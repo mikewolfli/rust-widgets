@@ -4,4 +4,6 @@
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="rgba(35,35,35,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
+  <rect x="2" y="2" width="236" height="20" fill="rgba(46,46,46,1.00)" />
+  <line x1="2" y1="22" x2="238" y2="22" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
 </svg>

@@ -12,9 +12,21 @@ use crate::widget::capability::coercion::{expect_selection_mode, expect_usize, e
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::ControlMetrics;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::sync::Arc;
+
+/// The margin a list leaves between its own frame and its rows: 2 px on every edge.
+///
+/// Named once so the rows are all measured from the same inset. They used to start at the
+/// control's literal `rect.y`, which pinned the first row's text to y=0 on the frame's
+/// stroke.
+const LIST_INSET: u32 = 2;
+
+/// The inset of a row's label from its row's left edge: 2 px.
+const LIST_TEXT_INSET: i32 = 2;
+
 /// List model abstraction for list-like views.
 pub trait ListModel: Send + Sync {
     /// Number of rows exposed by model.
@@ -434,6 +446,12 @@ impl WidgetProperties for ListView {
 impl Draw for ListView {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
+        // Rows are laid out from the control's inset content box rather than from its
+        // literal top edge. Every row used to start at `rect.y` and draw its label at
+        // `y + item_height / 2` with a top-left origin, so the first row's glyph box began on
+        // the frame's own stroke. `band_inset` reserves the margin and `text_line` centres
+        // each label on its row's own band.
+        let content = ControlMetrics::band_inset(rect, LIST_INSET);
 
         // Chrome colours resolve explicit style first, then the theme's resolved style for
         // this control, and only then a literal. The theme step is what makes an appearance
@@ -467,30 +485,40 @@ impl Draw for ListView {
 
         context.fill_rect(rect, surface);
         context.draw_rect(rect, border);
-        // Draw items from model
+        // Draw items from model. Each row is a band of the content box, never of the
+        // control, and the label's line box is derived from the row rather than from
+        // `y + item_height / 2` — which put the glyph box's top edge on the row's middle
+        // line and left the first row pinned to y=0.
         if let Some(ref model) = self.model {
             let item_height = 20;
             let row_count = model.row_count();
             let current_row = self.focused_row;
+            let font = crate::core::Font::default();
             for i in 0..row_count {
-                let y = rect.y + item_height * i as i32;
-                if y + item_height > rect.y + rect.height as i32 {
+                let y = content.y + item_height * i as i32;
+                if y + item_height > content.y + content.height as i32 {
                     break;
                 }
+                let row = crate::core::Rect::new(content.x, y, content.width, item_height as u32);
                 if Some(i) == current_row {
-                    context.fill_rect(
-                        crate::core::Rect::new(rect.x, y, rect.width, item_height as u32),
-                        focused_bg,
-                    );
+                    context.fill_rect(row, focused_bg);
                 }
                 if let Some(text) = model.data(i) {
-                    context.draw_text(
-                        crate::core::Point::new(rect.x + 2, y + item_height / 2),
-                        &text,
-                        &crate::core::Font::default(),
-                        ink,
-                        HorizontalAlignment::Left,
-                    );
+                    if !text.is_empty() {
+                        let cell = crate::core::Rect::new(
+                            row.x + LIST_TEXT_INSET,
+                            row.y,
+                            row.width.saturating_sub(LIST_TEXT_INSET as u32),
+                            row.height,
+                        );
+                        context.draw_text_fitted(
+                            context.text_line(cell, &font),
+                            &text,
+                            &font,
+                            ink,
+                            HorizontalAlignment::Left,
+                        );
+                    }
                 }
             }
         }

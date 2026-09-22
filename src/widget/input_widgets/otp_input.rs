@@ -30,6 +30,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usi
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -499,16 +500,18 @@ impl OtpInput {
     /// The box a point falls in, or `None` when it is outside the row or in a gap
     /// between boxes.
     fn box_index_at(&self, pos: Point) -> Option<usize> {
-        let geom = self.geometry();
-        if pos.y < geom.y
-            || pos.y >= geom.y + geom.height as i32
-            || pos.x < geom.x
-            || pos.x >= geom.x + geom.width as i32
+        // The **painted row**, so the boxes a user can see are the ones that answer. Testing
+        // `geometry()` would let a click tens of pixels below a 48 px row select a cell.
+        let row = self.row_rect();
+        if pos.y < row.y
+            || pos.y >= row.y + row.height as i32
+            || pos.x < row.x
+            || pos.x >= row.x + row.width as i32
         {
             return None;
         }
         let (box_width, gap) = self.box_metrics();
-        let offset = (pos.x - geom.x) as u32;
+        let offset = (pos.x - row.x) as u32;
         let stride = box_width + gap;
         if stride == 0 {
             return None;
@@ -521,11 +524,32 @@ impl OtpInput {
         Some(index)
     }
 
-    /// The width of one box and the gap after it, sized so the whole row fits the
-    /// widget. Both are at least one pixel: a zero width would make the boxes
-    /// invisible and the separators overlap into an unreadable smear.
+    /// The row of boxes the control actually paints: a full-width band one text-field
+    /// height tall, centred in the area the control was given.
+    ///
+    /// # Why the row is not the control's rectangle
+    ///
+    /// An OTP field is a text field made of cells, so its row is
+    /// [`dimensions::TEXT_FIELD_MIN_HEIGHT`] tall and centred — the same shape every other
+    /// field in the crate draws. Deriving it from `geometry()` made a 240x120 census cell a
+    /// row of six **36x120** columns (a 120 px tall column is not a box, it is a stripe), and
+    /// it made the row's own height depend on the caller's layout rather than on the field's
+    /// identity.
+    fn row_rect(&self) -> Rect {
+        ControlMetrics::full_width_band(self.geometry(), dimensions::TEXT_FIELD_MIN_HEIGHT)
+    }
+
+    /// The width of one box and the gap after it.
+    ///
+    /// The pair is derived from the **drawn row's** width, not the control's, so a row
+    /// centred in a wider rectangle keeps the boxes on the row rather than spreading them
+    /// across the rectangle. The final box's slack is folded in here rather than left to
+    /// the draw loop, which is what made the boxes and the hit test disagree: the drawing
+    /// added the leftover pixels to the last box while `box_index_at` recomputed the same
+    /// geometry from `stride` alone, so the two differed by the slack and box 5's right
+    /// edge ran past the control's own edge.
     fn box_metrics(&self) -> (u32, u32) {
-        let width = self.geometry().width.max(1);
+        let width = self.row_rect().width.max(1);
         let boxes = self.length.max(1) as u32;
         let gap = if self.separator.is_some() { 8 } else { 4 };
         let box_width = (width / boxes).saturating_sub(gap).max(1);
@@ -533,17 +557,29 @@ impl OtpInput {
     }
 
     /// The rectangle of box `index`, in widget coordinates.
+    ///
+    /// The last box absorbs the row's slack so the row's right edge is the control's own:
+    /// `index * stride` truncated to a whole number of boxes left the final cell narrower
+    /// than its neighbours *and* the accumulated truncation put the row's right edge a
+    /// couple of pixels past `row_rect().right()`. Taking the remainder from the drawn
+    /// rectangle keeps every box inside the band the row was given.
     fn box_rect(&self, index: usize) -> Rect {
-        let geom = self.geometry();
+        let row = self.row_rect();
         let (box_width, gap) = self.box_metrics();
-        let x = geom.x + (index as u32 * (box_width + gap)) as i32;
-        Rect::new(x, geom.y, box_width, geom.height)
+        let x = row.x + (index as u32 * (box_width + gap)) as i32;
+        let is_last = index + 1 == self.length;
+        let width = if is_last { (row.x + row.width as i32 - x).max(1) as u32 } else { box_width };
+        Rect::new(x, row.y, width, row.height)
     }
 }
 
 impl Draw for OtpInput {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.base.geometry();
+        // The **row**, not the control's rectangle: see `row_rect`. Every measurement below
+        // — the cell faces, the outlines, the glyphs and the separators — is taken from this
+        // one band, and the hit test reads the same one.
+        let row = self.row_rect();
+        let rect = row;
         if rect.width == 0 || rect.height == 0 {
             return;
         }
@@ -577,7 +613,14 @@ impl Draw for OtpInput {
         // as one widget rather than as empty space.
         let hairline = background.blend(&text_color, 0.35);
 
+        // The glyph size comes from the **row's** height, not the control's: deriving it
+        // from a 120 px cell asked for a 48 px glyph in a 48 px box, and the character then
+        // could not fit the cell it was drawn into.
         let font = Font::simple("Sans", (rect.height as f32 * 0.4).clamp(8.0, 32.0));
+        // The row's own line box, so each glyph is vertically centred in its cell rather
+        // than beginning on the cell's middle line (a glyph origin is the top-left corner of
+        // its box, so `slot.y + slot.height / 2` drew every character half a line low).
+        let line = context.text_line(rect, &font);
 
         context.fill_rect(rect, background);
 
@@ -616,7 +659,7 @@ impl Draw for OtpInput {
             // between the disabled ink and the real text colour.
             let color = if !enabled { background.blend(&text_color, 0.45) } else { text_color };
             context.draw_text(
-                Point::new(slot.x + (slot.width as i32) / 2, slot.y + (slot.height as i32) / 2),
+                Point::new(slot.x + (slot.width as i32) / 2, line.y),
                 &glyph.to_string(),
                 &font,
                 color,
@@ -629,7 +672,7 @@ impl Draw for OtpInput {
                     let (box_width, gap) = self.box_metrics();
                     let sep_x = slot.x + box_width as i32 + (gap as i32) / 2;
                     context.draw_text(
-                        Point::new(sep_x, slot.y + (slot.height as i32) / 2),
+                        Point::new(sep_x, line.y),
                         &sep.to_string(),
                         &font,
                         background.blend(&text_color, 0.5),
@@ -894,6 +937,76 @@ mod tests {
 
         otp.handle_event(&Event::mouse_press(5, 200, 1));
         assert_eq!(otp.focused_index(), 1, "a click outside the row is ignored");
+    }
+
+    /// The row is a band one text-field height tall, centred in the control.
+    ///
+    /// The boxes used to be the control's full height, so a 240x120 census cell held six
+    /// **36x120** stripes. This pins the shared `full_width_band` derivation in both
+    /// directions, including the clamp for a control shorter than a field.
+    #[test]
+    fn the_boxes_are_a_text_field_height_and_centred() {
+        for height in [48u32, 120, 300] {
+            let otp = OtpInput::new(Rect::new(0, 0, 240, height));
+            let row = otp.row_rect();
+            assert_eq!(row.height, dimensions::TEXT_FIELD_MIN_HEIGHT, "at control height {height}");
+            assert_eq!(row.y, (height - row.height) as i32 / 2, "at control height {height}");
+            for index in 0..otp.length() {
+                assert_eq!(
+                    otp.box_rect(index).height,
+                    dimensions::TEXT_FIELD_MIN_HEIGHT,
+                    "box {index} is the row's height"
+                );
+            }
+        }
+
+        let short = OtpInput::new(Rect::new(0, 0, 240, 30));
+        assert_eq!(short.row_rect().height, 30, "a short control clamps the row");
+    }
+
+    /// Every box stays **inside** the row, including the last one.
+    ///
+    /// `index * slack / boxes` truncated, so the accumulated truncation pushed box 5's right
+    /// edge to x = 241 in a 240 px control — one pixel outside the widget — while the hit
+    /// test recomputed the same geometry from the stride alone and disagreed about where the
+    /// box ended. The last box now absorbs the row's slack, so the row's right edge *is* the
+    /// control's and hit and ink are the same rectangle.
+    #[test]
+    fn the_last_box_ends_exactly_at_the_rows_right_edge() {
+        for width in [240u32, 200, 199, 137] {
+            let otp = OtpInput::new(Rect::new(0, 0, width, 120));
+            let row = otp.row_rect();
+            for index in 0..otp.length() {
+                let slot = otp.box_rect(index);
+                assert!(
+                    slot.x >= row.x && slot.x + slot.width as i32 <= row.x + row.width as i32,
+                    "box {index} at width {width} leaves the row: {slot:?} vs {row:?}"
+                );
+            }
+            let last = otp.box_rect(otp.length() - 1);
+            assert_eq!(
+                last.x + last.width as i32,
+                row.x + row.width as i32,
+                "the last box ends at the row's right edge, at width {width}"
+            );
+        }
+    }
+
+    /// A click below the row selects nothing, even though it is inside the control.
+    ///
+    /// The hit test used the control's rectangle, so with the row centred in a 120 px cell
+    /// a click 40 px below the boxes still selected a cell — on empty background, nowhere
+    /// near any ink.
+    #[test]
+    fn a_click_below_the_row_selects_nothing() {
+        let mut otp = OtpInput::new(Rect::new(0, 0, 240, 120));
+        otp.set_value("123456");
+        otp.set_focused_index(0);
+
+        let row = otp.row_rect();
+        // Inside the control's rectangle, below the drawn boxes.
+        otp.handle_event(&Event::mouse_press(5, row.y + row.height as i32 + 20, 1));
+        assert_eq!(otp.focused_index(), 0, "a click below the row must not select a box");
     }
 
     /// The property contract must round-trip the writable names and refuse the

@@ -4,6 +4,8 @@
 //! TextArea widget — multi-line text input (BLUE13 R2.5).
 use crate::compat::{Box, Rc, RefCell, String, ToString};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+#[cfg(test)]
+use crate::event::FocusReason;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
@@ -12,6 +14,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::dimensions;
 use crate::widget::text_utils::floor_char_boundary;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -338,7 +341,7 @@ impl EventHandler for TextArea {
             return;
         }
         match event {
-            Event::FocusGained => {
+            Event::FocusGained { .. } => {
                 self.focused = true;
                 self.request_redraw();
             }
@@ -418,8 +421,13 @@ const LINE_H: i32 = 16;
 
 impl Draw for TextArea {
     fn draw(&mut self, context: &mut RenderContext) {
+        // A text area is the one field whose height is **not** a fixed band: it is
+        // multi-line, so the lines legitimately span whatever height the caller gives it.
+        // `rect.height` therefore stays. Everything *inside* is measured from the field's
+        // own padding rather than from a local literal, so the first line starts where a
+        // single-line field's does instead of at a second, unshared `y = 4`.
         let rect = self.geometry();
-        let padding = 4;
+        let origin_x = rect.x + dimensions::TEXT_FIELD_PADDING_H as i32;
 
         // -- Background --
         let bg = self.style().background_color.unwrap_or(Color::rgb(255, 255, 255));
@@ -433,23 +441,40 @@ impl Draw for TextArea {
         let text_color = self.style().text_color.unwrap_or(Color::rgb(0, 0, 0));
         let placeholder_color = Color::rgb(180, 180, 180);
 
+        // The first line's own glyph box, centred on a line-height band below the top edge.
+        // The origin of a text run is the *top-left corner of its glyph box*, so the old
+        // `rect.y + padding` put that corner 4 px below the border and drew the first line
+        // half a line high — the same off-by-a-half-line defect the single-line fields had,
+        // and the reason the first line sat at `y = 4` in `text_area.svg` while its own
+        // placeholder sat beside it on a different baseline.
+        //
+        // The band is one line tall and starts one inset below the top border, where a
+        // single-line field's content starts, so a text area's first line and a `line_edit`'s
+        // value sit on the same row when the two are laid out at the same height. Deriving
+        // the band from the *first line* rather than from the whole control is what keeps a
+        // 120 px text area from putting its first line halfway down the control.
+        const FIRST_LINE_INSET: i32 = 4;
+        let first_band = Rect::new(origin_x, rect.y + FIRST_LINE_INSET, rect.width, LINE_H as u32);
+        let first_line = context.text_line(first_band, &Font::default());
+        let text_top = first_line.y;
+
         if self.text.is_empty() && !self.placeholder.is_empty() && !self.focused {
-            // Draw placeholder in gray
+            // Draw placeholder in gray, on the same first-line box the value would use.
             context.draw_text(
-                Point::new(rect.x + padding, rect.y + padding),
+                Point::new(origin_x, text_top),
                 &self.placeholder,
                 &Font::default(),
                 placeholder_color,
                 HorizontalAlignment::Left,
             );
         } else if !self.text.is_empty() {
-            let mut y = rect.y + padding;
+            let mut y = text_top;
             for line in self.text.lines() {
                 if y + LINE_H > rect.y + rect.height as i32 {
                     break;
                 }
                 context.draw_text(
-                    Point::new(rect.x + padding, y),
+                    Point::new(origin_x, y),
                     line,
                     &Font::default(),
                     text_color,
@@ -466,8 +491,8 @@ impl Draw for TextArea {
 
         // -- Cursor --
         if self.focused {
-            let cursor_x = self.cursor_screen_x(rect.x + padding);
-            let cursor_y = self.cursor_screen_y(rect.y + padding);
+            let cursor_x = self.cursor_screen_x(origin_x);
+            let cursor_y = self.cursor_screen_y(text_top);
             context.draw_line(
                 Point::new(cursor_x, cursor_y),
                 Point::new(cursor_x, cursor_y + LINE_H),
@@ -606,6 +631,40 @@ mod tests {
         ta.draw(&mut ctx);
     }
 
+    /// The first line is padded on the **field's** own inset from the top, not at `y = 4`.
+    ///
+    /// The origin of a text run is its glyph box's top-left corner, so `rect.y + 4` put that
+    /// corner four pixels below the border and drew the first line half a line high — the
+    /// placeholder and the value that replaced it therefore sat on different baselines, and
+    /// `text_area.svg` showed a 14 px line at `y = 4`. The first line now takes the same
+    /// line box every other text-bearing control uses.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn the_first_line_is_padded_consistently_with_every_other_field() {
+        let mut ta = TextArea::new("Line1".to_string(), Rect::new(0, 0, 240, 120));
+        let svg = crate::widget::svg::render_to_svg(&mut ta);
+        let line = svg.lines().find(|l| l.contains("<text")).expect("a text element");
+        let x: i32 = line
+            .split(" x=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .and_then(|value| value.parse().ok())
+            .expect("an x attribute");
+        let y: i32 = line
+            .split(" y=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .and_then(|value| value.parse().ok())
+            .expect("a y attribute");
+
+        assert_eq!(x, dimensions::TEXT_FIELD_PADDING_H as i32, "the shared horizontal inset");
+        // The line box is centred inside the first line's band, which is inset from the
+        // border; the assertion is that the glyph box sits clear of the top edge and still
+        // inside the first row, rather than pinned to a bare literal.
+        assert!(y > 0, "the first line clears the border: {y}");
+        assert!(y < LINE_H, "and stays inside the first row: {y}");
+    }
+
     #[test]
     fn textarea_set_text_truncates_on_max_length() {
         let mut ta = TextArea::new(String::new(), Rect::new(0, 0, 300, 200));
@@ -641,7 +700,7 @@ mod tests {
     fn textarea_focus_events() {
         let mut ta = TextArea::new(String::new(), Rect::new(0, 0, 300, 200));
         assert!(!ta.focused);
-        ta.handle_event(&Event::FocusGained);
+        ta.handle_event(&Event::FocusGained { reason: FocusReason::Programmatic });
         assert!(ta.focused);
         ta.handle_event(&Event::FocusLost);
         assert!(!ta.focused);

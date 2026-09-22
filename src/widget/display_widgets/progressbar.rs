@@ -13,6 +13,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::numeric::ordered_clamp_i32;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -304,14 +305,14 @@ impl Draw for ProgressBar {
         // filled rectangle rather than a progress bar; Material's linear indicator is 4px
         // tall with `height / 2` rounded ends. `rect` stays the widget's occupancy — its
         // hit area and layout slot — and only the drawn chrome takes the constant.
-        const BAR_HEIGHT: u32 = 4;
-        let bar_height = rect.height.clamp(1, BAR_HEIGHT);
-        let bar_rect = Rect::new(
-            rect.x,
-            rect.y + (rect.height as i32 - bar_height as i32) / 2,
-            rect.width,
-            bar_height,
-        );
+        //
+        // The height comes from the shared `dimensions` table and the box from
+        // `ControlMetrics::centered_band`, the derivation for "a line of this thickness
+        // across the middle of my area". A local `const BAR_HEIGHT: u32 = 4` was the same
+        // fact written a second time: the table already names it, so the two could drift
+        // and nothing would have connected a progress bar's thickness to its neighbour's.
+        let bar_rect = ControlMetrics::centered_band(rect, dimensions::PROGRESS_HEIGHT);
+        let bar_height = bar_rect.height;
         // How much of the run is filled, in pixels along the bar's own axis.
         let filled_len = match self.orientation {
             Orientation::Horizontal => (bar_rect.width as f32 * progress) as u32,
@@ -321,37 +322,55 @@ impl Draw for ProgressBar {
             Orientation::Horizontal => bar_rect.width,
             Orientation::Vertical => bar_rect.height,
         });
-        // Draw background (the groove)
+        // Draw background (the groove).
+        //
+        // The groove is the control's *own chrome* — the empty run the fill is measured against — so
+        // it is drawn unconditionally, including at value 0. Only the fill below is conditional.
         context.fill_rounded_rect(bar_rect, bar_height / 2, track_color);
         // Draw border
         if let Some(border_color) = style.border_color {
             context.draw_rect(bar_rect, border_color);
         }
-        // Draw progress bar
-        match self.orientation {
-            Orientation::Horizontal => {
-                let x = if self.inverted_appearance {
-                    bar_rect.x + bar_rect.width as i32 - filled_len as i32
-                } else {
-                    bar_rect.x
-                };
-                context.fill_rounded_rect(
-                    Rect::new(x, bar_rect.y, filled_len, bar_height),
-                    bar_height / 2,
-                    fill,
-                );
-            }
-            Orientation::Vertical => {
-                let y = if self.inverted_appearance {
-                    bar_rect.y
-                } else {
-                    bar_rect.y + bar_rect.height as i32 - filled_len as i32
-                };
-                context.fill_rounded_rect(
-                    Rect::new(bar_rect.x, y, bar_rect.width, filled_len),
-                    bar_height / 2,
-                    fill,
-                );
+        // Draw the filled run — but only when there is one.
+        //
+        // A zero-extent rectangle is a *degenerate* element, not a small one. The SVG backend emits
+        // it faithfully (`<rect width="0" ...>`), where it paints nothing, so a bar at value 0
+        // claimed a fill and drew none: `snapshots/svg/progress_bar.svg` carried `width="0"` on the
+        // fill line. Worse, the two backends *disagreed* about the same command —
+        // `SoftwareSurface::fill_rounded_rect` returns early for a zero-extent rect — so the
+        // snapshot documented chrome no rasteriser ever produced. Guarding here fixes both: the
+        // emitted stream no longer contains an element that means nothing, and it now matches what
+        // the rasteriser does with the identical command.
+        //
+        // The guard is `filled_len > 0`, and the same for both arms. A guard on `progress > 0.0`
+        // alone would be wrong: a long bar at a *tiny* non-zero value floors to `filled_len == 0`
+        // too, and the degenerate rect would come straight back.
+        if filled_len > 0 {
+            match self.orientation {
+                Orientation::Horizontal => {
+                    let x = if self.inverted_appearance {
+                        bar_rect.x + bar_rect.width as i32 - filled_len as i32
+                    } else {
+                        bar_rect.x
+                    };
+                    context.fill_rounded_rect(
+                        Rect::new(x, bar_rect.y, filled_len, bar_height),
+                        bar_height / 2,
+                        fill,
+                    );
+                }
+                Orientation::Vertical => {
+                    let y = if self.inverted_appearance {
+                        bar_rect.y
+                    } else {
+                        bar_rect.y + bar_rect.height as i32 - filled_len as i32
+                    };
+                    context.fill_rounded_rect(
+                        Rect::new(bar_rect.x, y, bar_rect.width, filled_len),
+                        bar_height / 2,
+                        fill,
+                    );
+                }
             }
         }
         // Draw text if visible
@@ -409,6 +428,9 @@ impl Draw for ProgressBar {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `Vec` comes from `crate::compat` rather than from `std`, because the `alloc_frugal`
+    // profile has no `std::vec` and a test that named it directly would not compile there.
+    use crate::compat::Vec;
     use crate::core::{Color, Orientation, Rect, Size};
     use crate::style::WidgetStyle;
 
@@ -576,5 +598,103 @@ mod tests {
         pb.set_orientation(Orientation::Vertical);
         let hint = pb.size_hint();
         assert_eq!(hint, Size::new(20, 120));
+    }
+
+    /// Returns the `(x, y, width, height)` of every `<rect>` whose `fill` is `fill`.
+    ///
+    /// Parsed per line rather than with a regex so the test needs no extra dependency; the backend
+    /// emits exactly one element per line, so this is the whole element stream.
+    fn rects_with_fill(svg: &str, fill: &str) -> Vec<(i32, i32, i32, i32)> {
+        svg.lines()
+            .filter(|line| line.contains("<rect") && line.contains(fill))
+            .map(|line| {
+                let attr = |name: &str| -> i32 {
+                    line.split(&std::format!("{name}=\""))
+                        .nth(1)
+                        .and_then(|rest| rest.split('"').next())
+                        .and_then(|value| value.parse().ok())
+                        .unwrap_or_else(|| panic!("no {name} on: {line}"))
+                };
+                (attr("x"), attr("y"), attr("width"), attr("height"))
+            })
+            .collect()
+    }
+
+    /// The colour `draw` resolves for the filled run, read the same way `draw` reads it.
+    ///
+    /// Derived rather than hardcoded because the value is theme-dependent (the fill is chrome and
+    /// follows the resolved theme style). Asserting a literal here would make the test fail on a
+    /// theme change for a reason unrelated to what it pins.
+    fn fill_color() -> Color {
+        crate::style::resolved_theme_style("progress_bar")
+            .and_then(|resolved| resolved.background_color)
+            .or_else(|| crate::style::semantic_color(crate::style::SemanticColor::Info))
+            .unwrap_or(Color::rgb(0, 120, 215))
+    }
+
+    /// A bar at value 0 must emit **nothing** for its fill, in either orientation.
+    ///
+    /// A zero-extent `<rect>` is degenerate: it is present in the stream, it is not a drawing, and
+    /// the software rasteriser skips the identical command — so the snapshot showed an element the
+    /// raster never produced (`snapshots/svg/progress_bar.svg` carried `width="0"`). The groove
+    /// underneath is the control's own chrome and must still be there: "no fill" is the assertion,
+    /// "no drawing at all" is not.
+    #[test]
+    fn progressbar_at_zero_emits_no_fill_but_keeps_its_groove() {
+        let fill = fill_color();
+        for orientation in [Orientation::Horizontal, Orientation::Vertical] {
+            for inverted in [false, true] {
+                let mut pb = ProgressBar::new(Rect::new(0, 0, 240, 120));
+                pb.set_orientation(orientation);
+                pb.set_inverted_appearance(inverted);
+                pb.set_value(0);
+                assert_eq!(pb.value(), 0, "the precondition of this test is a 0 value");
+
+                let svg = crate::widget::svg::render_to_svg(&mut pb);
+                let filled =
+                    rects_with_fill(&svg, &crate::render::svg::convert::color_to_rgba(&fill));
+                assert!(
+                    filled.is_empty(),
+                    "a 0-value {orientation:?} bar (inverted={inverted}) emitted a fill: {filled:?}\n{svg}"
+                );
+
+                // The groove is unconditional chrome, so it must survive the guard above. The
+                // window background is the only other rect, and it is the full control rect.
+                let drawn: Vec<_> = svg
+                    .lines()
+                    .filter(|line| line.contains("<rect") && line.contains("rx=\""))
+                    .collect();
+                assert!(
+                    !drawn.is_empty(),
+                    "a 0-value bar still draws its own groove, not just the window background: {svg}"
+                );
+
+                // The groove is also a *fixed-height band* centred in the control, not the
+                // control itself: the 240x120 census cell used to be painted as a 240x120
+                // slab, which is a filled rectangle rather than a progress bar. This pins
+                // the shared `centered_band` derivation now that it supplies the geometry.
+                assert!(
+                    svg.contains(&format!("height=\"{}\"", dimensions::PROGRESS_HEIGHT)),
+                    "the groove is {0}px tall, not the whole cell: {svg}",
+                    dimensions::PROGRESS_HEIGHT
+                );
+            }
+        }
+    }
+
+    /// The complement of the test above: a non-zero value that reaches a whole pixel of run **does**
+    /// emit a fill, and the emitted extent is the filled length, never zero.
+    #[test]
+    fn progressbar_above_zero_emits_a_non_degenerate_fill() {
+        let fill = fill_color();
+        let mut pb = ProgressBar::new(Rect::new(0, 0, 240, 120));
+        pb.set_value(50);
+
+        let svg = crate::widget::svg::render_to_svg(&mut pb);
+        let filled = rects_with_fill(&svg, &crate::render::svg::convert::color_to_rgba(&fill));
+        assert_eq!(filled.len(), 1, "half a bar is one filled run: {svg}");
+        let (_, _, width, height) = filled[0];
+        assert!(width > 0 && height > 0, "a drawn fill is never degenerate: {svg}");
+        assert_eq!(width, 120, "half of a 240-wide census cell is 120px: {svg}");
     }
 }

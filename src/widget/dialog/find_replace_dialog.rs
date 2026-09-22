@@ -16,6 +16,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -25,6 +26,19 @@ const PADDING: i32 = 8;
 const ROW_HEIGHT: u32 = 28;
 /// Small button size for toggle/action buttons.
 const BTN_SIZE: u32 = 24;
+/// The width of the trailing arrow buttons on the find row, and of the two action
+/// buttons on the replace row.
+///
+/// Named once because the draw path and the hit test both step by it: the two used to
+/// disagree (`24` at the draw site, a `28` stride the hit test measured with), so the
+/// clickable area of Replace All sat one inset to the left of the button it named.
+const ARROW_BTN: u32 = 24;
+/// The width of the "Find:" / "Rpl:" label column.
+///
+/// Both rows reserve the same column, so the two entry fields start on the same x. The
+/// draw path's `40` and the hit test's `46` were two different answers to the same
+/// question, which is how a click could land in the gap between a label and its field.
+const LABEL_WIDTH: u32 = 46;
 /// Gap between adjacent widgets on a row.
 const GAP: i32 = 6;
 
@@ -261,8 +275,13 @@ impl FindReplaceDialog {
     }
 
     /// Computes layout rectangles for the two rows.
+    ///
+    /// Both rows are stored, so the draw path and the hit test step through the **same**
+    /// boxes: they used to re-derive their own x offsets from four separate literals
+    /// (`46` here, `40 + GAP` there), and the entry-field region the click test built was
+    /// 6 px narrower than the field it was meant to name.
     fn compute_layout(&self) -> (Rect, Rect) {
-        let geom = self.geometry();
+        let geom = self.frame_rect();
         let row1 = Rect::new(
             geom.x + PADDING,
             geom.y + PADDING,
@@ -276,6 +295,48 @@ impl FindReplaceDialog {
             ROW_HEIGHT,
         );
         (row1, row2)
+    }
+
+    /// The bar this control actually paints: at most its intrinsic size, centred in the
+    /// area it was given.
+    ///
+    /// # Why the bar is not the caller's rectangle
+    ///
+    /// `rect` is the area the find bar is **offered**. Painting it verbatim made the
+    /// 240x120 census cell a 240x120 panel, and — because the two rows were then anchored
+    /// to that panel's top edge — left three quarters of the bar empty with both rows
+    /// crammed into the top eighth. [`ControlMetrics::painted_box`] caps the width at
+    /// [`dimensions::DIALOG_MIN_WIDTH`] and the height at the two rows the control
+    /// actually has, then centres the result, so the chrome is sized by what it contains
+    /// rather than by whatever box the caller handed it.
+    fn frame_rect(&self) -> Rect {
+        // Two rows plus the padding above, between and below them: the bar's intrinsic
+        // height is derived from its own parts so a row-height change cannot leave the
+        // frame a row short.
+        let intrinsic_height = PADDING as u32 * 2 + ROW_HEIGHT * 2 + GAP as u32;
+        ControlMetrics::painted_box(
+            self.geometry(),
+            Size::new(dimensions::DIALOG_MIN_WIDTH, intrinsic_height),
+        )
+    }
+
+    /// The x each trailing column starts at on a row of `row`, laid out from the row's
+    /// **right edge** inwards.
+    ///
+    /// # Why the fixed columns are placed from the right
+    ///
+    /// The row's fixed budget on a 240 px control did not fit: the two arrow buttons were
+    /// drawn at x 240 and x 270, entirely outside the frame, and at 400 px the Replace All
+    /// button sat 30 px past the right edge. Anchoring every fixed-width control to the
+    /// row's right edge makes the arrows — the affordances — the last thing to be placed
+    /// and the one flexible column (the entry field) absorb the remainder, so no fixed
+    /// column can leave the frame however narrow the caller's rectangle is.
+    ///
+    /// The arithmetic is floored at the row's own left edge, so even a row narrower than
+    /// its trailing columns keeps every button inside the frame.
+    fn trailing_x(row: Rect, trailing_width: i32) -> i32 {
+        let right = row.x + row.width as i32 - trailing_width;
+        right.max(row.x)
     }
 
     /// The line box, vertically centred in `cell`, that a label in `font` should occupy.
@@ -366,7 +427,10 @@ impl Draw for FindReplaceDialog {
             return;
         }
 
-        let geom = self.geometry();
+        // The **bar**, not the control's rectangle: see `frame_rect`. Every band below —
+        // the two rows, their labels, their fields and their buttons — is derived from
+        // this one rect, so the ink and the hit test cannot be anchored to different boxes.
+        let geom = self.frame_rect();
 
         // Chrome colours resolve explicit style first, then the theme's resolved style
         // for this control, and only then fall back to a literal. Every colour below used
@@ -427,46 +491,47 @@ impl Draw for FindReplaceDialog {
 
         // ── Find row: label + input + toggles + buttons ──
         //
-        // The row's fixed budget — a 40 px label, an input, four 24 px toggles and two 24 px
-        // arrows, each separated by `GAP` — comes to 40 + 6*6 + 96 + 48 + 6 = 226 px. A
-        // 240 px control leaves only the input room to absorb the remainder, so the arrows
-        // used to be placed at x=240 and x=270, entirely outside the dialog. The input is
-        // therefore clamped to the space that is actually left before the buttons: each
-        // fixed-width control is laid out from the row's right edge inwards, so the input
-        // takes up the slack instead of the last two buttons leaving the frame.
-        //
-        // `trailing` is every column to the right of the input — four toggles, two arrows
-        // and the six gaps between them — and it is subtracted from the row while the input
-        // keeps only what is left. There is deliberately **no minimum width on the input**: a
-        // floor of 40 px was enough to push the two arrow buttons 10 px and 40 px past the
-        // row's right edge at the census rectangle, so the floor lets the last fixed columns
-        // leave the frame. The input is the one flexible column here and it is the one that
-        // absorbs a narrow dialog; the arrows are the affordances, so they keep their width.
-        //
-        // The subtraction is floored at zero *before* the cast: casting a negative remainder
-        // to `u32` wraps it to ~4.29e9, which is how this row reported a right edge of
-        // `4294967296` in the SVG.
-        let label_width = 40u32;
-        let trailing = GAP * 6 + BTN_SIZE as i32 * 4 + 24 + GAP + 24;
-        let input_width = (find_row.width as i32 - label_width as i32 - trailing).max(0) as u32;
+        // The four toggles and the two arrows are a **fixed** trailing group; only the
+        // entry field flexes. The group's width is named once so the field can take
+        // exactly the remainder and no fixed column can be pushed past the row's right
+        // edge — see `trailing_x` for the defect that caused.
+        let trailing = GAP * 6 + BTN_SIZE as i32 * 4 + ARROW_BTN as i32 * 2;
+        let label_col = LABEL_WIDTH.min(find_row.width);
+        let input_width = (find_row.width as i32 - label_col as i32 - GAP - trailing).max(0) as u32;
         let mut x = find_row.x;
 
         // "Find:" label. Bounded by the label column, so it truncates there rather than
         // running into the input it names.
-        let label_rect = Rect::new(x, find_row.y, label_width, find_row.height);
+        let label_rect = Rect::new(x, find_row.y, label_col, find_row.height);
         let font = crate::core::Font::simple("sans-serif", 12.0);
         let label_line = self.text_line(label_rect, &font, context);
         context.draw_text_fitted(label_line, "Find:", &font, ink, HorizontalAlignment::Left);
-        x += label_width as i32 + GAP;
+        x += label_col as i32 + GAP;
 
-        // Find text input background
-        let input_rect = Rect::new(x, find_row.y, input_width, find_row.height);
-        context.fill_rect(input_rect, field);
-        context.draw_rect_stroke(input_rect, border, 1);
-        let display_text = if self.find_text.is_empty() { "" } else { &self.find_text };
-        let input_line = self.text_line(input_rect, &font, context);
-        context.draw_text_fitted(input_line, display_text, &font, ink, HorizontalAlignment::Left);
-        x = input_rect.x + input_rect.width as i32 + GAP;
+        // Find text input background. The field is only drawn when the row genuinely
+        // leaves room for it: on a bar narrower than its own trailing columns the
+        // remainder floors to zero, and a zero-width field is an element the SVG backend
+        // emits and the rasteriser skips — a silent divergence. Dropping it keeps the two
+        // backends in agreement.
+        if input_width > 0 {
+            let input_rect = Rect::new(x, find_row.y, input_width, find_row.height);
+            context.fill_rect(input_rect, field);
+            context.draw_rect_stroke(input_rect, border, 1);
+            // Guarded on the text being non-empty: an unguarded `draw_text_fitted` emits
+            // `<text …></text>`, an empty element that the rasteriser never produces.
+            let display_text = if self.find_text.is_empty() { "" } else { &self.find_text };
+            if !display_text.is_empty() {
+                let input_line = self.text_line(input_rect, &font, context);
+                context.draw_text_fitted(
+                    input_line,
+                    display_text,
+                    &font,
+                    ink,
+                    HorizontalAlignment::Left,
+                );
+            }
+        }
+        x = Self::trailing_x(find_row, trailing);
 
         // Match Case toggle
         let mc_rect = Rect::new(x, find_row.y, BTN_SIZE, find_row.height);
@@ -525,52 +590,63 @@ impl Draw for FindReplaceDialog {
         x += BTN_SIZE as i32 + GAP;
 
         // Find Previous button
-        let fp_rect = Rect::new(x, find_row.y, 24, find_row.height);
+        let fp_rect = Rect::new(x, find_row.y, ARROW_BTN, find_row.height);
         context.fill_rect(fp_rect, muted);
         let fp_line = self.text_line(fp_rect, &font, context);
         context.draw_text_fitted(fp_line, "\u{25B2}", &font, muted_ink, HorizontalAlignment::Left);
-        x += 24 + GAP;
+        x += ARROW_BTN as i32 + GAP;
 
         // Find Next button
-        let fn_rect = Rect::new(x, find_row.y, 24, find_row.height);
+        let fn_rect = Rect::new(x, find_row.y, ARROW_BTN, find_row.height);
         context.fill_rect(fn_rect, accent);
         let fn_line = self.text_line(fn_rect, &font, context);
         context.draw_text_fitted(fn_line, "\u{25BC}", &font, accent_ink, HorizontalAlignment::Left);
 
         // ── Replace row: label + input + buttons ──
-        // The replace row carried the same underflow and the same absent minimum: the
-        // remainder here is small but still positive at 240 px, so the visible defect was the
-        // Replace All button 30 px past the right edge rather than a wrapped width. Flooring
-        // in `i32` keeps a narrower row from producing the same ~4.29e9 px input the find row
-        // did, and the input is allowed to reach zero so the two trailing buttons stay inside.
+        //
+        // The replace row's trailing group is the two action buttons and the two GAPs
+        // around them, laid out from the right edge by the same helper as the find row, so
+        // the Replace All button sits inside the frame instead of 30 px past it.
+        let r_trailing = GAP * 2 + ARROW_BTN as i32 * 2;
         let r_input_width =
-            (replace_row.width as i32 - label_width as i32 - GAP * 3 - 28 - 24).max(0) as u32;
+            (replace_row.width as i32 - label_col as i32 - GAP - r_trailing).max(0) as u32;
         let mut x2 = replace_row.x;
 
         // "Replace:" label
-        let rl_rect = Rect::new(x2, replace_row.y, label_width, replace_row.height);
+        let rl_rect = Rect::new(x2, replace_row.y, label_col, replace_row.height);
         let rl_line = self.text_line(rl_rect, &font, context);
         context.draw_text_fitted(rl_line, "Rpl:", &font, ink, HorizontalAlignment::Left);
-        x2 += label_width as i32 + GAP;
+        x2 += label_col as i32 + GAP;
 
-        // Replace text input background
-        let r_input_rect = Rect::new(x2, replace_row.y, r_input_width, replace_row.height);
-        context.fill_rect(r_input_rect, field);
-        context.draw_rect_stroke(r_input_rect, border, 1);
-        let r_text = if self.replace_text.is_empty() { "" } else { &self.replace_text };
-        let r_input_line = self.text_line(r_input_rect, &font, context);
-        context.draw_text_fitted(r_input_line, r_text, &font, ink, HorizontalAlignment::Left);
-        x2 = r_input_rect.x + r_input_rect.width as i32 + GAP;
+        // Replace text input background. Drawn only when there is room, for the same
+        // zero-width reason the find field is guarded above.
+        if r_input_width > 0 {
+            let r_input_rect = Rect::new(x2, replace_row.y, r_input_width, replace_row.height);
+            context.fill_rect(r_input_rect, field);
+            context.draw_rect_stroke(r_input_rect, border, 1);
+            let r_text = if self.replace_text.is_empty() { "" } else { &self.replace_text };
+            if !r_text.is_empty() {
+                let r_input_line = self.text_line(r_input_rect, &font, context);
+                context.draw_text_fitted(
+                    r_input_line,
+                    r_text,
+                    &font,
+                    ink,
+                    HorizontalAlignment::Left,
+                );
+            }
+        }
+        x2 = Self::trailing_x(replace_row, r_trailing);
 
         // Replace button
-        let rep_rect = Rect::new(x2, replace_row.y, 24, replace_row.height);
+        let rep_rect = Rect::new(x2, replace_row.y, ARROW_BTN, replace_row.height);
         context.fill_rect(rep_rect, muted);
         let rep_line = self.text_line(rep_rect, &font, context);
         context.draw_text_fitted(rep_line, "R", &font, muted_ink, HorizontalAlignment::Left);
-        x2 += 28;
+        x2 += ARROW_BTN as i32 + GAP;
 
         // Replace All button
-        let ra_rect = Rect::new(x2, replace_row.y, 24, replace_row.height);
+        let ra_rect = Rect::new(x2, replace_row.y, ARROW_BTN, replace_row.height);
         context.fill_rect(ra_rect, muted);
         let ra_line = self.text_line(ra_rect, &font, context);
         context.draw_text_fitted(ra_line, "RA", &font, muted_ink, HorizontalAlignment::Left);
@@ -595,45 +671,58 @@ impl EventHandler for FindReplaceDialog {
         match event {
             Event::MousePress { pos, button } => {
                 if *button == 1 {
-                    // Check clicks on find row buttons
+                    // Check clicks on find row buttons. The regions come from the same
+                    // `compute_layout` + trailing-column arithmetic the draw path uses, so
+                    // a button's clickable area cannot drift from its ink. They used to be
+                    // re-derived here from their own literals — `46` for the label column
+                    // against the draw path's `40 + GAP`, and a `28` stride between the two
+                    // replace buttons against the `24` they were drawn at — which put the
+                    // Replace All hit region one inset to the left of the button it named.
                     let (find_row, replace_row) = self.compute_layout();
+                    let label_col = LABEL_WIDTH.min(find_row.width);
+                    let trailing = GAP * 6 + BTN_SIZE as i32 * 4 + ARROW_BTN as i32 * 2;
 
-                    // Focus find field on click
+                    // Focus find field on click. The region is exactly the drawn field:
+                    // when the row leaves no room for it (`input_width == 0`) there is no
+                    // field to click, so it is not reported as one.
                     let find_input_w =
-                        ((find_row.width as i32 - 46 - GAP * 6 - BTN_SIZE as i32 * 4 - 40) as u32)
-                            .max(60);
-                    let find_input_region = Rect::new(
-                        find_row.x + 46, // after "Find:" label
-                        find_row.y,
-                        find_input_w,
-                        find_row.height,
-                    );
-                    if find_input_region.contains_point(*pos) {
-                        self.focus_field = 0;
-                        self.base.request_redraw();
-                        return;
+                        (find_row.width as i32 - label_col as i32 - GAP - trailing).max(0);
+                    if find_input_w > 0 {
+                        let find_input_region = Rect::new(
+                            find_row.x + label_col as i32 + GAP,
+                            find_row.y,
+                            find_input_w as u32,
+                            find_row.height,
+                        );
+                        if find_input_region.contains_point(*pos) {
+                            self.focus_field = 0;
+                            self.base.request_redraw();
+                            return;
+                        }
                     }
 
                     // Click on replace input
+                    let r_trailing = GAP * 2 + ARROW_BTN as i32 * 2;
+                    let r_label_col = LABEL_WIDTH.min(replace_row.width);
                     let r_input_width =
-                        ((replace_row.width as i32 - 46 - GAP * 3 - 48) as u32).max(60);
-                    let r_input_region = Rect::new(
-                        replace_row.x + 46, // after "Rpl:" label
-                        replace_row.y,
-                        r_input_width,
-                        replace_row.height,
-                    );
-                    if r_input_region.contains_point(*pos) {
-                        self.focus_field = 1;
-                        self.base.request_redraw();
-                        return;
+                        (replace_row.width as i32 - r_label_col as i32 - GAP - r_trailing).max(0);
+                    if r_input_width > 0 {
+                        let r_input_region = Rect::new(
+                            replace_row.x + r_label_col as i32 + GAP,
+                            replace_row.y,
+                            r_input_width as u32,
+                            replace_row.height,
+                        );
+                        if r_input_region.contains_point(*pos) {
+                            self.focus_field = 1;
+                            self.base.request_redraw();
+                            return;
+                        }
                     }
 
-                    // Toggle buttons on find row
-                    let find_input_width =
-                        ((find_row.width as i32 - 46 - GAP * 6 - BTN_SIZE as i32 * 4 - 40) as u32)
-                            .max(60) as i32;
-                    let button_start_x = find_row.x + 46 + find_input_width + GAP;
+                    // Toggle buttons on find row. Placed from the row's right edge by the
+                    // same helper the draw path uses, so the two agree by construction.
+                    let button_start_x = Self::trailing_x(find_row, trailing);
 
                     // Match Case
                     let mc_rect = Rect::new(button_start_x, find_row.y, BTN_SIZE, find_row.height);
@@ -684,32 +773,40 @@ impl EventHandler for FindReplaceDialog {
 
                     // Find Previous button
                     let fp_x = button_start_x + (BTN_SIZE as i32 + GAP) * 4;
-                    let fp_rect = Rect::new(fp_x, find_row.y, 24, find_row.height);
+                    let fp_rect = Rect::new(fp_x, find_row.y, ARROW_BTN, find_row.height);
                     if fp_rect.contains_point(*pos) {
                         self.find_previous();
                         return;
                     }
 
                     // Find Next button
-                    let fn_rect = Rect::new(fp_x + 24 + GAP, find_row.y, 24, find_row.height);
+                    let fn_rect = Rect::new(
+                        fp_x + ARROW_BTN as i32 + GAP,
+                        find_row.y,
+                        ARROW_BTN,
+                        find_row.height,
+                    );
                     if fn_rect.contains_point(*pos) {
                         self.find_next();
                         return;
                     }
 
-                    // Replace button
-                    let r_btn_x = replace_row.x
-                        + 46
-                        + (replace_row.width as i32 - 46 - GAP * 3 - 48).max(60)
-                        + GAP;
-                    let rep_rect = Rect::new(r_btn_x, replace_row.y, 24, replace_row.height);
+                    // Replace button. Anchored to the row's right edge by the same helper
+                    // the draw path uses, so the hit region is the button.
+                    let r_btn_x = Self::trailing_x(replace_row, r_trailing);
+                    let rep_rect = Rect::new(r_btn_x, replace_row.y, ARROW_BTN, replace_row.height);
                     if rep_rect.contains_point(*pos) {
                         self.replace();
                         return;
                     }
 
                     // Replace All button
-                    let ra_rect = Rect::new(r_btn_x + 28, replace_row.y, 24, replace_row.height);
+                    let ra_rect = Rect::new(
+                        r_btn_x + ARROW_BTN as i32 + GAP,
+                        replace_row.y,
+                        ARROW_BTN,
+                        replace_row.height,
+                    );
                     if ra_rect.contains_point(*pos) {
                         self.replace_all();
                     }
@@ -753,7 +850,12 @@ impl EventHandler for FindReplaceDialog {
     }
 }
 
-#[cfg(test)]
+// These tests drive the **theme**, which only exists in a build with a device profile
+// (see `crate::lib`: `pub mod theme` is gated on `device_profile`). Without this gate the
+// `mini` and `embedded` profiles fail to compile their test targets, because the test code
+// names a module that those builds compile out — the production code is profile-clean and
+// only the fixture was not.
+#[cfg(all(test, full_widgets))]
 mod tests {
     use super::*;
     use crate::widget::svg::render_to_svg;
@@ -974,5 +1076,44 @@ mod tests {
         let svg = render_to_svg(&mut dialog);
         assert!(svg.starts_with("<svg"), "SVG should start with <svg, got: {svg:.60}");
         assert!(svg.ends_with("</svg>"), "SVG should end with </svg>");
+    }
+
+    /// The census geometry must emit no zero-extent rect and no empty text element, and no
+    /// element may leave the 240 px frame.
+    ///
+    /// This pins the three named defects of the old layout together, because they share one
+    /// cause — the rows were laid out from the control's raw rectangle with four independent
+    /// literals:
+    ///
+    /// * `find_replace_dialog.svg` carried `<rect x="52" y="29" width="0" height="28">`
+    ///   (the find field collapsed to zero width). A zero-width rect is emitted by the SVG
+    ///   backend and skipped by the rasteriser, so the two backends disagreed about the frame.
+    /// * each entry field emitted `<text …></text>` when its value was empty — again an element
+    ///   the rasteriser never produces.
+    /// * the two arrow buttons were drawn at x 240 and x 270, past the 240 px frame.
+    #[test]
+    fn the_find_bar_emits_no_zero_extent_or_out_of_frame_ink_at_the_census_geometry() {
+        let mut dialog = FindReplaceDialog::new(Rect::new(0, 0, 240, 120));
+        dialog.show();
+        let svg = render_to_svg(&mut dialog);
+
+        assert!(
+            !svg.contains("width=\"0\"") && !svg.contains("height=\"0\""),
+            "a zero-extent rect is emitted by the SVG backend and skipped by the rasteriser: {svg}"
+        );
+        assert!(
+            !svg.contains("></text>"),
+            "an empty <text> element is a silent divergence between the two backends: {svg}"
+        );
+        // Every x is a placement or a line endpoint; none may start or end past the frame.
+        for token in
+            svg.split(|c: char| !(c.is_ascii_digit() || c == '=' || c.is_ascii_alphabetic()))
+        {
+            if let Some(rest) = token.strip_prefix("x=") {
+                if let Ok(value) = rest.parse::<i32>() {
+                    assert!(value <= 240, "ink at x={value} is outside the 240 px frame: {svg}");
+                }
+            }
+        }
     }
 }

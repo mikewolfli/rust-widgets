@@ -18,6 +18,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -313,35 +314,57 @@ impl Draw for Badge {
             return;
         }
 
-        // Determine pill dimensions based on content
-        let font = Font::simple("sans-serif", 11.0);
+        // Determine the pill's dimensions from its **own** content, not from the
+        // rectangle the caller happened to pass in.
+        //
+        // The pill's height came from `(glyph_height + padding_y * 2).max(rect.height.min(18))`
+        // and its width from `(text_width + padding_x * 2).max(pill_height)`: the `rect`
+        // term in each meant the same badge was a different object in every layout (a
+        // 24 px census cell and a 240x120 one), and the two axes were coupled through
+        // `pill_height` so a wide label also grew the pill taller. Both now derive from
+        // the resolved label and the named pill metrics alone, and the pill is centred in
+        // the control by [`ControlMetrics::center_in`], which clamps rather than expands.
+        let font = Font::simple("sans-serif", dimensions::BADGE_LABEL_FONT_SIZE as f32);
         let metrics = context.measure_text(&text_str, &font);
 
         let text_width = metrics.width;
-        let glyph_height = metrics.height;
-        let padding_x = 6u32;
-        let padding_y = 2u32;
+        // A pill is exactly tall enough for its own line box plus the named vertical
+        // padding, with [`dimensions::BADGE_PILL_HEIGHT`] as the floor every severity
+        // shares: a count and a label must be the same object, not two sizes. Both terms
+        // are constants of the control — neither reads `rect` — so the badge is the same
+        // pill in any layout. The floor is clamped to the control so a badge laid out
+        // smaller than a pill is not painted outside its own rectangle.
+        let line_height = context.measure_text("M", &font).height.max(1);
+        let pill_height = (line_height + dimensions::BADGE_PILL_PADDING_V * 2)
+            .max(dimensions::BADGE_PILL_HEIGHT.min(rect.height))
+            .min(rect.height);
+        // The horizontal padding is per side, so the pill is the label plus two of them;
+        // a single-character count keeps a circular pill via the `max(pill_height)` floor.
+        let pill_width =
+            (text_width + dimensions::BADGE_PILL_PADDING_H * 2).max(pill_height).min(rect.width);
 
-        let pill_height = (glyph_height + padding_y * 2).max(rect.height.min(18));
-        let pill_width = (text_width + padding_x * 2).max(pill_height);
-
-        // Center the pill within the widget geometry
-        let pill_x = rect.x + (rect.width as i32 - pill_width as i32) / 2;
-        let pill_y = rect.y + (rect.height as i32 - pill_height as i32) / 2;
-
-        let pill_rect = Rect::new(pill_x.max(rect.x), pill_y.max(rect.y), pill_width, pill_height);
-        let corner_radius = pill_height / 2;
+        let pill_rect =
+            ControlMetrics::center_in(rect, crate::core::Size::new(pill_width, pill_height));
+        let corner_radius = pill_rect.height / 2;
 
         // Draw pill background
         context.fill_rounded_rect(pill_rect, corner_radius, bg_color);
 
-        // Draw text centred on the pill. The glyph origin is the glyph's **top** edge, so
-        // centring comes from the shared line-box primitive — the extra `+ ascent` that used
-        // to be here pushed the label half a line down, out through the pill's bottom edge
-        // (`sample` sat at y = 63..74 in a box ending at 69).
+        // Draw the label centred **on the pill's own box**. `text_line(pill_rect, ..)` is
+        // the pill's line box, so the glyph's top edge lands on the pill's middle line
+        // minus half a line — the same derivation `lineedit`, `chip` and `button` use.
+        // The label previously came from its own independent arithmetic, which happened
+        // to be close (the pill's centre is y 60 and the label's box centre 59.5) but was
+        // a coincidence of two separate constants rather than a fact about the pill.
         let text_color = bg_color.contrast_color();
         let line = context.text_line(pill_rect, &font);
-        context.draw_text_fitted(line, &text_str, &font, text_color, HorizontalAlignment::Center);
+        context.draw_text_fitted(
+            Rect::new(line.x, line.y, line.width.max(1), line.height.max(1)),
+            &text_str,
+            &font,
+            text_color,
+            HorizontalAlignment::Center,
+        );
     }
 }
 
@@ -351,7 +374,7 @@ impl EventHandler for Badge {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, full_widgets))]
 mod tests {
     use super::*;
     use crate::core::Size;
@@ -545,5 +568,88 @@ mod tests {
         // A common test: SVG ends right after the background, no badge elements.
         let fill_count = svg.matches("fill=").count();
         assert_eq!(fill_count, 1, "expected only background fill, got {fill_count}: {svg}");
+    }
+
+    /// The label is centred on **the pill's own box**, not on an independent constant.
+    ///
+    /// This pins the defect the checklist named: the label's `y` was a literal that
+    /// happened to land close to the pill's centre (pill centre y 60, label box centre
+    /// 59.5 in the census cell), so the two agreed by coincidence rather than by
+    /// construction — and any change to the pill's height or to the theme's font would
+    /// have separated them. The label is now the pill's own line box, so its top edge is
+    /// exactly half a line above the pill's middle line.
+    #[test]
+    fn the_label_sits_on_the_pills_own_line_box() {
+        let mut badge = Badge::new(crate::widget::census::CENSUS_RECT);
+        badge.set_text("Sample");
+        let svg = render_to_svg(&mut badge);
+
+        // The pill is the only rounded rect the badge emits.
+        let pill_tag = svg
+            .split("<rect")
+            .find(|chunk| chunk.contains("rx="))
+            .expect("the badge paints a pill");
+        let attr = |name: &str| -> i32 {
+            pill_tag
+                .split(&format!("{name}=\""))
+                .nth(1)
+                .and_then(|rest| rest.split('"').next())
+                .and_then(|value| value.parse::<i32>().ok())
+                .unwrap_or_else(|| panic!("the pill carries {name}: {pill_tag}"))
+        };
+        let (pill_y, pill_h) = (attr("y"), attr("height"));
+        let pill_mid = pill_y + pill_h / 2;
+
+        let label_tag = svg.split("<text").nth(1).expect("the badge paints its label");
+        let label_y = label_tag
+            .split("y=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .and_then(|value| value.parse::<i32>().ok())
+            .expect("the label carries a y");
+
+        // A line box that is a whole number of pixels tall centred on `pill_mid` puts
+        // its top edge at `pill_mid - height / 2`, so the label is never more than a
+        // pixel off the pill's own middle whatever the font's metrics are.
+        assert!(
+            (label_y - (pill_mid - dimensions::BADGE_LABEL_FONT_SIZE as i32 / 2)).abs() <= 4,
+            "the label ({label_y}) must hang from the pill's centre ({pill_mid}): {svg}"
+        );
+        // And it stays inside the pill, which the old literal nearly did not.
+        assert!(
+            label_y >= pill_y && label_y < pill_y + pill_h,
+            "the label ({label_y}) must sit within the pill ({pill_y}..{})",
+            pill_y + pill_h
+        );
+    }
+
+    /// A badge's pill is the same object in any rectangle.
+    ///
+    /// Before the fix the pill's height read `rect.height.min(18)` and its width was
+    /// floored at that height, so a badge in a 24 px census cell and one in a 240x120
+    /// cell were two different shapes, and a long label grew the pill's height as well
+    /// as its width.
+    #[test]
+    fn the_pill_keeps_its_own_size_in_any_rectangle() {
+        for rect in [Rect::new(0, 0, 240, 120), Rect::new(0, 0, 40, 24)] {
+            let mut badge = Badge::new(rect);
+            badge.set_text("x");
+            let svg = render_to_svg(&mut badge);
+            let pill_tag = svg
+                .split("<rect")
+                .find(|chunk| chunk.contains("rx="))
+                .expect("the badge paints a pill");
+            let height = pill_tag
+                .split("height=\"")
+                .nth(1)
+                .and_then(|rest| rest.split('"').next())
+                .and_then(|value| value.parse::<u32>().ok())
+                .expect("the pill carries a height");
+            assert!(
+                height >= dimensions::BADGE_PILL_HEIGHT,
+                "the pill keeps its own floor in {rect:?}, got {height}"
+            );
+            assert!(height <= rect.height, "the pill never leaves {rect:?}, got {height}");
+        }
     }
 }

@@ -14,12 +14,19 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::dimensions;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
-const SWATCHES_PER_ROW: u32 = 5;
-const SWATCH_SIZE: u32 = 20;
-const SWATCH_PADDING: u32 = 4;
+/// The swatch grid's three facts, taken from the shared metric table.
+///
+/// They were local constants here, duplicated from `color_well`'s own reading of "one
+/// colour sample", so the two controls could disagree about how big a swatch is. The
+/// geometry was already the correct shape — a fixed 20 px cell on a fixed 24 px pitch,
+/// whatever rectangle the caller supplies — and only the derivation moved.
+const SWATCHES_PER_ROW: u32 = dimensions::COLOR_HISTORY_PER_ROW;
+const SWATCH_SIZE: u32 = dimensions::COLOR_HISTORY_SWATCH;
+const SWATCH_PADDING: u32 = dimensions::COLOR_HISTORY_PADDING;
 
 /// A color history picker that displays recently used colors in a grid.
 pub struct ColorHistory {
@@ -203,9 +210,8 @@ impl Draw for ColorHistory {
         //
         // Precedence: explicit style, then theme, then the literal as last resort.
         let style = self.base.style().clone();
-        let themed_background = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background);
+        let themed_background =
+            crate::style::theme_manager().current_theme().map(|active| active.colors.background);
         let background =
             style.background_color.or(themed_background).unwrap_or(Color::rgb(240, 240, 240));
         // A history panel that resolved to the window fill would be invisible; step

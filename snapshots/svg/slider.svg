@@ -3,6 +3,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <rect x="0" y="58" width="240" height="4" fill="rgba(255,171,64,1.00)" />
-  <rect x="0" y="0" width="16" height="120" fill="rgba(100,181,246,1.00)" />
-  <rect x="0" y="0" width="16" height="120" fill="none" stroke="rgba(162,177,173,1.00)" stroke-width="1" />
+  <circle cx="10" cy="60" r="10" fill="rgba(100,181,246,1.00)" />
+  <circle cx="10" cy="60" r="10" fill="none" stroke="rgba(162,177,173,1.00)" stroke-width="1" />
 </svg>

@@ -14,6 +14,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -115,17 +116,44 @@ impl Spinner {
         self.angle = (self.angle + delta_ms as f32 * 0.1 * self.speed) % 360.0;
     }
 
-    /// Computes the center point and effective radius based on geometry and size_ratio.
+    /// Computes the centre point and effective radius of the painted ring.
+    ///
+    /// # Why the diameter is the control's own, not the rectangle's
+    ///
+    /// A spinner is a **fixed-size indicator**: the same ring means the same thing in a
+    /// toolbar slot and in a full-screen cell. Deriving the diameter from the given
+    /// rectangle (`min(w, h) as f32 / 2.0 * size_ratio`) made the ring a fraction of
+    /// whatever space the caller happened to leave — the census cell drew a `r=45`
+    /// circle filling most of the 240x120 box while [`Self::size_hint`] reported
+    /// 48x48, so the control's declaration and its drawing described two different
+    /// objects. [`dimensions::SPINNER_DIAMETER`] is the size `size_hint` asks for, so
+    /// the two now agree by construction; [`ControlMetrics::centered_disc`] places it
+    /// on the control's middle and clamps it to the rectangle, because nothing clips a
+    /// widget at this layer and a ring larger than the control would paint outside it.
+    ///
+    /// `size_ratio` still scales the ring inside that fixed box, so a caller that wants
+    /// a smaller indicator gets one without resizing the control.
     fn center_and_radius(&self) -> Option<(Point, u32)> {
         let rect = self.geometry();
         if rect.width == 0 || rect.height == 0 {
             return None;
         }
-        let cx = rect.x + (rect.width as i32) / 2;
-        let cy = rect.y + (rect.height as i32) / 2;
-        let raw_radius = rect.width.min(rect.height) as f32 / 2.0 * self.size_ratio;
+        // The box the ring is centred in: the fixed diameter when the control has room
+        // for it, the control's own extent when it does not. Guarded against zero in
+        // both axes, because `draw_circle_stroke` with a zero radius is an invisible
+        // element rather than a small one.
+        let box_side = dimensions::SPINNER_DIAMETER.min(rect.width).min(rect.height);
+        if box_side == 0 {
+            return None;
+        }
+        let disc = ControlMetrics::centered_disc(rect, box_side);
+        let center =
+            Point::new(disc.x + (disc.width as i32) / 2, disc.y + (disc.height as i32) / 2);
+        // The ring is inset by half the stroke and a pixel of rounding, so the painted
+        // outline stays inside the disc rather than straddling its edge.
+        let raw_radius = disc.width as f32 / 2.0 * self.size_ratio;
         let radius = (raw_radius - self.thickness as f32 / 2.0 - 1.0).max(1.0);
-        Some((Point::new(cx, cy), radius as u32))
+        Some((center, radius as u32))
     }
 }
 
@@ -139,7 +167,10 @@ impl Widget for Spinner {
     }
 
     fn size_hint(&self) -> Size {
-        Size::new(48, 48)
+        // The same fact `center_and_radius` draws from: the indicator's diameter. It has
+        // to be a square of that size, or a layout that honours `size_hint` would hand
+        // the control a box its ring does not fit in.
+        Size::new(dimensions::SPINNER_DIAMETER, dimensions::SPINNER_DIAMETER)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -209,14 +240,16 @@ impl EventHandler for Spinner {
 
 impl Draw for Spinner {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
-        if rect.width == 0 || rect.height == 0 {
-            return;
-        }
-
+        // `center_and_radius` already refuses a rectangle with no extent, so this path
+        // only runs when there is a disc to paint.
         let Some((center, radius)) = self.center_and_radius() else {
             return;
         };
+        if radius == 0 {
+            // A zero-radius ring is invisible: nothing to draw, and emitting it would
+            // break the "never emit a zero-extent element" rule.
+            return;
+        }
 
         let is_enabled = self.base.is_enabled();
         let stroke_w = self.thickness.max(1);
@@ -252,7 +285,7 @@ impl Draw for Spinner {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, full_widgets))]
 mod tests {
     use super::*;
     use crate::render::PaintBackend;
@@ -429,6 +462,82 @@ mod tests {
     #[test]
     fn spinner_size_hint() {
         let sp = Spinner::new(Rect::new(0, 0, 48, 48));
-        assert_eq!(sp.size_hint(), Size::new(48, 48));
+        assert_eq!(
+            sp.size_hint(),
+            Size::new(dimensions::SPINNER_DIAMETER, dimensions::SPINNER_DIAMETER)
+        );
+    }
+
+    /// A spinner is a fixed-size indicator, not a fraction of the area it is given.
+    ///
+    /// This pins the defect the old derivation caused: `min(w, h) / 2 * size_ratio` on
+    /// the 240x120 census cell drew a ring with `r = 45` centred at (120, 60), while
+    /// `size_hint` reported 48x48 — a spinner that was one control to a layout and
+    /// another one on screen. The diameter is now [`dimensions::SPINNER_DIAMETER`]
+    /// whenever the control has room for it, clamped only when it does not.
+    #[test]
+    fn spinner_draws_its_own_diameter_in_any_rectangle() {
+        for (rect, expected_side) in [
+            (Rect::new(0, 0, 240, 120), dimensions::SPINNER_DIAMETER),
+            (Rect::new(0, 0, 48, 48), dimensions::SPINNER_DIAMETER),
+            // A control smaller than the indicator clamps it rather than painting
+            // outside its own rectangle.
+            (Rect::new(0, 0, 24, 80), 24),
+        ] {
+            let sp = Spinner::new(rect);
+            let (center, _) = sp.center_and_radius().expect("a non-empty rectangle has a disc");
+            // Recover the disc the centre came from and check its square side.
+            let disc = ControlMetrics::centered_disc(rect, expected_side);
+            assert_eq!(disc.width, expected_side, "at control {rect:?}");
+            assert_eq!(disc.height, expected_side, "at control {rect:?}");
+            assert_eq!(disc.x + (disc.width as i32) / 2, center.x);
+            assert_eq!(disc.y + (disc.height as i32) / 2, center.y);
+            // The ring is centred in the control, so its centre is the control's middle.
+            assert_eq!(center.x, rect.x + (rect.width as i32) / 2);
+            assert_eq!(center.y, rect.y + (rect.height as i32) / 2);
+        }
+    }
+
+    /// The painted ring stays inside the control it was given.
+    #[test]
+    fn spinner_ring_never_leaves_its_rectangle() {
+        for rect in [Rect::new(0, 0, 240, 120), Rect::new(5, 7, 30, 30), Rect::new(0, 0, 51, 47)] {
+            let sp = Spinner::new(rect);
+            let Some((center, radius)) = sp.center_and_radius() else {
+                continue;
+            };
+            assert!(radius > 0, "a drawn ring has a positive radius at {rect:?}");
+            assert!(
+                center.x - radius as i32 >= rect.x
+                    && center.x + radius as i32 <= rect.x + rect.width as i32,
+                "the ring fits horizontally at {rect:?}"
+            );
+            assert!(
+                center.y - radius as i32 >= rect.y
+                    && center.y + radius as i32 <= rect.y + rect.height as i32,
+                "the ring fits vertically at {rect:?}"
+            );
+        }
+    }
+
+    /// The emitted SVG's circle is the fixed diameter, not the census cell's half.
+    #[test]
+    fn spinner_svg_paints_the_fixed_diameter() {
+        let mut sp = Spinner::new(crate::widget::census::CENSUS_RECT);
+        let svg = crate::widget::svg::render_to_svg(&mut sp);
+        assert!(svg.contains("<circle"), "a spinner paints its ring as a circle stroke: {svg}");
+        // `r` is the ring radius: the disc's half, inset by the stroke and a pixel.
+        // Anything derived from the cell would be near 45 rather than under 22.
+        let radius = svg
+            .split("<circle")
+            .nth(1)
+            .and_then(|rest| rest.split("r=\"").nth(1))
+            .and_then(|rest| rest.split('"').next())
+            .and_then(|value| value.parse::<f32>().ok())
+            .expect("the circle carries a radius");
+        assert!(
+            radius < dimensions::SPINNER_DIAMETER as f32 / 2.0,
+            "a {radius} radius would mean the ring scaled with the cell"
+        );
     }
 }

@@ -718,9 +718,13 @@ impl Default for Theme {
         Self {
             name: "default".to_string(),
             appearance: AppearanceMode::Light,
+            // The base palette comes from `Colors::default()`; only the roles whose
+            // light-appearance value this preset deliberately overrides are named.
+            // Spelling every field out here is what made a new colour role an
+            // unbounded edit — this preset and `dark()` both had to be found and
+            // changed, and neither was marked as a construction site.
             colors: Colors {
                 background: Color { r: 240, g: 240, b: 240, a: 255 },
-                foreground: Color { r: 0, g: 0, b: 0, a: 255 },
                 primary: Color { r: 33, g: 150, b: 243, a: 255 },
                 secondary: Color { r: 158, g: 158, b: 158, a: 255 },
                 accent: Color { r: 255, g: 152, b: 0, a: 255 },
@@ -728,7 +732,7 @@ impl Default for Theme {
                 warning: Color { r: 255, g: 193, b: 7, a: 255 },
                 success: Color { r: 76, g: 175, b: 80, a: 255 },
                 disabled: Color { r: 200, g: 200, b: 200, a: 255 },
-                info: Color::INFO,
+                ..Colors::default()
             },
             fonts: Fonts {
                 regular: Font::simple("Arial", 14.0),
@@ -778,6 +782,20 @@ impl Theme {
                 // appearance — a control reading it could never respond to a theme
                 // switch, and the census caught exactly that.
                 info: Color { r: 138, g: 180, b: 248, a: 255 },
+                // The separator family exists so a divider and a focus ring stop
+                // being the same line, so the dark preset must move both with the
+                // surface — left at the light values they would glare on a near-black
+                // window.
+                outline: Color { r: 147, g: 143, b: 153, a: 255 },
+                outline_variant: Color { r: 73, g: 69, b: 79, a: 255 },
+                // A dark theme cannot dim by *darkening*: the scrim has to be a light
+                // veil over a dark surface, which is the whole reason the role exists
+                // rather than an inline translucent black.
+                scrim: Color { r: 255, g: 255, b: 255, a: 38 },
+                surface_container: Color { r: 30, g: 30, b: 33, a: 255 },
+                surface_container_high: Color { r: 40, g: 40, b: 44, a: 255 },
+                inverse_surface: Color { r: 228, g: 225, b: 229, a: 255 },
+                on_inverse_surface: Color { r: 49, g: 48, b: 51, a: 255 },
             },
             fonts: Fonts {
                 regular: Font::simple("Arial", 14.0),

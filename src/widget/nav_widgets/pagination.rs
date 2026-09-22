@@ -22,6 +22,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -252,15 +253,33 @@ impl Pagination {
         plan
     }
 
-    /// Width of one cell, derived from the bar so the plan always fits.
+    /// Width of one cell, derived from the **drawn bar** so the plan always fits inside the
+    /// band the control actually paints.
     fn cell_width(&self) -> u32 {
         let cells = self.cell_plan().len().max(1) as u32;
-        (self.geometry().width / cells).max(1)
+        (self.bar_rect().width / cells).max(1)
+    }
+
+    /// The single-line bar the control actually paints: a full-width band
+    /// [`dimensions::PAGINATION_HEIGHT`] tall, centred in the area the control was given.
+    ///
+    /// # Why the bar is not the control's rectangle
+    ///
+    /// A pager is a **row of glyph cells**, not a panel. Drawing `geometry()` made a 240x120
+    /// census cell a 120 px-tall column of 48 px glyphs — `pagination.svg` carried a 80x120
+    /// filled block, a stripe rather than a bar — and the glyph size came from `height * 0.4`,
+    /// so the same control showed two different type sizes at two container heights.
+    /// [`ControlMetrics::full_width_band`] keeps the full width, takes the bar's own height and
+    /// centres it, and this one band is what `cell_width`, the hit test and `draw` all read.
+    fn bar_rect(&self) -> Rect {
+        ControlMetrics::full_width_band(self.geometry(), dimensions::PAGINATION_HEIGHT)
     }
 
     /// The cell under `pos`, or `None` when the point is outside the bar.
     fn cell_at(&self, pos: Point) -> Option<Cell> {
-        let rect = self.geometry();
+        // The **painted bar**, so the cells a user can see are the ones that answer. Testing
+        // `geometry()` would let a click tens of pixels below a 32 px bar change the page.
+        let rect = self.bar_rect();
         if pos.x < rect.x
             || pos.x >= rect.x + rect.width as i32
             || pos.y < rect.y
@@ -306,7 +325,10 @@ impl Widget for Pagination {
     }
 
     fn size_hint(&self) -> Size {
-        Size::new(self.cell_width() * self.cell_plan().len().max(1) as u32, 32)
+        Size::new(
+            self.cell_width() * self.cell_plan().len().max(1) as u32,
+            dimensions::PAGINATION_HEIGHT,
+        )
     }
 
     impl_draw_bridge!();
@@ -434,7 +456,10 @@ impl EventHandler for Pagination {
 
 impl Draw for Pagination {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.base.geometry();
+        // The **bar**, not the control's rectangle: see `bar_rect`. Every measurement below —
+        // the fill, the cells, the glyph size and the outline — is taken from this one band,
+        // and the hit test reads the same one.
+        let rect = self.bar_rect();
         if rect.width == 0 || rect.height == 0 {
             return;
         }
@@ -443,12 +468,14 @@ impl Draw for Pagination {
         let background = style.background_color.unwrap_or(Color::WHITE);
         let text_color = style.text_color.unwrap_or(Color::BLACK);
         let selected_background = style.border_color.unwrap_or(Color::rgb(60, 90, 160));
-        // The glyph size is capped by the bar's own height, not just scaled by it.
+        // The glyph size is derived from the **bar's** height, not the control's.
         //
         // The rasteriser paints a glyph **downward** from its origin, so a 48 px font in a
         // 22 px bar reserved the full 48 px: the labels overlapped and the rows below them
-        // were painted (and clipped) outside the control. A page number only has to be
-        // readable inside its cell, and `height - 8` is the tallest size that stays there.
+        // were painted (and clipped) outside the control. Deriving `height * 0.4` from a 120 px
+        // census cell asked for 48 px glyphs in a bar that is now only 32 px tall, so the
+        // fraction is taken from the band and capped at `height - 8`, the tallest size that
+        // stays inside a page-number cell.
         let font_size =
             (rect.height as f32 * 0.4).max(8.0).min(rect.height.saturating_sub(8).max(8) as f32);
         let font = Font::simple("Sans", font_size);
@@ -490,12 +517,14 @@ impl Draw for Pagination {
                 text_color
             };
             // The origin is the glyph's top-left, so the vertical centre is reached by
-            // subtracting half the line box rather than by passing the cell's midline.
+            // subtracting half the *measured line box* rather than by halving the cell — the
+            // old `cell_rect.y + (cell_rect.height - font_size) / 2` used the font size as a
+            // stand-in for the line box and put the label half a line low whenever the two
+            // differed.
             let text_width = context.measure_text(&label, &font).width as i32;
-            let origin = Point::new(
-                cell_rect.x + (cell_rect.width as i32 - text_width) / 2,
-                cell_rect.y + (cell_rect.height as i32 - font_size as i32) / 2,
-            );
+            let line = context.text_line(cell_rect, &font);
+            let origin =
+                Point::new(cell_rect.x + (cell_rect.width as i32 - text_width) / 2, line.y);
             context.draw_text(origin, &label, &font, color, HorizontalAlignment::Left);
         }
 

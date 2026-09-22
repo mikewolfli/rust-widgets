@@ -38,6 +38,15 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// for the disc to stay inside the control.
 const SPARKLINE_DOT_RADIUS: u32 = 3;
 
+/// The edging a sparkline leaves between the control's edge and its plot, in pixels: 4.
+///
+/// The trace used to be inset by half the stroke alone — the exact amount its ink needs and
+/// no more — so the data's extremes were drawn flush against the control's edges
+/// (`sparkline.svg` spanned y 13..107 in a 120 px box). A plot that touches its own frame reads
+/// as decoration rather than as a series, and a real sparkline (Flutter's, `fl_chart`'s) always
+/// leaves a margin.
+const SPARKLINE_PLOT_MARGIN: i32 = 4;
+
 /// A compact inline sparkline chart widget.
 ///
 /// Draws a mini line chart without axes. Only the line itself and an optional
@@ -237,15 +246,23 @@ impl Draw for Sparkline {
 
         // Map data values to pixel coordinates
         let n = self.data.len();
-        // The plot is inset by half the stroke (and by the highlight dot's radius when one is
-        // drawn) so the *painted* extent stays inside the control. A 1 px stroke centred on
-        // `rect.x` reaches half a pixel outside it, and the dot is a radius-3 disc centred on
-        // the last sample — at the right edge half of it was painted past the control, which
-        // the raster backend clipped and the SVG snapshot showed hanging out.
+        // The plot is inset by the chart's own margin **plus** half the stroke (and the
+        // highlight dot's radius when one is drawn), so the *painted* extent stays inside the
+        // control with a visible gap. A 1 px stroke centred on `rect.x` reaches half a pixel
+        // outside it, and the dot is a radius-3 disc centred on the last sample — at the right
+        // edge half of it was painted past the control, which the raster backend clipped and
+        // the SVG snapshot showed hanging out.
+        //
+        // The half-stroke inset alone was not enough: it is exactly what the ink needs and no
+        // more, so `sparkline.svg` drew its trace from y=13 to y=107 in a 120 px box — the data
+        // extremes sat on the frame, with the plot flush against the edges it was given. A
+        // sparkline is still a plot, so it takes `SPARKLINE_PLOT_MARGIN` of edging *inside* the
+        // half-stroke, which is what makes the trace read as a series on a surface rather than
+        // as a border decoration.
         let stroke_w = self.stroke_width as u32;
         let dot_radius = if self.show_last_point { SPARKLINE_DOT_RADIUS } else { 0 };
         let half_stroke = (stroke_w.max(1) as i32 + 1) / 2;
-        let inset = half_stroke.max(dot_radius as i32);
+        let inset = half_stroke.max(dot_radius as i32) + SPARKLINE_PLOT_MARGIN;
         let inset = inset.min(rect.width as i32 / 2).min(rect.height as i32 / 2);
         let x0 = rect.x + inset;
         let x1 = rect.x + rect.width as i32 - 1 - inset;

@@ -19,6 +19,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_f32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// VideoPlayer — simulated video player widget with playback controls.
@@ -355,9 +356,12 @@ impl Draw for VideoPlayer {
             return;
         }
 
-        let control_bar_height = 36u32;
-        let control_bar_y = rect.y + rect.height as i32 - control_bar_height as i32;
-        let control_bar_rect = Rect::new(rect.x, control_bar_y, rect.width, control_bar_height);
+        // The transport bar is a fixed overlay pinned to the video surface's bottom edge; its
+        // height is the player's own fact, not a fraction of the surface it covers, so it stays
+        // 36 px whether the player is a 320x240 panel or a full-screen canvas.
+        let control_bar_height = dimensions::VIDEO_CONTROL_BAR_HEIGHT;
+        let control_bar_rect = ControlMetrics::bottom_band(rect, control_bar_height);
+        let control_bar_y = control_bar_rect.y;
         context.fill_rect(control_bar_rect, Color::rgba(0, 0, 0, 160));
 
         // Play/Pause button.
@@ -373,19 +377,28 @@ impl Draw for VideoPlayer {
             HorizontalAlignment::Left,
         );
 
-        // Seek bar.
+        // Seek bar: the shared thickness, centred on the transport bar's own middle line.
         let seek_bar_x = btn_x + btn_metrics.width as i32 + 12;
-        let seek_bar_y = control_bar_y + control_bar_height as i32 / 2 - 4;
+        let seek_bar_y = control_bar_y
+            + (control_bar_height as i32 - dimensions::VIDEO_SEEK_BAR_HEIGHT as i32) / 2;
         let seek_bar_width = rect.width.saturating_sub((seek_bar_x - rect.x + 80) as u32);
-        let seek_bar_height = 8u32;
+        let seek_bar_height = dimensions::VIDEO_SEEK_BAR_HEIGHT;
         let seek_bar_full = Rect::new(seek_bar_x, seek_bar_y, seek_bar_width, seek_bar_height);
-        context.fill_rounded_rect(seek_bar_full, 4, Color::rgba(100, 100, 100, 200));
+        context.fill_rounded_rect(
+            seek_bar_full,
+            seek_bar_height / 2,
+            Color::rgba(100, 100, 100, 200),
+        );
 
         let fill_width = (seek_bar_full.width as f64 * self.progress()) as u32;
         if fill_width > 0 {
             let seek_bar_fill =
                 Rect::new(seek_bar_full.x, seek_bar_full.y, fill_width, seek_bar_full.height);
-            context.fill_rounded_rect(seek_bar_fill, 4, Color::rgba(60, 140, 240, 230));
+            context.fill_rounded_rect(
+                seek_bar_fill,
+                seek_bar_height / 2,
+                Color::rgba(60, 140, 240, 230),
+            );
         }
 
         // Time display.

@@ -2,8 +2,8 @@
 <!-- control: tag_input | appearance: light -->
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(240,240,240,1.00)" />
-  <rect x="0" y="0" width="240" height="120" rx="6" ry="6" fill="rgba(180,180,180,1.00)" />
-  <rect x="0" y="0" width="240" height="120" rx="6" ry="6" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
-  <rect x="6" y="4" width="228" height="24" rx="4" ry="4" fill="rgba(166,166,166,1.00)" />
-  <text x="13" y="9" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(58,58,58,1.00)">Type and press Enter…</text>
+  <rect x="0" y="36" width="240" height="48" rx="24" ry="24" fill="rgba(180,180,180,1.00)" />
+  <rect x="0" y="36" width="240" height="48" rx="24" ry="24" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
+  <rect x="6" y="48" width="228" height="24" rx="4" ry="4" fill="rgba(166,166,166,1.00)" />
+  <text x="13" y="53" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(58,58,58,1.00)">Type and press Enter…</text>
 </svg>

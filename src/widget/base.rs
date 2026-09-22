@@ -6,6 +6,8 @@
 use super::WidgetKind;
 use crate::core::{ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
+#[cfg(test)]
+use crate::event::FocusReason;
 use crate::object::Object;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
@@ -604,7 +606,7 @@ impl EventHandler for BaseWidget {
             Event::KeyUp((key, modifiers)) => {
                 self.key_up.emit((*key, *modifiers));
             }
-            Event::FocusGained => {
+            Event::FocusGained { .. } => {
                 self.focus_gained.emit();
             }
             Event::FocusLost => {
@@ -1017,7 +1019,7 @@ mod tests {
             button: 1,
             pressure: 0.0,
         });
-        bw.handle_event(&Event::FocusGained);
+        bw.handle_event(&Event::FocusGained { reason: FocusReason::Programmatic });
 
         assert_eq!(*hover.lock().unwrap(), Some(Point::new(7, 9)));
         assert_eq!(*released.lock().unwrap(), Some((Point::new(8, 10), 1)));

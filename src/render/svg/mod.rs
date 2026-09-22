@@ -21,6 +21,11 @@
 //! ```
 
 pub mod backend;
-mod convert;
+// Public because it is the *definition* of the SVG stream's textual form: a test that asserts on an
+// emitted element's attributes has to build the same strings the backend does, and a private helper
+// would force every such test to re-implement `color_to_rgba`/`rect_attrs` and drift from the
+// producer. Exposing the formatter keeps "the snapshot says X" and "the producer writes X" one fact
+// rather than two.
+pub mod convert;
 
 pub use backend::SvgPaintBackend;

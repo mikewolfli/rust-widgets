@@ -13,8 +13,15 @@ use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::dimensions;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// The inset a media player's own chrome keeps from its surface edges: 10.
+///
+/// One value for the two stacked labels and the transport rule, so all three share a leading
+/// edge and a bottom margin instead of each spelling its own `10`/`6`/`8` offsets.
+const MEDIA_PLAYER_PADDING: i32 = 10;
 
 /// Lightweight media player stateful control.
 pub struct MediaPlayer {
@@ -404,28 +411,44 @@ impl Draw for MediaPlayer {
 
         // Both lines are fitted to the control's width. The title comes from a file name,
         // which has no length limit, and the status line is three joined words; neither was
-        // bounded, so a long file name simply kept going past the player's right edge.
+        // bounded, so a long file name simply kept going past the player's right edge. Both
+        // share the one padding constant with the transport rule below them.
         let font = Font::default();
         context.draw_text_fitted(
-            Rect::new(rect.x + 10, rect.y + 6, rect.width.saturating_sub(20), 16),
+            Rect::new(
+                rect.x + MEDIA_PLAYER_PADDING,
+                rect.y + MEDIA_PLAYER_PADDING / 2,
+                rect.width.saturating_sub((MEDIA_PLAYER_PADDING * 2) as u32),
+                16,
+            ),
             title,
             &font,
             Color::rgb(232, 237, 245),
             HorizontalAlignment::Left,
         );
         context.draw_text_fitted(
-            Rect::new(rect.x + 10, rect.y + 24, rect.width.saturating_sub(20), 16),
+            Rect::new(
+                rect.x + MEDIA_PLAYER_PADDING,
+                rect.y + MEDIA_PLAYER_PADDING / 2 + 18,
+                rect.width.saturating_sub((MEDIA_PLAYER_PADDING * 2) as u32),
+                16,
+            ),
             &format!("{state} | {vol} | {fs}"),
             &font,
             Color::rgb(190, 202, 220),
             HorizontalAlignment::Left,
         );
 
+        // The transport rule is pinned to the surface's bottom edge by the player's own
+        // thickness rather than the literal `- 18`, which described one font size's layout:
+        // the rule's offset from the bottom is its height plus the same 10 px margin the
+        // labels above use, so the three stay in step when the surface changes size.
+        let bar_height = dimensions::VIDEO_SEEK_BAR_HEIGHT;
         let bar_rect = Rect::new(
-            rect.x + 10,
-            rect.y + rect.height as i32 - 18,
-            rect.width.saturating_sub(20),
-            8,
+            rect.x + MEDIA_PLAYER_PADDING,
+            rect.y + rect.height as i32 - bar_height as i32 - MEDIA_PLAYER_PADDING,
+            rect.width.saturating_sub((MEDIA_PLAYER_PADDING * 2) as u32),
+            bar_height,
         );
         context.fill_rect(bar_rect, Color::rgb(62, 73, 90));
         let fill_w = ((bar_rect.width as f32) * self.progress_ratio()) as u32;

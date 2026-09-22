@@ -11,6 +11,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_toolba
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Orientation of a toolbar.
@@ -376,27 +377,48 @@ impl ToolBar {
         self.items.get(index).map(|item| item.is_checked())
     }
     fn button_size(&self) -> f32 {
-        self.icon_size + 8.0
+        self.icon_size + dimensions::TOOLBAR_SPACING as f32
+    }
+
+    /// The strip the control actually paints: a full-width band
+    /// [`dimensions::TOOLBAR_HEIGHT`] tall, centred in the area the control was given.
+    ///
+    /// # Why the strip is not the control's rectangle
+    ///
+    /// A toolbar is a **row of items of a fixed height**; it is not a panel. Painting
+    /// `geometry()` made the 240x120 census cell a 120 px-tall strip — a slab four times the
+    /// height of the control's own `size_hint`, which is a rectangle shaped like a toolbar
+    /// rather than a toolbar. [`ControlMetrics::full_width_band`] keeps the full width (a
+    /// toolbar *is* as wide as its window) and takes the strip's own height, so the ink and
+    /// the reported size agree. This one band is what `item_rect` — and therefore the hit test
+    /// — and `draw` both read.
+    fn band_rect(&self) -> Rect {
+        ControlMetrics::full_width_band(self.geometry(), dimensions::TOOLBAR_HEIGHT)
     }
     fn item_rect(&self, index: usize) -> Rect {
-        let rect = self.geometry();
-        let btn_sz = self.icon_size as u32 + 8;
-        let sep_sz = 8u32;
-        let mut offset = 2i32;
+        // The **painted band**, not the control's rectangle: the strip is
+        // [`dimensions::TOOLBAR_HEIGHT`] tall and centred, and an item is that band inset by
+        // [`dimensions::TOOLBAR_ITEM_INSET`]. Deriving the item's height from `geometry()`
+        // made a 240x120 census cell give every item a 116 px hover square, so the strip's
+        // own hover fill covered the whole cell rather than the row the item sits on.
+        let band = self.band_rect();
+        let btn_sz = self.icon_size as u32 + dimensions::TOOLBAR_SPACING;
+        let sep_sz = dimensions::TOOLBAR_SPACING;
+        let mut offset = dimensions::TOOLBAR_ITEM_INSET as i32;
         for (i, item) in self.items.iter().enumerate() {
             let sz = if item.is_separator() { sep_sz } else { btn_sz };
             if i == index {
                 return match self.orientation {
                     ToolBarOrientation::Horizontal => Rect {
-                        x: rect.x + offset,
-                        y: rect.y + 2,
+                        x: band.x + offset,
+                        y: band.y + dimensions::TOOLBAR_ITEM_INSET as i32,
                         width: sz,
-                        height: rect.height.saturating_sub(4),
+                        height: band.height.saturating_sub(dimensions::TOOLBAR_ITEM_INSET * 2),
                     },
                     ToolBarOrientation::Vertical => Rect {
-                        x: rect.x + 2,
-                        y: rect.y + offset,
-                        width: rect.width.saturating_sub(4),
+                        x: band.x + dimensions::TOOLBAR_ITEM_INSET as i32,
+                        y: band.y + offset,
+                        width: band.width.saturating_sub(dimensions::TOOLBAR_ITEM_INSET * 2),
                         height: sz,
                     },
                 };
@@ -424,7 +446,7 @@ impl Widget for ToolBar {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(400, 32)
+        crate::core::Size::new(400, dimensions::TOOLBAR_HEIGHT)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -538,7 +560,10 @@ impl EventHandler for ToolBar {
 }
 impl Draw for ToolBar {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
+        // The **strip**, not the control's rectangle: see `band_rect`. Every measurement below
+        // — the fill, the rule, the separators and the item squares — is taken from this one
+        // band, and `item_rect` (and therefore the hit test) reads the same one.
+        let rect = self.band_rect();
         let _btn_sz = self.button_size();
         let style = self.style();
         // Background

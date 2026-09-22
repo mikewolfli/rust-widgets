@@ -1555,6 +1555,142 @@ impl CursorBlink {
     }
 }
 
+/// Which of the theme's motion tokens prices a transition.
+///
+/// Named rather than passed as a bare `u32`, so the *choice of tempo* is a decision a control
+/// states once, in one word, instead of reading a field out of the theme at its call site — and
+/// so a control cannot accidentally price itself from an unrelated duration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TransitionTempo {
+    /// The theme's `Motion::fast` — a direct reaction to the pointer.
+    Fast,
+    /// The theme's `Motion::normal` — a control's own state change. The default, and what
+    /// Material's `kThemeChangeDuration` (200 ms) describes.
+    #[default]
+    Normal,
+    /// The theme's `Motion::slow` — a larger movement, such as a toggle travelling.
+    Slow,
+}
+
+impl TransitionTempo {
+    /// The duration this tempo names in the active theme.
+    ///
+    /// Read through [`crate::style`] rather than `crate::theme` directly: `crate::theme`
+    /// only exists in a build with a device profile, so naming it here made the module
+    /// fail to compile under `mini`/`embedded`. The `style` layer is the profile-safe
+    /// facade every other control already goes through.
+    pub fn duration_ms(self) -> u32 {
+        // The `Motion` token set, or the crate's own defaults when no theme is active.
+        // `normal` (200 ms) is the value the old hardcoded call sites used, so a build
+        // with no theme behaves exactly as before.
+        let (fast, normal, slow) = crate::style::motion_tokens();
+        match self {
+            TransitionTempo::Fast => fast,
+            TransitionTempo::Normal => normal,
+            TransitionTempo::Slow => slow,
+        }
+    }
+}
+
+/// A single control's state transition, advanced by frame deltas.
+///
+/// # Why this is a type rather than a few fields in each control
+///
+/// Dozens of controls animate one thing: how far they are between their resting appearance and
+/// their interactive one. Each one that reimplements the interpolation also reimplements the same
+/// decisions — what `tick`'s return value means, which of the theme's motion tokens prices it,
+/// and how the engine's callback ownership works — and a control that gets any of them wrong
+/// fails quietly. Two shapes of that failure were already present in the crate: `Button` carried
+/// the interpolation inline (including the `Rc<Cell<_>>` dance the engine's callback ownership
+/// requires), and `FloatingLabel` had re-derived it as an **exponential approach** that never
+/// actually arrived and could not be re-priced by a theme.
+///
+/// # The contract
+///
+/// [`Transition::tick`] follows `tick(delta_ms) -> bool`: it returns `true` while there is still
+/// movement and `false` once the value has settled, so a host can stop scheduling frames. The
+/// duration is read from the theme *per tick*, so a theme switch re-prices a transition already
+/// in flight instead of stranding it at the old tempo.
+///
+/// # Why the target is supplied every tick
+///
+/// A press that arrives mid-hover **re-aims the same progress** rather than restarting from zero.
+/// That is what makes a quick press-and-release read as one movement instead of two fades. The
+/// caller states the target from its own state on each call, so a change that arrived without a
+/// `tick` in between is picked up rather than missed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Transition {
+    /// Where the value is now, in `0.0..=1.0`.
+    progress: f32,
+    /// Which motion token prices the transition.
+    tempo: TransitionTempo,
+}
+
+impl Default for Transition {
+    /// At rest: a freshly constructed control must not fade *out* on its first frame, which is
+    /// what starting at the interactive end of the range would do.
+    fn default() -> Self {
+        Self { progress: 0.0, tempo: TransitionTempo::Normal }
+    }
+}
+
+impl Transition {
+    /// A transition at rest, priced by the theme's `normal` tempo.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A transition at rest with an explicit tempo.
+    pub fn with_tempo(tempo: TransitionTempo) -> Self {
+        Self { progress: 0.0, tempo }
+    }
+
+    /// Where the value is now, in `0.0..=1.0`.
+    pub fn progress(&self) -> f32 {
+        self.progress
+    }
+
+    /// Moves the value to `progress`, snapping it and stopping any motion.
+    ///
+    /// Used when a control is reset or disabled: the caller wants a definite appearance, not a
+    /// fade toward it.
+    pub fn reset_to(&mut self, progress: f32) {
+        self.progress = progress.clamp(0.0, 1.0);
+    }
+
+    /// Advances toward `target` by `delta_ms` and reports whether another frame is needed.
+    ///
+    /// # The interpolation is the engine's, not this type's
+    ///
+    /// The crate already owns an easing engine ([`AnimationDriver`]). This type drives it with
+    /// `advance_by`, so a transition follows the same curve as every other animation in the crate,
+    /// and the easing function stays a theme decision rather than something each control chooses.
+    ///
+    /// The driver owns its callbacks, so the value it produces comes back through a shared cell
+    /// rather than an assignment to a captured local: `move |v| observed = v` would move the
+    /// local into the closure and leave the caller reading the pre-move value, which is how a
+    /// transition silently never advances.
+    pub fn tick(&mut self, target: f32, delta_ms: u32) -> bool {
+        let target = target.clamp(0.0, 1.0);
+        if (self.progress - target).abs() < f32::EPSILON {
+            return false;
+        }
+        // Read per tick, so a theme that changes mid-flight re-prices the remainder.
+        let duration_ms = self.tempo.duration_ms().max(1);
+
+        let from = self.progress;
+        let mut driver = AnimationDriver::new();
+        let observed = crate::compat::Rc::new(core::cell::Cell::new(from));
+        let sink = crate::compat::Rc::clone(&observed);
+        let config = AnimationConfig::new(Duration::from_millis(duration_ms as u64));
+        driver.add_float(config, from, target, move |value| sink.set(value));
+        driver.advance_by(Duration::from_millis(delta_ms as u64));
+        let next = observed.get();
+        self.progress = if (next - target).abs() < f32::EPSILON { target } else { next };
+        (self.progress - target).abs() >= f32::EPSILON
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1804,6 +1940,77 @@ mod tests {
         assert!(blink.is_visible());
         assert!(!blink.tick(CURSOR_BLINK_HALF_PERIOD_MS * 10), "a stopped cursor owes no frame");
         assert!(blink.is_visible());
+    }
+
+    // ── Transition (the shared state-transition primitive) ──
+
+    #[test]
+    fn a_transition_starts_at_rest_heading_nowhere() {
+        // Starting at the interactive end would make every control fade *out* on its first
+        // frame, and would make a snapshot taken without ticking show a moved control.
+        let transition = Transition::new();
+        assert_eq!(transition.progress(), 0.0);
+    }
+
+    #[test]
+    fn a_transition_lands_exactly_on_its_target_and_then_settles() {
+        // The whole point of the `bool` return: a host must be able to stop scheduling frames.
+        // A transition that approached its target asymptotically would return `true` forever,
+        // which is precisely the defect `FloatingLabel` had before it used this type.
+        let mut transition = Transition::new();
+        assert!(transition.tick(1.0, 30), "one short frame is not enough to arrive");
+        assert!(!transition.tick(1.0, 10_000), "a long frame must finish it");
+        assert_eq!(transition.progress(), 1.0, "and must land exactly on the target");
+        assert!(!transition.tick(1.0, 16), "a settled transition owes no frame");
+    }
+
+    #[test]
+    fn a_transition_re_aims_rather_than_restarting() {
+        // A press arriving mid-hover must continue from where the value *is*, which is what
+        // makes a quick press-and-release read as one movement instead of two.
+        let mut transition = Transition::new();
+        transition.tick(1.0, 50);
+        let partway = transition.progress();
+        assert!(partway > 0.0 && partway < 1.0, "expected mid-flight, got {partway}");
+        transition.tick(0.0, 16);
+        assert!(
+            transition.progress() < partway,
+            "retracting must continue from {partway}, not jump"
+        );
+    }
+
+    #[test]
+    fn a_transition_never_leaves_the_unit_range() {
+        // Targets come from caller state, so the clamp is the type's own guarantee rather
+        // than something each caller must remember.
+        let mut transition = Transition::new();
+        transition.tick(5.0, 10_000);
+        assert!(transition.progress() <= 1.0);
+        transition.tick(-5.0, 10_000);
+        assert!(transition.progress() >= 0.0);
+    }
+
+    #[test]
+    fn resetting_a_transition_snaps_rather_than_fading() {
+        let mut transition = Transition::new();
+        transition.reset_to(1.0);
+        assert_eq!(transition.progress(), 1.0);
+        assert!(!transition.tick(1.0, 16), "an already-at-target transition owes no frame");
+        // Out-of-range input is clamped, not stored.
+        transition.reset_to(9.0);
+        assert_eq!(transition.progress(), 1.0);
+    }
+
+    #[test]
+    fn each_tempo_names_its_own_motion_token() {
+        // The three tempos must be distinct facts, or the enum would be decoration.
+        // Reading the values back through the crate's own defaults keeps this test
+        // compiling in a profile with no theme module.
+        let fast = TransitionTempo::Fast.duration_ms();
+        let normal = TransitionTempo::Normal.duration_ms();
+        let slow = TransitionTempo::Slow.duration_ms();
+        assert!(fast < normal, "a pointer reaction is quicker than a state change");
+        assert!(normal < slow, "a state change is quicker than a large movement");
     }
 
     /// An animation that completes on a frame still reports that frame's final value.

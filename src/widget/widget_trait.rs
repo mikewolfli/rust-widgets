@@ -635,6 +635,51 @@ pub trait Widget: EventHandler + Any {
         Size::new(0, 0)
     }
 
+    /// The widget's size wish, in the form a layout can act on.
+    ///
+    /// # Why this is separate from [`Widget::size_hint`]
+    ///
+    /// `size_hint` answers one question — "how big would you like to be?" — and a layout
+    /// needs three: how small may I squeeze you, how big would you like to be, and how far
+    /// may I stretch you. A single value cannot express a button's floor (it must stay
+    /// tappable) or an icon's ceiling (it must not inflate).
+    ///
+    /// # Why the default derives from `size_hint`
+    ///
+    /// 176 widgets implement `size_hint`, and requiring all of them to switch at once is
+    /// the mass-migration shape this crate has already paid for. So the default is a
+    /// **faithful translation** of the existing method: the reported size becomes both the
+    /// preferred value and the floor, with no ceiling. That is the closest thing to the
+    /// old behaviour expressible in three values, and it means every widget already
+    /// answers sensibly — a widget that has a real floor or ceiling overrides this.
+    ///
+    /// The translation is deliberately *not* "unconstrained": a layout that asked the old
+    /// `size_hint` and got `50x28` must not now be told "any size at all", or adopting the
+    /// new channel would visibly loosen every existing layout.
+    fn hints(&self) -> crate::layout::Hints {
+        let preferred = self.size_hint();
+        crate::layout::Hints {
+            width: crate::layout::AxisHints::at_least(preferred.width),
+            height: crate::layout::AxisHints::at_least(preferred.height),
+        }
+    }
+
+    /// How this widget wants its parent's layout to treat it by default.
+    ///
+    /// # Why a control declares its own default
+    ///
+    /// "Should I be stretched across the available room?" is not derivable from size: a
+    /// slider and a button can report the same `pref` and want opposite answers. A
+    /// control therefore states its own default policy — Qt calls this the item's
+    /// `sizePolicy` — and a caller that wants something else overrides it per child.
+    ///
+    /// The default is "do not stretch", which is the conservative answer: a widget that
+    /// silently absorbed free space would reflow every existing layout. Controls that
+    /// genuinely want to grow (sliders, fields, progress bars) override it.
+    fn default_layout_params(&self) -> crate::layout::LayoutParams {
+        crate::layout::LayoutParams::new()
+    }
+
     /// Apply CSS styles to this widget. The `css` text is parsed and rules matching
     /// the widget's kind and optional class/id are applied to the widget's style.
     fn apply_css(&mut self, css: &str, class: Option<&str>) -> Result<(), String> {
@@ -672,7 +717,7 @@ pub trait Widget: EventHandler + Any {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, full_widgets))]
 mod tests {
     use super::Widget;
     use crate::compat::{MiniToString, String};

@@ -385,7 +385,7 @@ const LABEL_GUTTER: i32 = 56;
 /// was 4 px taller than the room reserved for it and its top 3 px landed on the ramp. The
 /// drawing code now places the numbers from the ramp's bottom edge rather than from the
 /// band's, so the two can no longer overlap; this value stays the layout's own reservation.
-const LEGEND_HEIGHT: i32 = RAMP_HEIGHT + RAMP_GAP + LEGEND_LABEL_HEIGHT;
+const LEGEND_HEIGHT: i32 = RAMP_HEIGHT + RAMP_GAP + LEGEND_LABEL_HEIGHT + LEGEND_BOTTOM_GUARD;
 
 /// Height of the legend's colour ramp, in pixels.
 const RAMP_HEIGHT: i32 = 8;
@@ -399,6 +399,13 @@ const RAMP_GAP: i32 = 2;
 /// the ramp's bottom edge, so this value only sizes the *reservation* the grid leaves for the
 /// legend, never the placement of the numbers themselves.
 const LEGEND_LABEL_HEIGHT: i32 = 14;
+
+/// Margin between the legend's endpoint numbers and the control's own bottom edge: 1 px.
+///
+/// The reservation is exactly `ramp + gap + line box`, so without this the numbers' last
+/// pixel lands *on* the control's bottom edge — `heatmap.svg` drew the endpoint numbers at
+/// y=106..120 in a 120 px box, i.e. flush with the frame. One pixel keeps the row inside.
+const LEGEND_BOTTOM_GUARD: i32 = 1;
 
 /// Pads `row` to `columns` cells with empty cells.
 fn pad_row(mut row: Vec<HeatmapCell>, columns: usize) -> Vec<HeatmapCell> {

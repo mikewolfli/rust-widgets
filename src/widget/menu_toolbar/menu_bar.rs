@@ -9,6 +9,7 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// A top-level menu entry in the menu bar.
@@ -154,12 +155,29 @@ impl MenuBar {
         self.active_index = None;
         self.hovered_index = None;
     }
+    /// The strip the bar actually paints: a full-width band
+    /// [`dimensions::MENU_BAR_HEIGHT`] tall, pinned to the **top** of the area the control was
+    /// given.
+    ///
+    /// # Why the bar is a top band and not a centred one
+    ///
+    /// A menu bar is not centred chrome: the menu contents it opens begin *below* it, so
+    /// whatever the layout handed the bar, the strip belongs on the control's top edge.
+    /// `draw` painted `geometry()` while `size_hint` reported 28 — the two disagreed about how
+    /// thick a menu bar is, and the 240x120 census cell drew a 120 px band, four times the
+    /// strip a layout was told to expect (`menu_bar.svg` was a full-canvas fill). The two ends
+    /// now share one derivation. This is also what `entry_width` and `hit_entry` read, so the
+    /// clickable strip is the painted strip.
+    fn band_rect(&self) -> Rect {
+        ControlMetrics::top_band(self.geometry(), dimensions::MENU_BAR_HEIGHT)
+    }
+
     fn entry_width(title: &str) -> f32 {
         // Approximate width: 8 pixels per char + 16 padding
         title.len() as f32 * 8.0 + 16.0
     }
     fn _entry_rect(&self, index: usize) -> Rect {
-        let rect = self.geometry();
+        let rect = self.band_rect();
         let mut x = rect.x;
         for (i, entry) in self.entries.iter().enumerate() {
             let w = Self::entry_width(entry.title()) as i32;
@@ -171,7 +189,8 @@ impl MenuBar {
         Rect { x: 0, y: 0, width: 0, height: 0 }
     }
     fn hit_entry(&self, pos: Point) -> Option<usize> {
-        let rect = self.geometry();
+        // The **painted band**, so a click below a 28 px strip is not a click on the bar.
+        let rect = self.band_rect();
         if pos.y < rect.y || pos.y > rect.y + rect.height as f32 as i32 {
             return None;
         }
@@ -195,7 +214,7 @@ impl Widget for MenuBar {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(400, 28)
+        crate::core::Size::new(400, dimensions::MENU_BAR_HEIGHT)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -298,7 +317,10 @@ impl EventHandler for MenuBar {
 }
 impl Draw for MenuBar {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
+        // The **band**, not the control's rectangle: see `band_rect`. The fill, the bottom
+        // rule, the entry highlights and the labels are all placed from this one box, so a
+        // 240x120 census cell draws a 28 px strip rather than a 120 px slab.
+        let rect = self.band_rect();
 
         // A menu bar is very nearly all chrome — its fill, its separators, its entry
         // highlights and its labels. Every one of those was a literal, so a light/dark

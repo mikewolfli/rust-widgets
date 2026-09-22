@@ -2,13 +2,13 @@
 <!-- control: meter | appearance: light -->
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(240,240,240,1.00)" />
-  <path d="M 71 71 L 68 73 L 64 76 L 61 78 L 57 79 L 53 81 L 49 82 L 45 82 L 41 82 L 37 82 L 33 81 L 29 79 L 25 78 L 22 76 L 18 73 L 15 71 L 13 68 L 10 64 L 8 61 L 7 57 L 5 53 L 4 49 L 4 45 L 4 41 L 4 37 L 5 33 L 7 29 L 8 25 L 10 22 L 13 18 L 15 15 L 18 13 L 22 10 L 25 8 L 29 7 L 33 5 L 37 4 L 41 4 L 45 4 L 49 4 L 53 5 L 57 7 L 61 8 L 64 10 L 68 13 L 71 15" fill="none" stroke="rgba(255,209,140,1.00)" stroke-width="1" />
-  <line x1="66" y1="66" x2="71" y2="71" stroke="rgba(143,86,0,1.00)" stroke-width="1" />
-  <line x1="31" y1="74" x2="29" y2="79" stroke="rgba(143,86,0,1.00)" stroke-width="1" />
-  <line x1="10" y1="41" x2="4" y2="41" stroke="rgba(143,86,0,1.00)" stroke-width="1" />
-  <line x1="31" y1="12" x2="29" y2="7" stroke="rgba(143,86,0,1.00)" stroke-width="1" />
-  <line x1="66" y1="20" x2="71" y2="15" stroke="rgba(143,86,0,1.00)" stroke-width="1" />
-  <line x1="43" y1="43" x2="67" y2="67" stroke="rgba(143,86,0,1.00)" stroke-width="2" />
-  <circle cx="43" cy="43" r="4" fill="rgba(143,86,0,1.00)" />
-  <text x="40" y="102" dominant-baseline="text-before-edge" font-family="Sans" font-size="12" font-style="normal" font-weight="400" fill="rgba(143,86,0,1.00)">0</text>
+  <path d="M 154 94 L 150 97 L 146 100 L 142 103 L 137 105 L 132 106 L 128 107 L 123 108 L 117 108 L 112 107 L 108 106 L 103 105 L 98 103 L 94 100 L 90 97 L 86 94 L 83 90 L 80 86 L 77 82 L 75 77 L 74 72 L 73 68 L 72 63 L 72 57 L 73 52 L 74 48 L 75 43 L 77 38 L 80 34 L 83 30 L 86 26 L 90 23 L 94 20 L 98 17 L 103 15 L 108 14 L 112 13 L 117 12 L 123 12 L 128 13 L 132 14 L 137 15 L 142 17 L 146 20 L 150 23 L 154 26" fill="none" stroke="rgba(255,209,140,1.00)" stroke-width="1" />
+  <line x1="145" y1="85" x2="150" y2="90" stroke="rgba(143,86,0,1.00)" stroke-width="1" />
+  <line x1="107" y1="94" x2="105" y2="99" stroke="rgba(143,86,0,1.00)" stroke-width="1" />
+  <line x1="84" y1="58" x2="78" y2="58" stroke="rgba(143,86,0,1.00)" stroke-width="1" />
+  <line x1="107" y1="26" x2="105" y2="21" stroke="rgba(143,86,0,1.00)" stroke-width="1" />
+  <line x1="145" y1="35" x2="150" y2="30" stroke="rgba(143,86,0,1.00)" stroke-width="1" />
+  <line x1="120" y1="60" x2="150" y2="90" stroke="rgba(143,86,0,1.00)" stroke-width="2" />
+  <circle cx="120" cy="60" r="4" fill="rgba(143,86,0,1.00)" />
+  <text x="117" y="102" dominant-baseline="text-before-edge" font-family="Sans" font-size="12" font-style="normal" font-weight="400" fill="rgba(143,86,0,1.00)">0</text>
 </svg>

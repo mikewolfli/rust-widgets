@@ -11,6 +11,7 @@ use crate::widget::capability::coercion::{expect_i64, expect_orientation, orient
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::numeric::ordered_clamp_i32;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -144,13 +145,42 @@ impl ScrollBar {
         }
         ((self.value - self.minimum) as f32) / ((self.maximum - self.minimum) as f32)
     }
+    /// The control's **own rectangle**, which is the area it was given: a hit area and a
+    /// layout slot, *not* a drawing instruction.
+    ///
+    /// `size_hint` reports a 16 px thick bar and `draw` paints
+    /// [`dimensions::SCROLLBAR_THICKNESS`] of it, so the two agree about thickness; this
+    /// accessor is the one place that asks "how long may the thumb travel", and it is
+    /// deliberately the full length of the rectangle.
+    fn track_band(&self) -> Rect {
+        let rect = self.geometry();
+        match self.orientation {
+            Orientation::Horizontal => {
+                ControlMetrics::centered_band(rect, dimensions::SCROLLBAR_THICKNESS)
+            }
+            Orientation::Vertical => {
+                // A vertical scrollbar's band is *wide and full-height*, i.e. the same
+                // derivation with the axes exchanged. `centered_band` keeps the caller's
+                // width and takes the thickness for the height, which is exactly the
+                // horizontal reading; transposing the inputs gives the vertical one.
+                let band = ControlMetrics::centered_band(
+                    Rect::new(rect.y, rect.x, rect.height, rect.width),
+                    dimensions::SCROLLBAR_THICKNESS,
+                );
+                Rect::new(band.y, band.x, band.height, band.width)
+            }
+        }
+    }
+
     /// Size of the arrow cell at each end of the trough, in pixels.
     ///
     /// Derived from the control's **thickness** and bounded, so a scrollbar's arrows are the
     /// same size no matter how long the bar is. `width * 0.2` on a 240 px horizontal bar gave a
     /// 48 px arrow — wider than the trough and longer than the space before the thumb, so the
     /// left arrow's apex landed underneath the slider. Qt's `SC_ScrollBarSubLine` cell is on the
-    /// order of the trough's thickness, and this is the same reading.
+    /// order of the trough's thickness, and this is the same reading — it is
+    /// [`dimensions::SCROLLBAR_MIN_LENGTH`]'s floor applied to the cell, so an arrow cell and a
+    /// thumb are never wildly different objects.
     ///
     /// `value_to_pixel_pos` reads this too, which is what keeps the thumb inside the trough: one
     /// derivation, two consumers, so they cannot drift apart.
@@ -167,56 +197,55 @@ impl ScrollBar {
     }
 
     /// Returns value for a given pixel position.
+    ///
+    /// The inverse of [`Self::value_to_pixel_pos`]: both read the same **track band**, so the
+    /// value a drag reads back is the value the thumb was drawn at.
     fn pixel_pos_to_value(&self, pos: f32) -> i32 {
-        let rect = self.geometry();
+        let band = self.track_band();
         let slider_size = self.slider_size();
         let range = (self.maximum - self.minimum) as f32;
-        match self.orientation {
-            Orientation::Horizontal => {
-                let available_width = rect.width as f32 * (1.0 - slider_size);
-                let relative = (pos - rect.x as f32) / available_width;
-                let value = self.minimum as f32 + range * relative.clamp(0.0, 1.0);
-                value.round() as i32
-            }
-            Orientation::Vertical => {
-                let available_height = rect.height as f32 * (1.0 - slider_size);
-                let relative = (pos - rect.y as f32) / available_height;
-                let value = self.minimum as f32 + range * relative.clamp(0.0, 1.0);
-                value.round() as i32
-            }
+        // The available travel is the band's length, not the control's: with the band centred
+        // in a 120 px cell, measuring the pointer from the *control's* edge would map a click
+        // 60 px above the bar to a position on it. The `slider_size` term is deliberately
+        // *not* subtracted, because `value_to_pixel_pos` does not subtract it either — a
+        // scrollbar's thumb does not travel its own length, and the two must be inverses.
+        let (origin, length) = match self.orientation {
+            Orientation::Horizontal => (band.x as f32, band.width as f32),
+            Orientation::Vertical => (band.y as f32, band.height as f32),
+        };
+        let available = (length * (1.0 - slider_size)).max(0.0);
+        if available == 0.0 {
+            return self.minimum;
         }
+        let relative = (pos - origin) / available;
+        let value = self.minimum as f32 + range * relative.clamp(0.0, 1.0);
+        value.round() as i32
     }
     /// Returns pixel position for a given value.
+    ///
+    /// Read the trough from [`Self::track_band`] and the cells from [`Self::arrow_cell`], so
+    /// the thumb, the arrows and the hit test are three consumers of **one** geometry rather
+    /// than three derivations that can drift.
     fn value_to_pixel_pos(&self, value: i32) -> f32 {
-        let rect = self.geometry();
+        let band = self.track_band();
         let clamped = ordered_clamp_i32(value, self.minimum, self.maximum);
         let slider_size = self.slider_size();
         let range = (self.maximum - self.minimum) as f32;
         //
-        // The travel is the **trough between the two arrow cells**, not the whole control: the
+        // The travel is the **band between the two arrow cells**, not the whole control: the
         // arrows occupy fixed cells at each end, so a thumb travelling the full length would
-        // pass underneath them. `arrow_cell()` is the same derivation `draw` uses for the arrow
-        // size, so the two cannot disagree about where the end of the track is.
+        // pass underneath them.
         let cell = self.arrow_cell();
+        let (origin, length) = match self.orientation {
+            Orientation::Horizontal => (band.x as f32, band.width as f32),
+            Orientation::Vertical => (band.y as f32, band.height as f32),
+        };
         if range == 0.0 {
-            return match self.orientation {
-                Orientation::Horizontal => rect.x as f32 + cell,
-                Orientation::Vertical => rect.y as f32 + cell,
-            };
+            return origin + cell;
         }
         let relative = (clamped - self.minimum) as f32 / range;
-        match self.orientation {
-            Orientation::Horizontal => {
-                let available_width =
-                    (rect.width as f32 - cell * 2.0).max(0.0) * (1.0 - slider_size);
-                rect.x as f32 + cell + available_width * relative
-            }
-            Orientation::Vertical => {
-                let available_height =
-                    (rect.height as f32 - cell * 2.0).max(0.0) * (1.0 - slider_size);
-                rect.y as f32 + cell + available_height * relative
-            }
-        }
+        let available = (length - cell * 2.0).max(0.0) * (1.0 - slider_size);
+        origin + cell + available * relative
     }
     /// Triggers a scroll action.
     pub fn trigger_action(&mut self, action: ScrollBarAction) {
@@ -471,7 +500,15 @@ fn color_theme_window_fill() -> Color {
 impl Draw for ScrollBar {
     fn draw(&mut self, context: &mut RenderContext) {
         // Draw base widget
-        let rect = self.geometry();
+        //
+        // The **band**, not the control's rectangle: the trough is
+        // [`dimensions::SCROLLBAR_THICKNESS`] thick and centred, exactly as `size_hint`
+        // describes it. Painting `rect` made a 240x120 census cell a 240x120 trough with a
+        // 240x120 *thumb* (`scroll_bar.svg` carried `<rect x="16" y="0" width="24"
+        // height="120"/>` — a full-height slab, not a grip), which is a picture of a
+        // scrollbar-shaped rectangle rather than a scrollbar.
+        let band = self.track_band();
+        let rect = band;
         let slider_pos = self.value_to_pixel_pos(self.value);
         let slider_size = self.slider_size();
         let style = self.style();
@@ -514,9 +551,21 @@ impl Draw for ScrollBar {
             style.border_color.unwrap_or_else(|| trough.contrast_color().with_alpha(80)),
         );
         // Draw slider
+        //
+        // The thumb is `slider_size` of the *travel*, but never shorter than
+        // [`dimensions::SCROLLBAR_MIN_LENGTH`]: a proportional thumb with no floor vanishes on
+        // a very long document, leaving nothing to grab. The floor is applied here rather than
+        // inside `slider_size()` because that function reports the fraction a *caller* asked
+        // for, while the floor is a drawing decision about the grip.
+        let thumb_length = |travel: u32| -> u32 { (travel as f32 * slider_size) as u32 };
         match self.orientation {
             Orientation::Horizontal => {
-                let slider_width = (rect.width as f32 * slider_size) as u32;
+                let slider_width =
+                    thumb_length(rect.width).max(dimensions::SCROLLBAR_MIN_LENGTH.min(rect.width));
+                // The thumb stops at the trough's far edge even when the floor would push it
+                // past it, because nothing clips a widget at this layer.
+                let slider_width = slider_width
+                    .min((band.x + band.width as i32 - slider_pos as i32).max(0) as u32);
                 context.fill_rect(
                     Rect::from_f32(
                         slider_pos,
@@ -545,12 +594,12 @@ impl Draw for ScrollBar {
                 // x = 24). The derivation lives in `arrow_cell()`, which the thumb's travel
                 // reads too, so the two cannot disagree.
                 let arrow_size = self.arrow_cell() as u32;
+                // The arrows sit on the band's own middle line, so a centred band draws them
+                // on the trough rather than on the control's edges.
+                let mid_y = rect.y as f32 + rect.height as f32 / 2.0;
                 // Left arrow head
                 context.draw_line(
-                    Point::from_f32(
-                        rect.x as f32 + arrow_size as f32 / 2.0,
-                        rect.y as f32 + rect.height as f32 / 2.0,
-                    ),
+                    Point::from_f32(rect.x as f32 + arrow_size as f32 / 2.0, mid_y),
                     Point::from_f32(
                         rect.x as f32 + arrow_size as f32,
                         rect.y as f32 + rect.height as f32 / 4.0,
@@ -558,10 +607,7 @@ impl Draw for ScrollBar {
                     arrow_color,
                 );
                 context.draw_line(
-                    Point::from_f32(
-                        rect.x as f32 + arrow_size as f32 / 2.0,
-                        rect.y as f32 + rect.height as f32 / 2.0,
-                    ),
+                    Point::from_f32(rect.x as f32 + arrow_size as f32 / 2.0, mid_y),
                     Point::from_f32(
                         rect.x as f32 + arrow_size as f32,
                         rect.y as f32 + rect.height as f32 * 3.0 / 4.0,
@@ -572,7 +618,7 @@ impl Draw for ScrollBar {
                 context.draw_line(
                     Point::from_f32(
                         rect.x as f32 + rect.width as f32 - arrow_size as f32 / 2.0,
-                        rect.y as f32 + rect.height as f32 / 2.0,
+                        mid_y,
                     ),
                     Point::from_f32(
                         rect.x as f32 + rect.width as f32 - arrow_size as f32,
@@ -583,7 +629,7 @@ impl Draw for ScrollBar {
                 context.draw_line(
                     Point::from_f32(
                         rect.x as f32 + rect.width as f32 - arrow_size as f32 / 2.0,
-                        rect.y as f32 + rect.height as f32 / 2.0,
+                        mid_y,
                     ),
                     Point::from_f32(
                         rect.x as f32 + rect.width as f32 - arrow_size as f32,
@@ -593,7 +639,10 @@ impl Draw for ScrollBar {
                 );
             }
             Orientation::Vertical => {
-                let slider_height = (rect.height as f32 * slider_size) as u32;
+                let slider_height = thumb_length(rect.height)
+                    .max(dimensions::SCROLLBAR_MIN_LENGTH.min(rect.height));
+                let slider_height = slider_height
+                    .min((band.y + band.height as i32 - slider_pos as i32).max(0) as u32);
                 context.fill_rect(
                     Rect::from_f32(
                         rect.x as f32,
@@ -615,12 +664,11 @@ impl Draw for ScrollBar {
                 );
                 // Draw arrows using draw_line (triangles approximated)
                 let arrow_size = self.arrow_cell() as u32;
+                // On the band's own middle line, as above.
+                let mid_x = rect.x as f32 + rect.width as f32 / 2.0;
                 // Up arrow head
                 context.draw_line(
-                    Point::from_f32(
-                        rect.x as f32 + rect.width as f32 / 2.0,
-                        rect.y as f32 + arrow_size as f32 / 2.0,
-                    ),
+                    Point::from_f32(mid_x, rect.y as f32 + arrow_size as f32 / 2.0),
                     Point::from_f32(
                         rect.x as f32 + rect.width as f32 / 4.0,
                         rect.y as f32 + arrow_size as f32,
@@ -628,10 +676,7 @@ impl Draw for ScrollBar {
                     arrow_color,
                 );
                 context.draw_line(
-                    Point::from_f32(
-                        rect.x as f32 + rect.width as f32 / 2.0,
-                        rect.y as f32 + arrow_size as f32 / 2.0,
-                    ),
+                    Point::from_f32(mid_x, rect.y as f32 + arrow_size as f32 / 2.0),
                     Point::from_f32(
                         rect.x as f32 + rect.width as f32 * 3.0 / 4.0,
                         rect.y as f32 + arrow_size as f32,
@@ -641,7 +686,7 @@ impl Draw for ScrollBar {
                 // Down arrow head
                 context.draw_line(
                     Point::from_f32(
-                        rect.x as f32 + rect.width as f32 / 2.0,
+                        mid_x,
                         rect.y as f32 + rect.height as f32 - arrow_size as f32 / 2.0,
                     ),
                     Point::from_f32(
@@ -652,7 +697,7 @@ impl Draw for ScrollBar {
                 );
                 context.draw_line(
                     Point::from_f32(
-                        rect.x as f32 + rect.width as f32 / 2.0,
+                        mid_x,
                         rect.y as f32 + rect.height as f32 - arrow_size as f32 / 2.0,
                     ),
                     Point::from_f32(

@@ -13,6 +13,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::numeric::ordered_clamp_i32;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Progress dialog widget.
@@ -307,9 +308,30 @@ impl EventHandler for ProgressDialog {
         }
     }
 }
+impl ProgressDialog {
+    /// The frame the dialog actually paints: at most its intrinsic size, centred in the
+    /// area it was given.
+    ///
+    /// # Why the frame is not the caller's rectangle
+    ///
+    /// `rect` is the area the dialog is **offered**. Painting it verbatim drew the 240x120
+    /// census cell as a 240x120 panel whose label, bar and button were then pinned to
+    /// literals (`48`, `62`, `rect.height - 40`) written for a taller default size — so the
+    /// bar sat in the top third and the cancel button floated well below it.
+    /// [`ControlMetrics::painted_box`] caps each axis at the dialog's own intrinsic size and
+    /// centres what is left; every band below is derived from this one rect.
+    fn frame_rect(&self) -> Rect {
+        ControlMetrics::painted_box(
+            self.base.geometry(),
+            Size::new(dimensions::DIALOG_MIN_WIDTH, dimensions::DIALOG_MIN_HEIGHT),
+        )
+    }
+}
+
 impl Draw for ProgressDialog {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
+        // The **frame**, not the control's rectangle: see `frame_rect`.
+        let rect = self.frame_rect();
         // Chrome colours resolve explicit style first, then the theme's resolved style for
         // this control, and only then a literal. The dialog surface already read the style,
         // but the title bar, the progress track and the button were literals, so a light/dark
@@ -358,86 +380,113 @@ impl Draw for ProgressDialog {
         let progress_fill = crate::style::semantic_color(crate::style::SemanticColor::Success)
             .unwrap_or(Color::rgb(6, 176, 37));
 
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), surface);
-        context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border);
-        // Every label is fitted to the band it belongs to: the title to the title bar, the
-        // label to its own row, and the button caption to the button. None of them was
-        // bounded before, so a long caption ran past the frame — the raster backends clip
-        // that away and the SVG snapshot showed it as drawing outside the picture.
-        const TITLE_BAR_HEIGHT: u32 = 28;
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, TITLE_BAR_HEIGHT), title_bar);
-        let title_font = Font::default();
-        let title_metrics = context.measure_text(&self.title, &title_font);
-        context.draw_text_fitted(
-            Rect::new(
-                rect.x + 8,
-                rect.y + ((TITLE_BAR_HEIGHT as i32 - title_metrics.height as i32) / 2).max(0),
-                rect.width.saturating_sub(16),
-                title_metrics.height.max(1),
-            ),
-            &self.title,
-            &title_font,
-            ink,
-            HorizontalAlignment::Left,
-        );
-        // Label
-        let label_font = Font::default();
-        let label_metrics = context.measure_text(&self.label_text, &label_font);
-        context.draw_text_fitted(
-            Rect::new(
-                rect.x + 10,
-                rect.y + 48,
-                rect.width.saturating_sub(20),
-                label_metrics.height.max(1),
-            ),
-            &self.label_text,
-            &label_font,
-            ink,
-            HorizontalAlignment::Left,
-        );
-        // Progress bar: the track is chrome and follows the theme; the filled portion is the
-        // semantic `success` colour resolved above.
-        let bar_y = rect.y + 62;
-        let bar_w = rect.width.saturating_sub(20);
-        let bar_h: u32 = 20;
-        context.fill_rect(Rect::new(rect.x + 10, bar_y, bar_w, bar_h), track);
-        context.draw_rect(Rect::new(rect.x + 10, bar_y, bar_w, bar_h), border);
-        let fill_w = (bar_w as f32 * self.progress_fraction()) as i32;
-        if fill_w > 0 {
-            context.fill_rect(
-                Rect::new(rect.x + 10, bar_y, fill_w.max(0) as u32, bar_h),
-                progress_fill,
+        // Rounded by [`dimensions::DIALOG_RADIUS`]; the radius is clamped to the frame so a
+        // box smaller than its own corner is not drawn with an inverted one.
+        let radius = dimensions::DIALOG_RADIUS.min(rect.width / 2).min(rect.height / 2);
+        if radius > 0 {
+            context.fill_rounded_rect(rect, radius, surface);
+            context.draw_rounded_rect_stroke(rect, radius, border, 1);
+        } else {
+            context.fill_rect(rect, surface);
+            context.draw_rect(rect, border);
+        }
+        // Every label is fitted to the band it belongs to and centred on that band through
+        // the shared primitive: the title to the title bar, the label to its own row, and
+        // the button caption to the button. None of them was bounded before, so a long
+        // caption ran past the frame — the raster backends clip that away and the SVG
+        // snapshot showed it as drawing outside the picture.
+        let title_bar_band = ControlMetrics::top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
+        context.fill_rect(title_bar_band, title_bar);
+        // Guarded on the text being non-empty so a titleless dialog emits no `<text …></text>`.
+        if !self.title.is_empty() {
+            let title_font = Font::default();
+            let title_line = context.text_line(title_bar_band, &title_font);
+            context.draw_text_fitted(
+                Rect::new(
+                    rect.x + 8,
+                    title_line.y,
+                    rect.width.saturating_sub(16),
+                    title_line.height.max(1),
+                ),
+                &self.title,
+                &title_font,
+                ink,
+                HorizontalAlignment::Left,
             );
         }
-        // Percentage text. Centred on the bar rather than merely *starting* at the bar's
-        // midpoint — the old `bar_x + bar_w/2` origin made the caption occupy only its
-        // right half and, at 100%, run up to `bar_w/2 + 42` past the bar.
-        let pct = (self.progress_fraction() * 100.0) as i32;
-        let pct_font = Font::default();
-        let pct_text = format!("{pct}%");
-        let pct_metrics = context.measure_text(&pct_text, &pct_font);
-        let bar_rect = Rect::new(rect.x + 10, bar_y, bar_w, bar_h);
-        context.draw_text_fitted(
-            Rect::new(
-                bar_rect.x,
-                bar_y + ((bar_h as i32 - pct_metrics.height as i32) / 2).max(0),
-                bar_rect.width,
-                pct_metrics.height.max(1),
-            ),
-            &pct_text,
-            &pct_font,
-            ink,
-            HorizontalAlignment::Center,
-        );
-        // Cancel button. The button is centred, but its caption was drawn from the
-        // dialog's midpoint with a left origin, so the text started in the middle of the
-        // button and left the frame on its right — twice the button's own overflow. The
-        // caption and its 80 px button are therefore one rectangle, with the label centred
-        // and fitted inside it.
-        let btn_y = (rect.y as f32 + rect.height as f32 - 40.0) as i32;
-        const BTN_W: i32 = 80;
-        let btn_x = (rect.x + rect.width as i32 / 2 - BTN_W / 2).max(rect.x);
-        let btn_rect = Rect::new(btn_x, btn_y, BTN_W as u32, 28);
+        // The body is everything the title bar leaves, and the button is the bottom band of
+        // it. The label and the bar then take the space above the button, so the three rows
+        // stack inside the frame instead of each being placed from the frame's top edge plus
+        // a literal.
+        let body =
+            ControlMetrics::content_below_top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
+        let button_band = ControlMetrics::bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT);
+        let content =
+            ControlMetrics::content_above_bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT);
+        let label_font = Font::default();
+        let label_line_h = context.measure_text("M", &label_font).height.max(1);
+        // Label: the top row of the content area, bounded by it rather than by `rect.y + 48`.
+        // Guarded on the text being non-empty so a labelless dialog emits no empty `<text>`.
+        if !self.label_text.is_empty() {
+            let label_band = ControlMetrics::top_band(content, label_line_h);
+            let label_line = context.text_line(label_band, &label_font);
+            context.draw_text_fitted(
+                Rect::new(
+                    content.x + 10,
+                    label_line.y,
+                    content.width.saturating_sub(20),
+                    label_line.height.max(1),
+                ),
+                &self.label_text,
+                &label_font,
+                ink,
+                HorizontalAlignment::Left,
+            );
+        }
+        // Progress bar: the row below the label, centred in whatever the label row left.
+        // The track is chrome and follows the theme; the filled portion is the semantic
+        // `success` colour resolved above. The bar is drawn only when that row is non-empty:
+        // a zero-height band is an element the SVG backend emits and the rasteriser skips.
+        let bar_row = ControlMetrics::content_below_top_band(content, label_line_h);
+        let bar_h = 20u32.min(bar_row.height);
+        if bar_row.height > 0 && bar_row.width > 20 {
+            let bar_band = ControlMetrics::centered_band(
+                Rect::new(
+                    bar_row.x + 10,
+                    bar_row.y,
+                    bar_row.width.saturating_sub(20),
+                    bar_row.height,
+                ),
+                bar_h,
+            );
+            context.fill_rect(bar_band, track);
+            context.draw_rect(bar_band, border);
+            let fill_w = (bar_band.width as f32 * self.progress_fraction()) as i32;
+            if fill_w > 0 {
+                context.fill_rect(
+                    Rect::new(bar_band.x, bar_band.y, fill_w as u32, bar_band.height),
+                    progress_fill,
+                );
+            }
+            // Percentage text. Centred on the bar itself through `draw_text_line`, which
+            // re-derives the line box from the band and bounds the fit to it — the old
+            // `bar_x + bar_w/2` origin made the caption occupy only its right half and, at
+            // 100%, run up to `bar_w/2 + 42` past the bar.
+            let pct = (self.progress_fraction() * 100.0) as i32;
+            context.draw_text_line(
+                bar_band,
+                &format!("{pct}%"),
+                &Font::default(),
+                if track.is_dark() { Color::WHITE } else { ink },
+                HorizontalAlignment::Center,
+            );
+        }
+        // Cancel button: the frame's bottom band, centred horizontally and floored at the
+        // frame's left edge so a narrow dialog keeps it on screen. The caption and its
+        // button are one rectangle, with the label centred and fitted inside it.
+        let btn_w = 80i32.min(button_band.width as i32).max(1);
+        let btn_x = (rect.x + rect.width as i32 / 2 - btn_w / 2).max(rect.x);
+        let btn_rect = Rect::new(btn_x, button_band.y, btn_w as u32, button_band.height.max(1));
         context.fill_rect(btn_rect, button_fill);
         context.draw_rect(btn_rect, border);
         context.draw_text_line(

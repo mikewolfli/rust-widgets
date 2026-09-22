@@ -26,18 +26,18 @@ PNG 或 SVG。支持桌面、平板、移动、嵌入式，以及最小化的 `m
 
 ```toml
 [dependencies]
-rust_widgets = "2.6.0"
+rust_widgets = "2.6.1"
 ```
 
 设备配置**只能选一个**。它们互斥——`mini` 和 `embedded` 会把 crate 的一部分**编译掉**，所以把
 它们和 `desktop` 叠在一起不是「取最小公分母」，而是构建失败：
 
 ```toml
-rust_widgets = { version = "2.6.0", features = ["desktop"] }                       # 默认
-rust_widgets = { version = "2.6.0", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "2.6.0", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "2.6.0", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "2.6.0", default-features = false, features = ["mini"] }
+rust_widgets = { version = "2.6.1", features = ["desktop"] }                       # 默认
+rust_widgets = { version = "2.6.1", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "2.6.1", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "2.6.1", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "2.6.1", default-features = false, features = ["mini"] }
 ```
 
 > `cargo check --features embedded` 是**错的**：`desktop` 是默认特性，这条命令会同时打开两个互斥
@@ -84,6 +84,59 @@ fn main() {
 渲染器的文本原点是字形框的**左上角**，不是基线。两个后端对这一契约的实现完全一致（SVG 后端会写
 `dominant-baseline="text-before-edge"`），因此按其中一个后端测出的标签位置，在另一个后端也落在
 同一处。正是这个性质让 `snapshots/svg/` 成为可用的评审产物，而不是第二个会漂移的渲染器。
+
+## 控件的尺寸
+
+控件拿到的矩形是「**可以使用**的区域」，不是「应该画多大」——这是两个问题。回答第二个，才是开关
+不会被画成 240×120 体育场的原因：
+
+```rust
+implicit_size = max(floor, content + padding)     // Qt Quick 的 Button.qml 公式
+```
+
+承重的是那个 `max`：**地板 = 最小可点区**，所以 5px 文字的文字按钮仍然是 `64×40`，而不是 `64×18`。
+`rust_widgets::widget::ControlMetrics` 提供这个公式及建立在其上的几何 helper，
+`rust_widgets::widget::metrics::dimensions` 集中所有控件尺寸（轨道、手柄半径、输入框高度、内边距），
+同一事实只有一处定义：
+
+| helper | 回答的问题 |
+|---|---|
+| `implicit_size` / `content_box` | 我该多大？ / 我的内容能放到哪？ |
+| `center_in` / `centered_disc` / `centered_square` | 固定尺寸 chrome 居中，**只夹不撑** |
+| `centered_band` / `full_width_band` | 全宽、自己的高度、垂直居中 |
+| `top_band` / `bottom_band` / `band_inset` | 把条带钉在某一边，内容跟在后面 |
+| `focus_ring_rect` / `focus_ring_color` | 键盘焦点环，内缩因而不会压住邻居 |
+
+## 控件的布局
+
+布局是**向每个子控件要尺寸**，而不是被调用方提前告知。每个控件声明自己的诉求为「地板 / 期望 / 上限」
+三个值，因为「最小能压到多少」与「最大能拉到多少」是一个尺寸回答不了的：
+
+```rust
+use rust_widgets::layout::{AxisHints, Hints, LayoutParams, ChildInfo, Layout};
+
+// 最小 120、期望 200、不超过 400；允许被横向拉伸。
+let hints = Hints { width: AxisHints::new(120, 200, 400), height: AxisHints::fixed(32) };
+let children = [ChildInfo::new(widget_id, hints).with_params(LayoutParams::filled())];
+
+let mut out = Vec::new();
+layout.arrange(rect, &children, &mut |id, child_rect| out.push((id, child_rect)));
+```
+
+`fill` 与尺寸**刻意分开**：滑块与按钮的期望尺寸可以相同，但只有其中一个该被拉伸铺满表单。
+`AxisHints::new` 在构造时就把 `min <= pref <= max` 归一化，因此**非法状态不可表示**。
+既有布局全部照常工作——`Layout::arrange` 的默认实现转 `Layout::update`。
+
+## 控件的行为
+
+三条靠外形看不出来的契约：
+
+- **`clicked` 要求释放点落在控件内部**。从按钮上按下、拖出后释放，会发 `canceled` 而不是 `clicked`；
+  且只有主键能激活。
+- **`pressed` 是连续量**。按住拖出会清除它，拖回会恢复它，因此控件反映指针的真实位置。
+- **焦点环在「用户在用键盘」时画，而不只是「控件有焦点」时画**。`Event::FocusGained` 携带
+  `FocusReason`，`FocusReason::draws_focus_ring()` 对鼠标点击返回 `false`——光标下画环会读成卡住的
+  高亮。
 
 ## 验证一次改动
 
@@ -159,7 +212,7 @@ MIT —— 见 [LICENSE](LICENSE)。
 - 问题反馈：[GitHub Issues](https://github.com/mikewolfli/rust-widgets/issues)
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.6.0-blue)]()
+[![version](https://img.shields.io/badge/version-2.6.1-blue)]()
 [![tests](https://img.shields.io/badge/tests-5600%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 

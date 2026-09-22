@@ -5,6 +5,7 @@
 
 use crate::compat::{vec, Any, Vec};
 use crate::core::{ObjectId, Point, Rect, Size};
+use crate::layout::hints::ChildInfo;
 /// How a layout item reacts to the space its parent offers it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SizePolicy {
@@ -86,7 +87,6 @@ pub fn grow_to_min_touch_size(child: Rect, min_touch_size: Size) -> Rect {
     )
 }
 
-
 impl Default for LayoutContext {
     fn default() -> Self {
         Self {
@@ -105,6 +105,30 @@ pub trait Layout {
     fn remove_widget(&mut self, widget_id: ObjectId);
     /// Recompute child geometries within given rect.
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect));
+
+    /// Recompute child geometries, given what each child wants.
+    ///
+    /// # Why this exists alongside [`Layout::update`]
+    ///
+    /// `update` can only **write** child geometry. It receives `ObjectId`s, not widgets,
+    /// so it cannot ask "how big does this child want to be?" — which is why the layouts
+    /// that needed sizes had to be told in advance
+    /// ([`FlexLayout::set_child_sizes`](crate::layout::FlexLayout::set_child_sizes),
+    /// and the same workaround in `wrap` and `absolute`). This method is the channel
+    /// that lets a layout do the asking, as QML, Flutter and Qt Widgets all do.
+    ///
+    /// # Why the default implementation forwards to `update`
+    ///
+    /// Fifteen layouts implement this trait. Requiring all of them to change at once is
+    /// the "76 mechanical migrations" shape this crate has already paid for twice; the
+    /// default keeps every existing layout working untouched, and each one can adopt the
+    /// hints when it has a reason to. A layout that ignores `children` lays out exactly
+    /// as it did before, rather than refusing to lay out at all.
+    fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect)) {
+        let _ = children;
+        self.update(rect, out);
+    }
+
     /// Recompute child geometries from explicit position/size primitives.
     fn update_from_position_size(
         &self,

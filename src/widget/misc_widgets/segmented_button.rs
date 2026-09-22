@@ -16,6 +16,7 @@ use crate::widget::capability::coercion::expect_usize;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -158,19 +159,45 @@ impl SegmentedButton {
     }
 
     /// Checks whether the given point falls within a segment's hit area.
+    ///
+    /// Resolved against the same track band the segments are painted in, so a click above or
+    /// below the bar hits nothing rather than selecting a segment whose ink is not there.
     fn hit_segment(&self, pos: Point) -> Option<usize> {
-        let rect = self.geometry();
-        if !rect.contains_point(pos) || self.segments.is_empty() {
+        if self.segments.is_empty() {
             return None;
         }
-        let seg_width = rect.width / self.segments.len() as u32;
-        let local_x = (pos.x - rect.x) as u32;
+        let band = self.track_band();
+        if pos.y < band.y || pos.y >= band.y + band.height as i32 {
+            return None;
+        }
+        if pos.x < band.x || pos.x >= band.x + band.width as i32 {
+            return None;
+        }
+        let seg_width = band.width / self.segments.len() as u32;
+        if seg_width == 0 {
+            return None;
+        }
+        let local_x = (pos.x - band.x) as u32;
         let index = (local_x / seg_width) as usize;
         if index < self.segments.len() {
             Some(index)
         } else {
             None
         }
+    }
+
+    /// The track the control actually paints: full width,
+    /// `dimensions::SEGMENTED_CONTROL_HEIGHT` tall, centred in the rectangle it was given.
+    ///
+    /// # Why the track is not the rectangle
+    ///
+    /// A segmented button's chrome is one row of segments, not a filled container. Taking
+    /// `rect.height` made a 240x120 census cell a **240x120 rounded rectangle** whose corner
+    /// radius became 16 — a slab shaped like a segmented button rather than one — and it
+    /// disagreed with the 32 px `size_hint` the control reports. Deriving the band once here
+    /// keeps the paint, the hit test and the reported size on one value.
+    fn track_band(&self) -> Rect {
+        ControlMetrics::full_width_band(self.geometry(), dimensions::SEGMENTED_CONTROL_HEIGHT)
     }
 }
 
@@ -291,26 +318,36 @@ impl Draw for SegmentedButton {
 
         let is_enabled = self.base.is_enabled();
         let seg_count = self.segments.len();
-        let corner_radius = (rect.height.min(32) / 2).max(4);
+        // ── The track actually painted ──
+        //
+        // The corner radius is derived from the track's own height (half of it, floored at 4),
+        // so a 32 px track has 16 px ends and a track clamped smaller keeps a proportionate
+        // rounding rather than the 16 px radius a 120 px canvas produced.
+        let track_rect = self.track_band();
+        let corner_radius = (track_rect.height / 2).max(4);
         let font = Font::simple("sans-serif", 13.0);
 
         // The track is painted before the early return on an empty segment list, so a freshly
         // constructed control is visible rather than reporting `ink = 0`. An empty track reads as
         // a disabled group, which is exactly what a segmented button with nothing to choose is.
-        context.fill_rounded_rect(rect, corner_radius, track);
+        context.fill_rounded_rect(track_rect, corner_radius, track);
         // Draw outer container border
         let border_color = if is_enabled { border_color } else { border_color.with_alpha(100) };
-        context.draw_rounded_rect_stroke(rect, corner_radius, border_color, 1);
+        context.draw_rounded_rect_stroke(track_rect, corner_radius, border_color, 1);
 
         if seg_count == 0 {
             return;
         }
 
-        let seg_width = rect.width / seg_count as u32;
+        let seg_width = track_rect.width / seg_count as u32;
 
         for (i, segment) in self.segments.iter().enumerate() {
-            let seg_rect =
-                Rect::new(rect.x + (i as u32 * seg_width) as i32, rect.y, seg_width, rect.height);
+            let seg_rect = Rect::new(
+                track_rect.x + (i as u32 * seg_width) as i32,
+                track_rect.y,
+                seg_width,
+                track_rect.height,
+            );
 
             let is_selected = self.selected_index == Some(i);
             let seg_enabled = is_enabled && segment.enabled;
@@ -337,15 +374,19 @@ impl Draw for SegmentedButton {
                         seg_rect.x + corner_radius as i32,
                         seg_rect.y,
                         seg_width - corner_radius,
-                        rect.height,
+                        track_rect.height,
                     );
                     context.fill_rect(right_half, bg_color);
                 } else if i == seg_count - 1 {
                     // Last segment: round right corners only
                     context.fill_rounded_rect(seg_rect, corner_radius, bg_color);
                     // Over-draw left side square
-                    let left_half =
-                        Rect::new(seg_rect.x, seg_rect.y, seg_width - corner_radius, rect.height);
+                    let left_half = Rect::new(
+                        seg_rect.x,
+                        seg_rect.y,
+                        seg_width - corner_radius,
+                        track_rect.height,
+                    );
                     context.fill_rect(left_half, bg_color);
                 } else {
                     // Middle segments: fill fully
@@ -360,7 +401,7 @@ impl Draw for SegmentedButton {
                     if is_enabled { border_color } else { border_color.with_alpha(80) };
                 context.draw_line(
                     Point::new(divider_x, seg_rect.y + 4),
-                    Point::new(divider_x, seg_rect.y + rect.height as i32 - 4),
+                    Point::new(divider_x, seg_rect.y + track_rect.height as i32 - 4),
                     divider_color,
                 );
             }
@@ -379,7 +420,7 @@ impl Draw for SegmentedButton {
             let text_x = seg_rect.x + (seg_width as i32 - metrics.width as i32) / 2;
             // The origin is the glyph box's top edge, so centring on the segment is half the
             // *line box*; the old `+ ascent` began the box half a line below the middle.
-            let text_y = seg_rect.y + (rect.height as i32 - metrics.height as i32) / 2;
+            let text_y = seg_rect.y + (track_rect.height as i32 - metrics.height as i32) / 2;
 
             if !segment.text.is_empty() {
                 context.draw_text(
@@ -532,5 +573,22 @@ mod tests {
 
         btn.handle_event(&Event::mouse_press(500, 500, 1));
         assert_eq!(btn.selected_index(), None);
+    }
+
+    /// The track is one row tall whatever rectangle the control was given.
+    ///
+    /// The defect this pins: the track and its segments were sized from `rect.height`, so a
+    /// 240x120 census cell drew a 240x120 rounded rectangle (radius 16) whose segments were
+    /// also 120 tall — a slab shaped like a segmented button rather than one.
+    #[test]
+    fn the_track_keeps_its_own_height_in_any_rectangle() {
+        for height in [32u32, 60, 120, 300] {
+            let btn = SegmentedButton::new(Rect::new(0, 0, 240, height));
+            assert_eq!(
+                btn.track_band().height,
+                dimensions::SEGMENTED_CONTROL_HEIGHT,
+                "at control height {height}"
+            );
+        }
     }
 }

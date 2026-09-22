@@ -16,6 +16,7 @@ use crate::widget::capability::coercion::expect_i64;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::numeric::ordered_clamp_i32;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -104,6 +105,50 @@ impl Stepper {
     pub fn decrement(&mut self) {
         self.set_value(self.value.saturating_sub(self.step));
     }
+
+    /// The band the whole control is drawn in: full width, one button tall, centred.
+    ///
+    /// # Why the control is not its own rectangle
+    ///
+    /// A stepper is **one row of chrome**: a minus button, a value, a plus button.
+    /// Every piece of it used to be measured from `rect`, so the 240x120 census cell
+    /// drew a 240x120 pill two **118 px** buttons wide and a number floating between
+    /// them — a column shaped like a stepper rather than a stepper. The band is centred
+    /// and clamped to the control, so a stepper in a 30 px form row and one in a 120 px
+    /// cell are the same object, and nothing is ever painted outside the given area.
+    fn row_band(&self) -> Rect {
+        ControlMetrics::full_width_band(self.geometry(), dimensions::STEPPER_ROW_HEIGHT)
+    }
+
+    /// The minus button: the leading edge of the row band.
+    fn minus_rect(&self) -> Rect {
+        let band = self.row_band();
+        let width = dimensions::STEPPER_BUTTON_WIDTH.min(band.width);
+        let height = band.height.saturating_sub(dimensions::STEPPER_PADDING * 2);
+        Rect::new(
+            band.x + dimensions::STEPPER_PADDING as i32,
+            band.y + dimensions::STEPPER_PADDING as i32,
+            width,
+            height,
+        )
+    }
+
+    /// The plus button: the trailing edge of the row band.
+    ///
+    /// Derived from the same band as [`Self::minus_rect`], so the two cannot drift
+    /// apart — they used to be two independent `rect.width - btn_width - 1`
+    /// expressions in `draw` and again in the hit test.
+    fn plus_rect(&self) -> Rect {
+        let band = self.row_band();
+        let width = dimensions::STEPPER_BUTTON_WIDTH.min(band.width);
+        let height = band.height.saturating_sub(dimensions::STEPPER_PADDING * 2);
+        Rect::new(
+            band.x + band.width as i32 - width as i32 - dimensions::STEPPER_PADDING as i32,
+            band.y + dimensions::STEPPER_PADDING as i32,
+            width,
+            height,
+        )
+    }
 }
 
 impl Widget for Stepper {
@@ -115,7 +160,13 @@ impl Widget for Stepper {
     }
 
     fn size_hint(&self) -> Size {
-        crate::core::Size::new(120, 30)
+        // One row of chrome: the two buttons and the value between them, at the row's
+        // own fixed height. Reporting anything else would let a layout hand the control
+        // a box its buttons do not fit in.
+        Size::new(
+            dimensions::STEPPER_BUTTON_WIDTH * 2 + dimensions::STEPPER_PADDING * 2,
+            dimensions::STEPPER_ROW_HEIGHT,
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -167,9 +218,7 @@ impl WidgetProperties for Stepper {
 
 impl Draw for Stepper {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
-        let btn_width = rect.height.min(rect.width / 3).max(20);
         let value_text = self.value.to_string();
         let font = crate::core::Font::default_ui();
         let text_metrics = context.measure_text(&value_text, &font);
@@ -203,25 +252,38 @@ impl Draw for Stepper {
         let disabled_button = button_color.blend(&background, 0.6);
         let disabled_text = text_color.blend(&background, 0.5);
 
-        // Background
-        context.fill_rounded_rect(rect, 4, bg_color);
-        context.draw_rounded_rect_stroke(rect, 4, border, 1);
+        // ── The row band actually painted ──
+        //
+        // `rect` is the area the control was *given*; a stepper's own chrome is one row
+        // of a fixed height. Painting the surface across the whole rectangle made a
+        // 240x120 census cell a full-bleed pill whose buttons stood the control's full
+        // height — the defect this replaces — and left the value sitting in empty space
+        // between them. The band is the single derivation the surface and both buttons
+        // are placed from, and the hit test reads the same buttons.
+        let band = self.row_band();
+        context.fill_rounded_rect(band, 4, bg_color);
+        context.draw_rounded_rect_stroke(band, 4, border, 1);
+        // A band too thin for buttons has no button row to paint: emitting a zero-height
+        // button would be an invisible element rather than a small one.
+        if band.height <= dimensions::STEPPER_PADDING * 2 {
+            return;
+        }
 
         // --- Minus button (left) ---
-        let inner_height = rect.height.saturating_sub(2);
-        let minus_rect = Rect::new(rect.x + 1, rect.y + 1, btn_width, inner_height);
+        let minus_rect = self.minus_rect();
         let minus_color = if !is_enabled { disabled_button } else { button_color };
         context.fill_rounded_rect(minus_rect, 3, minus_color);
         context.draw_rounded_rect_stroke(minus_rect, 3, border, 1);
-        // Draw "-" symbol centered in the minus button
+        // Draw "-" symbol centered in the minus button through the shared line box: a
+        // glyph origin is the box's **top** edge, so `(height + metrics.height) / 2 -
+        // descent` placed that edge near the button's middle and drew the sign low.
         let minus_label = "\u{2212}";
         let minus_font = crate::core::Font::bold("Arial", 16.0);
         let minus_metrics = context.measure_text(minus_label, &minus_font);
         let minus_x = minus_rect.x + (minus_rect.width as i32 - minus_metrics.width as i32) / 2;
-        let minus_y = minus_rect.y + (minus_rect.height as i32 + minus_metrics.height as i32) / 2
-            - minus_metrics.descent as i32;
+        let minus_line = context.text_line(minus_rect, &minus_font);
         context.draw_text(
-            Point::new(minus_x, minus_y),
+            Point::new(minus_x, minus_line.y),
             minus_label,
             &minus_font,
             if !is_enabled { disabled_text } else { text_color },
@@ -229,37 +291,30 @@ impl Draw for Stepper {
         );
 
         // --- Plus button (right) ---
-        let plus_rect = Rect::new(
-            rect.x + rect.width as i32 - btn_width as i32 - 1,
-            rect.y + 1,
-            btn_width,
-            inner_height,
-        );
+        let plus_rect = self.plus_rect();
         let plus_color = if !is_enabled { disabled_button } else { button_color };
         context.fill_rounded_rect(plus_rect, 3, plus_color);
         context.draw_rounded_rect_stroke(plus_rect, 3, border, 1);
-        // Draw "+" symbol centered in the plus button
+        // Draw "+" symbol centered in the plus button, same line box as the sign above.
         let plus_label = "+";
         let plus_font = crate::core::Font::bold("Arial", 16.0);
         let plus_metrics = context.measure_text(plus_label, &plus_font);
         let plus_x = plus_rect.x + (plus_rect.width as i32 - plus_metrics.width as i32) / 2;
-        let plus_y = plus_rect.y + (plus_rect.height as i32 + plus_metrics.height as i32) / 2
-            - plus_metrics.descent as i32;
+        let plus_line = context.text_line(plus_rect, &plus_font);
         context.draw_text(
-            Point::new(plus_x, plus_y),
+            Point::new(plus_x, plus_line.y),
             plus_label,
             &plus_font,
             if !is_enabled { disabled_text } else { text_color },
             HorizontalAlignment::Left,
         );
 
-        // --- Value text (center) ---
-        let text_x = rect.x + (rect.width as i32 - text_metrics.width as i32) / 2;
-        let text_y = rect.y + (rect.height as i32 + text_metrics.height as i32) / 2
-            - text_metrics.descent as i32;
+        // --- Value text (center of the row, not of the control) ---
+        let text_x = band.x + (band.width as i32 - text_metrics.width as i32) / 2;
+        let value_line = context.text_line(band, &font);
         let value_color = if !is_enabled { disabled_text } else { text_color };
         context.draw_text(
-            Point::new(text_x, text_y),
+            Point::new(text_x, value_line.y),
             &value_text,
             &font,
             value_color,
@@ -278,23 +333,12 @@ impl EventHandler for Stepper {
                 if *button != 1 {
                     return;
                 }
-                let rect = self.geometry();
-                let btn_width = rect.height.min(rect.width / 3).max(20);
-
-                // Minus button area (left)
-                let inner_height = rect.height.saturating_sub(2);
-                let minus_rect = Rect::new(rect.x + 1, rect.y + 1, btn_width, inner_height);
-                // Plus button area (right)
-                let plus_rect = Rect::new(
-                    rect.x + rect.width as i32 - btn_width as i32 - 1,
-                    rect.y + 1,
-                    btn_width,
-                    inner_height,
-                );
-
-                if minus_rect.contains(*pos) {
+                // The hit test reads the **drawn** buttons. It used to re-derive them
+                // from `rect` with its own copy of the arithmetic, so the clickable area
+                // and the painted one could — and did — describe different controls.
+                if self.minus_rect().contains(*pos) {
                     self.decrement();
-                } else if plus_rect.contains(*pos) {
+                } else if self.plus_rect().contains(*pos) {
                     self.increment();
                 }
             }
@@ -305,7 +349,7 @@ impl EventHandler for Stepper {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, full_widgets))]
 mod tests {
     use super::*;
     use crate::core::Point;
@@ -407,18 +451,26 @@ mod tests {
         let mut s = Stepper::new(Rect::new(0, 0, 120, 30));
         // Set value to 5 first, then click in minus area (left side)
         s.set_value(5);
-        // The minus button is btn_width wide, starting at x=0
-        s.handle_event(&Event::MousePress { pos: Point::new(2, 15), button: 1 });
+        // The press is placed from the drawn button, because that is what hit-tests.
+        let minus = s.minus_rect();
+        s.handle_event(&Event::MousePress {
+            pos: Point::new(minus.x + minus.width as i32 / 2, minus.y + minus.height as i32 / 2),
+            button: 1,
+        });
         assert_eq!(s.value(), 4);
     }
 
     #[test]
     fn stepper_mouse_press_plus_increments() {
         let mut s = Stepper::new(Rect::new(0, 0, 120, 30));
-        // The plus button is btn_width wide on the right side
-        // btn_width = min(30, 120/3).max(20) = min(30, 40).max(20) = 30
-        // plus_rect starts at x = 0 + 120 - 30 - 1 = 89
-        s.handle_event(&Event::MousePress { pos: Point::new(100, 15), button: 1 });
+        // The plus button is the trailing edge of the row band. `TOUCH_TARGET_MIN` is 48
+        // and the band is 48 tall, so the buttons are 48 wide in this 120 px control.
+        let plus = s.plus_rect();
+        assert_eq!(plus.x, 120 - dimensions::STEPPER_BUTTON_WIDTH as i32 - 2);
+        s.handle_event(&Event::MousePress {
+            pos: Point::new(plus.x + plus.width as i32 / 2, plus.y + plus.height as i32 / 2),
+            button: 1,
+        });
         assert_eq!(s.value(), 1);
     }
 
@@ -426,7 +478,11 @@ mod tests {
     fn stepper_disabled_blocks_events() {
         let mut s = Stepper::new(Rect::new(0, 0, 120, 30));
         s.set_enabled(false);
-        s.handle_event(&Event::MousePress { pos: Point::new(100, 15), button: 1 });
+        let plus = s.plus_rect();
+        s.handle_event(&Event::MousePress {
+            pos: Point::new(plus.x + plus.width as i32 / 2, plus.y + plus.height as i32 / 2),
+            button: 1,
+        });
         assert_eq!(s.value(), 0);
     }
 
@@ -435,5 +491,97 @@ mod tests {
         let mut s = Stepper::new(Rect::new(0, 0, 120, 30));
         let svg = crate::widget::svg::render_to_svg(&mut s);
         assert!(svg.starts_with("<svg"));
+    }
+
+    /// A stepper's buttons are a fixed height, not the control's.
+    ///
+    /// This pins the defect the fix removes: `btn_width` was
+    /// `rect.height.min(rect.width / 3).max(20)` and the button's height was the
+    /// control's own `rect.height - 2`, so the 240x120 census cell drew two **118 px**
+    /// buttons in a 240x120 pill while a stepper in a 30 px form row drew 28 px ones —
+    /// the same control at two sizes. The row band is now `STEPPER_ROW_HEIGHT` tall
+    /// whenever the control has room for it.
+    #[test]
+    fn the_stepper_keeps_its_row_height_in_any_rectangle() {
+        for height in [48u32, 120, 300] {
+            let s = Stepper::new(Rect::new(0, 0, 240, height));
+            let band = s.row_band();
+            assert_eq!(band.height, dimensions::STEPPER_ROW_HEIGHT, "at control height {height}");
+            assert_eq!(band.width, 240, "the row spans the control's width");
+            // Centred, so the row sits on the control's middle line.
+            assert_eq!(band.y, (height - band.height) as i32 / 2, "at control height {height}");
+            // The buttons are a fixed width and sit inside the band once padded, so they
+            // are never taller than the row that holds them.
+            let minus = s.minus_rect();
+            let plus = s.plus_rect();
+            assert_eq!(
+                minus.height,
+                dimensions::STEPPER_ROW_HEIGHT - dimensions::STEPPER_PADDING * 2
+            );
+            assert_eq!(plus.height, minus.height);
+            assert_eq!(minus.width, dimensions::STEPPER_BUTTON_WIDTH);
+            assert!(minus.y >= band.y && plus.y >= band.y);
+            assert!(
+                minus.y + minus.height as i32 <= band.y + band.height as i32,
+                "the minus button stays in the row"
+            );
+        }
+        // A control shorter than the row clamps it rather than painting outside.
+        let short = Stepper::new(Rect::new(0, 0, 240, 20));
+        assert_eq!(short.row_band().height, 20);
+        assert_eq!(short.row_band().y, 0, "a clamped band starts at the control's edge");
+    }
+
+    /// The buttons are the hit area, so a press outside them changes nothing.
+    #[test]
+    fn a_press_outside_the_buttons_changes_nothing() {
+        let mut s = Stepper::new(Rect::new(0, 0, 240, 120));
+        s.set_value(50);
+        let band = s.row_band();
+        // Above the row band, still inside the control's rectangle.
+        assert!(band.y > 0, "the row is centred, so there is empty space above it");
+        s.handle_event(&Event::MousePress { pos: Point::new(band.x + 4, band.y - 5), button: 1 });
+        assert_eq!(s.value(), 50, "a press above the row must not step");
+        // On the value between the two buttons.
+        s.handle_event(&Event::MousePress {
+            pos: Point::new(band.x + band.width as i32 / 2, band.y + band.height as i32 / 2),
+            button: 1,
+        });
+        assert_eq!(s.value(), 50, "a press on the value must not step");
+    }
+
+    /// The emitted fills are the row band and its buttons, not a full-canvas slab.
+    #[test]
+    fn the_stepper_paints_a_row_rather_than_a_panel() {
+        let mut s = Stepper::new(crate::widget::census::CENSUS_RECT);
+        let svg = crate::widget::svg::render_to_svg(&mut s);
+        let band = s.row_band();
+        assert_eq!(band.height, dimensions::STEPPER_ROW_HEIGHT);
+        assert_eq!(band.y, 36, "a 48 px row centred in the 120 px cell");
+        assert!(
+            svg.contains(&format!(
+                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"4\" ry=\"4\"",
+                band.x, band.y, band.width, band.height
+            )),
+            "the row band is the control's own surface: {svg}"
+        );
+        // The defect's signature: a surface the control's own height. The 120 px cell
+        // must not emit a 120 px-tall fill.
+        assert!(
+            !svg.contains(&format!(
+                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"120\"",
+                band.x, band.y, band.width
+            )),
+            "the control's own height would mean a panel fill: {svg}"
+        );
+        // Both buttons are one padding in from the row's top and bottom edges.
+        let minus = s.minus_rect();
+        assert!(
+            svg.contains(&format!(
+                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"3\" ry=\"3\"",
+                minus.x, minus.y, minus.width, minus.height
+            )),
+            "the minus button is a fixed-size button on the row: {svg}"
+        );
     }
 }

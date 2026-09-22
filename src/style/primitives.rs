@@ -54,10 +54,207 @@ impl EdgeOffsets {
     pub const fn to_padding(&self) -> Padding {
         *self
     }
+
+    /// The total horizontal spacing: left plus right.
+    ///
+    /// The arithmetic every caller of an `EdgeOffsets` writes when it asks "how much width do
+    /// these sides take?" — `implicit_size` adds it to a content width, `content_box`
+    /// subtracts it from a rectangle's. Naming it once keeps the two from disagreeing about
+    /// whether a padding is applied to one side or both.
+    pub const fn horizontal_total(&self) -> u32 {
+        self.left.saturating_add(self.right)
+    }
+
+    /// The total vertical spacing: top plus bottom.
+    pub const fn vertical_total(&self) -> u32 {
+        self.top.saturating_add(self.bottom)
+    }
+
+    /// The same spacing with its horizontal sides exchanged, for a right-to-left layout.
+    ///
+    /// Only the horizontal sides move: a mirrored padding must not also swap its top and
+    /// bottom, which would lift a control off its own baseline.
+    pub const fn mirrored(&self) -> Self {
+        Self::new(self.top, self.left, self.bottom, self.right)
+    }
+
+    /// `self` with `other`'s sides added to each of its own.
+    ///
+    /// Used to compose a control's own padding with the padding a container puts around it,
+    /// so a nested control's content box is derived from one accumulated value rather than
+    /// from two additions performed at the call site.
+    pub const fn grow(&self, other: Self) -> Self {
+        Self::new(
+            self.top.saturating_add(other.top),
+            self.right.saturating_add(other.right),
+            self.bottom.saturating_add(other.bottom),
+            self.left.saturating_add(other.left),
+        )
+    }
 }
 
 /// Inner content spacing. Alias for EdgeOffsets for semantic clarity.
 pub type Padding = EdgeOffsets;
+
+/// A padding written one layer at a time, most general first.
+///
+/// # The four levels
+///
+/// A caller almost never wants to state all four sides when they all agree. Qt Quick
+/// resolves this with `padding` → `horizontalPadding`/`verticalPadding` →
+/// `leftPadding`/`rightPadding`/`topPadding`/`bottomPadding`, each more specific layer
+/// overriding the one below it:
+///
+/// ```text
+/// leftPadding   <-  horizontalPadding  <-  padding
+/// ```
+///
+/// So `set_uniform(8).set_horizontal(12)` keeps `top`/`bottom` at 8 and moves both
+/// horizontal sides to 12, and a later `set_left(20)` moves only the left. That is what
+/// makes "this one control has an extra 4 px on the left because of its icon" a one-line
+/// statement rather than a re-statement of the other three sides.
+///
+/// # Why the layers are recorded instead of applied immediately
+///
+/// `EdgeOffsets` holds four absolute values, so it cannot answer "what would you be, if
+/// the horizontal layer were 12?". Keeping the layers separate means the more specific
+/// one can be set *before* the general one and still win — which is what lets a style be
+/// built in any order, and what a CSS-like cascade requires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PaddingSpec {
+    /// The least specific layer: all four sides.
+    uniform: Option<u32>,
+    /// The vertical pair.
+    vertical: Option<u32>,
+    /// The horizontal pair.
+    horizontal: Option<u32>,
+    /// The most specific layer: one side at a time.
+    top: Option<u32>,
+    right: Option<u32>,
+    bottom: Option<u32>,
+    left: Option<u32>,
+}
+
+impl PaddingSpec {
+    /// An empty spec: every side falls through to 0.
+    pub const fn new() -> Self {
+        Self {
+            uniform: None,
+            vertical: None,
+            horizontal: None,
+            top: None,
+            right: None,
+            bottom: None,
+            left: None,
+        }
+    }
+
+    /// The least specific layer: all four sides at once.
+    pub const fn set_uniform(mut self, value: u32) -> Self {
+        self.uniform = Some(value);
+        self
+    }
+
+    /// The axis layer: both vertical sides.
+    pub const fn set_vertical(mut self, value: u32) -> Self {
+        self.vertical = Some(value);
+        self
+    }
+
+    /// The axis layer: both horizontal sides.
+    pub const fn set_horizontal(mut self, value: u32) -> Self {
+        self.horizontal = Some(value);
+        self
+    }
+
+    /// Alias for [`PaddingSpec::set_uniform`], so the builder reads as the CSS cascade
+    /// does (`padding(8).horizontal(12).left(20)`).
+    pub const fn padding(self, value: u32) -> Self {
+        self.set_uniform(value)
+    }
+
+    /// Alias for [`PaddingSpec::set_horizontal`].
+    pub const fn horizontal(self, value: u32) -> Self {
+        self.set_horizontal(value)
+    }
+
+    /// Alias for [`PaddingSpec::set_vertical`].
+    pub const fn vertical(self, value: u32) -> Self {
+        self.set_vertical(value)
+    }
+
+    /// One side.
+    pub const fn left(mut self, value: u32) -> Self {
+        self.left = Some(value);
+        self
+    }
+
+    /// One side.
+    pub const fn right(mut self, value: u32) -> Self {
+        self.right = Some(value);
+        self
+    }
+
+    /// One side.
+    pub const fn top(mut self, value: u32) -> Self {
+        self.top = Some(value);
+        self
+    }
+
+    /// One side.
+    pub const fn bottom(mut self, value: u32) -> Self {
+        self.bottom = Some(value);
+        self
+    }
+
+    /// Resolves the cascade to concrete per-side values.
+    ///
+    /// Each side takes the most specific layer that was set, falling back through
+    /// `side -> axis -> uniform -> 0`.
+    pub const fn resolve(&self) -> EdgeOffsets {
+        let base = match self.uniform {
+            Some(value) => value,
+            None => 0,
+        };
+        let vertical = match self.vertical {
+            Some(value) => value,
+            None => base,
+        };
+        let horizontal = match self.horizontal {
+            Some(value) => value,
+            None => base,
+        };
+        EdgeOffsets {
+            top: match self.top {
+                Some(value) => value,
+                None => vertical,
+            },
+            right: match self.right {
+                Some(value) => value,
+                None => horizontal,
+            },
+            bottom: match self.bottom {
+                Some(value) => value,
+                None => vertical,
+            },
+            left: match self.left {
+                Some(value) => value,
+                None => horizontal,
+            },
+        }
+    }
+
+    /// Whether every layer is unset, so the spec adds nothing.
+    pub const fn is_empty(&self) -> bool {
+        self.uniform.is_none()
+            && self.vertical.is_none()
+            && self.horizontal.is_none()
+            && self.top.is_none()
+            && self.right.is_none()
+            && self.bottom.is_none()
+            && self.left.is_none()
+    }
+}
 /// Outer widget margin. Alias for EdgeOffsets for semantic clarity.
 pub type Margin = EdgeOffsets;
 
@@ -176,6 +373,22 @@ pub struct WidgetStyle {
     pub padding: Padding,
     /// Outer widget margin.
     pub margin: Margin,
+    /// The gap between a control's **indicator and its label**.
+    ///
+    /// # Why spacing is not "the gap between siblings"
+    ///
+    /// QML's `CheckBox.qml:61` and `ComboBox.qml:21` both set `spacing`, and in both it
+    /// means exactly one thing: the distance from the control's own indicator to its own
+    /// text. It is a fact about *this control's* contents, so a checkbox, a radio and a
+    /// menu item with the same `spacing` look like one family.
+    ///
+    /// The gap between two *siblings* is a different fact and belongs to the layout that
+    /// places them (`FlexLayout::gap`), because the sibling pair is the layout's
+    /// knowledge, not either control's. Mixing the two is why this crate had the same
+    /// number written into both roles and neither could be changed safely.
+    ///
+    /// `None` means the control uses its own default from the metrics table.
+    pub spacing: Option<u32>,
     /// Optional drop shadow.
     pub shadow: Option<Shadow>,
     /// Optional minimum touch-target size override (BLUE8 P4-4).
@@ -276,6 +489,23 @@ impl WidgetStyle {
         self.padding = p;
         self
     }
+    /// Sets the padding from a four-level cascade.
+    ///
+    /// The builder counterpart of [`PaddingSpec`]: `with_padding_spec(PaddingSpec::new()
+    /// .padding(8).horizontal(12))` states "8 all round, 12 on the sides" without having
+    /// to re-state the two sides that did not change.
+    pub fn with_padding_spec(mut self, spec: PaddingSpec) -> Self {
+        self.padding = spec.resolve();
+        self
+    }
+    /// Sets the gap between this control's indicator and its label.
+    ///
+    /// See [`WidgetStyle::spacing`] for why this is not a sibling layout parameter.
+    pub fn with_spacing(mut self, spacing: u32) -> Self {
+        self.spacing = Some(spacing);
+        self.theme_derived = false;
+        self
+    }
     /// Sets the margin.
     pub fn with_margin(mut self, m: Margin) -> Self {
         self.margin = m;
@@ -318,6 +548,11 @@ impl WidgetStyle {
             border_radius: self.border_radius.or(parent.border_radius),
             padding: self.padding,
             margin: self.margin,
+            // Like `padding`, a control's indicator-to-label gap is a fact about the
+            // control itself, so it does not inherit: a child with its own spacing keeps
+            // it, and a child without one takes the metrics default rather than the
+            // parent's value.
+            spacing: self.spacing,
             shadow: self.shadow.clone().or(parent.shadow.clone()),
             touch_target: self.touch_target.or(parent.touch_target),
             opacity: self.opacity.or(parent.opacity),
@@ -413,5 +648,73 @@ mod tests {
         let overlay = WidgetStyle::default().with_background(Color::GREEN);
         base.merge(&overlay);
         assert_eq!(base.background_color, Some(Color::RED)); // unchanged
+    }
+
+    // ── The four-level padding cascade (P0-3) ────────────────────────────
+
+    #[test]
+    fn each_padding_layer_overrides_only_the_one_below_it() {
+        // The case the cascade exists for: state the general rule once, then change one
+        // axis. Without layers this call site would have to re-state all four sides.
+        let resolved = PaddingSpec::new().padding(8).horizontal(12).resolve();
+        assert_eq!(resolved.top, 8, "the vertical pair keeps the general value");
+        assert_eq!(resolved.bottom, 8);
+        assert_eq!(resolved.left, 12);
+        assert_eq!(resolved.right, 12);
+    }
+
+    #[test]
+    fn a_side_overrides_its_axis_and_the_axis_overrides_the_uniform_layer() {
+        let resolved = PaddingSpec::new().padding(4).horizontal(10).left(20).resolve();
+        assert_eq!(resolved.left, 20, "the most specific layer wins");
+        assert_eq!(resolved.right, 10, "its sibling keeps the axis value");
+        assert_eq!(resolved.top, 4, "the untouched axis keeps the general value");
+        assert_eq!(resolved.bottom, 4);
+    }
+
+    #[test]
+    fn writing_a_side_does_not_disturb_the_other_three() {
+        // BLUE22 §3 判据: "单测：写 `left_padding` 只改左".
+        let before = PaddingSpec::new().padding(6).resolve();
+        let after = PaddingSpec::new().padding(6).left(15).resolve();
+        assert_eq!(after.left, 15);
+        assert_eq!(after.top, before.top);
+        assert_eq!(after.right, before.right);
+        assert_eq!(after.bottom, before.bottom);
+    }
+
+    #[test]
+    fn a_more_specific_layer_wins_even_if_it_was_set_first() {
+        // The reason the layers are *recorded* rather than applied in order: a style may be
+        // built in any sequence, and the more specific statement must still win. Applying
+        // eagerly would make `left(20).padding(4)` lose its 20.
+        let resolved = PaddingSpec::new().left(20).padding(4).resolve();
+        assert_eq!(resolved.left, 20);
+        assert_eq!(resolved.right, 4);
+    }
+
+    #[test]
+    fn an_empty_spec_resolves_to_no_padding() {
+        let spec = PaddingSpec::new();
+        assert!(spec.is_empty());
+        assert_eq!(spec.resolve(), EdgeOffsets::all(0));
+        assert!(!PaddingSpec::new().padding(0).is_empty(), "an explicit 0 is still a statement");
+    }
+
+    #[test]
+    fn the_vertical_and_horizontal_axes_are_independent() {
+        let resolved = PaddingSpec::new().vertical(2).horizontal(9).resolve();
+        assert_eq!((resolved.top, resolved.bottom), (2, 2));
+        assert_eq!((resolved.left, resolved.right), (9, 9));
+    }
+
+    #[test]
+    fn a_style_can_be_given_a_padding_spec_and_a_spacing() {
+        let style = WidgetStyle::default()
+            .with_padding_spec(PaddingSpec::new().padding(8).horizontal(12))
+            .with_spacing(6);
+        assert_eq!(style.padding.top, 8);
+        assert_eq!(style.padding.horizontal_total(), 24);
+        assert_eq!(style.spacing, Some(6));
     }
 }

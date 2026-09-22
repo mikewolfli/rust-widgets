@@ -10,6 +10,7 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -105,29 +106,41 @@ impl SegmentedControl {
     }
 
     fn segment_rect(&self, index: usize) -> Option<Rect> {
-        if index >= self.items.len() {
+        if index >= self.items.len() || self.items.is_empty() {
             return None;
         }
-        let rect = self.geometry();
-        if self.items.is_empty() {
-            return None;
-        }
-        let width = (rect.width as usize / self.items.len()).max(1) as u32;
-        let x = rect.x + index as i32 * width as i32;
+        let band = self.track_band();
+        let width = (band.width as usize / self.items.len()).max(1) as u32;
+        let x = band.x + index as i32 * width as i32;
         let mut actual_width = width;
         if index + 1 == self.items.len() {
             let consumed = width.saturating_mul(index as u32);
-            actual_width = rect.width.saturating_sub(consumed);
+            actual_width = band.width.saturating_sub(consumed);
         }
-        Some(Rect::new(x, rect.y, actual_width, rect.height))
+        Some(Rect::new(x, band.y, actual_width, band.height))
+    }
+
+    /// The bar the control actually paints: full width, `dimensions::SEGMENTED_CONTROL_HEIGHT`
+    /// tall, centred in the rectangle it was given.
+    ///
+    /// # Why the bar is not the rectangle
+    ///
+    /// A segmented control's chrome is one row of segments, not a filled container. Taking
+    /// `rect.height` made a 240x120 census cell a **240x120 bar** whose segments were also
+    /// 120 tall — a rectangle shaped like a segmented control rather than one — and it made
+    /// the drawn pill disagree with the 32 px `size_hint` the control reports. Deriving the
+    /// band once here is what keeps the paint, the hit test and the reported size on one
+    /// value.
+    fn track_band(&self) -> Rect {
+        ControlMetrics::full_width_band(self.geometry(), dimensions::SEGMENTED_CONTROL_HEIGHT)
     }
 
     fn hit_index(&self, pos: Point) -> Option<usize> {
-        let rect = self.geometry();
-        if pos.x < rect.x
-            || pos.x >= rect.x + rect.width as i32
-            || pos.y < rect.y
-            || pos.y >= rect.y + rect.height as i32
+        let band = self.track_band();
+        if pos.x < band.x
+            || pos.x >= band.x + band.width as i32
+            || pos.y < band.y
+            || pos.y >= band.y + band.height as i32
         {
             return None;
         }
@@ -249,8 +262,6 @@ impl EventHandler for SegmentedControl {
 
 impl Draw for SegmentedControl {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
-
         // Chrome colours resolve the explicit style first, then the theme's resolved style for
         // this control, and only then fall back to a literal. Every colour below used to be a
         // literal, so a light/dark switch left the bar, its dividers, its selection and its labels
@@ -308,8 +319,18 @@ impl Draw for SegmentedControl {
         let selected_bg = primary.blend(&bar, 0.55);
         let hovered_bg = primary.blend(&bar, 0.25);
 
-        context.fill_rect(rect, bar);
-        context.draw_rect(rect, divider);
+        // ── The bar actually painted ──
+        //
+        // `rect` is the area the control was *given*; the control's own chrome is one row of
+        // segments, `dimensions::SEGMENTED_CONTROL_HEIGHT` tall and centred in that area.
+        // Painting the bar across the whole rectangle made a 240x120 census cell a bare
+        // 240x120 stadium with no segment division in it — the segments inherited the same
+        // height, so there was nothing to divide — and it disagreed with the 32 px size the
+        // control reports. The band is the single derivation the paint and the hit test share.
+        let band = self.track_band();
+
+        context.fill_rect(band, bar);
+        context.draw_rect(band, divider);
 
         for index in 0..self.items.len() {
             let Some(seg) = self.segment_rect(index) else {
@@ -502,5 +523,36 @@ mod tests {
 
         control.move_selection(-1);
         assert_eq!(control.selected_id(), Some("x"));
+    }
+
+    /// The bar's height is chrome, not a fraction of the control.
+    ///
+    /// The defect this pins: the bar and its segments were sized from `rect`, so a 240x120
+    /// census cell drew a bare 240x120 stadium whose segments were also 120 tall — there was
+    /// nothing left to divide, so the control had no compartment structure at all. The bar's
+    /// height is its own, so it is `SEGMENTED_CONTROL_HEIGHT` whenever there is room.
+    #[test]
+    fn the_bar_keeps_its_own_height_in_any_rectangle() {
+        for height in [32u32, 60, 120, 300] {
+            let mut control = SegmentedControl::new(Rect::new(0, 0, 240, height));
+            control.set_items(sample_items());
+            let band = control.track_band();
+            assert_eq!(band.height, dimensions::SEGMENTED_CONTROL_HEIGHT, "at {height}");
+            for index in 0..control.items().len() {
+                let seg = control.segment_rect(index).expect("a laid-out segment");
+                assert_eq!(seg.height, dimensions::SEGMENTED_CONTROL_HEIGHT, "at {height}");
+            }
+        }
+    }
+
+    /// The segments tile the bar's width without leaving the control.
+    #[test]
+    fn the_segments_tile_the_bar() {
+        let mut control = SegmentedControl::new(Rect::new(0, 0, 240, 120));
+        control.set_items(sample_items());
+        let band = control.track_band();
+        let expected = band.x + band.width as i32;
+        let last = control.segment_rect(2).expect("the third segment");
+        assert_eq!(last.x + last.width as i32, expected, "the last segment ends at the bar's edge");
     }
 }

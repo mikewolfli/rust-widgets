@@ -11,6 +11,7 @@ use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -52,7 +53,7 @@ impl Chip {
             items: Vec::new(),
             multi_select: false,
             focused_index: None,
-            chip_padding: 8,
+            chip_padding: dimensions::CHIP_PADDING_H as i32,
             chip_spacing: 6,
             chip_toggled: Signal1::new(),
         }
@@ -157,13 +158,31 @@ impl Chip {
         (item.label.chars().count() as i32) * 8 + padding * 2
     }
 
+    /// The band the chip row occupies: full width, `CHIP_HEIGHT` tall, centred in the
+    /// control's rectangle.
+    ///
+    /// # Why the row has its own height
+    ///
+    /// A chip is chrome: it is the same height whoever hands it the row. Deriving it from
+    /// `rect.height - 8` made a 240x120 census cell draw a **112 px chip** — a column shaped
+    /// like a chip rather than a chip — and made a chip inside a 64 px toolbar a different
+    /// object from one inside a 120 px cell. [`ControlMetrics::full_width_band`] is the
+    /// shared derivation for "my width, my own height", so the drawn chip and the 24 px
+    /// `size_hint` can no longer describe different controls.
+    fn row_band(&self) -> Rect {
+        ControlMetrics::full_width_band(self.geometry(), dimensions::CHIP_HEIGHT)
+    }
+
     fn chip_rect(&self, index: usize) -> Option<Rect> {
-        let rect = self.geometry();
-        let mut x = rect.x + 4;
+        let band = self.row_band();
+        let mut x = band.x + dimensions::CHIP_PADDING_H as i32;
         for (i, item) in self.items.iter().enumerate() {
             let width = Self::chip_width(item, self.chip_padding).max(10);
             if i == index {
-                return Some(Rect::new(x, rect.y + 4, width as u32, rect.height.saturating_sub(8)));
+                // Only the width is content-driven; the height is the chip's own, so the
+                // chip sits in the row band rather than at the control's top edge.
+                let width = (width as u32).min(band.width);
+                return Some(Rect::new(x, band.y, width, band.height));
             }
             x += width + self.chip_spacing;
         }
@@ -302,8 +321,6 @@ impl EventHandler for Chip {
 
 impl Draw for Chip {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
-
         // Chrome colours resolve explicit style first, then the theme's resolved
         // style for this control, and only then fall back to a literal. The theme
         // step is what makes a light/dark switch visible here; without it every
@@ -327,8 +344,18 @@ impl Draw for Chip {
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
             .unwrap_or(Color::BLACK);
 
-        context.fill_rect(rect, background);
-        context.draw_rect(rect, border);
+        // ── The row band actually painted ──
+        //
+        // `rect` is the area the control was *given*; a chip row's own chrome is one row of
+        // chips, [`dimensions::CHIP_HEIGHT`] tall. Painting the control's surface across the
+        // whole rectangle made a 240x120 census cell a full-bleed panel with no chip shape in
+        // it at all — the defect this replaces — and put the row's background behind empty
+        // space no chip could occupy. The band is centred, so it sits on the control's middle
+        // line whatever height the caller supplies, which is the same derivation each chip
+        // uses (`row_band`).
+        let band = self.row_band();
+        context.fill_rect(band, background);
+        context.draw_rect(band, border);
 
         for index in 0..self.items.len() {
             let Some(chip_rect) = self.chip_rect(index) else {
@@ -537,5 +564,37 @@ mod tests {
         // Toggle with Space
         chip.handle_event(&Event::key_press(32, 0));
         assert_eq!(chip.selected_ids(), vec!["a"]);
+    }
+
+    /// A chip's height is chrome, not a fraction of the control.
+    ///
+    /// The defect this pins: the chip's height was `rect.height - 8`, so a 240x120 census
+    /// cell drew a 112 px chip while a chip in a 32 px toolbar drew a 24 px one — the same
+    /// control at two sizes. A chip's height is its own, so it is `CHIP_HEIGHT` whenever the
+    /// control has room for it and clamped to the control only when it does not, which is
+    /// the same "never paint outside the rectangle" rule every other piece of chrome follows.
+    #[test]
+    fn a_chip_is_the_same_height_in_any_rectangle() {
+        for height in [32u32, 48, 120, 320] {
+            let mut chip = Chip::new(Rect::new(0, 0, 240, height));
+            chip.set_items(vec![ChipItem::new("a", "A")]);
+            let rect = chip.chip_rect(0).expect("one item has one chip");
+            assert_eq!(rect.height, dimensions::CHIP_HEIGHT, "at control height {height}");
+        }
+        // A control shorter than a chip clamps it rather than painting outside.
+        let mut short = Chip::new(Rect::new(0, 0, 240, 20));
+        short.set_items(vec![ChipItem::new("a", "A")]);
+        let rect = short.chip_rect(0).expect("one item has one chip");
+        assert_eq!(rect.height, 20);
+    }
+
+    /// The chip row never paints outside the rectangle it was given.
+    #[test]
+    fn the_chip_row_stays_inside_a_short_control() {
+        let mut chip = Chip::new(Rect::new(0, 0, 240, 16));
+        chip.set_items(vec![ChipItem::new("a", "A")]);
+        let rect = chip.chip_rect(0).expect("one item has one chip");
+        assert!(rect.y >= 0, "the chip must start inside the control");
+        assert!(rect.y + rect.height as i32 <= 16, "the chip must end inside the control");
     }
 }

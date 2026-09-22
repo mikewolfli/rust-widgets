@@ -18,14 +18,17 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// The height of the dialog's title bar, in pixels.
 ///
 /// Also the amount the content area is inset by when a title is present, so the two
-/// cannot drift apart.
-pub const DIALOG_TITLE_BAR_HEIGHT: u32 = 24;
+/// cannot drift apart. It is [`dimensions::DIALOG_TITLE_BAR_HEIGHT`] rather than a local
+/// `24`: every dialog in this module draws the same strip, and a second value in the same
+/// module is how the eight of them acquired four different heights (rule #101).
+const DIALOG_TITLE_BAR_HEIGHT: u32 = dimensions::DIALOG_TITLE_BAR_HEIGHT;
 
 /// A generic dial‑log window: a titled frame that owns one content widget.
 ///
@@ -146,12 +149,32 @@ impl Dialog {
         self.close();
     }
 
+    /// The frame the dialog actually paints: at most its intrinsic size, centred in the
+    /// area it was given.
+    ///
+    /// # Why the frame is not the caller's rectangle
+    ///
+    /// `rect` is the area the dialog is **offered** — a census cell, a layout slot, a
+    /// parent's whole client area. Painting it verbatim is what turned the 240x120 census
+    /// cell into a 240x120 frame: a rectangle shaped like a dialog rather than a dialog.
+    /// [`ControlMetrics::painted_box`] caps each axis at [`dimensions::DIALOG_MIN_WIDTH`] /
+    /// [`dimensions::DIALOG_MIN_HEIGHT`] and centres what is left, and it clamps the result
+    /// *up* to one pixel so a dialog squeezed to nothing is still visible. Every element
+    /// below — the frame, the title bar and the title's line box — is derived from this one
+    /// box, so the chrome and its label cannot be placed from different rectangles.
+    fn frame_rect(&self) -> Rect {
+        ControlMetrics::painted_box(
+            self.base.geometry(),
+            Size::new(dimensions::DIALOG_MIN_WIDTH, dimensions::DIALOG_MIN_HEIGHT),
+        )
+    }
+
     /// The rectangle available to the content child.
     ///
     /// Insets the top by the title bar **only when a title is set**, so a titleless
     /// dialog gives its child the full rect.
     pub fn content_rect(&self) -> Rect {
-        let rect = self.base.geometry();
+        let rect = self.frame_rect();
         if self.title.is_empty() {
             return rect;
         }
@@ -240,7 +263,10 @@ impl EventHandler for Dialog {
 
 impl Draw for Dialog {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
+        // The **frame**, not the control's rectangle: see `frame_rect`. A dialog offered a
+        // 240x120 census cell paints its own centred box, and every band below — the title
+        // strip, its separator and the title's line box — is taken from this one rect.
+        let rect = self.frame_rect();
         if rect.width == 0 || rect.height == 0 {
             return;
         }
@@ -289,31 +315,41 @@ impl Draw for Dialog {
         // one visible step apart in either appearance.
         let title_bar = surface.blend(&ink, 0.08);
 
-        context.fill_rect(rect, surface);
-        context.draw_rect(rect, border);
+        let radius = dimensions::DIALOG_RADIUS.min(rect.width / 2).min(rect.height / 2);
+        if radius > 0 {
+            context.fill_rounded_rect(rect, radius, surface);
+            context.draw_rounded_rect_stroke(rect, radius, border, 1);
+        } else {
+            context.fill_rect(rect, surface);
+            context.draw_rect(rect, border);
+        }
 
         if self.title.is_empty() {
             return;
         }
-        let bar_height = DIALOG_TITLE_BAR_HEIGHT.min(rect.height);
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, bar_height), title_bar);
+        // The title strip is a **band** of the frame, not a sub-rectangle reconstructed
+        // from the frame's top edge: `top_band` keeps the strip's thickness and clamps it
+        // to the frame, so it cannot start above the frame or grow past it.
+        let bar = ControlMetrics::top_band(rect, DIALOG_TITLE_BAR_HEIGHT);
+        context.fill_rect(bar, title_bar);
         context.draw_line(
-            Point::new(rect.x, rect.y + bar_height as i32),
-            Point::new(rect.x + rect.width as i32, rect.y + bar_height as i32),
+            Point::new(bar.x, bar.y + bar.height as i32),
+            Point::new(bar.x + bar.width as i32, bar.y + bar.height as i32),
             border,
         );
-        // The title is centred inside the bar. The origin is the glyph's **top** edge, so the
-        // offset is half the difference between the bar and the line box; using the bar's own
-        // midline put the glyph's top *at* the centre, leaving a 14 px title spanning 12..26 in
-        // a 24 px bar — two pixels over the separator below it.
+        // The title is centred **on the bar's own band** through the shared primitive: the
+        // origin is the glyph's top edge, so `text_line` is what places it on the strip's
+        // middle line. The old `rect.y + (bar - title_h) / 2` measured against a height the
+        // strip did not have, and a bare literal `y` would reintroduce exactly that.
         let title_font = Font::default();
-        let title_h = context.measure_text("M", &title_font).height;
+        let band = ControlMetrics::band_inset(bar, 0);
+        let title_line = context.text_line(band, &title_font);
         context.draw_text_fitted(
             Rect::new(
                 rect.x + 8,
-                rect.y + (bar_height as i32 - title_h as i32) / 2,
+                title_line.y,
                 rect.width.saturating_sub(16),
-                title_h,
+                title_line.height.max(1),
             ),
             &self.title,
             &title_font,

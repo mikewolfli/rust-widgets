@@ -13,6 +13,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::numeric::ordered_clamp_i32;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -72,7 +73,11 @@ pub enum TickPosition {
 /// position `value_to_pixel_pos` returns, and that function has to keep half a handle inside
 /// each end. While the size was a literal in the draw path only, the travel range assumed a
 /// zero-width handle and the minimum value's handle hung off the control.
-const SLIDER_SIZE: f32 = 16.0;
+///
+/// It is *derived* from [`dimensions::SLIDER_THUMB_RADIUS`] rather than being a second
+/// literal for the same object: the thumb is one diameter, and the arithmetic that keeps it
+/// inside the control and the metric table that names it must not be able to disagree.
+const SLIDER_SIZE: f32 = (dimensions::SLIDER_THUMB_RADIUS * 2) as f32;
 
 /// Formats a [`TickPosition`] as its published token.
 ///
@@ -718,7 +723,6 @@ impl Draw for Slider {
         // Draw base widget
         let rect = self.geometry();
         let slider_pos = self.value_to_pixel_pos(self.value);
-        let slider_size = SLIDER_SIZE;
 
         // Chrome colours resolve the explicit style first, then the theme's resolved style for
         // this control, and only then fall back to a literal. The groove read `style` already,
@@ -792,56 +796,51 @@ impl Draw for Slider {
             .filter(|resolved| *resolved != handle_color)
             .unwrap_or_else(|| handle_color.blend(&accent, 0.40));
         // Draw groove (track)
+        //
+        // The groove and the handle are **fixed-size chrome centred in the area the control
+        // was given**, not a scaling of it. Painting `rect` directly made a slider handed the
+        // 240x120 census cell draw a 240x120 handle — `slider.svg` carried `<rect x="0"
+        // y="0" width="16" height="120"/>`, a full-height slab sixteen pixels wide, which is
+        // a picture of a slider-shaped rectangle rather than a slider. The two dimensions
+        // come from the shared `dimensions` table ([`dimensions::SLIDER_TRACK_HEIGHT`],
+        // [`dimensions::SLIDER_THUMB_RADIUS`]) rather than from local literals, so the drawn
+        // handle and `SLIDER_SIZE` — which the value↔pixel mapping and therefore the
+        // round-trip invariant depend on — cannot describe different controls.
+        //
+        // The *travel* still comes from `self.geometry()`: a 120 px-tall vertical slider has
+        // 120 px of travel, and shrinking that to the thumb's diameter would silently change
+        // the mapping `pixel_pos_to_value` inverts.
+        let track = ControlMetrics::centered_band(rect, dimensions::SLIDER_TRACK_HEIGHT);
+        let thumb = ControlMetrics::centered_disc(rect, SLIDER_SIZE as u32);
+        // A value with no travel (a degenerate range) has no handle to place: the
+        // `range == 0.0` arm of `value_to_pixel_pos` already answers the left/top end, so the
+        // disc is drawn there and this branch is not taken with a zero-extent element.
+        let handle_radius = (SLIDER_SIZE / 2.0) as u32;
         match self.orientation {
             Orientation::Horizontal => {
-                let groove_y = rect.y as f32 + rect.height as f32 / 2.0;
-                let groove_height = 4;
                 // Draw groove
                 context.fill_rect(
                     Rect::from_f32(
-                        rect.x as f32,
-                        groove_y - groove_height as f32 / 2.0,
-                        rect.width as f32,
-                        groove_height as f32,
+                        track.x as f32,
+                        track.y as f32,
+                        track.width as f32,
+                        track.height as f32,
                     ),
                     groove_color,
                 );
-                // Draw slider handle
-                context.fill_rect(
-                    Rect::from_f32(
-                        slider_pos - SLIDER_SIZE / 2.0,
-                        rect.y as f32,
-                        slider_size,
-                        rect.height as f32,
-                    ),
-                    handle_color,
-                );
+                // Draw slider handle: a disc centred on the mapped position, on the control's
+                // own middle line, so it reads as sitting *on* the groove at every height.
+                let handle_centre =
+                    Point::from_f32(slider_pos, thumb.y as f32 + thumb.height as f32 / 2.0);
+                context.fill_circle(handle_centre, handle_radius, handle_color);
                 // Draw handle border
-                if let Some(border_color) = style.border_color.filter(|c| *c != handle_color) {
-                    context.draw_rect(
-                        Rect::from_f32(
-                            slider_pos - SLIDER_SIZE / 2.0,
-                            rect.y as f32,
-                            slider_size,
-                            rect.height as f32,
-                        ),
-                        border_color,
-                    );
-                } else {
-                    context.draw_rect(
-                        Rect::from_f32(
-                            slider_pos - SLIDER_SIZE / 2.0,
-                            rect.y as f32,
-                            slider_size,
-                            rect.height as f32,
-                        ),
-                        handle_border,
-                    );
-                }
+                let handle_ring =
+                    style.border_color.filter(|c| *c != handle_color).unwrap_or(handle_border);
+                context.draw_circle_stroke(handle_centre, handle_radius, handle_ring, 1);
                 // Draw ticks if enabled (capped at 100 ticks max to avoid
                 // performance issues with large ranges and small intervals).
                 if self.tick_position != TickPosition::NoTicks && self.tick_interval > 0 {
-                    let tick_height = 6;
+                    let tick_height = dimensions::SLIDER_TRACK_HEIGHT * 2;
                     let total_ticks =
                         ((self.maximum - self.minimum) / self.tick_interval) as u32 + 1;
                     let tick_count = total_ticks.min(100);
@@ -852,8 +851,8 @@ impl Draw for Slider {
                             || self.tick_position == TickPosition::TicksBothSides
                         {
                             context.draw_line(
-                                Point::from_f32(tick_x, rect.y as f32),
-                                Point::from_f32(tick_x, rect.y as f32 + tick_height as f32),
+                                Point::from_f32(tick_x, track.y as f32),
+                                Point::from_f32(tick_x, track.y as f32 + tick_height as f32),
                                 tick_color,
                             );
                         }
@@ -863,9 +862,9 @@ impl Draw for Slider {
                             context.draw_line(
                                 Point::from_f32(
                                     tick_x,
-                                    rect.y as f32 + rect.height as f32 - tick_height as f32,
+                                    track.y as f32 + track.height as f32 - tick_height as f32,
                                 ),
-                                Point::from_f32(tick_x, rect.y as f32 + rect.height as f32),
+                                Point::from_f32(tick_x, track.y as f32 + track.height as f32),
                                 tick_color,
                             );
                         }
@@ -873,54 +872,29 @@ impl Draw for Slider {
                 }
             }
             Orientation::Vertical => {
-                let groove_x = rect.x as f32 + rect.width as f32 / 2.0;
-                let groove_width = 4;
                 // Draw groove
                 context.fill_rect(
                     Rect::from_f32(
-                        groove_x - groove_width as f32 / 2.0,
-                        rect.y as f32,
-                        groove_width as f32,
-                        rect.height as f32,
+                        track.x as f32,
+                        track.y as f32,
+                        track.width as f32,
+                        track.height as f32,
                     ),
                     groove_color,
                 );
-                // Draw slider handle
-                context.fill_rect(
-                    Rect::from_f32(
-                        rect.x as f32,
-                        slider_pos - SLIDER_SIZE / 2.0,
-                        rect.width as f32,
-                        slider_size,
-                    ),
-                    handle_color,
-                );
+                // Draw slider handle: mirrored on the block axis, again centred in the
+                // control's own box rather than filling it.
+                let handle_centre =
+                    Point::from_f32(thumb.x as f32 + thumb.width as f32 / 2.0, slider_pos);
+                context.fill_circle(handle_centre, handle_radius, handle_color);
                 // Draw handle border
-                if let Some(border_color) = style.border_color.filter(|c| *c != handle_color) {
-                    context.draw_rect(
-                        Rect::from_f32(
-                            rect.x as f32,
-                            slider_pos - SLIDER_SIZE / 2.0,
-                            rect.width as f32,
-                            slider_size,
-                        ),
-                        border_color,
-                    );
-                } else {
-                    context.draw_rect(
-                        Rect::from_f32(
-                            rect.x as f32,
-                            slider_pos - SLIDER_SIZE / 2.0,
-                            rect.width as f32,
-                            slider_size,
-                        ),
-                        handle_border,
-                    );
-                }
+                let handle_ring =
+                    style.border_color.filter(|c| *c != handle_color).unwrap_or(handle_border);
+                context.draw_circle_stroke(handle_centre, handle_radius, handle_ring, 1);
                 // Draw ticks if enabled (capped at 100 ticks max to avoid
                 // performance issues with large ranges and small intervals).
                 if self.tick_position != TickPosition::NoTicks && self.tick_interval > 0 {
-                    let tick_width = 6;
+                    let tick_width = dimensions::SLIDER_TRACK_HEIGHT * 2;
                     let total_ticks =
                         ((self.maximum - self.minimum) / self.tick_interval) as u32 + 1;
                     let tick_count = total_ticks.min(100);
@@ -931,8 +905,8 @@ impl Draw for Slider {
                             || self.tick_position == TickPosition::TicksBothSides
                         {
                             context.draw_line(
-                                Point::from_f32(rect.x as f32, tick_y),
-                                Point::from_f32(rect.x as f32 + tick_width as f32, tick_y),
+                                Point::from_f32(track.x as f32, tick_y),
+                                Point::from_f32(track.x as f32 + tick_width as f32, tick_y),
                                 tick_color,
                             );
                         }
@@ -941,10 +915,10 @@ impl Draw for Slider {
                         {
                             context.draw_line(
                                 Point::from_f32(
-                                    rect.x as f32 + rect.width as f32 - tick_width as f32,
+                                    track.x as f32 + track.width as f32 - tick_width as f32,
                                     tick_y,
                                 ),
-                                Point::from_f32(rect.x as f32 + rect.width as f32, tick_y),
+                                Point::from_f32(track.x as f32 + track.width as f32, tick_y),
                                 tick_color,
                             );
                         }

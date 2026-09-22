@@ -2,5 +2,5 @@
 <!-- control: cupertino_segmented_control | appearance: light -->
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(240,240,240,1.00)" />
-  <rect x="0" y="0" width="240" height="120" rx="60" ry="60" fill="rgba(221,221,221,1.00)" />
+  <rect x="0" y="44" width="240" height="32" rx="16" ry="16" fill="rgba(221,221,221,1.00)" />
 </svg>

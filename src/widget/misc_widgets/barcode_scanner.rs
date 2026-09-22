@@ -17,7 +17,17 @@ use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::ControlMetrics;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+
+/// The height of the scan-result overlay band pinned to the viewfinder's bottom: 50.
+///
+/// Two 13 px text lines plus the air around them; a fixed band rather than a fraction of the
+/// control, so the readout does not stretch with a taller viewfinder.
+const BARCODE_OVERLAY_HEIGHT: u32 = 50;
+
+/// The inset of the viewfinder's own chrome (the status dot, the overlay text) from its edges: 10.
+const BARCODE_PADDING: i32 = 10;
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Barcode format types supported by the scanner.
@@ -411,15 +421,20 @@ impl Draw for BarcodeScanner {
 
         // Draw detected result overlay
         if let Some(ref result) = self.last_result {
-            let overlay_y = rect.y + h - 50;
-            let overlay_rect = Rect::new(rect.x, overlay_y, w as u32, 50);
+            // The result overlay is a fixed-height band pinned to the bottom of the viewfinder,
+            // not a fraction of it: its two text lines and their insets are the control's own
+            // chrome, so a taller viewfinder does not stretch the readout. The band is clamped
+            // to the control, so a very short viewfinder keeps it inside its own rectangle.
+            let overlay_height = BARCODE_OVERLAY_HEIGHT.min(h as u32);
+            let overlay_rect = ControlMetrics::bottom_band(rect, overlay_height);
             // The overlay is a scrim over whatever is behind it, so it is the
             // surface dimmed rather than a fixed black.
             context.fill_rect(overlay_rect, surface.blend(&Color::BLACK, 0.78));
 
             let format_text = format!("[{}]", result.format.name());
+            let format_line = context.text_line(overlay_rect, &small_font);
             context.draw_text(
-                Point::new(rect.x + 10, overlay_y + 14),
+                Point::new(rect.x + BARCODE_PADDING, format_line.y),
                 &format_text,
                 &small_font,
                 bracket_color,
@@ -431,8 +446,17 @@ impl Draw for BarcodeScanner {
             } else {
                 result.data.clone()
             };
+            // The second line occupies the overlay's lower half, so the two lines cannot
+            // overlap whatever the overlay was clamped to.
+            let data_band = Rect::new(
+                overlay_rect.x,
+                overlay_rect.y + (overlay_rect.height / 2) as i32,
+                overlay_rect.width,
+                overlay_rect.height / 2,
+            );
+            let data_line = context.text_line(data_band, &normal_font);
             context.draw_text(
-                Point::new(rect.x + 10, overlay_y + 32),
+                Point::new(rect.x + BARCODE_PADDING, data_line.y),
                 &display_data,
                 &normal_font,
                 text_color,

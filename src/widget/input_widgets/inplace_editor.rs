@@ -15,6 +15,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -206,6 +207,20 @@ impl InplaceEditor {
         self.padding
     }
 
+    /// The field the control actually paints.
+    ///
+    /// # Why the field is not the control's rectangle
+    ///
+    /// An in-place editor is a text field shown only while a cell is being edited, so it is
+    /// [`dimensions::TEXT_FIELD_MIN_HEIGHT`] tall, full width, centred — the same shape the
+    /// rest of the crate's input controls draw. Painting `geometry()` made a 240x120 census
+    /// cell a 240x120 box, and the value inherited the oversized box through the
+    /// `padding + font_size` anchor. Everything the control paints **and the double-click it
+    /// answers** is placed from this one box.
+    fn field_rect(&self) -> Rect {
+        ControlMetrics::full_width_band(self.geometry(), dimensions::TEXT_FIELD_MIN_HEIGHT)
+    }
+
     /// Inserts a character at the cursor position.
     fn insert_char(&mut self, c: char) {
         if c == '\u{7f}' {
@@ -336,7 +351,15 @@ impl WidgetProperties for InplaceEditor {
 
 impl Draw for InplaceEditor {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
+        // The **field**, not the control's rectangle.
+        //
+        // An in-place editor is a text field: it is `TEXT_FIELD_MIN_HEIGHT` tall, full
+        // width, centred in the area it is given, exactly as every other field in this crate
+        // is. Painting `geometry()` made a 240x120 census cell a 240x120 box, and the text
+        // and caret below inherited that — the value sat `padding + font_size` down from an
+        // edge that was itself not the field's. The hit test reads the same box, so the
+        // double-click target is the visible field.
+        let rect = self.field_rect();
         let font = Font::new("sans-serif", self.font_size, false, false);
 
         // Chrome colours resolve explicit style first, then the theme's resolved style for
@@ -383,11 +406,15 @@ impl Draw for InplaceEditor {
             context.fill_rect(rect, surface);
             context.draw_rect_stroke(rect, accent, 2);
 
-            // Draw text
-            let text_x = rect.x + self.padding;
-            let text_y = rect.y + self.padding + self.font_size as i32;
+            // Draw text, on the field's own line box. The old anchor was
+            // `rect.y + padding + font_size`, which put the glyph origin a *font size* below
+            // the field's top edge — the text was drawn on the row after the one it belonged
+            // to. `context.text_line` returns the field's line box, so the value is centred
+            // in the field rather than positioned by two unrelated offsets.
+            let text_x = rect.x + dimensions::TEXT_FIELD_PADDING_H as i32;
+            let line = context.text_line(rect, &font);
             context.draw_text(
-                Point::new(text_x, text_y),
+                Point::new(text_x, line.y),
                 &self.text,
                 &font,
                 ink,
@@ -400,8 +427,8 @@ impl Draw for InplaceEditor {
             if self.cursor_blink.is_visible() {
                 let cursor_x = text_x + self.cursor_position as i32 * 8;
                 context.draw_line(
-                    Point::new(cursor_x, rect.y + self.padding),
-                    Point::new(cursor_x, rect.y + rect.height as i32 - self.padding),
+                    Point::new(cursor_x, line.y),
+                    Point::new(cursor_x, line.y + line.height as i32),
                     ink.with_alpha_f32(0.8),
                 );
             }
@@ -410,10 +437,10 @@ impl Draw for InplaceEditor {
             context.fill_rect(rect, surface);
             context.draw_rect_stroke(rect, border, 1);
 
-            let text_x = rect.x + self.padding;
-            let text_y = rect.y + self.padding + self.font_size as i32;
+            let text_x = rect.x + dimensions::TEXT_FIELD_PADDING_H as i32;
+            let line = context.text_line(rect, &font);
             context.draw_text(
-                Point::new(text_x, text_y),
+                Point::new(text_x, line.y),
                 &self.text,
                 &font,
                 ink,
@@ -433,7 +460,12 @@ impl EventHandler for InplaceEditor {
                 // Entering edit mode needs the double-click to land on the editor.
                 // Discarding the position meant a double-click anywhere in the window
                 // put this control into edit mode with no way for the user to cancel it.
-                if self.geometry().contains_point(*pos) {
+                //
+                // The test is against the **painted field**, not the control's rectangle:
+                // a double-click on the empty space below a 48 px field in a tall cell is on
+                // the window background, and starting an edit there would put the user into
+                // a mode they never asked for.
+                if self.field_rect().contains_point(*pos) {
                     self.start_edit();
                 }
             }
@@ -581,6 +613,85 @@ mod tests {
         let mut ie = InplaceEditor::new("Hello", Rect::new(0, 0, 200, 30));
         ie.handle_event(&Event::MouseDoubleClick { pos: Point::new(50, 15), button: 1 });
         assert!(ie.is_editing());
+    }
+
+    /// The field is a full-width band one text-field height tall, centred in the control.
+    ///
+    /// The control painted its whole rectangle, so a 240x120 census cell drew a 240x120 box
+    /// and the value was anchored from its oversized top edge.
+    #[test]
+    fn the_field_is_a_text_field_height_in_any_rectangle() {
+        for height in [48u32, 120, 300] {
+            let ie = InplaceEditor::new("Sample", Rect::new(0, 0, 240, height));
+            let field = ie.field_rect();
+            assert_eq!(
+                field.height,
+                dimensions::TEXT_FIELD_MIN_HEIGHT,
+                "at control height {height}"
+            );
+            assert_eq!(field.width, 240, "the field spans the control's width");
+            assert_eq!(field.y, (height - field.height) as i32 / 2, "at control height {height}");
+        }
+
+        let short = InplaceEditor::new("Sample", Rect::new(0, 0, 240, 20));
+        assert_eq!(short.field_rect().height, 20, "a short control clamps the field");
+    }
+
+    /// A double-click below the field does not start an edit.
+    ///
+    /// With the field centred in a 120 px cell, a double-click inside the control's
+    /// rectangle but below the drawn band is on the window background; starting an edit
+    /// there puts the user into a mode they never asked for.
+    #[test]
+    fn a_double_click_below_the_drawn_field_does_not_start_an_edit() {
+        let mut ie = InplaceEditor::new("Hello", Rect::new(0, 0, 240, 120));
+        let field = ie.field_rect();
+
+        ie.handle_event(&Event::MouseDoubleClick {
+            pos: Point::new(field.x + 10, field.y + field.height as i32 / 2),
+            button: 1,
+        });
+        assert!(ie.is_editing(), "a double-click on the drawn field starts an edit");
+
+        let mut ie = InplaceEditor::new("Hello", Rect::new(0, 0, 240, 120));
+        ie.handle_event(&Event::MouseDoubleClick {
+            pos: Point::new(field.x + 10, field.y + field.height as i32 + 40),
+            button: 1,
+        });
+        assert!(!ie.is_editing(), "a double-click below the drawn field must not");
+    }
+
+    /// The value is drawn on the field's own line box, not a font size below its top edge.
+    ///
+    /// The old anchor was `rect.y + padding + font_size`, which put the glyph origin a whole
+    /// font size down from the field's top — the value was drawn on the row *after* the one
+    /// it belonged to, and the caret spanned a different band from the text.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn the_value_sits_inside_the_field() {
+        let mut ie = InplaceEditor::new("Sample", Rect::new(0, 0, 240, 120));
+        ie.start_edit();
+        let svg = crate::widget::svg::render_to_svg(&mut ie);
+        let field = ie.field_rect();
+
+        let ys: Vec<i32> = svg
+            .lines()
+            .filter(|l| l.contains("<text"))
+            .filter_map(|l| {
+                l.split(" y=\"")
+                    .nth(1)
+                    .and_then(|rest| rest.split('"').next())
+                    .and_then(|value| value.parse().ok())
+            })
+            .collect();
+        assert!(!ys.is_empty(), "an editor with text draws it: {svg}");
+        for y in ys {
+            assert!(y >= field.y, "the value starts inside the field: y={y}, field={field:?}");
+            assert!(
+                y < field.y + field.height as i32,
+                "and above the field's bottom edge: y={y}, field={field:?}"
+            );
+        }
     }
 
     #[test]

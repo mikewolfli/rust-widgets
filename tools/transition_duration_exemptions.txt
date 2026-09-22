@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+# SPDX-License-Identifier: MIT
+#
+# Exemptions for tools/check_transition_durations_are_tokens.sh (BLUE22 §6.7).
+#
+# The rule, the literal shapes it matches, and the full statement of what it proves and does not
+# prove are in that script's header. Read it first.
+#
+# Format, one record per line, whitespace-separated (the reason may contain spaces):
+#
+#     src/path/to/control.rs    <why this file's duration literals are not interaction transitions>
+#
+# A bare path is not an entry: an exemption with no reason is an unexplained licence, which this
+# project forbids. The first field is matched against the path the scan produces, so a moved file
+# stops being exempt rather than silently staying so.
+#
+# The exclusion that is NOT in this file, because it is a definition rather than an exemption:
+# `src/style/animation.rs` and `src/theme/` are where durations are *supposed* to be written down.
+# Flagging them would be flagging the token system itself, so the scan skips them by directory.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# These entries are hover DWELL timings, not interaction transitions.
+#
+# The distinction is what the rule is about. A transition duration is how long a control takes to
+# animate between two of its own states — a toggle sliding, a highlight fading — and BLUE22's point
+# is that those must come from `theme.motion` so a theme, a reduced-motion preference or a test
+# harness can re-price them together. A dwell timing is how long the pointer must rest before a
+# transient surface appears or disappears; it is a *behavioural setting of the control*, it is
+# already caller-settable (`set_show_delay` / `set_hide_delay`), and shortening it does not make the
+# control move differently — it makes it appear sooner. Folding it into `theme.motion` would put two
+# different concepts behind one token and would make "the animation is fast" and "the tooltip is
+# eager" the same setting.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Verified: `show_delay` and `hide_delay` are public, settable fields (`set_show_delay`,
+# `set_hide_delay`), and the constants are only their documented defaults. No transition reads them.
+src/widget/dialog/tooltip.rs    hover dwell timings with their own settable properties, not transitions

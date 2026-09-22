@@ -4,13 +4,17 @@
 //! Button widget implementation.
 use crate::compat::{format, String, ToString};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
+use crate::event::{Event, EventHandler, FocusReason};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::style::EdgeOffsets;
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{
+    dimensions, focus_ring_color, ControlMetrics, FocusRing, FOCUS_RING_WIDTH,
+};
 #[cfg(feature = "image")]
 use crate::widget::Image;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
@@ -48,14 +52,39 @@ pub struct Button {
     #[cfg(feature = "image")]
     icon: Option<Image>,
     pressed: bool,
+    /// Whether this control owns the *gesture*: set by a press that landed on it and
+    /// cleared by the release that ends it, regardless of where the pointer is.
+    ///
+    /// # Why `pressed` alone is not enough
+    ///
+    /// `pressed` answers "should I paint pressed", and it follows the pointer in and
+    /// out of the control. Using it to decide whether an incoming release *belongs* to
+    /// this control conflates two facts: a release that arrives while `pressed` is
+    /// false — because the pointer wandered off and was not dragged back — would be
+    /// discarded without ending the gesture, leaving the control armed forever. And a
+    /// move could never restore `pressed`, because the arm was guarded on it.
+    ///
+    /// Qt Quick separates the pair as `pressed` and the grab (`explicitDown`,
+    /// `qquickabstractbutton_p.h:31-32`; grab taken in `handlePress`, released in
+    /// `handleRelease`/`handleUngrab`). This is that split.
+    grabbed: bool,
     default_button: bool,
+    /// Whether this control currently owns keyboard focus.
     focused: bool,
+    /// Why it got focus, which decides whether a focus ring is painted.
+    ///
+    /// Kept alongside `focused` rather than folded into it because the two answer
+    /// different questions: `focused` is "am I the keyboard target", this is "is the
+    /// user on the keyboard". Qt Quick spells the pair `activeFocus` / `visualFocus`.
+    focus_reason: FocusReason,
     hovered: bool,
-    /// Progress of the interaction transition: `0.0` at rest, `1.0` fully at the hovered/pressed
-    /// fill. Kept as a fraction rather than a colour so the target can change mid-flight — a press
+    /// The interaction transition: `0.0` at rest, `1.0` fully at the hovered/pressed fill.
+    ///
+    /// Kept as a fraction rather than a colour so the target can change mid-flight — a press
     /// during a hover transition re-aims the same progress instead of restarting from zero, which is
-    /// what makes a quick press-and-release read as one movement rather than two fades.
-    interaction_progress: f32,
+    /// what makes a quick press-and-release read as one movement rather than two fades. The shared
+    /// [`crate::style::Transition`] owns the interpolation and the theme-derived duration.
+    interaction_progress: crate::style::Transition,
     /// The progress value the transition is travelling toward.
     interaction_target: f32,
     /// Emitted on the rising edge of the pressed flag (button down).
@@ -73,6 +102,17 @@ pub struct Button {
     /// Emitted with the recomputed [`ButtonState`] whenever the pressed or
     /// enabled flag changes. Not emitted when only the hover state changes.
     pub state_changed: Signal1<ButtonState>,
+    /// Emitted when a press is abandoned rather than completed.
+    ///
+    /// # Why this is not folded into `released`
+    ///
+    /// `released` answers "the pointer came up", which is true for a drag that started
+    /// on the button and ended off it. `canceled` answers "this gesture will not
+    /// activate", which is the fact a caller routing a destructive action needs. A
+    /// button that reported both as `released` would leave the caller unable to tell a
+    /// completed activation from an abandoned one — the distinction Qt Quick draws by
+    /// emitting `canceled` instead of `clicked` (`qquickabstractbutton.cpp:198-204`).
+    pub canceled: GenericSignal,
 }
 impl Button {
     /// Creates a button with initial text and geometry.
@@ -83,23 +123,48 @@ impl Button {
             #[cfg(feature = "image")]
             icon: None,
             pressed: false,
+            grabbed: false,
             default_button: false,
             focused: false,
+            // No focus yet, so the reason is never read. `Programmatic` is the
+            // variant that claims the least: it does not assert a gesture happened.
+            focus_reason: FocusReason::Programmatic,
             hovered: false,
             // A freshly constructed button is at rest, so its progress is at the rest end of the
             // interpolation. Starting at the interactive end would make every button fade *out* on
-            // its first frame.
-            interaction_progress: 0.0,
+            // its first frame. `Normal` is the tempo a state change takes.
+            interaction_progress: crate::style::Transition::new(),
             interaction_target: 0.0,
             pressed_signal: GenericSignal::new(),
             released_signal: GenericSignal::new(),
             state_changed: Signal1::new(),
+            canceled: GenericSignal::new(),
         }
     }
     /// Returns button text.
     pub fn text(&self) -> &str {
         &self.text
     }
+    /// Returns whether this button currently owns keyboard focus.
+    pub fn has_focus(&self) -> bool {
+        self.focused
+    }
+
+    /// Returns whether a focus ring should be painted right now.
+    ///
+    /// The single question every draw site asks: `focused && reason.draws_focus_ring()`
+    /// — the Qt Quick rule — evaluated in one place so a control cannot accidentally
+    /// implement "has focus" as "draw the ring".
+    pub fn visual_focus(&self) -> bool {
+        self.focused && self.focus_reason.draws_focus_ring()
+    }
+
+    /// Returns whether this button is the keyboard's current target, regardless of
+    /// whether a ring is drawn for it.
+    pub fn is_focused(&self) -> bool {
+        self.focused
+    }
+
     /// Returns current button interaction state.
     pub fn state(&self) -> ButtonState {
         if !self.base.is_enabled() {
@@ -153,60 +218,20 @@ impl Button {
     /// repainting forever, which is why the boolean is part of the signature rather than something
     /// the caller infers.
     ///
-    /// # Why the duration is read here rather than stored
+    /// # Why the work is delegated to `Transition`
     ///
-    /// The length of a transition is a theme decision (`Theme::motion`), and the theme can change
-    /// while the control exists — a light/dark switch carries a different tempo. Reading it per tick
-    /// means a control already in flight finishes at the new tempo instead of the one it started
-    /// with. The engine prices at zero is the degenerate case a test uses.
+    /// The interpolation, the iteration counting and the engine's callback ownership are the
+    /// same for every control that animates between two appearances. Keeping a private copy here
+    /// meant the duration was read from `crate::theme` directly, which only exists in a build with
+    /// a device profile — so this file failed to compile under `mini`/`embedded` until the read was
+    /// routed through the `style` facade. `Transition` owns that read once.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
-        // The target comes from the control's own state, recomputed every tick so a state change
+        // The target is recomputed every tick from the control's own state, so a state change
         // that arrived without a `tick` in between is picked up rather than missed.
-        self.interaction_target = self.interaction_target_progress();
-        if (self.interaction_progress - self.interaction_target).abs() < f32::EPSILON {
-            return false;
-        }
-
-        // The transition is driven by the crate's animation engine, not by arithmetic here.
-        //
-        // `AnimationDriver`/`Animation` carry the iteration counting, the easing curve and the
-        // completion callback, and `advance_by` lets a host supply the frame delta instead of the
-        // animation reading the wall clock — which is what makes it usable from the
-        // `tick(delta_ms) -> bool` convention this library uses for every animated control.
-        //
-        // A one-shot driver is built per tick deliberately: it is a handful of map entries, the
-        // animation is a pure function of accumulated time, and holding one in the widget would
-        // require it to survive a theme switch that re-prices the duration mid-flight.
-        let duration_ms = crate::style::theme_manager()
-            .current_theme()
-            .map(|theme| theme.motion.normal)
-            .unwrap_or(200)
-            .max(1);
-        let from = self.interaction_progress;
-        let target = self.interaction_target;
-        let mut driver = crate::style::AnimationDriver::new();
-        // The driver owns its callbacks, so the value it produces has to come back through a shared
-        // cell rather than an assignment to a captured local: `move |v| observed = v` would move
-        // `observed` into the closure and leave the caller reading the pre-move value, which is how
-        // a transition silently never advances.
-        let observed = std::rc::Rc::new(core::cell::Cell::new(from));
-        let sink = std::rc::Rc::clone(&observed);
-        driver.add_float(
-            crate::style::AnimationConfig::new(core::time::Duration::from_millis(
-                duration_ms as u64,
-            )),
-            from,
-            target,
-            move |value| sink.set(value),
-        );
-        driver.advance_by(core::time::Duration::from_millis(delta_ms as u64));
-        let next = observed.get();
-        self.interaction_progress =
-            if (next - target).abs() < f32::EPSILON { target } else { next };
-
-        // Another frame is owed exactly while the value has not reached its target — the same
-        // question `advance_by`'s return value answers about the driver, asked about this control.
-        (self.interaction_progress - self.interaction_target).abs() >= f32::EPSILON
+        let target = self.interaction_target_progress();
+        let moving = self.interaction_progress.tick(target, delta_ms);
+        self.interaction_target = target;
+        moving
     }
 
     /// The progress the current interaction state calls for.
@@ -248,23 +273,53 @@ impl Button {
         self.state_changed.emit(self.state());
         self.base.request_redraw();
     }
-    /// Presses the button, via [`Button::set_pressed`] — so the signals and the
-    /// disabled check apply. Does not emit a click; the caller decides when a
-    /// press-and-release counts as an activation.
+    /// Begins a gesture: takes the grab and marks the control pressed.
+    ///
+    /// The grab is taken **before** the pressed flag so that `set_pressed(false)`
+    /// during an ungrab cannot re-enter and drop a grab that was never taken.
     pub fn press(&mut self) {
+        if !self.base.is_enabled() {
+            return;
+        }
+        self.grabbed = true;
         self.set_pressed(true);
     }
-    /// Releases the button, via [`Button::set_pressed`]. A release without a
-    /// preceding press is a no-op because the flag is already clear.
+    /// Ends a gesture: drops the grab and clears the pressed flag.
     pub fn release(&mut self) {
+        self.grabbed = false;
         self.set_pressed(false);
     }
+
+    /// Abandons a gesture without activating: ends it and emits `canceled` if it was live.
+    ///
+    /// This is Qt Quick's `handleUngrab`, and it is the single place that decides what
+    /// "the interaction is off" means. Called from a focus change and from disabling the
+    /// control — so the paths cannot drift into slightly different notions of cancellation.
+    pub fn cancel_gesture(&mut self) {
+        if !self.grabbed && !self.pressed {
+            return;
+        }
+        self.grabbed = false;
+        self.set_pressed(false);
+        self.canceled.emit();
+    }
+
+    /// Whether this control currently owns the pointer gesture.
+    pub fn is_grabbed(&self) -> bool {
+        self.grabbed
+    }
     /// Enables/disables button while preserving deterministic state transitions.
+    ///
+    /// Disabling mid-gesture abandons it, emitting `canceled`: a control that became
+    /// inert while held will never receive the release that would have ended the
+    /// gesture normally, so leaving the grab set would keep a stale `pressed` paint and
+    /// an arm that fires on an unrelated later release. Qt Quick clears the transient
+    /// state at the same moment (`button_style_button.dart:359-362`).
     pub fn set_enabled_state(&mut self, enabled: bool) {
         let previous = self.state();
         self.base.set_enabled(enabled);
         if !enabled {
-            self.pressed = false;
+            self.cancel_gesture();
         }
         let current = self.state();
         if previous != current {
@@ -359,9 +414,36 @@ impl Widget for Button {
     }
 
     fn size_hint(&self) -> Size {
-        // Approximate: text length * ~8px + padding, minimum 75x28
-        let text_w = self.text().len() as u32 * 8 + 20;
-        Size::new(text_w.max(75), 28)
+        // The button's intrinsic size is the QML formula — `max(floor, content + padding)` —
+        // expressed through the shared primitive rather than as a hand-written `max`.
+        //
+        // `BUTTON_MIN` (64x40) is the *floor*, and it is the load-bearing term: a button
+        // labelled with two characters must still be big enough to press. The label estimate is
+        // the crate's usual `len * 8`, used everywhere text is measured for sizing; the icon's
+        // own box is added when one is present.
+        let label_width = self.text().len() as u32 * 8;
+        // The icon's own box, when there is one, is part of the content — so it is added to
+        // the label rather than to the padding, which is what keeps the floor meaningful.
+        // Written as a conditional expression rather than a `mut` binding followed by an
+        // assignment because the `image` feature is optional: a `mut` that is only needed in
+        // one feature configuration is an `unused_mut` warning in the others.
+        #[cfg(feature = "image")]
+        let content = Size::new(
+            label_width
+                + if self.icon.is_some() {
+                    dimensions::BUTTON_ICON_SIZE + dimensions::BUTTON_ICON_SPACING
+                } else {
+                    0
+                },
+            dimensions::FONT_SIZE_BASE + 4,
+        );
+        #[cfg(not(feature = "image"))]
+        let content = Size::new(label_width, dimensions::FONT_SIZE_BASE + 4);
+        ControlMetrics::implicit_size(
+            content,
+            EdgeOffsets::symmetric(dimensions::BUTTON_PADDING_V, dimensions::BUTTON_PADDING_H),
+            dimensions::BUTTON_MIN,
+        )
     }
 
     impl_draw_bridge!();
@@ -431,39 +513,104 @@ impl WidgetProperties for Button {
 }
 
 impl EventHandler for Button {
+    /// The four-segment activation contract.
+    ///
+    /// # Why `released` and `clicked` are not the same event
+    ///
+    /// A pointer that goes down on a button and comes up away from it is a *canceled*
+    /// gesture: the user changed their mind or was dragging something. Qt Quick encodes
+    /// this in `QQuickAbstractButtonPrivate::handleRelease` (`qquickabstractbutton.cpp:198-204`),
+    /// which emits `clicked` only when the release lands **inside** the control and
+    /// `canceled` otherwise.
+    ///
+    /// This handler used to treat every release as an activation, so dragging off a
+    /// button and letting go still fired it — including for a drag that started
+    /// elsewhere and merely ended here.
+    ///
+    /// | event | result |
+    /// |---|---|
+    /// | press | `pressed` armed, `pressed` signal emitted |
+    /// | move | `pressed` follows whether the pointer is still inside |
+    /// | release inside | release, `clicked` |
+    /// | release outside | release, `canceled`, **no** `clicked` |
+    /// | ungrab (leave / focus loss / disable) | release, `canceled` |
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         match event {
-            Event::MousePress { pos: _, button: _ } if self.base.is_enabled() => {
-                self.press();
+            Event::MousePress { pos, button } if self.base.is_enabled() => {
+                // Only a press that resolves to this control arms it. The runtime
+                // hit-tests before delivery, but a direct dispatch (a test, a host with
+                // its own routing, a designer preview) does not, and an unguarded press
+                // would leave the latch armed for a release that belongs elsewhere.
+                if button_activates(*button) && self.base.contains_point_with_touch_expansion(*pos)
+                {
+                    self.press();
+                }
             }
             #[cfg(feature = "touch")]
             Event::TouchBegin { .. } if self.base.is_enabled() => {
                 self.press();
             }
-            Event::MouseRelease { pos: _, button: _ } if self.pressed => {
+            // `pressed` is a *continuous* quantity, not an edge: dragging off the
+            // control clears it and dragging back restores it, so the button visually
+            // commits again. Qt Quick does this in `handleMove`
+            // (`qquickabstractbutton.cpp:179`). Without it, a press that wandered off
+            // left the button painted pressed forever.
+            //
+            // The arm is guarded on the **grab**, not on `pressed`: guarding on
+            // `pressed` made the move that should restore the state exit early, so a
+            // drag out and back could never re-arm.
+            Event::MouseMove { pos } | Event::PointerMove { pos, .. } if self.grabbed => {
+                self.set_pressed(self.base.contains_point_with_touch_expansion(*pos));
+            }
+            Event::MouseRelease { pos, button } if self.grabbed => {
+                if !button_activates(*button) {
+                    return;
+                }
+                // Inside ⇒ activate; outside ⇒ cancel. This is the whole contract.
+                let inside = self.base.contains_point_with_touch_expansion(*pos);
                 self.release();
-                self.base.clicked.emit();
+                if inside {
+                    self.base.clicked.emit();
+                } else {
+                    self.canceled.emit();
+                }
             }
             #[cfg(feature = "touch")]
-            Event::TouchEnd { .. } if self.pressed => {
+            Event::TouchEnd { pos, .. } if self.grabbed => {
+                let inside = self.base.contains_point_with_touch_expansion(*pos);
                 self.release();
-                self.base.clicked.emit();
+                if inside {
+                    self.base.clicked.emit();
+                } else {
+                    self.canceled.emit();
+                }
             }
             #[cfg(feature = "touch")]
             Event::Tap { .. } if self.base.is_enabled() => {
+                // A tap carries no position: the platform already resolved it to this
+                // control, which is the same basis the hit test narrows.
                 self.base.clicked.emit();
                 self.state_changed.emit(self.state());
             }
-            Event::FocusGained => {
+            Event::FocusGained { reason } => {
                 self.focused = true;
+                self.focus_reason = *reason;
                 self.base.request_redraw();
             }
             Event::FocusLost => {
                 self.focused = false;
+                // Focus lost mid-press abandons the gesture: the release belongs to
+                // whatever the window switch moved to.
+                self.cancel_gesture();
                 self.base.request_redraw();
             }
-            Event::KeyPress { key, .. } if (*key == 13 || *key == 32) && self.base.is_enabled() => {
+            Event::KeyPress { key, .. }
+                if is_keyboard_activation(*key) && self.base.is_enabled() =>
+            {
+                // A keyboard activation is `Shortcut`: the user is on the keyboard, so
+                // the ring stays lit. Only the activation itself runs here; the ring
+                // follows from the focus reason already stored.
                 self.click();
             }
             Event::MouseEnter { .. } => {
@@ -472,16 +619,38 @@ impl EventHandler for Button {
             }
             Event::MouseLeave { .. } => {
                 self.hovered = false;
-                // A pointer that leaves while held abandons the press. Only `hovered` used to be
-                // cleared, so `pressed` stayed true: the widget then committed on the *next*
-                // release, including one for an unrelated interaction, and `draw` kept painting
-                // the pressed state for a button the user had already dragged away from.
-                self.pressed = false;
+                // A pointer that leaves while held abandons the painted pressed state,
+                // but the *grab* is kept: `MouseLeave` fires as soon as the pointer
+                // crosses the edge, and a drag that comes back should still be able to
+                // complete. Only the release, wherever it lands, ends the gesture and
+                // decides the outcome.
+                self.set_pressed(false);
                 self.base.request_redraw();
             }
             _ => { /* Other events are not relevant */ }
         }
     }
+}
+
+/// Whether `button` is one that activates a control.
+///
+/// Only the primary button activates. The handler used to accept any button, so a
+/// secondary click fired a button's action — and a secondary click is how a host opens
+/// a context menu (`runtime.rs` routes `mouse_button::SECONDARY` for exactly that).
+/// `CheckBox` and `RadioButton` already guarded on the primary button; this brings
+/// `Button` into line rather than being the outlier.
+fn button_activates(button: u32) -> bool {
+    button == crate::event::mouse_button::PRIMARY
+}
+
+/// Whether `key` activates a focused button.
+///
+/// Space and Enter are the two the platform convention assigns, and they are named
+/// here rather than left as literals at the match arm: the raw numbers appeared in
+/// every binary control with slightly different spellings (`13` here, `13 | 10`
+/// elsewhere), so "which keys activate a button" had no single answer to read.
+fn is_keyboard_activation(key: u32) -> bool {
+    matches!(key, 13 | 10 | 32)
 }
 impl Draw for Button {
     fn draw(&mut self, context: &mut RenderContext) {
@@ -491,6 +660,22 @@ impl Draw for Button {
         let rect = self.geometry();
         let state = self.state();
         let style = self.style();
+
+        // ── The box actually painted ──
+        //
+        // A button fills the width it was *given* — that is what a button is, and a wider
+        // button is still a button. But its **height** is its own: a 240x120 census cell drew a
+        // 240x120 pill, which is a rectangle shaped like a button rather than a button. The
+        // height comes from `size_hint`, the same derivation a layout asks for, so the drawn
+        // shape and the reported size cannot disagree.
+        let intrinsic = self.size_hint();
+        let painted_height = intrinsic.height.min(rect.height).max(1);
+        let rect = Rect::new(
+            rect.x,
+            rect.y + (rect.height.saturating_sub(painted_height) / 2) as i32,
+            rect.width,
+            painted_height,
+        );
 
         // ── Background ──
         let bg = style.background_color.unwrap_or_else(|| match state {
@@ -505,14 +690,15 @@ impl Draw for Button {
         //
         // At progress `0.0` — a fresh control, or one whose transition has settled at rest — the
         // result is exactly the resting colour, so a snapshot taken without ticking is unchanged.
-        let bg = if self.interaction_progress <= 0.0 {
+        let progress = self.interaction_progress.progress();
+        let bg = if progress <= 0.0 {
             bg
         } else {
             let interactive = match state {
                 ButtonState::Pressed => bg,
                 _ => bg.blend(&bg.contrast_color(), 0.22),
             };
-            bg.blend(&interactive, self.interaction_progress)
+            bg.blend(&interactive, progress)
         };
         let br = style.border_radius.unwrap_or(0);
         if br > 0 {
@@ -558,13 +744,36 @@ impl Draw for Button {
             // Vertically centred through the shared primitive, so the label sits in the
             // button's middle instead of having its glyph-box top edge on that middle line.
             let line = context.text_line(rect, font);
+            // The label is placed at the control's own horizontal padding rather than at a
+            // literal, so a themed padding and a wider font move the text together — the
+            // same derivation the intrinsic size uses (`ControlMetrics::implicit_size`).
+            let label_x = rect.x + dimensions::BUTTON_PADDING_H as i32;
             context.draw_text(
-                Point { x: rect.x + 6, y: line.y },
+                Point { x: label_x, y: line.y },
                 &self.text,
                 font,
                 text_color,
                 HorizontalAlignment::Left,
             );
+        }
+
+        // ── Focus ring ──
+        //
+        // Drawn strictly inside the control's rectangle (see `ControlMetrics::focus_ring_rect`)
+        // and only when the *reason* focus arrived warrants it: a pointer press focuses without
+        // drawing a ring, Tab and Shortcut draw one. This is the Qt Quick rule
+        // (`qquickcontrol.cpp:1433`), and it is why `Button` carries a `FocusReason` rather than
+        // a bare `focused` bool.
+        if self.visual_focus() {
+            let ring = FocusRing::for_control(rect, br);
+            if ring.is_drawable() {
+                context.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    focus_ring_color(bg.contrast_color()),
+                    FOCUS_RING_WIDTH,
+                );
+            }
         }
     }
 }
@@ -876,14 +1085,14 @@ mod tests {
     fn focus_gained_sets_focused_flag() {
         let mut btn = make_button();
         assert!(!btn.focused, "Button should not be focused by default");
-        btn.handle_event(&Event::FocusGained);
+        btn.handle_event(&Event::FocusGained { reason: FocusReason::Programmatic });
         assert!(btn.focused, "Button should be focused after FocusGained");
     }
 
     #[test]
     fn focus_lost_clears_focused_flag() {
         let mut btn = make_button();
-        btn.handle_event(&Event::FocusGained);
+        btn.handle_event(&Event::FocusGained { reason: FocusReason::Programmatic });
         assert!(btn.focused);
         btn.handle_event(&Event::FocusLost);
         assert!(!btn.focused, "Button should not be focused after FocusLost");
@@ -951,7 +1160,12 @@ mod tests {
     #[test]
     fn event_mouse_down_presses_button() {
         let mut b = make_button();
-        let event = Event::MousePress { pos: Point::new(15, 25), button: 0 };
+        // `mouse_button::PRIMARY`, not a bare `1`: the activation guard reads the named
+        // code, and a test that spelled its own number would not notice the guard moving.
+        let event = Event::MousePress {
+            pos: crate::core::Point::new(15, 25),
+            button: crate::event::mouse_button::PRIMARY,
+        };
         b.handle_event(&event);
         assert!(b.is_pressed());
         assert_eq!(b.state(), ButtonState::Pressed);
@@ -972,11 +1186,176 @@ mod tests {
         b.press();
         assert!(b.is_pressed());
 
-        let event = Event::MouseRelease { pos: Point::new(15, 25), button: 0 };
+        let event = Event::MouseRelease {
+            pos: crate::core::Point::new(15, 25),
+            button: crate::event::mouse_button::PRIMARY,
+        };
         b.handle_event(&event);
         assert!(!b.is_pressed());
         assert_eq!(b.state(), ButtonState::Normal);
         assert!(clicked.load(Ordering::SeqCst));
+    }
+
+    // ── The activation contract (P0-6 / P0-7) ────────────────────────────
+
+    #[test]
+    fn a_release_outside_the_button_cancels_instead_of_clicking() {
+        // The defect this guards: every release used to activate, so dragging off a
+        // button and letting go still fired it.
+        let mut b = make_button();
+        let clicked = Arc::new(AtomicBool::new(false));
+        let canceled = Arc::new(AtomicBool::new(false));
+        b.base.clicked.connect({
+            let flag = Arc::clone(&clicked);
+            move || flag.store(true, Ordering::SeqCst)
+        });
+        b.canceled.connect({
+            let flag = Arc::clone(&canceled);
+            move || flag.store(true, Ordering::SeqCst)
+        });
+
+        b.handle_event(&Event::MousePress {
+            pos: crate::core::Point::new(20, 30),
+            button: crate::event::mouse_button::PRIMARY,
+        });
+        assert!(b.is_pressed());
+
+        b.handle_event(&Event::MouseRelease {
+            pos: crate::core::Point::new(900, 900),
+            button: crate::event::mouse_button::PRIMARY,
+        });
+        assert!(!b.is_pressed(), "the press ends either way");
+        assert!(canceled.load(Ordering::SeqCst), "a release outside must cancel");
+        assert!(!clicked.load(Ordering::SeqCst), "a release outside must not click");
+    }
+
+    #[test]
+    fn a_release_inside_the_button_clicks_and_does_not_cancel() {
+        let mut b = make_button();
+        let clicked = Arc::new(AtomicBool::new(false));
+        let canceled = Arc::new(AtomicBool::new(false));
+        b.base.clicked.connect({
+            let flag = Arc::clone(&clicked);
+            move || flag.store(true, Ordering::SeqCst)
+        });
+        b.canceled.connect({
+            let flag = Arc::clone(&canceled);
+            move || flag.store(true, Ordering::SeqCst)
+        });
+
+        b.handle_event(&Event::MousePress {
+            pos: crate::core::Point::new(20, 30),
+            button: crate::event::mouse_button::PRIMARY,
+        });
+        b.handle_event(&Event::MouseRelease {
+            pos: crate::core::Point::new(30, 40),
+            button: crate::event::mouse_button::PRIMARY,
+        });
+        assert!(clicked.load(Ordering::SeqCst));
+        assert!(!canceled.load(Ordering::SeqCst), "a release inside must not cancel");
+    }
+
+    #[test]
+    fn pressed_is_continuous_as_the_pointer_moves_out_and_back() {
+        // `pressed` is not an edge: dragging off clears it, dragging back restores it.
+        let mut b = make_button();
+        b.handle_event(&Event::MousePress {
+            pos: crate::core::Point::new(20, 30),
+            button: crate::event::mouse_button::PRIMARY,
+        });
+        assert!(b.is_pressed());
+
+        b.handle_event(&Event::MouseMove { pos: crate::core::Point::new(900, 900) });
+        assert!(!b.is_pressed(), "dragging off must clear pressed");
+
+        b.handle_event(&Event::MouseMove { pos: crate::core::Point::new(25, 35) });
+        assert!(b.is_pressed(), "dragging back must restore pressed");
+    }
+
+    #[test]
+    fn a_secondary_press_does_not_activate() {
+        // The secondary button opens a context menu; it must not also fire the action.
+        let mut b = make_button();
+        b.handle_event(&Event::MousePress {
+            pos: crate::core::Point::new(20, 30),
+            button: crate::event::mouse_button::SECONDARY,
+        });
+        assert!(!b.is_pressed());
+    }
+
+    #[test]
+    fn losing_focus_mid_press_abandons_the_gesture() {
+        let mut b = make_button();
+        let canceled = Arc::new(AtomicBool::new(false));
+        b.canceled.connect({
+            let flag = Arc::clone(&canceled);
+            move || flag.store(true, Ordering::SeqCst)
+        });
+
+        b.handle_event(&Event::MousePress {
+            pos: crate::core::Point::new(20, 30),
+            button: crate::event::mouse_button::PRIMARY,
+        });
+        b.handle_event(&Event::FocusLost);
+        assert!(!b.is_pressed());
+        assert!(canceled.load(Ordering::SeqCst));
+    }
+
+    // ── Visual focus (P0-5) ────────────────────────────────────────────
+
+    #[test]
+    fn a_pointer_click_focuses_without_drawing_a_focus_ring() {
+        let mut b = make_button();
+        b.handle_event(&Event::FocusGained { reason: FocusReason::Pointer });
+        assert!(b.is_focused(), "the control is the keyboard target");
+        assert!(!b.visual_focus(), "but the user is on the pointer, so no ring is drawn");
+    }
+
+    #[test]
+    fn tab_and_shortcut_focus_draw_the_focus_ring() {
+        for reason in [FocusReason::Tab, FocusReason::BackTab, FocusReason::Shortcut] {
+            let mut b = make_button();
+            b.handle_event(&Event::FocusGained { reason });
+            assert!(b.is_focused());
+            assert!(b.visual_focus(), "{reason:?} must draw the ring");
+        }
+    }
+
+    #[test]
+    fn a_keyboard_activation_keeps_the_ring() {
+        let mut b = make_button();
+        let clicks = Arc::new(core::sync::atomic::AtomicUsize::new(0));
+        b.base.clicked.connect({
+            let counter = Arc::clone(&clicks);
+            move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        b.handle_event(&Event::FocusGained { reason: FocusReason::Shortcut });
+        b.handle_event(&Event::KeyPress { key: 32, modifiers: 0 });
+        assert_eq!(clicks.load(Ordering::SeqCst), 1);
+        assert!(b.visual_focus());
+    }
+
+    #[test]
+    fn a_disabled_button_never_arms_and_never_clicks() {
+        let mut b = make_button();
+        let clicked = Arc::new(AtomicBool::new(false));
+        b.base.clicked.connect({
+            let flag = Arc::clone(&clicked);
+            move || flag.store(true, Ordering::SeqCst)
+        });
+        b.set_enabled_state(false);
+        b.handle_event(&Event::MousePress {
+            pos: crate::core::Point::new(20, 30),
+            button: crate::event::mouse_button::PRIMARY,
+        });
+        assert!(!b.is_pressed());
+        b.handle_event(&Event::MouseRelease {
+            pos: crate::core::Point::new(20, 30),
+            button: crate::event::mouse_button::PRIMARY,
+        });
+        assert!(!clicked.load(Ordering::SeqCst));
     }
 
     #[cfg(feature = "touch")]
@@ -1250,7 +1629,7 @@ mod tests {
             frames += 1;
             assert!(frames < 100, "the transition must terminate rather than tick forever");
         }
-        assert_eq!(b.interaction_progress, 0.5, "a hover settles exactly on its target");
+        assert_eq!(b.interaction_progress.progress(), 0.5, "a hover settles exactly on its target");
 
         // Settled means settled: **each** further tick reports no work. Asserted in a loop rather
         // than once, because a single `!tick()` would also pass for an implementation that
@@ -1261,7 +1640,7 @@ mod tests {
                 !b.tick(16),
                 "a settled transition must report that no frame is needed (tick {frame})"
             );
-            assert_eq!(b.interaction_progress, 0.5, "and must not drift while settled");
+            assert_eq!(b.interaction_progress.progress(), 0.5, "and must not drift while settled");
         }
     }
 
@@ -1271,13 +1650,13 @@ mod tests {
         let mut b = make_button();
         b.set_hovered(true);
         b.tick(50);
-        let partway = b.interaction_progress;
+        let partway = b.interaction_progress.progress();
         assert!(partway > 0.0 && partway < 0.5, "the hover is in flight: {partway}");
 
         b.set_pressed(true);
         assert!(b.tick(1), "the press must continue the movement, not settle on the first frame");
         assert!(
-            b.interaction_progress > partway,
+            b.interaction_progress.progress() > partway,
             "a press must move the progress onward from where the hover left it, not back to zero"
         );
     }

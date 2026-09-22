@@ -133,8 +133,20 @@ impl Draw for Label {
                 crate::core::Alignment::Right => rect.x + rect.width as i32 - text_width as i32,
                 _ => rect.x,
             };
+            // The label's **line box**, not the label's own top edge. A glyph origin is the
+            // box's top-left corner, so `rect.y` pinned the text to the top of whatever area
+            // the label was given: in the 240x120 census cell `label.svg` carried
+            // `<text y="0">` — the text sat on the very first row and the other 106 were
+            // empty. Deriving the line from `context.text_line` centres the glyph box in the
+            // label, and it is the same helper every other text-bearing control in the crate
+            // uses, so a label and the value beside it cannot disagree about where a line of
+            // text goes.
+            //
+            // Only the vertical anchor moves: the horizontal origin above is computed from
+            // the caller's alignment and stays exactly as it was.
+            let line = context.text_line(rect, &font);
             context.draw_text(
-                Point::new(text_x, rect.y),
+                Point::new(text_x, line.y),
                 &self.text,
                 &font,
                 text_color,
@@ -513,5 +525,82 @@ mod tests {
         assert_eq!(s.border_color, Some(bc));
         assert_eq!(s.border_width, Some(2));
         assert_eq!(s.border_radius, Some(6));
+    }
+
+    // ------------------------------------------------------------------
+    // Vertical anchoring of the text
+    // ------------------------------------------------------------------
+
+    /// The label's text is **vertically centred** in the area it was given.
+    ///
+    /// The origin of a text run is the top-left corner of its glyph box, so drawing at
+    /// `rect.y` pinned the label to the top of its slot: in the 240x120 census cell
+    /// `snapshots/svg/label.svg` carried `<text y="0">` and the other 106 rows were empty.
+    /// The assertion is on the emitted `y`, not on a helper call, because the emitted
+    /// attribute is the thing that was wrong.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn the_text_is_vertically_centred_in_the_label() {
+        let rect = Rect::new(0, 0, 240, 120);
+        let mut label = Label::new("Sample".to_string(), rect);
+        let svg = crate::widget::svg::render_to_svg(&mut label);
+
+        // Read the emitted origin back out of the element stream.
+        let text_line = svg
+            .lines()
+            .find(|line| line.contains("<text"))
+            .unwrap_or_else(|| panic!("a label with text must emit one: {svg}"));
+        let y: i32 = text_line
+            .split(" y=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_else(|| panic!("no y on: {text_line}"));
+
+        // Centred means the line box sits in the middle, so its top is roughly half the
+        // difference between the cell and the line. It must not be pinned to the top edge.
+        assert!(y > 0, "the text must not sit on the label's first row: y={y}");
+        assert!(
+            y < rect.height as i32 / 2,
+            "a centred line starts above the middle of the cell: y={y}"
+        );
+        assert!(
+            y > rect.height as i32 / 4,
+            "a centred 14 px line begins well below the top quarter: y={y}"
+        );
+    }
+
+    /// The horizontal origin still follows the caller's alignment.
+    ///
+    /// The vertical fix moved the anchor in one axis only, and this is the guard on that:
+    /// a change that centred the text on both axes would silently break the three
+    /// alignments the control publishes.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn the_vertical_fix_leaves_the_horizontal_alignment_alone() {
+        let rect = Rect::new(0, 0, 200, 40);
+        let origin_of = |alignment: Alignment| -> i32 {
+            let mut label = Label::new("Sample".to_string(), rect);
+            label.set_alignment(alignment);
+            let svg = crate::widget::svg::render_to_svg(&mut label);
+            let line = svg.lines().find(|l| l.contains("<text")).expect("a text element");
+            line.split(" x=\"")
+                .nth(1)
+                .and_then(|rest| rest.split('"').next())
+                .and_then(|value| value.parse().ok())
+                .expect("an x attribute")
+        };
+
+        assert_eq!(origin_of(Alignment::Left), rect.x, "left-aligned starts at the edge");
+        assert_eq!(
+            origin_of(Alignment::Right),
+            rect.x + rect.width as i32 - "Sample".len() as i32 * 8,
+            "right-aligned ends at the edge"
+        );
+        let centred = origin_of(Alignment::Center);
+        assert!(
+            centred > rect.x && centred < origin_of(Alignment::Right),
+            "centred sits between the two edges: {centred}"
+        );
     }
 }

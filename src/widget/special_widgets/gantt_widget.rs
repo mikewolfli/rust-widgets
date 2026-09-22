@@ -11,6 +11,7 @@ use crate::widget::capability::coercion::expect_i64;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::dimensions;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -339,17 +340,32 @@ impl Draw for GanttWidget {
         context.fill_rect(rect, background);
         context.draw_rect(rect, border);
 
-        let track_x = rect.x + 150;
-        let track_w = rect.width.saturating_sub(160);
+        // The label column and the track share one derivation: `CHART_LABEL_GUTTER` is the room
+        // reserved for task names, and the track begins at its trailing edge and ends a
+        // `CHART_TRACK_MARGIN` short of the control's right edge. The pair this replaces —
+        // `rect.x + 150` for the track and `rect.width - 160` for its length — encoded the same
+        // fact twice with two different numbers, so the track began 10 px past the gutter its
+        // labels were measured against.
+        let track_x = rect.x + dimensions::CHART_LABEL_GUTTER;
+        let track_w = rect.width.saturating_sub(
+            dimensions::CHART_LABEL_GUTTER as u32 + dimensions::CHART_TRACK_MARGIN as u32,
+        );
 
         for (index, task) in self.tasks.iter().take(12).enumerate() {
             let y = rect.y + index as i32 * self.row_height as i32;
+            if y + self.row_height as i32 > rect.y + rect.height as i32 {
+                break;
+            }
             if self.selected_index == Some(index) {
                 context.fill_rect(Rect::new(rect.x, y, rect.width, self.row_height), selected_lane);
             }
 
-            context.draw_text(
-                Point::new(rect.x + 8, y + self.row_height as i32 / 2),
+            // The lane label is centred through the shared primitive: the raw midpoint put the
+            // glyph box's *top* edge on the lane's middle line, half a line low.
+            let label_band =
+                Rect::new(rect.x, y, track_x.saturating_sub(rect.x) as u32, self.row_height);
+            context.draw_text_fitted(
+                label_band,
                 &task.label,
                 &Font::default(),
                 text_color,

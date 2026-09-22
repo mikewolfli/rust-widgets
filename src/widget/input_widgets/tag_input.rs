@@ -16,6 +16,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -78,8 +79,6 @@ impl UndoCommand for TagInputStateCommand {
 
 /// Horizontal padding between tag chip and container edge, or between chips.
 const TAG_PADDING: i32 = 6;
-/// Vertical padding inside the tag area.
-const TAG_VERTICAL_PADDING: i32 = 4;
 /// Gap between tag chips.
 const TAG_GAP: i32 = 4;
 /// Line height for the tag row.
@@ -312,6 +311,32 @@ impl TagInput {
         self.base.request_redraw();
     }
 
+    /// The field the control actually paints.
+    ///
+    /// # Why the field is not the control's rectangle
+    ///
+    /// A tag input is a text field that happens to hold chips: it is
+    /// [`dimensions::TEXT_FIELD_MIN_HEIGHT`] tall, full width, centred in the area the
+    /// caller offers, exactly as `lineedit` and the other input controls are. Painting
+    /// `geometry()` made a 240x120 census cell a 240x120 box — a panel rather than a field
+    /// — and, more visibly, it made the chips and their close buttons sit on a different
+    /// row from the text the field shares a form with.
+    ///
+    /// Everything the control paints **and everything it hit-tests** is placed from this
+    /// one box. The close button's hit test used to be derived from the control's
+    /// rectangle while its ink was drawn from the chip row, and the two differed by the
+    /// band's offset — so a click on the drawn X missed it by the height difference.
+    /// Deriving both from `field_rect` is what makes hit and ink the same fact.
+    fn field_rect(&self) -> Rect {
+        ControlMetrics::full_width_band(self.geometry(), dimensions::TEXT_FIELD_MIN_HEIGHT)
+    }
+
+    /// The y of the chip row inside the painted field: the row is centred on the field.
+    fn chip_row_y(&self) -> i32 {
+        let field = self.field_rect();
+        field.y + (field.height as i32 - TAG_HEIGHT) / 2
+    }
+
     /// Returns the close button center for a tag chip at the given pixel position.
     fn tag_close_center(&self, chip_x: i32, chip_width: i32, chip_y: i32) -> Point {
         Point::new(chip_x + chip_width - TAG_PADDING - TAG_CLOSE_RADIUS, chip_y + TAG_HEIGHT / 2)
@@ -320,9 +345,10 @@ impl TagInput {
     /// Hit-tests whether a point is within the close button of any tag chip.
     /// Returns the tag index if a close button was hit, or `None`.
     fn hit_tag_close(&self, pos: Point) -> Option<usize> {
-        let rect = self.geometry();
+        // The **painted field**, so the circles the user can see are the ones that answer.
+        let rect = self.field_rect();
         let mut current_x = rect.x + TAG_PADDING;
-        let chip_y = rect.y + TAG_VERTICAL_PADDING;
+        let chip_y = self.chip_row_y();
         let max_width = rect.width as i32 - TAG_PADDING * 2;
 
         for (index, tag) in self.tags.iter().enumerate() {
@@ -414,7 +440,10 @@ impl WidgetProperties for TagInput {
 
 impl Draw for TagInput {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
+        // The **field**, not the control's rectangle: see `field_rect`. Every measurement
+        // below — the fill, the border, the chip row and the input area — is taken from this
+        // one box, so none of them can drift away from the others.
+        let rect = self.field_rect();
         let is_enabled = self.base.is_enabled();
 
         // ── Background ──
@@ -435,27 +464,32 @@ impl Draw for TagInput {
         } else {
             base_bg
         };
-        context.fill_rounded_rect(rect, 6, bg_color);
+        // The field's own stadium: the radius is half its height. A literal `6` was written
+        // for a 28 px field and becomes an almost-square corner on the 48 px field every
+        // other input in the crate shares, so the fill and the border below could not even
+        // agree with each other — the two edges crossed at the corners.
+        let field_radius = rect.height / 2;
+        context.fill_rounded_rect(rect, field_radius, bg_color);
 
         // — Focus border —
         if self.focused && is_enabled {
             context.draw_rounded_rect_stroke(
                 rect,
-                6,
+                field_radius,
                 accent.unwrap_or(Color::rgba(60, 140, 255, 200)),
                 2,
             );
         } else {
             context.draw_rounded_rect_stroke(
                 rect,
-                6,
+                field_radius,
                 style.border_color.unwrap_or(Color::rgba(200, 200, 200, 160)),
                 1,
             );
         }
 
         let mut current_x = rect.x + TAG_PADDING;
-        let chip_y = rect.y + TAG_VERTICAL_PADDING;
+        let chip_y = self.chip_row_y();
         let max_width = rect.width as i32 - TAG_PADDING * 2;
         let default_font = crate::core::Font::default();
 
@@ -613,13 +647,18 @@ impl EventHandler for TagInput {
                     self.remove_tag(tag_index);
                     return;
                 }
-                // Click anywhere else in the widget → gain focus
-                self.set_focused(true);
+                // Focus is gained only from a press on the **painted field**. Testing the
+                // control's rectangle instead would let a click on the empty space below a
+                // 48 px field in a 120 px cell focus the control, and the field the user
+                // was told they had focused is the one they can see.
+                if self.field_rect().contains_point(*pos) {
+                    self.set_focused(true);
+                }
             }
             Event::MouseRelease { pos: _, button } if *button == 1 => {
                 // No special release handling needed
             }
-            Event::FocusGained => {
+            Event::FocusGained { .. } => {
                 self.set_focused(true);
             }
             Event::FocusLost => {
@@ -993,17 +1032,73 @@ mod tests {
         let mut ti = TagInput::new(Rect::new(0, 0, 300, 36));
         ti.add_tag("removable");
 
-        // Compute expected close button position for the first (and only) tag chip
-        let rect = ti.geometry();
-        let chip_x = rect.x + TAG_PADDING;
-        let chip_y = rect.y + TAG_VERTICAL_PADDING;
+        // The expected close-button position is derived from the **painted field**, which is
+        // where the ink is. This used to be computed from `ti.geometry()` plus a second
+        // vertical padding literal, so the test agreed with the old hit test by construction
+        // — and both were wrong together: the circle was drawn on the chip row while the hit
+        // test guessed at the control's top edge, so a click on the drawn X could miss it.
+        // Pinning the painted geometry is what makes this test able to catch that.
+        let field = ti.field_rect();
+        let chip_x = field.x + TAG_PADDING;
+        let chip_y = ti.chip_row_y();
         let chip_width =
-            ti.compute_chip_width("removable").min(rect.width as i32 - TAG_PADDING * 2);
+            ti.compute_chip_width("removable").min(field.width as i32 - TAG_PADDING * 2);
         let close_center = ti.tag_close_center(chip_x, chip_width, chip_y);
 
         // Click on the close button
         ti.handle_event(&Event::MousePress { pos: close_center, button: 1 });
         assert!(ti.tags().is_empty());
+    }
+
+    /// The chip row and its close buttons are placed from the **painted field**.
+    ///
+    /// The close button's hit test was derived from the control's rectangle while its ink
+    /// came from the chip row, so the two sat 36 px apart in a 120 px cell: the circle a user
+    /// saw was not the one that answered. Both now come from `chip_row_y()`, and this pins
+    /// the drawn circle against the same derivation the hit test uses.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn the_close_circle_is_hit_where_it_is_drawn() {
+        let mut ti = TagInput::new(Rect::new(0, 0, 240, 120));
+        ti.add_tag("removable");
+
+        let field = ti.field_rect();
+        let chip_x = field.x + TAG_PADDING;
+        let chip_width =
+            ti.compute_chip_width("removable").min(field.width as i32 - TAG_PADDING * 2);
+        let close_center = ti.tag_close_center(chip_x, chip_width, ti.chip_row_y());
+
+        // The centre of the drawn circle is inside the field, not above or below it.
+        assert!(
+            field.contains_point(close_center),
+            "the close circle is painted inside the field: {close_center:?}, field={field:?}"
+        );
+        // And clicking exactly there removes the tag.
+        ti.handle_event(&Event::MousePress { pos: close_center, button: 1 });
+        assert!(ti.tags().is_empty(), "the drawn close circle answers a click");
+    }
+
+    /// The field is a full-width band one text-field height tall, centred in the control.
+    ///
+    /// The control painted its whole rectangle, so a 240x120 census cell drew a 240x120 box
+    /// — a panel rather than a field — and its chips sat on a row unrelated to the fields it
+    /// shares a form with.
+    #[test]
+    fn the_field_is_a_text_field_height_in_any_rectangle() {
+        for height in [48u32, 120, 300] {
+            let ti = TagInput::new(Rect::new(0, 0, 240, height));
+            let field = ti.field_rect();
+            assert_eq!(
+                field.height,
+                dimensions::TEXT_FIELD_MIN_HEIGHT,
+                "at control height {height}"
+            );
+            assert_eq!(field.width, 240, "the field spans the control's width");
+            assert_eq!(field.y, (height - field.height) as i32 / 2, "at control height {height}");
+        }
+
+        let short = TagInput::new(Rect::new(0, 0, 240, 20));
+        assert_eq!(short.field_rect().height, 20, "a short control clamps the field");
     }
 
     #[test]

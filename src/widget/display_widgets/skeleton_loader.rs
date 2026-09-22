@@ -19,6 +19,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -221,22 +222,45 @@ impl Draw for SkeletonLoader {
 
         match self.shape {
             SkeletonShape::Rect(w, h) => {
-                let shape_rect = Rect::new(cx - w as i32 / 2, cy - h as i32 / 2, w, h);
+                // The caller's own dimensions are the **datum** here: a skeleton stands in
+                // for a specific piece of content, so its width and height are the shape
+                // the caller asked for. They are still clamped to the rectangle, because
+                // an oversized placeholder would paint outside the area nothing clips it
+                // to — which is what `ControlMetrics::center_in` guarantees, and it is
+                // also what keeps a zero-size placeholder from being emitted.
+                let w = w.min(rect.width).max(1);
+                let h = h.min(rect.height).max(1);
+                let shape_rect = ControlMetrics::center_in(rect, crate::core::Size::new(w, h));
                 context.fill_rounded_rect(shape_rect, 4, base_color);
             }
             SkeletonShape::Circle(r) => {
+                // The radius is the caller's datum, clamped to the shortest side so the
+                // disc stays square and inside the control.
+                let r = r.min(rect.width.min(rect.height) / 2).max(1);
                 let center = Point::new(cx, cy);
                 context.fill_circle_aa(center, r, base_color);
             }
             SkeletonShape::TextLine(w) => {
-                // Draw three stacked text-like lines to simulate paragraph text
-                let line_h: u32 = 12;
-                let gap: u32 = 6;
+                // Draw three stacked text-like lines to simulate paragraph text.
+                //
+                // The rows are a **fixed** height and gap, so the placeholder is
+                // `3 * row + 2 * gap` tall in any rectangle. Every term used to be a
+                // local literal, which is why the census cell drew a 12 px line in a
+                // 120 px box: the stack was the only fixed part of a control whose box
+                // was otherwise the caller's, so the same skeleton was a different
+                // object at every size. `SKELETON_ROW_HEIGHT` and `SKELETON_ROW_GAP`
+                // name the two values the caller can now predict from the shape.
+                let line_h = dimensions::SKELETON_ROW_HEIGHT;
+                let gap = dimensions::SKELETON_ROW_GAP;
                 let total_h = 3 * line_h + 2 * gap;
                 let start_y = cy - total_h as i32 / 2;
+                // A row is the caller's width clamped to the control, and never zero: an
+                // over-wide row would paint past the rectangle and a zero-width one would
+                // be an invisible element.
+                let row_w = w.clamp(1, rect.width.max(1));
                 for i in 0..3 {
                     let y = start_y + i * (line_h + gap) as i32;
-                    let line_rect = Rect::new(cx - w as i32 / 2, y, w, line_h);
+                    let line_rect = Rect::new(cx - row_w as i32 / 2, y, row_w, line_h);
                     context.fill_rounded_rect(line_rect, 3, base_color);
                 }
             }
@@ -352,5 +376,66 @@ mod tests {
         assert!(!sl.is_animated());
         sl.set_animated(true);
         assert!(sl.is_animated());
+    }
+
+    /// A `TextLine` skeleton is a fixed stack of rows, not a fraction of the control.
+    ///
+    /// This pins the defect the fix removes: the row height and gap were local literals
+    /// and the rows were the only fixed part of a control whose box was otherwise the
+    /// caller's, so a skeleton in a 100 px slot and one in a census cell were laid out
+    /// against different arithmetic. The stack is now
+    /// `3 * SKELETON_ROW_HEIGHT + 2 * SKELETON_ROW_GAP` tall in any rectangle, which is
+    /// the one thing a caller can predict from the shape.
+    #[test]
+    fn a_text_line_skeleton_stacks_fixed_rows() {
+        let total = 3 * dimensions::SKELETON_ROW_HEIGHT + 2 * dimensions::SKELETON_ROW_GAP;
+        // The stack cannot outgrow the cell a control is measured in, or the census
+        // would be reporting a clipped placeholder rather than a drawn one.
+        assert!(total < 120, "the default stack is shorter than the census cell");
+        for rect in [Rect::new(0, 0, 240, 120), Rect::new(0, 0, 240, 300)] {
+            let mut sl = SkeletonLoader::new(rect);
+            sl.set_shape(SkeletonShape::TextLine(180));
+            sl.set_animated(false);
+            let svg = render_to_svg(&mut sl);
+            // Each of the three rows is emitted at the named height.
+            assert_eq!(
+                svg.matches(&format!("height=\"{}\"", dimensions::SKELETON_ROW_HEIGHT)).count(),
+                3,
+                "three rows at SKELETON_ROW_HEIGHT in {rect:?}: {svg}"
+            );
+        }
+    }
+
+    /// A `Rect` skeleton is the caller's size, clamped to the control rather than
+    /// painted outside it, and never zero-extent.
+    #[test]
+    fn a_rect_skeleton_is_clamped_to_its_control_and_never_empty() {
+        let mut oversized = SkeletonLoader::new(Rect::new(0, 0, 100, 40));
+        oversized.set_shape(SkeletonShape::Rect(500, 500));
+        oversized.set_animated(false);
+        let svg = render_to_svg(&mut oversized);
+        assert!(
+            svg.contains("height=\"40\""),
+            "an oversized placeholder clamps to the control: {svg}"
+        );
+
+        // A zero-size placeholder is still emitted at one pixel rather than not at all.
+        let mut empty = SkeletonLoader::new(Rect::new(0, 0, 100, 40));
+        empty.set_shape(SkeletonShape::Rect(0, 0));
+        empty.set_animated(false);
+        let svg = render_to_svg(&mut empty);
+        assert!(!svg.contains("width=\"0\""), "nothing is emitted zero-wide: {svg}");
+        assert!(!svg.contains("height=\"0\""), "nothing is emitted zero-tall: {svg}");
+    }
+
+    /// A `Circle` skeleton is a disc centred in the control, clamped to its short side.
+    #[test]
+    fn a_circle_skeleton_stays_square_and_inside() {
+        let mut sl = SkeletonLoader::new(Rect::new(0, 0, 60, 120));
+        sl.set_shape(SkeletonShape::Circle(200));
+        sl.set_animated(false);
+        // The disc is clamped to half the *shorter* side, so it cannot exceed the width.
+        let svg = render_to_svg(&mut sl);
+        assert!(!svg.contains("r=\"0\""), "a disc is never zero-radius: {svg}");
     }
 }

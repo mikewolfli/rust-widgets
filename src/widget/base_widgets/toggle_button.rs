@@ -5,10 +5,12 @@
 use crate::core::{HorizontalAlignment, Rect, Size};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::style::EdgeOffsets;
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Toggle button state enumeration.
@@ -179,8 +181,17 @@ impl Widget for ToggleButton {
     }
 
     fn size_hint(&self) -> Size {
-        let text_w = self.text().len() as u32 * 8 + 20;
-        Size::new(text_w.max(75), 28)
+        // The same `max(floor, content + padding)` formula `Button` uses, through the shared
+        // primitive rather than the hand-written `max(75)` this used to spell out. The old
+        // literal pair (`75`/`28`) disagreed with `Button`'s `BUTTON_MIN` (64x40) about how
+        // big a push button is, so two buttons that look identical reported different sizes
+        // and — once `draw` started deriving its band from this hint — drew at two heights.
+        let label_width = self.text().len() as u32 * 8;
+        ControlMetrics::implicit_size(
+            Size::new(label_width, dimensions::FONT_SIZE_BASE + 4),
+            EdgeOffsets::symmetric(dimensions::BUTTON_PADDING_V, dimensions::BUTTON_PADDING_H),
+            dimensions::BUTTON_MIN,
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -251,6 +262,16 @@ impl Draw for ToggleButton {
         let state = self.state();
         let style = self.style();
         use crate::core::Color;
+
+        // ── The box actually painted ──
+        //
+        // The toggle fills the width it was *given*, exactly as `Button` does, but its height
+        // is its own. Painting `rect` directly drew a 240x120 census cell as a 240x120 slab
+        // with the caption floating in the middle of it — a rectangle shaped like a button
+        // rather than a button, and visibly taller than the `Button` beside it. The height
+        // comes from `size_hint`, the same derivation a layout asks for, so the drawn shape
+        // and the reported size cannot disagree.
+        let rect = ControlMetrics::full_width_band(rect, self.size_hint().height);
 
         // ── Background ──
         let bg_color = style.background_color.unwrap_or_else(|| match state {

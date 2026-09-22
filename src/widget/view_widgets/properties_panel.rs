@@ -15,6 +15,7 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::ControlMetrics;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::collections::HashMap;
@@ -109,6 +110,12 @@ const ROW_HEIGHT: u32 = 26;
 const CATEGORY_PADDING: i32 = 4;
 const NAME_COL_LEFT: i32 = 8;
 const VALUE_COL_LEFT: i32 = 148;
+/// The margin the panel leaves between its own frame and its rows: 2 px on every edge.
+///
+/// Named once so the first category header and the rows below it are all measured from the
+/// same inset. They used to start at the panel's literal `geom.y`, which pinned the first
+/// header's glyph box to the frame's own stroke.
+const PANEL_INSET: u32 = 2;
 
 /// PropertiesPanel widget — a property editor with categorized grid layout.
 pub struct PropertiesPanel {
@@ -362,11 +369,16 @@ impl Draw for PropertiesPanel {
 
         let font = crate::core::Font::simple("sans-serif", 12.0);
         let categories = self.properties_by_category();
-        let mut y = geom.y - self.scroll_offset;
+        // Rows scroll inside the panel's own content box, not from its literal top edge: the
+        // first category header used to start at `geom.y`, so its glyph box began on the
+        // frame's own stroke. `band_inset` reserves the panel's margin and the scroll offset
+        // is applied inside it, so the ink and the scroll both move together.
+        let content = ControlMetrics::band_inset(geom, PANEL_INSET);
+        let mut y = content.y - self.scroll_offset;
 
         for (category, entries) in &categories {
             // ── Category header ──
-            let header_rect = Rect::new(geom.x, y, geom.width, ROW_HEIGHT);
+            let header_rect = Rect::new(content.x, y, content.width, ROW_HEIGHT);
             context.fill_rect(header_rect, header_background);
             // Centred through the shared primitive. Every row of this panel used to draw at
             // `y + ROW_HEIGHT / 2 + 4`: the `+ 4` was meant to compensate for the top-edge
@@ -388,60 +400,65 @@ impl Draw for PropertiesPanel {
             y += ROW_HEIGHT as i32;
 
             for entry in entries {
-                if y + (ROW_HEIGHT as i32) > geom.y + (geom.height as i32) {
+                if y + (ROW_HEIGHT as i32) > content.y + (content.height as i32) {
                     break;
                 }
-                if y + (ROW_HEIGHT as i32) < geom.y {
+                if y + (ROW_HEIGHT as i32) < content.y {
                     y += ROW_HEIGHT as i32;
                     continue;
                 }
 
                 // Alternate row background
-                let row_rect = Rect::new(geom.x, y, geom.width, ROW_HEIGHT);
+                let row_rect = Rect::new(content.x, y, content.width, ROW_HEIGHT);
                 context.fill_rect(row_rect, row_background);
                 let row_line = context.text_line(row_rect, &font);
 
-                // Property name
-                let name_x = geom.x + NAME_COL_LEFT;
-                context.draw_text_fitted(
-                    Rect {
-                        x: name_x,
-                        y: row_line.y,
-                        width: (geom.x + VALUE_COL_LEFT - name_x).max(0) as u32,
-                        height: row_line.height,
-                    },
-                    &entry.name,
-                    &font,
-                    text_color,
-                    HorizontalAlignment::Left,
-                );
+                // Property name. Guarded on the text being non-empty so a nameless entry
+                // emits no `<text …></text>`.
+                let name_x = content.x + NAME_COL_LEFT;
+                if !entry.name.is_empty() {
+                    context.draw_text_fitted(
+                        Rect {
+                            x: name_x,
+                            y: row_line.y,
+                            width: (content.x + VALUE_COL_LEFT - name_x).max(0) as u32,
+                            height: row_line.height,
+                        },
+                        &entry.name,
+                        &font,
+                        text_color,
+                        HorizontalAlignment::Left,
+                    );
+                }
 
                 // Property value (with label-style background)
                 let value_rect = Rect::new(
-                    geom.x + VALUE_COL_LEFT,
+                    content.x + VALUE_COL_LEFT,
                     y,
-                    geom.width.saturating_sub(VALUE_COL_LEFT as u32),
+                    content.width.saturating_sub(VALUE_COL_LEFT as u32),
                     ROW_HEIGHT,
                 );
                 let display = Self::value_display_text(&entry.value);
                 context.fill_rect(value_rect, value_background);
                 let value_line = context.text_line(value_rect, &font);
-                context.draw_text_fitted(
-                    Rect {
-                        x: value_rect.x + 2,
-                        y: value_line.y,
-                        width: value_rect.width.saturating_sub(4),
-                        height: value_line.height,
-                    },
-                    &display,
-                    &font,
-                    if entry.editable { value_color } else { readonly_value_color },
-                    HorizontalAlignment::Left,
-                );
+                if !display.is_empty() {
+                    context.draw_text_fitted(
+                        Rect {
+                            x: value_rect.x + 2,
+                            y: value_line.y,
+                            width: value_rect.width.saturating_sub(4),
+                            height: value_line.height,
+                        },
+                        &display,
+                        &font,
+                        if entry.editable { value_color } else { readonly_value_color },
+                        HorizontalAlignment::Left,
+                    );
+                }
 
                 // Draw bottom border line
                 context.draw_rect_stroke(
-                    Rect::new(geom.x, y + ROW_HEIGHT as i32 - 1, geom.width, 1),
+                    Rect::new(content.x, y + ROW_HEIGHT as i32 - 1, content.width, 1),
                     divider,
                     1,
                 );

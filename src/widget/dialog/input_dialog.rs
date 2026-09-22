@@ -13,6 +13,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::numeric::{ordered_clamp_f64, ordered_clamp_i64};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Input dialog input mode.
@@ -463,9 +464,30 @@ impl EventHandler for InputDialog {
         }
     }
 }
+impl InputDialog {
+    /// The frame the dialog actually paints: at most its intrinsic size, centred in the
+    /// area it was given.
+    ///
+    /// # Why the frame is not the caller's rectangle
+    ///
+    /// `rect` is the area the dialog is **offered**. Painting it verbatim drew the 240x120
+    /// census cell as a 240x120 frame whose title bar, label, field and buttons were then
+    /// pinned to literals (`48`, `60`, `rect.height - 40`) written for the 400 px default
+    /// size — so the rows sat in the top half and the buttons floated away from them.
+    /// [`ControlMetrics::painted_box`] caps each axis at the dialog's own intrinsic size
+    /// and centres what is left; every band below is derived from this one rect.
+    fn frame_rect(&self) -> Rect {
+        ControlMetrics::painted_box(
+            self.base.geometry(),
+            Size::new(dimensions::DIALOG_MIN_WIDTH, dimensions::DIALOG_MIN_HEIGHT),
+        )
+    }
+}
+
 impl Draw for InputDialog {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
+        // The **frame**, not the control's rectangle: see `frame_rect`.
+        let rect = self.frame_rect();
         let style = self.style().clone();
 
         // Chrome colours resolve explicit style first, then the theme's resolved style
@@ -519,46 +541,70 @@ impl Draw for InputDialog {
             surface.blend(&Color::BLACK, 0.06)
         };
 
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), surface);
-        context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border);
+        // Rounded by [`dimensions::DIALOG_RADIUS`] so the dialog reads as the same class of
+        // object as its neighbours; the radius is clamped to the frame so a box smaller
+        // than its own corner is not drawn with an inverted one.
+        let radius = dimensions::DIALOG_RADIUS.min(rect.width / 2).min(rect.height / 2);
+        if radius > 0 {
+            context.fill_rounded_rect(rect, radius, surface);
+            context.draw_rounded_rect_stroke(rect, radius, border, 1);
+        } else {
+            context.fill_rect(rect, surface);
+            context.draw_rect(rect, border);
+        }
         // Title bar: a separate region from the dialog surface, in the theme's accent
         // rather than the literal blue it carried before. The label is fitted to the bar,
-        // so a long title truncates at the bar's edge instead of running past the frame.
-        const TITLE_BAR_HEIGHT: u32 = 28;
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, TITLE_BAR_HEIGHT), accent);
-        let title_font = Font::default();
-        let title_metrics = context.measure_text(&self.title, &title_font);
-        context.draw_text_fitted(
-            Rect::new(
-                rect.x + 8,
-                rect.y + ((TITLE_BAR_HEIGHT as i32 - title_metrics.height as i32) / 2).max(0),
-                rect.width.saturating_sub(16),
-                title_metrics.height.max(1),
-            ),
-            &self.title,
-            &title_font,
-            accent_ink,
-            HorizontalAlignment::Left,
-        );
-        // Label. Its box is the row above the entry field, which is what bounds a label
-        // longer than the dialog instead of the dialog's own width.
+        // so a long title truncates at the bar's edge instead of running past the frame, and
+        // it is centred on the bar's own band through the shared primitive rather than at a
+        // literal `y`. The strip comes from `top_band`, which keeps its thickness.
+        let title_bar_band = ControlMetrics::top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
+        context.fill_rect(title_bar_band, accent);
+        if !self.title.is_empty() {
+            let title_font = Font::default();
+            let title_line = context.text_line(title_bar_band, &title_font);
+            context.draw_text_fitted(
+                Rect::new(
+                    rect.x + 8,
+                    title_line.y,
+                    rect.width.saturating_sub(16),
+                    title_line.height.max(1),
+                ),
+                &self.title,
+                &title_font,
+                accent_ink,
+                HorizontalAlignment::Left,
+            );
+        }
+        // The body is everything the title bar leaves. Its rows are derived from the body
+        // rather than from the frame's top edge plus a literal, so the label sits above the
+        // field it names at any frame size and the two cannot drift apart.
+        let body =
+            ControlMetrics::content_below_top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
         let label_font = Font::default();
-        let label_metrics = context.measure_text(&self.label_text, &label_font);
-        context.draw_text_fitted(
-            Rect::new(
-                rect.x + 10,
-                rect.y + 48,
-                rect.width.saturating_sub(20),
-                label_metrics.height.max(1),
-            ),
-            &self.label_text,
-            &label_font,
-            ink,
-            HorizontalAlignment::Left,
-        );
-        // Input field
-        let input_y = rect.y + 60;
-        let input_band = Rect::new(rect.x + 10, input_y, rect.width.saturating_sub(20), 26);
+        let label_line_h = context.measure_text("M", &label_font).height.max(1);
+        // Label. Its box is the row above the entry field, which is what bounds a label
+        // longer than the dialog instead of the dialog's own width. Guarded on the text
+        // being non-empty so a labelless dialog emits no `<text …></text>`.
+        let label_band = ControlMetrics::top_band(body, label_line_h);
+        if !self.label_text.is_empty() {
+            let label_line = context.text_line(label_band, &label_font);
+            context.draw_text_fitted(
+                Rect::new(
+                    body.x + 10,
+                    label_line.y,
+                    body.width.saturating_sub(20),
+                    label_line.height.max(1),
+                ),
+                &self.label_text,
+                &label_font,
+                ink,
+                HorizontalAlignment::Left,
+            );
+        }
+        // Input field: the band below the label, its height the field's own rather than a
+        // literal `26` written at the frame's top plus `60`.
+        let field_band = ControlMetrics::content_below_top_band(body, label_line_h);
+        let input_band = ControlMetrics::top_band(field_band, field_band.height.min(26));
         context.fill_rect(input_band, field);
         context.draw_rect(input_band, border);
         let display_text = match self.mode {
@@ -569,33 +615,36 @@ impl Draw for InputDialog {
             }
             InputMode::Item => self.current_item_text().unwrap_or("").to_string(),
         };
-        // The `Rect::new` above already narrows to zero rather than going negative; the
-        // `saturating_sub` repetitions that used to spell this out are gone because the
-        // band is named once and reused for the field's fill, its border and its text.
-        let input_font = Font::default();
-        let input_metrics = context.measure_text(&display_text, &input_font);
-        context.draw_text_fitted(
-            Rect::new(
-                input_band.x + 4,
-                input_y + ((26 - input_metrics.height as i32) / 2).max(0),
-                input_band.width.saturating_sub(8),
-                input_metrics.height.max(1),
-            ),
-            &display_text,
-            &input_font,
-            ink,
-            HorizontalAlignment::Left,
-        );
-        // OK/Cancel. The pair is right-aligned inside the frame and floored at its left
-        // edge, so a control narrower than the two 80 px buttons keeps them on screen
-        // rather than starting the OK label at a negative x. The labels are centred in
-        // their buttons and fitted to them.
-        let btn_y = (rect.y as f32 + rect.height as f32 - 40.0) as i32;
-        const BTN_W: i32 = 80;
-        const BTN_STEP: i32 = 88;
-        let cancel_x = (rect.x + rect.width as i32 - BTN_STEP).max(rect.x);
-        let ok_x = (cancel_x - BTN_STEP).max(rect.x);
-        let ok_rect = Rect::new(ok_x, btn_y, BTN_W as u32, 28);
+        // Guarded: an unguarded draw of an empty value emits `<text …></text>`, an element
+        // the rasteriser never produces. The line box is centred on the field through the
+        // shared primitive, which the old `input_y + ((26 - h) / 2)` re-derived by hand.
+        if !display_text.is_empty() {
+            let input_font = Font::default();
+            let input_line = context.text_line(input_band, &input_font);
+            context.draw_text_fitted(
+                Rect::new(
+                    input_band.x + 4,
+                    input_line.y,
+                    input_band.width.saturating_sub(8),
+                    input_line.height.max(1),
+                ),
+                &display_text,
+                &input_font,
+                ink,
+                HorizontalAlignment::Left,
+            );
+        }
+        // OK/Cancel. The pair is the frame's bottom band, right-aligned inside it and
+        // floored at its left edge, so a control narrower than the two 80 px buttons keeps
+        // them on screen rather than starting the OK label at a negative x. Taking the row
+        // from `bottom_band` is what stops the buttons floating up at a tall frame (the old
+        // `rect.height - 40`) or clipping at a short one.
+        let button_band = ControlMetrics::bottom_band(rect, dimensions::DIALOG_BUTTON_HEIGHT);
+        let btn_w = 80i32.min(button_band.width as i32).max(1);
+        let btn_step = btn_w + 8;
+        let cancel_x = (rect.x + rect.width as i32 - btn_step).max(rect.x);
+        let ok_x = (cancel_x - btn_step).max(rect.x);
+        let ok_rect = Rect::new(ok_x, button_band.y, btn_w as u32, button_band.height.max(1));
         context.fill_rect(ok_rect, accent);
         context.draw_text_line(
             ok_rect,
@@ -604,7 +653,8 @@ impl Draw for InputDialog {
             accent_ink,
             HorizontalAlignment::Center,
         );
-        let cancel_rect = Rect::new(cancel_x, btn_y, BTN_W as u32, 28);
+        let cancel_rect =
+            Rect::new(cancel_x, button_band.y, btn_w as u32, button_band.height.max(1));
         context.fill_rect(cancel_rect, surface.blend(&ink, 0.1));
         context.draw_rect(cancel_rect, border);
         context.draw_text_line(

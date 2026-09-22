@@ -16,6 +16,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::misc_widgets::date_utils::{days_in_month, DAY_STRINGS, MONTH_NAMES};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -311,14 +312,34 @@ impl Draw for CupertinoDatePicker {
 
         // Background
         let bg_color = if is_enabled { wheel } else { disabled_surface };
-        context.fill_rect(rect, bg_color);
+        // ── The drum actually painted ──
+        //
+        // `rect` is the area the picker was *given*; the drum is a fixed-row wheel, so its
+        // height is [`dimensions::PICKER_VISIBLE_ROWS`] rows of [`dimensions::PICKER_ROW_HEIGHT`]
+        // — not a fifth of whatever height the caller supplied. Deriving the row from
+        // `rect.height / 5` made a 120 px cell show five 24 px rows and the 300x200 panel five
+        // 60 px rows: the same control at two densities, with the font size tied to the row.
+        // The band is centred and clamped to the rectangle, so a picker shorter than five rows
+        // still fits inside it.
+        let wheel_rect = ControlMetrics::center_in(
+            rect,
+            Size::new(rect.width, dimensions::PICKER_ROW_HEIGHT * dimensions::PICKER_VISIBLE_ROWS),
+        );
+        context.fill_rect(wheel_rect, bg_color);
 
         // Column layout
-        let col_width = rect.width / 3;
-        let row_height = (rect.height / 5).max(1);
-        let font_size = (row_height as f32 * 0.38).clamp(10.0, 15.0);
+        //
+        // The column width still divides the available width (a wheel fills its panel
+        // horizontally), but the row height is the picker's own fact. `row_height` is the row
+        // **as painted**, which equals `PICKER_ROW_HEIGHT` when the band was not clamped — and
+        // it is what the font must follow: deriving the font from the nominal 32 px row while
+        // the band drew 24 px rows put a 15.8 px arrow inside a 24 px row and pushed the first
+        // and last visible values off the wheel in the census cell.
+        let col_width = wheel_rect.width / 3;
+        let row_height = (wheel_rect.height / dimensions::PICKER_VISIBLE_ROWS).max(1);
+        let font_size = (row_height as f32 * 0.38).clamp(9.0, 15.0);
         let font = Font::new("sans-serif", font_size, false, false);
-        let arrow_font = Font::new("sans-serif", (font_size * 1.3).max(12.0), true, false);
+        let arrow_font = Font::new("sans-serif", (font_size * 1.3).max(10.0), true, false);
 
         // Build visible column items (reuse static arrays — no per-draw Vec<String>)
         let constraint = self.date_constraint();
@@ -344,29 +365,36 @@ impl Draw for CupertinoDatePicker {
         ];
 
         for (col_idx, (sel_offset, items, _label)) in columns.iter().enumerate() {
-            let col_x = rect.x + (col_idx as u32 * col_width) as i32;
+            let col_x = wheel_rect.x + (col_idx as u32 * col_width) as i32;
 
-            // Vertical divider between columns
+            // Vertical rule between columns. Drawn as a *line* rather than a 1 px wide
+            // rectangle: `draw_rect_stroke` on a 1-wide rect emits a degenerate element
+            // (`width="1"` in the SVG) that the two strokes of its own outline overdraw, so the
+            // division was both wider than a divider and indistinguishable from a module.
             if col_idx > 0 {
-                context.draw_rect_stroke(Rect::new(col_x, rect.y, 1, rect.height), column_rule, 1);
+                context.draw_line(
+                    Point::new(col_x, wheel_rect.y),
+                    Point::new(col_x, wheel_rect.y + wheel_rect.height as i32),
+                    column_rule,
+                );
             }
 
             // Highlight bar for the center (selected) row
-            let highlight_y = rect.y + 2 * row_height as i32;
+            let highlight_y = wheel_rect.y + 2 * row_height as i32;
             let highlight_rect =
                 Rect::new(col_x + 4, highlight_y, col_width.saturating_sub(8), row_height);
             context.fill_rounded_rect(highlight_rect, 6, band);
 
             // Draw the five visible rows
-            for row in 0..5 {
-                let item_idx = row + (sel_offset - 2);
+            for row in 0..dimensions::PICKER_VISIBLE_ROWS {
+                let item_idx = row as i32 + (sel_offset - 2);
                 if item_idx < 0 || item_idx >= items.len() as i32 {
                     continue;
                 }
 
                 let text = &items[item_idx as usize];
                 let is_selected = row == 2;
-                let item_y = rect.y + (row as u32 * row_height) as i32;
+                let item_y = wheel_rect.y + (row * row_height) as i32;
 
                 let metrics = context.measure_text(text, &font);
                 // Centred inside the row's own band. The old origin added `ascent` on top of
@@ -401,7 +429,7 @@ impl Draw for CupertinoDatePicker {
 
             // Up arrow indicator (top of column)
             let arrow_color = if is_enabled { arrow } else { disabled_arrow };
-            let up_y = rect.y + 2;
+            let up_y = wheel_rect.y + 2;
             context.draw_text(
                 Point::new(col_x + (col_width as i32 - 8) / 2, up_y),
                 "^",
@@ -410,8 +438,9 @@ impl Draw for CupertinoDatePicker {
                 HorizontalAlignment::Left,
             );
 
-            // Down arrow indicator (bottom of column)
-            let down_y = rect.y + rect.height as i32 - row_height as i32 + 2;
+            // Down arrow indicator (bottom of column), on the wheel rather than on the
+            // control's own bottom edge, which sat half a row below the last visible row.
+            let down_y = wheel_rect.y + wheel_rect.height as i32 - row_height as i32 + 2;
             context.draw_text(
                 Point::new(col_x + (col_width as i32 - 8) / 2, down_y),
                 "v",
@@ -433,9 +462,19 @@ impl EventHandler for CupertinoDatePicker {
         if let Event::MousePress { pos, button: 1 } = event {
             let col = self.column_at(pos.x);
             let rect = self.geometry();
-            let row_height = rect.height / 5;
-            let rel_y = pos.y - rect.y;
-            let row = rel_y / row_height as i32;
+            // The row is resolved against the same fixed-height wheel the rows are painted in,
+            // so a click maps to the value under the pointer rather than to a fraction of the
+            // control's height — which picked the wrong row on every non-200 px panel.
+            let wheel_rect = ControlMetrics::center_in(
+                rect,
+                Size::new(
+                    rect.width,
+                    dimensions::PICKER_ROW_HEIGHT * dimensions::PICKER_VISIBLE_ROWS,
+                ),
+            );
+            let row_height = (wheel_rect.height / dimensions::PICKER_VISIBLE_ROWS).max(1) as i32;
+            let rel_y = pos.y - wheel_rect.y;
+            let row = rel_y / row_height;
             // Upper half (row 0-2) = increment, lower half (row 3-4) = decrement
             let increment = row <= 2;
 
@@ -604,5 +643,25 @@ mod tests {
 
         picker.handle_event(&Event::MousePress { pos: Point::new(20, 30), button: 1 });
         assert_eq!(picker.selected_date().0, 2025);
+    }
+
+    /// The drum's rows are a fixed height, not a fifth of whatever the caller supplied.
+    ///
+    /// The defect this pins: `row_height` was `rect.height / 5`, so a 120 px cell drew five
+    /// 24 px rows and the 300x200 panel drew five 60 px rows — the same wheel at two densities,
+    /// with the font and the arrows tied to the row and therefore changing with it. A wheel's
+    /// row height is chrome.
+    #[test]
+    fn the_wheel_rows_are_a_fixed_height() {
+        // Tall enough for the full five rows, so the band is not clamped and the rows are
+        // exactly the picker's own value.
+        let mut picker = CupertinoDatePicker::new(Rect::new(0, 0, 300, 200));
+        picker.set_selected_date(2025, 6, 15);
+        let svg = crate::widget::svg::render_to_svg(&mut picker);
+        // The rows tile the drum: 5 rows of `PICKER_ROW_HEIGHT` = 160, centred in 200.
+        assert!(
+            svg.contains("height=\"32\""),
+            "a row must be PICKER_ROW_HEIGHT tall, not a fraction of the panel"
+        );
     }
 }

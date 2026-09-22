@@ -16,6 +16,7 @@ use crate::widget::capability::coercion::expect_usize;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::ControlMetrics;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -49,6 +50,13 @@ const ROW_HEIGHT: u32 = 24;
 /// below it, so the first row begins at `ROW_HEIGHT + 1`.
 const FIRST_ROW_TOP: u32 = ROW_HEIGHT + 1;
 
+/// The margin the grid leaves between its own frame and its rows: 2 px on every edge.
+///
+/// Named once so the header, the property rows, the hit test and the visible-row count are
+/// all measured from the same inset. They used to start at the control's literal `rect.y`,
+/// which pinned the header's glyph box to the frame's own stroke.
+const GRID_INSET: u32 = 2;
+
 /// PropertyGrid widget — a two-column property editor table.
 pub struct PropertyGrid {
     base: BaseWidget,
@@ -60,6 +68,16 @@ pub struct PropertyGrid {
 }
 
 impl PropertyGrid {
+    /// The grid's inset content box, the one rectangle every row is measured from.
+    ///
+    /// `draw` lays the header and the property rows out from this box rather than from the
+    /// control's literal top edge — which is what kept the header's glyph box off the frame's
+    /// own stroke — so the hit test, the visible-row count and the paint path all derive from
+    /// this one helper instead of each re-deriving the offset.
+    fn content_rect(&self) -> Rect {
+        ControlMetrics::band_inset(self.geometry(), GRID_INSET)
+    }
+
     /// Number of property rows that fit in the current geometry.
     ///
     /// Mirrors the arithmetic in `draw` so a hit-test can reject a click below the
@@ -67,7 +85,7 @@ impl PropertyGrid {
     /// an index that `selected_index < properties.len()` accepted, selecting a row the
     /// user cannot see.
     fn visible_row_count(&self) -> u32 {
-        let height = self.geometry().height;
+        let height = self.content_rect().height;
         height.saturating_sub(FIRST_ROW_TOP) / ROW_HEIGHT
     }
 
@@ -314,19 +332,38 @@ impl Draw for PropertyGrid {
         // Background
         context.fill_rect(rect, surface);
 
+        // The header row and the property rows are laid out from the control's inset content
+        // box, not from its literal top edge. The header used to be the first 26 px of the
+        // control and its label was drawn at `rect.y + 6`, so its glyph box began on the
+        // frame's own stroke; the rows below then started at `rect.y + row_height + 1` with
+        // the same flush-top origin. `band_inset` reserves the margin and `text_line` centres
+        // each label on its own row.
+        let content = self.content_rect();
+
         // Header row
         let header_font = Font::bold("Arial", 12.0);
-        let header_rect = Rect::new(rect.x, rect.y, rect.width, row_height);
+        let header_rect = Rect::new(content.x, content.y, content.width, row_height);
         context.fill_rect(header_rect, header_bg);
-        context.draw_text(
-            Point::new(rect.x + 4, rect.y + 6),
+        let header_line = context.text_line(header_rect, &header_font);
+        context.draw_text_fitted(
+            Rect::new(
+                header_rect.x + 4,
+                header_line.y,
+                name_col_width.saturating_sub(4),
+                header_line.height.max(1),
+            ),
             "Property",
             &header_font,
             header_ink,
             HorizontalAlignment::Left,
         );
-        context.draw_text(
-            Point::new(rect.x + name_col_width as i32 + 4, rect.y + 6),
+        context.draw_text_fitted(
+            Rect::new(
+                header_rect.x + name_col_width as i32 + 4,
+                header_line.y,
+                header_rect.width.saturating_sub(name_col_width).saturating_sub(8),
+                header_line.height.max(1),
+            ),
             "Value",
             &header_font,
             header_ink,
@@ -334,10 +371,10 @@ impl Draw for PropertyGrid {
         );
 
         // Draw a separator line under header
-        let separator_y = rect.y + row_height as i32;
+        let separator_y = header_rect.y + row_height as i32;
         context.draw_line(
-            Point::new(rect.x, separator_y),
-            Point::new(rect.x + rect.width as i32, separator_y),
+            Point::new(content.x, separator_y),
+            Point::new(content.x + content.width as i32, separator_y),
             separator,
         );
 
@@ -347,7 +384,7 @@ impl Draw for PropertyGrid {
 
         #[allow(clippy::manual_checked_ops)]
         let visible_count = if row_height > 0 {
-            (rect.height.saturating_sub(FIRST_ROW_TOP)) / row_height
+            (content.height.saturating_sub(FIRST_ROW_TOP)) / row_height
         } else {
             0
         };
@@ -356,7 +393,7 @@ impl Draw for PropertyGrid {
         let end_idx = (start_idx + visible_count as usize).min(self.properties.len());
 
         for i in start_idx..end_idx {
-            let row_rect = Rect::new(rect.x, y, rect.width, row_height);
+            let row_rect = Rect::new(content.x, y, content.width, row_height);
             let is_selected = self.selected_index == Some(i);
 
             // Alternating row background
@@ -369,13 +406,23 @@ impl Draw for PropertyGrid {
             }
 
             // Name column background
-            let name_rect = Rect::new(rect.x, y, name_col_width, row_height);
+            let name_rect = Rect::new(content.x, y, name_col_width, row_height);
             context.fill_rect(name_rect, name_column);
+
+            // The row's line box, so every label is centred on its own row rather than
+            // positioned from a literal `y + 6` that assumed the row began at the control's
+            // top edge.
+            let row_line = context.text_line(row_rect, &value_font);
 
             // Name text (bold)
             let name_text_color = if !is_enabled { disabled_ink } else { ink };
-            context.draw_text(
-                Point::new(rect.x + 4, y + 6),
+            context.draw_text_fitted(
+                Rect::new(
+                    name_rect.x + 4,
+                    row_line.y,
+                    name_col_width.saturating_sub(8),
+                    row_line.height.max(1),
+                ),
                 &self.properties[i].name,
                 &Font::bold("Arial", 12.0),
                 name_text_color,
@@ -392,8 +439,13 @@ impl Draw for PropertyGrid {
             } else {
                 ink
             };
-            context.draw_text(
-                Point::new(rect.x + name_col_width as i32 + 4, y + 6),
+            context.draw_text_fitted(
+                Rect::new(
+                    row_rect.x + name_col_width as i32 + 4,
+                    row_line.y,
+                    row_rect.width.saturating_sub(name_col_width).saturating_sub(8),
+                    row_line.height.max(1),
+                ),
                 &self.properties[i].value,
                 &value_font,
                 value_color,
@@ -420,18 +472,18 @@ impl EventHandler for PropertyGrid {
         match event {
             Event::MousePress { pos, button } | Event::MouseRelease { pos, button } => {
                 if *button == 1 {
-                    let rect = self.geometry();
+                    let content = self.content_rect();
 
-                    // The click is measured from the widget's own top edge, so a press
-                    // above the widget (`click_y < 0`) is a click outside it and must
-                    // deselect rather than index a row. The previous arithmetic cast
-                    // `click_y` to `u32` before subtracting, which turned a negative
+                    // The click is measured from the content box's own top edge, so a press
+                    // above the first painted row (`click_y < FIRST_ROW_TOP`) is outside the
+                    // rows and must deselect rather than index one. The previous arithmetic
+                    // cast `click_y` to `u32` before subtracting, which turned a negative
                     // offset into a huge row index.
-                    let click_y = pos.y - rect.y;
+                    let click_y = pos.y - content.y;
 
                     if click_y >= FIRST_ROW_TOP as i32 {
                         // `draw` paints row `scroll_offset + i` at
-                        // `y = rect.y + FIRST_ROW_TOP + i * ROW_HEIGHT`, so this is the
+                        // `y = content.y + FIRST_ROW_TOP + i * ROW_HEIGHT`, so this is the
                         // inverse of that mapping. `>=` (not `>`) matters: a click on the
                         // first row's top edge is a click on that row, and `>` skipped it.
                         let row_in_view = (click_y as u32 - FIRST_ROW_TOP) / ROW_HEIGHT;
@@ -647,31 +699,34 @@ mod tests {
         assert_eq!(pg.selected_index(), None);
     }
 
-    /// Row 0 occupies `[25, 49)`; its top edge is part of it.
+    /// Row 0 occupies `[25, 49)` **inside the control's inset content box**; its top edge is
+    /// part of it.
     ///
     /// The hit-test compared `click_y > header_height` (25), so a click exactly on the
     /// first row's top edge fell into the header branch and selected nothing, while
     /// `y = 26` selected row 0. `draw` paints that row starting at 25, so the boundary
     /// case is the row's own first pixel.
+    ///
+    /// The coordinates below are taken from the grid's own `content_rect`, which is what
+    /// this now pins: the rows are measured from the inset content box rather than from the
+    /// control's literal top edge, so the first row's top edge sits at `content.y + 25`.
+    /// Asserting the absolute `25` would pin the old flush-top geometry and fail once the
+    /// inset moved the rows down.
     #[test]
     fn property_grid_first_row_top_edge_selects_row_zero() {
         let mut pg = PropertyGrid::new(Rect::new(0, 0, 300, 200));
         pg.add_property("A", "1", true);
         pg.add_property("B", "2", true);
 
-        pg.handle_event(&Event::MousePress {
-            pos: Point::new(10, FIRST_ROW_TOP as i32),
-            button: 1,
-        });
+        let top = pg.content_rect().y + FIRST_ROW_TOP as i32;
+        pg.handle_event(&Event::MousePress { pos: Point::new(10, top), button: 1 });
         assert_eq!(pg.selected_index(), Some(0), "the first row's top edge is part of it");
 
         // The last pixel of the previous row is not.
         let mut pg = PropertyGrid::new(Rect::new(0, 0, 300, 200));
         pg.add_property("A", "1", true);
-        pg.handle_event(&Event::MousePress {
-            pos: Point::new(10, FIRST_ROW_TOP as i32 - 1),
-            button: 1,
-        });
+        let top = pg.content_rect().y + FIRST_ROW_TOP as i32;
+        pg.handle_event(&Event::MousePress { pos: Point::new(10, top - 1), button: 1 });
         assert_eq!(pg.selected_index(), None, "the separator line is not a row");
     }
 

@@ -369,12 +369,19 @@ impl PieChart {
 /// pick the ink for the surface the label actually ended up on, instead of assuming the
 /// placement it asked for.
 fn label_box(x: i32, y: i32, width: i32, height: i32, rect: Rect) -> (Rect, bool) {
-    let max_x = (rect.x + rect.width as i32 - width).max(rect.x);
-    let max_y = (rect.y + rect.height as i32 - height).max(rect.y);
-    let clamped_x = x.clamp(rect.x, max_x);
-    let clamped_y = y.clamp(rect.y, max_y);
+    // The gutter is the margin a clamped label keeps from the control's own edge, so a
+    // clamped box sits *inside* the picture rather than on its border: `pie_chart.svg` drew
+    // its top and bottom slice labels flush against the frame when the box was clamped to
+    // `rect`'s raw extremes. One pixel is enough to read as inset and never loses a glyph.
+    const EDGE_GUARD: i32 = 1;
+    let min_x = rect.x + EDGE_GUARD;
+    let min_y = rect.y + EDGE_GUARD;
+    let max_x = (rect.x + rect.width as i32 - width - EDGE_GUARD).max(min_x);
+    let max_y = (rect.y + rect.height as i32 - height - EDGE_GUARD).max(min_y);
+    let clamped_x = x.clamp(min_x, max_x);
+    let clamped_y = y.clamp(min_y, max_y);
     let moved = clamped_x != x || clamped_y != y;
-    (Rect::new(clamped_x, clamped_y, width as u32, height as u32), moved)
+    (Rect::new(clamped_x, clamped_y, width.max(1) as u32, height.max(1) as u32), moved)
 }
 
 impl Widget for PieChart {
@@ -485,7 +492,17 @@ impl Draw for PieChart {
                 // ring, so on the downward slices it lands near the bottom edge: centring
                 // an unfitted label there put half its glyph box below the control, which
                 // the census caught as `[96,129..102,139]` on a 120 px-high box.
-                let label_radius = outer_radius + 12.0;
+                //
+                // The anchor is also *pulled inside* the control by the gutter the label
+                // needs. A fixed `outer_radius + 12` put the anchor at y = 0 for the top
+                // slice and y = 110 for the bottom one on a 120 px box — the label was then
+                // only kept in the picture by `label_box` clamping it flush against the
+                // border, so the first and last labels sat on the frame. Deriving the anchor
+                // from the room that is actually left leaves a margin and lets `label_box`
+                // stay a genuine fallback rather than the mechanism.
+                let label_gutter = context.measure_text("0", &label_font).height as f32 + 4.0;
+                let label_radius = (outer_radius + 12.0)
+                    .min((rect.width.min(rect.height) as f32 / 2.0) - label_gutter);
                 let label_pos = Self::point_on_circle(exploded_center, label_radius, mid_angle);
 
                 if self.show_labels {

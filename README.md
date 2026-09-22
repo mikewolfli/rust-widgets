@@ -28,7 +28,7 @@ buffer instead. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ```toml
 [dependencies]
-rust_widgets = "2.6.0"
+rust_widgets = "2.6.1"
 ```
 
 Pick **exactly one device profile**. They are mutually exclusive — `mini` and `embedded` compile parts
@@ -36,11 +36,11 @@ of the crate *out*, so combining one with `desktop` is not a lowest common denom
 build:
 
 ```toml
-rust_widgets = { version = "2.6.0", features = ["desktop"] }                       # default
-rust_widgets = { version = "2.6.0", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "2.6.0", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "2.6.0", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "2.6.0", default-features = false, features = ["mini"] }
+rust_widgets = { version = "2.6.1", features = ["desktop"] }                       # default
+rust_widgets = { version = "2.6.1", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "2.6.1", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "2.6.1", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "2.6.1", default-features = false, features = ["mini"] }
 ```
 
 > `cargo check --features embedded` is **wrong**: `desktop` is a default feature, so that command
@@ -89,6 +89,67 @@ The renderer's text origin is the glyph box's **top-left**, not a baseline. Both
 contract identically — the SVG emitter writes `dominant-baseline="text-before-edge"` — so a label
 measured against one backend lands in the same place in the other. That property is what makes
 `snapshots/svg/` a usable review artifact rather than a second, divergent renderer.
+
+## Sizing a control
+
+A control is given a rectangle by whatever placed it, and that rectangle is the area it **may**
+occupy — not how big it should draw. Those are two questions, and answering the second one is what
+stops a switch from being painted as a 240x120 stadium:
+
+```rust
+implicit_size = max(floor, content + padding)     // Qt Quick's Button.qml formula
+```
+
+The `max` is the load-bearing part: the **floor is a minimum tappable area**, so a button labelled
+with 5 px of text is still `64x40` rather than `64x18`. `rust_widgets::widget::ControlMetrics`
+exposes that formula and the geometry helpers built on it, and
+`rust_widgets::widget::metrics::dimensions` holds every control dimension (track sizes, thumb
+radii, field heights, paddings) so one fact has one definition:
+
+| helper | the question it answers |
+|---|---|
+| `implicit_size` / `content_box` | how big should I be? / where may my content go? |
+| `center_in` / `centered_disc` / `centered_square` | centre fixed chrome, clamped never expanded |
+| `centered_band` / `full_width_band` | full width, my height, vertically centred |
+| `top_band` / `bottom_band` / `band_inset` | pin a bar to an edge and let content follow |
+| `focus_ring_rect` / `focus_ring_color` | the keyboard ring, inset so it never overlaps a neighbour |
+
+## Laying out a control
+
+A layout **asks each child how big it wants to be** and acts on the answer, rather than being told in
+advance. Each control states its wish as a floor, a preferred value and a ceiling, because "how small
+may I squeeze you" and "how large may I stretch you" are questions a single size cannot answer:
+
+```rust
+use rust_widgets::layout::{AxisHints, Hints, LayoutParams, ChildInfo, Layout};
+
+// 120 px wide minimum, would like 200, never past 400; free to stretch horizontally.
+let hints = Hints { width: AxisHints::new(120, 200, 400), height: AxisHints::fixed(32) };
+let children = [ChildInfo::new(widget_id, hints).with_params(LayoutParams::filled())];
+
+let mut out = Vec::new();
+layout.arrange(rect, &children, &mut |id, child_rect| out.push((id, child_rect)));
+```
+
+`fill` is separate from the size on purpose: a slider and a button can share a preferred size while
+only one of them should be stretched across a form. `AxisHints::new` normalises `min <= pref <= max`
+on construction, so an unnormalised hint cannot be represented. Every existing layout keeps working
+unchanged — `Layout::arrange` defaults to forwarding to `Layout::update`.
+
+An example is committed at [`examples/readme_check.rs`](examples/readme_check.rs), so these snippets
+are compiled on every build rather than drifting from the API.
+
+## Control behaviour
+
+Three contracts that a control's shape alone does not communicate:
+
+- **`clicked` requires the release to land inside the control.** A drag that starts on a button and
+  ends off it emits `canceled` instead, and only the primary button activates.
+- **`pressed` is a continuous quantity.** Dragging off a held button clears it and dragging back
+  restores it, so the control reflects where the pointer actually is.
+- **A focus ring is drawn when the user is on the keyboard, not merely when the control has focus.**
+  `Event::FocusGained` carries a `FocusReason`, and `FocusReason::draws_focus_ring()` is `false` for a
+  pointer press — a ring under the cursor reads as a stuck highlight.
 
 ## Verifying a change
 
@@ -169,7 +230,7 @@ MIT — see [LICENSE](LICENSE).
 - Issues: [GitHub Issues](https://github.com/mikewolfli/rust-widgets/issues)
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.6.0-blue)]()
+[![version](https://img.shields.io/badge/version-2.6.1-blue)]()
 [![tests](https://img.shields.io/badge/tests-5600%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 

@@ -15,6 +15,7 @@ use crate::widget::capability::coercion::expect_usize;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -88,6 +89,18 @@ impl CupertinoSegmentedControl {
     pub fn segment_count(&self) -> usize {
         self.segments.len()
     }
+
+    /// The track the control actually paints: full width,
+    /// `dimensions::SEGMENTED_CONTROL_HEIGHT` tall, centred in the rectangle it was given.
+    ///
+    /// # Why the track is not the rectangle
+    ///
+    /// A segmented control's chrome is one row of segments. Taking `rect.height` made a
+    /// 240x120 census cell a **240x120 stadium**, and it disagreed with the 32 px `size_hint`
+    /// the control reports. The band is the single derivation the paint and the hit test share.
+    fn track_band(&self) -> Rect {
+        ControlMetrics::full_width_band(self.geometry(), dimensions::SEGMENTED_CONTROL_HEIGHT)
+    }
 }
 
 impl Widget for CupertinoSegmentedControl {
@@ -152,14 +165,22 @@ impl Draw for CupertinoSegmentedControl {
         }
 
         let seg_count = self.segments.len();
-        // A control with no segments is the state `create_cupertino_segmented_control`
-        // produces — that constructor takes no segment text, so the whole `draw` used to
-        // return before painting a pixel and the control was invisible on screen while every
-        // geometry check passed. The pill is the control's own surface, so it is painted
-        // whether or not there is anything in it.
-        let seg_w =
-            if seg_count == 0 { rect.width as i32 } else { rect.width as i32 / seg_count as i32 };
-        let corner_radius = (rect.height as f32 / 2.0) as u32;
+        // ── The track actually painted ──
+        //
+        // `rect` is the area the control was *given*; the control's own chrome is one row of
+        // segments, `dimensions::SEGMENTED_CONTROL_HEIGHT` tall and centred. Painting the
+        // track across the whole rectangle made a 240x120 census cell a bare 240x120 stadium
+        // with no segment division in it — the defect this replaces — and it disagreed with the
+        // 32 px size the control reports. A control with no segments still paints its track,
+        // which is what keeps a freshly constructed control visible; that track is now the
+        // fixed-height pill rather than the whole canvas.
+        let track_rect = self.track_band();
+        let seg_w = if seg_count == 0 {
+            track_rect.width as i32
+        } else {
+            track_rect.width as i32 / seg_count as i32
+        };
+        let corner_radius = track_rect.height / 2;
 
         // Chrome colours resolve explicit style first, then the theme's resolved style for
         // this control, and only then fall back to a literal. Every colour below used to be
@@ -209,7 +230,7 @@ impl Draw for CupertinoSegmentedControl {
         } else {
             track_surface.blend(&window_fill, 0.50)
         };
-        context.fill_rounded_rect(rect, corner_radius, track_color);
+        context.fill_rounded_rect(track_rect, corner_radius, track_color);
 
         if seg_count == 0 {
             return;
@@ -226,12 +247,12 @@ impl Draw for CupertinoSegmentedControl {
         } else {
             highlight_color.blend(&track_color, 0.50)
         };
-        let sel_x = rect.x + (self.selected_index as i32) * seg_w;
+        let sel_x = track_rect.x + (self.selected_index as i32) * seg_w;
         let sel_rect = Rect::new(
             sel_x + 2,
-            rect.y + 2,
+            track_rect.y + 2,
             seg_w.saturating_sub(4) as u32,
-            rect.height.saturating_sub(4),
+            track_rect.height.saturating_sub(4),
         );
         context.fill_rounded_rect(sel_rect, corner_radius, indicator_color);
 
@@ -242,12 +263,12 @@ impl Draw for CupertinoSegmentedControl {
         let unselected = ink.blend(&track_color, 0.45);
         for (i, seg) in self.segments.iter().enumerate() {
             let metrics = context.measure_text(seg, &font);
-            let seg_x = rect.x + (i as i32) * seg_w;
+            let seg_x = track_rect.x + (i as i32) * seg_w;
             let text_x = seg_x + (seg_w - metrics.width as i32) / 2;
             // Centre the label in its segment. The origin is the glyph box's top edge, so the
             // offset is half the *line box*; the old ascent/descent pair began the glyph box
             // half a line below the segment's middle.
-            let text_y = rect.y + (rect.height as i32 - metrics.height as i32) / 2;
+            let text_y = track_rect.y + (track_rect.height as i32 - metrics.height as i32) / 2;
             // The label must contrast with what it is painted on — the accent highlight for
             // the selected segment, the track for the rest — so the two are chosen against
             // their own backdrop instead of both assuming a light one.
@@ -284,11 +305,20 @@ impl EventHandler for CupertinoSegmentedControl {
                     return;
                 }
 
-                let rect = self.geometry();
-                let seg_w = rect.width as i32 / self.segments.len() as i32;
-                let rel_x = pos.x - rect.x;
+                // The click is resolved against the same band the segments are painted in, so a
+                // tap above or below the bar hits nothing rather than selecting a segment whose
+                // ink is not there.
+                let track_rect = self.track_band();
+                let seg_w = track_rect.width as i32 / self.segments.len() as i32;
+                if seg_w <= 0 {
+                    return;
+                }
+                let rel_x = pos.x - track_rect.x;
 
-                if rel_x < 0 || rel_x >= rect.width as i32 {
+                if rel_x < 0 || rel_x >= track_rect.width as i32 {
+                    return;
+                }
+                if pos.y < track_rect.y || pos.y >= track_rect.y + track_rect.height as i32 {
                     return;
                 }
 
@@ -433,5 +463,22 @@ mod tests {
             "the disabled state must be visible; otherwise the control lies about \
              accepting input"
         );
+    }
+
+    /// The track is one 32 px pill whatever rectangle the control was given.
+    ///
+    /// The defect this pins: the track was `fill_rounded_rect(rect, rect.height / 2, ..)`,
+    /// so a 240x120 census cell drew a bare 240x120 stadium with no segment division in it —
+    /// the segments inherited the same height, leaving nothing to divide.
+    #[test]
+    fn the_track_keeps_its_own_height_in_any_rectangle() {
+        for height in [32u32, 60, 120, 300] {
+            let sc = CupertinoSegmentedControl::new(Rect::new(0, 0, 240, height));
+            assert_eq!(
+                sc.track_band().height,
+                crate::widget::metrics::dimensions::SEGMENTED_CONTROL_HEIGHT,
+                "at control height {height}"
+            );
+        }
     }
 }

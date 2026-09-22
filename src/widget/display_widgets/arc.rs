@@ -378,25 +378,36 @@ impl Draw for Arc {
             context.fill_circle(center, inner_radius, bg);
         }
 
-        // Draw the value text in the center of the arc, if enabled.
+        // Draw the value text in the centre of the arc, if enabled.
+        //
+        // The label belongs in the **ring's hole**, not in the middle of the control: the
+        // hole's diameter is `2 * inner_radius`, and an arc drawn as a ring only has room for
+        // text narrower and shorter than that hole. The old placement centred the text in the
+        // whole control, so on a ring whose hole is smaller than the label the digits were
+        // painted over the ring itself. It is also dropped when it cannot fit, rather than
+        // straddling the arc: a reading that covers the progress it reports is worse than no
+        // reading, and the raster backend hides the overflow while the SVG one shows it.
         let text = self.format_value_text();
-        if !text.is_empty() {
+        if !text.is_empty() && inner_radius > 0 {
             let font = Font::default();
             let metrics = context.measure_text(&text, &font);
-            let text_width = metrics.width;
-            let text_height = metrics.height;
-
-            let text_x = center.x - (text_width as i32 / 2);
-            let text_y = center.y - (text_height as i32 / 2);
-
-            let text_color = self.style().text_color.unwrap_or(Color::rgb(0, 0, 0));
-            context.draw_text(
-                Point::new(text_x, text_y),
-                &text,
-                &font,
-                text_color,
-                HorizontalAlignment::Left,
-            );
+            let hole = inner_radius.saturating_mul(2);
+            // A one-pixel margin on each side of the hole, so the glyphs do not touch the
+            // ring they sit inside.
+            let fits =
+                metrics.width <= hole.saturating_sub(2) && metrics.height <= hole.saturating_sub(2);
+            if fits {
+                let text_x = center.x - (metrics.width as i32 / 2);
+                let text_y = center.y - (metrics.height as i32 / 2);
+                let text_color = self.style().text_color.unwrap_or(Color::rgb(0, 0, 0));
+                context.draw_text(
+                    Point::new(text_x, text_y),
+                    &text,
+                    &font,
+                    text_color,
+                    HorizontalAlignment::Left,
+                );
+            }
         }
     }
 }
@@ -478,6 +489,47 @@ mod tests {
         let mut context = RenderContext::new(&mut backend);
         arc.draw(&mut context);
         backend.end_frame();
+    }
+
+    /// The `0%` reading is drawn in the ring's **hole**, and dropped when it cannot fit there.
+    ///
+    /// The label used to be centred on the control and printed whatever its size, so on a ring
+    /// whose hole is smaller than the text the digits were painted over the arc they annotate —
+    /// invisible in a raster (clipped) and visible in the SVG. This pins the two halves of the
+    /// fix: a roomy ring still shows the reading, and a ring with no hole at all (a disc, below
+    /// the thickness) emits no text element.
+    #[test]
+    fn arc_value_is_drawn_only_when_it_fits_in_the_ring_hole() {
+        fn text_elements(arc: &mut Arc, side: u32) -> usize {
+            let mut backend = SoftwarePaintBackend::new(Size::new(side, side), 1.0);
+            backend.begin_frame(Color::WHITE);
+            {
+                let mut context = RenderContext::new(&mut backend);
+                arc.draw(&mut context);
+            }
+            backend.end_frame();
+            let svg = crate::widget::svg::render_to_svg(arc);
+            svg.matches("<text").count()
+        }
+
+        // A 200 px ring with the default 20 px thickness has a 140 px hole: the 0% fits.
+        let mut roomy = Arc::new(Rect::new(0, 0, 200, 200));
+        roomy.set_show_value(true);
+        assert!(
+            text_elements(&mut roomy, 200) > 0,
+            "a reading that fits inside the ring hole must still be drawn"
+        );
+
+        // A ring whose thickness equals its radius has no hole for the label, so there is
+        // nowhere legal to put it — it is dropped rather than overprinted on the arc.
+        let mut solid = Arc::new(Rect::new(0, 0, 200, 200));
+        solid.set_show_value(true);
+        solid.set_thickness(99);
+        assert_eq!(
+            text_elements(&mut solid, 200),
+            0,
+            "with no ring hole the reading must be dropped, not drawn over the arc"
+        );
     }
 
     #[test]

@@ -61,6 +61,48 @@
       "g": 133,
       "b": 244,
       "a": 255
+    },
+    "outline": {
+      "r": 121,
+      "g": 116,
+      "b": 126,
+      "a": 255
+    },
+    "outline_variant": {
+      "r": 202,
+      "g": 196,
+      "b": 208,
+      "a": 255
+    },
+    "scrim": {
+      "r": 0,
+      "g": 0,
+      "b": 0,
+      "a": 82
+    },
+    "surface_container": {
+      "r": 243,
+      "g": 237,
+      "b": 247,
+      "a": 255
+    },
+    "surface_container_high": {
+      "r": 236,
+      "g": 230,
+      "b": 240,
+      "a": 255
+    },
+    "inverse_surface": {
+      "r": 49,
+      "g": 48,
+      "b": 51,
+      "a": 255
+    },
+    "on_inverse_surface": {
+      "r": 244,
+      "g": 239,
+      "b": 244,
+      "a": 255
     }
   },
   "fonts": {
@@ -141,5 +183,11 @@
   },
   "overrides": {
     "styles": {}
+  },
+  "motion": {
+    "fast": 100,
+    "normal": 200,
+    "slow": 300,
+    "easing": "EaseOut"
   }
 }

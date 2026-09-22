@@ -11,6 +11,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -209,24 +210,40 @@ impl SplitButton {
         self.base.request_redraw();
     }
 
+    /// The face the button actually paints: full width,
+    /// `dimensions::SPLIT_BUTTON_HEIGHT` tall, centred in the rectangle it was given.
+    ///
+    /// # Why the face is not the rectangle
+    ///
+    /// A split button is chrome: one compact row split into a trigger and an arrow. Taking
+    /// `rect.height` made a 240x120 census cell a 120 px-tall face whose two halves were also
+    /// 120 tall — a slab shaped like a button rather than a button — and it disagreed with the
+    /// 28 px `size_hint` the control reports. The band is the single derivation the paint, the
+    /// hit tests and the drop-down's anchor all read.
+    fn face_band(&self) -> Rect {
+        ControlMetrics::full_width_band(self.geometry(), dimensions::SPLIT_BUTTON_HEIGHT)
+    }
+
     fn primary_rect(&self) -> Rect {
-        let rect = self.geometry();
-        let primary_width = rect.width.saturating_sub(self.arrow_width);
-        Rect::new(rect.x, rect.y, primary_width, rect.height)
+        let band = self.face_band();
+        let primary_width = band.width.saturating_sub(self.arrow_width);
+        Rect::new(band.x, band.y, primary_width, band.height)
     }
 
     fn arrow_rect(&self) -> Rect {
-        let rect = self.geometry();
-        let arrow_x = rect.x + rect.width as i32 - self.arrow_width as i32;
-        Rect::new(arrow_x, rect.y, self.arrow_width, rect.height)
+        let band = self.face_band();
+        let arrow_x = band.x + band.width as i32 - self.arrow_width as i32;
+        Rect::new(arrow_x, band.y, self.arrow_width, band.height)
     }
 
     fn menu_rect(&self) -> Rect {
-        let rect = self.geometry();
+        // The popup hangs from the **face**'s bottom edge, not the control's, so it appears
+        // directly under the button the user pressed rather than 120 px below it.
+        let band = self.face_band();
         Rect::new(
-            rect.x,
-            rect.y + rect.height as i32,
-            rect.width,
+            band.x,
+            band.y + band.height as i32,
+            band.width,
             self.row_height.saturating_mul(self.actions.len() as u32),
         )
     }
@@ -449,8 +466,6 @@ impl EventHandler for SplitButton {
 
 impl Draw for SplitButton {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
-
         // Chrome colours resolve the explicit style first, then the theme's resolved style for
         // this control, and only then a literal. Every colour below used to be a literal, so a
         // light/dark switch left the button, its splits and its drop-down unchanged — the
@@ -505,8 +520,13 @@ impl Draw for SplitButton {
         let pressed_bg = face.blend(&primary, 0.45);
         let arrow_face = face.blend(&ink, 0.06);
 
-        context.fill_rect(rect, face);
-        context.draw_rect(rect, border);
+        // ── The face actually painted ──
+        //
+        // The button's chrome is one compact row, not a filled container; the band is where the
+        // trigger and the arrow are drawn and where the popup is anchored.
+        let face_rect = self.face_band();
+        context.fill_rect(face_rect, face);
+        context.draw_rect(face_rect, border);
 
         let primary_rect = self.primary_rect();
         let arrow = self.arrow_rect();
@@ -763,5 +783,32 @@ mod tests {
 
         let got = emitted.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert_eq!(got, vec![true, false]);
+    }
+
+    /// The button's face is one compact row, and the popup hangs from it.
+    ///
+    /// The defect this pins: the face and its two halves were sized from `rect`, so a 240x120
+    /// census cell drew a 120 px-tall face, and the drop-down was anchored to the control's
+    /// bottom edge — 120 px below the button the user pressed.
+    #[test]
+    fn the_face_keeps_its_own_height_and_anchors_the_menu() {
+        let mut split = SplitButton::new("Run", Rect::new(0, 0, 240, 120));
+        split.set_actions(sample_actions());
+
+        let band = split.face_band();
+        assert_eq!(
+            band.height,
+            crate::widget::metrics::dimensions::SPLIT_BUTTON_HEIGHT,
+            "the face is a compact row, not the whole rectangle"
+        );
+        // The trigger and the arrow divide the face rather than the control.
+        let primary = split.primary_rect();
+        let arrow = split.arrow_rect();
+        assert_eq!(primary.height, band.height);
+        assert_eq!(arrow.height, band.height);
+        assert_eq!(primary.width + arrow.width, band.width);
+        // The popup begins at the face's bottom edge.
+        let menu = split.menu_rect();
+        assert_eq!(menu.y, band.y + band.height as i32);
     }
 }

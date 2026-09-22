@@ -14,6 +14,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -157,7 +158,7 @@ impl Widget for Avatar {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(40, 40)
+        crate::core::Size::new(dimensions::AVATAR_SIZE, dimensions::AVATAR_SIZE)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -199,7 +200,17 @@ impl WidgetProperties for Avatar {
 
 impl Draw for Avatar {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
+        // ── The disc actually painted ──
+        //
+        // An avatar is a **fixed-size square** affordance centred in the area it was given.
+        // Deriving the disc from `rect`'s top-left corner drew it half-clipped at the left
+        // edge of any rectangle wider than the disc: the census hands this control a 240x120
+        // cell, so the old code drew `circle cx=60 cy=60 r=60`, running from x 0 to x 120 with
+        // the whole left half of the cell empty — a half-visible circle rather than a centred
+        // avatar. The height is `size_hint`'s, so the drawn shape and the reported size cannot
+        // disagree; `center_in` clamps *down* rather than up, so a control laid out smaller
+        // than its hint still paints inside the rectangle it was given.
+        let rect = ControlMetrics::centered_square(self.geometry(), self.size_hint().width);
         let size = rect.width.min(rect.height);
         let center = Point::new(rect.x + (size as i32) / 2, rect.y + (size as i32) / 2);
 

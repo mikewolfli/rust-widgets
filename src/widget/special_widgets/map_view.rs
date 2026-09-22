@@ -14,6 +14,13 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+/// A map marker's pin size: a 6x6 square centred on the marker's screen position.
+///
+/// Named because the paint, the label's offset and the "is this marker inside the pane?"
+/// test all measure the pin, and three spellings of `6`/`3` are how the pin and its own hit
+/// box drift apart.
+const MAP_MARKER_SIZE: u32 = 6;
+
 /// One map marker with logical world coordinates.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapMarker {
@@ -140,10 +147,41 @@ impl MapView {
         (sx, sy)
     }
 
+    /// Whether a marker's screen position falls inside the pane.
+    ///
+    /// # Why a marker can be outside at all
+    ///
+    /// `world_to_screen` is an affine map, so a marker the user has panned or zoomed away from
+    /// lands anywhere — including outside the pane. Nothing clips a widget at this layer, so a
+    /// marker painted there draws over whatever the layout put beside the map. Both the paint
+    /// and the hit test therefore ask this first, which is what keeps the ink and the clickable
+    /// area the same set: a marker outside the pane has neither a pin nor a hit box.
+    fn marker_is_inside(&self, index: usize) -> bool {
+        let rect = self.geometry();
+        let Some(marker) = self.markers.get(index) else {
+            return false;
+        };
+        let (sx, sy) = self.world_to_screen(marker.x, marker.y);
+        let (px, py) = (sx.round() as i32, sy.round() as i32);
+        // The pin is `MARKER_SIZE` across and centred on the point, so the whole pin — not just
+        // its centre — must fit inside the pane.
+        let half = MAP_MARKER_SIZE as i32 / 2;
+        px - half >= rect.x
+            && (px + half) < rect.x + rect.width as i32
+            && py - half >= rect.y
+            && (py + half) < rect.y + rect.height as i32
+    }
+
     fn hit_marker_index(&self, pos: Point) -> Option<usize> {
         let px = pos.x as f32;
         let py = pos.y as f32;
-        for (index, marker) in self.markers.iter().enumerate() {
+        for index in 0..self.markers.len() {
+            if !self.marker_is_inside(index) {
+                continue;
+            }
+            let Some(marker) = self.markers.get(index) else {
+                continue;
+            };
             let (sx, sy) = self.world_to_screen(marker.x, marker.y);
             let dx = sx - px;
             let dy = sy - py;
@@ -360,8 +398,16 @@ impl Draw for MapView {
         }
 
         for (index, marker) in self.markers.iter().enumerate() {
+            // A marker panned or zoomed out of the pane is not drawn: its pin would land over
+            // the neighbouring widget, since nothing clips a widget at this layer. The hit test
+            // asks the same question, so an invisible pin is also not clickable.
+            if !self.marker_is_inside(index) {
+                continue;
+            }
             let (sx, sy) = self.world_to_screen(marker.x, marker.y);
-            let marker_rect = Rect::new((sx as i32) - 3, (sy as i32) - 3, 6, 6);
+            let half = MAP_MARKER_SIZE as i32 / 2;
+            let marker_rect =
+                Rect::new((sx as i32) - half, (sy as i32) - half, MAP_MARKER_SIZE, MAP_MARKER_SIZE);
             // A marker's colour is **data**: it distinguishes the selected place from the
             // rest, and a theme colour would carry no such meaning.
             let color = if self.selected_marker == Some(index) {
@@ -372,11 +418,11 @@ impl Draw for MapView {
             context.fill_rect(marker_rect, color);
             // A marker label is bounded by the pane: it is placed beside a point that may sit
             // anywhere, so unbounded it could start inside and end past the edge.
-            let label_left = (sx as i32) + 6;
+            let label_left = (sx as i32) + half + 3;
             let label_width = (rect.x + rect.width as i32 - label_left).max(0) as u32;
             if label_width > 0 {
                 context.draw_text_fitted(
-                    Rect::new(label_left, sy as i32 - 6, label_width, 14),
+                    Rect::new(label_left, sy as i32 - half, label_width, 14),
                     &marker.label,
                     &Font::default(),
                     ink,
@@ -579,5 +625,31 @@ mod tests {
         map.set_zoom(2.5);
         let got = zooms.lock().ok().map(|g| g.clone()).unwrap_or_default();
         assert!((got[0] - 2.5).abs() < f32::EPSILON);
+    }
+
+    /// A marker panned outside the pane is neither drawn nor clickable.
+    ///
+    /// The defect this pins: `world_to_screen` is affine, so a marker a long way from the
+    /// centre lands outside the pane, and the pin was painted there unconditionally — over
+    /// whatever the layout put beside the map, since nothing clips a widget at this layer.
+    /// The hit test asks the same question, so an invisible pin has no hit box either.
+    #[test]
+    fn a_marker_outside_the_pane_has_neither_pin_nor_hit_box() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 240));
+        map.set_zoom(1.0);
+        map.set_markers(vec![
+            MapMarker::new("centre", "Centre", 0.0, 0.0),
+            // Far outside at this zoom: (5000, -4000) maps past the pane's edges.
+            MapMarker::new("far", "Far away", 5000.0, -4000.0),
+        ]);
+
+        assert!(map.marker_is_inside(0), "the centred marker is in the pane");
+        assert!(!map.marker_is_inside(1), "the far marker is not");
+        // A press at the point the far marker would project to must not select it.
+        let (sx, sy) = map.world_to_screen(5000.0, -4000.0);
+        assert!(
+            map.hit_marker_index(Point::new(sx as i32, sy as i32)).is_none(),
+            "a marker outside the pane must not be selectable"
+        );
     }
 }

@@ -32,7 +32,7 @@
 // registry rather than a `full_widgets` extra: every profile that can mount a widget
 // must be able to answer "which widget is under this point?".
 use crate::core::{ObjectId, Point, Rect, Size};
-use crate::event::Event;
+use crate::event::{Event, FocusReason};
 use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
 
 /// Why a widget could not be mounted onto a host surface.
@@ -356,6 +356,24 @@ pub fn has_focus(id: ObjectId) -> bool {
 /// Returns whether focus moved. Already-focused ids report `false`, so a repeated
 /// click does not re-emit the pair.
 pub fn focus_widget(id: ObjectId) -> bool {
+    focus_widget_with_reason(id, FocusReason::Programmatic)
+}
+
+/// Moves keyboard focus to `id`, recording *why* it moved.
+///
+/// [`focus_widget`] is this function with [`FocusReason::Programmatic`], which is the
+/// honest default for a caller that has no user gesture to point at: an explicit
+/// `focus_widget` call is the application choosing a control, not the user navigating.
+///
+/// The reason travels with the `FocusGained` payload so an individual control can
+/// decide whether to paint a focus ring **at the moment it handles the event**. A
+/// shared `current_focus_reason()` query would be the wrong shape: by the time a third
+/// control asked, the answer could describe a move that had already been superseded,
+/// and a draw pass happens later still.
+///
+/// Returns whether focus moved. Already-focused ids report `false`, so a repeated
+/// click does not re-emit the pair.
+pub fn focus_widget_with_reason(id: ObjectId, reason: FocusReason) -> bool {
     // Read the outgoing owner *before* the manager switches, so the pair is
     // `previous -> id` and not `id -> id`.
     let previous = focused_widget();
@@ -390,8 +408,26 @@ pub fn focus_widget(id: ObjectId) -> bool {
         let _ = dispatch_event(previous, &Event::FocusLost);
     }
     notify_ime_focus_in(id);
-    let _ = dispatch_event(id, &Event::FocusGained);
+    let _ = dispatch_event(id, &Event::FocusGained { reason });
     true
+}
+
+/// Focuses `id` because a pointer press landed on it.
+///
+/// The reason is [`FocusReason::Pointer`], which suppresses the focus ring: the
+/// pointer already shows the user where they are, and a ring under the cursor reads
+/// as a stuck highlight. This is the entry point pointer routing should call instead
+/// of [`focus_widget`], so no call site has to remember the distinction.
+pub fn focus_on_pointer_press(id: ObjectId) -> bool {
+    focus_widget_with_reason(id, FocusReason::Pointer)
+}
+
+/// Focuses `id` because a keyboard accelerator or shortcut activated it.
+///
+/// `Shortcut` **does** draw the ring: the user is on the keyboard, and if the control
+/// is now the keyboard's target the ring is how that fact becomes visible.
+pub fn focus_on_keyboard_activation(id: ObjectId) -> bool {
+    focus_widget_with_reason(id, FocusReason::Shortcut)
 }
 
 /// Tells the platform's IME bridge that `id` is now being edited.
@@ -463,7 +499,8 @@ pub fn focus_next(forward: bool) -> Option<ObjectId> {
         let _ = dispatch_event(previous, &Event::FocusLost);
     }
     notify_ime_focus_in(next);
-    let _ = dispatch_event(next, &Event::FocusGained);
+    let reason = if forward { FocusReason::Tab } else { FocusReason::BackTab };
+    let _ = dispatch_event(next, &Event::FocusGained { reason });
     Some(next)
 }
 

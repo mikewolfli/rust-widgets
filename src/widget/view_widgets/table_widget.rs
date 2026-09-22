@@ -12,10 +12,25 @@ use crate::widget::capability::coercion::expect_selection_mode;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::ControlMetrics;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// The margin a table leaves between its own frame and its rows: 2 px on every edge.
+///
+/// Named once so the header row and the first content row are both measured from the same
+/// inset. The rows used to start at the control's literal `rect.y`, so the first row's glyph
+/// box sat flush on the frame's own stroke with no header row above it.
+const TABLE_INSET: u32 = 2;
+
+/// The height of the table's header row: 20, the same row the model's data rows use.
+///
+/// A table has a header whether or not the model supplies column titles, so the first data
+/// row is always one header below the frame rather than pinned to the top edge.
+const HEADER_ROW_HEIGHT: u32 = 20;
+
 /// Table model abstraction for table-like views.
 pub trait TableModel: Send + Sync {
     /// Number of rows exposed by model.
@@ -307,6 +322,14 @@ impl WidgetProperties for TableWidget {
 impl Draw for TableWidget {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
+        // The table's content sits inside its own surface, not flush against it. Every row
+        // used to start at the control's literal top edge, so the first row's text began at
+        // y=0 — with no header row above it and no margin anywhere, the glyph box's top edge
+        // landed exactly on the frame's own stroke. The rows are laid out from the inset
+        // content box instead, and the header row the inset reserves is what the first
+        // content row then sits below.
+        let content = ControlMetrics::band_inset(rect, TABLE_INSET);
+        let header = ControlMetrics::top_band(content, HEADER_ROW_HEIGHT);
         // Chrome colours resolve explicit style first, then the theme's resolved style for
         // this control, and only then a literal. The theme step is what makes an appearance
         // switch visible; the surface, the border, the grid lines, the focused-row highlight
@@ -353,34 +376,51 @@ impl Draw for TableWidget {
             .unwrap_or(Color::PRIMARY);
         let focused_bg = surface.blend(&accent, 0.30);
 
-        // Draw background
+        // Draw background and border over the control's own rectangle, so the surface is
+        // the whole control; the rows below are inset from it.
         context.fill_rect(rect, surface);
-        // Draw border
         context.draw_rect(rect, border);
+        // Header row: the band the content rows begin below. It carries the surface's own
+        // ink as a rule, so a table with a model reads as a table before its first row.
+        if content.height > header.height {
+            context.fill_rect(header, surface.blend(&ink, 0.06));
+            context.draw_line(
+                crate::core::Point::new(header.x, header.y + header.height as i32),
+                crate::core::Point::new(
+                    header.x + header.width as i32,
+                    header.y + header.height as i32,
+                ),
+                border,
+            );
+        }
+        // The rows begin at the header's bottom edge, which is what keeps the first content
+        // row off y=0 (the defect the inset exists to fix).
+        let rows_top = content.y + header.height as i32;
+        let rows_height = (content.height - header.height) as i32;
         // Draw grid from model
         if let Some(ref model) = self.model {
             let row_h = 20;
             let col_w = if model.column_count() > 0 {
-                (rect.width / model.column_count() as u32).max(40)
+                (content.width / model.column_count() as u32).max(40)
             } else {
-                rect.width
+                content.width
             };
             let row_count = model.row_count();
             let col_count = model.column_count();
             let current_row = self.focused_row;
             for r in 0..row_count {
-                let y = rect.y + row_h * r as i32;
-                if y + row_h > rect.y + rect.height as i32 {
+                let y = rows_top + row_h * r as i32;
+                if y + row_h > rows_top + rows_height {
                     break;
                 }
                 if Some(r) == current_row {
                     context.fill_rect(
-                        crate::core::Rect::new(rect.x, y, rect.width, row_h as u32),
+                        crate::core::Rect::new(content.x, y, content.width, row_h as u32),
                         focused_bg,
                     );
                 }
                 for c in 0..col_count {
-                    let x = rect.x + (col_w as i32) * c as i32;
+                    let x = content.x + (col_w as i32) * c as i32;
                     if let Some(text) = model.data(r, c) {
                         // The cell is the band: a text origin of `y + row_h / 2` would put the
                         // glyph box's *top* edge on the row's middle line and draw every label
@@ -388,13 +428,15 @@ impl Draw for TableWidget {
                         // it also bounds the label so a long cell value cannot run into the next
                         // column.
                         let cell = crate::core::Rect::new(x, y, col_w, row_h as u32);
-                        context.draw_text_fitted(
-                            context.text_line(cell, &crate::core::Font::default()),
-                            &text,
-                            &crate::core::Font::default(),
-                            ink,
-                            HorizontalAlignment::Left,
-                        );
+                        if !text.is_empty() {
+                            context.draw_text_fitted(
+                                context.text_line(cell, &crate::core::Font::default()),
+                                &text,
+                                &crate::core::Font::default(),
+                                ink,
+                                HorizontalAlignment::Left,
+                            );
+                        }
                     }
                     // Draw column separator
                     if c < col_count - 1 {
@@ -408,8 +450,8 @@ impl Draw for TableWidget {
                 // Draw row separator
                 if r < row_count - 1 {
                     context.draw_line(
-                        crate::core::Point::new(rect.x, y + row_h),
-                        crate::core::Point::new(rect.x + rect.width as i32, y + row_h),
+                        crate::core::Point::new(content.x, y + row_h),
+                        crate::core::Point::new(content.x + content.width as i32, y + row_h),
                         grid_ink,
                     );
                 }

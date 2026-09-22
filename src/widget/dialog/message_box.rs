@@ -16,6 +16,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Message box icon type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -477,9 +478,31 @@ impl EventHandler for MessageBox {
         }
     }
 }
+impl MessageBox {
+    /// The frame the message box actually paints: at most its intrinsic size, centred in
+    /// the area it was given.
+    ///
+    /// # Why the frame is not the caller's rectangle
+    ///
+    /// `rect` is the area the box is **offered** — a census cell, a parent's client area.
+    /// Painting it verbatim drew a 240x120 census cell as a 240x120 slab whose title bar,
+    /// message and button row were each pinned to a literal written for a wider default
+    /// size. [`ControlMetrics::painted_box`] caps each axis at the box's own intrinsic size
+    /// and centres what is left, and it clamps up to one pixel so a squeezed box stays
+    /// visible. Every band below — the title strip, the icon/message row and the button row
+    /// — is derived from this one rect.
+    fn frame_rect(&self) -> Rect {
+        ControlMetrics::painted_box(
+            self.base.geometry(),
+            Size::new(dimensions::DIALOG_MIN_WIDTH, dimensions::DIALOG_MIN_HEIGHT),
+        )
+    }
+}
+
 impl Draw for MessageBox {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
+        // The **frame**, not the control's rectangle: see `frame_rect`.
+        let rect = self.frame_rect();
         // Chrome colours resolve explicit style first, then the theme's resolved style for
         // this control, and only then a literal. The surface already read the style, but the
         // title bar and the buttons were literals, so a light/dark switch left them
@@ -531,87 +554,111 @@ impl Draw for MessageBox {
         // the picture. Each label is fitted to the band it belongs to instead.
         let font = Font::default();
 
-        // Dialog background.
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), surface);
-        context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border);
+        // Dialog background. Rounded by [`dimensions::DIALOG_RADIUS`] so a message box reads
+        // as the same class of object as every other dialog; the radius is clamped to the
+        // frame so a box smaller than its own corner is not drawn with an inverted one.
+        let radius = dimensions::DIALOG_RADIUS.min(rect.width / 2).min(rect.height / 2);
+        if radius > 0 {
+            context.fill_rounded_rect(rect, radius, surface);
+            context.draw_rounded_rect_stroke(rect, radius, border, 1);
+        } else {
+            context.fill_rect(rect, surface);
+            context.draw_rect(rect, border);
+        }
         // Title bar. The band is the label's own box, so the fit is measured against the
         // bar rather than against the dialog: a title longer than the bar truncates at the
-        // bar's edge instead of leaving the control.
-        const TITLE_BAR_HEIGHT: u32 = 28;
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, TITLE_BAR_HEIGHT), title_bar);
-        let title_font = Font::default();
-        let title_metrics = context.measure_text(&self.title, &title_font);
-        context.draw_text_fitted(
-            Rect::new(
-                rect.x + 8,
-                rect.y + ((TITLE_BAR_HEIGHT as i32 - title_metrics.height as i32) / 2).max(0),
-                rect.width.saturating_sub(16),
-                title_metrics.height.max(1),
-            ),
-            &self.title,
-            &title_font,
-            ink,
-            HorizontalAlignment::Left,
-        );
-
-        // Icon and message share one band: the icon is a glyph at the left, the message
-        // starts after it (or at the frame's own margin when there is no icon). The gutter
-        // that separates them used to be an absolute `rect.x + 60` written for a wide
-        // dialog; deriving it from the icon's measured advance keeps the two from
-        // overlapping when the icon is a wide scalar and the dialog is narrow.
-        let message_top = rect.y + 60;
-        let icon_sym = self.icon_symbol();
-        let gutter = if icon_sym.is_empty() {
-            12
-        } else {
-            let icon_font = Font::default();
-            let icon_metrics = context.measure_text(icon_sym, &icon_font);
-            let icon_left = 20.min(rect.width as i32);
-            let icon_right = icon_left + icon_metrics.width as i32;
-            let body_left = icon_right.max(icon_left) + 8;
+        // bar's edge instead of leaving the control. The strip comes from `top_band`, which
+        // keeps its thickness and clamps to the frame.
+        let title_bar_band = ControlMetrics::top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
+        context.fill_rect(title_bar_band, title_bar);
+        if !self.title.is_empty() {
+            let title_font = Font::default();
+            let title_line = context.text_line(title_bar_band, &title_font);
             context.draw_text_fitted(
                 Rect::new(
-                    rect.x + icon_left,
-                    message_top,
-                    (body_left - icon_left) as u32,
-                    icon_metrics.height.max(1),
+                    rect.x + 8,
+                    title_line.y,
+                    rect.width.saturating_sub(16),
+                    title_line.height.max(1),
+                ),
+                &self.title,
+                &title_font,
+                ink,
+                HorizontalAlignment::Left,
+            );
+        }
+
+        // The icon/message row and the button row both live inside the space the title bar
+        // leaves, which is what keeps a long message from starting under the strip and a
+        // button row from overlapping the message on a short frame.
+        //
+        // The icon and the message share one band: the icon is a glyph at the left, the
+        // message starts after it (or at the frame's own margin when there is no icon).
+        let body =
+            ControlMetrics::content_below_top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
+        let icon_sym = self.icon_symbol();
+        let body_font = Font::default();
+        let body_line_h = context.measure_text("M", &body_font).height.max(1) as i32;
+        // The icon column is measured from the glyph, not a fixed `rect.x + 60` written for
+        // a wide dialog, so a wide scalar cannot overlap the message beside it.
+        let icon_left = 12.min(body.width as i32);
+        let gutter = if icon_sym.is_empty() {
+            icon_left
+        } else {
+            let icon_metrics = context.measure_text(icon_sym, &body_font);
+            let icon_line = context.text_line(body, &body_font);
+            context.draw_text_fitted(
+                Rect::new(
+                    body.x + icon_left,
+                    icon_line.y,
+                    icon_metrics.width.max(1),
+                    icon_line.height.max(1),
                 ),
                 icon_sym,
-                &icon_font,
+                &body_font,
                 self.icon_color(),
                 HorizontalAlignment::Left,
             );
-            body_left
+            icon_left + icon_metrics.width as i32 + 8
         };
-        // The message must stop before the button row, whose top edge is at `button_top`.
-        let btn_h = 28i32;
-        let button_top = (rect.y + rect.height as i32 - btn_h - 12).max(rect.y);
-        let message_bounds = Rect::new(
-            rect.x + gutter,
-            message_top,
-            (rect.width as i32 - gutter - 8).max(0) as u32,
-            (button_top - message_top).max(1) as u32,
+
+        // The button row is the bottom band; the message occupies what is left above it.
+        let button_band = ControlMetrics::bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT);
+        let message_area =
+            ControlMetrics::content_above_bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT);
+        let message_band = Rect::new(
+            message_area.x + gutter,
+            message_area.y,
+            (message_area.width as i32 - gutter).max(0) as u32,
+            message_area.height,
         );
-        let message_font = Font::default();
-        let message_metrics = context.measure_text(&self.text, &message_font);
-        context.draw_text_fitted(
-            Rect::new(
-                message_bounds.x,
-                message_bounds.y,
-                message_bounds.width,
-                message_metrics.height.max(1),
-            ),
-            &self.text,
-            &message_font,
-            ink,
-            HorizontalAlignment::Left,
-        );
+        // Guarded on the text being non-empty: an unguarded draw emits `<text …></text>`,
+        // an empty element the rasteriser never produces. The line box is centred on the
+        // message band through the shared primitive rather than at a literal `y`.
+        if !self.text.is_empty() {
+            let message_line = context.text_line(message_band, &body_font);
+            context.draw_text_fitted(
+                Rect::new(
+                    message_band.x,
+                    message_line.y,
+                    message_band.width.max(1),
+                    message_line.height.max(1),
+                ),
+                &self.text,
+                &body_font,
+                ink,
+                HorizontalAlignment::Left,
+            );
+        }
 
         // Buttons, right-aligned as a row. The row is laid out inside the frame, so the
-        // `…max(rect.x)` floor keeps a row of wide buttons from starting left of the
-        // dialog when the control is narrower than the buttons it wants.
-        let btn_w = 80i32;
-        let btn_y = button_top;
+        // `…max(rect.x)` floor keeps a row of wide buttons from starting left of the dialog
+        // when the control is narrower than the buttons it wants. Each button is a fixed
+        // width, so a row that cannot fit is squeezed from the right rather than leaving the
+        // frame; the label is centred and fitted to its button.
+        let btn_w = 80i32.min(rect.width as i32).max(1);
+        let btn_y = button_band.y;
+        let btn_h = button_band.height.max(1);
         let total_btn_w = self.buttons.len() as i32 * (btn_w + 8);
         let mut btn_x = rect.x + rect.width as i32 - total_btn_w;
         btn_x = btn_x.max(rect.x);
@@ -619,7 +666,7 @@ impl Draw for MessageBox {
             let is_default = self.default_button == Some(*btn);
             let bg = if is_default { primary } else { button_fill };
             let fg = if is_default { primary_ink } else { ink };
-            let btn_rect = Rect::new(btn_x, btn_y, btn_w as u32, btn_h as u32);
+            let btn_rect = Rect::new(btn_x, btn_y, btn_w as u32, btn_h);
             context.fill_rect(btn_rect, bg);
             context.draw_rect(btn_rect, border);
             context.draw_text_line(
@@ -631,6 +678,9 @@ impl Draw for MessageBox {
             );
             btn_x += btn_w + 8;
         }
+        // `body_line_h` records the line box the rows were measured against, so a later
+        // change to the reserved rows and this measurement cannot silently disagree.
+        debug_assert!(body_line_h > 0);
     }
 }
 

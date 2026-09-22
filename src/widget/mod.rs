@@ -62,6 +62,12 @@ pub mod draw;
 pub mod draw_bridge;
 pub mod kind;
 
+/// Content-driven control metrics — the "implicit size" system.
+///
+/// Answers "how big should this control draw?", which is a different question
+/// from "how much room was I given?". See the module docs for why conflating
+/// the two painted a 240x120 switch.
+pub mod metrics;
 /// Numeric helpers for widget value clamping.
 ///
 /// Every value-carrying widget that holds a `min`/`max` pair clamps through here,

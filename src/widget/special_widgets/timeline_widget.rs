@@ -10,6 +10,7 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::dimensions;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -371,8 +372,15 @@ impl Draw for TimelineWidget {
             return;
         }
 
-        let track_x = rect.x + 120;
-        let track_w = rect.width.saturating_sub(130);
+        // The label column and the track share one derivation: `CHART_LABEL_GUTTER` is the room
+        // reserved for item labels, and the track begins at its trailing edge and ends a
+        // `CHART_TRACK_MARGIN` short of the control's right edge — the same pair `gantt_widget`
+        // uses. The literals this replaces (`rect.x + 120` and `rect.width - 130`) spelled the
+        // same fact twice and left the two charts disagreeing about how wide a label column is.
+        let track_x = rect.x + dimensions::CHART_LABEL_GUTTER;
+        let track_w = rect.width.saturating_sub(
+            dimensions::CHART_LABEL_GUTTER as u32 + dimensions::CHART_TRACK_MARGIN as u32,
+        );
         let max_rows = self.visible_count().min(self.items.len());
 
         for index in 0..max_rows {
@@ -386,8 +394,13 @@ impl Draw for TimelineWidget {
             }
 
             if let Some(item) = self.items.get(index) {
-                context.draw_text(
-                    Point::new(rect.x + 8, y + self.row_height as i32 / 2),
+                // The label is fitted to the label column rather than spilling into the track:
+                // the old origin was the raw row midpoint, which put the glyph box's top edge
+                // on the middle line and let a long label run under its own bar.
+                let label_band =
+                    Rect::new(rect.x, y, dimensions::CHART_LABEL_GUTTER as u32, self.row_height);
+                context.draw_text_fitted(
+                    label_band,
                     &item.label,
                     &Font::default(),
                     text_color,

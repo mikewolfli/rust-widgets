@@ -19,6 +19,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -822,44 +823,54 @@ impl Draw for WebEngineView {
         // Draw URL bar. The label is centred inside the bar's own height: the origin is the
         // glyph's **top** edge, so `+ 20` in a 28 px bar left a 14 px URL spanning 20..34 —
         // six pixels past the bar and over the content it frames.
-        let bar = Rect::new(g.x, g.y, g.width, 28);
+        //
+        // The bar's height is `dimensions::WEB_URL_BAR_HEIGHT` rather than the literal `28`,
+        // so the strip the browser chrome occupies and the height a layout would be told
+        // cannot disagree. The bar can also be taller than the view is: `top_band` clamps it,
+        // which is what stops a 20 px view from painting a 28 px bar over its own content.
+        let bar = ControlMetrics::top_band(g, dimensions::WEB_URL_BAR_HEIGHT);
         ctx.fill_rect(bar, page.blend(&ink, 0.10));
         let url_font = Font::default_ui();
         let url_h = ctx.measure_text("M", &url_font).height;
-        ctx.draw_text_fitted(
-            Rect::new(
-                bar.x + 4,
-                bar.y + (bar.height as i32 - url_h as i32) / 2,
-                bar.width.saturating_sub(8),
-                url_h,
-            ),
-            self.url(),
-            &url_font,
-            ink.blend(&page, 0.35),
-            HorizontalAlignment::Left,
-        );
+        // An empty URL is *nothing to say*, not an empty text element: `draw_text_fitted` on an
+        // empty string emitted `<text x="7" y="7" ...></text>` into `web_engine_view.svg` — a
+        // zero-content element that a downstream bounds reader still has to handle. The guard
+        // is the same one every other labelled control in the crate uses.
+        if !self.url().is_empty() {
+            ctx.draw_text_fitted(
+                Rect::new(
+                    bar.x + 4,
+                    bar.y + (bar.height as i32 - url_h as i32) / 2,
+                    bar.width.saturating_sub(8),
+                    url_h,
+                ),
+                self.url(),
+                &url_font,
+                ink.blend(&page, 0.35),
+                HorizontalAlignment::Left,
+            );
+        }
         // Content area hint
         if self.is_loading() {
             let hint_font = Font::default_ui();
             let hint_h = ctx.measure_text("M", &hint_font).height;
-            let content = Rect::new(
-                g.x,
-                g.y + bar.height as i32,
-                g.width,
-                g.height.saturating_sub(bar.height),
-            );
-            ctx.draw_text_fitted(
-                Rect::new(
-                    content.x + 4,
-                    content.y + (content.height as i32 - hint_h as i32) / 2,
-                    content.width.saturating_sub(8),
-                    hint_h,
-                ),
-                "Loading...",
-                &hint_font,
-                secondary,
-                HorizontalAlignment::Left,
-            );
+            // The content area is what the bar leaves, derived from the bar itself rather than
+            // from a second copy of its height.
+            let content = ControlMetrics::content_below_top_band(g, dimensions::WEB_URL_BAR_HEIGHT);
+            if content.height > 0 {
+                ctx.draw_text_fitted(
+                    Rect::new(
+                        content.x + 4,
+                        content.y + (content.height as i32 - hint_h as i32) / 2,
+                        content.width.saturating_sub(8),
+                        hint_h,
+                    ),
+                    "Loading...",
+                    &hint_font,
+                    secondary,
+                    HorizontalAlignment::Left,
+                );
+            }
         }
     }
     fn uses_custom_drawing(&self) -> bool {
@@ -1057,4 +1068,39 @@ fn web_engine_load_html_retains_source() {
     wv.load_html("<html><body>Hello</body></html>");
     assert_eq!(wv.html_source(), "<html><body>Hello</body></html>");
     assert_eq!(wv.url(), "data:text/html");
+}
+
+/// An unloaded view emits no text element for its empty URL.
+///
+/// The defect this pins: `draw` passed the (empty) URL straight to `draw_text_fitted`, so
+/// `web_engine_view.svg` carried `<text x="7" y="7" ...></text>` — a zero-content element
+/// that a bounds reader still has to handle and that says nothing to a user. Empty text is
+/// nothing to say, not something to draw.
+#[test]
+fn an_empty_url_paints_no_text_element() {
+    let mut wv = WebEngineView::new(Rect::new(0, 0, 240, 120));
+    assert!(wv.url().is_empty(), "a fresh view has no URL");
+    let svg = crate::widget::svg::render_to_svg(&mut wv);
+    assert!(
+        !svg.contains("></text>"),
+        "an empty URL must not emit an empty text element, got:\n{svg}"
+    );
+}
+
+/// The URL bar is a fixed strip, whatever height the view has.
+///
+/// The defect this pins: the bar was a literal `28` tall while the view's own chrome spanned
+/// the whole rectangle, so the strip and the size the control reports were two unrelated
+/// numbers.
+#[test]
+fn the_url_bar_keeps_its_own_height() {
+    use crate::widget::metrics::{dimensions, ControlMetrics};
+    for height in [28u32, 60, 120, 400] {
+        let mut wv = WebEngineView::new(Rect::new(0, 0, 240, height));
+        let svg = crate::widget::svg::render_to_svg(&mut wv);
+        let bar =
+            ControlMetrics::top_band(Rect::new(0, 0, 240, height), dimensions::WEB_URL_BAR_HEIGHT);
+        let fill = format!("x=\"0\" y=\"0\" width=\"240\" height=\"{}\"", bar.height);
+        assert!(svg.contains(&fill), "at view height {height} the bar is {bar:?}:\n{svg}");
+    }
 }

@@ -11,7 +11,24 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+
+/// The horizontal padding of a toast's message from the accent stripe: 12.
+///
+/// The message starts clear of the stripe, which is 4 px wide; 12 is the stripe plus the same
+/// 8 px gutter the rest of the crate uses between an indicator and its label.
+const TOAST_PADDING_H: i32 = 12;
+
+/// The trailing inset of a toast's close affordance from the bar's right edge: 6.
+///
+/// Deliberately its own value rather than [`TOAST_PADDING_H`]: a dismiss glyph reads as
+/// attached to the toast's edge, where a line of text needs the gutter. Keeping the two apart
+/// is what stops a change to the message padding from moving the button a user aims at.
+const TOAST_CLOSE_INSET: i32 = 6;
+
+/// A toast's close affordance: a 14x14 glyph box.
+const TOAST_CLOSE_SIZE: u32 = 14;
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// A single transient notification message.
@@ -110,14 +127,30 @@ impl Toast {
         if !self.dismissible {
             return None;
         }
-        let rect = self.geometry();
-        let size = 14.min(rect.height);
+        // Placed from the toast's own band, so the dismiss control sits on the bar the message
+        // is painted in rather than half way down a 120 px canvas that the toast does not fill.
+        let band = self.band();
+        let size = TOAST_CLOSE_SIZE.min(band.height);
         Some(Rect::new(
-            rect.x + rect.width as i32 - size as i32 - 6,
-            rect.y + (rect.height as i32 - size as i32) / 2,
+            band.x + band.width as i32 - size as i32 - TOAST_CLOSE_INSET,
+            band.y + (band.height.saturating_sub(size) / 2) as i32,
             size,
             size,
         ))
+    }
+
+    /// The bar the toast actually paints: full width, `dimensions::TOAST_HEIGHT` tall,
+    /// centred in the rectangle it was given.
+    ///
+    /// # Why the toast is not the rectangle
+    ///
+    /// A toast is a floating notification bar of one fixed height. Taking `rect.height` made a
+    /// 240x120 census cell a 120 px-tall toast whose severity stripe ran the full canvas as a
+    /// 4x120 band and whose message sat on the canvas's middle line — a card shaped like a toast
+    /// rather than a toast. The band is the single derivation the stripe, the message and the
+    /// close affordance all read.
+    fn band(&self) -> Rect {
+        ControlMetrics::full_width_band(self.geometry(), dimensions::TOAST_HEIGHT)
     }
 
     /// Whether `pos` is over the close affordance.
@@ -241,8 +274,6 @@ impl EventHandler for Toast {
 
 impl Draw for Toast {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
-
         // Chrome colours resolve explicit style first, then the theme's resolved
         // style for this control, and only then a literal. The theme step is what
         // makes an appearance switch visible; previously every colour below was a
@@ -284,32 +315,42 @@ impl Draw for Toast {
         // foreground rather than a second literal.
         let close_color = text_color.blend(&background, 0.4);
 
-        context.fill_rect(rect, background);
-        context.draw_rect(rect, border);
+        // ── The bar actually painted ──
+        //
+        // The toast's chrome is one notification bar, not the whole area it was handed; the
+        // severity stripe runs that bar's height and the message centres on it.
+        let band = self.band();
+        context.fill_rect(band, background);
+        context.draw_rect(band, border);
         // A severity stripe rather than a badge: at toast height there is no room
         // for a square, and a stripe reads at any width.
-        context.fill_rect(Rect::new(rect.x, rect.y, 4, rect.height), accent);
+        context.fill_rect(
+            Rect::new(band.x, band.y, dimensions::TOAST_ACCENT_WIDTH, band.height),
+            accent,
+        );
 
-        let text_x = rect.x + 12;
+        let text_x = band.x + TOAST_PADDING_H;
         // Centred through the shared primitive. The previous origin carried a hand-tuned
         // `(height + 12) / 2`, i.e. half a line box added to the band's middle — the same
         // half-line error as `height / 2`, only in the opposite shape. The close button on
         // this same toast already sat at the true centre, so the message and its own dismiss
         // control disagreed about the row they shared.
         let font = Font::default();
-        let line = context.text_line(rect, &font);
+        let line = context.text_line(band, &font);
         // Bounded to end before the close button, so a long message cannot run under it.
         let text_width = self
             .close_rect()
             .map(|close| (close.x - text_x - 4).max(0) as u32)
-            .unwrap_or_else(|| rect.width.saturating_sub(12));
-        context.draw_text_fitted(
-            Rect { x: text_x, y: line.y, width: text_width, height: line.height },
-            &self.message,
-            &font,
-            text_color,
-            HorizontalAlignment::Left,
-        );
+            .unwrap_or_else(|| band.width.saturating_sub(TOAST_PADDING_H as u32));
+        if !self.message.is_empty() && text_width > 0 {
+            context.draw_text_fitted(
+                Rect { x: text_x, y: line.y, width: text_width, height: line.height },
+                &self.message,
+                &font,
+                text_color,
+                HorizontalAlignment::Left,
+            );
+        }
 
         if let Some(close) = self.close_rect() {
             context.draw_line(

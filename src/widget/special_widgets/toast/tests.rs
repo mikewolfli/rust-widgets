@@ -375,3 +375,65 @@ fn a_toast_declares_its_own_kind() {
         "the hint is one text row plus padding"
     );
 }
+
+/// A toast paints one fixed-height bar, not the area it was handed.
+///
+/// The defect this pins: the toast filled its whole rectangle and ran its severity stripe the
+/// full height, so a 240x120 census cell drew a 120 px card with a 4x120 stripe. A toast's
+/// height is chrome.
+#[test]
+fn a_toast_paints_one_fixed_height_bar() {
+    use crate::widget::metrics::{dimensions, ControlMetrics};
+    for height in [48u32, 60, 120, 300] {
+        let toast = Toast::new(Rect::new(0, 0, 320, height), "Saved");
+        let mut toast = toast;
+        let svg = crate::widget::svg::render_to_svg(&mut toast);
+        let band =
+            ControlMetrics::full_width_band(Rect::new(0, 0, 320, height), dimensions::TOAST_HEIGHT);
+        let stripe = format!(
+            "x=\"0\" y=\"{}\" width=\"{}\" height=\"{}\"",
+            band.y,
+            dimensions::TOAST_ACCENT_WIDTH,
+            band.height
+        );
+        assert!(
+            svg.contains(&stripe),
+            "at control height {height} the stripe must run the bar, not the control, in:\n{svg}"
+        );
+    }
+}
+
+/// A toast stack occupies only the rows it holds, anchored to the bottom.
+///
+/// The defect this pins: the stack filled its whole rectangle, so a 240x120 census cell drew
+/// a 120 px panel behind two 26 px rows — a surface much larger than its contents, whose top
+/// edge was painted but never occupied. An empty stack still claims a single row so the
+/// control stays visible at rest.
+#[test]
+fn a_toast_stack_occupies_only_its_rows() {
+    let mut stack = ToastStack::new(Rect::new(0, 0, 240, 120));
+    let row = match stack.get("row_height") {
+        Ok(CapabilityValue::UInt(height)) => height as i32,
+        other => panic!("row_height must read as a UInt, got {other:?}"),
+    };
+    stack.push(ToastItem::new("a", "first", ToastLevel::Info, 3000));
+    stack.push(ToastItem::new("b", "second", ToastLevel::Info, 3000));
+
+    let svg = crate::widget::svg::render_to_svg(&mut stack);
+    // Two rows, bottom-anchored: the panel's own top edge is `120 - 2 * row`.
+    let expected_top = 120 - 2 * row;
+    let panel = format!("x=\"0\" y=\"{expected_top}\" width=\"240\" height=\"{}\"", row * 2);
+    assert!(
+        svg.contains(&panel),
+        "the panel must be the two rows it holds, anchored to the bottom, in:\n{svg}"
+    );
+
+    // An empty stack still claims one row, so the control does not vanish.
+    stack.clear();
+    let svg = crate::widget::svg::render_to_svg(&mut stack);
+    let empty_panel = format!("x=\"0\" y=\"{}\" width=\"240\" height=\"{row}\"", 120 - row);
+    assert!(
+        svg.contains(&empty_panel),
+        "an empty stack must still paint its one-row region, in:\n{svg}"
+    );
+}

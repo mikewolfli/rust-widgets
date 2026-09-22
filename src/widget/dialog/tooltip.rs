@@ -17,6 +17,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -370,7 +371,7 @@ impl Draw for Tooltip {
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
             .unwrap_or(self.text_color);
-        let bubble = match style
+        let bubble_color = match style
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
         {
@@ -388,7 +389,8 @@ impl Draw for Tooltip {
         };
         // A tooltip that is not showing is drawn as a dimmed bubble rather than omitted, so
         // the control has a rendered body in every state instead of vanishing at rest.
-        let bubble = if self.visible { bubble } else { window_fill.blend(&bubble, 0.45) };
+        let bubble_color =
+            if self.visible { bubble_color } else { window_fill.blend(&bubble_color, 0.45) };
 
         // The label is chosen against the **bubble actually painted**, which is why this is
         // computed after the dimming step and not before it. Deriving it from the undimmed
@@ -397,7 +399,7 @@ impl Draw for Tooltip {
         // ink had already been decided as the near-black bubble's white — measuring 2.78:1 on
         // the surface it was really painted on. Deriving from the final fill makes the pairing
         // correct in both states by construction.
-        let text_color = bubble.contrast_color();
+        let text_color = bubble_color.contrast_color();
 
         let font = Font::simple("sans-serif", self.font_size);
 
@@ -406,38 +408,44 @@ impl Draw for Tooltip {
         let label = if self.text.is_empty() { "Tooltip" } else { self.text.as_str() };
         let metrics = context.measure_text(label, &font);
         let text_width = metrics.width;
-        let glyph_height = metrics.height;
 
-        // Clamp content width to max_width
+        // ── The bubble actually painted ──
+        //
+        // A tooltip is a **single-line bubble of its own height**, centred in the area it was
+        // given, not a panel shaped like its container. `total_width = ..max(rect.width)` and
+        // `total_height = ..max(rect.height)` did the opposite: the bubble was *at least* the
+        // control's size, so the 240x120 census cell drew a full-canvas 240x120 rounded
+        // rectangle (`tooltip.svg` carried `<rect x="0" y="0" width="240" height="120"
+        // rx="4"/>`) with its label stranded at y = 6 — a poorly filled panel rather than a
+        // tooltip. The height is now [`dimensions::TOOLTIP_HEIGHT`] and the width is the
+        // label's own advance plus [`dimensions::TOOLTIP_PADDING_H`], so a longer string makes
+        // a wider bubble and nothing about the caller's rectangle can stretch it.
         let content_width = text_width.min(self.max_width);
-        let content_height = glyph_height;
-
-        // Calculate total dimensions with padding
-        let total_width = (content_width + (self.padding as u32) * 2).max(rect.width);
-        let total_height = (content_height + (self.padding as u32) * 2).max(rect.height);
-
-        // Center the tooltip within its geometry (typically positioned near cursor/target)
-        let bg_x = rect.x + (rect.width as i32 - total_width as i32) / 2;
-        let bg_y = rect.y + (rect.height as i32 - total_height as i32) / 2;
-        let bg_rect = Rect::new(bg_x, bg_y, total_width, total_height);
-        let corner_radius = 4u32;
+        let total_width = (content_width + dimensions::TOOLTIP_PADDING_H * 2).min(rect.width);
+        let bubble = ControlMetrics::center_in(
+            rect,
+            Size::new(total_width.max(1), dimensions::TOOLTIP_HEIGHT),
+        );
+        // The corner is the vertical padding, so the radius scales with the bubble's own
+        // edging rather than being a fourth literal for a 24 px box.
+        let corner_radius = dimensions::TOOLTIP_PADDING_V;
 
         // Draw rounded rectangle background
-        context.fill_rounded_rect(bg_rect, corner_radius, bubble);
+        context.fill_rounded_rect(bubble, corner_radius, bubble_color);
 
-        // Draw text at the padded top-left of the bubble.
+        // Draw the label **vertically centred** in the bubble, horizontally at the bubble's
+        // own padding.
         //
-        // No `ascent` is added: `draw_text`'s origin is the glyph box's **top edge** (the
-        // backend pairs it with `dominant-baseline="text-before-edge"` so both backends agree),
-        // so a top-aligned label belongs at `bubble.y + padding` exactly. Adding `ascent`
-        // pushed the 12 px glyph box to `padding + 10 .. padding + 22`, i.e. `16..28` in a
-        // bubble whose natural height is 24 — the label hung 4 px out of its own bubble. The
-        // census geometry is 120 px tall, which is the only reason no bound assertion saw it.
-        let text_x = bg_rect.x + self.padding;
-        let text_y = bg_rect.y + self.padding;
+        // The origin is the glyph box's top-left, so a top-aligned label sat at
+        // `bubble.y + padding`; more importantly the old code positioned it from the *control's*
+        // rectangle while the bubble was centred, so once the bubble stopped filling its
+        // rectangle the two would have been placed from different boxes. `text_line` derives the
+        // line box from the bubble itself, which is the same box the fill just painted.
+        let line = context.text_line(bubble, &font);
+        let text_x = bubble.x + dimensions::TOOLTIP_PADDING_H as i32;
 
         context.draw_text(
-            Point::new(text_x, text_y),
+            Point::new(text_x, line.y),
             label,
             &font,
             text_color,

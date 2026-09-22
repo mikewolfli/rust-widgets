@@ -15,6 +15,7 @@ use crate::signal::GenericSignal;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -144,7 +145,23 @@ impl WidgetProperties for ColorWell {
 
 impl Draw for ColorWell {
     fn draw(&mut self, context: &mut RenderContext) {
+        // ── The well is a fixed-size sample, not a panel ──
+        //
+        // A colour well is one swatch of chrome, `COLOR_WELL_SIZE` square: the same
+        // object in a form row and in a full-screen cell. Every measurement below used
+        // to be derived from the rectangle the caller handed over, so the 240x120 census
+        // cell drew a **240x120 checkerboard** with a 176x56 swatch flooding it — a
+        // 1808-rectangle image for a colour control — and the same well was a different
+        // size in every layout. `ControlMetrics::centered_square` is the shared
+        // derivation: one square, centred, clamped to the control rather than painted
+        // outside it.
         let rect = self.geometry();
+        let well = ControlMetrics::centered_square(rect, dimensions::COLOR_WELL_SIZE);
+        // A control with no room for even a pixel has nothing to show: emitting a
+        // zero-extent swatch would be an invisible element rather than a small one.
+        if well.width == 0 || well.height == 0 {
+            return;
+        }
 
         // The well's chrome — the checkerboard that marks transparency and the
         // framing border — resolves explicit style first, then the theme's resolved
@@ -179,20 +196,20 @@ impl Draw for ColorWell {
             .unwrap_or(Color::BLACK);
         let background = resolved.blend(&text_color, 0.08);
 
-        // Draw checkerboard for transparency indication: two steps of the resolved
-        // surface, so a translucent swatch composites over a pattern that follows the
-        // appearance rather than a fixed grey-and-white pair.
+        // Draw the checkerboard for transparency indication over the **well's own box**:
+        // two steps of the resolved surface, so a translucent swatch composites over a
+        // pattern that follows the appearance rather than a fixed grey-and-white pair.
         let checker_size = 4u32;
         let even = background;
         let odd = background.blend(&border, 0.25);
 
-        for y in (rect.y..(rect.y + rect.height as i32)).step_by(checker_size as usize) {
-            for x in (rect.x..(rect.x + rect.width as i32)).step_by(checker_size as usize) {
-                let tile_x = (x - rect.x) / checker_size as i32;
-                let tile_y = (y - rect.y) / checker_size as i32;
+        for y in (well.y..(well.y + well.height as i32)).step_by(checker_size as usize) {
+            for x in (well.x..(well.x + well.width as i32)).step_by(checker_size as usize) {
+                let tile_x = (x - well.x) / checker_size as i32;
+                let tile_y = (y - well.y) / checker_size as i32;
                 let tile_color = if (tile_x + tile_y) % 2 == 0 { even } else { odd };
-                let tile_w = checker_size.min((rect.x + rect.width as i32 - x) as u32);
-                let tile_h = checker_size.min((rect.y + rect.height as i32 - y) as u32);
+                let tile_w = checker_size.min((well.x + well.width as i32 - x) as u32);
+                let tile_h = checker_size.min((well.y + well.height as i32 - y) as u32);
                 context.fill_rect(Rect::new(x, y, tile_w, tile_h), tile_color);
             }
         }
@@ -204,33 +221,40 @@ impl Draw for ColorWell {
         // colour *control*. The housing around the swatch is what makes the well a
         // control: it is the resolved surface, so it follows the appearance, and it
         // is large enough to be the colour the eye reads first.
-        let inset = (rect.width.min(rect.height) / 3).clamp(3, 32);
+        //
+        // Both the inset and the housing are measured from the **well**, not from the
+        // control: an inset taken from the control's shortest side was 40 px in the
+        // census cell, which is why the swatch below it was a 176x56 slab rather than a
+        // square sample.
+        let inset =
+            (well.width.min(well.height) / 3).clamp(3, 32).min(well.width.min(well.height) / 2);
         let swatch = Rect::new(
-            rect.x + inset as i32,
-            rect.y + inset as i32,
-            rect.width.saturating_sub(inset * 2),
-            rect.height.saturating_sub(inset * 2),
+            well.x + inset as i32,
+            well.y + inset as i32,
+            well.width.saturating_sub(inset * 2),
+            well.height.saturating_sub(inset * 2),
         );
         // A translucent swatch composites over the checkerboard; an opaque one
         // covers it. Either way the surrounding housing stays the resolved surface.
         context.fill_rect(swatch, self.color);
 
         // The housing between the well's edge and the swatch is the resolved surface,
-        // drawn last so it reads as the control's chrome rather than as a hole.
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, inset), background);
+        // drawn last so it reads as the control's chrome rather than as a hole. Each strip
+        // is derived from the well's own box, so the four of them tile it exactly.
+        context.fill_rect(Rect::new(well.x, well.y, well.width, inset), background);
         context.fill_rect(
-            Rect::new(rect.x, swatch.y + swatch.height as i32, rect.width, inset),
+            Rect::new(well.x, swatch.y + swatch.height as i32, well.width, inset),
             background,
         );
-        context.fill_rect(Rect::new(rect.x, swatch.y, inset, swatch.height), background);
+        context.fill_rect(Rect::new(well.x, swatch.y, inset, swatch.height), background);
         context.fill_rect(
-            Rect::new(rect.x + rect.width as i32 - inset as i32, swatch.y, inset, swatch.height),
+            Rect::new(well.x + well.width as i32 - inset as i32, swatch.y, inset, swatch.height),
             background,
         );
 
         // Draw border if enabled
         if self.show_border {
-            context.draw_rect_stroke(rect, border, 1);
+            context.draw_rect_stroke(well, border, 1);
         }
     }
 }
@@ -329,5 +353,44 @@ mod tests {
         let mut cw = ColorWell::new(Color::RED, Rect::new(0, 0, 40, 40));
         let svg = crate::widget::svg::render_to_svg(&mut cw);
         assert!(svg.starts_with("<svg"));
+    }
+
+    /// A colour well is a fixed-size sample, not a panel.
+    ///
+    /// This pins the defect the fix removes: the checkerboard and the swatch were both
+    /// measured from the control's rectangle, so the 240x120 census cell drew a
+    /// **240x120 chequerboard** (1808 emitted rectangles) with a 176x56 swatch flooding
+    /// it. The well is now `COLOR_WELL_SIZE` square and centred, so the same control is
+    /// the same object in a form row and in a full-screen cell.
+    #[test]
+    fn the_well_is_a_fixed_square_in_any_rectangle() {
+        for rect in [Rect::new(0, 0, 240, 120), Rect::new(0, 0, 300, 300)] {
+            let mut cw = ColorWell::new(Color::RED, rect);
+            let svg = crate::widget::svg::render_to_svg(&mut cw);
+            let expected = ControlMetrics::centered_square(rect, dimensions::COLOR_WELL_SIZE);
+            assert_eq!(expected.width, dimensions::COLOR_WELL_SIZE, "at {rect:?}");
+            assert_eq!(expected.height, dimensions::COLOR_WELL_SIZE, "at {rect:?}");
+            // The border is the well's own outline, and every emitted tile is inside it.
+            assert!(
+                svg.contains(&format!(
+                    "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"none\"",
+                    expected.x, expected.y, expected.width, expected.height
+                )),
+                "the well is outlined at its own box: {svg}"
+            );
+            // The defect's signature: a canvas-sized chequerboard. The control's own
+            // tiles are 4 px; a tile at the control's top-left corner would mean the
+            // chequerboard was measured from `rect` rather than from the well.
+            if rect.height > dimensions::COLOR_WELL_SIZE {
+                assert!(
+                    !svg.contains(&format!("<rect x=\"{}\" y=\"0\" width=\"4\"", rect.x)),
+                    "the chequerboard must start at the well, not the control's top edge: {svg}"
+                );
+            }
+        }
+        // A control smaller than the well clamps it rather than painting outside.
+        let mut small = ColorWell::new(Color::RED, Rect::new(0, 0, 20, 20));
+        let svg = crate::widget::svg::render_to_svg(&mut small);
+        assert!(svg.contains("width=\"20\" height=\"20\""), "the well clamps to 20x20: {svg}");
     }
 }

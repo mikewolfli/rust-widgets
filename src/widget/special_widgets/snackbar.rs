@@ -11,8 +11,24 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// Horizontal padding of a snackbar's message from the bar's leading edge: 10.
+///
+/// One value for the message inset and the action button's trailing margin, so the two ends of
+/// the bar are inset by the same amount rather than by `10` on one side and `14` on the other.
+const SNACKBAR_PADDING_H: i32 = 10;
+
+/// A snackbar action button's width: 76.
+const SNACKBAR_ACTION_WIDTH: u32 = 76;
+
+/// A snackbar action button's height: 20.
+const SNACKBAR_ACTION_HEIGHT: u32 = 20;
+
+/// The thickness of a snackbar's progress rule: 3.
+const SNACKBAR_PROGRESS_HEIGHT: u32 = 3;
 
 /// Snackbar with optional action and progress display.
 pub struct Snackbar {
@@ -104,8 +120,18 @@ impl Snackbar {
 
     fn action_rect(&self) -> Option<Rect> {
         self.action_label.as_ref()?;
-        let rect = self.geometry();
-        Some(Rect::new(rect.x + rect.width as i32 - 90, rect.y + rect.height as i32 - 28, 76, 20))
+        // Derived from the same bar the message is painted in, so the button sits on the right
+        // end of the snackbar rather than at a fixed offset from the control's bottom edge —
+        // which placed it 34 px below the bar in a 120 px cell.
+        let bar = ControlMetrics::full_width_band(self.geometry(), dimensions::SNACKBAR_HEIGHT);
+        let height = SNACKBAR_ACTION_HEIGHT.min(bar.height);
+        let width = SNACKBAR_ACTION_WIDTH.min(bar.width);
+        Some(Rect::new(
+            bar.x + bar.width as i32 - width as i32 - SNACKBAR_PADDING_H,
+            bar.y + (bar.height.saturating_sub(height) / 2) as i32,
+            width,
+            height,
+        ))
     }
 
     fn point_in_rect(pos: Point, rect: Rect) -> bool {
@@ -245,10 +271,6 @@ impl Draw for Snackbar {
             .background_color
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
             .unwrap_or(Color::rgb(248, 250, 253));
-        let border = style
-            .border_color
-            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
-            .unwrap_or_else(|| resolved.blend(&Color::BLACK, 0.15));
         let text_color = style
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
@@ -274,56 +296,71 @@ impl Draw for Snackbar {
             .map(|token| token.blend(&bar_background, 0.2))
             .unwrap_or_else(|| bar_background.blend(&background, 0.5));
 
-        context.fill_rect(rect, background);
-        context.draw_rect(rect, border);
+        // ── The bar actually painted ──
+        //
+        // `rect` is the area the control was *given*; a snackbar is one floating bar of
+        // [`dimensions::SNACKBAR_HEIGHT`], centred in that area. Filling the whole rectangle
+        // made a 240x120 census cell a full-bleed panel with a 26 px bar pinned near its
+        // bottom — a surface shaped like a snackbar rather than a snackbar — and the panel's
+        // own fill is not part of this control's chrome at all: a snackbar sits *over* the
+        // page, it does not paint the page. The band is the single derivation the message, the
+        // action button and the progress rule are all placed from.
+        let bar = ControlMetrics::full_width_band(rect, dimensions::SNACKBAR_HEIGHT);
+        context.fill_rect(bar, bar_background);
+        context.draw_rect(bar, bar_border);
 
         if !self.visible {
             return;
         }
 
-        let bar = Rect::new(
-            rect.x + 8,
-            rect.y + rect.height as i32 - 34,
-            rect.width.saturating_sub(16),
-            26,
-        );
-        context.fill_rect(bar, bar_background);
-        context.draw_rect(bar, bar_border);
-
         // Both labels are centred on their own band. The origins were fixed offsets
-        // (`+ 16` and `+ 13`) written for one font size: a 14 px line in the 26 px bar spans
+        // (`+ 16` and `+ 13`) written for one font size: a 14 px line in a 26 px bar spans
         // 16..30, four pixels past the bar's bottom edge, and the action label likewise.
         let message_font = Font::default();
         let message_h = context.measure_text("M", &message_font).height;
-        context.draw_text(
-            Point::new(bar.x + 10, bar.y + (bar.height as i32 - message_h as i32) / 2),
-            &self.message,
-            &message_font,
-            bar_text,
-            HorizontalAlignment::Left,
-        );
+        if !self.message.is_empty() {
+            context.draw_text(
+                Point::new(
+                    bar.x + SNACKBAR_PADDING_H,
+                    bar.y + (bar.height as i32 - message_h as i32) / 2,
+                ),
+                &self.message,
+                &message_font,
+                bar_text,
+                HorizontalAlignment::Left,
+            );
+        }
 
         if let Some(action_rect) = self.action_rect() {
             context.fill_rect(action_rect, action_background);
             context.draw_rect(action_rect, action_border);
             if let Some(label) = &self.action_label {
-                context.draw_text_fitted(
-                    Rect::new(
-                        action_rect.x + 4,
-                        action_rect.y + (action_rect.height as i32 - message_h as i32) / 2,
-                        action_rect.width.saturating_sub(8),
-                        message_h,
-                    ),
-                    label,
-                    &message_font,
-                    action_text,
-                    HorizontalAlignment::Center,
-                );
+                if !label.is_empty() {
+                    context.draw_text_fitted(
+                        Rect::new(
+                            action_rect.x + 4,
+                            action_rect.y + (action_rect.height as i32 - message_h as i32) / 2,
+                            action_rect.width.saturating_sub(8),
+                            message_h,
+                        ),
+                        label,
+                        &message_font,
+                        action_text,
+                        HorizontalAlignment::Center,
+                    );
+                }
             }
         }
 
         if let Some(progress) = self.progress {
-            let progress_bar = Rect::new(bar.x, bar.y + bar.height as i32 - 3, bar.width, 3);
+            // The progress rule sits on the bar's own bottom edge, not on a literal 3 px above
+            // a bar whose position moved with the canvas.
+            let progress_bar = Rect::new(
+                bar.x,
+                bar.y + bar.height as i32 - SNACKBAR_PROGRESS_HEIGHT as i32,
+                bar.width,
+                SNACKBAR_PROGRESS_HEIGHT,
+            );
             context.fill_rect(progress_bar, track);
             let fill = (progress_bar.width as f32 * progress).round() as u32;
             if fill > 0 {
@@ -381,5 +418,53 @@ mod tests {
 
         bar.handle_event(&Event::key_press(27, 0));
         assert!(!bar.is_visible());
+    }
+
+    /// The bar is one floating row whatever height the control was given.
+    ///
+    /// The defect this pins: the control painted a full-canvas panel and then a 26 px bar
+    /// pinned 34 px above its bottom, so a 240x120 census cell was a 120 px surface with the
+    /// snackbar somewhere near its lower edge. A snackbar is its bar; it does not paint the
+    /// page behind it.
+    #[test]
+    fn the_bar_keeps_its_own_height_in_any_rectangle() {
+        use crate::widget::metrics::{dimensions, ControlMetrics};
+        for height in [48u32, 60, 120, 300] {
+            let mut bar = Snackbar::new(Rect::new(0, 0, 320, height));
+            bar.show("Saved successfully");
+            let svg = crate::widget::svg::render_to_svg(&mut bar);
+            // The bar is the filled rectangle the control paints. It is at most
+            // `SNACKBAR_HEIGHT` tall, centred in the control, so no emitted fill rectangle may
+            // span the control's own full height (which is what a panel fill would do).
+            let expected = ControlMetrics::full_width_band(
+                Rect::new(0, 0, 320, height),
+                dimensions::SNACKBAR_HEIGHT,
+            );
+            let fill = format!(
+                "x=\"0\" y=\"{}\" width=\"320\" height=\"{}\"",
+                expected.y, expected.height
+            );
+            assert!(
+                svg.contains(&fill),
+                "at control height {height} the bar must be {expected:?}, in:\n{svg}"
+            );
+        }
+    }
+
+    /// The action button sits on the bar, not below it.
+    #[test]
+    fn the_action_button_sits_on_the_bar() {
+        let mut bar = Snackbar::new(Rect::new(0, 0, 320, 120));
+        bar.show_with_action("Retry deployment", "Retry");
+        let action = bar.action_rect().expect("an action button");
+        let bar_band = crate::widget::metrics::ControlMetrics::full_width_band(
+            Rect::new(0, 0, 320, 120),
+            crate::widget::metrics::dimensions::SNACKBAR_HEIGHT,
+        );
+        assert!(action.y >= bar_band.y, "the button starts on the bar");
+        assert!(
+            action.y + action.height as i32 <= bar_band.y + bar_band.height as i32,
+            "the button ends on the bar"
+        );
     }
 }

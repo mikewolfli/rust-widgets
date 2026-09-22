@@ -13,6 +13,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::dimensions;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -23,13 +24,13 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// out in belongs to whoever placed the control. Deriving one from the other meant the census
 /// render of a 240x120 cell drew a 120 px box, and a checkbox in a wide row drew one wider
 /// than its own label.
-const INDICATOR_SIZE: u32 = 18;
+///
+/// Read from the shared table so a checkbox and a radio — which sit side by side in a form —
+/// cannot drift apart in size or in the gap to their labels.
+const INDICATOR_SIZE: u32 = dimensions::CHECKBOX_BOX;
 
 /// Gap between the control's left edge and the indicator box.
 pub(crate) const INDICATOR_INSET: i32 = 2;
-
-/// Gap between the indicator box and the label.
-const INDICATOR_GAP: i32 = 6;
 
 /// Checkbox state.
 ///
@@ -97,6 +98,17 @@ impl CheckBox {
     /// The region is then widened to the style's `touch_target` when one is set, which is the
     /// platform's minimum-touch-size mechanism: on a phone the same small indicator needs a larger
     /// reachable area than on a desktop with a mouse.
+    /// The gap between the indicator and the label.
+    ///
+    /// Read from the style so a theme can tune it, falling back to the shared table. This is
+    /// what `spacing` means throughout the crate: the distance from a control's *own*
+    /// indicator to its *own* text — never the distance between two siblings, which is the
+    /// parent layout's decision (QML draws the same line: `CheckBox.qml:61` uses `spacing`
+    /// for this pair only).
+    fn label_gap(&self) -> i32 {
+        self.style().spacing.unwrap_or(dimensions::INDICATOR_TEXT_SPACING) as i32
+    }
+
     fn hit_area(&self) -> Rect {
         let rect = self.geometry();
         // The renderer's line height for the default font is one em, which is what
@@ -113,7 +125,7 @@ impl CheckBox {
             Rect::new(
                 indicator.x,
                 indicator.y,
-                indicator.width + INDICATOR_GAP as u32 + label_width,
+                indicator.width + self.label_gap() as u32 + label_width,
                 indicator.height,
             )
         };
@@ -441,6 +453,12 @@ impl Draw for CheckBox {
         // The label shares the indicator's line box, so the two cannot drift apart when the
         // font or the control's height changes.
         if !self.text.is_empty() {
+            // `spacing` is the indicator-to-label gap, and that is the *only* thing the field
+            // means — the gap between two sibling controls belongs to whichever layout placed
+            // them (QML keeps the two separate for the same reason: `CheckBox.qml:61` uses
+            // `spacing` for this pair, never for siblings). A themed spacing therefore tunes
+            // this one relation and cannot accidentally re-space a whole row.
+            let gap = self.label_gap();
             let text_color = style.text_color.unwrap_or_else(|| {
                 if enabled {
                     surface.contrast_color()
@@ -450,12 +468,10 @@ impl Draw for CheckBox {
             });
             context.draw_text_fitted(
                 Rect::new(
-                    checkbox_rect.x + checkbox_rect.width as i32 + INDICATOR_GAP,
+                    checkbox_rect.x + checkbox_rect.width as i32 + gap,
                     line.y,
                     rect.width.saturating_sub(
-                        (checkbox_rect.x - rect.x) as u32
-                            + checkbox_rect.width
-                            + INDICATOR_GAP as u32,
+                        (checkbox_rect.x - rect.x) as u32 + checkbox_rect.width + gap as u32,
                     ),
                     line.height,
                 ),
@@ -468,7 +484,12 @@ impl Draw for CheckBox {
     }
 }
 
-#[cfg(test)]
+// These tests drive the **theme**, which only exists in a build with a device profile
+// (see `crate::lib`: `pub mod theme` is gated on `device_profile`). Without this gate the
+// `mini` and `embedded` profiles fail to compile their test targets, because the test code
+// names a module that those builds compile out — the production code is profile-clean and
+// only the fixture was not.
+#[cfg(all(test, full_widgets))]
 mod tests {
     use super::*;
     use crate::compat::Vec;

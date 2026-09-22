@@ -69,6 +69,12 @@ const HEADER_HEIGHT: u32 = 32;
 const CARD_HEIGHT: u32 = 48;
 const CARD_GAP: i32 = 8;
 
+/// The horizontal padding of a card's or a column header's text from its own box edge: 10.
+///
+/// One value for two labels that share a leading edge, so a column's header title and the card
+/// titles below it line up rather than each deriving its own inset.
+const CARD_PADDING: i32 = 10;
+
 /// A card on the board.
 #[derive(Debug, Clone, PartialEq)]
 pub struct KanbanCard {
@@ -891,16 +897,20 @@ impl KanbanBoard {
         let background = if is_drop_target { chrome.drop_target() } else { chrome.column() };
         context.fill_rounded_rect(column_rect, 8, background);
 
-        // Header strip.
+        // Header height is `HEADER_HEIGHT`; the title and the count badge are centred in it
+        // through the shared primitive rather than at a literal `+ 21`, which was a third of a
+        // 32 px header and moved neither with the header nor with the font.
         let header_rect = Rect::new(column_rect.x, column_rect.y, column_rect.width, HEADER_HEIGHT);
         context.fill_rounded_rect(header_rect, 8, chrome.header());
         // A WIP limit is only worth showing when it is reached, which is the state a
         // user has to act on.
         let header_color = if at_limit { chrome.at_limit() } else { chrome.text() };
+        let header_font = Font::simple("Sans", 13.0);
+        let header_line = context.text_line(header_rect, &header_font);
         context.draw_text(
-            Point::new(header_rect.x + 10, header_rect.y + 21),
+            Point::new(header_rect.x + CARD_PADDING, header_line.y),
             &title,
-            &Font::simple("Sans", 13.0),
+            &header_font,
             header_color,
             HorizontalAlignment::Left,
         );
@@ -912,10 +922,18 @@ impl KanbanBoard {
         } else {
             cards.len().to_string()
         };
+        let badge_font = Font::simple("Sans", 11.0);
+        let badge_metrics = context.measure_text(&badge, &badge_font);
+        let badge_line = context.text_line(header_rect, &badge_font);
         context.draw_text(
-            Point::new(header_rect.x + header_rect.width as i32 - 10, header_rect.y + 21),
+            Point::new(
+                header_rect.x + header_rect.width as i32
+                    - CARD_PADDING
+                    - badge_metrics.width as i32,
+                badge_line.y,
+            ),
             &badge,
-            &Font::simple("Sans", 11.0),
+            &badge_font,
             chrome.muted_text(),
             HorizontalAlignment::Left,
         );
@@ -959,18 +977,35 @@ impl KanbanBoard {
             chrome.text().with_alpha(alpha)
         };
         let title = if card.done { format!("✓ {}", card.title) } else { card.title.clone() };
-        context.draw_text(
-            Point::new(card_rect.x + 10, card_rect.y + 20),
-            &title,
-            &Font::simple("Sans", 12.0),
-            title_color,
-            HorizontalAlignment::Left,
-        );
-        if !card.description.is_empty() {
+        // The title and the description are placed from the card's own box: the literals
+        // `+ 20` and `+ 38` described a 48 px card, so any other `CARD_HEIGHT` drew the
+        // description past the card's bottom edge. A card is `CARD_HEIGHT` tall by contract.
+        let title_font = Font::simple("Sans", 12.0);
+        let desc_font = Font::simple("Sans", 10.0);
+        let title_line = context.text_line(card_rect, &title_font);
+        if !title.is_empty() {
             context.draw_text(
-                Point::new(card_rect.x + 10, card_rect.y + 38),
+                Point::new(card_rect.x + CARD_PADDING, title_line.y),
+                &title,
+                &title_font,
+                title_color,
+                HorizontalAlignment::Left,
+            );
+        }
+        if !card.description.is_empty() {
+            // The description occupies the card's lower half, so the two lines never overlap
+            // whatever the card's height is.
+            let desc_band = Rect::new(
+                card_rect.x,
+                card_rect.y + (card_rect.height / 2) as i32,
+                card_rect.width,
+                card_rect.height / 2,
+            );
+            let desc_line = context.text_line(desc_band, &desc_font);
+            context.draw_text(
+                Point::new(card_rect.x + CARD_PADDING, desc_line.y),
                 &card.description,
-                &Font::simple("Sans", 10.0),
+                &desc_font,
                 chrome.muted_text().with_alpha(alpha),
                 HorizontalAlignment::Left,
             );
@@ -1008,23 +1043,29 @@ impl KanbanBoard {
         }
 
         // The card itself, centred on the pointer and semi-transparent so the board
-        // underneath stays readable.
+        // underneath stays readable. It is clamped to the board, because a ghost centred on a
+        // pointer near the edge would otherwise paint over whatever the layout placed beside
+        // the board — nothing clips a widget at this layer.
         let label = session.payload().label.clone();
-        let ghost = Rect::new(
-            current.x - (COLUMN_WIDTH as i32 / 2),
-            current.y - (CARD_HEIGHT as i32 / 2),
-            COLUMN_WIDTH,
-            CARD_HEIGHT,
-        );
+        let board = self.geometry();
+        let ghost_x = (current.x - (COLUMN_WIDTH as i32 / 2))
+            .clamp(board.x, board.x + board.width.saturating_sub(COLUMN_WIDTH) as i32);
+        let ghost_y = (current.y - (CARD_HEIGHT as i32 / 2))
+            .clamp(board.y, board.y + board.height.saturating_sub(CARD_HEIGHT) as i32);
+        let ghost = Rect::new(ghost_x, ghost_y, COLUMN_WIDTH, CARD_HEIGHT);
         context.fill_rounded_rect(ghost, 6, chrome.ghost().with_alpha(230));
         context.draw_rounded_rect_stroke(ghost, 6, chrome.insertion(), 2);
-        context.draw_text(
-            Point::new(ghost.x + 10, ghost.y + 20),
-            &label,
-            &Font::simple("Sans", 12.0),
-            chrome.text(),
-            HorizontalAlignment::Left,
-        );
+        if !label.is_empty() {
+            let ghost_font = Font::simple("Sans", 12.0);
+            let ghost_line = context.text_line(ghost, &ghost_font);
+            context.draw_text(
+                Point::new(ghost.x + CARD_PADDING, ghost_line.y),
+                &label,
+                &ghost_font,
+                chrome.text(),
+                HorizontalAlignment::Left,
+            );
+        }
     }
 }
 

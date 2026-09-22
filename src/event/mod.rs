@@ -46,7 +46,7 @@ pub use timer::TimerManager;
 /// Named mouse-button codes, re-exported so a widget never writes a bare `2` to
 /// mean "secondary button".
 pub use types::mouse_button;
-pub use types::{Event, EventHandler, EventPriority, GestureClass, TouchId};
+pub use types::{Event, EventHandler, EventPriority, FocusReason, GestureClass, TouchId};
 // Re-export queue utilities
 pub use queue::{FixedSizeQueue, QueueError, DEFAULT_QUEUE_CAPACITY};
 pub mod legacy_types;

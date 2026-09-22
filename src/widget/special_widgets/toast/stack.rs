@@ -11,6 +11,7 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::ControlMetrics;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -112,21 +113,40 @@ impl ToastStack {
         true
     }
 
+    /// The region the stack actually occupies: the bottom of the control's rectangle, as many
+    /// rows tall as there are toasts, clamped to the rectangle.
+    ///
+    /// # Why the stack is not the rectangle
+    ///
+    /// A toast stack is a column of fixed-height bars. Filling the whole rectangle made a
+    /// 240x120 census cell a 120 px panel behind two 26 px rows — a surface much larger than
+    /// the toasts it holds, whose top edge was painted but never occupied. Anchoring the band to
+    /// the bottom and sizing it from the rows is the same derivation the draw and the hit test
+    /// read, so the panel and the rows it contains cannot disagree.
+    ///
+    /// An empty stack still claims **one row**: the control is a drop target that has to show
+    /// where a toast will land, and an empty container that paints nothing is indistinguishable
+    /// from a control that was never laid out (the census's P1 defect).
+    fn stack_band(&self) -> Rect {
+        let rows = (self.toasts.len() as u32).max(1);
+        let height = rows.saturating_mul(self.row_height);
+        ControlMetrics::bottom_band(self.geometry(), height)
+    }
+
     fn row_at(&self, pos: Point) -> Option<usize> {
-        let rect = self.geometry();
-        if pos.x < rect.x
-            || pos.x >= rect.x + rect.width as i32
-            || pos.y < rect.y
-            || pos.y >= rect.y + rect.height as i32
+        if self.toasts.is_empty() {
+            return None;
+        }
+        let band = self.stack_band();
+        if pos.x < band.x
+            || pos.x >= band.x + band.width as i32
+            || pos.y < band.y
+            || pos.y >= band.y + band.height as i32
         {
             return None;
         }
 
-        if self.toasts.is_empty() {
-            return None;
-        }
-
-        let bottom = rect.y + rect.height as i32;
+        let bottom = band.y + band.height as i32;
         for index in 0..self.toasts.len() {
             let top = bottom - ((index + 1) as i32 * self.row_height as i32);
             if pos.y >= top && pos.y < top + self.row_height as i32 {
@@ -272,8 +292,6 @@ impl EventHandler for ToastStack {
 
 impl Draw for ToastStack {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
-
         // Chrome colours resolve explicit style first, then the theme's resolved
         // style for this control, and only then a literal. The theme step is what
         // makes an appearance switch visible; previously every colour below was a
@@ -307,21 +325,31 @@ impl Draw for ToastStack {
         let row_background = background.blend(&text_color, 0.05);
         let row_border = background.blend(&text_color, 0.2);
 
-        context.fill_rect(rect, background);
-        context.draw_rect(rect, border);
+        // ── The stack actually painted ──
+        //
+        // The panel is the bottom-anchored region the rows occupy, not the whole rectangle: a
+        // 240x120 census cell was a 120 px panel behind two 26 px rows. An empty stack paints
+        // nothing, because a stack with no toasts has no bar to show.
+        let band = self.stack_band();
+        if band.height == 0 {
+            return;
+        }
+        context.fill_rect(band, background);
+        context.draw_rect(band, border);
 
-        let bottom = rect.y + rect.height as i32;
+        // Bottom-up: the newest toast is the lowest row, which is the end the stack grows from.
+        let bottom = band.y + band.height as i32;
         for (index, item) in self.toasts.iter().enumerate() {
             let visual_order = self.toasts.len() - 1 - index;
             let y = bottom - ((visual_order + 1) as i32 * self.row_height as i32);
-            if y < rect.y {
+            if y < band.y {
                 continue;
             }
 
             let row = Rect::new(
-                rect.x + 4,
+                band.x + 4,
                 y + 2,
-                rect.width.saturating_sub(8),
+                band.width.saturating_sub(8),
                 self.row_height.saturating_sub(4),
             );
             let bg = if self.selected_index == Some(index) {

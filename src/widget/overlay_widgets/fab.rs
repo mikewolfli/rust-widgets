@@ -261,38 +261,73 @@ impl Draw for FAB {
 }
 
 impl EventHandler for FAB {
+    /// The same activation contract `Button` implements.
+    ///
+    /// # What was wrong
+    ///
+    /// Both pointer arms discarded the position (`pos: _`), so **any** release the host
+    /// routed here committed a click — including a drag that began outside the FAB and
+    /// merely ended on top of it, and any release delivered without a preceding press
+    /// inside. There was also no `MouseLeave` arm, so the `pressed` latch survived the
+    /// pointer leaving and stayed armed for an unrelated later release. `Button` had
+    /// already been fixed; this is the same control in a different shape, and leaving it
+    /// as the one outlier is exactly the "fixed one, missed the family" shape
+    /// `tools/check_click_requires_release_inside.sh` exists to catch.
+    ///
+    /// A release outside **cancels** and does not emit `clicked`; a release inside
+    /// emits it. `MouseLeave` clears the latch without emitting, because a pointer that
+    /// merely crosses the edge may still come back.
     fn handle_event(&mut self, event: &Event) {
         if !self.base.is_enabled() {
             return;
         }
 
         match event {
-            Event::MousePress { pos: _, button } => {
-                if *button == 1 {
-                    self.pressed = true;
+            Event::MousePress { pos, button } => {
+                if *button == crate::event::mouse_button::PRIMARY {
+                    // Only a press that lands on the FAB arms it. The runtime hit-tests
+                    // before delivery, but a direct dispatch does not, and an unguarded
+                    // press leaves the latch armed for a release belonging elsewhere.
+                    self.pressed = self.base.contains_point_with_touch_expansion(*pos);
                     self.base.request_redraw();
                 }
             }
-            Event::MouseRelease { pos: _, button } => {
-                if *button == 1 && self.pressed {
+            Event::MouseRelease { pos, button } => {
+                if *button == crate::event::mouse_button::PRIMARY && self.pressed {
                     self.pressed = false;
-                    self.base.clicked.emit();
+                    // Inside commits; outside cancels silently. `clicked` is what a caller
+                    // routes an action on, so it must mean "this gesture completed here".
+                    if self.base.contains_point_with_touch_expansion(*pos) {
+                        self.base.clicked.emit();
+                    }
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseLeave { .. } => {
+                // Crossing the edge abandons the press. Only the latch is cleared — no
+                // signal — because the release that ends the gesture decides its outcome.
+                if self.pressed {
+                    self.pressed = false;
                     self.base.request_redraw();
                 }
             }
             #[cfg(feature = "touch")]
-            Event::TouchBegin { .. } => {
-                self.pressed = true;
+            Event::TouchBegin { pos, .. } => {
+                self.pressed = self.base.contains_point_with_touch_expansion(*pos);
                 self.base.request_redraw();
             }
             #[cfg(feature = "touch")]
-            Event::TouchEnd { .. } => {
+            Event::TouchEnd { pos, .. } => {
                 if self.pressed {
                     self.pressed = false;
-                    self.base.clicked.emit();
+                    if self.base.contains_point_with_touch_expansion(*pos) {
+                        self.base.clicked.emit();
+                    }
                     self.base.request_redraw();
                 }
             }
+            // A `Tap` carries no position: the platform already resolved it to this control,
+            // which is the same basis the hit test narrows.
             #[cfg(feature = "touch")]
             Event::Tap { .. } => {
                 self.base.clicked.emit();

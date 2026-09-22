@@ -36,7 +36,7 @@ Two profiles target constrained hardware. They are **mutually exclusive** with
 ```toml
 # Cargo.toml of your own binary
 [dependencies]
-rust_widgets = { version = "2.6.0", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "2.6.1", default-features = false, features = ["embedded"] }
 ```
 
 A release profile that suits a device — size over speed, and `panic = "abort"`

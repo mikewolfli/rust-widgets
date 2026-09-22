@@ -16,6 +16,7 @@ use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -215,8 +216,21 @@ impl WidgetProperties for RefreshControl {
 impl Draw for RefreshControl {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        let indicator_height: u32 =
-            if self.is_refreshing || self.pull_distance > 5.0 { 40 } else { 0 };
+
+        // ── The reveal strip is a **fixed** band at the control's top edge ──
+        //
+        // A pull-down indicator is chrome: the same 40 px strip opens in a 400 px list
+        // and in a smaller one. The height is named (`REFRESH_INDICATOR_HEIGHT`) and the
+        // band is placed with `ControlMetrics::top_band`, which is the shared derivation
+        // for "a strip pinned to my top edge" — the indicator and the `content_rect`
+        // below it are both read from this one band, so they cannot overlap or leave a
+        // gap. The content area beneath it is what a scrolled list paints into, so it
+        // legitimately spans the rest of the control.
+        let indicator_height = if self.is_refreshing || self.pull_distance > 5.0 {
+            dimensions::REFRESH_INDICATOR_HEIGHT
+        } else {
+            0
+        };
 
         // Chrome colours resolve explicit style first, then the theme's resolved
         // style for this control, and only then a literal. The theme step is what
@@ -263,7 +277,7 @@ impl Draw for RefreshControl {
         context.draw_rect(rect, border);
 
         if indicator_height > 0 {
-            let indicator_area = Rect::new(rect.x, rect.y, rect.width, indicator_height);
+            let indicator_area = ControlMetrics::top_band(rect, indicator_height);
             context.fill_rect(indicator_area, indicator_background);
 
             // Indicator center
@@ -560,6 +574,43 @@ mod tests {
         let svg = render_to_svg(&mut rc);
         assert!(svg.starts_with("<svg"));
         assert!(svg.ends_with("</svg>"));
+    }
+
+    /// The reveal strip is a **fixed** band pinned to the control's top edge.
+    ///
+    /// This pins the defect the fix removes: the indicator's height was the bare literal
+    /// `40` at the draw site, so a caller could not predict the strip's size and a second
+    /// reader of it (the count in the tests, or a future hit test) would have had to
+    /// repeat the number. It is now `REFRESH_INDICATOR_HEIGHT`, placed by
+    /// `ControlMetrics::top_band`, which is also what fixes the strip's *origin*: a
+    /// centred band would have floated it down into the list instead of pinning it to
+    /// the edge the gesture starts at.
+    #[test]
+    fn the_reveal_strip_is_a_fixed_band_at_the_top_edge() {
+        let mut rc = make_refresh_control();
+        rc.set_pull_distance(dimensions::REFRESH_INDICATOR_HEIGHT as f32);
+        let rect = rc.geometry();
+        let svg = render_to_svg(&mut rc);
+        let band = ControlMetrics::top_band(rect, dimensions::REFRESH_INDICATOR_HEIGHT);
+        assert_eq!(band.y, rect.y, "the strip is pinned to the control's top edge");
+        assert_eq!(band.width, rect.width, "the strip spans the control's width");
+        assert_eq!(band.height, dimensions::REFRESH_INDICATOR_HEIGHT);
+        assert!(
+            svg.contains(&format!(
+                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"",
+                band.x, band.y, band.width, band.height
+            )),
+            "the strip is its own band: {svg}"
+        );
+
+        // At rest the strip is not drawn at all, so only the content area paints.
+        let mut idle = make_refresh_control();
+        idle.set_pull_distance(0.0);
+        let idle_svg = render_to_svg(&mut idle);
+        assert!(
+            !idle_svg.contains(&format!("height=\"{}\"", dimensions::REFRESH_INDICATOR_HEIGHT)),
+            "a control at rest has no reveal strip: {idle_svg}"
+        );
     }
 
     #[test]

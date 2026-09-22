@@ -402,7 +402,12 @@ impl Draw for MiniChart {
     }
 }
 
-#[cfg(test)]
+// These tests drive the **theme**, which only exists in a build with a device profile
+// (see `crate::lib`: `pub mod theme` is gated on `device_profile`). Without this gate the
+// `mini` and `embedded` profiles fail to compile their test targets, because the test code
+// names a module that those builds compile out — the production code is profile-clean and
+// only the fixture was not.
+#[cfg(all(test, full_widgets))]
 mod tests {
     use super::*;
     use crate::core::{Color, Rect, Size};

@@ -100,8 +100,12 @@ pub struct FloatingLabel {
     /// Interpolated float position, advanced toward `target_progress` by
     /// [`FloatingLabel::tick`] and consumed by the draw pass. `0.0` draws the
     /// label inline; `1.0` draws it fully above the field.
-    animation_progress: f32,
-    /// The value `animation_progress` moves toward — `1.0` when the label should
+    ///
+    /// Held as the shared [`Transition`](crate::style::Transition) rather than as a bare
+    /// `f32`: the travel needs a *duration* and an *easing curve*, and both are theme
+    /// decisions this control used to hardcode (see `tick`).
+    travel: crate::style::Transition,
+    /// The value the travel moves toward — `1.0` when the label should
     /// float, `0.0` when it should rest inline.
     target_progress: f32,
     /// Emitted when the text content changes.
@@ -122,7 +126,9 @@ impl FloatingLabel {
             is_focused: false,
             show_label_above: false,
             behavior: FloatingLabelBehavior::Auto,
-            animation_progress: 0.0,
+            // The label rising out of a field is a direct reaction to focus, which is
+            // what the theme's `fast` token describes.
+            travel: crate::style::Transition::with_tempo(crate::style::TransitionTempo::Fast),
             target_progress: 0.0,
             text_changed: Signal1::new(),
         }
@@ -227,32 +233,28 @@ impl FloatingLabel {
 
     /// Advances the floating-label animation toward its target.
     ///
-    /// `delta_ms` is the elapsed time since the previous frame. The label travels
-    /// the full inline→floating distance in about 150 ms, then holds. Returns
-    /// `true` when the interpolation changed and the widget needs a redraw, so the
-    /// caller can schedule the next frame only while the animation is still moving
-    /// (the same contract [`crate::widget::display_widgets::spinner::Spinner::tick`]
-    /// and the other animated widgets follow).
+    /// `delta_ms` is the elapsed time since the previous frame. Returns `true` when
+    /// another frame is needed, so the caller can schedule one only while the label is
+    /// still moving — the contract every animated control in this crate follows.
+    ///
+    /// # Why this drives the shared `Transition`
+    ///
+    /// The travel used to be `progress += (target - progress) * delta / 150`. That is not
+    /// a 150 ms animation: it is an **exponential approach** that only reaches the target
+    /// asymptotically, so the label never quite arrived and the control kept asking for
+    /// frames. It also hardcoded its duration, which meant the theme's `Motion` tokens
+    /// could not re-price it — the one animated control in the crate that ignored them.
+    ///
+    /// `Transition` supplies both halves correctly: the engine's eased interpolation over
+    /// a real duration, and the duration read from `theme.motion` (the `fast` token, since
+    /// a label rising out of a field is a direct reaction to focus).
     pub fn tick(&mut self, delta_ms: u32) -> bool {
-        if (self.animation_progress - self.target_progress).abs() < f32::EPSILON {
+        if !self.travel.tick(self.target_progress, delta_ms) {
+            // Settle exactly on the target: `Transition` snaps when it arrives, but a
+            // caller reading `animation_progress()` must never see a value a hair short.
+            self.travel.reset_to(self.target_progress);
             return false;
         }
-        // Interpolate a fixed fraction of the remaining distance; `clamp` to 1.0
-        // means a single large `delta_ms` lands exactly on the target instead of
-        // overshooting.
-        const FULL_TRAVEL_MS: f32 = 150.0;
-        let step = (delta_ms as f32 / FULL_TRAVEL_MS).clamp(0.0, 1.0);
-        let next =
-            self.animation_progress + (self.target_progress - self.animation_progress) * step;
-        // Never step past the target: once the interpolation would cross it, settle
-        // exactly on it so the value stays in `0.0 ..= 1.0`.
-        self.animation_progress = if (next - self.target_progress).abs() < f32::EPSILON
-            || (next > self.animation_progress) == (self.target_progress > self.animation_progress)
-        {
-            next
-        } else {
-            self.target_progress
-        };
         self.base.request_redraw();
         true
     }
@@ -261,7 +263,7 @@ impl FloatingLabel {
     /// `0.0 ..= 1.0`. Exposed for tests and animation-aware hosts; the draw pass
     /// consumes the same value to place the label.
     pub fn animation_progress(&self) -> f32 {
-        self.animation_progress
+        self.travel.progress()
     }
 
     /// The resolved field fill.
@@ -332,13 +334,13 @@ impl FloatingLabel {
         let floating_band = Rect::new(rect.x, rect.y + LABEL_TOP_MARGIN, 1, LABEL_LINE_HEIGHT);
         let floating_line = context.text_line(floating_band, &label_font);
 
-        if self.show_label_above || self.animation_progress > 0.0 {
+        if self.show_label_above || self.travel.progress() > 0.0 {
             // Float: interpolate the origin from the inline line up to the caption line. The
             // caption font is used only once the label has fully risen, so the glyphs do not
             // change size mid-flight.
-            let font = if self.animation_progress >= 1.0 { &label_font } else { &input_font };
+            let font = if self.travel.progress() >= 1.0 { &label_font } else { &input_font };
             let float_y = inline_line.y
-                + ((floating_line.y - inline_line.y) as f32 * self.animation_progress) as i32;
+                + ((floating_line.y - inline_line.y) as f32 * self.travel.progress()) as i32;
             context.draw_text(
                 Point::new(label_x, float_y),
                 &self.label,
@@ -671,16 +673,26 @@ mod tests {
         fl.set_focused(true);
         assert!(fl.show_label_above);
 
-        // A single large step lands exactly on the target and stays there.
-        assert!(fl.tick(1000));
+        // A single large step lands **exactly** on the target. The return value is `false`
+        // because there is no further work — the same settled signal every `tick` in this
+        // crate reports. The old implementation returned `true` here, which was the visible
+        // symptom of it being an asymptotic approach rather than a timed transition: it could
+        // never report "arrived".
+        assert!(!fl.tick(1000), "one long frame both arrives and reports settled");
         assert_eq!(fl.animation_progress(), 1.0);
         assert!(!fl.tick(1000)); // already at target — no further work
 
         // Losing focus retargets back to inline.
         fl.set_focused(false);
         assert!(!fl.show_label_above);
-        assert!(fl.tick(1000));
+        assert!(!fl.tick(1000));
         assert_eq!(fl.animation_progress(), 0.0);
+
+        // A short frame does *not* arrive, and does report more work — so the two answers are
+        // actually distinguishable, which a transition that never settled could not express.
+        fl.set_focused(true);
+        assert!(fl.tick(1), "one millisecond cannot cross the travel");
+        assert!(fl.animation_progress() > 0.0 && fl.animation_progress() < 1.0);
     }
 
     #[test]
@@ -835,8 +847,9 @@ mod tests {
         assert!(!fl.is_focused());
         assert!(fl.text().is_empty());
         assert!(fl.show_label_above);
-        // The float is a real state change, not just a flag: the animation targets 1.0.
-        assert!(fl.tick(1000));
+        // The float is a real state change, not just a flag: the animation crosses the whole
+        // travel and reports that it has no more work once it arrives.
+        assert!(!fl.tick(1000), "a long frame completes the travel in one step");
         assert_eq!(fl.animation_progress(), 1.0);
     }
 

@@ -12,6 +12,7 @@ use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Color dialog for picking RGBA colors.
@@ -64,6 +65,26 @@ impl ColorDialog {
     /// Bottom margin below the button row.
     const BOTTOM_MARGIN: i32 = 12;
 
+    /// The frame the dialog actually paints: at most its intrinsic size, centred in the
+    /// area it was given.
+    ///
+    /// # Why the frame is not the caller's rectangle
+    ///
+    /// `rect` is the area the dialog is **offered**. Painting it verbatim drew the 240x120
+    /// census cell as a 240x120 panel whose picker, preview and buttons were then stacked
+    /// against its top and bottom edges with literals written for the 400x300 default size.
+    /// [`ControlMetrics::painted_box`] caps each axis at the dialog's own intrinsic size and
+    /// centres what is left, and it clamps up to one pixel so a squeezed dialog stays
+    /// visible. Every band below — the title strip, the picker, the preview row and the
+    /// button row — is derived from this one rect, so they cannot be placed from different
+    /// boxes.
+    fn frame_rect(&self) -> Rect {
+        ControlMetrics::painted_box(
+            self.base.geometry(),
+            Size::new(dimensions::DIALOG_MIN_WIDTH, dimensions::DIALOG_MIN_HEIGHT),
+        )
+    }
+
     /// The y of the button row's top edge — the line the picker's height stops at.
     ///
     /// Derived by stacking the rows below the picker upward from the dialog's bottom
@@ -75,7 +96,7 @@ impl ColorDialog {
     /// exactly 0 and the picker collapsed. Tying both edges to the elements that fix them
     /// removes the coincidence of one size.
     fn button_row_top(&self) -> i32 {
-        let rect = self.geometry();
+        let rect = self.frame_rect();
         rect.y + rect.height as i32 - Self::BOTTOM_MARGIN - Self::BUTTON_HEIGHT
     }
 
@@ -86,7 +107,7 @@ impl ColorDialog {
     /// take the whole space on a short dialog: a band that does not fit is dropped
     /// instead of being squeezed into a negative height or overlapping the picker.
     fn preview_row_top(&self) -> Option<i32> {
-        let rect = self.geometry();
+        let rect = self.frame_rect();
         let band_top = self.button_row_top() - Self::PICKER_GAP - Self::PREVIEW_HEIGHT;
         // The band must clear the title bar's bottom and the picker's own minimum.
         if band_top >= rect.y + Self::PICKER_TOP_OFFSET + Self::PICKER_GAP {
@@ -192,7 +213,7 @@ impl ColorDialog {
     /// of the dialog fixes is what makes the picker's height a consequence of the
     /// layout instead of a coincidence of one size.
     fn picker_rect(&self) -> Rect {
-        let rect = self.geometry();
+        let rect = self.frame_rect();
         let picker_top = rect.y + Self::PICKER_TOP_OFFSET;
         // The picker stops at the top of whichever row is drawn below it: the preview
         // band when the dialog can hold one, otherwise the button row itself.
@@ -341,7 +362,8 @@ impl EventHandler for ColorDialog {
 }
 impl Draw for ColorDialog {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
+        // The **frame**, not the control's rectangle: see `frame_rect`.
+        let rect = self.frame_rect();
         // Chrome colours resolve explicit style first, then the theme's resolved style for
         // this control, and only then a literal. Every colour below used to be a literal,
         // so a light/dark switch left the panel, its title bar and its buttons unchanged —
@@ -394,23 +416,31 @@ impl Draw for ColorDialog {
         };
         let accent_ink = accent.contrast_color();
 
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), surface);
-        context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border);
+        // Rounded by [`dimensions::DIALOG_RADIUS`]; the radius is clamped to the frame so a
+        // box smaller than its own corner is not drawn with an inverted one.
+        let radius = dimensions::DIALOG_RADIUS.min(rect.width / 2).min(rect.height / 2);
+        if radius > 0 {
+            context.fill_rounded_rect(rect, radius, surface);
+            context.draw_rounded_rect_stroke(rect, radius, border, 1);
+        } else {
+            context.fill_rect(rect, surface);
+            context.draw_rect(rect, border);
+        }
         // Every label below is fitted to the band it sits in. None of them was bounded, so
         // the two ends of the dialog carried absolute origins written for its 400 px size
         // hint — at the census rectangle the preview label ran to x=379 and the Cancel label
         // to x=360, both past the 240 px frame. The fit makes the label's own rectangle the
         // authority instead of the size the control was designed at.
-        const TITLE_BAR_HEIGHT: u32 = 28;
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, TITLE_BAR_HEIGHT), title_bar);
+        let title_bar_band = ControlMetrics::top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
+        context.fill_rect(title_bar_band, title_bar);
         let title_font = Font::default();
-        let title_metrics = context.measure_text(&tr!("color_dialog.title"), &title_font);
+        let title_line = context.text_line(title_bar_band, &title_font);
         context.draw_text_fitted(
             Rect::new(
                 rect.x + 8,
-                rect.y + ((TITLE_BAR_HEIGHT as i32 - title_metrics.height as i32) / 2).max(0),
+                title_line.y,
                 rect.width.saturating_sub(16),
-                title_metrics.height.max(1),
+                title_line.height.max(1),
             ),
             &tr!("color_dialog.title"),
             &title_font,
@@ -422,34 +452,37 @@ impl Draw for ColorDialog {
         // Both fills are left as literals: the swatch is the colour being edited and the
         // field behind it is the neutral backdrop that makes it readable. Neither is theme
         // chrome, and recolouring either from `style` would misrepresent the picked colour.
+        // Drawn only when the band has real extent: a zero-height picker is an element the
+        // SVG backend emits while the rasteriser skips it.
         let picker_rect = self.picker_rect();
-        context.fill_rect(picker_rect, Color::rgb(200, 200, 200));
-        context.draw_rect(picker_rect, border);
+        if picker_rect.width > 0 && picker_rect.height > 0 {
+            context.fill_rect(picker_rect, Color::rgb(200, 200, 200));
+            context.draw_rect(picker_rect, border);
+        }
         // Color preview. Drawn only when a band's worth of room is left between the
         // title bar and the button row; on a shorter dialog the picker takes that space
         // instead, which is the trade the fit test in `preview_row_top` makes.
         let preview_font = Font::default();
         let preview_text =
             format!("{} {}", tr!("color_dialog.current_color"), self.current_color.to_hex_rgba());
-        let preview_metrics = context.measure_text(&preview_text, &preview_font);
         if let Some(preview_y) = self.preview_row_top() {
             let preview_rect = Rect::new(rect.x + 10, preview_y, 60, Self::PREVIEW_HEIGHT as u32);
             context.fill_rect(preview_rect, self.current_color);
             context.draw_rect(preview_rect, border);
             // The hex readout sits in the strip between the swatch and the panel's right
             // margin, so a long hex string truncates there rather than running under the
-            // buttons. It is centred in the 30 px swatch band: the glyph origin is the
-            // box's top-left, so the old `preview_y + 15` put the line's top edge on the
-            // swatch's middle line.
-            let band = Rect::new(rect.x + 80, preview_y, 60, Self::PREVIEW_HEIGHT as u32);
+            // buttons. It is centred on the 30 px swatch band through the shared primitive:
+            // the glyph origin is the box's top-left, so the old `preview_y + 15` put the
+            // line's top edge on the swatch's middle line.
+            let band = Rect::new(
+                rect.x + 80,
+                preview_y,
+                rect.width.saturating_sub(88),
+                Self::PREVIEW_HEIGHT as u32,
+            );
             let line = context.text_line(band, &preview_font);
             context.draw_text_fitted(
-                Rect::new(
-                    rect.x + 80,
-                    line.y,
-                    (rect.width as i32 - 80 - 8).max(0) as u32,
-                    preview_metrics.height.max(1),
-                ),
+                Rect::new(band.x, line.y, band.width.max(1), line.height.max(1)),
                 &preview_text,
                 &preview_font,
                 ink,

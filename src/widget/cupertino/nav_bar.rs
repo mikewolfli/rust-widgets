@@ -15,8 +15,15 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// The width of a Cupertino navigation bar's leading back-control area.
+///
+/// The affordance is the arrow plus a short label ("Back"), so it is fixed rather than
+/// proportional: a bar twice as wide does not make the back control twice as wide.
+const BACK_BUTTON_WIDTH: u32 = 80;
 
 /// iOS-style large title navigation bar.
 ///
@@ -200,7 +207,23 @@ impl Draw for CupertinoNavigationBar {
             _ => bar_from_theme,
         };
         let bar = bar_surface.blend(&window_fill, 0.10);
-        context.fill_rect(rect, bar);
+        // ── The bar actually painted ──
+        //
+        // `rect` is the area the control was *given*; a navigation bar is a strip pinned to the
+        // **top** of that area, [`dimensions::NAV_BAR_HEIGHT`] tall in compact mode and
+        // [`dimensions::NAV_BAR_LARGE_HEIGHT`] in large-title mode. Filling the whole rectangle
+        // made a 240x120 census cell a 120 px navigation bar whose compact title sat at `y + 22`
+        // — a third of the way down a bar three times its proper height — and it put the bottom
+        // rule on the *canvas* edge rather than on the bar's. `top_band` is the shared
+        // derivation for "a strip pinned to my top edge", and the hit test below reads the same
+        // band so the back affordance and its ink cannot part company.
+        let bar_height = if self.large_title {
+            dimensions::NAV_BAR_LARGE_HEIGHT
+        } else {
+            dimensions::NAV_BAR_HEIGHT
+        };
+        let bar_rect = ControlMetrics::top_band(rect, bar_height);
+        context.fill_rect(bar_rect, bar);
 
         // ── Bottom border line ──
         // A `Surface` role resolves no border colour, so the rule is derived one visible
@@ -210,10 +233,10 @@ impl Draw for CupertinoNavigationBar {
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))
             .filter(|resolved| *resolved != bar)
             .unwrap_or_else(|| bar.blend(&ink, 0.20));
-        let border_y = rect.y + rect.height as i32 - 1;
+        let border_y = bar_rect.y + bar_rect.height as i32 - 1;
         context.draw_line(
-            Point::new(rect.x, border_y),
-            Point::new(rect.x + rect.width as i32, border_y),
+            Point::new(bar_rect.x, border_y),
+            Point::new(bar_rect.x + bar_rect.width as i32, border_y),
             border,
         );
 
@@ -222,11 +245,11 @@ impl Draw for CupertinoNavigationBar {
             let title_font = Font::new("sans-serif", 34.0, true, false);
             if !self.title.is_empty() {
                 let metrics = context.measure_text(&self.title, &title_font);
-                let title_x = rect.x + 16;
+                let title_x = bar_rect.x + 16;
                 // Centre the large title on the bar. The origin is the glyph box's top edge,
                 // so the offset is half the *line box*; the `ascent / 2` term began the glyph
                 // box half a line below the middle.
-                let title_y = rect.y + (rect.height as i32 - metrics.height as i32) / 2;
+                let title_y = bar_rect.y + (bar_rect.height as i32 - metrics.height as i32) / 2;
                 context.draw_text(
                     Point::new(title_x, title_y),
                     &self.title,
@@ -240,13 +263,13 @@ impl Draw for CupertinoNavigationBar {
             let title_font = Font::new("sans-serif", 18.0, false, false);
             if !self.title.is_empty() {
                 let metrics = context.measure_text(&self.title, &title_font);
-                let title_x = rect.x + (rect.width as i32 - metrics.width as i32) / 2;
-                // Top-aligned on the compact bar's 22 px row: the origin is the glyph box's
-                // top edge, so it is simply `rect.y + 22`; the ascent/descent pair claimed to
-                // centre but sat the title half a line down.
-                let title_y = rect.y + 22;
+                let title_x = bar_rect.x + (bar_rect.width as i32 - metrics.width as i32) / 2;
+                // Vertically centred through the shared primitive, so the title sits on the
+                // compact bar's middle line whatever height the band was clamped to; the `+ 22`
+                // it replaces was a literal for the 44 px bar and landed elsewhere on any other.
+                let line = context.text_line(bar_rect, &title_font);
                 context.draw_text(
-                    Point::new(title_x, title_y),
+                    Point::new(title_x, line.y),
                     &self.title,
                     &title_font,
                     ink,
@@ -265,14 +288,14 @@ impl Draw for CupertinoNavigationBar {
             let action = primary.contrast_color().blend(&primary, 0.85);
 
             let arrow_metrics = context.measure_text(arrow_symbol, &arrow_font);
-            let arrow_x = rect.x + 8;
-            // Top-aligned on the same 22 px compact row as the title; the glyph origin is the
-            // top edge, so the removed `ascent / 2` had pushed the arrow half a line down.
-            let arrow_y = rect.y + 22;
+            let arrow_x = bar_rect.x + 8;
+            // On the compact bar's own middle line, shared with the title; the removed
+            // `+ 22` was a literal for the 44 px bar.
+            let arrow_line = context.text_line(bar_rect, &arrow_font);
 
             // Draw arrow
             context.draw_text(
-                Point::new(arrow_x, arrow_y),
+                Point::new(arrow_x, arrow_line.y),
                 arrow_symbol,
                 &arrow_font,
                 action,
@@ -282,11 +305,12 @@ impl Draw for CupertinoNavigationBar {
             // Draw text label next to arrow
             if !self.back_button_text.is_empty() {
                 let label_x = arrow_x + arrow_metrics.width as i32 + 4;
-                // Reads as a small title and shares the compact row's top edge with the title
-                // and the arrow; no ascent term, which had pushed it half a line down.
-                let label_y = rect.y + 22;
+                // Reads as a small title and shares the compact bar's middle line with the
+                // title and the arrow; no literal offset, which had moved it with the bar's
+                // height rather than its own line.
+                let label_line = context.text_line(bar_rect, &label_font);
                 context.draw_text(
-                    Point::new(label_x, label_y),
+                    Point::new(label_x, label_line.y),
                     &self.back_button_text,
                     &label_font,
                     action,
@@ -316,9 +340,18 @@ impl EventHandler for CupertinoNavigationBar {
                     return;
                 }
 
+                // The back area is the leading end of the bar itself, so it tracks the band the
+                // bar is painted in rather than a fixed 80x44 literal: the clickable region and
+                // the ink the user aims at are the same rectangle by construction.
                 let rect = self.geometry();
-                // Back button area: left ~80px of the nav bar, top 44px
-                let back_area = Rect::new(rect.x, rect.y, 80, 44);
+                let bar_height = if self.large_title {
+                    dimensions::NAV_BAR_LARGE_HEIGHT
+                } else {
+                    dimensions::NAV_BAR_HEIGHT
+                };
+                let bar_rect = ControlMetrics::top_band(rect, bar_height);
+                let back_area =
+                    Rect::new(bar_rect.x, bar_rect.y, BACK_BUTTON_WIDTH, bar_rect.height);
                 if back_area.contains_point(*pos) {
                     self.back_pressed.emit(());
                     self.base.request_redraw();
@@ -450,5 +483,38 @@ mod tests {
         bar.show_back_button(true);
         let svg = render_to_svg(&mut bar);
         assert!(svg.starts_with("<svg"));
+    }
+
+    /// The bar is a top-anchored strip, and its rule sits on the bar's own bottom edge.
+    ///
+    /// The defect this pins: the bar filled its whole rectangle, so a 240x120 census cell was
+    /// a 120 px navigation bar whose compact title sat at a literal `y + 22` — a third of the
+    /// way down a bar three times its proper height — and whose bottom rule landed on the
+    /// *canvas* edge rather than the bar's own.
+    #[test]
+    fn the_bar_is_a_top_strip_that_keeps_its_own_height() {
+        use crate::widget::metrics::{dimensions, ControlMetrics};
+        for height in [96u32, 120, 300] {
+            let mut bar = CupertinoNavigationBar::new(Rect::new(0, 0, 240, height));
+            bar.set_title("Settings");
+            // The large-title bar is the taller of the two modes.
+            let band = ControlMetrics::top_band(
+                Rect::new(0, 0, 240, height),
+                dimensions::NAV_BAR_LARGE_HEIGHT,
+            );
+            let svg = render_to_svg(&mut bar);
+            let fill = format!("x=\"0\" y=\"0\" width=\"240\" height=\"{}\"", band.height);
+            assert!(
+                svg.contains(&fill),
+                "at control height {height} the bar must be {band:?}, in:\n{svg}"
+            );
+            // And the rule is on the bar, not on the canvas.
+            let rule = format!(
+                "x1=\"0\" y1=\"{}\" x2=\"240\" y2=\"{}\"",
+                band.y + band.height as i32 - 1,
+                band.y + band.height as i32 - 1
+            );
+            assert!(svg.contains(&rule), "the rule must sit on the bar's bottom edge:\n{svg}");
+        }
     }
 }

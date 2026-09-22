@@ -14,6 +14,7 @@ use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// Font selection dialog.
 ///
@@ -189,9 +190,30 @@ impl EventHandler for FontDialog {
         }
     }
 }
+impl FontDialog {
+    /// The frame the dialog actually paints: at most its intrinsic size, centred in the
+    /// area it was given.
+    ///
+    /// # Why the frame is not the caller's rectangle
+    ///
+    /// `rect` is the area the dialog is **offered**. Painting it verbatim drew the 240x120
+    /// census cell as a 240x120 frame whose three columns and preview were stacked from
+    /// literals written for the 400 px default size. [`ControlMetrics::painted_box`] caps
+    /// each axis at the dialog's own intrinsic size and centres what is left; every band
+    /// below — the title strip, the column header row, the columns and the button row — is
+    /// derived from this one rect.
+    fn frame_rect(&self) -> Rect {
+        ControlMetrics::painted_box(
+            self.base.geometry(),
+            Size::new(dimensions::DIALOG_MIN_WIDTH, dimensions::DIALOG_MIN_HEIGHT),
+        )
+    }
+}
+
 impl Draw for FontDialog {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
+        // The **frame**, not the control's rectangle: see `frame_rect`.
+        let rect = self.frame_rect();
         let style = self.style().clone();
 
         // Chrome colours resolve explicit style first, then the theme's resolved style
@@ -245,22 +267,31 @@ impl Draw for FontDialog {
             surface.blend(&Color::BLACK, 0.06)
         };
 
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), surface);
-        context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border);
+        // Rounded by [`dimensions::DIALOG_RADIUS`]; the radius is clamped to the frame so a
+        // box smaller than its own corner is not drawn with an inverted one.
+        let radius = dimensions::DIALOG_RADIUS.min(rect.width / 2).min(rect.height / 2);
+        if radius > 0 {
+            context.fill_rounded_rect(rect, radius, surface);
+            context.draw_rounded_rect_stroke(rect, radius, border, 1);
+        } else {
+            context.fill_rect(rect, surface);
+            context.draw_rect(rect, border);
+        }
         // Title bar: a separate region from the dialog surface, in the theme's accent
-        // rather than the literal blue it carried before. The label is fitted to the bar,
-        // so a truncating locale cannot run the title past the frame.
-        const TITLE_BAR_HEIGHT: u32 = 28;
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, TITLE_BAR_HEIGHT), accent);
+        // rather than the literal blue it carried before. The label is centred on the bar's
+        // own band through the shared primitive and fitted to the bar, so a truncating
+        // locale cannot run the title past the frame.
+        let title_bar_band = ControlMetrics::top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
+        context.fill_rect(title_bar_band, accent);
         let title_font = Font::default();
         let title_label = tr!("dialog.font.select_font");
-        let title_metrics = context.measure_text(&title_label, &title_font);
+        let title_line = context.text_line(title_bar_band, &title_font);
         context.draw_text_fitted(
             Rect::new(
                 rect.x + 8,
-                rect.y + ((TITLE_BAR_HEIGHT as i32 - title_metrics.height as i32) / 2).max(0),
+                title_line.y,
                 rect.width.saturating_sub(16),
-                title_metrics.height.max(1),
+                title_line.height.max(1),
             ),
             &title_label,
             &title_font,
@@ -270,10 +301,14 @@ impl Draw for FontDialog {
         // The columns share the space left after the button row is reserved, so a third
         // of an already-short dialog cannot reach below the buttons. `col_w` is derived
         // from that clamped height rather than from the dialog's own, which is what made
-        // the last column's label leave the frame.
-        let btn_h = 28i32;
-        let button_top = (rect.y + rect.height as i32 - btn_h - 12).max(rect.y);
-        let col_w = (rect.width / 3).saturating_sub(6);
+        // the last column's label leave the frame. The four tracks (three columns plus the
+        // gaps between them) are laid out from the frame's own padding, and the trailing
+        // column takes the exact remainder so a rounding remainder cannot push it out.
+        let btn_h = dimensions::DIALOG_BUTTON_HEIGHT as i32;
+        let button_band = ControlMetrics::bottom_band(rect, dimensions::DIALOG_BUTTON_HEIGHT);
+        let button_top = button_band.y;
+        const COL_GAP: i32 = 4;
+        let col_w = ((rect.width as i32 - 8 - COL_GAP * 2) / 3).max(1) as u32;
         // The header strip is sized from the font's own line box first, then the columns
         // start below it. Deriving `list_y` from the strip (instead of the strip from
         // `list_y`) is what removes the collision at the source: the old form hardcoded
@@ -288,7 +323,7 @@ impl Draw for FontDialog {
         // agree by construction rather than by a tuned pair of literals.
         let header_metrics = context.measure_text("M", &Font::default());
         let header_h = header_metrics.height.max(1);
-        let list_y = rect.y + TITLE_BAR_HEIGHT as i32 + 2 + header_h as i32 + 2;
+        let list_y = rect.y + dimensions::DIALOG_TITLE_BAR_HEIGHT as i32 + 2 + header_h as i32 + 2;
         // The columns are the dialog's primary content, so they take the space left
         // between the list's real top and the rows reserved *below* it, and the preview
         // well is the band that yields when there is not room for both.
@@ -319,21 +354,29 @@ impl Draw for FontDialog {
             // is dropped; a band that cannot hold a line is not worth a column.
             (space_below_list as u32, 0)
         };
-        let header_top = list_y - 2 - header_h as i32;
-        // Family, Style, Size columns
+        let header_top = (list_y - 2 - header_h as i32).max(rect.y);
+        // Family, Style, Size columns. Each column's box is derived from the frame's own
+        // padding plus its index, so the third column cannot leave the frame; the label is
+        // fitted to its column and centred on the header row's band.
         let col_labels =
             [tr!("dialog.font.font_family"), tr!("dialog.font.style"), tr!("dialog.font.size")];
+        let header_band = Rect::new(rect.x, header_top, rect.width, header_h);
+        let header_line = context.text_line(header_band, &Font::default());
         for (i, label) in col_labels.iter().enumerate() {
-            let col_x = rect.x as f32 + 4.0 + i as f32 * (col_w as f32 + 4.0);
+            let col_x = rect.x + 4 + i as i32 * (col_w as i32 + COL_GAP);
             context.draw_text_fitted(
-                Rect::new(col_x as i32, header_top, col_w, header_h),
+                Rect::new(col_x, header_line.y, col_w, header_line.height.max(1)),
                 label.as_str(),
                 &Font::default(),
                 ink,
                 HorizontalAlignment::Left,
             );
-            context.fill_rect(Rect::new(col_x as i32, list_y, col_w, list_h), field);
-            context.draw_rect(Rect::new(col_x as i32, list_y, col_w, list_h), border);
+            // The column body is drawn only when it has real extent: a zero-height column
+            // is an element the SVG backend emits while the rasteriser skips it.
+            if list_h > 0 {
+                context.fill_rect(Rect::new(col_x, list_y, col_w, list_h), field);
+                context.draw_rect(Rect::new(col_x, list_y, col_w, list_h), border);
+            }
         }
         // Preview area. Placed on the same gap the columns reserved above, so the two
         // derivations cannot drift apart into an overlap or a hole between them. It has
@@ -363,14 +406,14 @@ impl Draw for FontDialog {
             );
         }
         // OK/Cancel. Right-aligned inside the frame and floored at its left edge, so a
-        // control narrower than the two 80 px buttons keeps them on screen; the labels are
-        // centred in their buttons and fitted to them.
+        // control narrower than the two 80 px buttons keeps them on screen; the row is the
+        // frame's bottom band and the labels are centred in their buttons and fitted to them.
         let btn_y = button_top;
-        const BTN_W: i32 = 80;
-        const BTN_STEP: i32 = 88;
-        let cancel_x = (rect.x + rect.width as i32 - BTN_STEP).max(rect.x);
-        let ok_x = (cancel_x - BTN_STEP).max(rect.x);
-        let ok_rect = Rect::new(ok_x, btn_y, BTN_W as u32, btn_h as u32);
+        let btn_w = 80i32.min(button_band.width as i32).max(1);
+        let btn_step = btn_w + 8;
+        let cancel_x = (rect.x + rect.width as i32 - btn_step).max(rect.x);
+        let ok_x = (cancel_x - btn_step).max(rect.x);
+        let ok_rect = Rect::new(ok_x, btn_y, btn_w as u32, btn_h.max(1) as u32);
         context.fill_rect(ok_rect, accent);
         context.draw_text_line(
             ok_rect,
@@ -379,7 +422,7 @@ impl Draw for FontDialog {
             accent_ink,
             HorizontalAlignment::Center,
         );
-        let cancel_rect = Rect::new(cancel_x, btn_y, BTN_W as u32, btn_h as u32);
+        let cancel_rect = Rect::new(cancel_x, btn_y, btn_w as u32, btn_h.max(1) as u32);
         context.fill_rect(cancel_rect, surface.blend(&ink, 0.1));
         context.draw_rect(cancel_rect, border);
         context.draw_text_line(

@@ -14,6 +14,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// File dialog mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +63,18 @@ impl std::fmt::Display for FileFilter {
         write!(f, "{} ({})", self.description, exts.join(" "))
     }
 }
+/// `FileDialog`'s list top gap below the title bar.
+///
+/// The strip between the title bar's bottom edge and the list's own top edge. Named once
+/// so the layout stack and the frame's own padding agree; the draw path used to write this
+/// as `list_y = rect.y + 38` — a bare offset that mixed the title-bar height with the gap
+/// and then cancelled against a second literal in the height arithmetic.
+const LIST_TOP_GAP: i32 = 10;
+/// The selected-file strip's height: one 22 px row above the button row.
+const SEL_H: i32 = 22;
+/// The gap between the list and the selected-file strip below it.
+const SELECTED_STRIP_GAP: i32 = 10;
+
 /// File dialog widget.
 pub struct FileDialog {
     base: BaseWidget,
@@ -358,9 +371,32 @@ impl EventHandler for FileDialog {
         }
     }
 }
+impl FileDialog {
+    /// The frame the dialog actually paints: at most its intrinsic size, centred in the
+    /// area it was given.
+    ///
+    /// # Why the frame is not the caller's rectangle
+    ///
+    /// `rect` is the area the dialog is **offered**. Painting it verbatim drew the 240x120
+    /// census cell as a 240x120 frame whose list, selected-file strip and button row were
+    /// then stacked against literals (`list_y = rect.y + 38`, `rect.height - btn_h - 12`)
+    /// written for the 400 px default size — the list collapsed to a few pixels and the
+    /// strip below it overlapped the buttons. [`ControlMetrics::painted_box`] caps each axis
+    /// at the dialog's own intrinsic size and centres what is left; every band below is
+    /// derived from this one rect, so the rows stack inside the frame instead of each being
+    /// hung off an absolute offset.
+    fn frame_rect(&self) -> Rect {
+        ControlMetrics::painted_box(
+            self.base.geometry(),
+            Size::new(dimensions::DIALOG_MIN_WIDTH, dimensions::DIALOG_MIN_HEIGHT),
+        )
+    }
+}
+
 impl Draw for FileDialog {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
+        // The **frame**, not the control's rectangle: see `frame_rect`.
+        let rect = self.frame_rect();
         let style = self.style().clone();
 
         // Chrome colours resolve explicit style first, then the theme's resolved style
@@ -414,39 +450,48 @@ impl Draw for FileDialog {
             surface.blend(&Color::BLACK, 0.06)
         };
 
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), surface);
-        context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border);
+        // Rounded by [`dimensions::DIALOG_RADIUS`]; the radius is clamped to the frame so a
+        // box smaller than its own corner is not drawn with an inverted one.
+        let radius = dimensions::DIALOG_RADIUS.min(rect.width / 2).min(rect.height / 2);
+        if radius > 0 {
+            context.fill_rounded_rect(rect, radius, surface);
+            context.draw_rounded_rect_stroke(rect, radius, border, 1);
+        } else {
+            context.fill_rect(rect, surface);
+            context.draw_rect(rect, border);
+        }
         // Title bar: a separate region from the dialog surface, in the theme's accent
         // rather than the literal blue it carried before, so the bar follows the palette
-        // the rest of the application is using. The label is fitted to the bar, so a long
-        // title truncates at the bar's edge instead of running past the frame.
-        const TITLE_BAR_HEIGHT: u32 = 28;
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, TITLE_BAR_HEIGHT), accent);
-        let title_font = Font::default();
-        let title_metrics = context.measure_text(&self.title, &title_font);
-        context.draw_text_fitted(
-            Rect::new(
-                rect.x + 8,
-                rect.y + ((TITLE_BAR_HEIGHT as i32 - title_metrics.height as i32) / 2).max(0),
-                rect.width.saturating_sub(16),
-                title_metrics.height.max(1),
-            ),
-            &self.title,
-            &title_font,
-            accent_ink,
-            HorizontalAlignment::Left,
-        );
-        // File list area. The list spans the space between the title bar's bottom edge
-        // and the top of the rows reserved below it — the selected-file strip and the
-        // button row. The old `(button_top - 34 - list_y)` subtracted a height from a
-        // top offset: 34 is the selected-file strip plus its gaps, but `list_y` was
-        // already 38 (the title bar plus its margin), so at the renderer's 120 px box
-        // the two nearly cancelled and the list was 8 px tall while sitting under a
-        // 14 px line box. Deriving both edges from the elements that fix them keeps the
-        // units consistent, so the list is as tall as the layout actually leaves.
-        let btn_h = 28i32;
-        let button_top = (rect.y + rect.height as i32 - btn_h - 12).max(rect.y);
-        let list_y = rect.y + 38;
+        // the rest of the application is using. The label is centred on the bar's own band
+        // through the shared primitive and fitted to it, so a long title truncates at the
+        // bar's edge instead of running past the frame. The strip comes from `top_band`.
+        let title_bar_band = ControlMetrics::top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
+        context.fill_rect(title_bar_band, accent);
+        if !self.title.is_empty() {
+            let title_font = Font::default();
+            let title_line = context.text_line(title_bar_band, &title_font);
+            context.draw_text_fitted(
+                Rect::new(
+                    rect.x + 8,
+                    title_line.y,
+                    rect.width.saturating_sub(16),
+                    title_line.height.max(1),
+                ),
+                &self.title,
+                &title_font,
+                accent_ink,
+                HorizontalAlignment::Left,
+            );
+        }
+        // The three stacked rows are the frame's own bands: the button row at the bottom,
+        // the selected-file strip above it, and the list taking the remainder. Deriving all
+        // three from the frame is what keeps them from overlapping on a short dialog — each
+        // was previously placed from an absolute offset written for a taller one.
+        let button_band = ControlMetrics::bottom_band(rect, dimensions::DIALOG_BUTTON_HEIGHT);
+        let btn_h = button_band.height as i32;
+        let button_top = button_band.y;
+        // The list top is the title bar's bottom edge plus the frame's own padding.
+        let list_y = rect.y + dimensions::DIALOG_TITLE_BAR_HEIGHT as i32 + LIST_TOP_GAP;
         // The list has to hold at least the placeholder's own line box, since that is the
         // only thing it draws when empty. The selected-file strip below it is the element
         // that yields when the two cannot both have room: a 6 px list under a 14 px line
@@ -455,7 +500,7 @@ impl Draw for FileDialog {
         // remains, rather than reaching below the button row.
         let placeholder_line_h = context.measure_text("M", &Font::default()).height.max(1) as i32;
         let list_min_h = placeholder_line_h + 4;
-        let reserved_below = 22 + 10 + 4;
+        let reserved_below = SEL_H + SELECTED_STRIP_GAP;
         let list_h = if button_top - list_y >= list_min_h {
             // The list's own remainder once the strip below is reserved, floored at one
             // line so an empty list can always draw the text that explains it.
@@ -465,39 +510,43 @@ impl Draw for FileDialog {
             (button_top - list_y).max(0) as u32
         };
         let list_rect = Rect::new(rect.x + 10, list_y, rect.width.saturating_sub(20), list_h);
-        context.fill_rect(list_rect, field);
-        context.draw_rect(list_rect, border);
+        if list_rect.height > 0 {
+            context.fill_rect(list_rect, field);
+            context.draw_rect(list_rect, border);
+        }
         // The placeholder lives inside the list it describes, so it truncates at the
         // list's edge rather than at a coordinate chosen for a wider default size. Its
         // line box is centred in the list via the shared primitive: the glyph origin is
         // the box's top-left, so the old fixed `list_rect.y + 6` placed a 14 px line
         // from y=44 to 58 inside a list ending at 46 — twelve pixels of the text that
-        // explains the empty list were outside the well it belongs to.
+        // explains the empty list were outside the well it belongs to. Drawn only when the
+        // list is non-empty, so a squeezed dialog emits no `<text …></text>`.
         let placeholder = tr!("dialog.file_dialog.file_list_placeholder");
         let placeholder_font = Font::default();
-        let placeholder_metrics = context.measure_text(&placeholder, &placeholder_font);
-        let placeholder_band = Rect::new(
-            list_rect.x + 6,
-            list_rect.y,
-            list_rect.width.saturating_sub(12),
-            list_rect.height,
-        );
-        let placeholder_line = context.text_line(placeholder_band, &placeholder_font);
-        context.draw_text_fitted(
-            Rect::new(
-                placeholder_band.x,
-                placeholder_line.y,
-                placeholder_band.width,
-                placeholder_metrics.height.max(1),
-            ),
-            &placeholder,
-            &placeholder_font,
-            // Dimmed toward the field, then held to the text floor: a fixed 50% blend measured
-            // 3.65:1 on the light field, so the line explaining what the empty list is for was
-            // itself hard to read.
-            ink.blend(&field, 0.5).legible_on(field, 4.5),
-            HorizontalAlignment::Left,
-        );
+        if list_rect.height > 0 && !placeholder.is_empty() {
+            let placeholder_band = Rect::new(
+                list_rect.x + 6,
+                list_rect.y,
+                list_rect.width.saturating_sub(12),
+                list_rect.height,
+            );
+            let placeholder_line = context.text_line(placeholder_band, &placeholder_font);
+            context.draw_text_fitted(
+                Rect::new(
+                    placeholder_band.x,
+                    placeholder_line.y,
+                    placeholder_band.width.max(1),
+                    placeholder_line.height.max(1),
+                ),
+                &placeholder,
+                &placeholder_font,
+                // Dimmed toward the field, then held to the text floor: a fixed 50% blend
+                // measured 3.65:1 on the light field, so the line explaining what the empty
+                // list is for was itself hard to read.
+                ink.blend(&field, 0.5).legible_on(field, 4.5),
+                HorizontalAlignment::Left,
+            );
+        }
         // Selected files display: a 70 px label column followed by the file-name field.
         // The strip is placed above the button row rather than eight pixels below the
         // list, which is what used to let it collide with — and overlap — the buttons when
@@ -505,20 +554,16 @@ impl Draw for FileDialog {
         // between the list's bottom and the button row: on a dialog too short for both,
         // the list keeps its line and the strip is dropped rather than being pushed over
         // the buttons by the `max` that used to guarantee it a place.
-        let sel_h = 22i32;
-        let sel_y = button_top - sel_h - 10;
+        let sel_h = SEL_H;
+        let sel_y = button_top - sel_h - SELECTED_STRIP_GAP;
         let sel_fits = sel_y >= list_y + list_h as i32 + 4;
         if sel_fits {
             let sel_label = tr!("dialog.file_dialog.file_name");
             let sel_label_font = Font::default();
-            let sel_label_metrics = context.measure_text(&sel_label, &sel_label_font);
+            let sel_band = Rect::new(rect.x + 10, sel_y, 66, sel_h as u32);
+            let sel_line = context.text_line(sel_band, &sel_label_font);
             context.draw_text_fitted(
-                Rect::new(
-                    rect.x + 10,
-                    (sel_y + (sel_h - sel_label_metrics.height as i32) / 2).max(sel_y),
-                    66,
-                    sel_label_metrics.height.max(1),
-                ),
+                Rect::new(sel_band.x, sel_line.y, sel_band.width, sel_line.height.max(1)),
                 &sel_label,
                 &sel_label_font,
                 ink,
@@ -529,54 +574,50 @@ impl Draw for FileDialog {
                 Rect::new(rect.x + 80, sel_y, rect.width.saturating_sub(90), sel_h as u32);
             context.fill_rect(fname_rect, field);
             context.draw_rect(fname_rect, border);
-            let fname_font = Font::default();
-            let fname_metrics = context.measure_text(fname, &fname_font);
-            context.draw_text_fitted(
-                Rect::new(
-                    fname_rect.x + 4,
-                    fname_rect.y + ((sel_h - fname_metrics.height as i32) / 2).max(0),
-                    fname_rect.width.saturating_sub(8),
-                    fname_metrics.height.max(1),
-                ),
-                fname,
-                &fname_font,
-                ink,
-                HorizontalAlignment::Left,
-            );
-        } else {
-            // The file name still needs a home; it moves into the list's own band, which
-            // is what the list is for. This keeps the control's content reachable at a
-            // size where the strip has no room, rather than silently dropping it.
-            let fname = self.selected_file().unwrap_or("");
-            let fname_font = Font::default();
-            let fname_metrics = context.measure_text(fname, &fname_font);
+            // Guarded: an unguarded draw of an empty file name emits `<text …></text>`.
             if !fname.is_empty() {
-                let band = Rect::new(
-                    list_rect.x + 6,
-                    list_rect.y,
-                    list_rect.width.saturating_sub(12),
-                    list_rect.height,
+                let fname_font = Font::default();
+                let fname_band = Rect::new(
+                    fname_rect.x + 4,
+                    fname_rect.y,
+                    fname_rect.width.saturating_sub(8),
+                    fname_rect.height,
                 );
-                let line = context.text_line(band, &fname_font);
+                let fname_line = context.text_line(fname_band, &fname_font);
                 context.draw_text_fitted(
-                    Rect::new(band.x, line.y, band.width, fname_metrics.height.max(1)),
+                    fname_line,
                     fname,
                     &fname_font,
                     ink,
                     HorizontalAlignment::Left,
                 );
             }
+        } else {
+            // The file name still needs a home; it moves into the list's own band, which
+            // is what the list is for. This keeps the control's content reachable at a
+            // size where the strip has no room, rather than silently dropping it.
+            let fname = self.selected_file().unwrap_or("");
+            let fname_font = Font::default();
+            let band = Rect::new(
+                list_rect.x + 6,
+                list_rect.y,
+                list_rect.width.saturating_sub(12),
+                list_rect.height,
+            );
+            if !fname.is_empty() && band.height > 0 {
+                let line = context.text_line(band, &fname_font);
+                context.draw_text_fitted(line, fname, &fname_font, ink, HorizontalAlignment::Left);
+            }
         }
         // OK/Cancel buttons. The pair is right-aligned inside the frame and floored at its
         // left edge, so a control narrower than the two 80 px buttons keeps them on screen
-        // rather than starting the Open label at a negative x. The labels are centred in
-        // their buttons and fitted to them, so a truncating locale cannot spill out of the
-        // button it belongs to.
-        let btn_y = button_top;
-        const BTN_W: i32 = 80;
-        const BTN_STEP: i32 = 88;
-        let cancel_x = (rect.x + rect.width as i32 - BTN_STEP).max(rect.x);
-        let ok_x = (cancel_x - BTN_STEP).max(rect.x);
+        // rather than starting the Open label at a negative x. The row itself is the frame's
+        // bottom band, and the labels are centred in their buttons and fitted to them, so a
+        // truncating locale cannot spill out of the button it belongs to.
+        let btn_w = 80i32.min(button_band.width as i32).max(1);
+        let btn_step = btn_w + 8;
+        let cancel_x = (rect.x + rect.width as i32 - btn_step).max(rect.x);
+        let ok_x = (cancel_x - btn_step).max(rect.x);
         let ok_label = if self.mode == FileDialogMode::SaveFile {
             tr!("common.button.save")
         } else {
@@ -584,7 +625,7 @@ impl Draw for FileDialog {
         };
         // The accept button is the dialog's call to action: the theme's accent, with its
         // contrast colour as the label — the same pairing `WidgetRole::Primary` uses.
-        let ok_rect = Rect::new(ok_x, btn_y, BTN_W as u32, btn_h as u32);
+        let ok_rect = Rect::new(ok_x, button_band.y, btn_w as u32, btn_h.max(1) as u32);
         context.fill_rect(ok_rect, accent);
         context.draw_text_line(
             ok_rect,
@@ -593,7 +634,7 @@ impl Draw for FileDialog {
             accent_ink,
             HorizontalAlignment::Center,
         );
-        let cancel_rect = Rect::new(cancel_x, btn_y, BTN_W as u32, btn_h as u32);
+        let cancel_rect = Rect::new(cancel_x, button_band.y, btn_w as u32, btn_h.max(1) as u32);
         context.fill_rect(cancel_rect, surface.blend(&ink, 0.1));
         context.draw_rect(cancel_rect, border);
         context.draw_text_line(

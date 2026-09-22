@@ -31,6 +31,8 @@ pub mod flow;
 pub mod form;
 /// Fixed grid layout addressed by `(row, column)` with optional spans.
 pub mod grid;
+/// Size hints — the channel that lets a layout ask a child how big it wants to be.
+pub mod hints;
 /// Diagnostic tooling for inspecting the geometry a layout produced.
 pub mod inspector;
 /// Adjusts a rect to avoid the on-screen software keyboard.
@@ -55,6 +57,7 @@ pub use flex::*;
 pub use flow::*;
 pub use form::*;
 pub use grid::*;
+pub use hints::*;
 pub use inspector::*;
 pub use keyboard_aware::*;
 pub use splitter::*;

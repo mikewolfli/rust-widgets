@@ -15,6 +15,7 @@ use crate::widget::capability::coercion::{expect_u32, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -121,14 +122,62 @@ impl Roller {
         self.font_size
     }
 
-    /// Computes the height of a single item row based on the current font size.
+    /// The height of one row in the wheel.
+    ///
+    /// # Why this is not a function of the control's rectangle
+    ///
+    /// A row is a **fixed row**, like a picker's drum: the same control shows the same
+    /// row height in a short box and a tall one. Deriving it from `rect` — combined with
+    /// sizing the wheel from the same rectangle — made the census cell a 120 px surface
+    /// with one 24 px selection band in it, and made a wheel in a list slot a different
+    /// object from a wheel here. The base is [`dimensions::ROLLER_ROW_HEIGHT`], which is
+    /// the row the default 16 pt face needs; `font_size` still scales it, but as a
+    /// proportion of the type the control was told to draw, never of `rect`.
     fn item_height(&self) -> u32 {
-        (self.font_size * 1.5).ceil() as u32
+        // The control's own default face, which is the type size `ROLLER_ROW_HEIGHT` was
+        // chosen for. Scaling from the *table's* base font instead made the default 16 pt
+        // face round 28 up to 32, so the drawn row disagreed with the named one on the one
+        // font size every default roller uses.
+        const DEFAULT_FONT_SIZE: f32 = 16.0;
+        if self.font_size <= DEFAULT_FONT_SIZE {
+            return dimensions::ROLLER_ROW_HEIGHT;
+        }
+        // A caller with a larger font gets a proportionally larger row. The base is the
+        // named row at the named font, and never `rect`: the two are unrelated facts.
+        // `font_size` is clamped to `>= 4.0` by the setter, so the divisor is never zero.
+        let scaled = (self.font_size / DEFAULT_FONT_SIZE * dimensions::ROLLER_ROW_HEIGHT as f32)
+            .round() as u32;
+        scaled.max(dimensions::ROLLER_ROW_HEIGHT)
     }
 
-    /// Computes the total content height for all visible items.
+    /// The total content height for all visible items.
+    ///
+    /// Fixed at [`dimensions::ROLLER_WHEEL_HEIGHT`] for the default wheel — five rows —
+    /// rather than derived from the *current* row height, because the wheel's extent is
+    /// a chrome fact: a caller who changes the font changes the row's density inside the
+    /// wheel, not how tall the wheel is. Deriving it from `item_height()` coupled the
+    /// control's box to the type size, which is the same drift that made the drawn wheel
+    /// disagree with the height `size_hint` reported.
     fn content_height(&self) -> u32 {
-        self.item_height() * self.visible_count
+        dimensions::ROLLER_WHEEL_HEIGHT * self.visible_count / dimensions::ROLLER_VISIBLE_ROWS
+    }
+
+    /// The band the wheel actually occupies: full width, its own height, centred.
+    ///
+    /// # Why the wheel has its own height
+    ///
+    /// A roller paints a **wheel of rows**, not a surface. The control used to fill its
+    /// whole rectangle (`fill_rect(rect, bg_color)`) and lay its items out around the
+    /// rectangle's middle, so the 240x120 census cell drew a 240x120 fill with a single
+    /// 24 px selection band at y 48 — a panel with one row in it rather than a wheel.
+    /// [`dimensions::ROLLER_WHEEL_HEIGHT`] is the wheel's own extent —
+    /// [`dimensions::ROLLER_VISIBLE_ROWS`] rows — and the shared
+    /// [`ControlMetrics::full_width_band`] centres it, so a wheel in a list slot and a
+    /// wheel in a census cell are the same object. When the caller's rectangle is
+    /// *shorter* than the wheel the band is clamped to it rather than painted outside,
+    /// which is the one case where the control legitimately fills its rectangle.
+    fn wheel_band(&self) -> Rect {
+        ControlMetrics::full_width_band(self.geometry(), dimensions::ROLLER_WHEEL_HEIGHT)
     }
 }
 
@@ -146,6 +195,9 @@ impl Widget for Roller {
         let char_width = self.font_size * 0.6;
         let max_len = self.options.iter().map(|s| s.len()).max().unwrap_or(10);
         let width = (max_len as f32 * char_width).ceil().max(80.0) as u32;
+        // The height is the wheel's own band, which `wheel_band` draws from, so the two
+        // cannot describe different controls: this is the `content_height` the control
+        // has always reported, now also the height it paints at.
         Size::new(width, self.content_height())
     }
     impl_draw_bridge!();
@@ -219,10 +271,17 @@ impl EventHandler for Roller {
             // Mouse press: determine which item was clicked relative to the
             // center of the visible wheel.
             Event::MousePress { pos, button: _ } => {
-                let rect = self.geometry();
+                let band = self.wheel_band();
                 let item_h = self.item_height() as i32;
-                let center_y = rect.y + (rect.height as i32) / 2;
+                let center_y = band.y + (band.height as i32) / 2;
                 let clicked_offset = pos.y - center_y;
+                // A press outside the wheel band selects nothing: the hit test is the
+                // **drawn** band, so the clickable rows and the painted rows are the same
+                // object. Reading the control's own rectangle here (as the old form did)
+                // made the empty space above and below the wheel live.
+                if pos.y < band.y || pos.y >= band.y + band.height as i32 {
+                    return;
+                }
                 let half_visible = (self.visible_count / 2) as i32;
                 // Clamp the row offset to the visible range.
                 let row_offset = (clicked_offset / item_h).clamp(-half_visible, half_visible);
@@ -294,16 +353,23 @@ impl Draw for Roller {
         let font =
             self.style().font.clone().unwrap_or_else(|| Font::simple("sans-serif", self.font_size));
 
+        // ── The wheel actually painted ──
+        //
+        // `rect` is the area the control was *given*; a wheel's own chrome is its rows,
+        // `visible_count` of them at `ROLLER_ROW_HEIGHT` each. The band is the single
+        // derivation the surface fill, the selection band, every row and the hit test are
+        // placed from, so none of them can disagree about where the wheel is.
+        let band = self.wheel_band();
         let item_h = self.item_height() as i32;
         let half_visible = (self.visible_count / 2) as usize;
-        let center_x = rect.x + (rect.width as i32) / 2;
-        let center_y = rect.y + (rect.height as i32) / 2;
+        let center_x = band.x + (band.width as i32) / 2;
+        let center_y = band.y + (band.height as i32) / 2;
 
-        // Draw a background fill for the entire widget area.
-        context.fill_rect(rect, bg_color);
+        // Draw a background fill for the wheel's own band, not for the whole control.
+        context.fill_rect(band, bg_color);
 
-        // Clipping region to ensure items don't spill outside the widget.
-        context.push_clip(rect.x, rect.y, rect.width, rect.height);
+        // Clipping region to ensure items don't spill outside the wheel.
+        context.push_clip(band.x, band.y, band.width, band.height);
 
         // Draw each visible item around the center.
         for offset in 0..=half_visible {
@@ -318,7 +384,7 @@ impl Draw for Roller {
                 let idx = idx as usize;
                 let y = center_y + sign * offset as i32 * item_h;
 
-                let item_rect = Rect::new(rect.x, y - item_h / 2, rect.width, item_h as u32);
+                let item_rect = Rect::new(band.x, y - item_h / 2, band.width, item_h as u32);
 
                 let is_selected = offset == 0;
                 if is_selected {
@@ -329,8 +395,11 @@ impl Draw for Roller {
                 // Draw the option text, measuring to center horizontally.
                 let metrics = context.measure_text(&self.options[idx], &font);
                 let text_x = center_x - (metrics.width as i32) / 2;
-                // Vertically center text within the item row.
-                let text_y = y - (metrics.height as i32) / 2;
+                // Vertically center the text in the row through the shared primitive: a
+                // glyph origin is the box's **top** edge, so `y - metrics.height / 2` put
+                // that edge on the row's middle line and drew every label half a line low.
+                let row_line = context.text_line(item_rect, &font);
+                let text_y = row_line.y;
 
                 let color = if is_selected {
                     selected_text_color
@@ -359,7 +428,7 @@ impl Draw for Roller {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, full_widgets))]
 mod tests {
     use super::*;
     use crate::compat::MiniToString;
@@ -511,13 +580,18 @@ mod tests {
     #[test]
     fn roller_mouse_press_selects_item() {
         let mut roller = make_roller();
-        let rect = roller.geometry();
+        // The hit test is the **drawn** wheel band, not the control's rectangle. The
+        // wheel is `ROLLER_WHEEL_HEIGHT` (140 px) in this 120 px control, so the band is
+        // clamped to the control and its middle is the control's middle; each press is
+        // placed one *row* from that middle, using the row the painter uses.
+        let band = roller.wheel_band();
         let item_h = roller.item_height() as i32;
-        let center_y = rect.y + (rect.height as i32) / 2;
+        assert!(item_h > 0, "a row is a drawable height");
+        let center_y = band.y + (band.height as i32) / 2;
 
         // Click one item above center.
         roller.handle_event(&Event::MousePress {
-            pos: Point::new(rect.x + 10, center_y - item_h),
+            pos: Point::new(band.x + 10, center_y - item_h),
             button: 1,
         });
         // Should have moved one index up (if available).
@@ -526,9 +600,114 @@ mod tests {
         roller.set_selected_index(2);
         // Click one item below center → index 3.
         roller.handle_event(&Event::MousePress {
-            pos: Point::new(rect.x + 10, center_y + item_h),
+            pos: Point::new(band.x + 10, center_y + item_h),
             button: 1,
         });
         assert_eq!(roller.selected_index(), 3);
+    }
+
+    /// The wheel's rows are a fixed height, so the same control is the same object in
+    /// any rectangle.
+    ///
+    /// This pins the defect the fix removes: `item_height` was `font_size * 1.5` and
+    /// the wheel's band was the control's own `rect`, so the census cell drew a 120 px
+    /// panel with one 24 px selection band in it while a 96 px list slot drew a
+    /// different wheel. The band is now the wheel's own extent — `visible_count` rows —
+    /// centred in the control and clamped only when the control is shorter than it.
+    #[test]
+    fn the_wheel_keeps_its_own_extent_in_any_rectangle() {
+        for height in [160u32, 240, 400] {
+            let roller = Roller::new(
+                vec!["a".to_string(), "b".to_string(), "c".to_string()],
+                Rect::new(0, 0, 200, height),
+            );
+            let band = roller.wheel_band();
+            // The band is the wheel's own height, not the caller's.
+            assert_eq!(band.height, roller.content_height(), "at control height {height}");
+            assert_eq!(
+                band.height,
+                dimensions::ROLLER_WHEEL_HEIGHT,
+                "a five-row wheel, whatever the control's height is"
+            );
+            // The row scales with the *type*, never with the box: at the default 16 pt
+            // face it is `ROLLER_ROW_HEIGHT`, and a taller control does not change it.
+            assert_eq!(
+                roller.item_height(),
+                dimensions::ROLLER_ROW_HEIGHT,
+                "a taller control must not stretch a row (at {height})"
+            );
+            assert_eq!(band.width, 200, "the wheel spans the control's width");
+            // Centred, so the wheel sits on the control's middle line.
+            assert_eq!(band.y, (height - band.height) as i32 / 2, "at control height {height}");
+        }
+        // A control shorter than the wheel clamps it rather than painting outside: this
+        // is the one case where the control legitimately fills its rectangle, and it is
+        // what the 240x120 census cell does.
+        let short = Roller::new(vec!["a".to_string()], Rect::new(0, 0, 200, 40));
+        assert_eq!(short.wheel_band().height, 40);
+        assert_eq!(short.wheel_band().y, 0, "a clamped band starts at the control's edge");
+        // And the census cell itself, which is shorter than the wheel.
+        let census = Roller::new(vec!["a".to_string()], crate::widget::census::CENSUS_RECT);
+        assert_eq!(census.wheel_band().height, 120);
+    }
+
+    /// A press outside the drawn wheel selects nothing.
+    ///
+    /// The old handler tested the control's rectangle, so a click in the empty space
+    /// above or below the wheel moved the selection — a hit area larger than the ink.
+    #[test]
+    fn a_press_outside_the_wheel_band_changes_nothing() {
+        // A tall control with a much shorter wheel: the rows occupy only the middle.
+        let mut roller = Roller::new(
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            Rect::new(0, 0, 200, 400),
+        );
+        roller.set_selected_index(1);
+        let band = roller.wheel_band();
+        assert!(band.y > 0, "the wheel is centred, so there is empty space above it");
+        roller.handle_event(&Event::MousePress { pos: Point::new(100, band.y - 10), button: 1 });
+        assert_eq!(roller.selected_index(), 1, "a press above the wheel must not select");
+        roller.handle_event(&Event::MousePress {
+            pos: Point::new(100, band.y + band.height as i32 + 10),
+            button: 1,
+        });
+        assert_eq!(roller.selected_index(), 1, "a press below the wheel must not select");
+    }
+
+    /// The emitted fill is the wheel band, not the control's whole rectangle.
+    #[test]
+    fn the_roller_paints_a_wheel_rather_than_a_panel() {
+        // A 400 px control with a 140 px wheel: the fill must be the wheel, so the
+        // band's own rectangle is what the snapshot starts from rather than the cell.
+        let mut roller =
+            Roller::new(vec!["Apple".to_string(), "Banana".to_string()], Rect::new(0, 0, 240, 400));
+        let svg = crate::widget::svg::render_to_svg(&mut roller);
+        let band = roller.wheel_band();
+        assert_eq!(band.height, dimensions::ROLLER_WHEEL_HEIGHT);
+        assert!(band.y > 0, "the wheel is centred, not pinned to the control's top edge");
+        assert!(
+            svg.contains(&format!(
+                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"",
+                band.x, band.y, band.width, band.height
+            )),
+            "the wheel's own band is what is painted: {svg}"
+        );
+        // The defect's signature: a fill spanning the control's whole height. The wheel
+        // is `visible_count` rows, so the control's own fill is the band — never the
+        // control's full height. (The `<rect x="0" y="0" … height="400">` above is the
+        // *exporter's* backdrop, painted before the control draws, which is why this
+        // asserts on the band's own rectangle rather than on the absence of a number.)
+        assert!(
+            !svg.contains(&format!(
+                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"",
+                band.x, band.y, band.width, 400
+            )),
+            "the control's own height would mean a panel fill: {svg}"
+        );
+        // The selection band is one row tall, not the whole wheel.
+        assert!(
+            svg.contains(&format!("height=\"{}\"", roller.item_height())),
+            "the centre row is a row, not the wheel: {svg}"
+        );
     }
 }

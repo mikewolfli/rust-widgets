@@ -17,6 +17,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -168,7 +169,10 @@ impl Widget for SearchBox {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(200, 28)
+        // A search box is a text field with a magnifier in it, so it reports the field's
+        // own minimum height — the same 48 a `lineedit` reports, which is what stops the
+        // two entry controls in one form being different sizes.
+        crate::core::Size::new(200, dimensions::SEARCH_BOX_FIELD_HEIGHT)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -224,10 +228,39 @@ impl WidgetProperties for SearchBox {
     }
 }
 
+impl SearchBox {
+    /// The field the control actually paints.
+    ///
+    /// # Why the field is not the control's rectangle
+    ///
+    /// A search box is a text field, and every other field in this crate
+    /// ([`crate::widget::LineEdit`]) is [`dimensions::TEXT_FIELD_MIN_HEIGHT`] tall, full
+    /// width, centred in the area it is given. This control painted a **240x120**
+    /// stadium (`rx=6`) in the census cell — a pill four times the height of the input it
+    /// shares a form with — so a search box and a text field side by side did not even
+    /// look like the same kind of control. [`ControlMetrics::full_width_band`] is the
+    /// shared derivation: full width, the field's own height, centred. Everything the
+    /// control paints — the fill, the border, the magnifier, the value and the clear
+    /// button — and everything it hit-tests is placed from this one box, so the ink and
+    /// the clickable area cannot drift apart.
+    fn field_rect(&self) -> Rect {
+        ControlMetrics::full_width_band(self.geometry(), dimensions::SEARCH_BOX_FIELD_HEIGHT)
+    }
+}
+
 impl Draw for SearchBox {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
+        // The field's own box: every child measurement below is taken from it rather
+        // than from the control's rectangle, so the magnifier, the value and the clear
+        // button stay on the field's middle line in any layout.
+        let rect = self.field_rect();
+        // A field with no height left to paint is not a field: the guard keeps the
+        // magnifier and the clear button from being emitted as zero-extent elements, and
+        // it is why the geometry queries below can assume a non-empty box.
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
         let icon_size = 14;
         let icon_margin = 10;
         let clear_btn_size = 16;
@@ -244,6 +277,10 @@ impl Draw for SearchBox {
 
         // — Background —
         //
+        // A stadium on the field's own box, so the radius is half the field's height
+        // rather than a literal 6 written for a 28 px field: at 48 the two disagree, and
+        // the border below must follow the same curve or the two edges cross.
+        let field_radius = rect.height / 2;
         // From the style, not a literal. This painted a fixed light grey in every state and
         // so stayed light in a dark theme: the theme resolved a search box's colour, handed
         // it to the widget, and the widget ignored it. The three-state ladder is kept, but
@@ -270,20 +307,20 @@ impl Draw for SearchBox {
         } else {
             base_bg
         };
-        context.fill_rounded_rect(rect, 6, bg_color);
+        context.fill_rounded_rect(rect, field_radius, bg_color);
 
         // — Focus border —
         if self.focused && is_enabled {
             context.draw_rounded_rect_stroke(
                 rect,
-                6,
+                field_radius,
                 accent.unwrap_or(Color::rgba(60, 140, 255, 200)),
                 2,
             );
         } else {
             context.draw_rounded_rect_stroke(
                 rect,
-                6,
+                field_radius,
                 style.border_color.unwrap_or(Color::rgba(200, 200, 200, 160)),
                 1,
             );
@@ -334,10 +371,20 @@ impl Draw for SearchBox {
         let display_text = if self.text.is_empty() { &self.placeholder } else { &self.text };
         // The field's own line box. A glyph origin is the box's top-left edge, so the old
         // `text_rect.y + text_rect.height / 2 + 4` put that edge on the field's middle line and
-        // drew the text half a line low.
-        let text_line = context.text_line(text_rect, font);
-        let text_origin = Point::new(text_rect.x + 2, text_line.y);
-        context.draw_text(text_origin, display_text, font, text_color, HorizontalAlignment::Left);
+        // drew the text half a line low. The value is drawn only when there is one: the
+        // placeholder is *text the caller supplied*, so an empty placeholder with no value is
+        // nothing to paint rather than a blank row.
+        if !display_text.is_empty() {
+            let text_line = context.text_line(text_rect, font);
+            let text_origin = Point::new(text_rect.x + 2, text_line.y);
+            context.draw_text(
+                text_origin,
+                display_text,
+                font,
+                text_color,
+                HorizontalAlignment::Left,
+            );
+        }
 
         // — Clear button (X circle) —
         if !self.text.is_empty() && is_enabled {
@@ -373,9 +420,13 @@ impl EventHandler for SearchBox {
         }
         match event {
             Event::MousePress { pos, button } if *button == 1 => {
-                // Check if clear button was clicked
+                // Check if clear button was clicked. The circle is placed from the **drawn
+                // field**, not from the control's rectangle: the two used to be the same
+                // box, so the hit test silently agreed with the ink by accident, and once
+                // the field became a centred band they would have diverged — the X would
+                // have been painted in the field but clickable where the rectangle was.
                 if !self.text.is_empty() {
-                    let rect = self.geometry();
+                    let rect = self.field_rect();
                     let clear_margin = 8;
                     let clear_btn_size = 16;
                     let center_y = rect.y + rect.height as i32 / 2;
@@ -396,7 +447,7 @@ impl EventHandler for SearchBox {
             Event::MouseRelease { pos: _, button } if *button == 1 => {
                 // No special release handling needed
             }
-            Event::FocusGained => {
+            Event::FocusGained { .. } => {
                 self.set_focused(true);
             }
             Event::FocusLost => {
@@ -454,7 +505,7 @@ impl EventHandler for SearchBox {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, full_widgets))]
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
@@ -673,5 +724,97 @@ mod tests {
         sb.set_text("hello");
         sb.set_text("hello"); // same text — should not emit
         assert_eq!(*count.lock().unwrap(), 1);
+    }
+
+    /// A search box is a text field, so it is the same height as one in any rectangle.
+    ///
+    /// This pins the defect the fix removes: the field was painted across the control's
+    /// whole `rect`, so the 240x120 census cell drew a **240x120 stadium** (`rx=6`) while
+    /// `lineedit` drew a 48 px band — two entry controls in one form that did not even
+    /// look like the same kind of control. The field is now
+    /// [`dimensions::TEXT_FIELD_MIN_HEIGHT`] tall, full width, centred, exactly as
+    /// `lineedit` is.
+    #[test]
+    fn the_field_is_a_text_field_height_in_any_rectangle() {
+        for height in [48u32, 120, 300] {
+            let sb = SearchBox::new(Rect::new(0, 0, 240, height));
+            let field = sb.field_rect();
+            assert_eq!(
+                field.height,
+                dimensions::TEXT_FIELD_MIN_HEIGHT,
+                "at control height {height}"
+            );
+            assert_eq!(field.width, 240, "the field spans the control's width");
+            assert_eq!(field.y, (height - field.height) as i32 / 2, "at control height {height}");
+        }
+        // A control shorter than a field clamps it rather than painting outside.
+        let short = SearchBox::new(Rect::new(0, 0, 240, 20));
+        assert_eq!(short.field_rect().height, 20);
+    }
+
+    /// The emitted stadium is the field's own box, and its radius follows that box.
+    ///
+    /// The fill used to be `fill_rounded_rect(rect, 6, ..)` over a 240x120 rectangle, so
+    /// the snapshot carried a near-rectangular slab; the radius is now half the field's
+    /// height, which is what makes the two-entry-control shapes match.
+    #[test]
+    fn the_search_box_paints_a_field_rather_than_a_panel() {
+        let mut sb = SearchBox::new(crate::widget::census::CENSUS_RECT);
+        let svg = crate::widget::svg::render_to_svg(&mut sb);
+        let field = sb.field_rect();
+        assert_eq!(field.height, dimensions::TEXT_FIELD_MIN_HEIGHT);
+        assert_eq!(field.y, 36, "a 48 px field centred in the 120 px cell");
+        let radius = field.height / 2;
+        assert!(
+            svg.contains(&format!(
+                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"{}\" ry=\"{}\"",
+                field.x, field.y, field.width, field.height, radius, radius
+            )),
+            "the field's own box is what is painted: {svg}"
+        );
+        // The defect's signature: a fill the control's own height.
+        assert!(
+            !svg.contains(&format!(
+                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"120\"",
+                field.x, field.y, field.width
+            )),
+            "the control's own height would mean a panel fill: {svg}"
+        );
+    }
+
+    /// An empty value with an empty placeholder paints no text at all.
+    ///
+    /// The value line is emitted only when there is something to draw, so a caller that
+    /// cleared the placeholder gets a bare field rather than a blank text element.
+    #[test]
+    fn an_empty_value_and_placeholder_paint_no_text() {
+        let mut sb = SearchBox::new(Rect::new(0, 0, 240, 48));
+        sb.clear();
+        sb.set_placeholder("");
+        let svg = crate::widget::svg::render_to_svg(&mut sb);
+        assert!(!svg.contains("<text"), "nothing to write means nothing drawn: {svg}");
+    }
+
+    /// The clear button's hit circle is the one that was painted.
+    ///
+    /// The hit test used to read the control's rectangle, which happened to be the same
+    /// box the X was drawn in; once the field became a centred band the two would have
+    /// diverged, so this pins that a click lands on the X and a click on the field's
+    /// empty row does not clear.
+    #[test]
+    fn the_clear_button_hit_circle_follows_the_drawn_field() {
+        let mut sb = SearchBox::new(Rect::new(0, 0, 240, 120));
+        sb.set_text("query");
+        let field = sb.field_rect();
+        let clear_cx = field.x + field.width as i32 - 8 - 16 / 2;
+        let clear_cy = field.y + field.height as i32 / 2;
+        // A press on the X clears the value.
+        sb.handle_event(&Event::MousePress { pos: Point::new(clear_cx, clear_cy), button: 1 });
+        assert_eq!(sb.text(), "", "a press on the drawn X clears");
+
+        // A press above the field, inside the control's rectangle, does not clear.
+        sb.set_text("query");
+        sb.handle_event(&Event::MousePress { pos: Point::new(clear_cx, field.y - 10), button: 1 });
+        assert_eq!(sb.text(), "query", "a press outside the field must not clear");
     }
 }

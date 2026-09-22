@@ -5,6 +5,247 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.6.1 (2026-09-23) — Controls Stop Being Their Container: a Metrics System, a Size Channel, and a Real Click Contract
+
+Backward compatible: no public signature was removed or changed. `FocusGained` gained a payload
+field, `Widget` gained two defaulted methods, `Layout` gained a defaulted method, `Colors` gained
+seven roles with serde defaults, and `WidgetStyle` gained one defaulted field. The rendering changes
+are geometric — a control's chrome is now its own size instead of a scaling of the rectangle it was
+given.
+
+---
+
+### 1. The root cause: a control treated its `rect` as a drawing instruction
+
+Every control is rendered into a rectangle by whatever placed it — a layout, a designer, a census
+cell. That rectangle is the area it was **given**. The question "how big should I draw?" is a
+different question, and conflating the two is why `switch.svg` was a 240x120 stadium, `radio_button`
+drew `r=30`, and `progress_bar` was a solid slab:
+
+```text
+CENSUS_RECT = 240x120        // a roomy cell, so a multi-part control has room for all its parts
+switch.svg   = rect 0,0,240,120 rx=60      // the control IS the cell
+```
+
+Qt Quick answers the second question with one formula, and the load-bearing term is the `max`:
+
+```text
+implicitWidth = max(implicitBackgroundWidth + leftInset + rightInset,
+                    implicitContentWidth   + leftPadding + rightPadding)
+```
+
+The **background is a minimum tappable floor**, not decoration — which is why a button labelled with
+5 px text is still 100x40 rather than 100x18.
+
+`src/widget/metrics.rs` is that formula as Rust value types, plus the numeric half of the same
+system: **one** `dimensions` table for every control dimension (track sizes, thumb radii, field
+heights, toolbar heights, paddings, spacings, font base, density step), so "how thick is a progress
+bar" has exactly one answer in the crate.
+
+The helpers that follow from it:
+
+| helper | the question it answers |
+|---|---|
+| `implicit_size(content, padding, floor)` | how big should I be? |
+| `content_box(rect, padding)` | where may my content go? |
+| `center_in` / `centered_square` / `centered_disc` | centre my fixed chrome, clamped never expanded |
+| `centered_band` / `full_width_band` | full width, *my* height, vertically centred |
+| `top_band` / `bottom_band` / `band_inset` | pin a bar to an edge and let content follow |
+| `leading_box` | a fixed-size indicator at my leading edge |
+| `painted_box` | a panel, at most my intrinsic size, never zero-extent |
+| `FocusRing::for_control` + `focus_ring_color` | the keyboard focus ring, inset so it never overlaps a neighbour |
+
+**174 controls** now derive their drawn box from this system instead of from `rect` directly.
+
+### 2. The second root cause: a layout could not ask a child how big it wanted to be
+
+`Layout::update` was `fn update(&self, rect, &mut dyn FnMut(ObjectId, Rect))` — it could **write**
+child geometry but not **read** a child's wish, because it held `ObjectId`s and not widgets. The
+crate's workaround made that concrete:
+
+```rust
+/// Size hints indexed by position within items (set before update).
+pub fn set_child_sizes(&mut self, sizes: Vec<Size>);   // "call before update for proper sizing"
+```
+
+The caller had to work out every child's size and hand it to the layout *before* asking the layout to
+lay anything out. `Wrap` and `Absolute` carried their own variants; `Flow` bypassed the protocol
+entirely by storing `Box<dyn Widget>` itself.
+
+`src/layout/hints.rs` opens that channel:
+
+```rust
+pub struct AxisHints { pub min: u32, pub pref: u32, pub max: u32 }   // normalised on construction
+pub struct Hints     { pub width: AxisHints, pub height: AxisHints }
+pub struct LayoutParams { pub fill: bool, pub stretch: u32, pub margins: EdgeOffsets }
+pub struct ChildInfo { pub id: ObjectId, pub hints: Hints, pub params: LayoutParams }
+```
+
+Three decisions worth naming:
+
+- **Three values per axis, not four opposite-axis functions.** Flutter's `getMinIntrinsicWidth(height)`
+  is parameterised on the other axis and its own docs describe `IntrinsicWidth` as "a speculative
+  layout pass" that is "O(N²) in the depth of the tree". `min`/`pref`/`max` are computed once by the
+  control from its own content; a layout reads them directly. What this gives up is width-for-height
+  coupling, which no control here needs.
+- **`min` is the value this crate was missing.** A floor ("you may squeeze me to 64x40 but no
+  further") is what makes a control stay tappable, and neither a single `size_hint` nor Flutter's
+  four functions can express it without a wrapper.
+- **`fill` is declared separately from size.** A slider's `pref` and a button's `pref` can be the
+  same number, yet the slider should be stretched across a form and the button should not. Size
+  cannot distinguish them, so the flag is its own bit — Qt's `Layout.fillWidth`.
+
+`Layout::arrange(rect, &[ChildInfo], out)` is the read-write entry point, and its **default
+implementation forwards to `update`**, so the fifteen existing layouts keep working untouched and can
+adopt hints one at a time. `FlexLayout` implements it, which is what proves the channel is real: it
+lays children out from their own hints with no `set_child_sizes` call, and produces byte-identical
+geometry to the legacy path given the same sizes.
+
+`Widget::hints()` defaults to a **faithful translation** of the existing `size_hint` (the reported
+size becomes both the preferred value and the floor, with no ceiling). Unconstrained-by-default
+would have *loosened* every existing layout the moment a caller adopted the channel; this way the
+migration is invisible until a control opts into a real floor or ceiling.
+
+### 3. `released` was treated as `clicked`, and neither existed for the keyboard
+
+`Button` emitted `clicked` on **any** release the host routed to it — including a drag that began
+outside and merely ended on top, and including a secondary-button click, which is how a host opens a
+context menu. There was no `canceled` signal, so a caller routing a destructive action could not tell
+a completed activation from an abandoned one, and `MouseLeave` cleared only the hover flag while
+leaving the press latch armed for an unrelated later release.
+
+The four-segment contract (Qt Quick's `handlePress`/`handleMove`/`handleRelease`/`handleUngrab`):
+
+| event | result |
+|---|---|
+| press (primary, enabled, inside) | take the grab, `pressed = true`, emit `pressed` |
+| move | `pressed` follows whether the pointer is still inside |
+| release inside | `pressed = false`, emit `released` + `clicked` |
+| release outside | `pressed = false`, emit `released` + **`canceled`**, **no** `clicked` |
+| ungrab (focus loss / disable) | clear the grab, emit `canceled` |
+
+Three things this required that a naive version gets wrong:
+
+- **`pressed` and the grab are different bits.** `pressed` answers "should I paint pressed" and
+  follows the pointer; the grab answers "is this gesture mine" and lasts from press to release.
+  Folding them into one flag made the move arm that restores `pressed` unreachable — caught by a test
+  asserting that dragging off and back re-arms the button.
+- **`MouseLeave` clears `pressed` but keeps the grab**, because it fires the instant the pointer
+  crosses the edge and a drag that returns should still be able to complete. The **release's landing
+  point** decides the outcome.
+- **`cancel_gesture()` is one place.** Focus loss, disabling and (in future) an explicit ungrab all
+  route through it, so they cannot drift into three slightly different notions of cancellation.
+
+`fab` had the identical defect one file over — the same "fixed the instance, missed the family" shape
+`tools/check_click_requires_release_inside.sh` now catches.
+
+### 4. A focus ring that appears when the user is on the keyboard, and not when they are not
+
+"This widget has focus" and "the user is navigating with the keyboard" are different facts, and only
+the second should draw a ring. Qt Quick encodes it as
+`visualFocus = activeFocus && (reason == Tab | Backtab | Shortcut)`.
+
+`Event::FocusGained` gained a `reason: FocusReason` payload (`Pointer` / `Tab` / `BackTab` /
+`Shortcut` / `Programmatic`) and `FocusReason::draws_focus_ring()` is the single predicate controls
+read. The reason travels **with the event** rather than being queryable from a shared focus manager,
+because a control must decide while handling the event and a draw pass happens later still — a query
+would answer about whatever move happened most recently, not the one this control is handling.
+
+`Button`, `CheckBox`, `RadioButton` and `Switch` now track focus, hover and the focus ring; the ring
+is drawn **inside** the control's rectangle (nothing clips a child at this layer, so a ring outside
+would overlap whatever the layout placed next to it) and follows the control's own corner radius.
+
+The ring colour comes from the theme's new `outline` role rather than from `foreground`, because a
+focused control used to look identical to a merely bordered one.
+
+### 5. A theme palette that can grow
+
+`Colors` had eleven roles against Material 3's forty-odd and QML's twenty-one. Adding one was
+expensive for a mechanical reason: there was no `Default for Colors`, so every `Colors { .. }`
+literal in the crate had to be found and extended. Seven roles are added, all with serde defaults so
+an older theme file still loads, and `impl Default for Colors` makes the next one a local change:
+
+| role | the defect it removes |
+|---|---|
+| `outline` | a focus ring and a divider were the same line |
+| `outline_variant` | no weaker secondary separator existed |
+| `scrim` | a modal dimmed by *darkening*, which does nothing on a dark theme |
+| `surface_container` / `surface_container_high` | cards and panels had nothing to step to |
+| `inverse_surface` / `on_inverse_surface` | an inverting surface and the ink legible on it |
+
+The two presets now use struct-update syntax (`..Colors::default()`), so a preset names only the
+roles it deliberately overrides.
+
+### 6. The controls that were drawing as their container
+
+Each of these was verified by exporting the SVG and reading it, and each row is a fixed size now
+rather than a scaling of the 240x120 cell:
+
+| control | was | is |
+|---|---|---|
+| `button`, `toggle_button` | `rect 240x120` | `rect 0,40,240,40` |
+| `label` | text at `y=0` | text at `y=53` (vertically centred) |
+| `switch` | — | 52x32 track, 28 px thumb, both centred |
+| `check_box` | — | 18x18 box, `r=2`, 2 px stroke |
+| `radio_button` | — | `r=8` ring, 2 px stroke; the dot took the *surface* colour, so checked and unchecked were identical |
+| `progress_bar` | — | 4 px centred band; a 0-value bar emitted a **zero-width** fill element |
+| `slider` | 16x120 thumb slab | 20 px disc on a 4 px track |
+| `scroll_bar` | 24x120 thumb | 8 px trough, 48 px minimum thumb |
+| `line_edit` | `rect 240x120` | `rect 0,36,240,48` |
+| `otp_input` | six 36x120 columns | six 36x48 cells, ending exactly at x=240 |
+| `tool_bar` | `rect 240x120` | `rect 0,32,240,56` |
+| `menu_bar` | `rect 240x120` | `rect 0,0,240,28` |
+| `tooltip` | full-canvas bubble, text at `y=6` | 24 px bubble, text vertically centred |
+| `pagination` | 48 px glyphs in a 120 px column | 32 px row, glyphs sized from the band |
+| `avatar` | `r=60`, half-clipped at the edge | 40 px disc, centred |
+| `spinner`, `rating`, `badge`, `roller`, `chip` | stretched | fixed chrome, centred |
+| every `dialog` | full-canvas frame, literal text `y` | `painted_box` (at most intrinsic, centred, rounded), text on its own band |
+| `table_widget`, `list_view`, `tree_view`, `data_grid`, `property_grid`, `properties_panel` | first row at `y=0`, text half a line low | inset header row, text on its band |
+| `meter` | gauge hard-left at x=4, reading below the arc | figure centred, reading under the arc |
+| `heatmap`, `chart`, `pie_chart`, `sparkline`, `arc` | labels at or past the canvas edge | every label constrained inside the band it labels |
+
+### 7. Defects that only became visible once the geometry was forced to agree
+
+- **`scroll_bar`'s two directions were not inverses.** `value_to_pixel_pos` subtracted the arrow
+  cells; `pixel_pos_to_value` did not, so value 0 at x=24 read back as 111. This is the *same* defect
+  class as the `slider` round-trip fixed in 2.6.0 — the earlier lesson was not scanned for siblings,
+  which is why both now share one inset and carry a round-trip test.
+- **`tag_input`'s chip close buttons were unclickable** — their hit circles sat 36 px above the chips.
+- **Four input controls could be focused by clicking below them**, because the hit test used
+  `geometry()` while the ink used the painted band.
+- **`otp_input`'s last cell ran to x=241** in a 240 px row: `index * slack / boxes` truncates,
+  overspending the trailing half.
+- **`menu` never reserved its heading** when clamping an open position, and charged a bare separator
+  the full item height while painting it a rule's height, so its reported height disagreed with its
+  ink by 16 px.
+- **`masked_edit::set_text` discarded its argument when no mask was set.** The loop iterated the
+  mask's segments, which is empty without a mask, while `set_mask` documents "if the mask is empty,
+  all input is accepted". The control painted nothing, and the legibility test passed anyway because
+  an **empty `<text>` element still has a `fill`** — a test asserting on something that should not
+  have existed.
+- **`fab` and `floating_label`** carried the same release contract and hardcoded-duration defects as
+  their better-tested siblings.
+- **`mini` and `embedded` did not compile.** `Transition` and `Button::tick` named `crate::theme`
+  directly, which is behind `#[cfg(device_profile)]`. Motion tokens are now read through the
+  `crate::style` facade.
+
+### 8. Gates
+
+Two new source gates, each proven failable by injection and each carrying an exemption table whose
+entries name a mechanism and a reason (a bare path is not an entry):
+
+- `tools/check_click_requires_release_inside.sh` — a control that emits `clicked` and handles
+  `MouseRelease` must test containment on the release, abandon the press on `MouseLeave`, or be
+  listed with the mechanism its containment rests on. It found `fab` and two verified defects in
+  `radar_chart` and `property_grid`.
+- `tools/check_transition_durations_are_tokens.sh` — an interaction transition must be priced from
+  `theme.motion`, not a literal. It found `floating_label`.
+
+All 376 snapshots were regenerated. **No snapshot contains a zero-width/zero-height element or an
+empty text element** — both classes are now at zero, down from three and six.
+
+---
+
 ## 2.6.0 (2026-09-22) — Every Label Sits Where It Belongs, and the Controls That Were Invisible Are Visible
 
 Backward compatible: no public signature was removed. The additions are one rendering primitive

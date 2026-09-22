@@ -286,6 +286,32 @@ jobs:
           ./tools/check_mechanism_has_a_consumer.sh
           ./tools/check_control_feature_visible_in_own_snapshot.sh
 
+      # BLUE22 §6.7's new gates, landed with the fixes they guard (§E.3: "this round lands at
+      # least two"). Both read the widget sources only and need no build, so they sit with the
+      # other source-level gates.
+      #
+      # `check_click_requires_release_inside` — a binary control that pairs `MousePress` with
+      # `MouseRelease` by button alone fires on a release *outside* itself, so "press on the
+      # control, drag off it, let go" commits a cancel. No test catches it: a test releases where it
+      # pressed, which passes either way. A file that emits `clicked` and handles a release must
+      # test containment, or abandon the press on `MouseLeave`, or be recorded in
+      # `tools/click_release_exemptions.txt`. The script's header states precisely what that
+      # lexical rule does and does not prove.
+      #
+      # `check_transition_durations_are_tokens` — an interaction transition that names its own
+      # `from_millis(150)` cannot follow a reduced-motion preference, cannot be re-priced by a
+      # theme, and cannot be settled deterministically by a test. `Theme::motion` exists for
+      # exactly this and `Button::tick` already reads it; the gate flags the literals elsewhere.
+      # Token definition sites (`src/style/animation.rs`, `src/theme/`) and hover dwell timings are
+      # excluded, each with its reason recorded in the script header and the exemption table.
+      - name: BLUE22 interaction-contract gates
+        shell: bash
+        run: |
+          chmod +x tools/check_click_requires_release_inside.sh
+          chmod +x tools/check_transition_durations_are_tokens.sh
+          ./tools/check_click_requires_release_inside.sh
+          ./tools/check_transition_durations_are_tokens.sh
+
       - name: Cargo fmt check
         run: cargo fmt --all -- --check
 

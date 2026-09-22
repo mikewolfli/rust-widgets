@@ -146,6 +146,20 @@ pub struct Colors {
     pub disabled: Color,
     /// Informational-state colour.
     pub info: Color,
+    /// Separator / border / focus-ring colour.
+    pub outline: Color,
+    /// Weak secondary separator colour.
+    pub outline_variant: Color,
+    /// Modal dimming layer.
+    pub scrim: Color,
+    /// Card / panel container colour.
+    pub surface_container: Color,
+    /// Raised container colour.
+    pub surface_container_high: Color,
+    /// Deliberately inverted surface colour.
+    pub inverse_surface: Color,
+    /// Ink legible on [`Colors::inverse_surface`].
+    pub on_inverse_surface: Color,
 }
 
 /// The active theme's colour for `token`, or `None` when no theme is active.
@@ -158,6 +172,32 @@ pub fn semantic_color(token: SemanticColor) -> Option<Color> {
 #[cfg(not(device_profile))]
 pub fn semantic_color(_token: SemanticColor) -> Option<Color> {
     None
+}
+
+/// The active theme's motion tokens: `(fast, normal, slow)` in milliseconds.
+///
+/// # Why this is a function rather than a field read
+///
+/// `Theme::motion` exists only where the theme module does, and the two profiles have
+/// different `Theme` shapes — so a caller in shared code cannot write `theme.motion`
+/// without failing to compile in the profile that has no theme. Every animated control
+/// needs the same three numbers, so the read happens here once.
+///
+/// The fallback is the crate's own `Motion::default()` tempo (100/200/300 ms), which is
+/// what an unthemed build behaved as before the tokens existed. It is deliberately a
+/// real, usable tempo rather than an error: a control with no theme still animates.
+#[cfg(device_profile)]
+pub fn motion_tokens() -> (u32, u32, u32) {
+    crate::style::theme_manager()
+        .current_theme()
+        .map(|theme| (theme.motion.fast, theme.motion.normal, theme.motion.slow))
+        .unwrap_or((100, 200, 300))
+}
+
+/// The active theme's motion tokens where there is no theme module to read them from.
+#[cfg(not(device_profile))]
+pub fn motion_tokens() -> (u32, u32, u32) {
+    (100, 200, 300)
 }
 
 /// The process-wide theme manager, behind its lock.

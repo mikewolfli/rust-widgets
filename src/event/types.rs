@@ -25,6 +25,66 @@ pub mod mouse_button {
     pub const MIDDLE: u32 = 3;
 }
 
+/// Why a widget received or lost keyboard focus.
+///
+/// # Why the reason must travel with the event
+///
+/// "This widget has focus" and "the user is navigating with the keyboard" are two
+/// different facts, and only the second should draw a focus ring. Qt Quick encodes
+/// exactly this distinction: its `visualFocus` is
+/// `activeFocus && (reason == Tab | Backtab | Shortcut)` (`qquickcontrol.cpp:1433`).
+///
+/// Without the reason, a control can only know *that* it is focused, so it either
+/// draws a ring on every click (which looks broken on a mouse-driven desktop) or
+/// never draws one (which makes keyboard navigation invisible). Neither is a
+/// tuning problem: the information was simply not delivered.
+///
+/// The variants mirror Qt's `Qt::FocusReason`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum FocusReason {
+    /// A pointer press moved focus — clicking must not show a focus ring.
+    Pointer,
+    /// `Tab` moved focus forward; the canonical "the user is on the keyboard" signal.
+    #[default]
+    Tab,
+    /// `Shift+Tab` (or `Backtab`) moved focus backward. Also keyboard navigation,
+    /// but some controls animate the ring's entry from the other side.
+    BackTab,
+    /// A keyboard accelerator or `Shortcut` invoked the widget.
+    Shortcut,
+    /// The application moved focus itself (dialogs, form focus order, programmatic
+    /// `focus_widget`), with no user navigation behind it.
+    Programmatic,
+}
+
+impl FocusReason {
+    /// Whether a control should paint a focus ring for this reason.
+    ///
+    /// A pointer press is the one reason that must **not**: the pointer already tells
+    /// the user where they are, and a ring drawn under the cursor reads as a stuck
+    /// highlight. Qt Quick's rule, verbatim. This is a method rather than a call site
+    /// predicate so the one place that knows the answer is the one place that names
+    /// the reasons — a new variant must be classified here, not at each draw site.
+    pub fn draws_focus_ring(self) -> bool {
+        match self {
+            FocusReason::Pointer => false,
+            FocusReason::Tab | FocusReason::BackTab | FocusReason::Shortcut => true,
+            // Programmatic focus is the application saying "this control is current".
+            // Showing the ring reflects what the application asked for, and without it
+            // a form that focuses its first field on open would look unfocused.
+            FocusReason::Programmatic => true,
+        }
+    }
+
+    /// Whether this reason came from the keyboard.
+    ///
+    /// Read by controls that change *how* they respond (a list that scrolls its
+    /// selection into view on a keyboard move, but not on a click).
+    pub fn is_keyboard(self) -> bool {
+        matches!(self, FocusReason::Tab | FocusReason::BackTab | FocusReason::Shortcut)
+    }
+}
+
 /// Screen orientation enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScreenOrientation {
@@ -77,11 +137,17 @@ pub enum Event {
     /// This is a legacy variant kept for backward compatibility.
     /// Use `KeyRelease` instead.
     KeyUp((u32, u32)),
-    /// Legacy focus gained event.
+    /// Focus gained, with the reason it moved.
     ///
-    /// This is a legacy variant kept for backward compatibility.
-    /// Use the `focus_gained` signal on `BaseWidget` instead.
-    FocusGained,
+    /// The reason is part of the payload rather than a separate query because a
+    /// control must decide "draw a focus ring?" *while handling the event*, and a
+    /// later lookup on a shared focus manager could already describe a different
+    /// move. Use [`FocusReason::draws_focus_ring`] rather than matching on the
+    /// variants at each draw site.
+    FocusGained {
+        /// What caused the focus to move to this widget.
+        reason: FocusReason,
+    },
     /// Legacy focus lost event.
     ///
     /// This is a legacy variant kept for backward compatibility.

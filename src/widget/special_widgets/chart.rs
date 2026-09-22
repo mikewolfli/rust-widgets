@@ -484,6 +484,12 @@ const LABEL_ROW_TOP: i32 = 12;
 /// line box is one em, so the two agree by construction.
 const LABEL_ROW_HEIGHT: i32 = 10;
 
+/// The margin between the axis label row's bottom edge and the control's own edge: 1 px.
+///
+/// The row's height is the line box, so without this the label's last pixel lands exactly on
+/// the border stroke — visible in `chart.svg` as the category names sitting on the frame.
+const LABEL_ROW_BOTTOM_GUARD: i32 = 1;
+
 /// Width of the value-axis label column, in pixels.
 ///
 /// Wide enough for a four-character label at the axis font plus the tick gap: `1000`,
@@ -498,10 +504,14 @@ impl PlotArea {
     fn of(rect: Rect) -> Self {
         const PADDING: i32 = 8;
         // The bottom margin has to cover the axis label row, which starts 12 px below the
-        // baseline and is one 10 px line box tall. It was 20, so the row's bottom edge landed
-        // exactly on the control's last pixel and any extra (a taller font, a scaled DPI)
-        // pushed it past. `12 + 10` states the reservation in the same units the label uses.
-        const BOTTOM_MARGIN: i32 = LABEL_ROW_TOP + LABEL_ROW_HEIGHT;
+        // baseline and is one 10 px line box tall, **plus** the one pixel that keeps the row's
+        // last pixel inside the control. It was 20, so the row's bottom edge landed exactly on
+        // the control's last pixel and any extra (a taller font, a scaled DPI) pushed it past.
+        // It was then `12 + 10`, which put the row's bottom pixel *on* the frame's own stroke:
+        // `chart.svg` drew the `A B C D` category labels at y=110..120 in a 120 px box, i.e.
+        // flush with the border. `LABEL_ROW_BOTTOM_GUARD` states the reservation in the same
+        // units the label uses and leaves the one pixel the border needs.
+        const BOTTOM_MARGIN: i32 = LABEL_ROW_TOP + LABEL_ROW_HEIGHT + LABEL_ROW_BOTTOM_GUARD;
         // The left margin is the value-axis label column, not just the panel padding: the axis
         // draws its tick values in this strip, so the plot region has to start after them. It
         // was `PADDING` alone, which left no room for a label and is why the axis could not be

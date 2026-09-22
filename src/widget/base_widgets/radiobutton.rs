@@ -4,13 +4,14 @@
 //! Radio button widget.
 use crate::compat::{String, ToString};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
+use crate::event::{Event, EventHandler, FocusReason};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics, FocusRing, FOCUS_RING_WIDTH};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -19,18 +20,34 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// A constant, for the same reason [`crate::widget::CheckBox`]'s indicator is: the disc is
 /// chrome the control owns, while the rectangle it is laid out in belongs to whoever placed
 /// it. `min(w, h) / 4` made a 240x120 census cell draw a 60 px circle, so the same control
-/// was a different shape in every layout. Flutter's outer radius is 8 at a 20 px indicator;
-/// this is the same size class, chosen so the disc sits comfortably inside a 24 px line.
-const INDICATOR_RADIUS: u32 = 9;
+/// was a different shape in every layout.
+///
+/// The value comes from the shared table (`dimensions::RADIO_OUTER_RADIUS`) rather than being
+/// restated here, so the indicator, the ring's stroke and the dot cannot drift apart — and so
+/// a checkbox and a radio, which sit side by side in a form, stay within a pixel of each
+/// other's size.
+const INDICATOR_RADIUS: u32 = dimensions::RADIO_OUTER_RADIUS;
 
 /// Stroke width of the indicator's ring.
-const RING_WIDTH: u32 = 1;
+const RING_WIDTH: u32 = dimensions::RADIO_STROKE;
 
 /// Distance from the control's left edge to the ring's outer edge.
-const INDICATOR_INSET: u32 = 1;
+///
+/// Only a few pixels: a radio button's indicator is close to its own edge, which is what
+/// lets several of them in a group line up as a column of discs.
+const INDICATOR_INSET: i32 = 1;
 
-/// Gap between the ring's right edge and the label.
-const INDICATOR_GAP: i32 = 6;
+/// The line box a single line of `font` occupies, centred vertically in `rect`.
+///
+/// A copy of what `RenderContext::text_line` computes, for the sizing path: `hit_area` is a
+/// `&self` query with no render context to hand, and it must place the indicator exactly
+/// where the painter will. Keeping the arithmetic in one place here — rather than restating
+/// `rect.height / 2` at each of the two call sites — is what stops the pair drifting.
+fn vertical_line_box(rect: Rect, font: &Font) -> Rect {
+    let height = font.size().max(1.0) as u32;
+    let height = height.min(rect.height);
+    Rect::new(rect.x, rect.y + (rect.height.saturating_sub(height) / 2) as i32, rect.width, height)
+}
 
 /// Radio button widget.
 pub struct RadioButton {
@@ -38,6 +55,12 @@ pub struct RadioButton {
     checked: bool,
     group_id: Option<String>,
     text: String,
+    /// Whether this control owns keyboard focus.
+    focused: bool,
+    /// Why it got focus — decides whether a focus ring is painted.
+    focus_reason: FocusReason,
+    /// Whether the pointer is over the control.
+    hovered: bool,
     /// Emitted without a payload when this button becomes the selected member of
     /// its peer group. Only fires on a `false` -> `true` transition; deselection
     /// does not emit.
@@ -46,6 +69,39 @@ pub struct RadioButton {
     pub checked_changed: Signal1<bool>,
 }
 impl RadioButton {
+    /// The gap between the indicator and the label.
+    ///
+    /// Read from the style so a theme can tune it, falling back to the shared table. This is
+    /// what `spacing` means throughout the crate: the distance from a control's *own*
+    /// indicator to its *own* text — never the distance between two siblings, which is the
+    /// parent layout's decision (QML draws the same line: `CheckBox.qml:61` uses `spacing`
+    /// for this pair only).
+    fn label_gap(&self) -> i32 {
+        self.style().spacing.unwrap_or(dimensions::INDICATOR_TEXT_SPACING) as i32
+    }
+
+    /// The indicator's centre and radius.
+    ///
+    /// # Why one function, not two
+    ///
+    /// The hit test and the painter must agree on where the disc is and how big it is, or a
+    /// press lands in a place that looks empty (or misses a place that looks like the
+    /// control). They used to be derived independently — the hit side from `rect.height`, the
+    /// paint side from the label's line box — so a press in the indicator's corner was inside
+    /// the hit area but outside the drawn ring. Deriving both from here makes that class of
+    /// drift unrepresentable.
+    ///
+    /// `line` supplies the *row* the disc is centred on. The disc's own diameter is fixed
+    /// chrome, so it is not clamped to the line's height — only to the control's rectangle.
+    fn indicator_geometry(&self, line: &Rect) -> (Point, u32) {
+        let rect = self.geometry();
+        let row_centre_y = line.y + line.height as i32 / 2;
+        let diameter = (INDICATOR_RADIUS * 2).min(rect.width).min(rect.height);
+        let radius = diameter / 2;
+        let center_x = rect.x + INDICATOR_INSET + radius as i32;
+        (Point::new(center_x.min(rect.x + rect.width as i32 - radius as i32), row_centre_y), radius)
+    }
+
     /// The region a press must land in to select this radio button.
     ///
     /// The indicator plus the label beside it, **not** the whole rectangle the caller laid out.
@@ -58,23 +114,29 @@ impl RadioButton {
     /// target is at least N points", which then widens this region rather than replacing it.
     fn hit_area(&self) -> Rect {
         let rect = self.geometry();
-        let line_height = Font::default().size().max(1.0) as u32;
-        let radius = INDICATOR_RADIUS.min(rect.height / 2).min(rect.width / 2);
-        let indicator_x = rect.x + INDICATOR_INSET as i32;
-        let indicator = Rect::new(
-            indicator_x,
-            rect.y + (rect.height as i32 - (radius as i32 * 2)) / 2,
-            radius * 2,
-            radius * 2,
-        );
+        // The line box, derived the same way `RenderContext::text_line` derives it: a single
+        // line of `Font::default()` centred in the control's rectangle. The two must agree,
+        // because the disc's vertical position follows the line.
+        let line = vertical_line_box(rect, &Font::default());
+        let (center, radius) = self.indicator_geometry(&line);
+        let indicator =
+            Rect::new(center.x - radius as i32, center.y - radius as i32, radius * 2, radius * 2);
+        // The interactive region is the **contents** — indicator through the end of the
+        // label — not the whole laid-out rectangle. A radio given a wide row by its layout
+        // must not select when the user clicks empty space far to the right of its label.
         let contents = if self.text.is_empty() {
+            // No label to reach, so the indicator alone is the target.
             indicator
         } else {
-            let label_width = self.text.chars().count() as u32 * (line_height * 3 / 5).max(1);
+            // The label's width is an *estimate* (`chars * 3/5 em`), deliberately conservative:
+            // the region must never extend past the text the user can see, and this path has no
+            // render context to measure with. The painter may therefore draw a slightly wider
+            // label than the hit region — the safe direction.
+            let label_width = self.text.chars().count() as u32 * (line.height * 3 / 5).max(1);
             Rect::new(
                 indicator.x,
                 indicator.y,
-                indicator.width + INDICATOR_GAP as u32 + label_width,
+                indicator.width + self.label_gap() as u32 + label_width,
                 indicator.height,
             )
         };
@@ -91,6 +153,9 @@ impl RadioButton {
             checked: false,
             group_id: None,
             text: String::new(),
+            focused: false,
+            focus_reason: FocusReason::Programmatic,
+            hovered: false,
             selected: GenericSignal::new(),
             checked_changed: Signal1::new(),
         }
@@ -140,6 +205,34 @@ impl RadioButton {
             peer.set_checked(index == selected_index);
         }
         true
+    }
+
+    /// Whether this control currently owns keyboard focus.
+    pub fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    /// Whether a focus ring should be painted right now.
+    ///
+    /// The same single predicate every control uses — `focused && reason.draws_focus_ring()`
+    /// — so "has focus" cannot be mistaken for "draw the ring" in one control and not in
+    /// another.
+    pub fn visual_focus(&self) -> bool {
+        self.focused && self.focus_reason.draws_focus_ring()
+    }
+
+    /// Whether the pointer is over this control.
+    pub fn is_hovered(&self) -> bool {
+        self.hovered
+    }
+
+    /// Sets the hovered flag and requests a redraw.
+    pub fn set_hovered(&mut self, hovered: bool) {
+        if self.hovered == hovered {
+            return;
+        }
+        self.hovered = hovered;
+        self.base.request_redraw();
     }
 }
 // Implement Widget trait
@@ -248,6 +341,23 @@ impl EventHandler for RadioButton {
                 self.set_checked(true);
                 self.base.clicked.emit();
             }
+            Event::FocusGained { reason } => {
+                self.focused = true;
+                self.focus_reason = *reason;
+                self.base.request_redraw();
+            }
+            Event::FocusLost => {
+                self.focused = false;
+                self.base.request_redraw();
+            }
+            Event::MouseEnter { .. } => {
+                self.hovered = true;
+                self.base.request_redraw();
+            }
+            Event::MouseLeave { .. } => {
+                self.hovered = false;
+                self.base.request_redraw();
+            }
             _ => { /* Other events are not relevant */ }
         }
     }
@@ -266,11 +376,11 @@ impl Draw for RadioButton {
         // is neither the size nor the position of a radio button, and it moved the label to the
         // control's centre as well. The fixed radius is the one every toolkit uses because a
         // radio's disc is chrome the control owns, while the rectangle is the caller's.
-        let radius = INDICATOR_RADIUS.min(rect.height / 2).min(rect.width / 2);
-        let center = Point::new(
-            rect.x + INDICATOR_INSET as i32 + radius as i32,
-            line.y + line.height as i32 / 2,
-        );
+        //
+        // Derived through `indicator_geometry`, the *same* function the hit test uses, so the
+        // disc the user sees and the disc the user must hit are the same circle. They used to be
+        // computed separately — one from `rect.height`, one from the label's line box.
+        let (center, radius) = self.indicator_geometry(&line);
 
         let ink = style.text_color.unwrap_or_else(|| {
             // The control paints no fill of its own, so the ink is derived from the surface
@@ -287,21 +397,40 @@ impl Draw for RadioButton {
         // The ring is a stroke, so it is drawn as one rather than as a filled disc with a
         // second disc punched out: two stacked discs at this radius leave a seam where the
         // anti-aliased edges meet.
+        //
+        // A hovered control steps the ring one shade toward its own ink, which is how a radio
+        // acknowledges the pointer without needing a ripple layer.
+        let ink =
+            if self.hovered && enabled { ink.blend(&ink.contrast_color(), 0.25) } else { ink };
         let ring = if enabled { ink } else { ink.with_alpha(140) };
         context.draw_circle_stroke(center, radius, ring, RING_WIDTH);
 
         if self.checked {
-            // The dot takes the caller's or the theme's accent, or — when neither exists —
-            // the ink, which is by construction legible on this control's surface.
-            let dot = style.background_color.unwrap_or(ink);
+            // The dot is the control's *meaning*, so it takes the accent — the same token a
+            // checked switch's track takes. It used to read `style.background_color`, which is
+            // the **surface** the control sits on: on a default theme that painted a near-white
+            // dot on a near-white surface, so a checked radio was indistinguishable from an
+            // unchecked one, and the doc comment claiming "the caller's or the theme's accent"
+            // described a colour the code never read.
+            //
+            // The caller's explicit colour still wins, so a themed radio can be re-coloured;
+            // the accent rung is what a *theme-derived* style falls through to.
+            #[cfg(device_profile)]
+            let accent = crate::style::semantic_color(crate::style::SemanticColor::Info);
+            #[cfg(not(device_profile))]
+            let accent: Option<Color> = None;
+            let explicit = if style.theme_derived { None } else { style.background_color };
+            let dot = explicit.or(accent).unwrap_or(ink);
             let dot = if enabled { dot } else { dot.with_alpha(140) };
-            // Scaled to the ring rather than a fixed ratio of it: Flutter's inner/outer ratio
-            // is 0.5625, which is visibly fuller than a half without touching the ring.
-            context.fill_circle(center, radius.saturating_mul(9) / 16, dot);
+            // Sized from the shared table rather than as a ratio of the ring: Flutter's
+            // inner/outer ratio is 0.5625, which this table rounds to a fixed radius so the
+            // dot cannot drift when the outer radius moves.
+            let dot_radius = dimensions::RADIO_DOT_RADIUS.min(radius.saturating_sub(RING_WIDTH));
+            context.fill_circle(center, dot_radius, dot);
         }
 
         if !self.text.is_empty() {
-            let label_x = center.x + radius as i32 + INDICATOR_GAP;
+            let label_x = center.x + radius as i32 + self.label_gap();
             context.draw_text_fitted(
                 Rect::new(
                     label_x,
@@ -314,6 +443,25 @@ impl Draw for RadioButton {
                 ink,
                 HorizontalAlignment::Left,
             );
+        }
+
+        // ── Focus ring ──
+        //
+        // Inset inside the control's own rectangle, and gated on the *reason* focus arrived so a
+        // click focuses without painting a ring.
+        if self.visual_focus() {
+            let ring_outer = FocusRing::for_control(
+                rect,
+                ControlMetrics::focus_ring_radius(dimensions::RADIO_OUTER_RADIUS),
+            );
+            if ring_outer.is_drawable() {
+                context.draw_rounded_rect_stroke(
+                    ring_outer.rect,
+                    ring_outer.radius,
+                    crate::widget::metrics::focus_ring_color(ink.contrast_color()),
+                    FOCUS_RING_WIDTH,
+                );
+            }
         }
     }
 }

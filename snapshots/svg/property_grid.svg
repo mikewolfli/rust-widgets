@@ -3,8 +3,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="rgba(35,35,35,1.00)" />
-  <rect x="0" y="0" width="240" height="24" fill="rgba(84,145,193,1.00)" />
-  <text x="4" y="6" dominant-baseline="text-before-edge" font-family="Arial" font-size="12" font-style="normal" font-weight="700" fill="rgba(0,0,0,1.00)">Property</text>
-  <text x="84" y="6" dominant-baseline="text-before-edge" font-family="Arial" font-size="12" font-style="normal" font-weight="700" fill="rgba(0,0,0,1.00)">Value</text>
-  <line x1="0" y1="24" x2="240" y2="24" stroke="rgba(83,83,83,1.00)" stroke-width="1" />
+  <rect x="2" y="2" width="236" height="24" fill="rgba(84,145,193,1.00)" />
+  <text x="9" y="8" dominant-baseline="text-before-edge" font-family="Arial" font-size="12" font-style="normal" font-weight="700" fill="rgba(0,0,0,1.00)">Property</text>
+  <text x="89" y="8" dominant-baseline="text-before-edge" font-family="Arial" font-size="12" font-style="normal" font-weight="700" fill="rgba(0,0,0,1.00)">Value</text>
+  <line x1="2" y1="26" x2="238" y2="26" stroke="rgba(83,83,83,1.00)" stroke-width="1" />
 </svg>

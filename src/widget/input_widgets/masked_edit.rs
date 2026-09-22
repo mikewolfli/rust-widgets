@@ -24,6 +24,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -125,16 +126,32 @@ impl MaskedEdit {
 
     /// Sets the raw text. The text is validated against the mask, and only
     /// characters that match the mask positions are accepted.
+    ///
+    /// # Why an unmasked field accepts everything
+    ///
+    /// With no mask there are no segment positions to validate against, and
+    /// [`MaskedEdit::set_mask`] documents exactly that case: "If the mask is empty, no
+    /// formatting is applied and all input is accepted". The loop below used to iterate
+    /// `self.segments` unconditionally, so with no mask it ran zero times and **silently
+    /// discarded the whole string** — `set_text("Sample")` left `raw_text` empty and the
+    /// control painted nothing. That is why the census SVG for this control contained an
+    /// empty `<text></text>`: not a rendering subtlety, but a setter that threw its
+    /// argument away.
     pub fn set_text(&mut self, text: &str) {
         let before = self.raw_text.clone();
         self.raw_text = String::new();
-        let mut chars = text.chars();
-        for seg in &self.segments {
-            if let MaskSegment::Input { kind } = seg {
-                for ch in chars.by_ref() {
-                    if mask_char_matches(*kind, ch) {
-                        self.raw_text.push(ch);
-                        break;
+        if self.segments.is_empty() {
+            // No mask: the text is the value, verbatim.
+            self.raw_text = text.to_string();
+        } else {
+            let mut chars = text.chars();
+            for seg in &self.segments {
+                if let MaskSegment::Input { kind } = seg {
+                    for ch in chars.by_ref() {
+                        if mask_char_matches(*kind, ch) {
+                            self.raw_text.push(ch);
+                            break;
+                        }
                     }
                 }
             }
@@ -320,6 +337,21 @@ impl MaskedEdit {
         }
         self.segments.len()
     }
+
+    /// The field the control actually paints.
+    ///
+    /// # Why the field is not the control's rectangle
+    ///
+    /// A masked field is a text field: [`dimensions::TEXT_FIELD_MIN_HEIGHT`] is the
+    /// touch-sized content floor every field shares, full width and centred in the area the
+    /// caller offers. Painting `geometry()` made a 240x120 census cell a 240x120 box — a
+    /// panel rather than a field — and every anchor inside it (the ink's line box, the
+    /// caret) was derived from the oversized box, so a themed field's text sat on the wrong
+    /// row. [`ControlMetrics::full_width_band`] is the shared derivation, and the hit test
+    /// below reads it too, so the clickable area is exactly the painted one.
+    fn field_rect(&self) -> Rect {
+        ControlMetrics::full_width_band(self.geometry(), dimensions::TEXT_FIELD_MIN_HEIGHT)
+    }
 }
 
 impl Widget for MaskedEdit {
@@ -388,7 +420,15 @@ impl WidgetProperties for MaskedEdit {
 
 impl Draw for MaskedEdit {
     fn draw(&mut self, context: &mut RenderContext) {
-        let geom = self.geometry();
+        // The **field**, not the control's rectangle.
+        //
+        // A masked field is a text field, and every other field in this crate is
+        // `TEXT_FIELD_MIN_HEIGHT` tall, full width, centred in the area it is given.
+        // Painting `geometry()` made a 240x120 census cell a 240x120 box, and every
+        // measurement below — the fill, the border, the ink's line box and the caret —
+        // inherited that. `ControlMetrics::full_width_band` is the shared derivation, and
+        // it is also what the hit test uses, so the clickable area is the visible one.
+        let geom = self.field_rect();
         let is_enabled = self.base.is_enabled();
         let font = Font::simple("monospace", 13.0);
 
@@ -480,7 +520,10 @@ impl Draw for MaskedEdit {
         // text be laid out from the centre line downward and leave the control. The segment
         // walk below therefore bounds each character by arithmetic in the painter's own space,
         // where its own `char_width` is the unit it advances by.
-        let padding = 6i32;
+        // The field's horizontal content inset, from the shared table rather than a local
+        // `6`: a masked field and every other field inset their content by the same amount,
+        // so the value belongs in the table the others read.
+        let padding = dimensions::TEXT_FIELD_PADDING_H as i32;
         let text_x = geom.x + padding;
         // The band a character may occupy. It starts below the field's top border and stops at
         // the field's bottom edge, because a character is drawn *down* from its origin: a 13 px
@@ -489,8 +532,13 @@ impl Draw for MaskedEdit {
         // SVG snapshot shows a `<text>` at `y = 60` in a 120 px field whose painted extent
         // reaches y = 73). Centring the *glyph box* instead of its centre line keeps the text
         // where it was while giving both branches below a bound they can be checked against.
-        let inner_top = geom.y + (geom.height.saturating_sub(font.size() as u32) / 2) as i32;
-        let inner_height = (geom.height as i32 - padding).max(0) as u32;
+        //
+        // `context.text_line` is what places the box: it returns the field's own line box, so
+        // the ink is vertically centred in the *field* rather than beginning on the point the
+        // field happens to be centred on.
+        let line = context.text_line(geom, &font);
+        let inner_top = line.y;
+        let inner_height = line.height;
 
         if self.mask.is_empty() {
             let text_color = if !is_enabled { disabled_ink } else { ink };
@@ -508,13 +556,21 @@ impl Draw for MaskedEdit {
                 geom.width.saturating_sub(padding as u32 * 2),
                 inner_height,
             );
-            context.draw_text_fitted(
-                text_bounds,
-                &self.raw_text,
-                &font,
-                text_color,
-                HorizontalAlignment::Left,
-            );
+            // An empty value emits no text element at all. `draw_text_fitted` on an empty string
+            // still reaches the backend, which emitted `<text ...></text>` — an element with no
+            // content, which is neither a glyph nor a space and which nothing can consume. The
+            // masked branch below already skips empty segments, so guarding here keeps the two
+            // halves of the control consistent rather than leaving one of them emitting nothing
+            // that looks like something.
+            if !self.raw_text.is_empty() {
+                context.draw_text_fitted(
+                    text_bounds,
+                    &self.raw_text,
+                    &font,
+                    text_color,
+                    HorizontalAlignment::Left,
+                );
+            }
             return;
         }
 
@@ -616,7 +672,7 @@ impl EventHandler for MaskedEdit {
         }
 
         match event {
-            Event::FocusGained => {
+            Event::FocusGained { .. } => {
                 self.focused = true;
                 self.base.request_redraw();
             }
@@ -624,9 +680,18 @@ impl EventHandler for MaskedEdit {
                 self.focused = false;
                 self.base.request_redraw();
             }
-            Event::MousePress { .. } => {
-                self.focused = true;
-                self.base.request_redraw();
+            // A press focuses the field only when it lands on the **painted band**.
+            //
+            // Testing the control's rectangle is what let a user focus this field by
+            // clicking the empty space below it: the field is a 48 px band centred in the
+            // area the caller gave, so in a 120 px cell the bottom 36 px of the rectangle
+            // are window background, not the control. Hit-testing the drawn box keeps the
+            // clickable area equal to the visible one.
+            Event::MousePress { pos, .. } => {
+                if self.field_rect().contains_point(*pos) {
+                    self.focused = true;
+                    self.base.request_redraw();
+                }
             }
             Event::KeyPress { key, modifiers: _ } => {
                 if !self.focused {
@@ -744,7 +809,12 @@ fn build_display_text(segments: &[MaskSegment], raw_text: &str) -> String {
     result
 }
 
-#[cfg(test)]
+// These tests drive the **theme**, which only exists in a build with a device profile
+// (see `crate::lib`: `pub mod theme` is gated on `device_profile`). Without this gate the
+// `mini` and `embedded` profiles fail to compile their test targets, because the test code
+// names a module that those builds compile out — the production code is profile-clean and
+// only the fixture was not.
+#[cfg(all(test, full_widgets))]
 mod tests {
     use super::*;
     use crate::widget::svg::render_to_svg;
@@ -896,6 +966,89 @@ mod tests {
         let svg = render_to_svg(&mut me);
         assert!(svg.starts_with("<svg"), "SVG should start with <svg, got: {svg:.60}");
         assert!(svg.ends_with("</svg>"), "SVG should end with </svg>");
+    }
+
+    /// The field is a full-width band one text-field height tall, centred in the control.
+    ///
+    /// The control painted its whole rectangle, so a 240x120 census cell drew a 240x120
+    /// box — a panel rather than a field — and every anchor inside it was derived from the
+    /// oversized box. This pins the shared `full_width_band` derivation, including the
+    /// clamp for a control smaller than the field.
+    #[test]
+    fn the_field_is_a_text_field_height_in_any_rectangle() {
+        for height in [48u32, 120, 300] {
+            let me = MaskedEdit::new(Rect::new(0, 0, 240, height));
+            let field = me.field_rect();
+            assert_eq!(
+                field.height,
+                dimensions::TEXT_FIELD_MIN_HEIGHT,
+                "at control height {height}"
+            );
+            assert_eq!(field.width, 240, "the field spans the control's width");
+            assert_eq!(field.y, (height - field.height) as i32 / 2, "at control height {height}");
+        }
+
+        let short = MaskedEdit::new(Rect::new(0, 0, 240, 20));
+        assert_eq!(short.field_rect().height, 20, "a short control clamps the field");
+    }
+
+    /// Hit-testing follows the ink: a press below the field does not focus it.
+    ///
+    /// With the field centred in a 120 px cell, a press inside the control's rectangle but
+    /// well below the drawn band belongs to the window background. The control must not
+    /// claim it. The flag is read directly because this control publishes no focus accessor;
+    /// the assertion is on the state the handler sets, which is what the ring and the caret
+    /// are drawn from.
+    #[test]
+    fn a_press_outside_the_drawn_band_does_not_focus_the_field() {
+        let mut me = MaskedEdit::new(Rect::new(0, 0, 240, 120));
+        let field = me.field_rect();
+
+        me.handle_event(&Event::MousePress {
+            pos: Point::new(field.x + 10, field.y + field.height as i32 / 2),
+            button: 1,
+        });
+        assert!(me.focused, "a press on the drawn field focuses it");
+
+        me.focused = false;
+        me.handle_event(&Event::MousePress {
+            pos: Point::new(field.x + 10, field.y + field.height as i32 + 40),
+            button: 1,
+        });
+        assert!(!me.focused, "a press below the drawn field must not focus it");
+    }
+
+    /// The ink is vertically centred inside the **field**, not below its middle line.
+    ///
+    /// The old anchor was `geom.y + (geom.height - font.size) / 2`, derived from a
+    /// rectangle that was already too tall. Drawing down from that origin put a 13 px glyph
+    /// near the bottom of the field. The line box is now taken from the field itself.
+    #[test]
+    fn the_ink_is_vertically_centred_in_the_field() {
+        let mut me = MaskedEdit::new(Rect::new(0, 0, 240, 120));
+        me.set_mask("000-0000");
+        me.set_text("5551234");
+        let svg = render_to_svg(&mut me);
+        let field = me.field_rect();
+
+        let ys: Vec<i32> = svg
+            .lines()
+            .filter(|l| l.contains("<text"))
+            .filter_map(|l| {
+                l.split(" y=\"")
+                    .nth(1)
+                    .and_then(|rest| rest.split('"').next())
+                    .and_then(|value| value.parse().ok())
+            })
+            .collect();
+        assert!(!ys.is_empty(), "a filled masked field draws glyphs: {svg}");
+        for y in ys {
+            assert!(y >= field.y, "ink starts inside the field: y={y}, field={field:?}");
+            assert!(
+                y < field.y + field.height as i32,
+                "ink starts above the field's bottom edge: y={y}, field={field:?}"
+            );
+        }
     }
 
     /// The five chrome colours were fixed literals, so a themed field carried unthemed text:

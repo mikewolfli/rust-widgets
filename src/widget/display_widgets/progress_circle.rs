@@ -298,17 +298,29 @@ impl Draw for ProgressCircle {
             let start_angle = -std::f32::consts::FRAC_PI_2;
             let end_angle = start_angle + 2.0 * std::f32::consts::PI * self.value;
 
-            let prog_color =
-                if is_enabled { self.progress_color } else { Color::DISABLED_FOREGROUND };
-            crate::render::draw_arc_segments(
-                context,
-                center,
-                radius,
-                start_angle,
-                end_angle,
-                prog_color,
-                stroke_w.max(1),
-            );
+            // A non-zero value is not yet a non-degenerate arc. `draw_arc_segments` drops a sweep
+            // below 0.001 rad (`arc_helpers.rs`), but a value in `(0.001 / 2pi, ~0.02)` sits in a
+            // gap between two guards: the angle sum is still under that threshold, so
+            // `point_on_circle`'s `as i32` rounds every vertex of all 40 segments onto one pixel —
+            // `(radius * angle.cos()).round() as i32` stops moving — and the helper emits 40
+            // zero-length `<line>` elements. That is the same degenerate element this round removes
+            // from `progress_bar`: a stream full of drawing commands that draw nothing. The sweep is
+            // therefore resolved to whole pixels first, the way `progressbar.rs` floors its
+            // `filled_len`, and the arc is skipped when it rounds away entirely.
+            let sweep_px = (radius * (end_angle - start_angle)).round() as u32;
+            if sweep_px > 0 {
+                let prog_color =
+                    if is_enabled { self.progress_color } else { Color::DISABLED_FOREGROUND };
+                crate::render::draw_arc_segments(
+                    context,
+                    center,
+                    radius,
+                    start_angle,
+                    end_angle,
+                    prog_color,
+                    stroke_w.max(1),
+                );
+            }
         }
     }
 }
@@ -408,6 +420,64 @@ mod tests {
         // Should not panic
         let svg = crate::widget::svg::render_to_svg(&mut pc);
         assert!(svg.starts_with("<svg"));
+    }
+
+    /// Every arc segment in the stream, as `(x1, y1, x2, y2)`.
+    ///
+    /// The arc helper emits one `<line>` per segment at the widget's stroke width, so selecting on
+    /// that pair counts the arc's own output without having to reason about the track circle.
+    fn arc_segments(svg: &str) -> Vec<(i32, i32, i32, i32)> {
+        svg.lines()
+            .filter(|line| line.contains("<line") && line.contains("stroke-width=\"4\""))
+            .map(|line| {
+                let attr = |name: &str| -> i32 {
+                    line.split(&std::format!("{name}=\""))
+                        .nth(1)
+                        .and_then(|rest| rest.split('"').next())
+                        .and_then(|value| value.parse().ok())
+                        .unwrap_or_else(|| panic!("no {name} on: {line}"))
+                };
+                (attr("x1"), attr("y1"), attr("x2"), attr("y2"))
+            })
+            .collect()
+    }
+
+    /// A value whose arc sweep rounds away must emit **no** segment with any length.
+    ///
+    /// Two guards used to leave this value uncovered. The helper drops a sweep below 0.001 rad, and
+    /// the draw skipped `value == 0.0` — but value 0.001 gives a 0.0063 rad sweep, which passes the
+    /// first test while 40 vertex pairs all round onto the same pixel. The result was 40
+    /// zero-length `<line>` elements: a stream full of drawing commands that draw nothing. The track
+    /// circle must survive the guard, because it is the ring's own chrome.
+    #[test]
+    fn progress_circle_ignores_a_value_too_small_to_sweep_a_pixel() {
+        let mut pc = ProgressCircle::new(Rect::new(0, 0, 48, 48));
+        pc.set_value(0.001);
+
+        let svg = crate::widget::svg::render_to_svg(&mut pc);
+        let segments = arc_segments(&svg);
+        assert!(
+            segments.iter().all(|(x1, y1, x2, y2)| x1 == x2 && y1 == y2),
+            "no arc segment of a swept-away value may have length: {segments:?}"
+        );
+        assert!(
+            svg.contains("<circle") && svg.contains("fill=\"none\""),
+            "the track ring is chrome and must still be drawn: {svg}"
+        );
+    }
+
+    /// The complement: a value that does sweep whole pixels must still draw the arc.
+    #[test]
+    fn progress_circle_draws_an_arc_that_sweeps_whole_pixels() {
+        let mut pc = ProgressCircle::new(Rect::new(0, 0, 48, 48));
+        pc.set_value(0.25);
+
+        let svg = crate::widget::svg::render_to_svg(&mut pc);
+        let segments = arc_segments(&svg);
+        assert!(
+            !segments.is_empty() && segments.iter().any(|(x1, y1, x2, y2)| x1 != x2 || y1 != y2),
+            "a quarter turn is a visible arc, not 40 dots: {segments:?}"
+        );
     }
 
     #[test]

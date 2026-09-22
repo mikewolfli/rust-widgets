@@ -49,6 +49,22 @@ pub struct MeterThreshold {
     pub color: Color,
 }
 
+/// The radial length of a tick mark, in pixels: 6.
+///
+/// Named once because the tick's inner end, its outer end and the radius the labels sit
+/// at all measure from it — see `Meter::draw`. It used to appear as a literal `6` at the
+/// tick and again inside the label radius, so the two could drift apart.
+const TICK_MARK_LENGTH: u32 = 6;
+
+/// Half the width of the gauge's drawn box, as a fraction of its radius: `sin 45° ≈ 0.707`.
+///
+/// The 270° sweep runs from 45° to 315°, so its extreme x are `±cos 45°` and its extreme y
+/// are `±sin 45°`: the box is `1.414 · radius` square. This is the one fact the radius and
+/// the centre both derive from — deriving the radius from the *height* alone put the arc off
+/// the top edge, and anchoring the centre at the control's left edge left the gauge hanging
+/// off its left side while its rightmost vertex ran past the far edge.
+const SWEEP_HALF_EXTENT: f32 = std::f32::consts::FRAC_1_SQRT_2;
+
 /// Meter (gauge) widget — displays a value on an arc with a needle indicator.
 pub struct Meter {
     base: BaseWidget,
@@ -506,30 +522,51 @@ impl Draw for Meter {
         let value_angle =
             deg_to_rad(arc_start_deg + arc_sweep_deg * self.normalized_value() + offset);
 
-        // Radius and centre fitted to the sweep's own bounding box.
+        // Radius and centre fitted to the sweep's **actual** bounding box, then centred in
+        // the control.
         //
-        // A 270° sweep starting at 45° passes through both the top and bottom cardinal
-        // points, so it spans the full `2 * radius` vertically; the gap is the
-        // 270°..45° quadrant on the right, which is why only the left half is reached
-        // horizontally (`radius` to the left of the centre, never to the right). Sizing
-        // the radius by the height while centring the ring on the rectangle therefore put
-        // the top of the arc a full radius above the centre — past the control's top edge
-        // — and the leftmost point a full radius left of it.
+        // The 270° sweep runs from 45° to 315° once the −90° phase offset is applied. Its
+        // extreme x are `cos 135° = -0.707` (left) and `cos 45° = +0.707` (right), and its
+        // extreme y are `sin 45° = +0.707`/`sin 315° = -0.707`, so the drawn box is
+        // `1.414 · radius` on **both** axes — a square, biased neither left nor right.
         //
-        // The fit derives the radius from the band the arc may occupy and then places the
-        // centre from the radius, so the centre sits half a diameter below the band's top
-        // and half a radius right of its left edge. The `- 8` and the `+ 4` are the ring's
-        // breathing room, so the painted stroke does not sit flush against the border.
+        // Two earlier readings of this were wrong in opposite directions. Deriving the
+        // radius from the *height* while centring on the rectangle put the top of the arc a
+        // full radius above the centre and past the control's edge. Anchoring the centre at
+        // `rect.x + radius + 4` then pinned the whole gauge to the left edge — `meter.svg`
+        // drew its arc at x 4..71 inside a 240 px cell — while the sweep's rightmost point
+        // still reached a full radius to the right of that centre and left the control.
         //
-        // A stroke is centred on its chord and so paints half its width outside the ring
-        // the radius describes; the `- 1` shrinks the radius by that half-width once, and
-        // every stroke on the ring uses the result.
-        let radius =
-            (rect.width / 2).min(arc_band_height as u32 / 2).saturating_sub(8).saturating_sub(1);
-        if radius < 10 {
+        // So the radius comes from the drawn band's **half-extent** (half of `1.414 ·
+        // radius`), and the centre is placed so the drawn box is centred in the control. The
+        // `- 4` at each end is the ring's breathing room plus the half-width of its stroke.
+        let ring_radius = ((rect.width.min(rect.height) / 2) as f32 / SWEEP_HALF_EXTENT) as u32;
+        let ring_radius = ring_radius.saturating_sub(4).min(arc_band_height as u32 / 2).max(1);
+        if ring_radius < 10 {
             return;
         }
-        let center = Point::new(rect.x + radius as i32 + 4, rect.y + 4 + radius as i32);
+        // The tick labels sit inside the ring, so the radius they are placed at is derived
+        // from what a label actually measures rather than from one more magic subtraction.
+        // `tick_inner.saturating_sub(10)` rarely left a radius and was `.max(1)`, which let
+        // the fit test below drop every label — `meter.svg` drew the arc and the needle with
+        // no scale on them at all.
+        let tick_label_font = Font::simple("Sans", 9.0);
+        let tick_outer = ring_radius.saturating_sub(TICK_MARK_LENGTH).max(1);
+        let label_half = context.measure_text("000", &tick_label_font).width.max(1) / 2;
+        let label_radius =
+            ring_radius.saturating_sub(TICK_MARK_LENGTH).saturating_sub(label_half).max(1);
+        let radius = ring_radius;
+        // The centre. The drawn horizontal box is `[center.x - 0.707r, center.x + 0.707r]`, so
+        // the centre is placed by centring that box in the control — and the vertical box is
+        // the same size, so the centre sits one half-extent below the control's own middle.
+        // The clamp keeps the whole drawn box inside the control when the radius is small
+        // relative to the rectangle it was offered.
+        let half_extent = (ring_radius as f32 * SWEEP_HALF_EXTENT).ceil() as i32;
+        let max_center_x = (rect.x + rect.width as i32 - half_extent).max(rect.x + half_extent);
+        let center_x = (rect.x + rect.width as i32 / 2).clamp(rect.x + half_extent, max_center_x);
+        let max_center_y = (rect.y + rect.height as i32 - half_extent).max(rect.y + half_extent);
+        let center_y = (rect.y + rect.height as i32 / 2).clamp(rect.y + half_extent, max_center_y);
+        let center = Point::new(center_x, center_y);
 
         // Resolve colors from style.
         //
@@ -642,13 +679,8 @@ impl Draw for Meter {
         // the mapping is also what makes the tick's label land on the same ray as the tick
         // it names.
         if self.tick_count >= 2 {
-            let tick_outer = radius;
-            let tick_inner = radius.saturating_sub(6).max(1);
             let tick_step = arc_sweep_deg / (self.tick_count - 1) as f32;
-            // Labels go inside the arc so they cannot fall outside the control's
-            // rectangle, which a backend would clip away silently.
-            let label_radius = tick_inner.saturating_sub(10).max(1) as f32;
-            let label_font = Font::simple("Sans", 9.0);
+            let label_font = tick_label_font.clone();
 
             for i in 0..self.tick_count {
                 let tick_angle_deg = arc_start_deg + tick_step * i as f32 + offset;
@@ -665,8 +697,9 @@ impl Draw for Meter {
 
                 let outer_x = center.x + (tick_outer as f32 * dir_x).round() as i32;
                 let outer_y = center.y + (tick_outer as f32 * dir_y).round() as i32;
-                let inner_x = center.x + (tick_inner as f32 * dir_x).round() as i32;
-                let inner_y = center.y + (tick_inner as f32 * dir_y).round() as i32;
+                let inner_radius = tick_outer.saturating_sub(TICK_MARK_LENGTH).max(1);
+                let inner_x = center.x + (inner_radius as f32 * dir_x).round() as i32;
+                let inner_y = center.y + (inner_radius as f32 * dir_y).round() as i32;
 
                 context.draw_line_stroke(
                     Point::new(inner_x, inner_y),
@@ -682,18 +715,34 @@ impl Draw for Meter {
                     let fraction = i as f32 / (self.tick_count - 1) as f32;
                     let text = format!("{}{}", self.value_at_fraction(fraction), self.unit);
                     let metrics = context.measure_text(&text, &label_font);
-                    let lx = center.x + (label_radius * dir_x).round() as i32;
-                    let ly = center.y + (label_radius * dir_y).round() as i32;
+                    let lx = center.x + (label_radius as f32 * dir_x).round() as i32;
+                    let ly = center.y + (label_radius as f32 * dir_y).round() as i32;
                     // Centred on the point the tick sits at: the glyph origin is the box's
                     // top edge, so that is `ly - height/2` — the old `ly + ascent/2` left the
                     // label half a line below its own tick.
-                    context.draw_text(
-                        Point::new(lx - metrics.width as i32 / 2, ly - metrics.height as i32 / 2),
-                        &text,
-                        &label_font,
-                        tick_color,
-                        HorizontalAlignment::Left,
-                    );
+                    //
+                    // The label is drawn **only when its whole box lies inside the control**.
+                    // A label placed on the ring's own radius has its ends outside the vertical
+                    // band the arc occupies — the sweep's endpoints sit at the top and bottom
+                    // of the circle — so an unclamped label would be painted past the edge by a
+                    // backend that clips nothing. The old code had no such test and its label
+                    // radius collapsed to 1, so in practice the whole scale simply never
+                    // appeared; this restores it while keeping every drawn label inside.
+                    let label_x = lx - metrics.width as i32 / 2;
+                    let label_y = ly - metrics.height as i32 / 2;
+                    let fits = label_x >= rect.x
+                        && label_y >= rect.y
+                        && label_x + metrics.width as i32 <= rect.x + rect.width as i32
+                        && label_y + metrics.height as i32 <= rect.y + rect.height as i32;
+                    if fits {
+                        context.draw_text(
+                            Point::new(label_x, label_y),
+                            &text,
+                            &label_font,
+                            tick_color,
+                            HorizontalAlignment::Left,
+                        );
+                    }
                 }
             }
         }

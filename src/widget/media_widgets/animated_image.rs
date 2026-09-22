@@ -369,7 +369,14 @@ impl Draw for AnimatedImage {
             // Content, not chrome: the frame's own pixels are the caller's data — the whole
             // subject of an animated image — so they are painted exactly as decoded and must
             // never be recoloured from a theme.
+            //
+            // Clipped to the control: a frame larger than the surface (a 640x480 GIF in a
+            // 240x120 cell) was centred and then painted at full size, so it covered whatever
+            // the layout put beside the control. Nothing clips a widget at this layer, so the
+            // clip is what keeps a decoded frame inside the picture that carries it.
+            context.push_clip(rect.x, rect.y, rect.width, rect.height);
             context.draw_image(dx.max(0), dy.max(0), frame.width, frame.height, &frame.data);
+            context.pop_clip();
 
             // Draw play/pause indicator overlay if animation is stopped or paused.
             if !self.playing {

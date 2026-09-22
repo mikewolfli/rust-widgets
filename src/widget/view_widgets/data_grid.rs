@@ -16,7 +16,21 @@ use crate::widget::capability::coercion::{expect_column_filters, expect_sort_spe
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::ControlMetrics;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+
+/// The margin a data grid leaves between its own frame and its cells: 2 px on every edge.
+///
+/// Named once so the first cell and the frozen-column divider are both measured from the
+/// same inset. The cells used to start at the control's literal `rect.y`, which put the first
+/// row's border on the frame's own stroke.
+const GRID_INSET: u32 = 2;
+
+/// The strip a data grid reserves above its first cell for column titles: 22 px, one row.
+///
+/// A grid reads as one whether or not a header row is supplied, so the first cell is always
+/// one header below the frame rather than pinned to the top edge.
+const GRID_HEADER_HEIGHT: u32 = 22;
 
 use super::data_source::IncrementalTableDataSource;
 use super::filter_expr::{FilterCondition, FilterExpr};
@@ -635,45 +649,58 @@ impl Draw for DataGrid {
             return;
         }
 
+        // The cells are laid out from the control's inset content box, not from its literal
+        // top edge. The first row used to start at `rect.y`, so its border and its glyph box
+        // sat on the frame's own stroke; the inset also leaves a header row's worth of room
+        // above the first cell, which is what a grid reads as its column-title strip.
+        let content = ControlMetrics::band_inset(rect, GRID_INSET);
+        let cells_top = content.y + GRID_HEADER_HEIGHT as i32;
+        let cells_height = content.height.saturating_sub(GRID_HEADER_HEIGHT) as i32;
+
         let row_h = self.row_height as i32;
         let col_w = self.column_width as i32;
 
         for (row_idx, row) in rows.iter().enumerate() {
-            let y = rect.y + (row_idx as i32) * row_h;
-            if y >= rect.y + rect.height as i32 {
+            let y = cells_top + (row_idx as i32) * row_h;
+            if y >= cells_top + cells_height {
                 break;
             }
 
-            let mut x = rect.x;
+            let mut x = content.x;
             for cell in row {
-                if x >= rect.x + rect.width as i32 {
+                if x >= content.x + content.width as i32 {
                     break;
                 }
                 context.draw_rect(Rect::new(x, y, self.column_width, self.row_height), cell_border);
                 if let Some(text) = cell {
-                    // The cell is the band. Centring by handing `y + row_h / 2` to `draw_text`
-                    // put the glyph box's *top* edge on the cell's middle line, so every value
-                    // sat half a line low; `text_line` derives the real centred box. Fitting as
-                    // well keeps a long value inside its own column instead of bleeding right.
-                    let cell_rect = Rect::new(x, y, self.column_width, self.row_height);
-                    context.draw_text_fitted(
-                        context.text_line(cell_rect, &Font::default()),
-                        text,
-                        &Font::default(),
-                        ink,
-                        HorizontalAlignment::Left,
-                    );
+                    // Guarded on the text being non-empty: an unguarded draw of an empty cell
+                    // emits `<text …></text>`, an element the rasteriser never produces.
+                    if !text.is_empty() {
+                        // The cell is the band. Centring by handing `y + row_h / 2` to
+                        // `draw_text` put the glyph box's *top* edge on the cell's middle
+                        // line, so every value sat half a line low; `text_line` derives the
+                        // real centred box. Fitting as well keeps a long value inside its own
+                        // column instead of bleeding right.
+                        let cell_rect = Rect::new(x, y, self.column_width, self.row_height);
+                        context.draw_text_fitted(
+                            context.text_line(cell_rect, &Font::default()),
+                            text,
+                            &Font::default(),
+                            ink,
+                            HorizontalAlignment::Left,
+                        );
+                    }
                 }
                 x += col_w;
             }
         }
 
         if self.frozen_columns > 0 {
-            let split_x = rect.x + (self.frozen_columns as i32) * col_w;
-            if split_x > rect.x {
+            let split_x = content.x + (self.frozen_columns as i32) * col_w;
+            if split_x > content.x {
                 context.draw_line(
-                    Point::new(split_x, rect.y),
-                    Point::new(split_x, rect.y + rect.height as i32),
+                    Point::new(split_x, cells_top),
+                    Point::new(split_x, cells_top + cells_height),
                     accent,
                 );
             }

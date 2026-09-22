@@ -13,7 +13,7 @@
 //! whenever the date changes.
 
 use super::date_utils::{days_in_month, parse_iso_date, MONTH_NAMES};
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -21,6 +21,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -227,14 +228,30 @@ impl Draw for MobileDatePicker {
         let arrow_color = if is_enabled { ink.blend(&drum, 0.20) } else { row_ink };
 
         // Background
-        context.fill_rect(rect, drum);
+        //
+        // `rect` is the area the picker was *given*; the drum is a fixed-row wheel, so its
+        // height is [`dimensions::PICKER_VISIBLE_ROWS`] rows of
+        // [`dimensions::PICKER_ROW_HEIGHT`] rather than a fifth of whatever height the caller
+        // supplied. That is what stops a 120 px cell from compressing five rows to 24 px each
+        // and drawing them at a 10 px font. The band is centred and clamped to the rectangle,
+        // so a picker shorter than five rows still fits inside it.
+        let drum_rect = ControlMetrics::center_in(
+            rect,
+            Size::new(rect.width, dimensions::PICKER_ROW_HEIGHT * dimensions::PICKER_VISIBLE_ROWS),
+        );
+        context.fill_rect(drum_rect, drum);
 
         // Column layout
-        let col_width = rect.width / 3;
-        let row_height = rect.height / 5;
-        let font_size = (row_height as f32 * 0.38).clamp(10.0, 15.0);
+        //
+        // The column width still divides the available width (a wheel fills its panel
+        // horizontally), but the row height is the picker's own fact.
+        let col_width = drum_rect.width / 3;
+        let row_height = (drum_rect.height / dimensions::PICKER_VISIBLE_ROWS).max(1);
+        // The font follows the row **as painted**, so a band clamped shorter than the nominal
+        // five rows shrinks its type with it instead of overflowing the rows it sits in.
+        let font_size = (row_height as f32 * 0.38).clamp(9.0, 15.0);
         let font = Font::new("sans-serif", font_size, false, false);
-        let arrow_font = Font::new("sans-serif", (font_size * 1.3).max(12.0), true, false);
+        let arrow_font = Font::new("sans-serif", (font_size * 1.3).max(10.0), true, false);
 
         // Prepare column data: (offset_into_items, visible_items_list)
         let year_items: Vec<String> =
@@ -255,29 +272,36 @@ impl Draw for MobileDatePicker {
         ];
 
         for (col_idx, (sel_offset, items, _label)) in columns.iter().enumerate() {
-            let col_x = rect.x + (col_idx as u32 * col_width) as i32;
+            let col_x = drum_rect.x + (col_idx as u32 * col_width) as i32;
 
-            // Vertical divider between columns
+            // Vertical rule between columns. Drawn as a *line* rather than a 1 px wide
+            // rectangle: `draw_rect_stroke` on a 1-wide rect emits a degenerate element
+            // (`width="1"` in the SVG) whose own two outline strokes overdraw it, so the
+            // division read as a module rather than as a rule.
             if col_idx > 0 {
-                context.draw_rect_stroke(Rect::new(col_x, rect.y, 1, rect.height), divider, 1);
+                context.draw_line(
+                    Point::new(col_x, drum_rect.y),
+                    Point::new(col_x, drum_rect.y + drum_rect.height as i32),
+                    divider,
+                );
             }
 
             // Highlight bar for the center (selected) row
-            let highlight_y = rect.y + 2 * row_height as i32;
+            let highlight_y = drum_rect.y + 2 * row_height as i32;
             let highlight_rect =
                 Rect::new(col_x + 4, highlight_y, col_width.saturating_sub(8), row_height);
             context.fill_rounded_rect(highlight_rect, 6, highlight);
 
             // Draw the five visible rows
-            for row in 0..5 {
-                let item_idx = row + (sel_offset - 2);
+            for row in 0..dimensions::PICKER_VISIBLE_ROWS {
+                let item_idx = row as i32 + (sel_offset - 2);
                 if item_idx < 0 || item_idx >= items.len() as i32 {
                     continue;
                 }
 
                 let text = &items[item_idx as usize];
                 let is_selected = row == 2;
-                let item_y = rect.y + (row as u32 * row_height) as i32;
+                let item_y = drum_rect.y + (row * row_height) as i32;
 
                 let metrics = context.measure_text(text, &font);
                 // Centred inside the row's own band. The old origin added `ascent` on top of
@@ -298,7 +322,7 @@ impl Draw for MobileDatePicker {
             }
 
             // Up arrow indicator (top of column)
-            let up_y = rect.y + 2;
+            let up_y = drum_rect.y + 2;
             context.draw_text(
                 Point::new(col_x + (col_width as i32 - 8) / 2, up_y),
                 "^",
@@ -307,8 +331,9 @@ impl Draw for MobileDatePicker {
                 HorizontalAlignment::Left,
             );
 
-            // Down arrow indicator (bottom of column)
-            let down_y = rect.y + rect.height as i32 - row_height as i32 + 2;
+            // Down arrow indicator (bottom of column), on the drum rather than on the control's
+            // own bottom edge, which sat half a row below the last visible row.
+            let down_y = drum_rect.y + drum_rect.height as i32 - row_height as i32 + 2;
             context.draw_text(
                 Point::new(col_x + (col_width as i32 - 8) / 2, down_y),
                 "v",
@@ -348,9 +373,19 @@ impl EventHandler for MobileDatePicker {
             Event::MousePress { pos, button: 1 } => {
                 let col = self.column_at(pos.x);
                 let rect = self.geometry();
-                let row_height = rect.height / 5;
-                let rel_y = pos.y - rect.y;
-                let row = rel_y / row_height as i32;
+                // The row is resolved against the same fixed-height drum the rows are painted
+                // in, so a click maps to the value under the pointer rather than to a fraction of
+                // the control's height — which picked the wrong row on every non-200 px panel.
+                let drum_rect = ControlMetrics::center_in(
+                    rect,
+                    Size::new(
+                        rect.width,
+                        dimensions::PICKER_ROW_HEIGHT * dimensions::PICKER_VISIBLE_ROWS,
+                    ),
+                );
+                let row_height = (drum_rect.height / dimensions::PICKER_VISIBLE_ROWS).max(1) as i32;
+                let rel_y = pos.y - drum_rect.y;
+                let row = rel_y / row_height;
                 // Upper half (row 0-2) = increment, lower half (row 3-4) = decrement
                 let increment = row <= 2;
 
@@ -682,5 +717,23 @@ mod tests {
             button: 1,
         });
         assert_eq!(picker.month(), 12);
+    }
+
+    /// The drum's rows are a fixed height, not a fifth of whatever the caller supplied.
+    ///
+    /// The defect this pins: `row_height` was `rect.height / 5` and the font was derived from
+    /// the *nominal* 32 px row, so a 120 px control drew 24 px rows carrying 12 px type and a
+    /// 15.8 px arrow — text overflowing the row it sat in. Both the row and the font now follow
+    /// the drum as painted.
+    #[test]
+    fn the_drum_rows_are_a_fixed_height() {
+        let mut picker = MobileDatePicker::new(Rect::new(0, 0, 300, 200));
+        picker.set_date(2025, 6, 15);
+        let svg = crate::widget::svg::render_to_svg(&mut picker);
+        // 5 rows of PICKER_ROW_HEIGHT tile the drum exactly.
+        assert!(
+            svg.contains("height=\"32\""),
+            "a row must be PICKER_ROW_HEIGHT tall, not a fraction of the panel"
+        );
     }
 }

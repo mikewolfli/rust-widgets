@@ -430,23 +430,53 @@ impl Draw for NotificationCenter {
             .map(|token| token.blend(&background, 0.25))
             .unwrap_or_else(|| background.blend(&text_color, 0.5));
 
-            context.fill_rect(Rect::new(rect.x + 8, y + 14, 8, 8), badge_color);
-            context.draw_text(
-                Point::new(rect.x + 22, y + 14),
+            // The row's leading indicator and the two text lines are placed from the row's own
+            // box rather than from the literals `+ 8`/`+ 14`/`+ 22`/`+ 28`, which described a
+            // 36 px row: at any other `row_height` the badge and both labels drifted out of
+            // the row they belong to (a 20 px row drew its message 8 px past its own bottom
+            // edge). `row_height` is a published property, so it can be any value a caller
+            // sets.
+            let indent = (self.row_height / 3).max(8) as i32;
+            let badge_size = 8u32.min(self.row_height);
+            let badge_y = y + (self.row_height.saturating_sub(badge_size) / 2) as i32;
+            context.fill_rect(
+                Rect::new(rect.x + indent, badge_y, badge_size, badge_size),
+                badge_color,
+            );
+            let text_x = rect.x + indent + badge_size as i32 + 6;
+            // Two stacked lines: the title on the row's upper half, the message on the lower,
+            // each fitted to the room the row actually has.
+            let line_height = (self.row_height / 2).max(1);
+            let title_band = Rect::new(
+                text_x,
+                y,
+                rect.width.saturating_sub(text_x as u32 - rect.x as u32),
+                line_height,
+            );
+            context.draw_text_fitted(
+                title_band,
                 &item.title,
                 &Font::default(),
                 text_color,
                 HorizontalAlignment::Left,
             );
-            context.draw_text(
-                Point::new(rect.x + 22, y + 28),
-                &item.message,
-                &Font::default(),
-                // The message is secondary text, so it is a tint of the resolved
-                // foreground rather than a second literal.
-                text_color.blend(&background, 0.25),
-                HorizontalAlignment::Left,
-            );
+            if !item.message.is_empty() {
+                let message_band = Rect::new(
+                    text_x,
+                    y + line_height as i32,
+                    rect.width.saturating_sub(text_x as u32 - rect.x as u32),
+                    line_height,
+                );
+                context.draw_text_fitted(
+                    message_band,
+                    &item.message,
+                    &Font::default(),
+                    // The message is secondary text, so it is a tint of the resolved
+                    // foreground rather than a second literal.
+                    text_color.blend(&background, 0.25),
+                    HorizontalAlignment::Left,
+                );
+            }
 
             context.draw_line(
                 Point::new(rect.x, y + self.row_height as i32),

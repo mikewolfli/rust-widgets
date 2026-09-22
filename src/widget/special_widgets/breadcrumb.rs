@@ -10,6 +10,7 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -130,24 +131,63 @@ impl Breadcrumb {
         (segment.label.chars().count() as i32) * 8 + padding * 2
     }
 
+    /// The row the trail occupies: full width,
+    /// `dimensions::BREADCRUMB_HEIGHT` tall, centred in the control's rectangle.
+    ///
+    /// # Why the trail has its own height
+    ///
+    /// A breadcrumb is chrome: one compact row of links. Taking `rect.height` made a 240x120
+    /// census cell a 120 px-tall trail whose selected segment was a full-height column, and it
+    /// disagreed with the 28 px `size_hint` the control reports. The band is the single
+    /// derivation the paint and the hit test share.
+    fn band(&self) -> Rect {
+        ControlMetrics::full_width_band(self.geometry(), dimensions::BREADCRUMB_HEIGHT)
+    }
+
+    /// The rectangle of segment `index`, laid out from the leading edge of [`Self::band`].
+    ///
+    /// One derivation for both the paint and the hit test: they used to place the separator
+    /// differently — the draw loop advanced past it only between segments, the hit test
+    /// unconditionally — so the last segment's ink and its hit box disagreed by one separator
+    /// width. A segment past the band's right edge is clamped to it, because nothing clips a
+    /// widget at this layer.
     fn segment_rect_at(&self, index: usize) -> Option<Rect> {
-        let rect = self.geometry();
-        let mut x = rect.x;
+        if index >= self.segments.len() {
+            return None;
+        }
+        let band = self.band();
+        let band_right = band.x + band.width as i32;
+        let mut x = band.x;
 
         for (i, segment) in self.segments.iter().enumerate() {
+            if x >= band_right {
+                break;
+            }
             let width = Self::segment_width(segment, self.segment_padding).max(1);
             if i == index {
-                return Some(Rect::new(x, rect.y, width as u32, rect.height));
+                let visible_width = width.min(band_right - x).max(0) as u32;
+                if visible_width == 0 {
+                    return None;
+                }
+                return Some(Rect::new(x, band.y, visible_width, band.height));
             }
-            x += width + self.separator_width;
+            x += width;
+            // The separator belongs to the gap *between* segments, so it is reserved only when
+            // another segment follows — the rule the paint and the hit test now both use.
+            if i + 1 < self.segments.len() {
+                x += self.separator_width;
+            }
         }
 
         None
     }
 
     fn hit_index(&self, pos: Point) -> Option<usize> {
-        let rect = self.geometry();
-        if pos.y < rect.y || pos.y >= rect.y + rect.height as i32 {
+        let band = self.band();
+        if pos.y < band.y || pos.y >= band.y + band.height as i32 {
+            return None;
+        }
+        if pos.x < band.x || pos.x >= band.x + band.width as i32 {
             return None;
         }
 
@@ -263,8 +303,6 @@ impl EventHandler for Breadcrumb {
 
 impl Draw for Breadcrumb {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
-
         // Chrome colours resolve explicit style first, then the theme's resolved
         // style for this control, and only then fall back to a literal. Without the
         // theme step a light/dark switch would change nothing on screen because
@@ -302,13 +340,22 @@ impl Draw for Breadcrumb {
         let selected_background = background.blend(&text_color, 0.12);
         let separator_color = text_color.blend(&background, 0.45);
 
-        context.fill_rect(rect, background);
-        context.draw_rect(rect, border);
+        // ── The trail actually painted ──
+        //
+        // `rect` is the area the control was *given*; a breadcrumb trail is one compact row of
+        // links, `dimensions::BREADCRUMB_HEIGHT` tall and centred in that area. Filling the
+        // whole rectangle made a 240x120 census cell a 120 px-tall trail whose selected segment
+        // was a full-height column — a slab shaped like a breadcrumb rather than a breadcrumb.
+        // The band is what the segments below subdivide, and the same derivation the hit test
+        // reads, so ink and hit box cannot disagree.
+        let band = self.band();
+        context.fill_rect(band, background);
+        context.draw_rect(band, border);
 
-        let mut x = rect.x;
         for (index, segment) in self.segments.iter().enumerate() {
-            let width = Self::segment_width(segment, self.segment_padding).max(1);
-            let segment_rect = Rect::new(x, rect.y, width as u32, rect.height);
+            let Some(segment_rect) = self.segment_rect_at(index) else {
+                continue;
+            };
 
             if self.selected_index == Some(index) {
                 context.fill_rect(segment_rect, selected_background);
@@ -319,23 +366,25 @@ impl Draw for Breadcrumb {
             // centred in the segment gives the origin instead; the separator below shares it.
             let line = context.text_line(segment_rect, &Font::default());
             context.draw_text(
-                Point::new(x + self.segment_padding, line.y),
+                Point::new(segment_rect.x + self.segment_padding, line.y),
                 &segment.label,
                 &Font::default(),
                 text_color,
                 HorizontalAlignment::Left,
             );
 
-            x += width;
-            if index + 1 < self.segments.len() {
+            // The separator sits in the gap after the segment, and only exists when another
+            // segment follows it inside the band.
+            let gap_x = segment_rect.x + segment_rect.width as i32;
+            let next = self.segments.get(index + 1);
+            if next.is_some() && gap_x + self.separator_width <= band.x + band.width as i32 {
                 context.draw_text(
-                    Point::new(x + 3, line.y),
+                    Point::new(gap_x + 3, line.y),
                     ">",
                     &Font::default(),
                     separator_color,
                     HorizontalAlignment::Left,
                 );
-                x += self.separator_width;
             }
         }
     }
@@ -463,5 +512,22 @@ mod tests {
 
         // Re-setting same index returns true
         assert!(breadcrumb.set_selected_index(0));
+    }
+
+    /// A trail is one compact row whatever height the control was given.
+    ///
+    /// The defect this pins: the trail and its segments were sized from `rect`, so a 240x120
+    /// census cell drew a 120 px-tall trail whose selected segment was a full-height column.
+    /// The row's height is chrome.
+    #[test]
+    fn the_trail_keeps_its_own_height_in_any_rectangle() {
+        for height in [28u32, 60, 120, 300] {
+            let mut breadcrumb = Breadcrumb::new(Rect::new(0, 0, 320, height));
+            breadcrumb.set_segments(sample_segments());
+            let band = breadcrumb.band();
+            assert_eq!(band.height, crate::widget::metrics::dimensions::BREADCRUMB_HEIGHT);
+            let seg = breadcrumb.segment_rect_at(0).expect("a laid-out segment");
+            assert_eq!(seg.height, band.height, "a segment fills the trail's row, not the control");
+        }
     }
 }

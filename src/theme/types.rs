@@ -237,12 +237,137 @@ pub struct Colors {
     /// Informational state color.
     #[cfg_attr(not(alloc_frugal), serde(default = "default_info_color"))]
     pub info: Color,
+    /// Hairline separators, borders and focus rings.
+    ///
+    /// # Why this is separate from `foreground`
+    ///
+    /// A divider and a focus ring are both "a thin line", but they are not the same
+    /// line: a divider should recede while a focus ring must announce itself. Deriving
+    /// both from `foreground` meant a focused control looked identical to a bordered
+    /// one, which is the BLUE21 §七 B defect. Material 3 names the pair `outline` and
+    /// `outlineVariant`; this is the stronger of the two.
+    #[cfg_attr(not(alloc_frugal), serde(default = "default_outline_color"))]
+    pub outline: Color,
+    /// A weaker secondary separator, for nested or low-emphasis dividers.
+    #[cfg_attr(not(alloc_frugal), serde(default = "default_outline_variant_color"))]
+    pub outline_variant: Color,
+    /// The dimming layer behind a modal surface.
+    ///
+    /// # Why a theme needs a scrim of its own
+    ///
+    /// A modal dialog dims what is behind it to focus attention on itself. That dimming
+    /// used to be an inline translucent black, which does nothing on a dark theme —
+    /// "dimming" a surface that is already near-black leaves it near-black, so a modal
+    /// and a non-modal window looked the same (BLUE21 B23). A named role lets a dark
+    /// theme lighten the scrim instead.
+    #[cfg_attr(not(alloc_frugal), serde(default = "default_scrim_color"))]
+    pub scrim: Color,
+    /// The container colour for cards and panels sitting on `background`.
+    #[cfg_attr(not(alloc_frugal), serde(default = "default_surface_container_color"))]
+    pub surface_container: Color,
+    /// A raised step above [`Colors::surface_container`].
+    #[cfg_attr(not(alloc_frugal), serde(default = "default_surface_container_high_color"))]
+    pub surface_container_high: Color,
+    /// A surface whose text is [`Colors::on_inverse_surface`], for snack bars and
+    /// tooltips that deliberately invert to stand out.
+    #[cfg_attr(not(alloc_frugal), serde(default = "default_inverse_surface_color"))]
+    pub inverse_surface: Color,
+    /// The ink legible on [`Colors::inverse_surface`].
+    #[cfg_attr(not(alloc_frugal), serde(default = "default_on_inverse_surface_color"))]
+    pub on_inverse_surface: Color,
 }
 
 /// Default info color used for backward-compatible deserialization.
 #[cfg(not(alloc_frugal))]
 const fn default_info_color() -> Color {
     Color::INFO
+}
+
+// The defaults below exist for **deserialization** (rule: every new field must be
+// optional in a theme file an older build wrote). Each one is a mid-grey chosen to be
+// legible on either appearance, so a theme file that omits the role still resolves to
+// something renderable rather than to `Color::default()`'s transparent black.
+
+/// Default separator colour (`#79747E`, Material 3's light-theme `outline`).
+#[cfg(not(alloc_frugal))]
+const fn default_outline_color() -> Color {
+    Color::rgb(121, 116, 126)
+}
+
+/// Default secondary separator colour (`#CAC4D0`, M3's light `outlineVariant`).
+#[cfg(not(alloc_frugal))]
+const fn default_outline_variant_color() -> Color {
+    Color::rgb(202, 196, 208)
+}
+
+/// Default modal scrim: translucent black, Material's 32 % overlay.
+#[cfg(not(alloc_frugal))]
+const fn default_scrim_color() -> Color {
+    Color::rgba(0, 0, 0, 82)
+}
+
+/// Default card/panel container colour (`#F3EDF7`).
+#[cfg(not(alloc_frugal))]
+const fn default_surface_container_color() -> Color {
+    Color::rgb(243, 237, 247)
+}
+
+/// Default raised container colour (`#ECE6F0`), one step above
+/// [`default_surface_container_color`].
+#[cfg(not(alloc_frugal))]
+const fn default_surface_container_high_color() -> Color {
+    Color::rgb(236, 230, 240)
+}
+
+/// Default inverse surface (`#313033`), M3's dark surface used on snack bars.
+#[cfg(not(alloc_frugal))]
+const fn default_inverse_surface_color() -> Color {
+    Color::rgb(49, 48, 51)
+}
+
+/// Default ink on the inverse surface (`#F4EFF4`, M3's `inverseOnSurface`).
+#[cfg(not(alloc_frugal))]
+const fn default_on_inverse_surface_color() -> Color {
+    Color::rgb(244, 239, 244)
+}
+
+impl Default for Colors {
+    /// A complete, renderable palette with every role populated.
+    ///
+    /// # Why this exists at all
+    ///
+    /// There was no `Default for Colors`, so the two places that needed one —
+    /// `Default for Theme` and every test that wanted "a palette" — spelled out a
+    /// struct literal with every field. Adding a role therefore broke an unbounded
+    /// number of call sites, which is exactly what made a colour role expensive to
+    /// add and is why the palette stayed at eleven roles. A `Default` makes adding one
+    /// a local change: new field, one line here, one line in `Theme::default`.
+    ///
+    /// The ten original roles reproduce `Theme::default()`'s long-standing palette
+    /// **exactly** (including `background = 240`), because every other preset and every
+    /// test derives its expected colours from this theme. `Colors::default()` is a
+    /// *base*, not a redesign: only the roles the palette never had are new values.
+    fn default() -> Self {
+        Self {
+            background: Color::rgb(240, 240, 240),
+            foreground: Color::rgb(0, 0, 0),
+            primary: Color::rgb(33, 150, 243),
+            secondary: Color::rgb(158, 158, 158),
+            accent: Color::rgb(255, 152, 0),
+            error: Color::rgb(244, 67, 54),
+            warning: Color::rgb(255, 193, 7),
+            success: Color::rgb(76, 175, 80),
+            disabled: Color::rgb(200, 200, 200),
+            info: Color::INFO,
+            outline: Color::rgb(121, 116, 126),
+            outline_variant: Color::rgb(202, 196, 208),
+            scrim: Color::rgba(0, 0, 0, 82),
+            surface_container: Color::rgb(243, 237, 247),
+            surface_container_high: Color::rgb(236, 230, 240),
+            inverse_surface: Color::rgb(49, 48, 51),
+            on_inverse_surface: Color::rgb(244, 239, 244),
+        }
+    }
 }
 
 impl Color {

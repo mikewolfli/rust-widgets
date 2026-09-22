@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+# SPDX-License-Identifier: MIT
+#
+# Exemptions for tools/check_click_requires_release_inside.sh (BLUE22 §6.7).
+#
+# The rule and the full statement of what the gate proves and does not prove are in that script's
+# header. Read it first. In short: a control that emits `clicked` and handles `Event::MouseRelease`
+# must either test containment on the release, or abandon the press on `MouseLeave`, or be listed
+# here with the mechanism its containment actually rests on.
+#
+# Format, one record per line, whitespace-separated (the reason may contain spaces):
+#
+#     src/path/to/control.rs    <mechanism>    <why this is not a release-outside defect>
+#
+# A bare path is not an entry: an exemption without a mechanism and a reason is an unexplained
+# licence, which this project forbids. The first field is matched against the path the scan
+# produces, so a moved file stops being exempt rather than silently staying so.
+#
+# EVERY ENTRY BELOW IS A VERIFIED DEFECT OR A VERIFIED ALTERNATIVE MECHANISM — none is a
+# "looks fine to me". Each one names the line the scan reported and the evidence for the verdict.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# These three are exempted because the click lives on the PRESS arm, not the release arm.
+#
+# The gate's population is "emits clicked AND handles MouseRelease", which is the right population
+# for the rule but a superset of the paths the rule is about: a control whose release arm only
+# clears a latch cannot fire on a release outside it, because it does not fire on a release at all.
+# The click on the press arm is a different interaction contract with its own defect class (a press
+# inside is always a press inside), and `grid` bounds it, `radar_chart` does not — see below.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Verified: the containment is real, in a helper the scan's vocabulary cannot name.
+# `cell_at` -> `cell_at_y` (grid.rs:154) and `cell_at_x` (grid.rs:174) each return `None` when the
+# coordinate lies outside `base.geometry()`, so a point outside the control resolves to no cell and
+# `clicked.emit()` on the press arm (grid.rs:452) is unreachable. The release arm (grid.rs:456) only
+# clears `mouse_pressed` and emits nothing.
+src/widget/special_widgets/grid.rs    press-arm-only    containment via cell_at, which bounds-checks rect in cell_at_y/cell_at_x
+
+# NOT AN ALTERNATIVE MECHANISM — a live defect, recorded so the finding stays visible.
+# `nearest_series` (radar_chart.rs:711) is bounded (it picks the nearest of a fixed series set), but
+# the guard above it, `axis_at` (radar_chart.rs:292), is not: it reduces the point to an *angle*
+# about the centre and has no radius or rectangle test, so a pointer far outside the control still
+# resolves to an axis. The click then fires from the PRESS arm (radar_chart.rs:691) on a press that
+# is outside the control.
+# REMOVE THIS ENTRY WHEN FIXED. The fix is one line at axis_at:
+#     let (center, radius) = self.geometry_center_radius()?;
+#     if !self.base.geometry().contains_point(pos) { return None; }
+src/widget/special_widgets/radar_chart.rs    DEFECT-press-outside    axis_at has no bounds test (only an angle), so a press outside still resolves to an axis
+
+# NOT AN ALTERNATIVE MECHANISM — a live defect, recorded so the finding stays visible.
+# The press/release arm (property_grid.rs:421) computes `click_y = pos.y - rect.y` and bounds the
+# row index, but never tests that the point is over the control: there is no x bound and no
+# containment call anywhere in the file. A press or release left of, right of or above the control
+# with a `y` that maps onto a visible row therefore selects that row and emits `clicked`
+# (property_grid.rs:448).
+# REMOVE THIS ENTRY WHEN FIXED. The fix is one line at the top of the arm:
+#     if !self.base.geometry().contains_point(*pos) { return; }
+src/widget/view_widgets/property_grid.rs    DEFECT-press-maps-by-y    no containment test: the click is indexed from pos.y alone, with no x bound

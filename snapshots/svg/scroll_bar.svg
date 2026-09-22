@@ -2,12 +2,12 @@
 <!-- control: scroll_bar | appearance: dark -->
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
-  <rect x="0" y="0" width="240" height="120" fill="rgba(69,69,69,1.00)" />
-  <rect x="0" y="0" width="240" height="120" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
-  <rect x="16" y="0" width="24" height="120" fill="rgba(130,130,130,1.00)" />
-  <rect x="16" y="0" width="24" height="120" fill="none" stroke="rgba(100,100,100,1.00)" stroke-width="1" />
-  <line x1="8" y1="60" x2="16" y2="30" stroke="rgba(225,225,225,1.00)" stroke-width="1" />
-  <line x1="8" y1="60" x2="16" y2="90" stroke="rgba(225,225,225,1.00)" stroke-width="1" />
-  <line x1="232" y1="60" x2="224" y2="30" stroke="rgba(225,225,225,1.00)" stroke-width="1" />
-  <line x1="232" y1="60" x2="224" y2="90" stroke="rgba(225,225,225,1.00)" stroke-width="1" />
+  <rect x="0" y="56" width="240" height="8" fill="rgba(69,69,69,1.00)" />
+  <rect x="0" y="56" width="240" height="8" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
+  <rect x="16" y="56" width="48" height="8" fill="rgba(130,130,130,1.00)" />
+  <rect x="16" y="56" width="48" height="8" fill="none" stroke="rgba(100,100,100,1.00)" stroke-width="1" />
+  <line x1="8" y1="60" x2="16" y2="58" stroke="rgba(225,225,225,1.00)" stroke-width="1" />
+  <line x1="8" y1="60" x2="16" y2="62" stroke="rgba(225,225,225,1.00)" stroke-width="1" />
+  <line x1="232" y1="60" x2="224" y2="58" stroke="rgba(225,225,225,1.00)" stroke-width="1" />
+  <line x1="232" y1="60" x2="224" y2="62" stroke="rgba(225,225,225,1.00)" stroke-width="1" />
 </svg>

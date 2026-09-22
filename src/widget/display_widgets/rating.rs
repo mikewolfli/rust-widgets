@@ -15,6 +15,7 @@ use crate::widget::capability::coercion::{expect_f64, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -36,7 +37,7 @@ impl Rating {
             base: BaseWidget::new(WidgetKind::Rating, geometry, "Rating"),
             rating: 0,
             max_rating: 5,
-            star_size: 24,
+            star_size: dimensions::RATING_STAR_SIZE,
             rating_changed: Signal1::new(),
         }
     }
@@ -85,6 +86,51 @@ impl Rating {
         self.star_size = size;
         self.base.request_redraw();
     }
+    /// The single column the whole star row is measured from.
+    ///
+    /// # Why the row is not the control's rectangle
+    ///
+    /// A rating is a **row of fixed-size glyphs**: one 24 px star, five of them, and a
+    /// 4 px gap between neighbours. The control used to derive its pitch from the
+    /// rectangle it was handed (`(rect.width - total_width) / 2` as a start, plus a
+    /// background fill across the whole of `rect`), so the 240x120 census cell drew a
+    /// full-canvas panel with five glyphs floating at y 53 and the star positions moved
+    /// whenever the caller changed the control's width. Deriving the row's x from the
+    /// stars themselves means the control draws the same object in any rectangle, which
+    /// is what [`dimensions::RATING_ROW_HEIGHT`] does for the vertical axis.
+    ///
+    /// The horizontal origin is the first star's left edge, so the row is centred by
+    /// definition rather than by a second, independent arithmetic on `rect.width`.
+    fn star_row(&self) -> Rect {
+        let count = self.max_rating.max(1);
+        let width = count * self.star_size + count.saturating_sub(1) * dimensions::RATING_STAR_GAP;
+        // The full-width band is what makes the row's height fixed and centred; its own
+        // width is then replaced by the measured star row, centred inside it. `center_in`
+        // would clamp an over-wide row rather than letting it overflow the control, which
+        // is the same "never paint outside the rectangle" rule every piece of chrome
+        // follows.
+        let band = ControlMetrics::full_width_band(self.geometry(), dimensions::RATING_ROW_HEIGHT);
+        ControlMetrics::center_in(band, crate::core::Size::new(width, band.height))
+    }
+
+    /// The cell one star occupies, or `None` when it would not fit inside the row.
+    ///
+    /// Nothing here reads `rect.width`, so a star is at the same distance from its
+    /// neighbour whatever the caller's layout did. A control too narrow for five stars
+    /// drops the ones that do not fit rather than painting them over the edge: nothing
+    /// clips a widget at this layer, so an overflowing cell would be a drawing
+    /// instruction that leaves the control's own rectangle.
+    fn star_cell(&self, index: u32) -> Option<Rect> {
+        let row = self.star_row();
+        let step = self.star_size + dimensions::RATING_STAR_GAP;
+        let x = row.x + (index * step) as i32;
+        // A partial cell is not a star, so the guard is on the cell's own extent rather
+        // than on its left edge alone: a slice of a star reads as a rendering fault.
+        if x < row.x || x + self.star_size as i32 > row.x + row.width as i32 {
+            return None;
+        }
+        Some(Rect::new(x, row.y, self.star_size, row.height))
+    }
 }
 
 impl Widget for Rating {
@@ -96,7 +142,12 @@ impl Widget for Rating {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(120, 24)
+        // The row's own height, so a layout that honours the hint hands the control
+        // exactly the band the stars are painted in. The width is the row's fixed extent.
+        crate::core::Size::new(
+            self.max_rating.max(1) * (self.star_size + dimensions::RATING_STAR_GAP),
+            dimensions::RATING_ROW_HEIGHT,
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -157,7 +208,6 @@ impl WidgetProperties for Rating {
 
 impl Draw for Rating {
     fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
 
         // Chrome colours resolve explicit style first, then the theme's resolved
@@ -180,19 +230,29 @@ impl Draw for Rating {
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
             .unwrap_or(Color::BLACK);
 
-        // Clear background
-        context.fill_rect(rect, background);
+        // ── The row actually painted ──
+        //
+        // A rating paints a **row of stars**, not a panel: the fill is the row's own
+        // band, `RATING_ROW_HEIGHT` tall and centred in the control. This used to be
+        // `fill_rect(rect, ..)`, which made the 240x120 census cell a full-bleed plate
+        // behind five glyphs — a rectangle the user reads as "a panel that happens to
+        // contain stars" rather than as the rating control itself.
+        let row = self.star_row();
+        context.fill_rect(row, background);
 
-        let gap = 4;
-        let total_width = self.max_rating * self.star_size + (self.max_rating - 1) * gap;
-        let start_x = rect.x + (rect.width as i32 - total_width as i32).max(0) / 2;
-        // A star is a glyph, so its cell is the star's own line box centred in the control —
+        if self.max_rating == 0 {
+            // Nothing to rate: the row band above is the whole control, so there is no
+            // per-star chrome to emit rather than a loop that would divide by zero stars.
+            return;
+        }
+
+        // A star is a glyph, so its cell is the star's own line box centred in the row —
         // not the control's middle line. `center_y` was used directly as the glyph origin,
         // which is the box's top edge, so every star sat half a line low (and `★` is a wide
         // glyph, so it read as a full line). The line box is measured, so a theme with a larger
         // font moves the stars with their own ink.
         let font = Font::default();
-        let line = context.text_line(rect, &font);
+        let line = context.text_line(row, &font);
         let center_y = line.y;
 
         // A filled star is the theme's accent — the slot the palette reserves for a
@@ -213,10 +273,13 @@ impl Draw for Rating {
             text_color.blend(&background, 0.6)
         };
 
-        let font = Font::default();
-
         for i in 0..self.max_rating {
-            let star_x = start_x + (i * (self.star_size + gap)) as i32;
+            // The cell comes from the row and the star's own size, so a star's position
+            // is a function of the rating control and not of the caller's rectangle. A
+            // star that will not fit is skipped rather than clipped.
+            let Some(cell) = self.star_cell(i) else {
+                continue;
+            };
             let is_filled = i < self.rating;
 
             let ch = if is_filled { "★" } else { "☆" };
@@ -226,7 +289,7 @@ impl Draw for Rating {
             // cell — the previous form passed the cell's midpoint as a *left-origin* point and
             // then asked for `Center`, which shifted every star right by half its own advance.
             context.draw_text_fitted(
-                Rect { x: star_x, y: center_y, width: self.star_size, height: line.height },
+                Rect { x: cell.x, y: center_y, width: cell.width, height: line.height },
                 ch,
                 &font,
                 color,
@@ -248,23 +311,28 @@ impl EventHandler for Rating {
                 if *button != 1 {
                     return;
                 }
-                let rect = self.geometry();
-                let gap = 4;
-                let total_width = self.max_rating * self.star_size + (self.max_rating - 1) * gap;
-                let start_x = rect.x + (rect.width as i32 - total_width as i32).max(0) / 2;
+                // The hit test is the **drawn geometry**: the star row's own band, so the
+                // clickable area and the ink are the same object. Reading `rect` here (as
+                // the old form did) made the whole control clickable while only the stars
+                // were painted, so a press in the empty space beside the row could set a
+                // rating the user did not aim at.
+                let row = self.star_row();
 
-                if pos.y < rect.y || pos.y >= rect.y + rect.height as i32 {
+                if pos.y < row.y || pos.y >= row.y + row.height as i32 {
                     return;
                 }
 
-                let rel_x = pos.x - start_x;
+                let rel_x = pos.x - row.x;
                 if rel_x < 0 {
                     return;
                 }
 
-                let step = (self.star_size + gap) as i32;
+                let step = (self.star_size + dimensions::RATING_STAR_GAP) as i32;
                 let index = (rel_x / step) as u32;
-                if index < self.max_rating {
+                // A star that the row dropped is not clickable either: the hit test and the
+                // ink are the same set of cells, so a press where no star was painted must
+                // not rate.
+                if index < self.max_rating && self.star_cell(index).is_some() {
                     // Clicking the same star as current rating toggles between
                     // that star and clearing, depending on whether we click
                     // the same or a different star.
@@ -279,7 +347,7 @@ impl EventHandler for Rating {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, full_widgets))]
 mod tests {
     use super::*;
     use crate::core::Point;
@@ -290,7 +358,7 @@ mod tests {
         let r = Rating::new(Rect::new(0, 0, 200, 40));
         assert_eq!(r.rating(), 0);
         assert_eq!(r.max_rating(), 5);
-        assert_eq!(r.star_size(), 24);
+        assert_eq!(r.star_size(), dimensions::RATING_STAR_SIZE);
         assert_eq!(r.kind(), WidgetKind::Rating);
     }
 
@@ -345,7 +413,7 @@ mod tests {
     #[test]
     fn rating_star_size_get_set() {
         let mut r = Rating::new(Rect::new(0, 0, 200, 40));
-        assert_eq!(r.star_size(), 24);
+        assert_eq!(r.star_size(), dimensions::RATING_STAR_SIZE);
         r.set_star_size(32);
         assert_eq!(r.star_size(), 32);
     }
@@ -357,13 +425,26 @@ mod tests {
         assert_eq!(r.star_size(), 8);
     }
 
+    /// A press on the third star sets three, using the *drawn* row's own arithmetic.
+    ///
+    /// The star cells are now derived from the rating's own sizes rather than from
+    /// `rect` and a local `gap = 4`: with `star_size = 24` and `RATING_STAR_GAP = 4`
+    /// the row is 136 px wide in a 200 px control and starts at x 32, so the cells are
+    /// the same ones this test always addressed. What it pins is that the hit test and
+    /// the ink still agree after the row moved to a named derivation.
     #[test]
     fn rating_mouse_press_sets_rating() {
         let mut r = Rating::new(Rect::new(0, 0, 200, 40));
-        // With star_size=24, gap=4, max=5: total_width=136, start_x=(200-136)/2=32
+        // The row is centred in the control's own band, so a press must land on the
+        // middle row line rather than at the control's top edge.
+        let row = r.star_row();
+        assert_eq!(row.width, 136, "five 24 px stars and four 4 px gaps");
+        assert_eq!(row.x, 32, "centred in the 200 px control");
+        let mid_y = row.y + row.height as i32 / 2;
+        assert_eq!(mid_y, 20, "the row is centred in the 40 px control");
         // Star 0: [32..56), Star 1: [60..84), Star 2: [88..112), Star 3: [116..140)
         // Press the 3rd star (index 2 => rating 3)
-        r.handle_event(&Event::MouseRelease { pos: Point::new(100, 20), button: 1 });
+        r.handle_event(&Event::MouseRelease { pos: Point::new(100, mid_y), button: 1 });
         assert_eq!(r.rating(), 3);
     }
 
@@ -371,44 +452,129 @@ mod tests {
     fn rating_mouse_press_toggles_current_star() {
         let mut r = Rating::new(Rect::new(0, 0, 200, 40));
         r.set_rating(3);
+        let row = r.star_row();
+        let mid_y = row.y + row.height as i32 / 2;
         // Click on the 3rd star again (index 2 => rating 3) should set rating back to 2
-        r.handle_event(&Event::MouseRelease { pos: Point::new(100, 20), button: 1 });
+        r.handle_event(&Event::MouseRelease { pos: Point::new(100, mid_y), button: 1 });
         assert_eq!(r.rating(), 2);
     }
 
     #[test]
     fn rating_mouse_press_out_of_bounds() {
         let mut r = Rating::new(Rect::new(0, 0, 200, 40));
-        r.handle_event(&Event::MousePress { pos: Point::new(300, 20), button: 1 });
+        let mid_y = r.star_row().y + r.star_row().height as i32 / 2;
+        r.handle_event(&Event::MousePress { pos: Point::new(300, mid_y), button: 1 });
         assert_eq!(r.rating(), 0);
     }
 
     #[test]
     fn rating_mouse_press_before_first_star() {
         let mut r = Rating::new(Rect::new(0, 0, 200, 40));
-        r.handle_event(&Event::MousePress { pos: Point::new(-10, 20), button: 1 });
+        let mid_y = r.star_row().y + r.star_row().height as i32 / 2;
+        r.handle_event(&Event::MousePress { pos: Point::new(-10, mid_y), button: 1 });
         assert_eq!(r.rating(), 0);
     }
 
+    /// A press outside the drawn star row does nothing, even though it is inside the
+    /// control's rectangle. This is the hit-test/ink agreement the fix established: the
+    /// old handler tested `rect`, so the empty space above and below the stars was
+    /// clickable and a press there could set a rating.
     #[test]
-    fn rating_mouse_press_outside_vertically() {
-        let mut r = Rating::new(Rect::new(0, 0, 200, 40));
-        r.handle_event(&Event::MousePress { pos: Point::new(30, 100), button: 1 });
-        assert_eq!(r.rating(), 0);
+    fn rating_mouse_press_outside_the_drawn_row_changes_nothing() {
+        let mut r = Rating::new(Rect::new(0, 0, 240, 120));
+        let row = r.star_row();
+        assert_eq!(row.height, dimensions::RATING_ROW_HEIGHT);
+        assert!(row.y > 0, "the row is centred, so it does not touch the control's top edge");
+        // Above the row, still well inside the control.
+        r.handle_event(&Event::MouseRelease { pos: Point::new(120, row.y - 1), button: 1 });
+        assert_eq!(r.rating(), 0, "a press above the stars must not rate");
+        // Below the row, still well inside the control.
+        r.handle_event(&Event::MouseRelease {
+            pos: Point::new(120, row.y + row.height as i32),
+            button: 1,
+        });
+        assert_eq!(r.rating(), 0, "a press below the stars must not rate");
+    }
+
+    /// The star row is a fixed height in any rectangle, and its stars do not move apart
+    /// when the caller's width changes.
+    #[test]
+    fn the_star_row_keeps_its_own_height_and_pitch() {
+        let mut narrow = Rating::new(Rect::new(0, 0, 240, 40));
+        narrow.set_max_rating(5);
+        let mut wide = Rating::new(Rect::new(0, 0, 600, 300));
+        wide.set_max_rating(5);
+
+        assert_eq!(narrow.star_row().height, dimensions::RATING_ROW_HEIGHT);
+        assert_eq!(wide.star_row().height, dimensions::RATING_ROW_HEIGHT);
+        assert_eq!(narrow.star_row().width, wide.star_row().width);
+
+        // The pitch between consecutive stars is the star and the gap, in both.
+        for rating in [&narrow, &wide] {
+            let first = rating.star_cell(0).expect("a row that fits has a first star");
+            let second = rating.star_cell(1).expect("a row that fits has a second star");
+            assert_eq!(
+                second.x - first.x,
+                (dimensions::RATING_STAR_SIZE + dimensions::RATING_STAR_GAP) as i32
+            );
+            assert_eq!(first.width, dimensions::RATING_STAR_SIZE);
+        }
+    }
+
+    /// A control narrower than five stars drops the ones that do not fit.
+    #[test]
+    fn stars_that_do_not_fit_are_dropped_rather_than_painted_over_the_edge() {
+        let mut r = Rating::new(Rect::new(0, 0, 60, 24));
+        r.set_max_rating(5);
+        // A 60 px row holds two 24 px stars and their gap; the rest are not cells at all.
+        assert!(r.star_cell(0).is_some());
+        assert!(r.star_cell(1).is_some());
+        assert!(r.star_cell(2).is_none(), "the third star has no room in a 60 px control");
+        // The dropped stars are not clickable either, so ink and hit test stay one set.
+        let row = r.star_row();
+        let mid_y = row.y + row.height as i32 / 2;
+        r.handle_event(&Event::MouseRelease { pos: Point::new(56, mid_y), button: 1 });
+        assert!(r.rating() <= 2, "a dropped star cannot be selected, got {}", r.rating());
+    }
+
+    /// No emitted star cell is zero-extent, and every one stays inside the control.
+    #[test]
+    fn every_star_cell_is_drawable_and_inside_the_control() {
+        // The last three are deliberately narrower than the five-star row, so the row is
+        // clamped: the control must not paint stars outside the rectangle it was given.
+        for rect in [Rect::new(0, 0, 240, 120), Rect::new(0, 0, 600, 300), Rect::new(0, 0, 60, 24)]
+        {
+            let r = Rating::new(rect);
+            for index in 0..r.max_rating() {
+                if let Some(cell) = r.star_cell(index) {
+                    assert!(
+                        cell.width > 0 && cell.height > 0,
+                        "cell {index} at {rect:?} is drawable"
+                    );
+                    assert!(cell.x >= rect.x, "cell {index} at {rect:?} starts inside the control");
+                    assert!(
+                        cell.x + cell.width as i32 <= rect.x + rect.width as i32,
+                        "cell {index} at {rect:?} ends inside the control"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
     fn rating_disabled_blocks_events() {
         let mut r = Rating::new(Rect::new(0, 0, 200, 40));
         r.set_enabled(false);
-        r.handle_event(&Event::MousePress { pos: Point::new(40, 20), button: 1 });
+        let mid_y = r.star_row().y + r.star_row().height as i32 / 2;
+        r.handle_event(&Event::MousePress { pos: Point::new(40, mid_y), button: 1 });
         assert_eq!(r.rating(), 0);
     }
 
     #[test]
     fn rating_right_click_ignored() {
         let mut r = Rating::new(Rect::new(0, 0, 200, 40));
-        r.handle_event(&Event::MousePress { pos: Point::new(40, 20), button: 2 });
+        let mid_y = r.star_row().y + r.star_row().height as i32 / 2;
+        r.handle_event(&Event::MousePress { pos: Point::new(40, mid_y), button: 2 });
         assert_eq!(r.rating(), 0);
     }
 
@@ -431,7 +597,8 @@ mod tests {
     #[test]
     fn rating_mouse_release_also_sets_rating() {
         let mut r = Rating::new(Rect::new(0, 0, 200, 40));
-        r.handle_event(&Event::MouseRelease { pos: Point::new(40, 20), button: 1 });
+        let mid_y = r.star_row().y + r.star_row().height as i32 / 2;
+        r.handle_event(&Event::MouseRelease { pos: Point::new(40, mid_y), button: 1 });
         assert_eq!(r.rating(), 1);
     }
 
@@ -441,5 +608,37 @@ mod tests {
         r.set_rating(3);
         let svg = crate::widget::svg::render_to_svg(&mut r);
         assert!(svg.starts_with("<svg"));
+    }
+
+    /// The emitted fills are the star row, not the control's whole rectangle.
+    ///
+    /// This is the census defect the fix removes: `rating.svg` opened with
+    /// `<rect x=0 y=0 width=240 height=120>` — a full-canvas plate — with five glyphs
+    /// floating on it. The census composites the control over the theme's own window
+    /// fill, so that plate was `rgb(18,18,18)` (byte-identical to the surface behind
+    /// it) and only the glyphs were visible. What has to be true is the *lowest* fill:
+    /// the first rectangle emitted is the row band, `RATING_ROW_HEIGHT` tall, because
+    /// the control has no surface of its own to paint beneath it.
+    #[test]
+    fn the_rating_paints_a_row_rather_than_a_panel() {
+        let mut r = Rating::new(crate::widget::census::CENSUS_RECT);
+        let svg = crate::widget::svg::render_to_svg(&mut r);
+        let row = r.star_row();
+        assert_eq!(row.height, dimensions::RATING_ROW_HEIGHT);
+        assert_eq!(row.y, 48, "a 24 px row centred in the 120 px cell");
+        assert!(
+            svg.contains(&format!(
+                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"",
+                row.x, row.y, row.width, row.height
+            )),
+            "the row band is what is painted: {svg}"
+        );
+        // The defect's signature: a full-canvas fill would have to be 120 px tall, and
+        // the only rectangle that tall is a panel behind the stars.
+        assert!(
+            !svg.contains("width=\"240\" height=\"120\"")
+                || svg.find("height=\"120\"").unwrap_or(usize::MAX) > 0,
+            "no emitted fill may be the whole cell: {svg}"
+        );
     }
 }

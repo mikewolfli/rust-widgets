@@ -4,6 +4,8 @@
 //! Single-line text edit widget.
 use crate::compat::{Box, Rc, RefCell, String, ToString};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+#[cfg(test)]
+use crate::event::FocusReason;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -13,6 +15,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usi
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::text_utils::floor_char_boundary;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -369,6 +372,24 @@ impl LineEdit {
             EchoMode::NoEcho => String::new(),
         }
     }
+
+    /// The field the control actually paints.
+    ///
+    /// # Why the field is not the control's rectangle
+    ///
+    /// A text field is a *fixed-height band*: [`dimensions::TEXT_FIELD_MIN_HEIGHT`] is the
+    /// touch-sized content floor every field in this crate shares. Painting `rect` made a
+    /// 240x120 census cell a 240x120 white slab — a rectangle pretending to be a field —
+    /// and it also made `size_hint`'s 24 disagree with the ink by a factor of five.
+    /// [`ControlMetrics::full_width_band`] keeps the full width, takes the field's own
+    /// height and centres it, which is exactly what stops a 48 px field from drawing as a
+    /// 120 px panel.
+    ///
+    /// Everything the control paints **and everything it hit-tests** is placed from this
+    /// one box, so the clickable area cannot drift away from the ink.
+    fn field_rect(&self) -> Rect {
+        ControlMetrics::full_width_band(self.geometry(), dimensions::TEXT_FIELD_MIN_HEIGHT)
+    }
 }
 // Implement Widget trait
 impl Widget for LineEdit {
@@ -618,7 +639,18 @@ impl EventHandler for LineEdit {
                 self.set_focused(false);
                 self.editing_finished.emit();
             }
-            Event::FocusGained => {
+            Event::FocusGained { .. } => {
+                self.set_focused(true);
+            }
+            // A press focuses the field only when it lands on the **painted band**, not on
+            // the control's rectangle. The two used to be the same box, so the hit test
+            // silently agreed with the ink by accident; once the field became a centred
+            // 48 px band in a 120 px cell, testing `geometry()` would let a user focus the
+            // field by clicking 60 px below it — on the window background, nowhere near
+            // any ink. The test is against `field_rect()` for exactly that reason.
+            Event::MousePress { pos, button }
+                if *button == 1 && self.field_rect().contains_point(*pos) =>
+            {
                 self.set_focused(true);
             }
             _ => { /* Other events are not relevant */ }
@@ -628,10 +660,13 @@ impl EventHandler for LineEdit {
 impl Draw for LineEdit {
     fn draw(&mut self, context: &mut RenderContext) {
         // Draw base widget
-        let rect = self.geometry();
+        //
+        // The **field**, not the control's rectangle: see `field_rect`. Every measurement
+        // below — the fill, the border, the text's line box and the caret's top and bottom
+        // — is taken from this one box, so they cannot disagree about where the field is.
+        let rect = self.field_rect();
         let style = self.style();
-        let padding = 4;
-        let text_x = rect.x + padding;
+        let text_x = rect.x + dimensions::TEXT_FIELD_PADDING_H as i32;
         // Draw background
         let bg = style.background_color.unwrap_or(Color::rgb(255, 255, 255));
         context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), bg);
@@ -693,8 +728,12 @@ impl Draw for LineEdit {
             // The marker is clipped to the field's inner box. A caret beyond the visible text
             // (a value wider than the field) belongs at the last pixel a user can see, not
             // outside the control.
-            let caret_x = caret_x.min(rect.x + rect.width as i32 - padding);
-            // Inset so the caret does not touch the border.
+            let caret_x =
+                caret_x.min(rect.x + rect.width as i32 - dimensions::TEXT_FIELD_PADDING_H as i32);
+            // The caret spans the field's own content band, inset so it does not touch the
+            // border. The band is the field's, not the control's: with the field centred in
+            // a tall cell, `rect` alone would have drawn a caret taller than the field it
+            // belongs to.
             let caret_top = rect.y + 2;
             let caret_bottom = rect.y + rect.height as i32 - 2;
             let caret_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
@@ -758,7 +797,7 @@ mod tests {
     fn lineedit_tracks_focus_from_events() {
         let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
 
-        le.handle_event(&Event::FocusGained);
+        le.handle_event(&Event::FocusGained { reason: FocusReason::Programmatic });
         assert!(le.is_focused(), "FocusGained must mark the field focused");
 
         le.handle_event(&Event::FocusLost);
@@ -974,6 +1013,104 @@ mod tests {
         assert_eq!(le.geometry(), Rect::new(10, 10, 150, 30));
     }
 
+    /// The field is a full-width band one text-field height tall, centred in the control.
+    ///
+    /// The control used to paint its whole rectangle, so a 240x120 census cell drew a
+    /// 240x120 white slab — a panel, not a field — and the drawn height disagreed with
+    /// `size_hint`'s 24 by a factor of five. This pins the shared `full_width_band`
+    /// derivation in both directions: the height is the table's constant whatever the
+    /// cell, and a control smaller than the field clamps rather than painting outside.
+    #[test]
+    fn the_field_is_a_text_field_height_in_any_rectangle() {
+        for height in [48u32, 120, 300] {
+            let le = LineEdit::new(Rect::new(0, 0, 240, height));
+            let field = le.field_rect();
+            assert_eq!(
+                field.height,
+                dimensions::TEXT_FIELD_MIN_HEIGHT,
+                "at control height {height}"
+            );
+            assert_eq!(field.width, 240, "the field spans the control's width");
+            assert_eq!(field.y, (height - field.height) as i32 / 2, "at control height {height}");
+        }
+
+        let short = LineEdit::new(Rect::new(0, 0, 240, 20));
+        assert_eq!(short.field_rect().height, 20, "a short control clamps the field");
+    }
+
+    /// Hit-testing follows the ink: a press below the field does not focus it.
+    ///
+    /// With the field centred in a 120 px cell, a press on the control's rectangle but
+    /// 60 px below the drawn band belongs to the window background. The control must not
+    /// claim it — the clickable area has to be the one a user can see.
+    #[test]
+    fn a_press_outside_the_drawn_band_does_not_focus_the_field() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 240, 120));
+        let field = le.field_rect();
+
+        // Inside the band focuses.
+        le.handle_event(&Event::MousePress {
+            pos: Point::new(field.x + 10, field.y + field.height as i32 / 2),
+            button: 1,
+        });
+        assert!(le.is_focused(), "a press on the drawn field focuses it");
+
+        // Below the band, inside the control's rectangle, does not.
+        le.set_focused(false);
+        le.handle_event(&Event::MousePress {
+            pos: Point::new(field.x + 10, field.y + field.height as i32 + 40),
+            button: 1,
+        });
+        assert!(!le.is_focused(), "a press below the drawn field must not focus it");
+    }
+
+    /// The value is drawn on the field's own middle line.
+    ///
+    /// The origin of a text run is its glyph box's top-left corner, so the old
+    /// `rect.y + rect.height / 2` put that corner on the field's middle line and drew the
+    /// value half a line low. Pinning the emitted `y` keeps the line box — not the origin
+    /// — on the centre.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn the_value_sits_on_the_fields_middle_line() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 240, 120));
+        le.set_text("Sample");
+        let svg = crate::widget::svg::render_to_svg(&mut le);
+        let line = svg.lines().find(|l| l.contains("<text")).expect("a text element");
+        let y: i32 = line
+            .split(" y=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .and_then(|value| value.parse().ok())
+            .expect("a y attribute");
+        let field = le.field_rect();
+        assert!(y >= field.y, "the text starts inside the field: y={y}");
+        assert!(
+            y < field.y + field.height as i32,
+            "and above its bottom edge: y={y}, field={field:?}"
+        );
+    }
+
+    /// The value's horizontal origin is the field's own padding.
+    ///
+    /// A field's text is inset from its edge by [`dimensions::TEXT_FIELD_PADDING_H`]; the
+    /// origin was a local literal `4`, which is a different fact written in a second place.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn the_value_starts_at_the_fields_horizontal_padding() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 240, 120));
+        le.set_text("Sample");
+        let svg = crate::widget::svg::render_to_svg(&mut le);
+        let line = svg.lines().find(|l| l.contains("<text")).expect("a text element");
+        let x: i32 = line
+            .split(" x=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .and_then(|value| value.parse().ok())
+            .expect("an x attribute");
+        assert_eq!(x, dimensions::TEXT_FIELD_PADDING_H as i32);
+    }
+
     #[test]
     fn lineedit_visibility() {
         let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
@@ -1050,8 +1187,14 @@ mod tests {
         let at_start = caret_x(0);
         let at_three = caret_x(3);
         let at_end = caret_x(6);
+        // This assertion used to pin the literal `4`, which was a local padding constant
+        // written at the draw site. The origin is now [`dimensions::TEXT_FIELD_PADDING_H`],
+        // the same table value every other field insets its content by, so what this pins is
+        // "the caret starts at the field's own horizontal padding" — the fact the old
+        // literal was an unshared spelling of, not a different fact.
         assert_eq!(
-            at_start, 4,
+            at_start,
+            dimensions::TEXT_FIELD_PADDING_H as i32,
             "a caret at position 0 sits at the text origin (the field's padding inset)"
         );
         assert!(
