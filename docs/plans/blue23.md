@@ -115,15 +115,15 @@ src/render/text_shaper.rs:66 let total = char_count as f32 * font_size * 0.6; //
 
 | 期 | 内容 | 前置 | 现状 |
 |---|---|---|---|
-| **G-1** | `Shaper` trait + `RustybuzzShaper` + 通道门禁 | — | ⬜ 未开工 |
-| **G-2** | `FontStack` 装载与回退链 | G-1 | ⬜ |
-| **G-2b** | `GlyphSource` 抽象（点阵/矢量两种实现） | G-1 | ⬜ |
-| **G-3** | `unicode-bidi` 接入 + `TextDirection` 统一 | G-1 | ⬜ |
-| **G-4a** | 子集生成器 + 许可门禁 + `NOTICE` | G-2 | ⬜ |
-| **G-4b** | 点阵 CJK（`fonts-cjk-bitmap`，~85 KB，**不需塑形**） | G-2b | ⬜ |
-| **G-4c** | 矢量子集打包（`fonts-latin` / `fonts-cjk` / `fonts-complex`） | G-4a | ⬜ |
-| **G-5** | 矢量光栅化（抗锯齿 + 真实 advance + kerning） | G-1, G-4c | ⬜ |
-| **G-6** | 彩色 emoji | G-5 | ⬜ |
+| **G-1** | `Shaper` trait + `RustybuzzShaper` + 通道门禁 | — | ✅ **已实施**（`render::text::shaping`，含阿拉伯连写判据） |
+| **G-2** | `FontStack` 装载与回退链 | G-1 | ✅ **已实施**（`FontStack` + `font_assets::active_faces`） |
+| **G-2b** | `GlyphSource` 抽象（点阵/矢量两种实现） | G-1 | ✅ **已实施**（点阵两种：8x8 与 16x16 CJK） |
+| **G-3** | `unicode-bidi` 接入 + `TextDirection` 统一 | G-1 | ✅ **已实施**（`render::text::bidi`，UAX #9 L2） |
+| **G-4a** | 子集生成器 + 许可门禁 + `NOTICE` | G-2 | ✅ **已实施**（两个生成器 + 6 道门禁之一 + `NOTICE`） |
+| **G-4b** | 点阵 CJK（`fonts-cjk-bitmap`，~85 KB，**不需塑形**） | G-2b | ✅ **已实施**（2361 字形 / 84996 字节数组数据） |
+| **G-4c** | 矢量子集打包（`fonts-latin` / `fonts-cjk` / `fonts-complex`） | G-4a | ✅ 部分（`fonts-vector-latin` 35896 B + `fonts-complex` 70576 B；`fonts-cjk` 矢量版未打包，见日志 §22） |
+| **G-5** | 矢量光栅化（抗锯齿 + 真实 advance + kerning） | G-1, G-4c | ⏳ 半程：真实 advance + kerning ✅；**抗锯齿 ⬜**（阻断点为接口级，见日志 §22） |
+| **G-6** | 彩色 emoji | G-5 | ⬜ **未做**（同上，需第二种像素格式） |
 
 **推荐顺序**：`G-1 → G-2b → G-4b`（先把 `mini`/`embedded` 的中文拿下，代价最小且不依赖塑形）
 `→ G-3 → G-2 → G-4a → G-4c → G-5 → G-6`。

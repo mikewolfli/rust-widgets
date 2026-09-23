@@ -475,8 +475,8 @@ impl Draw for MaskedEdit {
         // Every piece of text ink below resolves `style.text_color` (the theme writes the
         // resolved text colour for an `Input`-role control) and then pushes that ink away from
         // the field's own fill until it is legible on it. `style.text_color` is the right source
-        // because the field's interior is what the text sits on — that is exactly Qt's
-        // `QPalette::Text` over `QPalette::Base` relationship — and `legible_on` is what makes
+        // because the field's interior is what the text sits on — that is exactly the
+        // standard text-over-base palette relationship — and `legible_on` is what makes
         // the result a property of the resolved pair rather than of a guessed lightness. Three
         // states are then derived from that one ink: enabled is the ink itself, disabled is
         // faded toward the fill, and a *placeholder* is a placeholder rather than a value, so it

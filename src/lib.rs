@@ -2,6 +2,60 @@
 // SPDX-License-Identifier: MIT
 
 //! rust_widgets - cross-platform native GUI architecture in pure Rust.
+//!
+//! # Text coverage
+//!
+//! **The default build draws Latin/ASCII only.** This is a stated boundary, not a bug
+//! report: the crate ships no font data, so glyphs come from a fixed 8x8 bitmap face whose
+//! character set is `U+0000`–`U+007F`.
+//!
+//! ```text
+//! src/render/text/glyph_source.rs   Font8x8Source  // U+0000-U+007F: the default's only face
+//! src/render/text/glyph_source.rs   TOFU           // the fallback glyph for anything else
+//! src/render/text/line.rs           estimate_cluster_advance // the one advance model
+//! ```
+//!
+//! What that means in practice:
+//!
+//! * A character inside the supported range is drawn from the bitmap face.
+//! * Any character outside it — CJK, Cyrillic, Arabic, emoji, and every other script —
+//!   is drawn as the **fallback glyph** (a hollow box, "tofu"). The label still lays
+//!   out and the control still renders; only the glyph is wrong.
+//! * A line is ordered for painting by the Unicode bidirectional algorithm, so an Arabic
+//!   or Hebrew run is drawn right to left. Ordering is not glyph *shape*: script-specific
+//!   shaping (Arabic joining, Indic reordering) is still not applied.
+//!
+//! ## Coverage beyond Latin/ASCII is opt-in, and that is the whole contract
+//!
+//! What a wider script needs is font data, and the default build carries **none** — a
+//! `mini` or `embedded` profile must not pay hundreds of kilobytes for glyphs it will
+//! never draw. So coverage is a feature a caller asks for by name:
+//!
+//! ```text
+//! cargo build --features "desktop,fonts-cjk-bitmap"
+//! ```
+//!
+//! `fonts-cjk-bitmap` adds a generated 16x16 CJK face — Han, kana, CJK punctuation and
+//! fullwidth forms, about 85 KB of read-only data read on demand and never resident. Latin
+//! rendering stays byte-identical when it is enabled: a face is *appended* to the fallback
+//! stack, so it can only answer for characters the base face has no glyph for.
+//!
+//! ## What is deliberately not claimed
+//!
+//! This crate does **not** implement Unicode text rendering, and does not call itself
+//! multilingual. A host that passes non-Latin text with no font feature enabled will see
+//! the fallback glyph, and that is the honest behaviour of the default configuration.
+//! Shaping for complex scripts remains future work rather than something assumed.
+//!
+//! ## The guarantee this section carries
+//!
+//! The boundary above is asserted from **both** sides — see
+//! `render::pipeline::pixel_ops::text_coverage_tests` and `render::text::glyph_source`'s
+//! tests. A non-Latin character must resolve to the fallback glyph on a default build, and
+//! enabling the CJK data must move that boundary by exactly the face it adds. A claim about
+//! what is *not* supported decays silently in either direction, so both are pinned, and
+//! `tools/check_text_coverage_claim_matches_features.sh` fails if this section and the
+//! feature graph ever disagree.
 
 // BLUE11 R9.6: Unsafe code audit — unsafe is required for platform FFI
 // Note: Removed `#![allow(unsafe_code)]` — default is allow, no-op.
@@ -145,7 +199,7 @@ pub mod i18n;
 /// explicit `Err` rather than fabricated pixels until a codec lands.
 #[cfg(feature = "image")]
 pub mod image;
-/// Declarative JSON window engine (QML-like).
+/// Declarative JSON window engine (declarative-tree style).
 ///
 /// Compiled for a full device build — `desktop`/`tablet`/`mobile` with an unstripped
 /// widget set. Stated as the `full_widgets` alias rather than the conjunction, so it

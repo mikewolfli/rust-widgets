@@ -250,6 +250,15 @@ impl Widget for AnimatedImage {
     }
 
     impl_widget_property_hooks!();
+    // The trait contract takes `u32` milliseconds; this control's own `tick` takes `u64` so a
+    // long animation cannot wrap its clock. Widening at the boundary keeps the trait uniform.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        AnimatedImage::tick(self, u64::from(delta_ms))
+    }
+
+    fn is_animating(&self) -> bool {
+        self.is_playing()
+    }
 }
 
 /// `AnimatedImage`'s property contract.

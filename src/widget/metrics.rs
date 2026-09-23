@@ -12,7 +12,7 @@
 //! hands every control a 240x120 box, and a control that treats that box as a
 //! *drawing instruction* paints a 240-wide track.
 //!
-//! Qt Quick's `Button.qml` answers the second question with
+//! The shared design-system table answers the second question with
 //!
 //! ```text
 //! implicitWidth = max(implicitBackgroundWidth + leftInset + rightInset,
@@ -45,70 +45,8 @@
 //! collapsing to a zero-extent, invisible rect.
 
 use crate::core::{Rect, Size};
+use crate::render::text::{estimate_cluster_advance, for_each_cluster};
 use crate::style::EdgeOffsets;
-
-/// The advance model's per-cluster factor for a cluster that contains a wide scalar.
-///
-/// This is the number the *renderer* uses: `estimate_cluster_advance` in
-/// `src/render/pipeline/pixel_ops.rs` returns `font_size * 1.0` for a wide cluster and
-/// `font_size * 0.6` otherwise. It is repeated here rather than imported because
-/// `pixel_ops` is `pub(crate)` to the render tree and a widget must not reach into the
-/// rasteriser's internals; the two must move together, which is why this constant's
-/// comment names its counterpart.
-const WIDE_CLUSTER_FACTOR: f32 = 1.0;
-
-/// The advance model's per-cluster factor for a cluster without a wide scalar.
-///
-/// See [`WIDE_CLUSTER_FACTOR`].
-const NARROW_CLUSTER_FACTOR: f32 = 0.6;
-
-/// The factor applied to a cluster made entirely of whitespace.
-///
-/// Whitespace advances even though it paints nothing; the renderer's model gives it a
-/// third of an em rather than a full one.
-const BLANK_CLUSTER_FACTOR: f32 = 0.33;
-
-/// Whether a scalar occupies a full em rather than a fraction of one.
-///
-/// Mirrors `is_wide_scalar` in `src/render/pipeline/pixel_ops.rs`. The ranges that matter
-/// here are CJK ideographs, Hangul syllables, full-width forms and the CJK punctuation
-/// block — a table a control cannot consult without asking a render context, which is
-/// exactly what an *implicit size* must not need.
-fn is_wide_scalar(scalar: char) -> bool {
-    matches!(scalar as u32,
-        0x1100..=0x115F        // Hangul Jamo initial consonants
-        | 0x2E80..=0x303E      // CJK radicals, Kangxi, CJK symbols and punctuation
-        | 0x3041..=0x33FF      // Hiragana, Katakana, Bopomofo, CJK compatibility
-        | 0x3400..=0x4DBF      // CJK unified ideographs extension A
-        | 0x4E00..=0x9FFF      // CJK unified ideographs
-        | 0xA000..=0xA4CF      // Yi syllables
-        | 0xAC00..=0xD7A3      // Hangul syllables
-        | 0xF900..=0xFAFF      // CJK compatibility ideographs
-        | 0xFE30..=0xFE6F      // CJK compatibility forms
-        | 0xFF00..=0xFF60      // Full-width forms
-        | 0xFFE0..=0xFFE6      // Full-width signs
-        | 0x1F300..=0x1F64F    // Emoji
-        | 0x1F900..=0x1F9FF    // Supplemental symbols and pictographs
-        | 0x20000..=0x3FFFD    // CJK extensions B and beyond
-    )
-}
-
-/// One cluster's advance under the backend's model: `font_size` times a factor that
-/// depends only on whether the cluster is blank and whether it contains a wide scalar.
-///
-/// `scale` is the DPI scale, applied because an advance is a device-space distance — the
-/// same reason the renderer multiplies by it.
-fn cluster_advance(cluster: &str, font_size: f32, scale: f32) -> f32 {
-    if cluster.trim().is_empty() {
-        return (font_size * BLANK_CLUSTER_FACTOR * scale).max(1.0);
-    }
-    let factor = if cluster.chars().any(is_wide_scalar) {
-        WIDE_CLUSTER_FACTOR
-    } else {
-        NARROW_CLUSTER_FACTOR
-    };
-    (font_size * factor * scale).max(1.0)
-}
 
 /// The width `text` occupies in `font` at `scale`, without a render context.
 ///
@@ -120,17 +58,20 @@ fn cluster_advance(cluster: &str, font_size: f32, scale: f32) -> f32 {
 /// control that wants the honest answer there had to write its own arithmetic instead, and
 /// that is how `text.len() * 8 + 4` kept appearing: a private copy of a public fact.
 ///
-/// This is the *same model* the renderer measures and draws with — one cluster per
-/// grapheme, `font_size` scaled by a width factor, whitespace advancing a third of an em —
-/// spelled as a pure function so the two can be compared in a test rather than by eye.
+/// # Why this is not a *copy* of the renderer's model
 ///
-/// # What it does not do
+/// It **is** the renderer's model — the same grapheme traversal (`for_each_cluster`) and the
+/// same advance function (`estimate_cluster_advance`), called without a backend. It used to be
+/// a hand-kept copy, which is why it merged no emoji continuation, classified a different set
+/// of scalars as wide, and would have kept its own answer the day either changed. A control
+/// that reserved space from a model the renderer did not use would be measuring with one ruler
+/// and drawing with another — the defect `surface.rs` records as having been paid for once
+/// already, and the one this crate's `estimate_text_width` exists to prevent.
 ///
-/// It is an *estimate*: it does not consult a glyph table, so a proportional font's real
-/// advance will differ. That is deliberate and matches the renderer, which uses the same
-/// estimate. A control that reserved space from a font's real metrics while the renderer
-/// painted from this model would be measuring with one ruler and drawing with another —
-/// the defect `surface.rs` records as having been paid for once already.
+/// # Cost
+///
+/// One reused cluster buffer per call, no per-cluster allocation, so it is safe on the layout
+/// hot path where a `size_hint` is asked on every arrange.
 pub fn estimate_text_width(text: &str, font: &crate::core::Font, scale: f32) -> u32 {
     let size = font.size().max(0.0);
     if text.is_empty() || size == 0.0 {
@@ -138,23 +79,16 @@ pub fn estimate_text_width(text: &str, font: &crate::core::Font, scale: f32) -> 
     }
     let mut advance = 0.0f32;
     let mut clusters = 0usize;
-    for scalar in text.chars() {
-        // Combining marks and variation selectors merge into the preceding cluster rather
-        // than starting one, so a base-plus-diacritic pair advances once. The renderer's
-        // `shape_text` decides this the same way; treating each scalar as its own cluster
-        // would over-measure any accented Latin text.
-        if is_combining_or_modifier(scalar) && clusters > 0 {
-            continue;
-        }
-        let mut buffer = [0u8; 4];
-        advance += cluster_advance(scalar.encode_utf8(&mut buffer), size, scale);
+    for_each_cluster(text, |cluster, _range| {
+        advance += estimate_cluster_advance(cluster, size, scale);
         clusters += 1;
-    }
+    });
     // `letter_spacing` is the gap *between* clusters, so `n` clusters pay `n - 1` gaps. The
     // renderer counts them the same way and for the same reason: counting them after the
     // last cluster would make a centred label sit left of centre.
-    if scale != 0.0 && clusters > 1 {
-        advance += font.letter_spacing() * scale * (clusters - 1) as f32;
+    let tracking = font.letter_spacing() * scale;
+    if tracking != 0.0 && clusters > 1 {
+        advance += tracking * (clusters - 1) as f32;
     }
     advance.round().max(0.0) as u32
 }
@@ -169,27 +103,16 @@ pub fn estimate_line_height(font: &crate::core::Font, scale: f32) -> u32 {
     (font.effective_line_height().max(1.0) * scale).round().max(1.0) as u32
 }
 
-/// Whether `scalar` continues the preceding cluster rather than starting a new one.
-///
-/// Mirrors `is_combining_mark` / `is_variation_selector` in
-/// `src/render/pipeline/pixel_ops.rs`; the ZWJ cases `shape_text` also merges are folded in
-/// because they are the same decision from the measurement's point of view.
-fn is_combining_or_modifier(scalar: char) -> bool {
-    let value = scalar as u32;
-    matches!(value, 0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF
-        | 0x20D0..=0x20FF | 0xFE00..=0xFE0F | 0xFE20..=0xFE2F | 0x200D)
-}
-
 /// Content-driven sizing for a single control.
 ///
-/// Both functions are pure and allocation-free, so calling them from a hot
-/// layout path costs nothing beyond the arithmetic.
+/// Both functions are pure, and the width one walks clusters through one reused buffer, so
+/// calling them from a hot layout path costs no per-cluster allocation.
 pub struct ControlMetrics;
 
 impl ControlMetrics {
     /// Intrinsic size = `max(floor, content + padding)`, component-wise.
     ///
-    /// This is the whole point of Qt's `Button.qml` formula: the **floor is a
+    /// This is the whole point of the shared implicit-size formula: the **floor is a
     /// minimum tappable area**, so small content does not shrink the control below
     /// what a finger can address, while large content still grows it past the
     /// floor. A control whose content is tiny and whose floor is `64x40` is
@@ -206,7 +129,8 @@ impl ControlMetrics {
 
     /// The box left for content once `padding` is removed from `rect`.
     ///
-    /// Qt calls this `availableWidth` / `availableHeight` (`qquickcontrol.cpp:382`).
+    /// The width available to content after insets.
+    ///
     /// The result is never negative: padding larger than the rectangle collapses
     /// the content box to zero rather than inverting it, because a negative extent
     /// is a drawing instruction that would paint outside the control.
@@ -389,9 +313,9 @@ impl ControlMetrics {
     /// # Why a panel does not fill its rectangle
     ///
     /// A dialog is handed a rectangle by whatever placed it (a census cell, a layout slot),
-    /// and that rectangle is its **available area**, not a drawing instruction. QDialog,
-    /// Flutter's `Dialog` and SwiftUI's `.alert` all have an intrinsic size and are centred
-    /// in the room they are offered; a dialog that stretches to a 240x120 census cell draws
+    /// and that rectangle is its **available area**, not a drawing instruction. SwiftUI's
+    /// `.alert` has an intrinsic size and is centred
+    /// in the room it is offered; a dialog that stretches to a 240x120 census cell draws
     /// a frame shaped like a dialog rather than a dialog. This is the same rule
     /// [`ControlMetrics::center_in`] applies to a fixed piece of chrome, with one addition that matters for
     /// a panel: the result is clamped *up* to one pixel, because a zero-extent rect is an
@@ -419,8 +343,8 @@ impl ControlMetrics {
     ///
     /// # Why the ring is drawn *inside* the control's rectangle
     ///
-    /// Qt Quick offsets its focus frame so it surrounds the control's background
-    /// (`qquickcontrol.cpp` `focusFrame`, which grows the frame by the padding).
+    /// The drawn frame surrounds the control's background, growing outward by the
+    /// padding.
     /// This crate does not clip a child to its layout slot, so a ring drawn outside
     /// the rectangle would overlap whatever the layout placed next to the control —
     /// and on a toolbar, where controls sit `spacing` px apart, that overlap would be
@@ -451,7 +375,7 @@ impl ControlMetrics {
 /// Thickness of a keyboard focus ring: 2 logical px.
 ///
 /// Two is the smallest width that reads as deliberate rather than as a rendering
-/// artefact on a 1x display, and it is what Qt's Basic style uses for its focus
+/// artefact on a 1x display, and it is what the reference compact style uses for its focus
 /// frame. Named here rather than at the draw site so every control that draws a ring
 /// agrees on how thick it is.
 pub const FOCUS_RING_WIDTH: u32 = 2;
@@ -522,20 +446,20 @@ pub fn focus_ring_color(fallback: crate::core::Color) -> crate::core::Color {
 /// draw site within a control (a track's height and its corner radius, a
 /// checkbox's box and its inset). Spreading them as literals meant the same fact
 /// was derived in several places and could drift — the failure mode rule #101
-/// names. The numbers themselves follow Flutter Material 3 and Qt Quick Basic,
-/// which agree closely; where they differ the comment records both.
+/// names. The numbers themselves follow the shared design-system table,
+/// which agrees closely across sources; where the numbers differ the comment records both.
 pub mod dimensions {
     use crate::core::Size;
 
     /// The smallest area a finger can reliably address on a touch device.
     ///
-    /// Flutter's `kMinInteractiveDimension` (`material/constants.dart:27`).
+    /// Material's `kMinInteractiveDimension`.
     pub const TOUCH_TARGET_MIN: u32 = 48;
 
     /// A push button's minimum size: `64x40`.
     ///
-    /// Flutter M3 `text_button.dart:555`. Qt's Basic `Button.qml:39-40` uses a
-    /// roomier `100x40` floor; M3's is the tighter of the two and is what a
+    /// Material M3's text-button sizing. A roomier `100x40` floor is the alternative;
+    /// M3's is the tighter of the two and is what a
     /// desktop form wants.
     pub const BUTTON_MIN: Size = Size { width: 64, height: 40 };
 
@@ -548,15 +472,15 @@ pub mod dimensions {
     /// Gap between a button's icon and its label: 6.
     pub const BUTTON_ICON_SPACING: u32 = 6;
 
-    /// A button's icon box: 18 (Flutter M3 `text_button.dart:561`). Qt uses 24.
+    /// A button's icon box: 18 (Material M3's text-button sizing). A 24 px icon box is the alternative.
     pub const BUTTON_ICON_SIZE: u32 = 18;
 
-    /// Corner radius of a rectangular button: 4 (Flutter M2 `text_button.dart:396`).
+    /// Corner radius of a rectangular button: 4 (Material M2's text-button sizing).
     pub const BUTTON_RADIUS: u32 = 4;
 
     /// A switch's track: `52x32`.
     ///
-    /// Flutter M3 `switch.dart:2355-2379`. Qt's `Switch.qml:22-31` is `56x28`; M3's
+    /// Material M3's switch sizing. A `56x28` track is the alternative; M3's
     /// proportion (a 14 px thumb radius in a 32 px track) is the shape this crate
     /// draws.
     pub const SWITCH_TRACK: Size = Size { width: 52, height: 32 };
@@ -567,7 +491,7 @@ pub mod dimensions {
     /// Inset of the switch thumb from the track edge: 2.
     pub const SWITCH_THUMB_INSET: u32 = 2;
 
-    /// A checkbox indicator's box: `18x18` (Flutter `checkbox.dart:405`).
+    /// A checkbox indicator's box: `18x18` (Material's checkbox sizing).
     pub const CHECKBOX_BOX: u32 = 18;
 
     /// A checkbox indicator's corner radius: 2.
@@ -576,13 +500,14 @@ pub mod dimensions {
     /// A checkbox tick / border stroke: 2.
     pub const CHECKBOX_STROKE: u32 = 2;
 
-    /// A radio button's outer radius: 8 (Flutter `radio.dart:31`).
+    /// A radio button's outer radius: 8 (Material's radio sizing).
     ///
     /// An outer *diameter* of 16, matching the 18 px checkbox box closely enough
     /// that the two indicators read as a set.
     pub const RADIO_OUTER_RADIUS: u32 = 8;
 
-    /// A radio button's inner dot radius: `4.5`, rounded to 5 (`radio.dart:32`).
+    /// A radio button's inner dot radius: `4.5`, rounded to 5 — the same inner/outer
+    /// ratio as the shared table.
     pub const RADIO_DOT_RADIUS: u32 = 5;
 
     /// A radio ring's stroke width: 2, matching [`CHECKBOX_STROKE`].
@@ -590,12 +515,12 @@ pub mod dimensions {
 
     /// The gap between an indicator and its label: 6.
     ///
-    /// Qt's `CheckBox.qml:61` reads `spacing`, and that `spacing` means exactly
+    /// This is the spacing of the shared table, and it means exactly
     /// this — indicator to text, never sibling to sibling (rule: `spacing` is not
     /// a sibling layout parameter).
     pub const INDICATOR_TEXT_SPACING: u32 = 6;
 
-    /// A progress bar's height: 4 (Flutter M3 `progress_indicator.dart:1624`).
+    /// A progress bar's height: 4 (Material M3's progress-indicator sizing).
     pub const PROGRESS_HEIGHT: u32 = 4;
 
     /// A progress bar's corner radius: 2, i.e. fully rounded at 4 px thick.
@@ -642,30 +567,30 @@ pub mod dimensions {
     /// A slider track's corner radius: 2.
     pub const SLIDER_TRACK_RADIUS: u32 = 2;
 
-    /// A slider thumb's radius: 10 (Flutter `slider_parts.dart:678`), i.e. a
+    /// A slider thumb's radius: 10 (Material's slider thumb sizing), i.e. a
     /// 20 px diameter thumb on a 4 px track.
     pub const SLIDER_THUMB_RADIUS: u32 = 10;
 
     /// A text field's content height floor: 48.
     ///
-    /// Flutter's `kMinInteractiveDimension` (`input_decorator.dart:1116`); Qt's
-    /// `TextField.qml:50` background is 40. A field is a tap target, so the
+    /// The same touch-sized value as [`TOUCH_TARGET_MIN`]; a 40 px background is the
+    /// alternative. A field is a tap target, so the
     /// touch-sized value wins.
     pub const TEXT_FIELD_MIN_HEIGHT: u32 = 48;
 
     /// A text field's horizontal content padding: 12.
     pub const TEXT_FIELD_PADDING_H: u32 = 12;
 
-    /// A card's corner radius: 12 (Flutter `card.dart:322`).
+    /// A card's corner radius: 12 (Material's card sizing).
     pub const CARD_RADIUS: u32 = 12;
 
-    /// A dialog's corner radius: 28 (Flutter M3 `dialog.dart:1963-1966`).
+    /// A dialog's corner radius: 28 (Material M3's dialog sizing).
     pub const DIALOG_RADIUS: u32 = 28;
 
-    /// A dialog's minimum width: 280 (Flutter M3 `dialog.dart:275`).
+    /// A dialog's minimum width: 280 (Material M3's dialog sizing).
     pub const DIALOG_MIN_WIDTH: u32 = 280;
 
-    /// A dialog's content padding: 12 (Qt `Dialog.qml:21`).
+    /// A dialog's content padding: 12 (the shared table's dialog sizing).
     pub const DIALOG_PADDING: u32 = 12;
 
     /// The strip a dialog draws across its top to carry its title: 28.
@@ -688,7 +613,7 @@ pub mod dimensions {
     /// given a taller area.
     pub const DIALOG_MIN_HEIGHT: u32 = 240;
 
-    /// A toolbar's height: 56 (Flutter M3 `constants.dart:30`).
+    /// A toolbar's height: 56 (Material M3's toolbar sizing).
     pub const TOOLBAR_HEIGHT: u32 = 56;
 
     /// A toolbar's inter-item spacing: 6.
@@ -702,16 +627,16 @@ pub mod dimensions {
     /// and the hit test both derive from `ToolBar::item_rect`).
     pub const TOOLBAR_ITEM_INSET: u32 = 2;
 
-    /// A menu bar's height: 28 (Qt `QMenuBar` at 100% scale; Flutter M3's `AppBar`
-    /// toolbar is 56, which is the *app bar*, not a menu bar's own `File Edit View`
-    /// strip).
+    /// A menu bar's height: 28 at 100% scale; a Material M3 toolbar is 56, which is the
+    /// *app bar*, not a menu bar's own `File Edit View`
+    /// strip.
     ///
     /// One fact for both ends of a menu bar: the height it paints its band at, and the
     /// height a layout is told it wants. They were `28` in `size_hint` and `rect.height`
     /// in `draw`, so a 240x120 census cell drew a 120 px menu bar.
     pub const MENU_BAR_HEIGHT: u32 = 28;
 
-    /// A status bar's height: 24 (Qt `QMainWindow`'s default status bar).
+    /// A status bar's height: 24 (the default status-bar band).
     ///
     /// The band `status_bar` paints and the height its `size_hint` reports, so the two
     /// cannot disagree about how thick the strip at the bottom of a window is.
@@ -742,14 +667,14 @@ pub mod dimensions {
     /// A single-line page-navigation bar's height: 32 (Material's `Pagination` row).
     pub const PAGINATION_HEIGHT: u32 = 32;
 
-    /// An app bar's height: 56 (Flutter M3 `constants.dart:30`, the same idea as
+    /// An app bar's height: 56 (Material M3's app-bar sizing, the same idea as
     /// [`TOOLBAR_HEIGHT`] — Material treats the app bar and the toolbar as one object).
     pub const APP_BAR_HEIGHT: u32 = 56;
 
-    /// A bottom navigation bar's height: 56 (Flutter M3 `navigation_bar.dart:46`).
+    /// A bottom navigation bar's height: 56 (Material M3's navigation-bar sizing).
     pub const BOTTOM_NAV_HEIGHT: u32 = 56;
 
-    /// A splitter handle's thickness: 5 (Qt `QSplitter`'s `handleWidth` default of 5 at
+    /// A splitter handle's thickness: 5 (the shared table's default handle width at
     /// 100% scale).
     ///
     /// It was `5` in `draw` and a second `HANDLE_WIDTH: f32 = 5.0` in `begin_handle_drag`,
@@ -775,7 +700,7 @@ pub mod dimensions {
     /// click" shape.
     pub const PANE_HEADER_HEIGHT: u32 = 24;
 
-    /// A scrollbar's thickness: 8 (Flutter `scrollbar.dart:12-16`).
+    /// A scrollbar's thickness: 8 (the shared table's scrollbar sizing).
     pub const SCROLLBAR_THICKNESS: u32 = 8;
 
     /// A scrollbar thumb's minimum length: 48. A proportional thumb with no floor
@@ -785,10 +710,10 @@ pub mod dimensions {
     /// A horizontal divider's thickness: 1.
     pub const DIVIDER_THICKNESS: u32 = 1;
 
-    /// The vertical space a divider reserves: 16 (Flutter `divider.dart:360-365`).
+    /// The vertical space a divider reserves: 16 (the shared table's divider spacing).
     pub const DIVIDER_SPACING: u32 = 16;
 
-    /// A tooltip's box height: 24 (Flutter desktop `tooltip.dart:425-448`).
+    /// A tooltip's box height: 24 (the shared table's desktop tooltip sizing).
     pub const TOOLTIP_HEIGHT: u32 = 24;
 
     /// A tooltip's horizontal padding: 8.
@@ -797,7 +722,7 @@ pub mod dimensions {
     /// A tooltip's vertical padding: 4.
     pub const TOOLTIP_PADDING_V: u32 = 4;
 
-    /// The base font size: 14 (Flutter `text_painter.dart:42`).
+    /// The base font size: 14 (the shared table's base text size).
     pub const FONT_SIZE_BASE: u32 = 14;
 
     /// The diameter (or side) of a `avatar` control: 40, the size its own `new`
@@ -812,7 +737,7 @@ pub mod dimensions {
     /// centred disc the draw path paints, so all three describe the same avatar.
     pub const AVATAR_SIZE: u32 = 40;
 
-    /// A chip's height: 32 (Flutter M3 `chip.dart`, `_kChipHeight`).
+    /// A chip's height: 32 (Material M3's chip height).
     ///
     /// A chip is chrome: it is the same height whoever hands it the row, so a 240x120
     /// census cell must not draw a 112 px chip. `chip` and every list that hosts a chip
@@ -883,13 +808,13 @@ pub mod dimensions {
 
     /// Horizontal padding of a split button's label and a menu row's label: 8.
     ///
-    /// Qt Basic's `Button.qml` uses `padding: 6` on a compact control and `MenuItem.qml` uses
+    /// The shared table's compact button uses `padding: 6` and its menu item uses
     /// `padding: 6` with a `leftPadding` that adds the indicator. 8 is the crate's existing
     /// value for both, kept as a name so the label and the menu rows cannot drift apart — they
     /// were two independent `x + 8` literals.
     pub const SPLIT_BUTTON_PADDING_H: u32 = 8;
 
-    /// A menu row's leading inset: 8, the same compact row padding Qt's `MenuItem.qml` uses.
+    /// A menu row's leading inset: 8, the same compact row padding the shared table uses.
     pub const MENU_ROW_PADDING_H: u32 = 8;
 
     /// The width a menu row reserves for its shortcut and its submenu arrow: 28.
@@ -1054,8 +979,8 @@ pub mod dimensions {
     ///
     /// The well is a **fixed-size affordance**, not a panel: sizing the checkerboard
     /// and the swatch from the control's rectangle drew a 240x120 chequerboard whose
-    /// swatch covered most of the cell (`color_well.svg` was 1808 rects). Flutter's
-    /// `ColorWell` sample is 60 px square at its default density.
+    /// swatch covered most of the cell (`color_well.svg` was 1808 rects). The shared
+    /// table's colour-well sample is 60 px square at its default density.
     pub const COLOR_WELL_SIZE: u32 = 60;
 
     /// The number of swatches a `color_history` lays out per row: 5.
@@ -1082,16 +1007,15 @@ pub mod dimensions {
     /// stretching beneath it.
     pub const REFRESH_INDICATOR_HEIGHT: u32 = 40;
 
-    /// The step between visual-density levels: 4 logical px per unit
-    /// (`theme_data.dart:3307-3314`).
+    /// The step between visual-density levels: 4 logical px per unit.
     pub const DENSITY_STEP: u32 = 4;
 
     /// Which way a visual-density level shifts metric sizes.
     ///
-    /// Flutter's `VisualDensity` is a signed offset in [`DENSITY_STEP`] units, and
+    /// The density level is a signed offset in [`DENSITY_STEP`] units, and
     /// Material's named levels are `comfortable = -4` and `compact = -8`. Only the
-    /// *vertical* metrics shrink at the compact end — Flutter deliberately does
-    /// **not** compress horizontal padding (`button_style_button.dart:502`),
+    /// *vertical* metrics shrink at the compact end — the shared table deliberately does
+    /// **not** compress horizontal padding,
     /// because a compact desktop button with 0 px of side padding stops reading as
     /// a button.
     pub fn density_scale(vertical_density: i32) -> i32 {

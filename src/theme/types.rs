@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use crate::compat::HashMap;
+use crate::compat::BTreeMap;
 use crate::core::{Color, Font};
 #[cfg(not(alloc_frugal))]
 use serde::{Deserialize, Serialize};
@@ -47,7 +47,7 @@ pub struct Theme {
     /// this, `src/style/animation.rs` carried a complete engine whose durations could only be passed
     /// in per call site, so "how fast does this library feel" was not something a theme could state.
     ///
-    /// The defaults are the Material values Flutter uses (`kThemeChangeDuration` 200 ms,
+    /// The shared Material values are (`kThemeChangeDuration` 200 ms,
     /// `kRadialReactionDuration` 100 ms, the switch's 300 ms toggle), so an unstyled theme moves at
     /// the tempo a Material application is expected to.
     #[cfg_attr(not(alloc_frugal), serde(default))]
@@ -511,7 +511,17 @@ pub struct Borders {
 #[derive(Debug, Clone)]
 pub struct ThemeOverrides {
     /// Overrides keyed by style/class name.
-    pub styles: HashMap<String, ThemeStyleToken>,
+    ///
+    /// # Why this is a `BTreeMap` and not a `HashMap`
+    ///
+    /// These entries are **serialised into the theme fixtures** (`themes/*.json`), and a
+    /// `HashMap` iterates in an unspecified order. With an empty override table that never
+    /// mattered; once the presets carried 26 state keys, a fresh generation produced a
+    /// different key order on every run and `check_theme_fixtures.sh` -- which regenerates
+    /// and compares -- failed intermittently for a reason that had nothing to do with the
+    /// theme's content. A sorted map makes the file deterministic, so a diff means a real
+    /// change.
+    pub styles: BTreeMap<String, ThemeStyleToken>,
 }
 
 /// Optional style tokens used to override resolved widget styles.

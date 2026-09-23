@@ -316,7 +316,7 @@ impl Draw for FontDialog {
         // 14 px line box the default font needs. The label was therefore drawn touching the
         // accent bar and hanging out of its own 12 px strip.
         //
-        // A column header in Qt (`QHeaderView`), Flutter (`DataTable`) and SwiftUI
+        // A column header in a table control and SwiftUI
         // (`TableColumn`) sits wholly inside its own header row, and the row is at least as
         // tall as the text it holds. Sizing from `measure_text` is what makes those two
         // agree by construction rather than by a tuned pair of literals.

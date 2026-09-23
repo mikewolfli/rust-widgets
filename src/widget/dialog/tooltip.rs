@@ -371,19 +371,29 @@ impl Draw for Tooltip {
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
             .unwrap_or(self.text_color);
-        let bubble_color = match style
-            .background_color
-            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
-        {
-            Some(resolved) if resolved != window_fill => resolved,
-            _ => {
-                // The control's own colour is the last resort before the theme-derived
-                // surface, so a caller who set one is not overruled by the derivation.
+        // # Why the inverse surface leads
+        //
+        // A tooltip is the canonical *inverted* bubble: in a light appearance it is dark, in a
+        // dark one it is light. The `Surface` role resolves to `surface_container`, which is
+        // one step off the page — close enough in the light preset that a bubble painted in it
+        // is hard to tell from the frame behind it (BLUE21 AR3's finding). `inverse_surface`
+        // states the relationship directly: it is *deliberately* the far end of the axis, and
+        // it is the token a theme author tunes. A caller's own colour still wins outright.
+        // A caller's own colour wins outright; a *theme-derived* background is ignored here,
+        // because the resolved `Surface` role is exactly the too-close-to-the-page value this
+        // control must not adopt. The distinction is `theme_derived`, the same flag the rest
+        // of the crate uses to tell "the theme chose this" from "the caller chose this".
+        let caller_color = style.background_color.filter(|_| !style.theme_derived);
+        let bubble_color = match caller_color {
+            Some(explicit) => explicit,
+            None => {
                 let own = self.background_color;
                 if own != window_fill {
                     own
                 } else {
-                    window_fill.blend(&ink, 0.85)
+                    crate::style::layer_color(crate::style::LayerColor::InverseSurface)
+                        .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+                        .unwrap_or_else(|| window_fill.blend(&ink, 0.85))
                 }
             }
         };

@@ -285,6 +285,10 @@ impl Widget for InplaceEditor {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+    // The caret blink is driven through the trait so the animation bus reaches it.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        InplaceEditor::tick(self, delta_ms)
+    }
 }
 
 /// `InplaceEditor`'s property contract.

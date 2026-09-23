@@ -361,4 +361,42 @@ mod tests {
             "a filled action and a plain label must not share a background"
         );
     }
+
+    /// BLUE23 §2.4, judgement 2 — the preset's state overrides reach a live control.
+    ///
+    /// A theme could describe `"button:hover"` and the manager would resolve it
+    /// correctly when asked directly, yet nothing on screen changed: the presets shipped
+    /// `overrides.styles` **empty**. This goes through the path a real control takes and
+    /// asserts that a hovered button (which is exactly `widget_state() == Hover` since
+    /// the state source was elevated) is filled differently from a resting one.
+    #[test]
+    fn a_hovered_button_is_filled_differently_from_a_resting_one() {
+        let _guard = guard();
+        let mut manager = global_theme_manager();
+        assert!(manager.set_theme("default"), "the default preset must be registered");
+        drop(manager);
+
+        let mut resting = crate::widget::Button::new("ok".to_string(), Rect::new(0, 0, 10, 10));
+        apply_active_theme(&mut resting);
+
+        // `MouseEnter` is what the runtime synthesises for the control under the pointer,
+        // and the base records it — so this is the same path a real hover takes.
+        let mut hovered = crate::widget::Button::new("ok".to_string(), Rect::new(0, 0, 10, 10));
+        crate::event::EventHandler::handle_event(
+            &mut hovered,
+            &crate::event::Event::MouseEnter { pos: crate::core::Point::new(5, 5) },
+        );
+        assert_eq!(
+            hovered.widget_state(),
+            crate::style::WidgetState::Hover,
+            "the control must actually report the state the override is keyed on"
+        );
+        apply_active_theme(&mut hovered);
+
+        assert_ne!(
+            hovered.style().background_color,
+            resting.style().background_color,
+            "`button:hover` in the preset must change the painted fill"
+        );
+    }
 }

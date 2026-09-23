@@ -9,6 +9,69 @@ use core::cell::RefCell;
 /// Callback type for theme mode change notifications.
 pub type ModeChangedCallback = Rc<RefCell<Vec<Box<dyn FnMut(ThemeMode)>>>>;
 
+/// The state layers a control should **overlay** on top of its resolved fill.
+///
+/// # Why this is separate from [`WidgetState`]
+///
+/// [`WidgetState`] answers "which colour set do I use" — a single value, usable as a theme
+/// lookup key, and something a theme can define a transition for. It cannot express
+/// "focused **and** hovered at once" without the theme carrying a rule for every combination
+/// (the Cartesian product that makes state-set transitions explode).
+///
+/// This struct answers the second, independent question: "what else do I lay on top?". Its
+/// members may all be true together, and they are **draw** instructions rather than lookup
+/// keys, so they are not transitioned — a hover blend and a focus ring are two separate
+/// channels that never fight for the same pixel. That is the split every toolkit with both
+/// a fill state and a focus ring arrives at: a fill answers to one state at a time, the ring
+/// is drawn over whatever fill won.
+///
+/// A control that reports `Hover` from [`crate::widget::Widget::widget_state`] should also
+/// set [`StateOverlay::hovered`], so a draw path that wants both the theme's hover colour
+/// **and** a focus ring does not have to re-derive one of them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StateOverlay {
+    /// The pointer is over the control: blend the fill a step toward the content colour.
+    pub hovered: bool,
+    /// An active press: blend the fill a firmer step toward the content colour.
+    pub pressed: bool,
+    /// Keyboard focus that warrants a ring. Painted as a ring, **not** as a fill.
+    pub focused: bool,
+    /// A persistent on/selected fact the control wants reflected as well.
+    pub checked: bool,
+}
+
+impl StateOverlay {
+    /// The overlay a control's base state alone implies.
+    ///
+    /// Built from the four facts [`crate::widget::BaseWidget`] maintains, so a control that
+    /// overrides nothing still gets the hover/press/focus overlay for free. `checked` is
+    /// not derivable from those facts — a control that latches a value adds it itself.
+    pub fn from_base(hovered: bool, pressed: bool, focused: bool) -> Self {
+        Self { hovered, pressed, focused, checked: false }
+    }
+
+    /// Whether any layer is set, i.e. whether a draw path has anything to add.
+    pub fn is_empty(&self) -> bool {
+        !(self.hovered || self.pressed || self.focused || self.checked)
+    }
+
+    /// The fill blend factor this overlay asks for, in `0.0..=1.0`.
+    ///
+    /// A press is a firmer step than a hover, and the two are mutually exclusive here
+    /// because a press already implies the pointer is down on the control. The values match
+    /// the ones the preset theme's `"<kind>:hover"` / `"<kind>:pressed"` overrides derive,
+    /// so an overlaid control and a theme-driven one move by the same amount.
+    pub fn fill_blend(&self) -> f32 {
+        if self.pressed {
+            0.12
+        } else if self.hovered {
+            0.08
+        } else {
+            0.0
+        }
+    }
+}
+
 /// The interaction state a widget is painted in.
 ///
 /// States are used as lookup keys into a [`StatefulTheme`], so a widget reports
@@ -404,5 +467,24 @@ mod tests {
         manager.set_mode(ThemeMode::Dark);
         let is_fired = *fired.borrow();
         assert!(is_fired, "callback should have been invoked on mode change");
+    }
+
+    /// The overlay carries states that hold at once, which is the whole reason it exists
+    /// alongside the single-valued [`WidgetState`].
+    #[test]
+    fn overlay_carries_simultaneous_states() {
+        let overlay = StateOverlay::from_base(true, false, true);
+        assert!(overlay.hovered && overlay.focused, "focused and hovered at once");
+        assert!(!overlay.is_empty());
+        assert_eq!(overlay.fill_blend(), 0.08, "a hover is the lighter step");
+    }
+
+    /// A press outranks a hover for the fill, and an idle control asks for no blend.
+    #[test]
+    fn overlay_fill_blend_follows_press_over_hover() {
+        let pressed = StateOverlay { pressed: true, hovered: true, ..StateOverlay::default() };
+        assert_eq!(pressed.fill_blend(), 0.12, "a press is the firmer step");
+        assert_eq!(StateOverlay::default().fill_blend(), 0.0);
+        assert!(StateOverlay::default().is_empty());
     }
 }

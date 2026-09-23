@@ -5,8 +5,8 @@
 //!
 //! # What this is, and what it deliberately is not
 //!
-//! A text field's chrome is more than its value and its placeholder. Qt Quick Controls and Flutter
-//! both model the same five extra strings, and this crate had none of them on its text entries:
+//! A text field's chrome is more than its value and its placeholder. The shared table
+//! models the same five extra strings, and this crate had none of them on its text entries:
 //!
 //! | Slot | What it is | Where it goes |
 //! |---|---|---|
@@ -28,7 +28,7 @@
 //! 2. **A selection would include the decoration.** Select-all plus copy would yield `$12` instead of
 //!    `12`, and what was drawn would disagree with the field's own `text`.
 //! 3. **The slots are not always text.** A `suffix` is frequently a unit badge or an icon in the
-//!    trailing edge, which is why Qt models these as *content items* rather than as string
+//!    trailing edge, which is why these are modelled as *content items* rather than as string
 //!    concatenation.
 //!
 //! So this module keeps the slots **separate** and derives their *boxes*. `spin_box` keeps its

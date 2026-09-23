@@ -3,7 +3,7 @@
 
 //! PropertiesPanel widget — a categorized property editor panel.
 //!
-//! Similar to VS Code properties view or Qt QTreeView with property delegates.
+//! Similar to the VS Code properties view: a categorized editor with property delegates.
 //! Properties are grouped by category and rendered as a grid with name-value pairs.
 //! Supports filter text for search, editable values (text, number, bool, color,
 //! choice, file), and emits `property_changed` on edits.

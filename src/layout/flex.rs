@@ -358,7 +358,7 @@ impl FlexLayout {
             // The floor is a statement about what the *child* can survive, and a layout that
             // ignores it to satisfy its own extent trades a visible overflow for an unreadable
             // control. CSS flexbox makes the same choice (`min-width: auto` item floors win over
-            // `flex-shrink`), and Qt's `implicitMinimumWidth` is likewise a hard bound.
+            // `flex-shrink`), and the shared `implicitMinimumWidth` is likewise a hard bound.
             //
             // # What happens when even the floors do not fit (the G-1 resolution)
             //
@@ -758,7 +758,7 @@ impl Layout for FlexLayout {
     /// silently lay everything out at zero.
     ///
     /// Each child's *preferred* extent is used as the intrinsic size, and its `fill` flag
-    /// as the flex-grow weight — which is the same division Qt draws: `preferredWidth`
+    /// as the flex-grow weight — which is the same division the shared model draws: `preferredWidth`
     /// says how big it wants to be, `fillWidth` says whether it may absorb the leftover.
     /// A child that declares neither is laid out at its preferred size and no more, which
     /// is the behaviour a caller reading only `size_hint` expects.

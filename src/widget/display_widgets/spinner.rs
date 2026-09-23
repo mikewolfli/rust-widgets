@@ -174,6 +174,17 @@ impl Widget for Spinner {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+    // An active spinner is *always* animating, so it owes a frame every tick and reports
+    // itself as animating while `active` -- the one control where "always true" is the
+    // honest answer rather than a repaint leak.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        Spinner::tick(self, delta_ms);
+        self.active
+    }
+
+    fn is_animating(&self) -> bool {
+        self.active
+    }
 }
 
 /// `Spinner`'s property contract.

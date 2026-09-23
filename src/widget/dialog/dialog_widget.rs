@@ -3,7 +3,7 @@
 
 //! Dialog widget — a secondary, usually-modal window that hosts its own children.
 //!
-//! This is the generic `QDialog`-style control: a titled frame that carries a single
+//! This is the generic dialog control: a titled frame that carries a single
 //! content widget, exposes modal intent (enforced through [`crate::widget::runtime`]'s
 //! modal stack), and announces accept/reject through dedicated signals. It is the
 //! standard desktop dialog — distinct from `MessageBox` (a fixed message + buttons)

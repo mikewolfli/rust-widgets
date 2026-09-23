@@ -100,8 +100,8 @@ pub type Padding = EdgeOffsets;
 ///
 /// # The four levels
 ///
-/// A caller almost never wants to state all four sides when they all agree. Qt Quick
-/// resolves this with `padding` → `horizontalPadding`/`verticalPadding` →
+/// A caller almost never wants to state all four sides when they all agree. The shared
+/// padding model resolves this with `padding` → `horizontalPadding`/`verticalPadding` →
 /// `leftPadding`/`rightPadding`/`topPadding`/`bottomPadding`, each more specific layer
 /// overriding the one below it:
 ///
@@ -377,7 +377,7 @@ pub struct WidgetStyle {
     ///
     /// # Why spacing is not "the gap between siblings"
     ///
-    /// QML's `CheckBox.qml:61` and `ComboBox.qml:21` both set `spacing`, and in both it
+    /// The shared table sets `spacing` on a checkbox and a combo box, and in both it
     /// means exactly one thing: the distance from the control's own indicator to its own
     /// text. It is a fact about *this control's* contents, so a checkbox, a radio and a
     /// menu item with the same `spacing` look like one family.

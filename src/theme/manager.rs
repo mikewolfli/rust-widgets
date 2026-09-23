@@ -761,7 +761,9 @@ impl Default for Theme {
             },
             spacing: Spacing { small: 4, medium: 8, large: 16, extra_large: 24 },
             borders: Borders { width: 1, radius: 4, shadow: true },
-            overrides: ThemeOverrides { styles: HashMap::new() },
+            overrides: ThemeOverrides {
+                styles: crate::theme::preset_states::preset_state_overrides(&Colors::default()),
+            },
             // Material's own tempo: `kRadialReactionDuration` 100 ms, `kThemeChangeDuration`
             // 200 ms, the switch's toggle 300 ms. A theme that wants a different rhythm sets
             // `theme.motion`; every animated control reads it from there rather than carrying its
@@ -777,40 +779,45 @@ impl Theme {
     /// This complements the light `Theme::default()` for dark/light mode switching.
     /// Fonts, spacing, and borders are identical to the default light theme.
     pub fn dark() -> Self {
+        // Built once and used twice: the preset's own palette, and the state overrides
+        // derived from it. Spelling the block twice is exactly the drift this guards
+        // against -- a palette edit would move one copy and not the other, and the hover
+        // fill would silently stop matching the surface it sits on.
+        let colors = Colors {
+            background: Color { r: 18, g: 18, b: 18, a: 255 },
+            foreground: Color { r: 225, g: 225, b: 225, a: 255 },
+            primary: Color { r: 100, g: 181, b: 246, a: 255 },
+            secondary: Color { r: 130, g: 130, b: 130, a: 255 },
+            accent: Color { r: 255, g: 171, b: 64, a: 255 },
+            error: Color { r: 239, g: 83, b: 80, a: 255 },
+            warning: Color { r: 255, g: 213, b: 79, a: 255 },
+            success: Color { r: 129, g: 199, b: 132, a: 255 },
+            disabled: Color { r: 80, g: 80, b: 80, a: 255 },
+            // Lightened for the dark surface, like the three tokens above it.
+            // It used to be `Color::INFO`, the *light* preset's value, which
+            // made it the one semantic token that did not move with the
+            // appearance — a control reading it could never respond to a theme
+            // switch, and the census caught exactly that.
+            info: Color { r: 138, g: 180, b: 248, a: 255 },
+            // The separator family exists so a divider and a focus ring stop
+            // being the same line, so the dark preset must move both with the
+            // surface — left at the light values they would glare on a near-black
+            // window.
+            outline: Color { r: 147, g: 143, b: 153, a: 255 },
+            outline_variant: Color { r: 73, g: 69, b: 79, a: 255 },
+            // A dark theme cannot dim by *darkening*: the scrim has to be a light
+            // veil over a dark surface, which is the whole reason the role exists
+            // rather than an inline translucent black.
+            scrim: Color { r: 255, g: 255, b: 255, a: 38 },
+            surface_container: Color { r: 30, g: 30, b: 33, a: 255 },
+            surface_container_high: Color { r: 40, g: 40, b: 44, a: 255 },
+            inverse_surface: Color { r: 228, g: 225, b: 229, a: 255 },
+            on_inverse_surface: Color { r: 49, g: 48, b: 51, a: 255 },
+        };
         Self {
             name: "dark".to_string(),
             appearance: AppearanceMode::Dark,
-            colors: Colors {
-                background: Color { r: 18, g: 18, b: 18, a: 255 },
-                foreground: Color { r: 225, g: 225, b: 225, a: 255 },
-                primary: Color { r: 100, g: 181, b: 246, a: 255 },
-                secondary: Color { r: 130, g: 130, b: 130, a: 255 },
-                accent: Color { r: 255, g: 171, b: 64, a: 255 },
-                error: Color { r: 239, g: 83, b: 80, a: 255 },
-                warning: Color { r: 255, g: 213, b: 79, a: 255 },
-                success: Color { r: 129, g: 199, b: 132, a: 255 },
-                disabled: Color { r: 80, g: 80, b: 80, a: 255 },
-                // Lightened for the dark surface, like the three tokens above it.
-                // It used to be `Color::INFO`, the *light* preset's value, which
-                // made it the one semantic token that did not move with the
-                // appearance — a control reading it could never respond to a theme
-                // switch, and the census caught exactly that.
-                info: Color { r: 138, g: 180, b: 248, a: 255 },
-                // The separator family exists so a divider and a focus ring stop
-                // being the same line, so the dark preset must move both with the
-                // surface — left at the light values they would glare on a near-black
-                // window.
-                outline: Color { r: 147, g: 143, b: 153, a: 255 },
-                outline_variant: Color { r: 73, g: 69, b: 79, a: 255 },
-                // A dark theme cannot dim by *darkening*: the scrim has to be a light
-                // veil over a dark surface, which is the whole reason the role exists
-                // rather than an inline translucent black.
-                scrim: Color { r: 255, g: 255, b: 255, a: 38 },
-                surface_container: Color { r: 30, g: 30, b: 33, a: 255 },
-                surface_container_high: Color { r: 40, g: 40, b: 44, a: 255 },
-                inverse_surface: Color { r: 228, g: 225, b: 229, a: 255 },
-                on_inverse_surface: Color { r: 49, g: 48, b: 51, a: 255 },
-            },
+            colors: colors.clone(),
             fonts: Fonts {
                 regular: Font::simple("Arial", 14.0),
                 bold: Font::bold("Arial", 14.0),
@@ -824,7 +831,9 @@ impl Theme {
             },
             spacing: Spacing { small: 4, medium: 8, large: 16, extra_large: 24 },
             borders: Borders { width: 1, radius: 4, shadow: true },
-            overrides: ThemeOverrides { styles: HashMap::new() },
+            overrides: ThemeOverrides {
+                styles: crate::theme::preset_states::preset_state_overrides(&colors),
+            },
             // Material's own tempo: `kRadialReactionDuration` 100 ms, `kThemeChangeDuration`
             // 200 ms, the switch's toggle 300 ms. A theme that wants a different rhythm sets
             // `theme.motion`; every animated control reads it from there rather than carrying its

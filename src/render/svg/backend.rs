@@ -7,8 +7,9 @@ use super::convert::{color_to_rgba, point_attrs, rect_attrs};
 use crate::compat::{format, MiniToString, String, Vec};
 use crate::core::{Color, Font, Size};
 use crate::render::core::command::RenderCommand;
-use crate::render::core::types::{ShapedText, TextCluster, TextMetrics};
-use crate::render::{is_combining_mark, is_variation_selector, PaintBackend, SoftwareRenderConfig};
+use crate::render::core::types::{ShapedText, TextMetrics};
+use crate::render::text::{is_combining_mark, is_variation_selector};
+use crate::render::{PaintBackend, SoftwareRenderConfig};
 use crate::style::gradient::GradientType;
 
 /// PaintBackend implementation that generates SVG markup from render commands.
@@ -580,43 +581,11 @@ impl PaintBackend for SvgPaintBackend {
     }
 
     fn shape_text(&self, text: &str, font: &Font) -> ShapedText {
-        // One run of unicode-aware clusters with logical advances — the same
-        // clustering the software surface produces, so the vector and raster
-        // backends wrap and position text identically.
-        let scale = self.dpi_scale;
-        let mut clusters = Vec::new();
-        for scalar in text.chars() {
-            let should_merge = clusters
-                .last()
-                .map(|cluster: &TextCluster| {
-                    crate::render::cluster_ends_with_zwj(cluster)
-                        || scalar == '\u{200D}'
-                        || crate::render::is_combining_mark(scalar)
-                        || crate::render::is_variation_selector(scalar)
-                })
-                .unwrap_or(false);
-            if should_merge {
-                if let Some(last) = clusters.last_mut() {
-                    last.text.push(scalar);
-                }
-            } else {
-                clusters.push(TextCluster { text: scalar.to_string(), advance: 0.0 });
-            }
-        }
-        let mut total_advance = 0.0f32;
-        let tracking = font.letter_spacing() * scale;
-        for cluster in &mut clusters {
-            cluster.advance =
-                crate::render::estimate_cluster_advance(&cluster.text, font.size(), scale);
-            total_advance += cluster.advance;
-        }
-        // `clusters - 1` gaps: a trailing tracking would push a centred or right-aligned run off its
-        // own centre. The rasteriser's `shape_text` counts the same way, so the SVG output and the
-        // rasterised frame agree about how wide a tracked run is.
-        if tracking != 0.0 && !clusters.is_empty() {
-            total_advance += tracking * (clusters.len() - 1) as f32;
-        }
-        ShapedText { clusters, advance: total_advance }
+        // One run of clusters in visual order, from the text layer's single derivation — the same
+        // call the software surface makes, so the vector and raster backends wrap and position
+        // text identically (principle #51: one derivation, not two copies that must be kept in
+        // step). Reordering for a right-to-left line is applied there, once, for both.
+        crate::render::text::shape_line(text, font, self.dpi_scale)
     }
 
     /// The SVG backend produces vector markup, not a raster surface, so it has no

@@ -214,7 +214,7 @@ impl ScrollBar {
     /// Derived from the control's **thickness** and bounded, so a scrollbar's arrows are the
     /// same size no matter how long the bar is. `width * 0.2` on a 240 px horizontal bar gave a
     /// 48 px arrow — wider than the trough and longer than the space before the thumb, so the
-    /// left arrow's apex landed underneath the slider. Qt's `SC_ScrollBarSubLine` cell is on the
+    /// left arrow's apex landed underneath the slider. The decrement-line scroll step is on the
     /// order of the trough's thickness, and this is the same reading — it is
     /// [`dimensions::SCROLLBAR_MIN_LENGTH`]'s floor applied to the cell, so an arrow cell and a
     /// thumb are never wildly different objects.

@@ -7,7 +7,56 @@ use crate::core::ObjectId;
 
 use super::apply::{apply_with_reservations, ApplyReport};
 use super::diff::{diff, DiffReport};
-use super::node::Node;
+use super::node::{Host, Node};
+
+/// Values a root supplies to the whole view subtree.
+///
+/// # Why reading is resolved at build time
+///
+/// A context answers "what is the theme accent?", "what locale?", "which user?" — facts a
+/// deep node needs but no intermediate node should have to forward. The naive implementation
+/// lets each node hold a reference and look *upward* at draw time; that makes the node's
+/// value depend on where it happens to sit and on when it is read, which is exactly the
+/// non-purity `diff` cannot tolerate.
+///
+/// So a context here is read **once, while the tree is being described**: [`View::build_with`]
+/// calls [`Context::get`] and writes the answer into a node's `props`. `diff` then compares
+/// two ordinary trees and never sees the context at all — the same discipline the crate
+/// already applies to animation (which lives in `PropertyAnimation` rather than in `build`,
+/// for the same reason).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Context {
+    /// The values, by key. `String`-keyed rather than `TypeId`-keyed so a serialised or
+    /// designer-authored context round-trips, which a `TypeId` cannot.
+    values: crate::compat::HashMap<String, String>,
+}
+
+impl Context {
+    /// An empty context. Reading any key returns `None`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets a value, replacing any previous one for the same key. Chainable.
+    pub fn with(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.values.insert(key.into(), value.into());
+        self
+    }
+
+    /// The value for `key`, or `None` when the root did not supply one.
+    ///
+    /// A missing key is `None` rather than a default or a panic: an unset context value is a
+    /// declaration that the root did not choose to provide one, and a node must be able to
+    /// fall back to its own default rather than the whole tree failing.
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.values.get(key).map(String::as_str)
+    }
+
+    /// Whether any value is present.
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+}
 
 /// A declarative description of a widget tree, computed from some state.
 ///
@@ -46,6 +95,22 @@ pub trait View {
     /// clock or a random number here would make the diff see changes that did not come from
     /// state, and an update would then never settle.
     fn build(&self) -> Node;
+
+    /// Describe the tree, resolving any [`Context`] values into concrete node properties.
+    ///
+    /// # Why this is a separate method with a default
+    ///
+    /// Making `build` itself take a context would break every existing `impl View` — the
+    /// signature change the plan defers to last (BLUE23 §5A.7). A defaulted second method is
+    /// the additive form: a view that needs no context implements only `build`, exactly as
+    /// before, and receives the context-aware call through this default. A view that does
+    /// need one overrides this and reads `ctx.get(key)` while describing.
+    ///
+    /// The default ignores the context and forwards to [`Self::build`], which is the honest
+    /// behaviour: a view that has not opted in has no key to look up.
+    fn build_with(&self, _ctx: &Context) -> Node {
+        self.build()
+    }
 }
 
 /// Holds a view's current tree and applies the differences between builds.
@@ -71,6 +136,17 @@ pub struct ViewEngine {
     /// Populated when the engine mounts or applies an `Insert`: ids for nodes it created,
     /// and — at mount time — ids the caller supplies for nodes built elsewhere.
     id_of_path: crate::compat::HashMap<Vec<usize>, ObjectId>,
+    /// The id of the engine-owned **overlay layer**, once a portal node has asked for one.
+    ///
+    /// # Why the layer is a sibling of the root, not a second root
+    ///
+    /// A portal node is declared as some control's child but must be created *outside* that
+    /// parent's clip (BLUE23 §5A.2). The place it is created into cannot be the root — a
+    /// document has exactly one root, and `Patch::Insert` relies on that — so it is a layer
+    /// the engine owns, **beside** the root rather than above it. The layout still sees one
+    /// rooted document; the layer is an additional host the engine keeps for portal
+    /// children, and it exists only when something asks for it.
+    overlay_layer: Option<ObjectId>,
 }
 
 impl core::fmt::Debug for ViewEngine {
@@ -78,6 +154,7 @@ impl core::fmt::Debug for ViewEngine {
         f.debug_struct("ViewEngine")
             .field("mounted", &self.current.is_some())
             .field("nodes", &self.layout.node_count())
+            .field("overlay", &self.overlay_layer)
             .finish()
     }
 }
@@ -89,7 +166,36 @@ impl ViewEngine {
             current: None,
             layout: crate::json::BoundJsonLayout::new(),
             id_of_path: crate::compat::HashMap::new(),
+            overlay_layer: None,
         }
+    }
+
+    /// The id of the overlay layer, or `None` when no portal node has needed one.
+    ///
+    /// A host that draws the layer separately (a modal stack, a tooltip rail) reads this to
+    /// find the container its portal children were created into. `None` is the honest answer
+    /// for a tree that declares no portals: there is no empty layer sitting around.
+    pub fn overlay_layer(&self) -> Option<ObjectId> {
+        self.overlay_layer
+    }
+
+    /// The layer a portal node is created into, creating it on first use.
+    ///
+    /// The layer is itself a control created through the caller's `create` bridge, named
+    /// `"overlay"`, so a host that maps names to controls needs no special case for it. It
+    /// is registered with no parent — it is a host the engine owns, not a child of the root.
+    fn overlay_layer_for(
+        &mut self,
+        create: &dyn Fn(&Node) -> Option<ObjectId>,
+    ) -> Option<ObjectId> {
+        if let Some(id) = self.overlay_layer {
+            return Some(id);
+        }
+        let layer_node = Node::new("overlay").key("__overlay_layer");
+        let id = create(&layer_node).filter(|&id| id != 0)?;
+        self.layout.register_node(id, layer_node.widget.clone(), "__overlay_layer", None);
+        self.overlay_layer = Some(id);
+        Some(id)
     }
 
     /// Build `view` and create its tree, recording the ids `create` assigns.
@@ -107,7 +213,21 @@ impl ViewEngine {
         view: &dyn View,
         create: &dyn Fn(&Node) -> Option<ObjectId>,
     ) -> ApplyReport {
-        let root = view.build();
+        self.mount_with(view, &Context::new(), create)
+    }
+
+    /// [`Self::mount`] with a [`Context`] the view may read while describing its tree.
+    ///
+    /// The context is resolved into node properties **before** the tree is diffed, so a
+    /// subsequent [`Self::update_with`] that passes a *different* context compares two
+    /// value-settled trees — the context itself never becomes a diff key (BLUE23 §5A.4).
+    pub fn mount_with(
+        &mut self,
+        view: &dyn View,
+        ctx: &Context,
+        create: &dyn Fn(&Node) -> Option<ObjectId>,
+    ) -> ApplyReport {
+        let root = view.build_with(ctx);
         let mut report = ApplyReport::default();
 
         // Drop the previous tree entirely, so its controls do not linger as orphans and so
@@ -116,18 +236,35 @@ impl ViewEngine {
         // new control, and leaving it indexed would make `node_count` count a control that
         // is no longer part of any tree.
         if self.layout.root().is_some() {
+            // Lifecycle: the old tree is about to go, so every node's `on_unmount` runs first --
+            // while the controls are still mounted and readable. This is the pair to the mount
+            // hook below: a node that mounted always unmounts exactly once, so a subscription
+            // it opened is closed rather than leaked.
+            if let Some(previous) = self.current.take() {
+                if let Some(old_root) = self.layout.root() {
+                    self.run_unmount_hooks(&previous, old_root, &[]);
+                }
+            }
             let removed = self.layout.clear_structure();
             report.widgets_removed += removed.len();
         }
         self.id_of_path.clear();
 
         let Some(root_id) = create(&root) else {
-            report.errors.push(super::ViewError::UnknownWidgetType { widget: root.widget.clone() });
+            report.errors.push(super::ViewError::UnknownWidgetType {
+                widget: root.widget.clone(),
+                key: root.key.clone(),
+                path: Vec::new(),
+            });
             self.current = None;
             return report;
         };
         if root_id == 0 {
-            report.errors.push(super::ViewError::UnknownWidgetType { widget: root.widget.clone() });
+            report.errors.push(super::ViewError::UnknownWidgetType {
+                widget: root.widget.clone(),
+                key: root.key.clone(),
+                path: Vec::new(),
+            });
             self.current = None;
             return report;
         }
@@ -136,11 +273,58 @@ impl ViewEngine {
         self.layout.register_node(root_id, root.widget.clone(), key, None);
         self.id_of_path.insert(Vec::new(), root_id);
         report.widgets_created += 1;
-        self.mount_children(&root, root_id, &[], create, &mut report);
+        // The root's own name seeds the ancestor chain, so a failure in a *direct* child still
+        // reports where it sits ("window > no_such_widget#bad") rather than an empty chain.
+        let root_chain = [root.widget.clone()];
+        self.mount_children_named(&root, root_id, &[], &root_chain, create, &mut report);
         self.write_declared_properties(&root, root_id, &mut report);
+        // Lifecycle: the whole tree now exists, so each node's `on_mount` runs -- children
+        // before their parent's, which is the order a callback that touches its subtree needs.
+        self.run_mount_hooks(&root, root_id, &[]);
 
         self.current = Some(root);
         report
+    }
+
+    /// Runs every `on_mount` in `node`'s subtree, deepest first.
+    ///
+    /// # Why the order is children-first
+    ///
+    /// A mount hook may read its own subtree ("subscribe to each row"). Running a parent
+    /// before its children would let it observe a tree that is not finished, so the recursion
+    /// descends before invoking. The ids come from `id_of_path`, which was populated by the
+    /// same walk that created the controls -- so a hook's id is guaranteed to address a
+    /// mounted control.
+    fn run_mount_hooks(&self, node: &Node, node_id: ObjectId, path: &[usize]) {
+        for (index, child) in node.children.iter().enumerate() {
+            let mut child_path = path.to_vec();
+            child_path.push(index);
+            if let Some(child_id) = self.id_at(&child_path) {
+                self.run_mount_hooks(child, child_id, &child_path);
+            }
+        }
+        if let Some(hook) = &node.on_mount {
+            hook(node_id);
+        }
+    }
+
+    /// Runs every `on_unmount` in `node`'s subtree, **parent first**.
+    ///
+    /// The reverse order of [`Self::run_mount_hooks`], and for the mirror reason: a teardown
+    /// hook may need to stop something in its own subtree, so the parent must get the chance
+    /// before its children are gone. Reads ids from `id_of_path` -- the map is still populated
+    /// because the layout is not cleared until after this returns.
+    fn run_unmount_hooks(&self, node: &Node, node_id: ObjectId, path: &[usize]) {
+        if let Some(hook) = &node.on_unmount {
+            hook(node_id);
+        }
+        for (index, child) in node.children.iter().enumerate() {
+            let mut child_path = path.to_vec();
+            child_path.push(index);
+            if let Some(child_id) = self.id_at(&child_path) {
+                self.run_unmount_hooks(child, child_id, &child_path);
+            }
+        }
     }
 
     /// Rebuild `view` and apply only the differences from the mounted tree.
@@ -154,11 +338,25 @@ impl ViewEngine {
         view: &dyn View,
         create: &dyn Fn(&Node) -> Option<ObjectId>,
     ) -> DiffReport {
+        self.update_with(view, &Context::new(), create)
+    }
+
+    /// [`Self::update`] with a [`Context`] the view may read while describing its tree.
+    ///
+    /// A context change therefore shows up the *ordinary* way: the new values land in the
+    /// nodes' props during the build, and the diff reports the resulting property patches.
+    /// Nothing in the diff knows a context exists.
+    pub fn update_with(
+        &mut self,
+        view: &dyn View,
+        ctx: &Context,
+        create: &dyn Fn(&Node) -> Option<ObjectId>,
+    ) -> DiffReport {
         let Some(previous) = self.current.take() else {
-            self.mount(view, create);
+            self.mount_with(view, ctx, create);
             return DiffReport::default();
         };
-        let next = view.build();
+        let next = view.build_with(ctx);
         let lookup = |path: &[usize], _index: usize| self.id_of_path.get(path).copied();
         let report = diff(&previous, &next, &lookup);
 
@@ -226,14 +424,28 @@ impl ViewEngine {
 
     /// Create and register a node's children, recursing.
     ///
-    /// Also writes each node's declared properties through the property contract, so a
-    /// freshly mounted tree is in the state the view described rather than in each control's
-    /// default state.
-    fn mount_children(
+    /// The recursive half of this, carrying the ancestor **names** so a failure can be
+    /// located in the declaration.
+    ///
+    /// # Error boundary (BLUE23 §5A.5)
+    ///
+    /// A child that cannot be created is recorded and skipped; its **siblings are still
+    /// mounted**. The alternative — propagating the failure and dropping the whole tree —
+    /// made one misspelled widget name cost the entire window, which is the same shape as
+    /// BLUE22's F-7 (`spacer` losing its subtree): "a node cannot be expressed" must not
+    /// escalate to "everything disappears".
+    ///
+    /// The chain starts with the **root's own widget name** (seeded by `mount`), so a
+    /// failure in a direct child reports `window > no_such_widget#bad` rather than nothing.
+    /// Properties are written after recursing, so a freshly mounted tree is in the state the
+    /// view described rather than in each control's default state.
+    #[allow(clippy::too_many_arguments)]
+    fn mount_children_named(
         &mut self,
         node: &Node,
         node_id: ObjectId,
         path: &[usize],
+        ancestor_names: &[String],
         create: &dyn Fn(&Node) -> Option<ObjectId>,
         report: &mut ApplyReport,
     ) {
@@ -241,17 +453,31 @@ impl ViewEngine {
             let mut child_path = path.to_vec();
             child_path.push(index);
             let Some(child_id) = create(child).filter(|&id| id != 0) else {
-                report
-                    .errors
-                    .push(super::ViewError::UnknownWidgetType { widget: child.widget.clone() });
+                report.errors.push(super::ViewError::UnknownWidgetType {
+                    widget: child.widget.clone(),
+                    key: child.key.clone(),
+                    path: ancestor_names.to_vec(),
+                });
                 continue;
             };
             let key = child.key.clone().unwrap_or_default();
-            self.layout.register_node(child_id, child.widget.clone(), key, Some(node_id));
-            self.layout.move_child_to(node_id, child_id, index);
+            // A portal node is created into the overlay layer rather than under its declared
+            // parent. Its `id_of_path` entry and its diff identity stay keyed by the declared
+            // path, so a keyed rebuild still matches it as this parent's child — only the
+            // control's *host* moves (BLUE23 §5A.2: identity in the tree, rendering elsewhere).
+            let host = match child.host {
+                Host::Declared => Some(node_id),
+                Host::Overlay => self.overlay_layer_for(create),
+            };
+            self.layout.register_node(child_id, child.widget.clone(), key, host);
+            if let Some(host) = host {
+                self.layout.move_child_to(host, child_id, index);
+            }
             self.id_of_path.insert(child_path.clone(), child_id);
             report.widgets_created += 1;
-            self.mount_children(child, child_id, &child_path, create, report);
+            let mut child_names = ancestor_names.to_vec();
+            child_names.push(child.widget.clone());
+            self.mount_children_named(child, child_id, &child_path, &child_names, create, report);
             self.write_declared_properties(child, child_id, report);
         }
     }
@@ -654,6 +880,294 @@ mod tests {
         assert!(
             report.properties_written + report.errors.len() >= 1,
             "the declared property must be attempted: {report:?}"
+        );
+    }
+
+    // ── Error boundary (BLUE23 §5A.5) ─────────────────────────────────────────
+
+    /// A view whose only child is a portal: declared under the panel, hosted in the layer.
+    struct PortalUnderAPanel;
+
+    impl View for PortalUnderAPanel {
+        fn build(&self) -> Node {
+            Node::new("window").key("root").child(
+                Node::new("panel").key("panel").child(Node::new("tooltip").key("tip").portal()),
+            )
+        }
+    }
+
+    /// A portal node's control lands in the overlay layer, not under its declared parent.
+    ///
+    /// This is the whole of §5A.2: identity in the tree, rendering elsewhere. The tip's id is
+    /// reachable by its **declared path** (`window > panel > tooltip`) while its *parent* in
+    /// the layout is the overlay layer — which is what lets it paint outside the panel's clip.
+    #[test]
+    fn a_portal_control_is_hosted_in_the_overlay_layer() {
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+        engine.mount(&PortalUnderAPanel, &ids.creator());
+
+        let layer = engine.overlay_layer().expect("a portal asks the engine for a layer");
+        // The declared path still resolves: identity stayed where it was written.
+        let tip = engine.id_at(&[0, 0]).expect("the portal keeps its declared path");
+        // But the control's parent is the layer, not the panel.
+        assert_eq!(
+            engine.layout().parent(tip),
+            Some(layer),
+            "the portal is rendered in the layer, outside its declarer's clip"
+        );
+        let panel = engine.id_at(&[0]).expect("the panel");
+        assert_ne!(
+            engine.layout().parent(tip),
+            Some(panel),
+            "and specifically not under the panel it was declared in"
+        );
+    }
+
+    /// A tree with no portal allocates no layer.
+    ///
+    /// The layer is an engine-owned host, not a fixture: an ordinary tree must not carry an
+    /// empty extra control, and `overlay_layer()` must say so honestly with `None`.
+    #[test]
+    fn a_tree_without_portals_has_no_overlay_layer() {
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+        engine.mount(&Text("hi".into()), &ids.creator());
+        assert_eq!(engine.overlay_layer(), None);
+    }
+
+    /// A portal node is the **same declaration** whether or not it is hosted elsewhere.
+    ///
+    /// `Host` says where a control is mounted, which is a rendering fact; it must not enter
+    /// the declaration's equality, or a diff would see a change on every rebuild and tear
+    /// down a subtree that did not change (BLUE23 §5A.4 judgement 9).
+    #[test]
+    fn the_host_does_not_enter_a_nodes_equality() {
+        let declared = Node::new("tooltip").key("t");
+        let portal = Node::new("tooltip").key("t").portal();
+        assert_eq!(declared, portal, "the host is not part of the declaration");
+        assert_ne!(declared.host, portal.host, "but the nodes do differ in host");
+    }
+
+    /// A view of three labels, the middle one naming a widget that cannot be created.
+    struct ThreeWithABadMiddle;
+    impl View for ThreeWithABadMiddle {
+        fn build(&self) -> Node {
+            Node::new("window")
+                .key("root")
+                .child(Node::new("label").key("first"))
+                .child(Node::new("no_such_widget").key("bad"))
+                .child(Node::new("label").key("last"))
+        }
+    }
+
+    /// A subtree cannot be created without taking its siblings with it.
+    ///
+    /// This is the whole point of the error boundary: before it, one unconstructible node
+    /// was either silently skipped or — at the mount level — treated as a reason to refuse
+    /// the tree. The builder below fails only for the node that names the bad widget, so the
+    /// two labels on either side must still be created.
+    #[test]
+    fn a_bad_child_does_not_remove_its_good_siblings() {
+        let mut engine = ViewEngine::new();
+        let create = |node: &Node| -> Option<ObjectId> {
+            if node.widget == "no_such_widget" {
+                None
+            } else {
+                Some(1)
+            }
+        };
+        let report = engine.mount(&ThreeWithABadMiddle, &create);
+        assert_eq!(report.failed_count(), 1, "exactly the bad node failed: {report:?}");
+        // The root plus the two good labels still became controls.
+        assert_eq!(report.widgets_created, 3, "the good siblings must survive: {report:?}");
+    }
+
+    /// The failure names the node well enough to find it in the declaration.
+    #[test]
+    fn a_failure_carries_the_widget_name_key_and_ancestor_chain() {
+        let mut engine = ViewEngine::new();
+        let create = |node: &Node| -> Option<ObjectId> {
+            if node.widget == "no_such_widget" {
+                None
+            } else {
+                Some(1)
+            }
+        };
+        let report = engine.mount(&ThreeWithABadMiddle, &create);
+        let failed = report.failed_nodes();
+        assert_eq!(failed.len(), 1);
+        // `widget chain > widget#key` -- the name, the key and where it sits.
+        assert!(
+            failed[0].contains("no_such_widget#bad"),
+            "the failure must name the widget and its key: {failed:?}"
+        );
+        assert!(failed[0].starts_with("window"), "and the ancestor chain above it: {failed:?}");
+    }
+
+    // ── Lifecycle hooks (BLUE23 §5A.3) ────────────────────────────────────────
+
+    use crate::compat::Rc;
+    use std::cell::RefCell;
+
+    /// A view whose label counts its own mounts and unmounts.
+    struct Counting {
+        mounts: Rc<RefCell<u32>>,
+        unmounts: Rc<RefCell<u32>>,
+    }
+
+    impl View for Counting {
+        fn build(&self) -> Node {
+            let mounts = Rc::clone(&self.mounts);
+            let unmounts = Rc::clone(&self.unmounts);
+            Node::new("window").key("root").child(
+                Node::new("label")
+                    .key("value")
+                    .on_mount(move |_id| *mounts.borrow_mut() += 1)
+                    .on_unmount(move |_id| *unmounts.borrow_mut() += 1),
+            )
+        }
+    }
+
+    /// A mount fires once, and a rebuild that keeps the node does not fire it again.
+    #[test]
+    fn on_mount_fires_once_and_not_on_a_stable_rebuild() {
+        let mounts = Rc::new(RefCell::new(0));
+        let unmounts = Rc::new(RefCell::new(0));
+        let view = Counting { mounts: Rc::clone(&mounts), unmounts: Rc::clone(&unmounts) };
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+        engine.mount(&view, &ids.creator());
+        assert_eq!(*mounts.borrow(), 1, "the node mounted once");
+
+        // A second build with the same key is the same node: no remount.
+        engine.update(&view, &ids.creator());
+        assert_eq!(*mounts.borrow(), 1, "a keyed rebuild must not remount");
+    }
+
+    /// Replacing the tree unmounts the previous one exactly once, after it mounted.
+    #[test]
+    fn on_unmount_fires_once_when_the_tree_is_replaced() {
+        let mounts = Rc::new(RefCell::new(0));
+        let unmounts = Rc::new(RefCell::new(0));
+        let view = Counting { mounts: Rc::clone(&mounts), unmounts: Rc::clone(&unmounts) };
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+        engine.mount(&view, &ids.creator());
+        assert_eq!(*unmounts.borrow(), 0, "nothing has left yet");
+
+        // A second mount replaces the tree, which is what tears the first one down.
+        engine.mount(&view, &ids.creator());
+        assert_eq!(*unmounts.borrow(), 1, "the replaced tree unmounted exactly once");
+        assert_eq!(*mounts.borrow(), 2, "and the new tree mounted");
+    }
+
+    /// A mount hook receives an id that addresses a mounted control.
+    #[test]
+    fn on_mount_receives_a_usable_id() {
+        let seen: Rc<RefCell<Option<ObjectId>>> = Rc::new(RefCell::new(None));
+
+        struct One(Rc<RefCell<Option<ObjectId>>>);
+        impl View for One {
+            fn build(&self) -> Node {
+                let slot = Rc::clone(&self.0);
+                Node::new("window").key("root").child(Node::new("label").key("only").on_mount(
+                    move |id| {
+                        *slot.borrow_mut() = Some(id);
+                    },
+                ))
+            }
+        }
+
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+        engine.mount(&One(Rc::clone(&seen)), &ids.creator());
+        let id = seen.borrow().expect("the mount hook ran and saw an id");
+        assert_eq!(engine.id_at(&[0]), Some(id), "and the id addresses the mounted label");
+    }
+
+    // ── Context propagation (BLUE23 §5A.4) ──────────────────────────────
+
+    /// A view that reads a context key into a child's property.
+    struct Themed;
+
+    impl View for Themed {
+        fn build(&self) -> Node {
+            // No context: fall back to the view's own default.
+            self.build_with(&Context::new())
+        }
+
+        fn build_with(&self, ctx: &Context) -> Node {
+            let accent = ctx.get("accent").unwrap_or("default");
+            Node::new("window")
+                .key("root")
+                .child(Node::new("label").key("accent").prop("text", s(accent)))
+        }
+    }
+
+    /// A context value changes what the view *describes*, so the produced props differ.
+    #[test]
+    fn a_context_value_reaches_the_described_props() {
+        let ctx = Context::new().with("accent", "red");
+        let node = Themed.build_with(&ctx);
+        let label = &node.children[0];
+        assert_eq!(
+            label.props.get("text"),
+            Some(&s("red")),
+            "the context value must be resolved into the node's props"
+        );
+    }
+
+    /// The context is **not** part of what the diff compares.
+    ///
+    /// The whole point of resolving at build time: two builds with the *same* context produce
+    /// equal nodes, so a rebuild that changes nothing about the context is a no-op to the
+    /// diff — the context never becomes a comparison key (BLUE23 §5A.4 judgement 9).
+    #[test]
+    fn the_context_is_absent_from_the_comparison() {
+        let a = Context::new().with("accent", "red").with("locale", "en");
+        let b = Context::new().with("accent", "red").with("locale", "fr");
+        // Same `accent`, different `locale`. The view reads only `accent`, so the described
+        // trees are identical even though the contexts differ.
+        assert_eq!(Themed.build_with(&a), Themed.build_with(&b));
+    }
+
+    /// A missing key reads as `None` rather than panicking.
+    #[test]
+    fn a_missing_context_key_is_none() {
+        let ctx = Context::new();
+        assert!(ctx.is_empty());
+        assert_eq!(ctx.get("nothing"), None);
+        // And the view falls back to its own default rather than failing.
+        let node = Themed.build_with(&ctx);
+        assert_eq!(node.children[0].props.get("text"), Some(&s("default")));
+    }
+
+    /// A failure yields a placeholder a host can mount, with non-zero content.
+    ///
+    /// BLUE23 §5A.9 judgement 13: a failed node must render as a *placeholder*, not as zero
+    /// ink. The library supplies the node (it knows where the failure is); the host paints
+    /// it. This pins that the placeholder names the missing widget and is a real tree.
+    #[test]
+    fn a_failure_yields_a_placeholder_that_names_it() {
+        let mut engine = ViewEngine::new();
+        let create = |node: &Node| -> Option<ObjectId> {
+            if node.widget == "no_such_widget" {
+                None
+            } else {
+                Some(1)
+            }
+        };
+        let report = engine.mount(&ThreeWithABadMiddle, &create);
+        let placeholders = report.placeholders();
+        assert_eq!(placeholders.len(), 1, "one placeholder per failed node");
+        // It is a panel with a label child -- non-empty, unlike a `spacer`.
+        assert_eq!(placeholders[0].widget, "panel");
+        assert_eq!(placeholders[0].children.len(), 1);
+        let text = placeholders[0].children[0].props.get("text");
+        assert!(
+            matches!(text, Some(CapabilityValue::String(s)) if s.contains("no_such_widget")),
+            "the placeholder must name the missing widget: {text:?}"
         );
     }
 }

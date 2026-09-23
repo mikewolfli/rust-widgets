@@ -200,7 +200,464 @@
     "shadow": true
   },
   "overrides": {
-    "styles": {}
+    "styles": {
+      "button:disabled": {
+        "background": {
+          "r": 200,
+          "g": 200,
+          "b": 200,
+          "a": 255
+        },
+        "foreground": {
+          "r": 108,
+          "g": 108,
+          "b": 108,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null
+      },
+      "button:hover": {
+        "background": {
+          "r": 221,
+          "g": 221,
+          "b": 221,
+          "a": 255
+        },
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null
+      },
+      "button:pressed": {
+        "background": {
+          "r": 211,
+          "g": 211,
+          "b": 211,
+          "a": 255
+        },
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null
+      },
+      "check_box:checked": {
+        "background": {
+          "r": 33,
+          "g": 150,
+          "b": 243,
+          "a": 255
+        },
+        "foreground": {
+          "r": 0,
+          "g": 0,
+          "b": 0,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null
+      },
+      "chip:checked": {
+        "background": {
+          "r": 33,
+          "g": 150,
+          "b": 243,
+          "a": 255
+        },
+        "foreground": {
+          "r": 0,
+          "g": 0,
+          "b": 0,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null
+      },
+      "combo_box:error": {
+        "background": null,
+        "foreground": null,
+        "border": {
+          "r": 244,
+          "g": 67,
+          "b": 54,
+          "a": 255
+        },
+        "border_width": 2,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null
+      },
+      "date_edit:error": {
+        "background": null,
+        "foreground": null,
+        "border": {
+          "r": 244,
+          "g": 67,
+          "b": 54,
+          "a": 255
+        },
+        "border_width": 2,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null
+      },
+      "date_time_edit:error": {
+        "background": null,
+        "foreground": null,
+        "border": {
+          "r": 244,
+          "g": 67,
+          "b": 54,
+          "a": 255
+        },
+        "border_width": 2,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null
+      },
+      "editable_combo_box:error": {
+        "background": null,
+        "foreground": null,
+        "border": {
+          "r": 244,
+          "g": 67,
+          "b": 54,
+          "a": 255
+        },
+        "border_width": 2,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null
+      },
+      "line_edit:error": {
+        "background": null,
+        "foreground": null,
+        "border": {
+          "r": 244,
+          "g": 67,
+          "b": 54,
+          "a": 255
+        },
+        "border_width": 2,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null
+      },
+      "masked_edit:error": {
+        "background": null,
+        "foreground": null,
+        "border": {
+          "r": 244,
+          "g": 67,
+          "b": 54,
+          "a": 255
+        },
+        "border_width": 2,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null
+      },
+      "radio_button:checked": {
+        "background": {
+          "r": 33,
+          "g": 150,
+          "b": 243,
+          "a": 255
+        },
+        "foreground": {
+          "r": 0,
+          "g": 0,
+          "b": 0,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null
+      },
+      "spin_box:error": {
+        "background": null,
+        "foreground": null,
+        "border": {
+          "r": 244,
+          "g": 67,
+          "b": 54,
+          "a": 255
+        },
+        "border_width": 2,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null
+      },
+      "split_button:disabled": {
+        "background": {
+          "r": 200,
+          "g": 200,
+          "b": 200,
+          "a": 255
+        },
+        "foreground": {
+          "r": 108,
+          "g": 108,
+          "b": 108,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null
+      },
+      "split_button:hover": {
+        "background": {
+          "r": 221,
+          "g": 221,
+          "b": 221,
+          "a": 255
+        },
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null
+      },
+      "split_button:pressed": {
+        "background": {
+          "r": 211,
+          "g": 211,
+          "b": 211,
+          "a": 255
+        },
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null
+      },
+      "switch:checked": {
+        "background": {
+          "r": 33,
+          "g": 150,
+          "b": 243,
+          "a": 255
+        },
+        "foreground": {
+          "r": 0,
+          "g": 0,
+          "b": 0,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null
+      },
+      "text_area:error": {
+        "background": null,
+        "foreground": null,
+        "border": {
+          "r": 244,
+          "g": 67,
+          "b": 54,
+          "a": 255
+        },
+        "border_width": 2,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null
+      },
+      "text_edit:error": {
+        "background": null,
+        "foreground": null,
+        "border": {
+          "r": 244,
+          "g": 67,
+          "b": 54,
+          "a": 255
+        },
+        "border_width": 2,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null
+      },
+      "time_edit:error": {
+        "background": null,
+        "foreground": null,
+        "border": {
+          "r": 244,
+          "g": 67,
+          "b": 54,
+          "a": 255
+        },
+        "border_width": 2,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null
+      },
+      "toggle_button:disabled": {
+        "background": {
+          "r": 200,
+          "g": 200,
+          "b": 200,
+          "a": 255
+        },
+        "foreground": {
+          "r": 108,
+          "g": 108,
+          "b": 108,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null
+      },
+      "toggle_button:hover": {
+        "background": {
+          "r": 221,
+          "g": 221,
+          "b": 221,
+          "a": 255
+        },
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null
+      },
+      "toggle_button:pressed": {
+        "background": {
+          "r": 211,
+          "g": 211,
+          "b": 211,
+          "a": 255
+        },
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null
+      },
+      "tool_button:disabled": {
+        "background": {
+          "r": 200,
+          "g": 200,
+          "b": 200,
+          "a": 255
+        },
+        "foreground": {
+          "r": 108,
+          "g": 108,
+          "b": 108,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null
+      },
+      "tool_button:hover": {
+        "background": {
+          "r": 221,
+          "g": 221,
+          "b": 221,
+          "a": 255
+        },
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null
+      },
+      "tool_button:pressed": {
+        "background": {
+          "r": 211,
+          "g": 211,
+          "b": 211,
+          "a": 255
+        },
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null
+      }
+    }
   },
   "motion": {
     "fast": 100,

@@ -15,6 +15,31 @@ use crate::compat::HashMap;
 
 use crate::widget::capability::CapabilityValue;
 
+/// Where a node's control is **created**, when that differs from where it is declared.
+///
+/// # Why this exists (BLUE23 §5A.2)
+///
+/// The declarative tree is a pure tree: a node's control is created under its declared
+/// parent and clipped by that parent's rectangle. That is right for almost every control —
+/// and wrong for the ones that are **logically a child but visually outside the parent's
+/// clip**: a menu opened by a button, a tooltip on a cell, a dialog over a form. Those need
+/// `placement in the tree` to be separate from `placement on screen`, which a pure tree
+/// cannot express: this is the one dimension it was missing.
+///
+/// A `host` names the layer the control is created into. The node keeps its **identity and
+/// context** where it was declared — so a keyed diff still matches it as that parent's
+/// child — while its control lives in the layer, outside the parent's clip. The default
+/// means "create me where I am declared", which is every node that does not opt in.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Host {
+    /// Create the control under the node's declared parent. The default.
+    #[default]
+    Declared,
+    /// Create the control into the engine's **overlay layer** — the engine-owned sibling of
+    /// the root, above every page — while the node keeps its declared identity.
+    Overlay,
+}
+
 /// A single node in a declarative tree.
 ///
 /// Build one with [`Node::new`] and the chainable accessors:
@@ -30,7 +55,7 @@ use crate::widget::capability::CapabilityValue;
 /// assert_eq!(node.widget, "button");
 /// assert_eq!(node.children.len(), 1);
 /// ```
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone)]
 pub struct Node {
     /// The widget type name, resolved through the same factory table the JSON loader
     /// uses. Not a [`WidgetKind`](crate::widget::WidgetKind): a kind is a *classification*
@@ -50,6 +75,38 @@ pub struct Node {
     /// value of `x`" and "enumerate the differences", and a map makes the first O(1) so
     /// the diff stays linear in the number of properties rather than quadratic.
     pub props: HashMap<String, CapabilityValue>,
+    /// Where the control is **created**, when that differs from where it is declared.
+    ///
+    /// Deliberately **not** part of [`Node`]'s equality: see the manual `PartialEq` below.
+    /// [`Host`] says *where a control is mounted*, which is a rendering fact, while the diff
+    /// compares *what the declaration says* — two builds that differ only in host are the
+    /// same declaration re-rendered, and making the diff see a change there would rebuild a
+    /// subtree on every frame.
+    pub host: Host,
+    /// Called once **after** this node's control has entered the applied tree.
+    ///
+    /// # Why a carried callback and not a method on [`View`](crate::view::View)
+    ///
+    /// `View::build` is a pure function, and that is the premise `diff` rests on: the same
+    /// state must produce the same tree, or the diff sees changes that came from nowhere and
+    /// never settles. Mounting a control is a **side effect** (start a poll, register a
+    /// subscription), so it cannot live in `build` without costing the guarantee.
+    ///
+    /// Carrying the callback on the node keeps the separation: `build` only *describes* what
+    /// runs, and the engine runs it after the patch batch has landed — the same shape as
+    /// every declarative system that separates description from effect. The callback receives
+    /// the control's id, which is why it runs after creation rather than before.
+    ///
+    /// Not part of [`Node`]'s equality: two nodes that differ only in their callbacks are the
+    /// same declaration, and a diff must not rebuild a subtree because a closure was rebuilt.
+    pub on_mount: Option<crate::compat::Rc<dyn Fn(crate::core::ObjectId)>>,
+    /// Called once **after** this node's control has left the applied tree.
+    ///
+    /// The counterpart of [`Self::on_mount`], and **always paired with it**: a node that
+    /// mounted must unmount exactly once, so a subscription or timer opened on mount is not
+    /// leaked when the node goes away. Runs **before** the subtree's controls are dropped, so
+    /// the callback can still read the control it is tearing down.
+    pub on_unmount: Option<crate::compat::Rc<dyn Fn(crate::core::ObjectId)>>,
     /// Children, **in declaration order**.
     ///
     /// Order is load-bearing: it is the last resort a diff uses to match siblings, and
@@ -57,10 +114,81 @@ pub struct Node {
     pub children: Vec<Node>,
 }
 
+/// Equality over the **declaration**: `widget`, `key`, `props` and `children`.
+///
+/// # Why this is hand-written
+///
+/// `host` is where the control is mounted, not what the declaration says, so it must not
+/// enter the comparison: a node whose host changed is the same node rendered elsewhere, and
+/// a diff that saw a difference would tear down and rebuild a subtree that did not change.
+/// Writing the impl by hand — rather than deriving and hoping no one compares whole nodes —
+/// is what makes that a property of the type instead of a convention (BLUE23 §5A.4
+/// judgement 9).
+impl PartialEq for Node {
+    fn eq(&self, other: &Self) -> bool {
+        self.widget == other.widget
+            && self.key == other.key
+            && self.props == other.props
+            && self.children == other.children
+    }
+}
+
+impl core::fmt::Debug for Node {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Node")
+            .field("widget", &self.widget)
+            .field("key", &self.key)
+            .field("props", &self.props)
+            .field("host", &self.host)
+            .field("on_mount", &self.on_mount.is_some())
+            .field("on_unmount", &self.on_unmount.is_some())
+            .field("children", &self.children)
+            .finish()
+    }
+}
+
 impl Node {
     /// Create a leaf node of the given widget type.
     pub fn new(widget: impl Into<String>) -> Self {
-        Self { widget: widget.into(), key: None, props: HashMap::new(), children: Vec::new() }
+        Self {
+            widget: widget.into(),
+            key: None,
+            props: HashMap::new(),
+            host: Host::default(),
+            on_mount: None,
+            on_unmount: None,
+            children: Vec::new(),
+        }
+    }
+
+    /// Register a callback to run once, **after** this node's control has been mounted.
+    ///
+    /// The id passed to `f` is the control that was created, so the callback can subscribe to
+    /// it, start its animation, or read its initial state — all things that need the control
+    /// to exist first. See [`Self::on_mount`] for why this is carried rather than run in
+    /// `build`.
+    pub fn on_mount(mut self, f: impl Fn(crate::core::ObjectId) + 'static) -> Self {
+        self.on_mount = Some(crate::compat::Rc::new(f));
+        self
+    }
+
+    /// Register a callback to run once, **after** this node's control has left the tree.
+    ///
+    /// Paired with [`Self::on_mount`]: whatever a mount opened, an unmount closes. Runs before
+    /// the subtree is dropped, so the control is still readable.
+    pub fn on_unmount(mut self, f: impl Fn(crate::core::ObjectId) + 'static) -> Self {
+        self.on_unmount = Some(crate::compat::Rc::new(f));
+        self
+    }
+
+    /// Create the control into the engine's overlay layer instead of under its declared
+    /// parent, while keeping this node's identity and context in the tree.
+    ///
+    /// See [`Host`] for why the two have to be separable: a menu or a tooltip is a child in
+    /// the declaration and an overlay on screen, and a pure tree cannot express both.
+    pub fn portal(mut self) -> Self {
+        self.host = Host::Overlay;
+        self
     }
 
     /// Set the stable key used to match this node across rebuilds.
@@ -98,7 +226,7 @@ impl Node {
     /// # Why this exists
     ///
     /// Conditional rendering is the *completeness condition* of a declarative tree: every
-    /// declarative UI layer has one — Flutter's `if` inside a children list, React's
+    /// declarative UI layer has one — a conditional inside a children list, React's
     /// `cond && <X/>`, SwiftUI's `if`/`else` in a `ViewBuilder`. Without it a caller has to
     /// interrupt the builder chain with an imperative `if` around the whole expression,
     /// which is both unreadable and easy to get wrong: the natural workaround,
@@ -136,19 +264,6 @@ impl Node {
         } else {
             self.child(else_child)
         }
-    }
-
-    /// Append the children produced by `make`, but only when `condition` holds. Chainable.
-    ///
-    /// The list-valued counterpart of [`Node::child_if`]: `condition` decides whether a
-    /// whole *group* of siblings (a `for` over a collection, a section) is in the tree. The
-    /// closure is not called when the condition is false, so an expensive or allocating
-    /// generator is skipped entirely rather than being built and discarded.
-    pub fn children_if(mut self, condition: bool, make: impl FnOnce() -> Vec<Node>) -> Self {
-        if condition {
-            self.children.extend(make());
-        }
-        self
     }
 
     /// Append one child per element of `items`, matched across rebuilds by `key_of`.
@@ -345,21 +460,20 @@ mod tests {
         assert_eq!(ready.children[0].widget, "content");
     }
 
+    /// The plain spelling covers what the removed conditional-group helper covered
+    /// (BLUE23 §5A.6).
+    ///
+    /// That helper was deleted because it had no consumer outside this file. This pins the
+    /// replacement so the capability is demonstrably still reachable — the verdict was "the
+    /// helper was redundant", not "conditional groups are unsupported".
     #[test]
-    fn children_if_does_not_evaluate_the_generator_when_false() {
-        // Not calling the closure is the observable difference from
-        // `children_of(if c { make() } else { Vec::new() })`: the generator may allocate or
-        // read state, and skipping it is the point of the helper.
-        let evaluated = core::cell::Cell::new(false);
-        let node = Node::new("section").children_if(false, || {
-            evaluated.set(true);
-            vec![Node::new("a")]
-        });
-        assert!(node.children.is_empty());
-        assert!(!evaluated.get(), "the generator must not run for a false condition");
-
-        let node = Node::new("section").children_if(true, || vec![Node::new("a"), Node::new("b")]);
-        assert_eq!(node.children.len(), 2);
+    fn a_conditional_group_is_expressed_with_an_if() {
+        let hidden = Node::new("section");
+        let hidden = if false { hidden.children_of([Node::new("a")]) } else { hidden };
+        assert!(hidden.children.is_empty(), "a false condition adds no children");
+        let shown = Node::new("section");
+        let shown = if true { shown.children_of([Node::new("a"), Node::new("b")]) } else { shown };
+        assert_eq!(shown.children.len(), 2);
     }
 
     #[test]

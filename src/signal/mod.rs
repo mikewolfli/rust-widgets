@@ -4,7 +4,7 @@
 //! Signal and slot implementation.
 //!
 //! This module provides a flexible, thread-safe signal/slot system inspired by
-//! Qt's signals & slots, but designed for Rust's ownership model.
+//! the classic signals & slots pattern, but designed for Rust's ownership model.
 //!
 //! # Core Types
 //!

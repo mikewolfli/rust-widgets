@@ -7,9 +7,9 @@
 //! current step title, and navigation buttons (Back, Next/Finish, Cancel) at the bottom.
 //! Emits `finished`, `cancelled`, and `step_changed` signals.
 //!
-//! # This is the control Flutter calls `Stepper` (BLUE22 · F-8)
+//! # This is the control a toolkit calls `Stepper` (BLUE22 · F-8)
 //!
-//! Flutter's `Stepper` is a multi-step flow; this crate's
+//! A toolkit's `Stepper` is a multi-step flow; this crate's
 //! [`Stepper`](crate::widget::container_widgets::Stepper) is a **numeric** spinner. Both names
 //! exist here and mean different things, so the mapping is stated in both files rather than left
 //! to a build error: a caller looking for the wizard reaches this module, and a caller looking for

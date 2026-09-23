@@ -7,7 +7,7 @@
 //!
 //! BLUE22 §B.8 lists `menu` / `menu_item`'s defect as "the check and arrow paddings written by
 //! hand". The *columns* of a row were already derived (see [`Menu::indicator_box`] and
-//! [`Menu::label_box`], which state Qt's `MenuItem.qml:25-28` relations), but the *run* of rows was
+//! [`Menu::label_box`], which state the standard menu-item relations), but the *run* of rows was
 //! a `let mut y` inside `draw`. [`Menu::item_bands`] now asks a [`FlexLayout`] column where each
 //! row is, so the run is a layout answer rather than a second accumulator.
 
@@ -611,8 +611,8 @@ impl Menu {
     /// The check column, the label column and the two trailing columns used to be four
     /// independent literals in `draw` (`x + 8`, `x + 28`, `right - 8`, `right - 4`), which is
     /// the exact shape BLUE22 §B.8 lists for this control: with literals, an indicator or an
-    /// arrow that changes size does not *push* its neighbour, it overlaps it. Qt states the
-    /// relation directly in `MenuItem.qml:25-28` —
+    /// arrow that changes size does not *push* its neighbour, it overlaps it. The standard relation is stated
+    /// directly —
     /// `leftPadding: padding + (checkable ? indicator.width + spacing : 0)` — so the label's
     /// box is whatever the indicator leaves, and the shortcut's box is whatever the submenu
     /// arrow leaves.
@@ -1216,7 +1216,7 @@ mod tests {
     /// BLUE22 §B.8 lists this control for exactly this: the check column, the label column and
     /// the two trailing columns were four independent literals (`x + 8`, `x + 28`, `right - 8`,
     /// `right - 4`), so a wider indicator or a longer shortcut did not *push* its neighbour.
-    /// Qt states the relation in `MenuItem.qml:25-28`.
+    /// The standard table states the relation directly.
     #[test]
     fn a_row_reserves_its_indicator_and_trailing_columns() {
         let menu = Menu::new("File", Rect::new(0, 0, 200, 120));

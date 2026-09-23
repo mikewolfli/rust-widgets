@@ -170,6 +170,15 @@ impl Widget for HeroAnimation {
     }
 
     impl_widget_property_hooks!();
+    // Trait contract: `u32` ms. This control's own `tick` takes `u64`; widen at the boundary.
+    // `HeroAnimation` already answers `is_animating` itself, so only the tick needs bridging.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        HeroAnimation::tick(self, u64::from(delta_ms))
+    }
+
+    fn is_animating(&self) -> bool {
+        HeroAnimation::is_animating(self)
+    }
 }
 
 /// `HeroAnimation`'s property contract.

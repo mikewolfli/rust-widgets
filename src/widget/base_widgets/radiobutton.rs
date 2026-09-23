@@ -4,7 +4,7 @@
 //! Radio button widget.
 use crate::compat::{String, ToString};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
-use crate::event::{Event, EventHandler, FocusReason};
+use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::{expect_bool, expect_string};
@@ -62,12 +62,6 @@ pub struct RadioButton {
     checked: bool,
     group_id: Option<String>,
     text: String,
-    /// Whether this control owns keyboard focus.
-    focused: bool,
-    /// Why it got focus — decides whether a focus ring is painted.
-    focus_reason: FocusReason,
-    /// Whether the pointer is over the control.
-    hovered: bool,
     /// Emitted without a payload when this button becomes the selected member of
     /// its peer group. Only fires on a `false` -> `true` transition; deselection
     /// does not emit.
@@ -81,7 +75,7 @@ impl RadioButton {
     /// Read from the style so a theme can tune it, falling back to the shared table. This is
     /// what `spacing` means throughout the crate: the distance from a control's *own*
     /// indicator to its *own* text — never the distance between two siblings, which is the
-    /// parent layout's decision (QML draws the same line: `CheckBox.qml:61` uses `spacing`
+    /// parent layout's decision (the standard table draws the same line: `spacing` is used
     /// for this pair only).
     fn label_gap(&self) -> i32 {
         self.style().spacing.unwrap_or(dimensions::INDICATOR_TEXT_SPACING) as i32
@@ -116,7 +110,7 @@ impl RadioButton {
     /// This handler used to ignore the pointer entirely (`MousePress { pos: _, .. }`), so a press
     /// anywhere in the control's rectangle selected it. A radio button given a wide row by its
     /// layout therefore selected when the user clicked empty space well to the right of its own
-    /// label. Testing the control's **contents** is what every toolkit does — `QRadioButton`
+    /// label. Testing the control's **contents** is what every toolkit does — a radio button
     /// reacts to its indicator and text — and it is a different statement from "the minimum touch
     /// target is at least N points", which then widens this region rather than replacing it.
     fn hit_area(&self) -> Rect {
@@ -184,9 +178,6 @@ impl RadioButton {
             checked: false,
             group_id: None,
             text: String::new(),
-            focused: false,
-            focus_reason: FocusReason::Programmatic,
-            hovered: false,
             selected: GenericSignal::new(),
             checked_changed: Signal1::new(),
         }
@@ -239,30 +230,33 @@ impl RadioButton {
     }
 
     /// Whether this control currently owns keyboard focus.
+    ///
+    /// Reads [`BaseWidget`], which records the fact for every control from
+    /// [`crate::event::Event::FocusGained`] / [`crate::event::Event::FocusLost`].
     pub fn is_focused(&self) -> bool {
-        self.focused
+        self.base.focus_reason().is_some()
     }
 
     /// Whether a focus ring should be painted right now.
     ///
-    /// The same single predicate every control uses — `focused && reason.draws_focus_ring()`
-    /// — so "has focus" cannot be mistaken for "draw the ring" in one control and not in
+    /// The same single predicate every control uses — [`BaseWidget::draws_focus_ring`] —
+    /// so "has focus" cannot be mistaken for "draw the ring" in one control and not in
     /// another.
     pub fn visual_focus(&self) -> bool {
-        self.focused && self.focus_reason.draws_focus_ring()
+        self.base.draws_focus_ring()
     }
 
     /// Whether the pointer is over this control.
     pub fn is_hovered(&self) -> bool {
-        self.hovered
+        self.base.is_hovered()
     }
 
     /// Sets the hovered flag and requests a redraw.
     pub fn set_hovered(&mut self, hovered: bool) {
-        if self.hovered == hovered {
+        if self.base.is_hovered() == hovered {
             return;
         }
-        self.hovered = hovered;
+        self.base.set_hovered(hovered);
         self.base.request_redraw();
     }
 }
@@ -380,20 +374,19 @@ impl EventHandler for RadioButton {
                 self.base.clicked.emit();
             }
             Event::FocusGained { reason } => {
-                self.focused = true;
-                self.focus_reason = *reason;
+                // The base records the reason; this arm only asks for the repaint, because
+                // the ring appearing is a visible change. Keeping one stored reason (in
+                // the base) is what stops "focused" and "reason" from disagreeing.
+                let _ = reason;
                 self.base.request_redraw();
             }
             Event::FocusLost => {
-                self.focused = false;
                 self.base.request_redraw();
             }
             Event::MouseEnter { .. } => {
-                self.hovered = true;
                 self.base.request_redraw();
             }
             Event::MouseLeave { .. } => {
-                self.hovered = false;
                 self.base.request_redraw();
             }
             _ => { /* Other events are not relevant */ }
@@ -437,9 +430,20 @@ impl Draw for RadioButton {
         // anti-aliased edges meet.
         //
         // A hovered control steps the ring one shade toward its own ink, which is how a radio
-        // acknowledges the pointer without needing a ripple layer.
-        let ink =
-            if self.hovered && enabled { ink.blend(&ink.contrast_color(), 0.25) } else { ink };
+        // acknowledges the pointer without needing a ripple layer. The overlay is the *one*
+        // place this control asks "what states hold right now": it carries hover and focus
+        // together, so the fill blend and the ring cannot disagree about whether the pointer
+        // is here.
+        let overlay = crate::style::StateOverlay::from_base(
+            self.base.is_hovered(),
+            self.base.is_pressed(),
+            self.visual_focus(),
+        );
+        let ink = if enabled && (overlay.hovered || overlay.pressed) {
+            ink.blend(&ink.contrast_color(), 0.25)
+        } else {
+            ink
+        };
         let ring = if enabled { ink } else { ink.with_alpha(140) };
         context.draw_circle_stroke(center, radius, ring, RING_WIDTH);
 
@@ -460,7 +464,7 @@ impl Draw for RadioButton {
             let explicit = if style.theme_derived { None } else { style.background_color };
             let dot = explicit.or(accent).unwrap_or(ink);
             let dot = if enabled { dot } else { dot.with_alpha(140) };
-            // Sized from the shared table rather than as a ratio of the ring: Flutter's
+            // Sized from the shared table rather than as a ratio of the ring: the
             // inner/outer ratio is 0.5625, which this table rounds to a fixed radius so the
             // dot cannot drift when the outer radius moves.
             let dot_radius = dimensions::RADIO_DOT_RADIUS.min(radius.saturating_sub(RING_WIDTH));
@@ -486,8 +490,9 @@ impl Draw for RadioButton {
         // ── Focus ring ──
         //
         // Inset inside the control's own rectangle, and gated on the *reason* focus arrived so a
-        // click focuses without painting a ring.
-        if self.visual_focus() {
+        // click focuses without painting a ring. Reading the same overlay as the fill above is
+        // what keeps "the pointer is here" from being answered twice, differently.
+        if overlay.focused {
             let ring_outer = FocusRing::for_control(
                 rect,
                 ControlMetrics::focus_ring_radius(dimensions::RADIO_OUTER_RADIUS),

@@ -61,6 +61,9 @@ pub mod svg;
 #[cfg(test)]
 mod tests;
 
+// Text layer: glyph sources and the fallback stack (BLUE23 §0A.4 G-2b/G-4b)
+pub mod text;
+
 // Text shaping (pre-layout measurement)
 pub mod text_shaper;
 
@@ -100,6 +103,10 @@ pub use pipeline::{blend_pixel, fill_pixels};
 // Text shaping
 pub use text_shaper::{ShapedGlyphRun, SimpleTextShaper, TextShaper};
 
+// The face-backed shaper, when a face is enabled (BLUE23 §0A.4, G-1).
+#[cfg(feature = "text-shaping")]
+pub use text::RustybuzzShaper;
+
 // Rich text
 pub use rich_text::{RichText, TextSpan, TextStyle};
 
@@ -123,10 +130,8 @@ pub(crate) use pipeline::pixel_bytes_len;
 /// Advancing/text-shaping helpers shared with the SVG backend, so the vector
 /// output and the software rasteriser agree on text metrics (principle #51: one
 /// heuristic, not two drifting copies).
-pub(crate) use pipeline::{
-    cluster_ends_with_zwj, estimate_cluster_advance, glyph_rects, is_combining_mark,
-    is_variation_selector,
-};
+/// The glyph geometry both renderers read, and the cluster predicates they classify with.
+pub(crate) use pipeline::glyph_rects;
 
 /// Arc and circle drawing helpers.
 pub mod arc_helpers;

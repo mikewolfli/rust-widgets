@@ -8,7 +8,12 @@
 //! on/off toggling, animated transitions, and accessibility role mapping.
 
 use crate::core::{Color, Rect};
-use crate::event::{Event, EventHandler, FocusReason};
+// Gated exactly like the test module that uses it: `#[cfg(test)]` alone is true in a build where
+// `full_widgets` is off, and the import would then be unused (a warning, which this crate's
+// profile checks treat as a defect).
+#[cfg(all(test, full_widgets))]
+use crate::event::FocusReason;
+use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::style::{Transition, TransitionTempo};
@@ -31,16 +36,11 @@ pub struct Switch {
     /// `true` between a pointer press that hit this control and the release that ends
     /// it. The release is what commits the toggle, so a press that began elsewhere and
     /// merely *ends* over the switch must not flip it — see `handle_event`.
-    pressed: bool,
-    /// Whether this control currently owns keyboard focus.
-    focused: bool,
-    /// Why it got focus, which decides whether a focus ring is painted.
     ///
-    /// Kept alongside `focused` rather than folded into it because the two answer
-    /// different questions: `focused` is "am I the keyboard target", this is "is the
-    /// user on the keyboard". Qt Quick spells the pair `activeFocus` / `visualFocus`.
-    focus_reason: FocusReason,
-    hovered: bool,
+    /// Distinct from [`BaseWidget::is_pressed`], which is the paint flag the base keeps
+    /// for every control: this one is the *commit guard* the toggle needs, and it means
+    /// "a press landed on me and has not been released yet" rather than "paint pressed".
+    pressed: bool,
     /// The **drawn** state: how far the thumb has travelled, `0.0` at the off end and
     /// `1.0` at the on end.
     ///
@@ -51,9 +51,10 @@ pub struct Switch {
     /// the click happened. Drawing the thumb from `checked` would therefore *also* move
     /// the thumb the instant the click arrived, with no transition — and a control whose
     /// motion has to be observable cannot put its presentation into the value the caller
-    /// reads. Qt Quick draws the same distinction as `position` (logical) versus
-    /// `visualPosition` (`qquickslider.cpp:395`); this field is the crate's
-    /// `visualPosition`. `travel = 0` renders exactly the old off-end appearance, so a
+    /// reads. The logical position and the drawn position are deliberately distinct,
+    /// as a slider's own `position` (logical) versus its
+    /// `visualPosition` are; this field is the crate's
+    /// drawn position. `travel = 0` renders exactly the old off-end appearance, so a
     /// snapshot taken without a `tick` is unchanged.
     travel: Transition,
     /// Emitted when the checked state changes.
@@ -68,11 +69,6 @@ impl Switch {
             base: BaseWidget::new(WidgetKind::Switch, geometry, "Switch"),
             checked: false,
             pressed: false,
-            focused: false,
-            // No focus yet, so the reason is never read. `Programmatic` is the
-            // variant that claims the least: it does not assert a gesture happened.
-            focus_reason: FocusReason::Programmatic,
-            hovered: false,
             // A toggle travelling across its track is a *larger* movement than a direct
             // reaction to the pointer, which is what the theme's `slow` token describes.
             // Starting at rest (0.0) keeps a freshly built switch at the off end instead
@@ -109,25 +105,25 @@ impl Switch {
     /// Returns whether this switch is the keyboard's current target, regardless of
     /// whether a ring is drawn for it.
     pub fn is_focused(&self) -> bool {
-        self.focused
+        self.base.focus_reason().is_some()
     }
 
     /// Returns whether a focus ring should be painted right now.
     ///
-    /// The single question every draw site asks: `focused && reason.draws_focus_ring()`
-    /// — the Qt Quick rule — evaluated in one place so a control cannot accidentally
-    /// implement "has focus" as "draw the ring".
+    /// The single question every draw site asks — [`BaseWidget::draws_focus_ring`] —
+    /// evaluated in one place so a control cannot accidentally implement "has focus"
+    /// as "draw the ring".
     pub fn visual_focus(&self) -> bool {
-        self.focused && self.focus_reason.draws_focus_ring()
+        self.base.draws_focus_ring()
     }
 
     /// Returns whether the pointer is currently over this switch.
     ///
-    /// Hover is tracked from [`crate::event::Event::MouseEnter`] /
+    /// Hover is recorded by [`BaseWidget`] from [`crate::event::Event::MouseEnter`] /
     /// [`crate::event::Event::MouseLeave`], which the widget runtime synthesises as
     /// the pointer moves between controls (no platform backend produces them).
     pub fn is_hovered(&self) -> bool {
-        self.hovered
+        self.base.is_hovered()
     }
 
     /// Sets the hovered flag.
@@ -142,10 +138,10 @@ impl Switch {
     ///
     /// Setting it also requests a redraw, because the flag changes what is painted.
     pub fn set_hovered(&mut self, hovered: bool) {
-        if self.hovered == hovered {
+        if self.base.is_hovered() == hovered {
             return;
         }
-        self.hovered = hovered;
+        self.base.set_hovered(hovered);
         self.base.request_redraw();
     }
 
@@ -156,6 +152,42 @@ impl Switch {
     /// out of step with each other.
     pub fn travel_progress(&self) -> f32 {
         self.travel.progress()
+    }
+
+    /// The thumb's rectangle for the current travel, or `None` when the track is too
+    /// small to hold a disc.
+    ///
+    /// # Why this is an accessor and not an inline expression in `draw`
+    ///
+    /// The thumb's position is the value an animation is *for*: the only way to assert
+    /// "the thumb slid rather than jumped" is to sample this at successive frames. Keeping
+    /// the derivation here means the geometry test and the draw path cannot disagree about
+    /// where the thumb is — the same "one derivation" rule the rest of the crate follows.
+    ///
+    /// `None` for a degenerate track rather than a zero-size rectangle: a switch laid out
+    /// smaller than its own track has no thumb to point at, and the caller must be able to
+    /// tell that from a thumb at the origin.
+    pub fn thumb_rect(&self, rect: Rect) -> Option<Rect> {
+        let track_rect = ControlMetrics::center_in(rect, dimensions::SWITCH_TRACK);
+        let thumb_size = dimensions::SWITCH_THUMB_RADIUS * 2;
+        let thumb_inset = dimensions::SWITCH_THUMB_INSET;
+        let thumb_size = thumb_size.min(track_rect.height.saturating_sub(thumb_inset * 2));
+        if thumb_size == 0 {
+            return None;
+        }
+        // A disabled switch shows its logical state at rest; an enabled one follows the
+        // travel, which is what lets the thumb be seen crossing.
+        let travel = if self.base.is_enabled() {
+            self.travel.progress()
+        } else if self.checked {
+            1.0
+        } else {
+            0.0
+        };
+        let travel_span = track_rect.width.saturating_sub(thumb_size + thumb_inset * 2);
+        let thumb_x = track_rect.x + thumb_inset as i32 + (travel_span as f32 * travel) as i32;
+        let thumb_y = track_rect.y + thumb_inset as i32;
+        Some(Rect::new(thumb_x, thumb_y, thumb_size, thumb_size))
     }
 
     /// Advances the thumb's travel by `delta_ms` and reports whether another frame is
@@ -202,6 +234,16 @@ impl Widget for Switch {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+    // `Switch::tick` owns the thumb travel; the trait spelling is what the animation bus
+    // reaches through `&mut dyn Widget`, which is the only way the sliding actually happens.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        Switch::tick(self, delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        let target = if self.checked { 1.0 } else { 0.0 };
+        self.travel.progress() != target
+    }
 }
 
 /// `Switch`'s property contract.
@@ -260,8 +302,8 @@ impl Draw for Switch {
         // 240x120 census cell drew a 240x120 stadium with a 116x116 thumb, which is a
         // picture of a switch-shaped rectangle rather than a switch. The geometry is the
         // widget's *occupancy* — its hit area and its layout slot — and the drawn chrome
-        // is a separate, fixed proportion of it. That is the same split Flutter's
-        // `Switch` makes (a 52x32 track, a 14px thumb radius), and it is why `size_hint`
+        // is a separate, fixed proportion of it. That is the same split a Material switch
+        // makes (a 52x32 track, a 14px thumb radius), and it is why `size_hint`
         // describes the control without the drawn shape depending on the layout engine's
         // answer.
         //
@@ -274,18 +316,9 @@ impl Draw for Switch {
         // laid out smaller than the nominal track must not paint outside the rectangle it
         // was given, since nothing clips a widget at this layer.
         let track_rect = ControlMetrics::center_in(rect, dimensions::SWITCH_TRACK);
-        let track_width = track_rect.width;
+        // The track's corner radius is half its height: a stadium. The thumb's own size and
+        // position come from `Switch::thumb_rect`, so the two derivations cannot disagree.
         let track_height = track_rect.height;
-        // The thumb is a disc the same size in every switch, inset from the track's edge.
-        // Deriving it from `track_height - inset * 2` made the thumb a fraction of the
-        // control's height, which is the same defect one level down: the disc's size is a
-        // property of the switch, not of the rectangle it was handed.
-        let thumb_size = dimensions::SWITCH_THUMB_RADIUS * 2;
-        let thumb_inset = dimensions::SWITCH_THUMB_INSET;
-        // A track too small to hold the disc draws no thumb at all rather than a squeezed
-        // one; the guard below is the same "degenerate element is not a small element"
-        // rule the progress bar's fill follows.
-        let thumb_size = thumb_size.min(track_height.saturating_sub(thumb_inset * 2));
 
         // Draw track
         //
@@ -369,13 +402,14 @@ impl Draw for Switch {
         // thumb would jump to the far end on the same frame the logical state changed, so
         // the animation could never be seen and a "travelling" toggle was really a
         // two-state image. `travel` is the crate's `visualPosition`.
-        if thumb_size == 0 {
-            return;
-        }
-        let travel_span = track_width.saturating_sub(thumb_size + thumb_inset * 2);
-        let thumb_x = track_rect.x + thumb_inset as i32 + (travel_span as f32 * travel) as i32;
-        let thumb_y = track_rect.y + thumb_inset as i32;
-        let thumb_rect = Rect::new(thumb_x, thumb_y, thumb_size, thumb_size);
+        let thumb_rect = match self.thumb_rect(rect) {
+            Some(thumb) => thumb,
+            None => return,
+        };
+        // The corner radius follows the thumb's own width, so a track too small for the
+        // nominal disc still draws a disc rather than a square: the size is read from the
+        // rectangle just derived, not recomputed here where it could disagree.
+        let thumb_radius = thumb_rect.width / 2;
 
         let thumb_color = if !is_enabled {
             Color::rgba(240, 240, 240, 200)
@@ -396,24 +430,23 @@ impl Draw for Switch {
         // A hovered switch answers the pointer before it is pressed, so the thumb steps
         // toward the ink: without it a switch that is under the cursor looks exactly like
         // one that is not, which is the affordance the control was missing.
-        let thumb_color = if is_enabled && self.hovered {
+        let thumb_color = if is_enabled && self.base.is_hovered() {
             thumb_color.blend(&track_color.contrast_color(), 0.10)
         } else {
             thumb_color
         };
-        context.fill_rounded_rect(thumb_rect, thumb_size / 2, thumb_color);
+        context.fill_rounded_rect(thumb_rect, thumb_radius, thumb_color);
 
         // Draw thumb shadow/border
         let thumb_border_color = style.border_color.unwrap_or(Color::rgba(0, 0, 0, 30));
-        context.draw_rounded_rect_stroke(thumb_rect, thumb_size / 2, thumb_border_color, 1);
+        context.draw_rounded_rect_stroke(thumb_rect, thumb_radius, thumb_border_color, 1);
 
         // ── Focus ring ──
         //
         // Drawn strictly inside the control's rectangle (see `ControlMetrics::focus_ring_rect`)
         // and only when the *reason* focus arrived warrants it: a pointer press focuses without
-        // drawing a ring, Tab and Shortcut draw one. This is the Qt Quick rule
-        // (`qquickcontrol.cpp:1433`), and it is why `Switch` carries a `FocusReason` rather than
-        // a bare `focused` bool.
+        // drawing a ring, Tab and Shortcut draw one. The reason is recorded by [`BaseWidget`] for
+        // every control, which is why the answer cannot differ between controls.
         if self.visual_focus() {
             let ring = FocusRing::for_control(rect, dimensions::SWITCH_THUMB_RADIUS);
             if ring.is_drawable() {
@@ -488,17 +521,14 @@ impl EventHandler for Switch {
             // Focus entry carries the *reason*, and the reason is what decides whether a
             // focus ring is painted; storing only a bool would make a click and a Tab
             // indistinguishable and the ring would appear on click, which reads as a stuck
-            // highlight under the cursor.
-            Event::FocusGained { reason } => {
-                self.focused = true;
-                self.focus_reason = *reason;
+            // highlight under the cursor. The base records it for every control.
+            Event::FocusGained { .. } => {
                 self.base.request_redraw();
             }
             // Focus loss abandons a held press, so the latch cannot survive a
             // window switch and fire on an unrelated later release — and it also drops
             // the ring, because the control is no longer the keyboard's target.
             Event::FocusLost => {
-                self.focused = false;
                 self.pressed = false;
                 self.base.request_redraw();
             }
@@ -642,6 +672,39 @@ mod tests {
         assert!(svg.starts_with("<svg"));
     }
 
+    /// BLUE23 §3.3, judgement 3 — the thumb's geometry is distinct across frames and moves
+    /// monotonically. This is the plan's shared "three-frame" criterion: an animation cannot
+    /// be proved with one frame, only with the *difference* between frames.
+    #[test]
+    fn the_travel_takes_the_thumb_across_distinct_positions() {
+        let rect = crate::widget::census::CENSUS_RECT;
+        let mut sw = Switch::new(rect);
+        let at_rest = sw.thumb_rect(rect).expect("censused switch has a thumb").x;
+
+        sw.set_checked(true);
+        // Sample before any tick, then after two even steps of the travel.
+        let before = sw.thumb_rect(rect).expect("thumb").x;
+        assert_eq!(before, at_rest, "a state change alone must not teleport the thumb");
+
+        assert!(sw.tick(80), "the travel is still running after one step");
+        let mid = sw.thumb_rect(rect).expect("thumb").x;
+
+        // Drain the rest of the travel so the end position is sampled at rest.
+        let mut guard = 0;
+        while sw.tick(80) {
+            guard += 1;
+            assert!(guard < 100, "the travel must settle");
+        }
+        let end = sw.thumb_rect(rect).expect("thumb").x;
+
+        assert_ne!(mid, before, "the first frame must move the thumb");
+        assert_ne!(end, mid, "the last frame must reach a new position");
+        assert!(
+            before < mid && mid < end,
+            "the thumb must advance monotonically: {before}/{mid}/{end}"
+        );
+    }
+
     /// The logical state and the drawn state are **two different facts**.
     ///
     /// `checked` is what a caller reads after a click and must change the instant the
@@ -743,7 +806,8 @@ mod tests {
     ///
     /// A pointer press focuses the control — it is the keyboard's target from then on —
     /// but drawing a ring under the cursor reads as a stuck highlight, so only the
-    /// keyboard reasons draw one. Qt Quick's rule, and the reason the control stores a
+    /// keyboard reasons draw one. This is the standard rule for visual focus, and the
+    /// reason the control stores a
     /// `FocusReason` rather than a bare bool.
     #[test]
     fn switch_visual_focus_depends_on_the_reason() {

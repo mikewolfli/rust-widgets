@@ -212,7 +212,7 @@ impl Draw for BottomSheet {
         //
         // The scrim darkens the *backdrop it covers* toward an absolute black. Blending
         // toward black is what every platform's modal scrim does (Material's
-        // `Colors.black54`, UIKit, Qt and SwiftUI all dim toward black); none blends toward
+        // `Colors.black54`, UIKit and SwiftUI all dim toward black); none blends toward
         // the foreground colour.
         //
         // The old `ink.blend(&sheet_color, 0.55)` blended toward the *foreground*, so on the
@@ -240,10 +240,12 @@ impl Draw for BottomSheet {
         // `rgb(24,24,24)` would still read as a lift rather than a dimming.
         let overlay_height = rect.height - sheet_height;
         const SCRIM_DARKEN: f32 = 0.32;
-        // Drawn as an explicit darkened fill rather than as a translucent overlay, which
-        // is how this control already painted it; `blend` carries the window fill's own
-        // alpha through, so the scrim stays as opaque as the surface it stands in for.
-        let scrim_color = window_fill.blend(&Color::BLACK, SCRIM_DARKEN);
+        // The token wins when a theme provides one; the blend is the honest fallback for an
+        // unthemed build. The token is read here so a theme author can express the dimming
+        // *once*, instead of every modal re-deriving the same weight and drifting apart --
+        // which is why `Colors::scrim` exists as a role at all.
+        let scrim_color = crate::style::layer_color(crate::style::LayerColor::Scrim)
+            .unwrap_or_else(|| window_fill.blend(&Color::BLACK, SCRIM_DARKEN));
         if overlay_height > 0 {
             let overlay_rect = Rect::new(rect.x, rect.y, rect.width, overlay_height);
             context.fill_rect(overlay_rect, scrim_color);

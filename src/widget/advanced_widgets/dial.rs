@@ -97,7 +97,7 @@ impl Dial {
     /// Returns the notch target, in **pixels of arc between adjacent notches**.
     /// Defaults to `3.7`.
     ///
-    /// This is Qt's own semantic for `QDial::notchTarget`, and it is the unit the
+    /// This is the standard semantic for the notch target, and it is the unit the
     /// rendering uses: the notch count is the dial's sweep measured in pixels and
     /// divided by this value. A value that would put fewer than two notches on the
     /// sweep is raised to the two-notch minimum, so turning the target up
@@ -459,11 +459,11 @@ impl Draw for Dial {
         //
         // `notches_visible` and `notch_target` were fully declared — field, accessors,
         // setters, `get`/`set` and `property_names` — and `draw` read neither, so the control
-        // rendered a blank face whatever a caller asked for. This is the ring Qt's
-        // `QDial::notchesVisible` / `notchTarget` draws, and both properties mean what Qt means
-        // by them: the target is the *pixel spacing* between adjacent notches, and the count
+        // rendered a blank face whatever a caller asked for. This is the ring the standard
+        // notch-dial properties draw, and both properties keep their standard meaning:
+        // the target is the *pixel spacing* between adjacent notches, and the count
         // follows from the sweep's arc length at this radius. A dial therefore gets a coarser
-        // scale by rendering at a smaller size, which is Qt's behaviour and the reason the
+        // scale by rendering at a smaller size, which is the standard behaviour and the reason the
         // target is a pixel quantity rather than a count.
         //
         // The arithmetic is done in `f64` and clamped before it is converted, because the

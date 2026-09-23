@@ -681,7 +681,7 @@ impl Draw for SplitButton {
         //
         // The label is centred both ways inside the trigger's padded box. A split button's
         // primary face *is* a button, so its label follows the same rule `Button` does
-        // (Qt Quick centres `AbstractButton`'s `contentItem`; Flutter M3 centres the child) —
+        // (the content item is centred, as Material M3 centres its child) —
         // the previous `x + 8` origin left-aligned it against a literal.
         let primary_box = self.primary_label_box(primary_rect);
         context.draw_text_fitted(

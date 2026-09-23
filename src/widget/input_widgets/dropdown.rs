@@ -46,8 +46,8 @@ const INDICATOR_LEADING_GAP: i32 = 2;
 /// # Why the two are computed together
 ///
 /// A `▼` and the label beside it are one row: the label must *yield* to the indicator rather
-/// than be clipped by an inset that was chosen independently of it. QML states the same
-/// relation as `rightPadding: padding + indicator.width`.
+/// than be clipped by an inset that was chosen independently of it. The shared relation reads
+/// `rightPadding: padding + indicator.width`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct FieldGeometry {
     /// The indicator cell at the field's trailing edge.

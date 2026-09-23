@@ -558,6 +558,15 @@ impl Widget for LineEdit {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+    // The caret blink is the whole animation: without a trait-visible `tick` a host holding
+    // `&mut dyn Widget` could not advance it, so the caret never blinked on screen.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        LineEdit::tick(self, delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.focused && !self.read_only
+    }
 }
 
 /// `LineEdit`'s property contract.

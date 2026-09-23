@@ -282,8 +282,8 @@ impl Draw for Splitter {
         // The count guard used to be `pane_count() > 1`, so a splitter with no panes yet —
         // which is exactly what `Splitter::new` builds, and what the factory produces — drew
         // no handle at all. It then rendered as a featureless slab: two full-area rectangles
-        // and no chrome, `detail = 0` in the rendering census. Qt's `QSplitter`, Flutter's
-        // `Flex`/`NestedScrollView` and SwiftUI's `HSplitView` all draw the divider
+        // and no chrome, `detail = 0` in the rendering census. A splitter and a
+        // scroll view and SwiftUI's `HSplitView` all draw the divider
         // regardless of how many panes exist, because the divider *is* the affordance — an
         // invisible one is a control a user cannot find or drag.
         //

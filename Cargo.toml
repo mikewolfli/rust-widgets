@@ -1,6 +1,6 @@
 [package]
 name = "rust_widgets"
-version = "2.6.1"
+version = "2.7.0"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 180 widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
@@ -34,6 +34,7 @@ include = [
     # documents, but not the target that writes a project's committed sources.
     "tools/designer_generate.rs",
     "LICENSE",
+    "NOTICE",
     "README.md",
     "README.zh-CN.md",
     "CHANGELOG.md",
@@ -108,6 +109,7 @@ desktop = [
     "dep:chrono",
     "serde",
     "serde_json",
+    "text-bidi",
 ]
 
 ## Tablet: touch-first, GPU, native controls, no desktop extras.
@@ -127,6 +129,7 @@ tablet = [
     "controls-native",
     "controls-custom",
     "image",
+    "text-bidi",
 ]
 
 ## Mobile: touch, GPU, mobile API, native controls.
@@ -144,15 +147,17 @@ mobile = [
     "controls-native",
     "controls-custom",
     "image",
+    "text-bidi",
 ]
 
 ## Embedded: software raster, no GPU, no touch, low memory.
-embedded = ["software", "controls-custom"]
+embedded = ["software", "controls-custom", "text-bidi"]
 
 ## LVGL-style mini: ~15 core widgets, software raster, no alloc-heavy deps.
 mini = [
     "software",
     "controls-custom",
+    "text-bidi",
     "dep:heapless",
     "dep:hashbrown",
     "dep:spin",
@@ -276,6 +281,41 @@ audio = ["dep:minimp3_fixed"]
 holographic = []
 projection = []
 
+## Bidirectional text (UAX #9), resolved through `unicode-bidi`.
+##
+## This is *logic*, not font data: it reorders the clusters a line already produced so an
+## Arabic or Hebrew run draws right-to-left and a mixed line draws in the order the Unicode
+## algorithm specifies. It is pure `no_std` + `alloc`, so it can be on in every profile.
+text-bidi = ["dep:unicode-bidi"]
+
+## ── Text data (opt-in) ──
+##
+## The default build carries no font data beyond the crate's historical 8x8 face, so
+## it draws Latin/ASCII and the fallback glyph for everything else. Each feature below
+## appends one *face* to the fallback stack (`render::text::active_stack`) and never
+## replaces the base face, so Latin output stays byte-identical whether they are on or
+## off.
+##
+## Real text shaping: ligatures, Arabic joining and kerning, from a face the caller enables.
+##
+## Shaping needs a face — it substitutes and positions glyphs by the font's own tables — so this
+## feature is only useful with one of the `fonts-*` data features below, which imply it.
+##
+## It is still a *separate* axis from the data (constraint 2 of BLUE23 §0A.4's three): a CJK
+## bitmap face needs no shaping at all, so `fonts-cjk-bitmap` does not enable this.
+text-shaping = ["dep:rustybuzz", "dep:ttf-parser"]
+
+## `fonts-cjk-bitmap` adds a generated 16x16 CJK bitmap subset (Han, kana, CJK
+## punctuation and fullwidth forms; ~85 KB of read-only data read on demand). A CJK
+## character is one cell, so this needs no shaping engine.
+fonts-cjk-bitmap = []
+
+## Vector faces. Unlike the bitmap face above these carry outlines and layout tables, so they
+## answer two questions the bitmap face cannot: real advances and kerning, and the contextual
+## substitutions complex scripts need (`arabic` carries the `GSUB` joining features).
+fonts-vector-latin = ["text-shaping"]
+fonts-complex = ["text-shaping"]
+
 
 # ── INTERNAL FEATURES (used by profiles, not user-facing) ──
 
@@ -385,6 +425,18 @@ serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
 crossbeam-channel = { version = "0.5", optional = true }
 font8x8 = "0.2.7"
+# Bidirectional text resolution (UAX #9). `default-features = false` drops `std` so the
+# `mini`/`embedded` profiles can carry it too; `hardcoded-data` keeps the character
+# bidi-class table compiled in rather than read from a runtime file.
+unicode-bidi = { version = "0.3.18", optional = true, default-features = false, features = [
+    "hardcoded-data",
+] }
+# A pure-Rust shaper (the Rust port of the shaping algorithm this crate's Arabic support
+# needs). Deliberately **not** `harfbuzz-sys`: that needs a C toolchain and a cross sysroot,
+# which would turn the Android, iOS and wasm gates red. `ttf-parser` comes with it for the
+# face data the shaper reads.
+rustybuzz = { version = "0.20.1", optional = true }
+ttf-parser = { version = "0.25.1", optional = true }
 pollster = { version = "0.4", optional = true }
 chrono = { version = "0.4", optional = true }
 notify = { version = "7.0", optional = true }

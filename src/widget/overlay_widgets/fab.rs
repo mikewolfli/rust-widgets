@@ -31,8 +31,6 @@ pub struct FAB {
     accent_color: Color,
     /// Whether this is a mini FAB (smaller size).
     mini: bool,
-    /// Whether the button is currently pressed (for press animation).
-    pressed: bool,
 }
 
 impl FAB {
@@ -56,7 +54,6 @@ impl FAB {
             icon_text: String::from("+"),
             accent_color: Self::DEFAULT_ACCENT_COLOR,
             mini: false,
-            pressed: false,
         }
     }
 
@@ -169,7 +166,7 @@ impl Draw for FAB {
             (rect.width.min(rect.height) / 2).saturating_sub(max_shadow_offset / 2 + 1);
 
         // When pressed, shrink by ~10% for press animation
-        let (radius, shadow_offset) = if self.pressed && is_enabled {
+        let (radius, shadow_offset) = if self.base.is_pressed() && is_enabled {
             let shrunk = (base_radius as f32 * 0.9) as u32;
             (shrunk, (2.0 * dpi) as u32)
         } else {
@@ -288,13 +285,13 @@ impl EventHandler for FAB {
                     // Only a press that lands on the FAB arms it. The runtime hit-tests
                     // before delivery, but a direct dispatch does not, and an unguarded
                     // press leaves the latch armed for a release belonging elsewhere.
-                    self.pressed = self.base.contains_point_with_touch_expansion(*pos);
+                    self.base.set_pressed(self.base.contains_point_with_touch_expansion(*pos));
                     self.base.request_redraw();
                 }
             }
             Event::MouseRelease { pos, button } => {
-                if *button == crate::event::mouse_button::PRIMARY && self.pressed {
-                    self.pressed = false;
+                if *button == crate::event::mouse_button::PRIMARY && self.base.is_pressed() {
+                    self.base.set_pressed(false);
                     // Inside commits; outside cancels silently. `clicked` is what a caller
                     // routes an action on, so it must mean "this gesture completed here".
                     if self.base.contains_point_with_touch_expansion(*pos) {
@@ -306,20 +303,20 @@ impl EventHandler for FAB {
             Event::MouseLeave { .. } => {
                 // Crossing the edge abandons the press. Only the latch is cleared — no
                 // signal — because the release that ends the gesture decides its outcome.
-                if self.pressed {
-                    self.pressed = false;
+                if self.base.is_pressed() {
+                    self.base.set_pressed(false);
                     self.base.request_redraw();
                 }
             }
             #[cfg(feature = "touch")]
             Event::TouchBegin { pos, .. } => {
-                self.pressed = self.base.contains_point_with_touch_expansion(*pos);
+                self.base.set_pressed(self.base.contains_point_with_touch_expansion(*pos));
                 self.base.request_redraw();
             }
             #[cfg(feature = "touch")]
             Event::TouchEnd { pos, .. } => {
-                if self.pressed {
-                    self.pressed = false;
+                if self.base.is_pressed() {
+                    self.base.set_pressed(false);
                     if self.base.contains_point_with_touch_expansion(*pos) {
                         self.base.clicked.emit();
                     }
@@ -424,11 +421,11 @@ mod tests {
         });
 
         fab.handle_event(&Event::MousePress { pos: Point::new(28, 28), button: 1 });
-        assert!(fab.pressed);
+        assert!(fab.base.is_pressed());
         assert!(!clicked.load(Ordering::SeqCst));
 
         fab.handle_event(&Event::MouseRelease { pos: Point::new(28, 28), button: 1 });
-        assert!(!fab.pressed);
+        assert!(!fab.base.is_pressed());
         assert!(clicked.load(Ordering::SeqCst));
     }
 
@@ -442,7 +439,7 @@ mod tests {
         });
 
         fab.handle_event(&Event::MousePress { pos: Point::new(28, 28), button: 2 });
-        assert!(!fab.pressed);
+        assert!(!fab.base.is_pressed());
         assert!(!clicked.load(Ordering::SeqCst));
     }
 
@@ -458,7 +455,7 @@ mod tests {
         });
 
         fab.handle_event(&Event::MousePress { pos: Point::new(28, 28), button: 1 });
-        assert!(!fab.pressed);
+        assert!(!fab.base.is_pressed());
 
         fab.handle_event(&Event::MouseRelease { pos: Point::new(28, 28), button: 1 });
         assert!(!clicked.load(Ordering::SeqCst));
@@ -501,13 +498,13 @@ mod tests {
     #[test]
     fn fab_press_animation_sets_pressed_state() {
         let mut fab = make_fab();
-        assert!(!fab.pressed);
+        assert!(!fab.base.is_pressed());
 
         fab.handle_event(&Event::MousePress { pos: Point::new(28, 28), button: 1 });
-        assert!(fab.pressed);
+        assert!(fab.base.is_pressed());
 
         fab.handle_event(&Event::MouseRelease { pos: Point::new(28, 28), button: 1 });
-        assert!(!fab.pressed);
+        assert!(!fab.base.is_pressed());
     }
 
     #[test]

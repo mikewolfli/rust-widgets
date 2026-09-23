@@ -261,6 +261,15 @@ impl Widget for VideoPlayer {
     }
 
     impl_widget_property_hooks!();
+    // Trait contract: `u32` ms. This control's own `tick` takes seconds as `f64` because
+    // playback position is a media clock rather than a frame delta; convert at the boundary.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        VideoPlayer::tick(self, f64::from(delta_ms) / 1000.0)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.is_playing()
+    }
 }
 
 /// `VideoPlayer`'s property contract.

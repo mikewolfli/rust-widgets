@@ -55,11 +55,20 @@ TARGETS=(
 # here means this gate covers the build script's actual configuration rather than a convenient one.
 FEATURES="android-jni jni mobile-api controls-custom controls-native serde serde_json"
 
-# `ANDROID_HOME` (or the SDK's default location) is needed for the linker search path on some
-# targets. The check is `cargo check`, which does not link, but `build.rs` probes the SDK, so the
-# variable is passed through when it exists rather than left unset.
-if [[ -z "${ANDROID_HOME:-}" ]] && [[ -d "$HOME/Android/Sdk" ]]; then
-  export ANDROID_HOME="$HOME/Android/Sdk"
+# `ANDROID_HOME` is exported when the SDK is in a standard location, because `cargo check` for an
+# Android target resolves the NDK's linker search path from it. The check does not link, but a host
+# that has the SDK should not have to set the variable by hand just to run this gate.
+#
+# Both conventional locations are probed: macOS puts the SDK under `Library/Android/sdk`, while
+# Linux uses `Android/Sdk`. Checking only the Linux path left a macOS host with a perfectly good
+# SDK reporting "no SDK" — the directory was there, the gate looked in the wrong place.
+if [[ -z "${ANDROID_HOME:-}" ]]; then
+  for candidate in "$HOME/Library/Android/sdk" "$HOME/Android/Sdk"; do
+    if [[ -d "$candidate" ]]; then
+      export ANDROID_HOME="$candidate"
+      break
+    fi
+  done
 fi
 
 MISSING=()

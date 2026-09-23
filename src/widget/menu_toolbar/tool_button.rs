@@ -90,8 +90,6 @@ pub struct ToolButton {
     popup_mode: ToolButtonPopupMode,
     button_style: ToolButtonStyle,
     auto_raise: bool,
-    pressed: bool,
-    hovered: bool,
     /// Emitted on every activation by [`ToolButton::click`], carrying the
     /// button's checked state at that moment. For a non-checkable button this is
     /// therefore always `false`, and it is emitted even when nothing was
@@ -123,8 +121,6 @@ impl ToolButton {
             popup_mode: ToolButtonPopupMode::DelayedPopup,
             button_style: ToolButtonStyle::IconOnly,
             auto_raise: false,
-            pressed: false,
-            hovered: false,
             clicked: Signal1::new(),
             toggled: Signal1::new(),
             triggered: GenericSignal::new(),
@@ -300,23 +296,27 @@ impl WidgetProperties for ToolButton {
 
 impl EventHandler for ToolButton {
     fn handle_event(&mut self, event: &Event) {
-        self.base.handle_event(event);
         if !self.base.is_enabled() {
+            // A disabled button is inert, but the base still records the pointer facts so
+            // hover keeps working once it is re-enabled.
+            self.base.handle_event(event);
             return;
         }
+        // The gesture is resolved **before** the base records the event: the base clears
+        // `pressed`/`grabbed` on the release, so a control that asked afterwards could no
+        // longer tell whether the release belonged to its own press.
         match event {
-            Event::MouseEnter { pos: _ } => {
-                self.hovered = true;
-            }
+            Event::MouseEnter { pos: _ } => {}
             Event::MouseLeave { pos: _ } => {
-                self.hovered = false;
-                self.pressed = false;
+                // Crossing the edge abandons the press; the grab is kept by the base, which is
+                // what lets a drag that returns still complete.
+                self.base.set_pressed(false);
             }
             Event::MousePress { button: 1, .. } => {
-                self.pressed = true;
+                self.base.set_pressed(true);
             }
-            Event::MouseRelease { button: 1, .. } if self.pressed => {
-                self.pressed = false;
+            Event::MouseRelease { button: 1, .. } if self.base.is_pressed() => {
+                self.base.set_pressed(false);
                 self.click();
             }
             Event::KeyPress { key: 13, .. } | Event::KeyPress { key: 32, .. } => {
@@ -324,6 +324,8 @@ impl EventHandler for ToolButton {
             }
             _ => { /* Other events are not relevant */ }
         }
+        // Record the primitive facts after the gesture, so `widget_state`/hover stay right.
+        self.base.handle_event(event);
     }
 }
 impl Draw for ToolButton {
@@ -363,19 +365,19 @@ impl Draw for ToolButton {
         // colour, so the four states stay distinguishable on any theme: a press is a step
         // toward the accent, a hover is a step toward white, and a toggled-on button keeps
         // the previous checked/hover ordering.
-        let bg = if self.pressed {
+        let bg = if self.base.is_pressed() {
             base.blend(&accent, 0.45)
         } else if self.checked {
             base.blend(&accent, 0.25)
-        } else if self.hovered && !self.auto_raise {
+        } else if self.base.is_hovered() && !self.auto_raise {
             base.blend(&Color::WHITE, 0.55)
-        } else if self.auto_raise && !self.hovered {
+        } else if self.auto_raise && !self.base.is_hovered() {
             Color::rgba(0, 0, 0, 0) // transparent
         } else {
             base
         };
         context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), bg);
-        if self.hovered || self.pressed || self.checked {
+        if self.base.is_hovered() || self.base.is_pressed() || self.checked {
             context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), accent);
         }
         // A disabled label is the ink faded toward the fill behind it, which keeps it

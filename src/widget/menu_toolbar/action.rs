@@ -48,12 +48,6 @@ pub struct Action {
     /// Emitted when the pointer enters the action's bounds (`Event::MouseEnter`).
     /// Carries no payload; a listener is expected to know the action it attached to.
     pub hovered: GenericSignal,
-    /// Whether the pointer is currently over the action.
-    ///
-    /// Tracked so drawing can highlight the row it is about to be clicked on. The
-    /// public `hovered` signal reports the transition; this records the state, which
-    /// is what a `draw` needs.
-    is_hovered: bool,
     /// Emitted whenever any presentation or command state changes — text, icon,
     /// shortcut, checkable, checked, enabled, or a command sync. Carries no
     /// payload, so a listener must re-read whatever it needs; it is a
@@ -84,7 +78,6 @@ impl Action {
             triggered: Signal1::new(),
             toggled: Signal1::new(),
             hovered: GenericSignal::new(),
-            is_hovered: false,
             changed: GenericSignal::new(),
             _toggled_handle: None,
             _enabled_handle: None,
@@ -132,8 +125,12 @@ impl Action {
         self.separator
     }
     /// Returns whether the pointer is currently over the action.
+    ///
+    /// Hover is recorded by [`BaseWidget`] from the runtime's synthesised
+    /// `MouseEnter`/`MouseLeave` pair, which keeps an action's answer identical to the
+    /// menus and tool buttons that draw it.
     pub fn is_pointer_hovered(&self) -> bool {
-        self.is_hovered
+        self.base.is_hovered()
     }
     /// Returns the inner [`CmdAction`]'s id, if non-empty.
     pub fn command_id(&self) -> Option<&str> {
@@ -370,12 +367,12 @@ impl EventHandler for Action {
         match event {
             Event::MousePress { button, .. } if *button == 1 => self.trigger(),
             Event::MouseEnter { .. } => {
-                self.is_hovered = true;
+                // The base already recorded the hover; this arm only repaints and
+                // announces it, so the flag cannot be set in two places.
                 self.base.request_redraw();
                 self.hovered.emit();
             }
-            Event::MouseLeave { .. } if self.is_hovered => {
-                self.is_hovered = false;
+            Event::MouseLeave { .. } if self.base.is_hovered() => {
                 self.base.request_redraw();
             }
             _ => { /* Other events are not relevant */ }
@@ -408,7 +405,7 @@ impl Draw for Action {
         }
         // A bare, unhovered action is still owned by its host menu/toolbar: painting
         // its own surface here would fight the host's row background.
-        if !self.is_hovered && self.text.is_empty() && self.icon_text.is_empty() {
+        if !self.base.is_hovered() && self.text.is_empty() && self.icon_text.is_empty() {
             return;
         }
 
@@ -438,7 +435,7 @@ impl Draw for Action {
             return;
         }
 
-        if self.is_hovered {
+        if self.base.is_hovered() {
             context.fill_rect(rect, highlight);
         }
 

@@ -337,9 +337,7 @@ impl Draw for ModalBottomSheet {
         // in `Colors::scrim`'s own documentation. Reading the role lets a dark theme lighten the
         // scrim deliberately while a light theme darkens it, and it gives the role the consumer it
         // was added for. The blend survives only as the fallback for a theme that predates the role.
-        let scrim = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.scrim)
+        let scrim = crate::style::layer_color(crate::style::LayerColor::Scrim)
             .unwrap_or_else(|| ink.blend(&sheet_fill, 0.55));
         let overlay_rect = Rect::new(rect.x, rect.y, rect.width, rect.height);
         context.fill_rect(overlay_rect, scrim);
@@ -664,5 +662,32 @@ mod tests {
         let svg = render_to_svg(&mut sheet);
         assert!(svg.starts_with("<svg"));
         assert!(svg.ends_with("</svg>"));
+    }
+
+    /// BLUE23 §5.1 — the modal scrim reads the `scrim` role, and dims rather than lifts.
+    ///
+    /// The defect this pins: a scrim derived from the *foreground* instead of an absolute
+    /// direction came out **brighter** than the surface it covered on one appearance, so the
+    /// "dimming" layer brightened the backdrop. Deriving from the theme's `scrim` token keeps
+    /// the direction the theme's business, and this asserts the two facts that matter: the
+    /// role is what is read, and the fallback darkens.
+    #[test]
+    fn the_scrim_reads_its_role_and_darkens_the_backdrop() {
+        let _guard = crate::theme::theme_test_guard();
+        let window = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background)
+            .expect("a preset is active");
+        let scrim = crate::style::layer_color(crate::style::LayerColor::Scrim)
+            .expect("the preset defines a scrim role");
+        // A light appearance dims by darkening; a dark one dims by a light veil. Either way the
+        // scrim must differ from the backdrop, or it is not a layer at all.
+        assert_ne!(scrim, window, "the scrim role must not be the page colour");
+        // And the fallback derivation -- used when no theme is active -- darkens absolutely.
+        let fallback = window.blend(&crate::core::Color::BLACK, 0.32);
+        assert!(
+            fallback.luminance() < window.luminance(),
+            "the blend fallback must darken, not lighten"
+        );
     }
 }

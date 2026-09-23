@@ -365,9 +365,17 @@ impl Draw for TableWidget {
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))
             .filter(|resolved| *resolved != surface)
             .unwrap_or_else(|| surface.blend(&ink, 0.20));
-        // The row and column separators are one step into the surface, so they stay a
-        // subdivision of the table rather than a second literal grey.
-        let grid_ink = surface.blend(&ink, 0.12);
+        // The row and column separators are the theme's `outline_variant` — the **weak**
+        // separator role — so a table's grid lines are visibly weaker than the focus ring,
+        // which uses the stronger `outline`. Both previously resolved to the same grey,
+        // because the grid line was a blend of the surface and the ring read `secondary`;
+        // reading the two roles keeps them distinct in every appearance, and lets a theme
+        // dim its grid lines without touching every control that draws one.
+        let grid_ink = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.outline_variant)
+            .filter(|resolved| *resolved != surface)
+            .unwrap_or_else(|| surface.blend(&ink, 0.12));
         // The focused row is a selection state, so it reads the theme's accent token and is
         // laid over the surface, which keeps it legible in either appearance.
         let accent = crate::style::theme_manager()

@@ -508,7 +508,7 @@ impl EventHandler for MessageBox {
 ///
 /// The button is **not** allowed to grow with its label: unlike a toolbar item, a dialog's
 /// action row is a fixed set of standard commands (`OK`, `Cancel`, `Yes to No`), and the
-/// platform convention — and Qt's `QDialogButtonBox` — is that they are all the same width
+/// platform convention — and the standard button-box — is that they are all the same width
 /// so the row reads as one control. `draw_text_fitted` elides a locale whose translation is
 /// longer than the box, so a longer label loses characters rather than moving its siblings.
 pub(crate) const DIALOG_BUTTON_WIDTH: i32 = 80;
@@ -561,8 +561,9 @@ impl MessageBox {
 
     /// The box this dialog needs: the action row's own width and the floor, component-wise.
     ///
-    /// This is Qt's `implicitWidth = max(implicitBackgroundWidth + inset,
-    /// implicitContentWidth + padding)` spelled with this crate's primitives, where the floor
+    /// This is the shared implicit-size formula
+    /// `implicitWidth = max(implicitBackgroundWidth + inset, implicitContentWidth + padding)`
+    /// spelled with this crate's primitives, where the floor
     /// is the background and the measured row is the content.
     fn intrinsic_size(&self, context: &RenderContext) -> Size {
         // The labels are the *translated* ones, because those are the strings the row draws —
@@ -740,7 +741,7 @@ impl Draw for MessageBox {
         // The button row is the bottom band; the message occupies what is left above it.
         let button_band = ControlMetrics::bottom_band(body, dimensions::DIALOG_BUTTON_HEIGHT);
         // The row is computed **before** the message band, because the message band's own
-        // trailing edge is derived from the row. That is the `SpinBox.qml:20-21` relation — the
+        // trailing edge is derived from the row. That is the sibling-column relation — the
         // text side's padding is the sibling column's width — and it is the whole reason
         // [`ActionRowGeometry::leading_inset`] exists: the message must stop where the buttons
         // begin, whatever the buttons' widths and their labels' translations turn out to be.
@@ -790,7 +791,7 @@ impl Draw for MessageBox {
         // left of the dialog and the `max(rect.x)` floor silently overlapped its neighbours; and
         // a locale whose `Cancel` is twice as long elided its label from the middle of a
         // button it did not fit. Rule 4 of the assembly spec is that a segment's size comes
-        // from its siblings, not from a literal — `SpinBox.qml:20-21` is the reference, where
+        // from its siblings, not from a literal — the sibling-column relation is the reference, where
         // the text side's padding is the *button column's own width*.
         //
         // The row is therefore a real layout: it is handed the buttons' measured hints plus
@@ -993,7 +994,8 @@ pub(crate) fn action_row_geometry(
     let row = Rect::new(row_left, band.y, (row_right - row_left).max(0) as u32, band.height);
     // What the row leaves *before* it: the padding this dialog's own content must carry so its
     // title, message and icon cannot overlap the buttons that share their band. This is the
-    // `SpinBox.qml:20-21` relation — the text side's padding is the sibling column's width —
+    // The sibling-column relation — the text side's padding is the sibling
+    // column's width —
     // and it is why the row reports it instead of leaving each call site to re-subtract.
     let leading_inset = if place { (row_left - band.x).max(0) as u32 } else { 0 };
     ActionRowGeometry { row, buttons, leading_inset }

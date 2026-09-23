@@ -43,7 +43,7 @@ const SPARKLINE_DOT_RADIUS: u32 = 3;
 /// The trace used to be inset by half the stroke alone — the exact amount its ink needs and
 /// no more — so the data's extremes were drawn flush against the control's edges
 /// (`sparkline.svg` spanned y 13..107 in a 120 px box). A plot that touches its own frame reads
-/// as decoration rather than as a series, and a real sparkline (Flutter's, `fl_chart`'s) always
+/// as decoration rather than as a series, and a real sparkline always
 /// leaves a margin.
 const SPARKLINE_PLOT_MARGIN: i32 = 4;
 

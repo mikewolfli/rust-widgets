@@ -964,6 +964,17 @@ impl Widget for LottieWidget {
     }
 
     impl_widget_property_hooks!();
+    // The trait contract takes `u32` milliseconds; this control's own `tick` takes `u64`
+    // because an animation can legitimately run long enough that the millisecond count
+    // would wrap. Widening at the boundary keeps the trait uniform without narrowing the
+    // animation's own clock.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        LottieWidget::tick(self, u64::from(delta_ms))
+    }
+
+    fn is_animating(&self) -> bool {
+        self.is_playing()
+    }
 }
 
 /// `LottieWidget`'s property contract.

@@ -1,0 +1,139 @@
+NOTICE
+======
+
+This repository is licensed under the MIT licence (see `LICENSE`). It also
+bundles the third-party material recorded below, whose licence differs from the
+project's own. Each section describes one inclusion: what is included, where it
+came from, under which licence, and what was changed. Append a new
+clearly-delimited section rather than editing an existing one.
+
+================================================================================
+GNU Unifont 16.0.01 — 16x16 bitmap CJK subset
+================================================================================
+
+Included file
+    src/render/text/cjk_bitmap_data.rs
+
+Origin
+    GNU Unifont 16.0.01 — the **bitmap** (`.hex`) build, not the OTF.
+    Unifont is by Roman Czyborra, Paul Hardy, and contributors.
+    Project:  https://unifoundry.com/unifont/index.html
+    Source:   https://unifoundry.com/pub/unifont/unifont-16.0.01/font-builds/unifont-16.0.01.hex.gz
+    SHA-256 of the decompressed `.hex`:
+        3b9d881d534c4144cd9865a47a7667760e33a571a45794a5334c16a72cb8f839
+
+    The file is generated, never hand-edited. Regenerate with:
+        python3 tools/gen_cjk_bitmap.py --license=ofl-1.1
+
+What it is
+    A **subset** of the Unifont 16x16 bitmap glyphs, reduced to the codepoint
+    ranges listed below and re-encoded as two Rust arrays (`CODEPOINTS`, `ROWS`).
+    The bitmap bits are Unifont's, copied verbatim; no glyph was redrawn or
+    re-rasterised, and no outline was autohinted. Glyphs that Unifont stores
+    8 px wide are left-aligned in a 16 px cell.
+
+Codepoint ranges included
+    U+3000..=U+303F   CJK Symbols and Punctuation         64 glyphs
+    U+3040..=U+30FF   Hiragana and Katakana              192 glyphs
+    U+4E00..=U+5548   CJK Unified Ideographs (subset)   1865 glyphs
+    U+FF00..=U+FFEF   Halfwidth and Fullwidth Forms      240 glyphs
+    ------------------------------------------------------------------
+    Total 2361 glyphs (84996 bytes of array data: ROWS 75552 + CODEPOINTS 9444).
+    ASCII (U+0000..=U+007F) is deliberately excluded.
+
+Licence
+    Unifont is dual-licensed by its copyright holders. Either of the following
+    applies:
+
+    (a) SIL Open Font License, Version 1.1
+        https://openfontlicense.org/
+
+    (b) GNU General Public License, Version 2.0 or later, with the GNU font
+        embedding exception
+        https://www.gnu.org/licenses/gpl-2.0.html
+        https://www.gnu.org/licenses/gpl-faq.html#FontException
+
+    Unifont's own licence file: https://unifoundry.com/LICENSE.txt
+
+Reserved Font Name (OFL)
+    Unifont's licence states only that the fonts are "covered by the SIL Open Font
+    License version 1.1"; it names no Reserved Font Name, so OFL 1.1 §3 imposes no
+    naming restriction here. Independently of that, this subset is a "Modified
+    Version" (it retains only a portion of Unifont's glyphs and re-encodes them), and
+    nothing in the shipped tree presents itself as the original font: the file is
+    named `cjk_bitmap_data.rs` and the arrays are `CODEPOINTS` and `ROWS`. The name
+    "Unifont" appears in this NOTICE and in the generated file's header for
+    attribution only.
+
+================================================================================
+Open Sans — vector subset for `fonts-vector-latin`
+================================================================================
+
+Included files
+    src/render/text/font_assets/latin.rs    (the provenance header and `include_bytes!`)
+    src/render/text/font_assets/latin.ttf   (the subset itself)
+
+Origin
+    Open Sans, by Steve Matteson and the Open Sans project (originally
+    commissioned by Google).
+    Project:  https://fonts.google.com/specimen/Open+Sans
+    Source:   https://github.com/google/fonts/blob/main/ofl/opensans/OpenSans%5Bwdth,wght%5D.ttf
+    SHA-256 of the upstream `.ttf`:
+        36643644f318a812aab2d2ed3bb98f8cf0872527f835fe9398d95fe6b9adb878
+
+    The files are generated, never hand-edited. Regenerate with:
+        python3 tools/gen_font_subset.py --face=latin --license=ofl-1.1
+
+What it is
+    A **subset** of Open Sans, instantiated from the variable font at
+    `wdth=100, wght=400` and reduced to ASCII printable, the Latin-1 supplement
+    and the punctuation a label uses. No outline was redrawn, re-hinted or
+    modified; the glyph outlines and the layout tables (GSUB, GPOS — including
+    kerning) are Open Sans's own.
+
+Licence
+    SIL Open Font License, Version 1.1
+        https://openfontlicense.org/
+
+Reserved Font Name (OFL)
+    The upstream licence declares **no** Reserved Font Name: its copyright
+    statement is followed by no name specification, so OFL 1.1 §3 imposes no naming
+    restriction on this subset. The files are nonetheless named after this crate's
+    modules (`latin.rs` / `latin.ttf`) rather than after the upstream family, so
+    nothing in the shipped tree presents itself as the original font.
+
+================================================================================
+Noto Naskh Arabic — vector subset for `fonts-complex`
+================================================================================
+
+Included files
+    src/render/text/font_assets/arabic.rs    (the provenance header and `include_bytes!`)
+    src/render/text/font_assets/arabic.ttf   (the subset itself)
+
+Origin
+    Noto Naskh Arabic, by the Noto project (Google).
+    Project:  https://fonts.google.com/noto/specimen/Noto+Naskh+Arabic
+    Source:   https://github.com/google/fonts/blob/main/ofl/notonaskharabic/NotoNaskhArabic%5Bwght%5D.ttf
+    SHA-256 of the upstream `.ttf`:
+        67b5a525a661b607971fbd3f96a81b89d3a768e74534fca84f18ac97e6fab72f
+
+    The files are generated, never hand-edited. Regenerate with:
+        python3 tools/gen_font_subset.py --face=arabic --license=ofl-1.1
+
+What it is
+    A **subset** of Noto Naskh Arabic, instantiated at `wght=400` and reduced to
+    the Arabic block (letters, marks, digits), the six zero-width and directional
+    controls and ASCII. The contextual forms are **not** stored as data: they are
+    produced at shaping time from the retained `GSUB` joining features, which are
+    part of the subset. No outline was redrawn or re-hinted.
+
+Licence
+    SIL Open Font License, Version 1.1
+        https://openfontlicense.org/
+
+Reserved Font Name (OFL)
+    The upstream licence declares **no** Reserved Font Name: its copyright
+    statement is followed by no name specification, so OFL 1.1 §3 imposes no naming
+    restriction on this subset. The files are nonetheless named after this crate's
+    modules (`arabic.rs` / `arabic.ttf`) rather than after the upstream family, so
+    nothing in the shipped tree presents itself as the original font.

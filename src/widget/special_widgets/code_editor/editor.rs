@@ -3072,6 +3072,16 @@ impl Widget for CodeEditor {
     }
 
     impl_widget_property_hooks!();
+
+    // The caret blink is driven through the trait so the animation bus reaches it -- an
+    // editor whose caret never blinks reads as frozen.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        CodeEditor::tick(self, delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        !self.config.read_only
+    }
 }
 
 /// `CodeEditor`'s property contract, published under the `RichEdit` kind.

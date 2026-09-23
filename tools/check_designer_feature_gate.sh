@@ -88,8 +88,32 @@ edition = "2021"
 [dependencies]
 rust_widgets = { path = "$manifest_path", default-features = false, features = [$features] }
 EOF
-  CARGO_TARGET_DIR="$ROOT_DIR/target" \
-    rw_cargo_cached "$GATE_TIMEOUT" check --quiet --manifest-path "$PROBE_DIR/Cargo.toml" \
+  # The probe gets its **own** target directory rather than sharing the repo's.
+  #
+  # Sharing it made this gate report a false LEAK: cargo unifies features per unit of
+  # work, and a fingerprint left by an earlier `desktop` build (which enables `designer`)
+  # was reused for the `tablet` probe, so `rust_widgets` came back with the feature on. The
+  # probe then "resolved" the module for every profile and the gate failed for a reason
+  # that had nothing to do with the feature graph -- exactly the environmental false
+  # positive `lib_timeout.sh` warns about in another form. An isolated target dir makes the
+  # probe's answer depend only on the probe's own feature set.
+  #
+  # The profile is also passed as **`--config env.RW_PROBE_PROFILE`** on the argv, not only
+  # baked into the `Cargo.toml` above. `lib_cargo_cache.sh` keys its cache on the argv plus the
+  # *workspace* source digest -- and the probe's manifest is a temp file outside the workspace,
+  # so the feature set was invisible to the key. All five probes therefore shared one key, the
+  # `desktop` probe cached `resolved`, and every later probe replayed that verdict as a false
+  # LEAK. A `env.` config entry is a valid, inert argv token that carries the profile into the
+  # key without changing the build.
+  local probe_target="$PROBE_DIR/target"
+  # The config value is a TOML string, so it must be *quoted inside* the `KEY=VALUE` token
+  # (cargo parses the value as TOML). The profile list arrives as `"tablet", "designer"`, whose
+  # own quotes are stripped first: nesting them would end the TOML string early and cargo would
+  # reject the invocation, failing every probe for a parsing reason rather than a feature one.
+  local profile_token="${features//\"/}"
+  rw_cargo_cached "$GATE_TIMEOUT" check --quiet --target-dir "$probe_target" \
+    --config "env.RW_PROBE_PROFILE=\"$profile_token\"" \
+    --manifest-path "$PROBE_DIR/Cargo.toml" \
     > /dev/null 2>&1
 }
 

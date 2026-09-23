@@ -94,7 +94,9 @@ pub enum WgpuDrawCommand {
     /// dot, so the text does not scale with the box — it is cropped and clipped
     /// instead.
     ///
-    /// Characters outside the embedded font are substituted with `'?'`.
+    /// Characters no face covers are drawn as the fallback box glyph — the same fallback the
+    /// software rasteriser and the SVG backend use, because all three read
+    /// [`crate::render::glyph_rects`].
     /// Combining marks and variation selectors still advance a grid cell.
     /// A zero-width box, a zero-height box or an empty string draws nothing.
     DrawText {

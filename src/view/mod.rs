@@ -8,7 +8,7 @@
 //!
 //! The rest of this library is **retained-mode**: a control is a long-lived object with an
 //! [`ObjectId`](crate::core::ObjectId), and callers mutate it in place. That is not in
-//! tension with being **declarative** — React, Flutter, and SwiftUI are all declarative
+//! tension with being **declarative** — React, SwiftUI, and the view layers of the platform toolkits are all declarative
 //! *and* retained. The two questions are orthogonal (BLUE18 rule #85):
 //!
 //! | Axis | This library |
@@ -53,6 +53,20 @@
 //!   expresses *target* state, and mixing in time would make the diff non-deterministic.
 //!
 //! [`PropertyAnimation`]: crate::style::PropertyAnimation
+//!
+//! # Context propagation
+//!
+//! A [`View`] describes its tree from its own state, plus an optional [`Context`]: a
+//! small `String`-keyed map a root supplies so a value can be **shared by an entire
+//! subtree** without being threaded through every intermediate node by hand (a web UI
+//! framework's `createContext`/`useContext`, Material's `InheritedWidget`, SwiftUI's
+//! `@Environment`, resolved once here).
+//!
+//! The key property is **when** it is read: [`View::build_with`] resolves context values
+//! into concrete node properties *before* the tree is returned, so `diff` sees an ordinary
+//! value-settled tree and never needs the context to compare two builds. If nodes held a
+//! live "look upward" reference instead, `build` would stop being a pure function of what
+//! it can see and the diff could no longer settle.
 //!
 //! # Reachability
 //!
@@ -105,8 +119,8 @@ mod reactive;
 
 pub use apply::{apply, ApplyReport, ViewError};
 pub use diff::{diff, DiffReport, Patch};
-pub use engine::{View, ViewEngine};
-pub use node::Node;
+pub use engine::{Context, View, ViewEngine};
+pub use node::{Host, Node};
 pub use reactive::ReactiveHost;
 
 /// A compile-time probe for the platform gate (BLUE18 rule #92 / #94).

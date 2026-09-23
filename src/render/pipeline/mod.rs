@@ -21,8 +21,5 @@ pub use pixel_ops::{blend_pixel, fill_pixels};
 // Re-export internal helper used by surface.rs
 pub(crate) use pixel_ops::pixel_bytes_len;
 
-// Text-shaping helpers shared with the SVG backend (principle #51).
-pub(crate) use pixel_ops::{
-    cluster_ends_with_zwj, estimate_cluster_advance, glyph_rects, is_combining_mark,
-    is_variation_selector,
-};
+// The glyph geometry both renderers read.
+pub(crate) use pixel_ops::glyph_rects;

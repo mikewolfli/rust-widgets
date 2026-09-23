@@ -29,7 +29,7 @@ const ITEM_WIDTH: u32 = 120;
 /// `content_rect` used to be `rect.height - item_height * items.len()`, floored at zero. At the
 /// census size (120 px) with four items that is `120 - 128 = 0`: every item's tab was drawn and
 /// the page — the whole point of a tool box — had no pixels at all, so the control rendered as a
-/// list of tabs beside nothing. Qt's `QToolBox` gives the page the remaining body and keeps at
+/// list of tabs beside nothing. The reference tool box gives the page the remaining body and keeps at
 /// least a line of it; this constant is that rule, in the same shape as `meter`'s reserved
 /// reading band and `splitter`'s minimum pane.
 const MIN_CONTENT_EXTENT: u32 = 24;

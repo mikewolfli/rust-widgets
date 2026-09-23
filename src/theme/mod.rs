@@ -43,6 +43,7 @@
 mod apply;
 pub(crate) use apply::apply_active_theme;
 mod manager;
+mod preset_states;
 mod types;
 
 /// Applies the active theme's style for `widget` to `widget`, as the creation funnels do.
@@ -119,6 +120,7 @@ pub use manager::{
     resolved_theme_style_for_state, semantic_color, set_global_high_contrast, SemanticColor,
     ThemeManager,
 };
+pub use preset_states::preset_state_key_count;
 pub use types::{
     AppearanceMode, Borders, Colors, Fonts, Motion, ShadowOverride, ShadowToken, Spacing, Theme,
     ThemeOverrides, ThemeStyleToken, WidgetRole,
@@ -646,7 +648,7 @@ mod tests {
     /// A class-level override is still consulted, now through the class argument.
     #[test]
     fn a_class_override_still_applies() {
-        use crate::compat::HashMap;
+        use crate::compat::BTreeMap;
         use crate::theme::types::{ThemeOverrides, ThemeStyleToken};
 
         let _guard = theme_test_guard();
@@ -654,7 +656,7 @@ mod tests {
         let Some(mut theme) = manager.get_theme("default").cloned() else {
             panic!("the default theme must be registered");
         };
-        let mut overrides = ThemeOverrides { styles: HashMap::new() };
+        let mut overrides = ThemeOverrides { styles: BTreeMap::new() };
         overrides.styles.insert(
             "primary".to_string(),
             ThemeStyleToken { background: Some(Color::rgb(1, 2, 3)), ..Default::default() },

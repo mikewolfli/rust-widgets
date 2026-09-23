@@ -6,7 +6,7 @@
 //! # Why the indicator drives the value's right inset
 //!
 //! The indicator is the field's trailing chrome, and the value's box must *yield* to it.
-//! QML's `ComboBox.qml` writes this as `rightPadding: padding + indicator.width`, and the
+//! The shared relation writes this as `rightPadding: padding + indicator.width`, and the
 //! reason is that a fixed text inset and a fixed indicator inset are two unrelated
 //! derivations from the *same* edge. The value used to be written at `g.x + 4` with no bound
 //! while the indicator was placed from `g.width - 14`, so a long family name — `Noto Sans
@@ -99,11 +99,6 @@ pub struct FontComboBox {
     edit_buffer: Option<String>,
     max_visible_items: i32,
     expanded: bool,
-    /// `true` between a press that hit this control and the release ending it.
-    ///
-    /// The release is what commits the font change, so a press that began elsewhere must not
-    /// arm it — see `handle_event`.
-    pressed: bool,
     /// Emitted with the new font whenever [`FontComboBox::set_current_font`]
     /// actually changes it — including as a side effect of changing the index.
     pub current_font_changed: Signal1<Font>,
@@ -162,7 +157,6 @@ impl FontComboBox {
             edit_buffer: None,
             max_visible_items: 10,
             expanded: false,
-            pressed: false,
             current_font_changed: Signal1::new(),
             current_index_changed: Signal1::new(),
             activated: Signal1::new(),
@@ -459,10 +453,12 @@ use crate::widget::Draw;
 
 impl EventHandler for FontComboBox {
     fn handle_event(&mut self, event: &Event) {
-        self.base.handle_event(event);
         if !self.base.is_enabled() {
+            self.base.handle_event(event);
             return;
         }
+        // The gesture is resolved before the base records the event: the base clears
+        // `pressed` on the release, so the commit guard must read the value the press set.
         match event {
             Event::KeyPress { key, modifiers: _ } if self.editable => {
                 // Mirrors `EditableComboBox`'s key convention: 8 is backspace, 13 is
@@ -502,8 +498,8 @@ impl EventHandler for FontComboBox {
             Event::MousePress { pos, button } if button == &1 => {
                 // Arm only for a press on the control; a press outside must not leave the
                 // cycle-on-release latch armed.
-                self.pressed = self.geometry().contains_point(*pos);
-                if self.pressed {
+                self.base.set_pressed(self.geometry().contains_point(*pos));
+                if self.base.is_pressed() {
                     // Show the dropdown list
                     self.show_popup();
                     self.base.clicked.emit();
@@ -516,9 +512,9 @@ impl EventHandler for FontComboBox {
                     // required, so **any** left release reached here and cycled the font — a
                     // release the host routed from a drag that began on another control, or one
                     // with no preceding press at all.
-                    && self.pressed =>
+                    && self.base.is_pressed() =>
             {
-                self.pressed = false;
+                self.base.set_pressed(false);
                 // A release off the control cancels, matching `Button`/`Switch`.
                 if self.geometry().contains_point(*pos) && !self.fonts.is_empty() {
                     let next = (self.current_index + 1) % self.fonts.len() as i32;
@@ -527,14 +523,16 @@ impl EventHandler for FontComboBox {
                 }
             }
             Event::MouseRelease { button: 1, .. } => {
-                self.pressed = false;
+                self.base.set_pressed(false);
             }
             // Losing focus abandons a held press, so the latch cannot survive a window switch.
             Event::FocusLost => {
-                self.pressed = false;
+                self.base.set_pressed(false);
             }
             _ => { /* Other events are not relevant */ }
         }
+        // Record the primitive facts after the gesture.
+        self.base.handle_event(event);
     }
 }
 

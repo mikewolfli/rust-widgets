@@ -11,7 +11,7 @@
 //! # Why the indicator drives the value's right inset
 //!
 //! The indicator is the control's trailing chrome, and the value's box must *yield* to it:
-//! QML's `ComboBox.qml` writes this as `rightPadding: padding + indicator.width`, and the
+//! The shared relation writes this as `rightPadding: padding + indicator.width`, and the
 //! reason is that a fixed text inset and a fixed indicator inset are two unrelated
 //! derivations from the *same* edge. A wider indicator, a theme that swaps the glyph for a
 //! larger one, or a bigger font measuring it then overlaps the value instead of pushing it.

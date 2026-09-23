@@ -5,6 +5,151 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.7.0 (2026-09-24) — From Correct Geometry to Live State: a State Channel, an Animation Bus, and a Layering Language
+
+Backward compatible: no public signature was removed or changed. `Widget` gained three defaulted
+methods (`widget_state` strengthened, `tick`, `is_animating`), `BaseWidget` gained four interaction
+fields with accessors, `Colors`'s presets gained state overrides, `View` gained a defaulted
+`build_with`, `Node` gained `host`/`on_mount`/`on_unmount`, and `ProgressBar` gained an indeterminate
+state. One speculative API (`children_if`) was removed because it had no consumer.
+
+---
+
+### 1. The state channel: every control can now say what it is
+
+`WidgetState` (12 variants), `resolve_style_for_state`, and `apply_active_theme` were all implemented
+and all correct — and `fn widget_state` had exactly **one** implementation (the trait default), so a
+theme author's `"button:hover"` was unreachable. One control reported hover; the other 187 reported
+`Normal` forever.
+
+The four facts every control shares now live on `BaseWidget`, recorded from the primitive input events
+the runtime already routes:
+
+| field | who writes it |
+|---|---|
+| `hovered` | `MouseEnter` / `MouseLeave` (synthesised by the runtime) |
+| `pressed` | `MousePress` (inside, enabled) / `MouseMove` / `MouseRelease` |
+| `grabbed` | the same, but `MouseMove` does not clear it |
+| `focus_reason` | `FocusGained { reason }` / `FocusLost` |
+
+`widget_state()`'s default now answers disabled > pressed > hovered > focused > resting, so a control
+that overrides **nothing** gets the whole state channel. `StateOverlay` carries the states that hold at
+once (a focused *and* hovered control) as a separate, non-transitioned draw layer.
+
+The presets ship **26 state overrides** each (`:hover` 0.08 / `:pressed` 0.12 toward the ink,
+`:disabled`, `:checked`, and `:error` — which gives the previously unused `error` role its first
+consumer). Resting appearance is byte-identical: 376 snapshots unchanged.
+
+### 2. The animation bus: one frame driver, and a still window costs nothing
+
+Eleven controls implemented the same `tick(delta_ms) -> bool`; **not one production caller existed**.
+The engine was written, tested, and unreachable.
+
+`Widget::tick`/`is_animating` lift the contract onto the trait (defaulted, so 180 controls needed no
+change), and `runtime::tick_animations` is the crate's **only** frame driver: it advances whatever
+answers `true` to its own `is_animating()`, and returns `false` once nothing is moving — so a static
+frame pays nothing. `has_animating_widgets()` lets a host decide before paying for a sweep.
+
+`ProgressBar` gained an indeterminate sweep (a looping phase, a third-of-the-run band, no fabricated
+percentage).
+
+### 3. The layering language: seven roles, all consumed
+
+`scrim`, `surface_container`, `surface_container_high`, `inverse_surface`/`on_inverse_surface` and
+`outline_variant` all sat in the presets with at most one consumer each. `style::LayerColor` +
+`layer_color()` is now the single resolution point, and each role has its consumer: modal scrims read
+`Scrim`, a panel's face reads `SurfaceContainer`, a tooltip reads `InverseSurface`, and table grid lines
+read `outline_variant` (visibly weaker than the focus ring's `outline`).
+
+### 4. The declarative layer gained the dimensions it was missing
+
+* **`portal`** — `Node::portal()` marks a node created into an engine-owned **overlay layer** while
+  keeping its declared identity. A menu is a child in the tree and an overlay on screen; a pure tree
+  could not express both.
+* **Lifecycle** — `Node::on_mount` / `on_unmount` are *carried* and run by the engine after the patch
+  batch lands, never during `build`, which keeps `build` a pure function of state.
+* **Context** — `view::Context` resolves into concrete node properties at build time, so `diff` still
+  compares value-settled trees and the context never becomes a comparison key.
+* **Error boundary** — a node that cannot be created no longer costs the whole window: its siblings
+  still mount, `ViewError` names it (`widget#key`, plus the ancestor chain), and `ApplyReport` exposes
+  the failure set and ready-made placeholders. "A node cannot be expressed" no longer escalates to
+  "everything disappears".
+* **`children_if` removed** — it had no consumer outside its own test; a plain `if` covers the case.
+
+### 5. Gates
+
+Four new gates, each with a working reverse injection:
+
+| gate | the defect it makes unrepresentable |
+|---|---|
+| `check_state_source_is_the_base` | a second, drifting source of hover/press/focus |
+| `check_animation_has_a_driver` | an animation the bus cannot advance |
+| `check_declared_tokens_have_consumers` | a colour role nothing reads |
+| `check_lifecycle_hooks_are_not_build_time` | a side effect fired while a tree is described |
+
+### 6. Text coverage is now stated
+
+The crate draws **Latin/ASCII only** by default (an 8x8 bitmap face, no font data). This was always
+true and never documented; `lib.rs` and both READMEs now say so, and a test pins that a CJK character
+takes the fallback glyph — so the docs cannot silently overstate what is drawn.
+
+### 7. The text layer: glyphs became data, and the line became Unicode-correct
+
+The crate answered "what does this character look like?" in one place — an accessor returning
+`[u8; 8]` straight from an 8x8 table. That return type was the defect: it hard-codes the cell size,
+so a CJK glyph (16x16) cannot be expressed and a second face cannot be added without editing every
+renderer. **Three** renderers had grown their own copy of the loop, and the GPU path even answered
+`'?'` where the other two answered the box glyph — three ideas of "unsupported" that no test could
+compare.
+
+Glyphs now come from a **source**, chosen by a **stack**, resolved once:
+
+| piece | what it is |
+|---|---|
+| `render::text::GlyphSource` | "do you have this character, and what are its pixels?" — 1-bit bitmap or 16x16 CJK |
+| `render::text::FontStack` | "among the faces I have, which wins?" — first hit, in order |
+| `render::text::for_each_cluster` | the crate's one grapheme-clustering rule |
+| `render::text::estimate_cluster_advance` | the crate's one advance model |
+| `render::text::bidi` | UAX #9 ordering, applied to the permutation of whole clusters |
+
+**Coverage is opt-in data, and the default build is byte-identical.** `fonts-cjk-bitmap` adds a
+generated 16x16 CJK face (2 361 glyphs, 84 996 bytes of generated array) whose data is read on
+demand and never resident. Latin output does not move: a face is *appended* to the stack, and the
+default stack has exactly one entry. All 376 SVG snapshots are byte-for-byte unchanged, before and
+after.
+
+**Bidirectional text is now ordered correctly** in every profile, including `mini`: an Arabic or
+Hebrew run draws right to left. Reordering is applied to the cluster permutation, never to characters
+— a grapheme is the unit that must not be split.
+
+**Real shaping, from an opt-in face.** `RustybuzzShaper` reads a face's `GSUB`/`GPOS` when one of the
+`fonts-*` features supplies it; the renderer honours `Font::family`, so enabling a face never changes
+a label's metrics behind the caller's back. Two faces ship as generated subsets, both OFL, both
+recorded in `NOTICE` with their upstream digests: a Latin face (35 896 bytes) and an Arabic face
+(70 576 bytes) whose joining features turn `بيت` into the word rather than three isolated letters.
+
+Six new gates, each with a working reverse injection:
+
+| gate | the defect it makes unrepresentable |
+|---|---|
+| `check_font_data_is_opt_in` | a profile that grows a binary by enabling font data |
+| `check_glyph_source_is_the_only_glyph_path` | a fourth renderer reaching a face table directly |
+| `check_font_licenses` | third-party glyphs shipped without a licence record |
+| `check_generated_font_table_integrity` | a table whose binary search cannot find its own glyphs |
+| `check_text_model_is_single_sourced` | a second clustering loop or advance model |
+| `check_text_coverage_claim_matches_features` | a coverage claim that no longer matches the features |
+
+The second gate earned its keep immediately: it found `src/wgpu_backend/raster.rs` reading
+`BASIC_FONTS` directly, the third glyph path, and the one place `'?'` was still substituted for an
+uncovered character.
+
+Still not implemented, and stated rather than implied: **antialiased outline rasterisation** and
+**colour emoji**. Both need a glyph representation that can hold per-pixel coverage (which a
+`&'static` 1-bit row array cannot) and an outline path for the SVG backend, so they are a redesign of
+the layer's allocation contract rather than an increment on it.
+
+---
+
 ## 2.6.1 (2026-09-23) — Controls Stop Being Their Container: a Metrics System, a Size Channel, and a Real Click Contract
 
 Backward compatible: no public signature was removed or changed. `FocusGained` gained a payload

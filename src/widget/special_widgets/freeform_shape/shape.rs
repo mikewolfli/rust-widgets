@@ -36,8 +36,18 @@ pub struct FreeformShapeWidget {
     /// The [`Self::fill_overridden`] counterpart for the outline.
     stroke_overridden: bool,
     stroke_width: u32,
-    hovered: bool,
-    pressed: bool,
+    /// Whether the shape's own **outline** is under the pointer.
+    ///
+    /// Named `hovered_item` rather than `hovered` on purpose: this is not the control's
+    /// widget-level hover (which [`BaseWidget`] owns) but a hit test against the *drawn
+    /// path*, which is what a freeform shape treats as its content. A caller comparing
+    /// the two names can see at a glance that they answer different questions.
+    hovered_item: bool,
+    /// Whether a primary press landed inside the outline and has not been released.
+    ///
+    /// The outline-level analogue of [`Self::hovered_item`]: a shape is only pressed
+    /// when the press hit its path, which a plain widget-level `pressed` cannot express.
+    pressed_item: bool,
     /// Emitted when the shape is clicked, i.e. pressed and released while the
     /// pointer is still inside the outline.
     pub clicked: GenericSignal,
@@ -66,8 +76,8 @@ impl FreeformShapeWidget {
             fill_overridden: false,
             stroke_overridden: false,
             stroke_width: 2,
-            hovered: false,
-            pressed: false,
+            hovered_item: false,
+            pressed_item: false,
             clicked: GenericSignal::new(),
             hovered_changed: Signal1::new(),
             pressed_changed: Signal1::new(),
@@ -860,21 +870,21 @@ impl crate::event::EventHandler for FreeformShapeWidget {
         }
         match event {
             crate::event::Event::MouseMove { pos } => {
-                let was_hovered = self.hovered;
-                self.hovered = self.contains(*pos);
-                if was_hovered != self.hovered {
-                    self.hovered_changed.emit(self.hovered);
+                let was_hovered = self.hovered_item;
+                self.hovered_item = self.contains(*pos);
+                if was_hovered != self.hovered_item {
+                    self.hovered_changed.emit(self.hovered_item);
                     self.base.request_redraw();
                 }
             }
             crate::event::Event::MouseEnter { .. } => {
-                self.hovered = true;
+                self.hovered_item = true;
                 self.hovered_changed.emit(true);
                 self.base.request_redraw();
             }
             crate::event::Event::MouseLeave { .. } => {
-                self.hovered = false;
-                self.pressed = false;
+                self.hovered_item = false;
+                self.pressed_item = false;
                 self.hovered_changed.emit(false);
                 self.pressed_changed.emit(false);
                 self.base.request_redraw();
@@ -882,14 +892,14 @@ impl crate::event::EventHandler for FreeformShapeWidget {
             crate::event::Event::MousePress { pos, button }
                 if *button == 1 && self.contains(*pos) =>
             {
-                self.pressed = true;
+                self.pressed_item = true;
                 self.pressed_changed.emit(true);
                 self.base.set_mouse_pressed(true);
                 self.base.request_redraw();
             }
             crate::event::Event::MouseRelease { pos, button } if *button == 1 => {
-                let was_pressed = self.pressed;
-                self.pressed = false;
+                let was_pressed = self.pressed_item;
+                self.pressed_item = false;
                 self.base.set_mouse_pressed(false);
                 if was_pressed && self.contains(*pos) {
                     self.clicked.emit();

@@ -919,6 +919,68 @@ pub fn for_each_mounted_widget<R>(mut f: impl FnMut(ObjectId, &mut dyn Widget) -
     });
 }
 
+/// Advances every animating control by `delta_ms`, reporting whether another frame is needed.
+///
+/// # Why this is the crate's *only* frame driver
+///
+/// `src/style/animation.rs` and eleven controls' own `tick` state machines were all fully
+/// implemented and all unreachable: nothing in `src/widget/`, `src/app/`, `src/render/` or
+/// `src/platform/` ever called one, so a hover faded nowhere and a caret never blinked. The
+/// missing piece is a single driver, and "who drives" has two wrong answers:
+///
+/// * **a timer per control** -- a hundred controls, a hundred timers, none of them aligned to
+///   the frame, and each one a chance to leak;
+/// * **each backend driving** -- the same button advanced twice in one frame, so its animation
+///   runs at a speed that depends on how many layers happened to call in.
+///
+/// So the driver is this one function, called once per frame by the host *before* it paints.
+/// The set of controls advanced is whatever answers `true` to its own
+/// [`Widget::is_animating`] rather than a registry the runtime maintains: a registry would
+/// have a "registered but never unregistered" leak, while self-reporting cannot -- an
+/// unmounted control simply is not in the map any more.
+///
+/// # The return value is the whole point
+///
+/// `true` means "at least one control still owes frames", which is exactly when the host
+/// should schedule another one. A window showing only resting controls therefore settles at
+/// `false` and pays nothing per frame -- a still application does not burn a core, which is
+/// the half of "smooth" that is easy to forget.
+///
+/// # Borrowing
+///
+/// Each control is advanced in place under the same map borrow as
+/// [`for_each_mounted_widget`]; a control's own `tick` therefore must not mount or unmount
+/// widgets.
+pub fn tick_animations(delta_ms: u32) -> bool {
+    let mut still_animating = false;
+    for_each_mounted_widget(|_, widget| {
+        // `is_animating` first, so a resting control (the common case) is not asked to
+        // interpolate at all: this is what keeps a static frame free.
+        if widget.is_animating() {
+            // `tick` also reports "moving"; either answer keeps the frame coming, because a
+            // control can be mid-flight while its own `is_animating` is a coarser fact.
+            if widget.tick(delta_ms) || widget.is_animating() {
+                still_animating = true;
+            }
+        }
+    });
+    still_animating
+}
+
+/// Whether any mounted control is currently animating.
+///
+/// A host can ask this before deciding whether to enter a continuous-frame mode, without
+/// paying for the sweep [`tick_animations`] performs.
+pub fn has_animating_widgets() -> bool {
+    let mut animating = false;
+    for_each_mounted_widget(|_, widget| {
+        if widget.is_animating() {
+            animating = true;
+        }
+    });
+    animating
+}
+
 /// Returns the geometry of a mounted widget, or `None` when it is not mounted.
 pub fn geometry_of(id: ObjectId) -> Option<Rect> {
     MOUNTED
@@ -1881,6 +1943,62 @@ mod tests {
     use super::*;
     use crate::core::{Color, Point};
     use crate::widget::special_widgets::code_editor::CodeEditor;
+
+    // ── BLUE23 §3.3 -- the animation bus ────────────────────────────────────────
+
+    /// A hovered button *is* animating, and the bus advances it to rest.
+    ///
+    /// The whole point of the bus: before it, the button's `interaction_progress`
+    /// interpolated forever in principle and never in practice, because nothing called
+    /// `tick`. This drives it through the one runtime entry point.
+    #[test]
+    fn the_bus_advances_a_hovered_button_to_rest() {
+        let id = register(Box::new(crate::widget::Button::new(
+            "ok".to_string(),
+            crate::core::Rect::new(0, 0, 80, 32),
+        )))
+        .expect("mount");
+        let _unmount = MountGuard(id);
+        // Deliver the hover the same way the runtime does, rather than reaching into the
+        // registry: this goes through the public dispatch the pointer path uses.
+        assert!(dispatch_event(id, &crate::event::Event::MouseEnter { pos: Point::new(5, 5) }));
+        // The control now owes frames, which is what lets a host schedule one.
+        assert!(has_animating_widgets(), "a hovered button is animating");
+        // Step until the bus reports rest, bounded so a transition that never settles fails
+        // the test rather than hanging on it. The exact duration is a theme token, so the
+        // assertion is "it ends", not a specific number of frames.
+        let mut frames = 0;
+        while tick_animations(50) {
+            frames += 1;
+            assert!(frames < 100, "the hover transition must settle, not run forever");
+        }
+        assert!(frames > 0, "a hover must take more than one frame, or it did not animate");
+        assert!(!has_animating_widgets(), "and the control must report resting afterwards");
+    }
+
+    /// A frame with only resting controls costs nothing.
+    ///
+    /// This is the half of "smooth" that decides whether it is bought with a burning
+    /// core: an idle window must report `false` so the host stops scheduling frames.
+    #[test]
+    fn the_bus_reports_no_frames_for_a_resting_control() {
+        let id = register(Box::new(crate::widget::Button::new(
+            "ok".to_string(),
+            crate::core::Rect::new(0, 0, 80, 32),
+        )))
+        .expect("mount");
+        let _unmount = MountGuard(id);
+        assert!(!has_animating_widgets(), "a resting button animates nothing");
+        assert!(!tick_animations(16), "so the bus returns false and the host stops");
+    }
+
+    /// Unmounts a widget registered by a test, even on panic.
+    struct MountGuard(ObjectId);
+    impl Drop for MountGuard {
+        fn drop(&mut self) {
+            let _ = unregister(self.0);
+        }
+    }
 
     /// Downcasts a mounted widget to the concrete editor type.
     fn editor_of(widget: &mut dyn Widget) -> Option<&mut CodeEditor> {

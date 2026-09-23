@@ -37,7 +37,13 @@ pub struct ToggleButton {
     checked: bool,
     auto_exclusive: bool,
     group_id: Option<String>,
-    pressed: bool,
+    /// The last value `pressed_signal`/`released_signal` were emitted for.
+    ///
+    /// The *paint* flag is [`BaseWidget::is_pressed`] (the crate's single source); this
+    /// is only the edge latch that decides whether the signals have been announced, so a
+    /// no-op repeat set cannot re-emit. See `Button::signaled_pressed` for the full
+    /// argument.
+    signaled_pressed: bool,
     /// Emitted with the new checked flag whenever it changes. Semantically a
     /// synonym for `checked_changed`, kept for callers using the checked-state
     /// terminology.
@@ -65,7 +71,7 @@ impl ToggleButton {
             checked: false,
             auto_exclusive: false,
             group_id: None,
-            pressed: false,
+            signaled_pressed: false,
             toggled: Signal1::new(),
             checked_changed: Signal1::new(),
             pressed_signal: GenericSignal::new(),
@@ -141,7 +147,7 @@ impl ToggleButton {
     }
     /// Returns whether the button is currently held down.
     pub fn is_pressed(&self) -> bool {
-        self.pressed
+        self.base.is_pressed()
     }
     /// Sets the pressed flag.
     ///
@@ -150,10 +156,11 @@ impl ToggleButton {
     /// `released_signal`. Unlike the checked flag, this does not request a
     /// redraw.
     pub fn set_pressed(&mut self, pressed: bool) {
-        if self.pressed == pressed {
+        self.base.set_pressed(pressed);
+        if self.signaled_pressed == pressed {
             return;
         }
-        self.pressed = pressed;
+        self.signaled_pressed = pressed;
         if pressed {
             self.pressed_signal.emit();
         } else {
@@ -342,8 +349,11 @@ impl crate::event::EventHandler for ToggleButton {
             }
             crate::event::Event::MouseRelease { pos, button } if *button == 1 => {
                 // Commit only a press that this control armed, and only while the pointer is
-                // still over it — the same two conditions `Button` applies.
-                if self.pressed && self.base.contains_point_with_touch_expansion(*pos) {
+                // still over it — the same two conditions `Button` applies. The guard reads
+                // `signaled_pressed`, not the base flag: the base clears `pressed` on the
+                // release before this arm runs, so the paint flag can no longer say
+                // whether this control had armed the gesture.
+                if self.signaled_pressed && self.base.contains_point_with_touch_expansion(*pos) {
                     self.toggle();
                 }
                 self.set_pressed(false);

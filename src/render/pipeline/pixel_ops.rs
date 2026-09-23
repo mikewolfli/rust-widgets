@@ -1,11 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! Pixel-level operations: draw_bitmap_glyph, glyph_bitmap, fill_pixels,
+//! Pixel-level operations: draw_bitmap_glyph, glyph_rects, fill_pixels,
 //! blend_pixel, set_pixel, pixel_bytes_len, and anti-aliased coverage/geometry helpers.
 use crate::core::{Color, Point, Rect, Size};
-use crate::render::TextCluster;
-use font8x8::{UnicodeFonts, BASIC_FONTS};
 
 /// Configuration for `draw_bitmap_glyph`.
 pub(crate) struct GlyphDrawConfig<'a> {
@@ -58,6 +56,11 @@ pub(crate) struct GlyphDrawConfig<'a> {
 /// term can equal `gx * w / 8` when `w < 8`, and a zero-extent rectangle is a drawing command
 /// that paints nothing, so it is widened to one pixel (which is also what the rasteriser's
 /// own guard did).
+///
+/// The cell walked here is the one the **active font stack** answers with — 8x8 for Latin,
+/// 16x16 for a CJK character when a CJK face is enabled — and the division is by that cell's
+/// own dimensions, not by a hardcoded 8. The default build's stack is the 8x8 face, so every
+/// coordinate this produced before the stack existed is reproduced bit for bit.
 pub(crate) fn glyph_rects(
     ch: char,
     x: i32,
@@ -71,24 +74,29 @@ pub(crate) fn glyph_rects(
     // A whitespace glyph and a zero-extent box produce no ink; the rasteriser returns early for
     // both, and so does this.
     if !ch.is_whitespace() && w != 0 && h != 0 {
-        let glyph = glyph_bitmap(ch);
-        for gy in 0..8i32 {
-            let row = glyph[gy as usize];
-            for gx in 0..8i32 {
-                if row & (1u8 << gx) == 0 {
-                    continue;
+        let (glyph, _) = crate::render::text::resolve(ch);
+        let gw = glyph.width as i32;
+        let gh = glyph.height as i32;
+        // A resolved glyph is always a real cell (8x8 or 16x16); the guard is belt-and-braces so
+        // a hypothetical zero-sized face divides nothing.
+        if gw > 0 && gh > 0 {
+            for gy in 0..gh {
+                for gx in 0..gw {
+                    if !glyph.bit(gx as u32, gy as u32) {
+                        continue;
+                    }
+                    let x0 = x + (gx * width) / gw;
+                    let mut x1 = x + ((gx + 1) * width) / gw;
+                    let y0 = y + (gy * height) / gh;
+                    let mut y1 = y + ((gy + 1) * height) / gh;
+                    if x1 <= x0 {
+                        x1 = x0 + 1;
+                    }
+                    if y1 <= y0 {
+                        y1 = y0 + 1;
+                    }
+                    rects.push((x0, y0, x1, y1));
                 }
-                let x0 = x + (gx * width) / 8;
-                let mut x1 = x + ((gx + 1) * width) / 8;
-                let y0 = y + (gy * height) / 8;
-                let mut y1 = y + ((gy + 1) * height) / 8;
-                if x1 <= x0 {
-                    x1 = x0 + 1;
-                }
-                if y1 <= y0 {
-                    y1 = y0 + 1;
-                }
-                rects.push((x0, y0, x1, y1));
             }
         }
     }
@@ -118,21 +126,20 @@ pub(crate) fn draw_bitmap_glyph(config: &mut GlyphDrawConfig) {
         }
     }
 }
-pub(crate) fn glyph_bitmap(ch: char) -> [u8; 8] {
-    if let Some(bitmap) = BASIC_FONTS.get(ch) {
-        return bitmap;
-    }
-    if let Some(bitmap) = BASIC_FONTS.get(ch.to_ascii_uppercase()) {
-        return bitmap;
-    }
-    if let Some(bitmap) = BASIC_FONTS.get(ch.to_ascii_lowercase()) {
-        return bitmap;
-    }
-    [0b11111111, 0b10000001, 0b10111101, 0b10100101, 0b10111101, 0b10000001, 0b11111111, 0b00000000]
-}
 pub(crate) fn pixel_bytes_len(size: Size) -> usize {
     size.width.saturating_mul(size.height).saturating_mul(4) as usize
 }
+
+/// BLUE23 §0A.2 — the text-coverage boundary, asserted where it is decided.
+///
+/// The crate-level docs claim "the default build draws Latin/ASCII only" and explain
+/// that anything else becomes the fallback glyph. A claim about what is *not* supported
+/// decays silently — the day a font is added the docs go stale and no test notices. This
+/// pins the other direction: the tofu path must be what a CJK character takes, on a
+/// default build.
+///
+/// Moved to the end of the file so no production item follows a test module (the crate's
+/// own lint posture: tests last).
 /// Writes `color` into `pixels` as consecutive RGBA quads.
 ///
 /// `pixels` must be a row-major RGBA buffer. Trailing bytes that do not form a
@@ -326,38 +333,6 @@ pub(crate) fn line_stroke_coverage_grid(
     }
     (coverage_sum / total as f32).clamp(0.0, 1.0)
 }
-pub(crate) fn cluster_ends_with_zwj(cluster: &TextCluster) -> bool {
-    cluster.text.chars().last().map(|ch| ch == '\u{200D}').unwrap_or(false)
-}
-pub(crate) fn is_combining_mark(ch: char) -> bool {
-    crate::render::grapheme::is_combining_mark(ch)
-}
-pub(crate) fn is_variation_selector(ch: char) -> bool {
-    crate::render::grapheme::is_variation_selector(ch)
-}
-pub(crate) fn is_wide_scalar(ch: char) -> bool {
-    matches!(
-        ch as u32,
-        0x1100..=0x115F
-            | 0x2329..=0x232A
-            | 0x2E80..=0xA4CF
-            | 0xAC00..=0xD7A3
-            | 0xF900..=0xFAFF
-            | 0xFE10..=0xFE19
-            | 0xFE30..=0xFE6F
-            | 0xFF00..=0xFF60
-            | 0xFFE0..=0xFFE6
-            | 0x1F300..=0x1FAFF
-    )
-}
-pub(crate) fn estimate_cluster_advance(cluster: &str, font_size: f32, scale: f32) -> f32 {
-    if cluster.trim().is_empty() {
-        return (font_size * 0.33 * scale).max(1.0);
-    }
-    let has_wide = cluster.chars().any(is_wide_scalar);
-    let factor = if has_wide { 1.0 } else { 0.6 };
-    (font_size * factor * scale).max(1.0)
-}
 pub(crate) fn rounded_rect_effective_radius(rect: Rect, radius: u32) -> u32 {
     radius.min(rect.width / 2).min(rect.height / 2)
 }
@@ -427,4 +402,49 @@ pub(crate) fn rounded_rect_coverage_grid(
         }
     }
     covered as f32 / total as f32
+}
+
+/// BLUE23 §0A.2 — the text-coverage boundary, asserted where it is decided.
+///
+/// The crate-level docs claim "the default build draws Latin/ASCII only" and explain that
+/// anything else becomes the fallback glyph. A claim about what is *not* supported decays
+/// silently — the day a font is added the docs go stale and no test notices. So the boundary
+/// is pinned from both sides: the tofu path is what a non-Latin character takes on a default
+/// build, and enabling a data feature moves that boundary by exactly the face it adds.
+#[cfg(test)]
+mod text_coverage_tests {
+    use crate::render::text;
+
+    #[test]
+    fn ascii_resolves_to_a_real_glyph() {
+        assert_eq!(text::source_for('A'), Some("font8x8"), "'A' is inside the base face");
+        assert_eq!(text::source_for('5'), Some("font8x8"));
+    }
+
+    /// The scripts the crate docs name as unsupported: CJK, Cyrillic, Arabic, emoji. With no
+    /// font data enabled, every one of them must take the fallback glyph.
+    #[cfg(not(feature = "fonts-cjk-bitmap"))]
+    #[test]
+    fn non_latin_resolves_to_the_fallback_glyph_by_default() {
+        for ch in ['\u{4e2d}', '\u{0416}', '\u{0627}', '\u{1f600}'] {
+            assert_eq!(
+                text::source_for(ch),
+                None,
+                "U+{:04X} is outside the base face and must take the fallback glyph",
+                ch as u32
+            );
+        }
+    }
+
+    /// With the CJK data enabled, the boundary moves to exactly where the feature says: Han is
+    /// covered by the added face, and the scripts the feature does *not* carry still fall back.
+    /// This is the half of the claim that would otherwise rot unnoticed.
+    #[cfg(feature = "fonts-cjk-bitmap")]
+    #[test]
+    fn enabling_the_cjk_data_moves_the_boundary_by_exactly_one_face() {
+        assert_eq!(text::source_for('\u{4e2d}'), Some("cjk-bitmap"));
+        assert_eq!(text::source_for('\u{0416}'), None, "Cyrillic is not in the CJK subset");
+        assert_eq!(text::source_for('\u{0627}'), None, "Arabic is not in the CJK subset");
+        assert_eq!(text::source_for('\u{1f600}'), None, "emoji is not in the CJK subset");
+    }
 }

@@ -671,8 +671,8 @@ impl Draw for Calendar {
             // toward a literal white, which is a light-theme assumption written as an
             // arithmetic step: on the dark appearance `rgb(18,18,18)` became
             // `rgb(137,137,137)` — a heavy mid-grey band, far heavier than any mainstream
-            // calendar's header (Flutter's `onSurfaceVariant` header, Qt's
-            // `QCalendarWidget`, SwiftUI's graphical `DatePicker` all keep it within a few
+            // calendar's header (a Material `onSurfaceVariant` header and SwiftUI's graphical
+            // `DatePicker` all keep it within a few
             // percent of the body). Blending a *small* fraction toward the calendar's own
             // ink gives the same restrained step on either surface, which is also what
             // keeps the weekday labels legible on top of it.
@@ -864,8 +864,8 @@ impl Draw for Calendar {
                         text_color
                     };
                     // The day number is **centred in its cell** on both axes, which is what a
-                    // calendar cell is for: Qt's `QCalendarWidget`, Flutter's
-                    // `CalendarDatePicker`, and the platform pickers all put the number in the
+                    // calendar cell is for: the mainstream calendar pickers
+                    // all put the number in the
                     // middle of the cell, because the cell's own tint (selection, "today") is
                     // the thing being pointed at and the number labels it. The previous form
                     // left-aligned the run at `cx + 3` inside a `cy + 3` line box, so a one-digit
@@ -1191,8 +1191,8 @@ mod tests {
     /// A day number sits in the **middle of its cell**, on both axes.
     ///
     /// The cell's own tint (selection, "today") is the thing being pointed at and the number
-    /// labels it; Qt's `QCalendarWidget`, Flutter's `CalendarDatePicker` and the platform
-    /// pickers all centre it. The previous form left-aligned the run at `cx + 3` inside a
+    /// labels it; the mainstream calendar pickers
+    /// all centre it. The previous form left-aligned the run at `cx + 3` inside a
     /// `cy + 3` line box, so a one-digit day hugged the cell's left rule and the digits
     /// visibly disagreed with the grid about which cell they labelled.
     ///

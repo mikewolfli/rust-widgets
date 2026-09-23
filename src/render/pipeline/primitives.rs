@@ -10,10 +10,10 @@ use crate::compat::Vec;
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::render::pipeline::pixel_ops::{
     blend_pixel, circle_fill_coverage_grid, circle_stroke_coverage_grid, draw_bitmap_glyph,
-    inset_rect, is_combining_mark, is_variation_selector, line_stroke_coverage_grid, pixel_visible,
-    rounded_rect_coverage, rounded_rect_coverage_grid, rounded_rect_effective_radius, set_pixel,
-    GlyphDrawConfig,
+    inset_rect, line_stroke_coverage_grid, pixel_visible, rounded_rect_coverage,
+    rounded_rect_coverage_grid, rounded_rect_effective_radius, set_pixel, GlyphDrawConfig,
 };
+use crate::render::text::{is_combining_mark, is_variation_selector};
 use crate::render::SoftwareSurface;
 
 macro_rules! set_pixel_clipped {

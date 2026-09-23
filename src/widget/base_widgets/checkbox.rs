@@ -112,7 +112,7 @@ impl CheckBox {
     /// Read from the style so a theme can tune it, falling back to the shared table. This is
     /// what `spacing` means throughout the crate: the distance from a control's *own*
     /// indicator to its *own* text — never the distance between two siblings, which is the
-    /// parent layout's decision (QML draws the same line: `CheckBox.qml:61` uses `spacing`
+    /// parent layout's decision (the standard table draws the same line: `spacing` is used
     /// for this pair only).
     fn label_gap(&self) -> i32 {
         self.style().spacing.unwrap_or(dimensions::INDICATOR_TEXT_SPACING) as i32
@@ -397,7 +397,7 @@ impl EventHandler for CheckBox {
             // it.
             //
             // The control now tests the **indicator and its label** through the shared expansion,
-            // which is the reading every toolkit uses: `QCheckBox` reacts to its own contents,
+            // which is the reading every toolkit uses: a checkbox reacts to its own contents,
             // and the minimum touch size widens that region rather than making the whole row
             // live. A caller that wants the row to toggle should size the control to the row.
             Event::MousePress { pos, button } if *button == 1 && self.base.is_enabled() => {
@@ -497,8 +497,8 @@ impl Draw for CheckBox {
         if !self.text.is_empty() {
             // `spacing` is the indicator-to-label gap, and that is the *only* thing the field
             // means — the gap between two sibling controls belongs to whichever layout placed
-            // them (QML keeps the two separate for the same reason: `CheckBox.qml:61` uses
-            // `spacing` for this pair, never for siblings). A themed spacing therefore tunes
+            // them (the standard table keeps the two separate for the same reason: `spacing` is used
+            // for this pair, never for siblings). A themed spacing therefore tunes
             // this one relation and cannot accidentally re-space a whole row.
             let gap = self.label_gap();
             let text_color = style.text_color.unwrap_or_else(|| {
@@ -1014,5 +1014,32 @@ mod tests {
     fn test_widget_connection_scope() {
         let cb = CheckBox::new(Rect::new(0, 0, 100, 30));
         let _scope = cb.connection_scope();
+    }
+
+    // ── State channel (§2.2) ─────────────────────────────────────────────────
+
+    /// `CheckBox` overrides neither `widget_state` nor any hover bookkeeping, so this
+    /// pins the *whole* point of elevating the state source into `BaseWidget`: a control
+    /// that inherited the default reports `Hover` purely because the runtime delivered
+    /// `MouseEnter`. Before the elevation this could not be true.
+    #[test]
+    fn widget_state_reports_hover_from_the_base() {
+        use crate::style::WidgetState;
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        assert_eq!(cb.widget_state(), WidgetState::Normal);
+        cb.handle_event(&Event::MouseEnter { pos: Point::new(1, 1) });
+        assert_eq!(cb.widget_state(), WidgetState::Hover);
+        cb.handle_event(&Event::MouseLeave { pos: Point::new(1, 1) });
+        assert_eq!(cb.widget_state(), WidgetState::Normal);
+    }
+
+    /// Disabled outranks hovered — the precedence the trait documents.
+    #[test]
+    fn widget_state_prefers_disabled_over_hover() {
+        use crate::style::WidgetState;
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        cb.handle_event(&Event::MouseEnter { pos: Point::new(1, 1) });
+        cb.set_enabled(false);
+        assert_eq!(cb.widget_state(), WidgetState::Disabled);
     }
 }

@@ -400,7 +400,7 @@ impl TabWidget {
     ///
     /// # Why the move is applied live rather than on release
     ///
-    /// Qt's `QTabBar` swaps the two tabs the moment the pointer crosses the midpoint, so
+    /// The tab strip swaps the two tabs the moment the pointer crosses the midpoint, so
     /// the strip the user sees while dragging is the arrangement they will get. Deferring
     /// it to the release makes the gesture feel unresponsive and gives no feedback about
     /// where the tab will land.

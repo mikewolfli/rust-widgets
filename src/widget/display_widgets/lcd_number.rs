@@ -205,14 +205,14 @@ impl LCDNumber {
     ///
     /// # Why the padding is not cosmetic
     ///
-    /// `num_digits` is Qt's `QLCDNumber::digitCount`, and Qt's contract is that the display
+    /// `num_digits` is the configured digit count, and the contract is that the display
     /// renders *that many* digit positions, right-aligned and blank-filled: it is the shape of the
     /// readout, which is why a caller sets it at all. This method returned the bare value instead,
     /// so `num_digits = 6` laid out six digit widths and then drew one character in the middle of
     /// them — the snapshot showed `A–F` segments lit for a single `0` in a six-wide panel. Reading
     /// `num_digits` therefore changed nothing about what a user saw except the cell size.
     ///
-    /// The padding is on the **left**, matching Qt (a readout grows leftward as its value grows),
+    /// The padding is on the **left**, matching that contract (a readout grows leftward as its value grows),
     /// and it is applied only to the decimal/hex/octal/binary digit runs — never to a sign or a
     /// decimal point, which occupy a position each but are not digits.
     ///
@@ -680,7 +680,7 @@ mod tests {
         lcd.set_value(1234.0);
         // Padded to `num_digits` (the default is 6), because that is what the property means:
         // it is the *number of digit positions* the display renders, right-aligned and blank-
-        // filled, which is Qt's `QLCDNumber::digitCount` contract. These tests previously
+        // filled, which is the configured digit-count contract. These tests previously
         // asserted the bare value, which is why `num_digits` could be read for the cell width and
         // ignored for the readout's shape without anything failing.
         assert_eq!(lcd.display_text(), "  1234");

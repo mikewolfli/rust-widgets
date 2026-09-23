@@ -5,7 +5,7 @@
 //!
 //! # The rule this control embodies
 //!
-//! BLUE22 §B.8 cites `GroupBox.qml:20`: `topPadding = padding + label_height + spacing`, i.e.
+//! BLUE22 §B.8 cites the reference group box: `topPadding = padding + label_height + spacing`, i.e.
 //! the content area begins below the title **plus the gap that separates the two**. This
 //! control derived the same quantity as a bare literal `14` in `content_rect` while the title
 //! band was separately anchored to the frame's top edge, so "where the title is" and "where the
@@ -65,7 +65,7 @@ const BORDER_WIDTH: u32 = 2;
 
 /// The vertical gap between the title row and the content below it: 6.
 ///
-/// This is the `spacing` of `GroupBox.qml:20`'s `topPadding = padding + label_height +
+/// This is the `spacing` of the reference group-box formula `topPadding = padding + label_height +
 /// spacing` — the distance between two adjacent *elements* of this control, as distinct from
 /// the frame's edge-to-content padding. It used to be folded into a single `top: 14` literal,
 /// which is why the title and the content could not be moved independently and why nothing
@@ -74,7 +74,7 @@ const TITLE_CONTENT_SPACING: u32 = dimensions::BUTTON_ICON_SPACING;
 
 /// The frame's own edge-to-content padding: 4.
 ///
-/// The `padding` of the same QML formula, kept separate from [`TITLE_CONTENT_SPACING`] for the
+/// The `padding` of the same formula, kept separate from [`TITLE_CONTENT_SPACING`] for the
 /// reason rule 4 gives: padding is edge-to-content, spacing is element-to-element. The old
 /// `content_rect` used one `inset = 4` for both the horizontal and the vertical edges and let
 /// the title band stand in for the top one, so there was no place for a second value to live.
@@ -372,8 +372,8 @@ impl GroupBox {
 
     /// The top edge the frame's content begins at, below the title band and its gap.
     ///
-    /// This is BLUE22 §B.8's `topPadding = padding + label_height + spacing`
-    /// (`GroupBox.qml:20`). The three terms are separately named because they are three
+    /// This is BLUE22 §B.8's `topPadding = padding + label_height + spacing`.
+    /// The three terms are separately named because they are three
     /// different facts: the frame's edge-to-content padding, the label's own height, and the
     /// element-to-element gap. Summing them is what makes the content start exactly below the
     /// title, so the pair cannot drift into an overlap.
@@ -567,6 +567,20 @@ impl Draw for GroupBox {
         let content = self.content_rect();
         let title_rect = self.title_rect();
         let style = self.style();
+        // Draw the panel's face.
+        //
+        // A panel is the crate's container surface — the thing a card *is* — so it takes the
+        // theme's `surface_container` role, one step above the page. It used to draw **no
+        // face at all**, only a border, so a panel on the window was indistinguishable from
+        // the window itself and the whole set of layering roles had no consumer. A caller's
+        // explicit colour still wins, so a hand-coloured panel is unaffected.
+        let face = style
+            .background_color
+            .filter(|_| !style.theme_derived)
+            .or_else(|| crate::style::layer_color(crate::style::LayerColor::SurfaceContainer));
+        if let Some(face) = face {
+            context.fill_rect(rect, face);
+        }
         // Draw border
         context.draw_rect(rect, style.border_color.unwrap_or(Color::rgb(200, 200, 200)));
         // Draw title background to hide the border behind the title. The band is widened
@@ -586,7 +600,20 @@ impl Draw for GroupBox {
                     title_bg_width,
                     BORDER_WIDTH.max(title_rect.height),
                 ),
-                style.background_color.unwrap_or(Color::rgb(255, 255, 255)),
+                // The erasure band must match the face it sits on, or it reads as a stripe.
+                // The caller's colour wins, then the panel's own layer, then the page.
+                style
+                    .background_color
+                    .filter(|_| !style.theme_derived)
+                    .or_else(|| {
+                        crate::style::layer_color(crate::style::LayerColor::SurfaceContainer)
+                    })
+                    .unwrap_or_else(|| {
+                        crate::style::theme_manager()
+                            .current_theme()
+                            .map(|active| active.colors.background)
+                            .unwrap_or(Color::rgb(255, 255, 255))
+                    }),
             );
         }
         // Draw checkbox if checkable
@@ -725,7 +752,7 @@ mod tests {
     ///
     /// The indicator's *width* was already derived (18 from the shared table), but its **space
     /// was not reserved**: the title still started at the 10 px inset, so an 18 px box began at
-    /// x = -14 and was partly clipped by the frame it belongs to. Qt's `GroupBox.qml` states the
+    /// x = -14 and was partly clipped by the frame it belongs to. The reference group box states the
     /// relation — the title's padding includes the indicator's width when there is one.
     #[test]
     fn a_checkable_groups_indicator_is_inside_the_frame() {

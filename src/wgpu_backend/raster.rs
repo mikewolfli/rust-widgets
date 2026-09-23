@@ -7,7 +7,6 @@ use super::types::{PixelRect, Rgba8};
 // The blend-mode enum is defined once in the render layer and reused here rather than
 // mirrored, so the two backends cannot disagree about the set of modes (principle #54).
 use crate::render::BlendMode;
-use font8x8::{UnicodeFonts, BASIC_FONTS};
 pub fn align_to(value: u32, alignment: u32) -> u32 {
     value.div_ceil(alignment) * alignment
 }
@@ -426,22 +425,27 @@ fn draw_text_cpu_rgba8(
         let row = grid_index / columns;
         let origin_x = rect.x + col * glyph_w;
         let origin_y = rect.y + row * glyph_h;
-        let glyph = BASIC_FONTS.get(scalar).or_else(|| BASIC_FONTS.get('?')).unwrap_or([0; 8]);
-        for (gy, bits) in glyph.iter().enumerate() {
-            for gx in 0..8 {
-                if ((bits >> gx) & 1) == 0 {
-                    continue;
+        // The glyph's rectangles come from `crate::render::glyph_rects` — the same derivation the
+        // software rasteriser fills and the SVG backend emits, so a glyph lands on the same pixels
+        // in all three renderers. This path used to walk the 8x8 table itself, which meant a face
+        // added by a feature (a CJK face, a vector face) was invisible to it, and that it fell back
+        // to `'?'` for an uncovered character while the other two fell back to the box glyph — the
+        // GPU path's idea of "unsupported" being a third answer nobody chose.
+        let rects: Vec<(i32, i32, i32, i32)> =
+            crate::render::glyph_rects(scalar, origin_x, origin_y, glyph_w as u32, glyph_h as u32)
+                .collect();
+        for (x0, y0, x1, y1) in rects {
+            for py in y0..y1 {
+                for px in x0..x1 {
+                    if px < clip_rect.x
+                        || py < clip_rect.y
+                        || px >= clip_rect.right()
+                        || py >= clip_rect.bottom()
+                    {
+                        continue;
+                    }
+                    set_pixel_cpu_rgba8(pixels, width, px as u32, py as u32, color);
                 }
-                let px = origin_x + gx;
-                let py = origin_y + gy as i32;
-                if px < clip_rect.x
-                    || py < clip_rect.y
-                    || px >= clip_rect.right()
-                    || py >= clip_rect.bottom()
-                {
-                    continue;
-                }
-                set_pixel_cpu_rgba8(pixels, width, px as u32, py as u32, color);
             }
         }
     }

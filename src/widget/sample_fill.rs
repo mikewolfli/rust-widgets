@@ -50,13 +50,14 @@ use crate::widget::Widget;
 
 use crate::compat::{String, Vec};
 use crate::widget::advanced_widgets::tab_bar::TabBar;
+use crate::widget::container_widgets::groupbox::GroupBox;
 use crate::widget::input_widgets::cascader::{Cascader, CascaderOption};
 use crate::widget::input_widgets::combobox::ComboBox;
 use crate::widget::input_widgets::dropdown::Dropdown;
 use crate::widget::input_widgets::editable_combo_box::EditableComboBox;
 use crate::widget::input_widgets::font_combo_box::FontComboBox;
-use crate::widget::input_widgets::multi_select_combo_box::{MultiSelectComboBox, MultiSelectItem};
 use crate::widget::input_widgets::listbox::ListBox;
+use crate::widget::input_widgets::multi_select_combo_box::{MultiSelectComboBox, MultiSelectItem};
 use crate::widget::menu_toolbar::menu::Menu;
 use crate::widget::menu_toolbar::menu_button::{MenuButton, MenuItem};
 use crate::widget::special_widgets::command_palette::{CommandEntry, CommandPalette};
@@ -76,6 +77,21 @@ use crate::widget::view_widgets::virtual_table::VirtualTable;
 /// both build a `TableWidget` and must both be filled.
 pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
     match name {
+        // ── A container whose *state* is the feature ──
+        //
+        // `group_box` ships with `checkable == false`, so its tick — the one part of it a user
+        // toggles — was never in any snapshot, and a colour regression in that tick was
+        // invisible to both the gallery and its gate. Enabling the state here is what makes
+        // the tick part of the checked appearance the exporter renders.
+        "group_box" => match widget_as_mut::<GroupBox>(widget) {
+            Some(group_box) => {
+                group_box.set_checkable(true);
+                group_box.set_checked(true);
+                true
+            }
+            None => false,
+        },
+
         // ── Tabular controls that read cells from a source ──
         //
         // `virtual_table` is **not** a `TableWidget`: it is its own type that reads from an

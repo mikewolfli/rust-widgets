@@ -6,7 +6,7 @@
 //! # The indicator drives the value's padding, and the row is assembled
 //!
 //! The indicator is part of the control's trailing chrome, and the value's box must *yield*
-//! to it: QML's `ComboBox.qml` states this as `rightPadding: padding + indicator.width`, and
+//! to it: the shared relation states this as `rightPadding: padding + indicator.width`, and
 //! the reason is that a fixed text inset and a fixed indicator inset are two unrelated
 //! derivations from the *same* edge. A wider indicator — or a larger font measuring one —
 //! then overlaps the value instead of pushing it. The previous form could not express that

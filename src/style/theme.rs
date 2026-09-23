@@ -174,6 +174,52 @@ pub fn semantic_color(_token: SemanticColor) -> Option<Color> {
     None
 }
 
+/// A **layering** colour role: the tokens that say where a surface sits relative to the page.
+///
+/// # Why this is a separate axis from [`SemanticColor`]
+///
+/// `SemanticColor` answers "what does this mean?" (good, bad, warning). These answer "how far
+/// off the page is this?" — a card, a popover, a modal's dimming layer, a deliberately
+/// inverted bar. A toast is not "informational", it is *above* the page; a scrim is not a
+/// meaning at all.
+///
+/// Reading them through one accessor is what keeps the whole set reachable: seven such
+/// roles existed in every preset and were consumed by at most one control each, so a control
+/// that needed "one step up from the page" usually re-derived a blend inline instead. The
+/// blend and the token then disagreed the moment either moved.
+pub enum LayerColor {
+    /// The modal dimming layer.
+    Scrim,
+    /// A card / panel surface, one step above the page.
+    SurfaceContainer,
+    /// A raised surface, one step above [`LayerColor::SurfaceContainer`].
+    SurfaceContainerHigh,
+    /// A deliberately inverted surface (a toast on a page-coloured bar, or the reverse).
+    InverseSurface,
+    /// Ink legible on [`LayerColor::InverseSurface`].
+    OnInverseSurface,
+}
+
+/// The active theme's colour for `layer`, or `None` when no theme is active.
+#[cfg(device_profile)]
+pub fn layer_color(layer: LayerColor) -> Option<Color> {
+    let manager = theme_manager();
+    let theme = manager.current_theme()?;
+    Some(match layer {
+        LayerColor::Scrim => theme.colors.scrim,
+        LayerColor::SurfaceContainer => theme.colors.surface_container,
+        LayerColor::SurfaceContainerHigh => theme.colors.surface_container_high,
+        LayerColor::InverseSurface => theme.colors.inverse_surface,
+        LayerColor::OnInverseSurface => theme.colors.on_inverse_surface,
+    })
+}
+
+/// No theme module in this profile, so there is no palette to resolve a layer against.
+#[cfg(not(device_profile))]
+pub fn layer_color(_layer: LayerColor) -> Option<Color> {
+    None
+}
+
 /// The active theme's motion tokens: `(fast, normal, slow)` in milliseconds.
 ///
 /// # Why this is a function rather than a field read

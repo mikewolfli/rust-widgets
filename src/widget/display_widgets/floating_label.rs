@@ -381,6 +381,15 @@ impl Widget for FloatingLabel {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+    // The label's float is driven through the trait so a host with `&mut dyn Widget` can
+    // advance it -- the inherent `tick` alone was unreachable from the animation bus.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        FloatingLabel::tick(self, delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.travel.progress() != self.target_progress
+    }
 }
 
 /// `FloatingLabel`'s property contract.

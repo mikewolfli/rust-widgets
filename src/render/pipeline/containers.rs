@@ -7,16 +7,11 @@
 //! Rendering primitives (rect, circle, line, text, etc.) are in the
 //! `primitives` sub-module.
 
-use crate::compat::{MiniToString, Vec};
+use crate::compat::Vec;
 use crate::core::{Color, Font, Rect, Size};
 use crate::render::default_software_render_config;
-use crate::render::pipeline::pixel_ops::{
-    cluster_ends_with_zwj, estimate_cluster_advance, fill_pixels, is_combining_mark,
-    is_variation_selector, pixel_visible, set_pixel,
-};
-use crate::render::{
-    BackBuffer, ShapedText, SoftwareRenderConfig, SoftwareSurface, TextCluster, TextMetrics,
-};
+use crate::render::pipeline::pixel_ops::{fill_pixels, pixel_visible, set_pixel};
+use crate::render::{BackBuffer, ShapedText, SoftwareRenderConfig, SoftwareSurface, TextMetrics};
 use crate::style::Gradient;
 use crate::style::GradientType;
 
@@ -91,49 +86,13 @@ impl SoftwareSurface {
         let width = shaped.advance().round() as u32;
         TextMetrics { width, height, ascent, descent }
     }
-    /// Shape text into unicode-aware clusters with logical advances.
+    /// Shape text into unicode-aware clusters, in **visual** order for painting.
+    ///
+    /// The derivation itself lives in [`crate::render::text`] (`shape_line`), so this backend and
+    /// the SVG backend cannot drift: a change to clustering, advances or bidirectional reordering
+    /// reaches both at once. All this method supplies is the device scale it already knows.
     pub fn shape_text(&self, text: &str, font: &Font) -> ShapedText {
-        let scale = self.buffer.dpi_scale();
-        let mut clusters: Vec<TextCluster> = Vec::new();
-        for scalar in text.chars() {
-            let should_merge = clusters
-                .last()
-                .map(|cluster| {
-                    cluster_ends_with_zwj(cluster)
-                        || scalar == '\u{200D}'
-                        || is_combining_mark(scalar)
-                        || is_variation_selector(scalar)
-                })
-                .unwrap_or(false);
-            if should_merge {
-                if let Some(last) = clusters.last_mut() {
-                    last.text.push(scalar);
-                }
-            } else {
-                clusters.push(TextCluster { text: scalar.to_string(), advance: 0.0 });
-            }
-        }
-        let mut total_advance = 0.0f32;
-        // The tracking is added to each cluster's advance **here**, in the one function both the
-        // measure path and the draw path go through. Adding it only in `draw_text` would make a
-        // tracked font measure narrower than it paints — the "measure with A, draw with B" defect
-        // this crate has paid for once already (§G.5), and a `letter_spacing` that silently changed
-        // how much room a label reserves is worse than no tracking at all. The `scale` is applied
-        // because a tracking is a logical-pixel distance like every other metric here.
-        let tracking = font.letter_spacing() * scale;
-        for cluster in &mut clusters {
-            cluster.advance = estimate_cluster_advance(&cluster.text, font.size(), scale);
-            // A trailing cluster's tracking would extend past the end of the run and make a centred
-            // label sit visibly left of centre, so it is not paid on the last one. CSS calls this out
-            // for the same reason.
-            total_advance += cluster.advance;
-        }
-        // Applied after the sum so the last cluster can be excluded by the caller of the loop above:
-        // `n` clusters have `n - 1` inter-cluster gaps.
-        if tracking != 0.0 && !clusters.is_empty() {
-            total_advance += tracking * (clusters.len() - 1) as f32;
-        }
-        ShapedText { clusters, advance: total_advance }
+        crate::render::text::shape_line(text, font, self.buffer.dpi_scale())
     }
     /// Fills a rectangle with a gradient.
     pub fn fill_rect_gradient(&mut self, rect: Rect, gradient: &Gradient) {

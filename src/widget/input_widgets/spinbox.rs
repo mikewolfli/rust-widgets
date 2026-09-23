@@ -6,7 +6,7 @@
 //! # The value box yields to the step column, and the column is assembled
 //!
 //! BLUE22 §F.2.2 puts this control first in the §B.8 migration queue, and the reason is the one
-//! insight the whole composite section rests on: `SpinBox.qml:20-21` states the relation as
+//! insight the whole composite section rests on: the sibling-column relation reads
 //! `leftPadding: padding + (mirrored ? up.width : down.width)`, i.e. **the text side's inset is
 //! the sibling column's width**. The value's box is therefore not "the field minus a constant"
 //! — it is whatever the column leaves.
@@ -160,7 +160,7 @@ impl SpinBox {
 
     /// The box the user may type in: whatever the button column leaves.
     ///
-    /// QML derives exactly this (`SpinBox.qml:20-21`'s `leftPadding: padding + down.width`) —
+    /// The sibling-column relation derives exactly this —
     /// the text area *yields* to the button column, so the two cannot overlap at any font or
     /// button size.
     fn editable_rect(&self) -> Rect {
@@ -194,7 +194,7 @@ impl SpinBox {
     ///
     /// # Why the row is assembled rather than computed
     ///
-    /// This is the `SpinBox.qml:20-21` relation — `leftPadding: padding + down.width` — with the
+    /// This is the sibling-column relation — `leftPadding: padding + down.width` — with the
     /// arithmetic done by the thing that owns it. The value column *asks to fill* and the step
     /// column declares its own width, so the value's box is the remainder **by construction**: a
     /// wider column, or a larger font on the buttons, narrows the value rather than running it
@@ -204,7 +204,7 @@ impl SpinBox {
     ///
     /// The column's two halves are `up` and `down`, tiled vertically — the same `VBox` relation
     /// the hand-written `+ height / 2` used to express, now spelled as a second layout. The two
-    /// buttons are what the column's *width* is derived from (`SpinBox.qml:20-21` again: the width
+    /// buttons are what the column's *width* is derived from (the same relation again: the width
     /// is one button's), so they are the children that decide it.
     ///
     /// # What the assembly is measured from
@@ -1691,7 +1691,7 @@ mod tests {
     ///
     /// # What this pins
     ///
-    /// This is the `SpinBox.qml:20-21` relation — `leftPadding: padding + down.width` — stated as a
+    /// This is the sibling-column relation — `leftPadding: padding + down.width` — stated as a
     /// *test*: the value's box is derived from the column rather than from the band's far edge, so a
     /// wider column must move the value's trailing edge. The relation was previously satisfied by
     /// two independent subtractions from two different edges, which is why a wider button or a

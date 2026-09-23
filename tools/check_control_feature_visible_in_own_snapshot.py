@@ -189,6 +189,23 @@ FEATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...], str], ...] = (
         "rectangle. The marker requires the 4px track (twice: track and progress) and forbids the "
         "full-height form",
     ),
+    (
+        "group_box",
+        # The checkable tick: two `<line>` strokes. Their ink is the **contrast colour of the box
+        # fill**, not pure black — the pre-BLUE21-B22 spelling. Both markers are needed: the two
+        # lines are the tick's own shape, and the white stroke is what proves it is legible on a
+        # dark appearance rather than the least-readable mark in the control.
+        ('<line x1="16" y1="14"', '<line x1="21" y1="19"', 'stroke="rgba(255,255,255,1.00)"'),
+        # The defect is *absence*: with `checkable == false` the tick was never drawn at all, so a
+        # regression restores "no `<line>` in the snapshot" (verified by reverting the census fill
+        # that enables the state). The pure-black spelling is forbidden by the ink marker above.
+        (),
+        "a group box's checkable state is the one part a user toggles, and it shipped **pure "
+        "black** while the constructor never made the box checkable — so the tick was both "
+        "unreadable on a dark appearance and absent from every snapshot. The marker requires the "
+        "tick's two strokes and their non-black ink, so a regression to either the missing state "
+        "or the black stroke fails here",
+    ),
 )
 
 LINE_COMMENT = re.compile(r"<!--.*?-->", re.S)

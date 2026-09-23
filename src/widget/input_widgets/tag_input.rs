@@ -388,6 +388,10 @@ impl Widget for TagInput {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+    // The caret blink is driven through the trait so the animation bus reaches it.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        TagInput::tick(self, delta_ms)
+    }
 }
 
 /// `TagInput`'s property contract.

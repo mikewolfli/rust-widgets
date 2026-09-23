@@ -19,7 +19,7 @@ macro_rules! impl_properties_input {
             PropertySchema::new("page_step", PropertyValueKind::Int, true, true),
             PropertySchema::enumerated("orientation", true, true, &["horizontal", "vertical"]),
             // The reader's tokens. `tick_position_to_str` returns `none`/`above`/`below`/`both`
-            // while this published Qt's `noticks`/`left`/`right`/`ticksbothsides`. The writer
+            // while this published the `noticks`/`left`/`right`/`ticksbothsides` spellings. The writer
             // parses both spellings, so only the read direction can reveal the mismatch — which
             // is exactly why it survived until a schema-versus-reader gate existed. A caller who
             // formatted the property, or matched it against a list built from this schema, would

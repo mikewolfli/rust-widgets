@@ -131,9 +131,25 @@ pub enum ViewError {
     ///
     /// Not a silent skip: an unconstructible node means the view describes a control this
     /// build cannot make, which is a defect in the view or in the factory registration.
+    ///
+    /// # Why the location is part of the error
+    ///
+    /// A bare type name says *what* failed but not *where*, so a view with two bad nodes
+    /// reported two identical errors and neither could be located in the declaration. The
+    /// key and the chain of ancestor widget names are what make the failure actionable, and
+    /// they are collected at the only point that knows the path — the walk that discovered
+    /// it. Carrying them is the difference between "widget 'barchart' is unknown" and "the
+    /// 'barchart' under 'vbox > panel > barchart' is unknown".
     UnknownWidgetType {
         /// The type name as declared.
         widget: String,
+        /// The node's key, when it declared one.
+        key: Option<String>,
+        /// The ancestor widget names from the root down to (but not including) this node.
+        ///
+        /// Names rather than indices because a name is what the view's author wrote; a chain
+        /// of indices would have to be read back against the source to mean anything.
+        path: Vec<String>,
     },
 }
 
@@ -149,8 +165,18 @@ impl core::fmt::Display for ViewError {
             ViewError::UnknownParent { parent } => {
                 write!(f, "patch targets parent {parent}, which is not mounted")
             }
-            ViewError::UnknownWidgetType { widget } => {
-                write!(f, "no constructor is registered for widget type '{widget}'")
+            ViewError::UnknownWidgetType { widget, key, path } => {
+                write!(f, "no constructor is registered for widget type '{widget}'")?;
+                if let Some(key) = key {
+                    write!(f, " (key '{key}'")?;
+                } else {
+                    write!(f, " (keyless")?;
+                }
+                if path.is_empty() {
+                    write!(f, ", at the root)")
+                } else {
+                    write!(f, ", under {})", path.join(" > "))
+                }
             }
         }
     }
@@ -180,6 +206,71 @@ impl ApplyReport {
     /// Total controls destroyed by this batch, including subtree members.
     pub fn total_removed(&self) -> usize {
         self.widgets_removed
+    }
+
+    /// The declared location of every node that could not be expressed, as a
+    /// `widget`-name chain.
+    ///
+    /// # Why the failure set is queryable
+    ///
+    /// A report whose only interface is "were there errors?" forces a caller to either
+    /// ignore the failures or refuse the whole update. That binary is what made a single
+    /// unknown widget name cost an entire window. Naming each failure lets a host show a
+    /// placeholder for exactly the nodes that failed while the rest of the tree renders —
+    /// the same shape as the diff's `positional_matches` counter: **the cost is visible, not
+    /// silent**, and the good parts survive.
+    pub fn failed_nodes(&self) -> Vec<String> {
+        self.errors
+            .iter()
+            .filter_map(|error| match error {
+                ViewError::UnknownWidgetType { widget, key, path } => {
+                    let mut chain = path.clone();
+                    chain.push(widget.clone());
+                    match key {
+                        Some(key) => Some(format!("{}#{key}", chain.join(" > "))),
+                        None => Some(chain.join(" > ")),
+                    }
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The number of nodes that could not be expressed.
+    ///
+    /// A count rather than a boolean, for the same reason [`Self::failed_nodes`] exists:
+    /// "one node failed" and "the tree is broken" are different situations.
+    pub fn failed_count(&self) -> usize {
+        self.errors
+            .iter()
+            .filter(|error| matches!(error, ViewError::UnknownWidgetType { .. }))
+            .count()
+    }
+
+    /// A declarative **placeholder** for every node this batch could not express.
+    ///
+    /// # Why the library builds the node and the host paints it
+    ///
+    /// A node that could not be constructed has, by definition, no control — so it cannot
+    /// draw itself. The two halves therefore split cleanly: the library knows *where* the
+    /// failures were (this method) and what a placeholder should say, and the host decides
+    /// how to show it (a diagnostic panel, a red box, a log line). Faking a renderer here
+    /// would put a drawing policy in the declarative layer, which is exactly the separation
+    /// `mod.rs` draws.
+    ///
+    /// The placeholder is a real node tree, so a host can mount it with the same construction
+    /// bridge it already has — no new path. Its label carries the widget name so a reader of
+    /// the screen sees *what* was missing, and it is a plain `panel` + `label` pair rather
+    /// than an empty `spacer`, so it occupies non-zero ink (BLUE23 §5A.9 judgement 13).
+    pub fn placeholders(&self) -> Vec<Node> {
+        self.failed_nodes()
+            .into_iter()
+            .map(|location| {
+                Node::new("panel")
+                    .key(format!("__view_error::{location}"))
+                    .child(Node::new("label").prop("text", CapabilityValue::String(location)))
+            })
+            .collect()
     }
 }
 
@@ -357,7 +448,15 @@ fn insert_subtree(
     let id = match reserved_id.or_else(|| create(node)) {
         Some(id) if id != 0 => id,
         _ => {
-            report.errors.push(ViewError::UnknownWidgetType { widget: node.widget.clone() });
+            report.errors.push(ViewError::UnknownWidgetType {
+                widget: node.widget.clone(),
+                key: node.key.clone(),
+                // An inserted subtree is addressed by node value rather than by path, so the
+                // ancestors are not available here; the key and type name still locate it in
+                // the declaration. The mount path, which walks the tree, carries the full
+                // chain.
+                path: Vec::new(),
+            });
             return 0;
         }
     };
@@ -721,7 +820,11 @@ mod tests {
         );
         assert_eq!(
             report.errors,
-            [ViewError::UnknownWidgetType { widget: "no_such_control".to_string() }]
+            [ViewError::UnknownWidgetType {
+                widget: "no_such_control".to_string(),
+                key: None,
+                path: Vec::new(),
+            }]
         );
     }
 
@@ -842,9 +945,13 @@ mod tests {
     #[test]
     fn error_display_names_the_thing_that_went_wrong() {
         assert!(ViewError::UnknownWidget { id: 7 }.to_string().contains('7'));
-        assert!(ViewError::UnknownWidgetType { widget: "widget_x".into() }
-            .to_string()
-            .contains("widget_x"));
+        assert!(ViewError::UnknownWidgetType {
+            widget: "widget_x".into(),
+            key: None,
+            path: Vec::new(),
+        }
+        .to_string()
+        .contains("widget_x"));
         assert!(ViewError::PropertyRefused {
             id: 1,
             name: "text".into(),

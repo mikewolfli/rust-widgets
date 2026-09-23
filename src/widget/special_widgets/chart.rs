@@ -697,8 +697,8 @@ impl ChartWidget {
     /// This control published a `y_axis_label` property and its module documentation described
     /// a y axis, but `draw` had no left margin and no value labels at all: the highest bar
     /// simply reached `rect.y + PADDING`, with nothing on screen saying what value that was.
-    /// A chart with no measurable scale is a picture, not a chart — every other toolkit (Qt
-    /// `QValueAxis`, `fl_chart`'s `leftTitles`, SwiftUI's default `AxisMarks`) draws one by
+    /// A chart with no measurable scale is a picture, not a chart — every other toolkit (the
+    /// shared design-system table, `fl_chart`'s `leftTitles`, SwiftUI's default `AxisMarks`) draws one by
     /// default. The axis is chrome, so it reads the same `ink`/`surface` pair the panel and the
     /// category labels use and cannot disagree with them about the appearance.
     ///

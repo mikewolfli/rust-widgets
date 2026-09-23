@@ -115,7 +115,7 @@ pub trait Layout {
     /// that needed sizes had to be told in advance
     /// ([`FlexLayout::set_child_sizes`](crate::layout::FlexLayout::set_child_sizes),
     /// and the same workaround in `wrap` and `absolute`). This method is the channel
-    /// that lets a layout do the asking, as QML, Flutter and Qt Widgets all do.
+    /// that lets a layout do the asking, as React, SwiftUI and the platform toolkits all do.
     ///
     /// # Why the default implementation forwards to `update`
     ///

@@ -20,24 +20,25 @@
 //! workaround, and `Flow` bypassed the protocol entirely by storing
 //! `Box<dyn Widget>` itself.
 //!
-//! Qt Quick, Flutter and Qt Widgets all answer this the other way round: the
-//! **parent asks the child**. QML computes
+//! The shared design-system table answers this the other way round: the
+//! **parent asks the child**. The intrinsic-size formula
 //! `implicitWidth = max(implicitBackgroundWidth + inset, implicitContentWidth + padding)`
-//! on the control itself; Flutter's `RenderBox.layout` reads `child.size` after
-//! laying the child out; Qt's layouts call `item->implicitWidth()`. Only this crate
+//! is computed
+//! on the control itself, reading the child's own reported size after
+//! laying the child out. Only this crate
 //! had the flow reversed.
 //!
 //! [`Hints`] and [`ChildInfo`] are that channel: a widget states its own wish, and
 //! [`Layout::arrange`](crate::layout::Layout::arrange) receives it.
 //!
-//! # Why three values per axis, and not Flutter's four functions
+//! # Why three values per axis, and not the four-function model
 //!
-//! Flutter exposes `getMinIntrinsicWidth(height)` and friends — parameterised on
+//! The four-function model exposes `getMinIntrinsicWidth(height)` and friends — parameterised on
 //! the *opposite* axis, because it supports width-for-height coupling. That is
-//! powerful and expensive: Flutter's own documentation describes `IntrinsicWidth`
-//! as "a speculative layout pass" that is "O(N²) in the depth of the tree".
+//! powerful and expensive: it amounts to
+//! "a speculative layout pass" that is "O(N²) in the depth of the tree".
 //!
-//! Qt's model is three values per axis — `min`, `pref`, `max` — that a widget
+//! The model here is three values per axis — `min`, `pref`, `max` — that a widget
 //! computes once, from its own content. A layout reads them directly: no
 //! round-trip, no opposite-axis parameter, no quadratic blow-up. It cannot express
 //! "my width depends on my height", which this crate's controls never need
@@ -51,7 +52,7 @@
 //! - **"How large may I stretch you?"** — `max`. An icon or a badge should not grow
 //!   without bound.
 //!
-//! Qt's own truth table puts the three together because they have to be decided
+//! The shared table's own truth table puts the three together because they have to be decided
 //! together:
 //!
 //! ```text
@@ -68,9 +69,9 @@ use crate::style::EdgeOffsets;
 /// A widget's size wish along one axis.
 ///
 /// The invariant `min <= pref <= max` holds **by construction**: the constructors
-/// normalise, so an unnormalised value is not representable. Qt instead permits any
+/// normalise, so an unnormalised value is not representable. The alternative permits any
 /// values and re-normalises on every read (`normalizeHints`, `expandSize`,
-/// `boundSize` in `qquicklayout.cpp`), which is a rule every consumer has to
+/// `boundSize`), which is a rule every consumer has to
 /// remember; making the illegal state unrepresentable is cheaper than correcting it
 /// afterwards.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,14 +199,14 @@ impl Hints {
 /// slider's `pref` is a fixed number, yet it *should* be stretched across a form; a
 /// button's `pref` is also a fixed number, and it should *not* be. The two are
 /// indistinguishable by size alone, so the flag has to be separate — which is what
-/// Qt's `Layout.fillWidth` is.
+/// the shared `fillWidth` flag states.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LayoutParams {
     /// Take all remaining room on the major axis.
     pub fill: bool,
     /// Share of the *leftover* room on the major axis, for proportional splitting.
     ///
-    /// Same meaning as Qt's `Layout.stretchFactor` and as this crate's existing
+    /// Same meaning as the shared `stretchFactor` and as this crate's existing
     /// `add_widget(id, stretch)` argument.
     pub stretch: u32,
     /// Space removed from the available area before this child is placed.
@@ -367,7 +368,7 @@ mod tests {
     fn a_new_hint_is_always_ordered() {
         // The point of constructing through `new` rather than a struct literal: an
         // unnormalised value must not be representable, so no consumer has to
-        // re-normalise before reading (which is what Qt has to do).
+        // re-normalise before reading (which is what the alternative has to do).
         //
         // `pref` is the anchor: it is what the widget computed from its own content, so
         // a value that the range *can* represent is never discarded.
@@ -452,7 +453,7 @@ mod tests {
     fn fill_is_declared_separately_from_size() {
         // Two children with identical hints must be distinguishable by `fill`, or a
         // layout could not tell "stretch me" from "leave me alone" — the exact reason
-        // Qt has `Layout.fillWidth` alongside `implicitWidth`.
+        // the shared model has `fillWidth` alongside `implicitWidth`.
         let button = ChildInfo::new(1, Hints::fixed(64, 40));
         let slider = ChildInfo::new(2, Hints::fixed(64, 40)).with_params(LayoutParams::filled());
         assert_eq!(button.hints, slider.hints);

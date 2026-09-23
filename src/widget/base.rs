@@ -5,9 +5,7 @@
 
 use super::WidgetKind;
 use crate::core::{ObjectId, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
-#[cfg(test)]
-use crate::event::FocusReason;
+use crate::event::{Event, EventHandler, FocusReason};
 use crate::object::Object;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::style::WidgetStyle;
@@ -96,6 +94,42 @@ pub struct BaseWidget {
     /// than a link because that module is not compiled on `mini`, and a doc link that
     /// resolves only on some profiles fails the doc build on the others.
     pub(crate) ever_requested_redraw: core::cell::Cell<bool>,
+    /// Whether the pointer is currently over this widget.
+    ///
+    /// # Why this lives here and not in each control
+    ///
+    /// The runtime already decides *which* control the pointer is over —
+    /// `widget::runtime::dispatch_hover_transition` synthesises exactly one
+    /// `MouseEnter`/`MouseLeave` pair as the pointer crosses a boundary — so "am I
+    /// hovered?" is a fact the base class can record once. Controls that each
+    /// re-derive it from `MouseMove` coordinates (as `Button` used to) get a
+    /// different answer from the one the runtime already committed to, and the rest
+    /// never answer at all. Recording it here is what makes `widget_state()` able to
+    /// report `Hover` for a control that overrides nothing.
+    pub(crate) hovered: bool,
+    /// Whether a *gesture* is live on this widget, and the widget should paint
+    /// pressed.
+    ///
+    /// Distinct from [`Self::grabbed`]: this one answers "should I look held", and a
+    /// pointer that drags off the control clears it while the grab stays. A control
+    /// that tracked only this bit could not tell "the pointer wandered off" from "the
+    /// gesture ended", which is why the pair exists (see [`Self::grabbed`]).
+    pub(crate) pressed: bool,
+    /// Whether this widget currently owns the pointer gesture.
+    ///
+    /// Set on a press that resolves to this widget and cleared on release or ungrab.
+    /// A widget that owns the grab keeps receiving move/release events even after the
+    /// pointer leaves its rectangle, which is what lets a drag start inside and finish
+    /// outside — and is exactly why `pressed` and `grabbed` cannot be one flag.
+    pub(crate) grabbed: bool,
+    /// Why this widget has keyboard focus, or `None` when it does not.
+    ///
+    /// The reason is stored, not just the fact, because it answers a *second* question
+    /// at paint time: whether to draw the focus ring. A pointer press focuses a control
+    /// without a ring; `Tab` and shortcuts focus it with one
+    /// ([`FocusReason::draws_focus_ring`]). Storing the reason is therefore the one
+    /// derivation both [`crate::widget::Widget::widget_state`] and a draw path need.
+    pub(crate) focus_reason: Option<FocusReason>,
 }
 impl BaseWidget {
     /// Create base widget state and core signals.
@@ -134,6 +168,10 @@ impl BaseWidget {
             layout_requested: GenericSignal::new(),
             changed: GenericSignal::new(),
             ever_requested_redraw: core::cell::Cell::new(false),
+            hovered: false,
+            pressed: false,
+            grabbed: false,
+            focus_reason: None,
         }
     }
     // -- Base accessors --
@@ -479,6 +517,73 @@ impl BaseWidget {
     pub fn set_mouse_pressed(&mut self, pressed: bool) {
         self.mouse_pressed = pressed;
     }
+
+    // -- Interaction state -------------------------------------------------------
+    //
+    // The four facts below are maintained by `handle_event` for *every* widget, so a
+    // control that overrides nothing still knows whether it is hovered, pressed or
+    // focused. `Widget::widget_state` turns them into the single state a theme is
+    // looked up by; draw paths that want the raw facts read them directly.
+
+    /// Whether the pointer is currently over this widget.
+    ///
+    /// Set by the `MouseEnter` arm and cleared by `MouseLeave`, both synthesised by
+    /// `widget::runtime::dispatch_hover_transition`. A host that has no hover concept
+    /// can still state the fact through [`Self::set_hovered`].
+    pub fn is_hovered(&self) -> bool {
+        self.hovered
+    }
+    /// Sets the hovered flag without requesting a redraw.
+    ///
+    /// Prefer this over synthesising a `MouseEnter`/`MouseLeave` event when the caller
+    /// is asserting a state rather than reporting input (a designer preview, a touch
+    /// backend with no hover). `handle_event` uses the same field, so both spellings
+    /// of the fact stay in one place.
+    pub fn set_hovered(&mut self, hovered: bool) {
+        self.hovered = hovered;
+    }
+    /// Whether a live gesture says this widget should paint pressed.
+    ///
+    /// Continuous, not an edge: dragging off the control clears it and dragging back
+    /// restores it (the `MouseMove` arm re-resolves it against the pointer position).
+    pub fn is_pressed(&self) -> bool {
+        self.pressed
+    }
+    /// Records whether the widget should paint pressed. See [`Self::pressed`] for why
+    /// this is separate from [`Self::grabbed`].
+    pub fn set_pressed(&mut self, pressed: bool) {
+        self.pressed = pressed;
+    }
+    /// Whether this widget owns the pointer gesture.
+    pub fn is_grabbed(&self) -> bool {
+        self.grabbed
+    }
+    /// Takes or releases the pointer grab.
+    ///
+    /// The grab is the *ownership* half of a gesture and outlives `pressed`: a drag
+    /// that wanders off the control keeps it so the release can still be routed here.
+    pub fn set_grabbed(&mut self, grabbed: bool) {
+        self.grabbed = grabbed;
+    }
+    /// Why this widget currently holds keyboard focus, or `None` when it does not.
+    ///
+    /// The *presence* of focus is [`Self::focus_reason`] being `Some`; there is no
+    /// separate boolean, because the two could then disagree. Use
+    /// [`Self::draws_focus_ring`] rather than matching on the reason at a draw site.
+    pub fn focus_reason(&self) -> Option<FocusReason> {
+        self.focus_reason
+    }
+    /// Whether a focus ring should be painted right now.
+    ///
+    /// One derivation for every control: a widget that is focused for a reason that
+    /// does not warrant a ring (a pointer press) must not paint one.
+    pub fn draws_focus_ring(&self) -> bool {
+        self.focus_reason.is_some_and(FocusReason::draws_focus_ring)
+    }
+    /// Records the focus reason directly, without requesting a redraw.
+    pub fn set_focus_reason(&mut self, reason: Option<FocusReason>) {
+        self.focus_reason = reason;
+    }
     /// Asks the host to repaint this widget, and records the damage.
     ///
     /// Takes `&self`, so it can be called from shared references. If nothing is
@@ -568,6 +673,11 @@ impl EventHandler for BaseWidget {
     /// (`Slider::value_changed`). Callers should read the concrete widget's own
     /// signals rather than expecting the base to supply one.
     fn handle_event(&mut self, event: &Event) {
+        // Interaction state first: these four facts are what `Widget::widget_state`
+        // reports, and every control inherits them without writing a line. Doing it
+        // before the signal fan-out means a slot connected to `mouse_down` already sees
+        // `is_pressed()` true, so a handler never has to re-derive the fact itself.
+        self.record_interaction_state(event);
         // Default event routing: delegate to typed signals
         match event {
             Event::MouseMove { pos } => {
@@ -613,6 +723,62 @@ impl EventHandler for BaseWidget {
                 self.focus_lost.emit();
             }
             _ => { /* Other events are not relevant */ }
+        }
+    }
+}
+
+impl BaseWidget {
+    /// Maintains [`Self::hovered`], [`Self::pressed`], [`Self::grabbed`] and
+    /// [`Self::focus_reason`] from the primitive input events.
+    ///
+    /// # Why the base owns this
+    ///
+    /// These four are true of *every* control, and the events that report them are the
+    /// ones the base already routes. A control that re-derived hover from `MouseMove`
+    /// coordinates produced a second, possibly different, answer; one that never did
+    /// reported `Normal` forever, which is why a `"button:hover"` theme entry was
+    /// unreachable. Recording them once here is what makes the state channel real.
+    ///
+    /// # The move arm re-resolves `pressed` rather than clearing it
+    ///
+    /// `pressed` is continuous: a press that drags off the control stops painting
+    /// pressed and a drag back restores it, but the *grab* survives both so the release
+    /// can still be routed here. That is the whole reason the two are separate fields.
+    ///
+    /// # Why arming here does not silence a control's own signals
+    ///
+    /// The binary controls emit `pressed`/`released` on the *edge*, and this runs before
+    /// their arm. They therefore keep a private signal latch (see `Button`'s
+    /// `signaled_pressed`) rather than using this flag as their edge — the flag is the
+    /// single source for what is *painted*, the latch for what has been *announced*.
+    fn record_interaction_state(&mut self, event: &Event) {
+        match event {
+            Event::MouseEnter { .. } => self.hovered = true,
+            Event::MouseLeave { .. } => self.hovered = false,
+            Event::MousePress { pos, button } => {
+                // Only a press the runtime actually routed here (or that hit-tests
+                // inside) arms the gesture, and never on a disabled control: a disabled
+                // control is inert, so its state channel must stay `Disabled` rather than
+                // reporting pressed. A themed box that paints outside its rectangle would
+                // otherwise look pressed for a click that landed elsewhere.
+                if self.enabled
+                    && *button == crate::event::mouse_button::PRIMARY
+                    && self.contains_point_with_touch_expansion(*pos)
+                {
+                    self.grabbed = true;
+                    self.pressed = true;
+                }
+            }
+            Event::MouseMove { pos } | Event::PointerMove { pos, .. } if self.grabbed => {
+                self.pressed = self.contains_point_with_touch_expansion(*pos);
+            }
+            Event::MouseRelease { .. } | Event::PointerRelease { .. } => {
+                self.grabbed = false;
+                self.pressed = false;
+            }
+            Event::FocusGained { reason } => self.focus_reason = Some(*reason),
+            Event::FocusLost => self.focus_reason = None,
+            _ => { /* Other events carry no base-owned state */ }
         }
     }
 }
@@ -830,10 +996,7 @@ mod tests {
         #[cfg(not(alloc_frugal))]
         assert_eq!(bw.tooltip().len(), long.len(), "desktop keeps the whole string");
 
-        assert!(
-            !bw.tooltip().is_empty(),
-            "an over-long tooltip must never become empty"
-        );
+        assert!(!bw.tooltip().is_empty(), "an over-long tooltip must never become empty");
     }
 
     /// `set_translated_tooltip` must store the **translation**, not the key.
@@ -1041,5 +1204,71 @@ mod tests {
 
         assert!(redrawn.load(std::sync::atomic::Ordering::SeqCst));
         assert!(laid_out.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// The base records hover from the pair the runtime synthesises.
+    ///
+    /// This is the供述 side of the state channel: before it existed, a control that
+    /// did not track hover itself reported `Normal` no matter what the theme said.
+    #[test]
+    fn base_records_hover_from_enter_and_leave() {
+        let mut bw = make_base();
+        assert!(!bw.is_hovered());
+        bw.handle_event(&Event::MouseEnter { pos: Point::new(1, 1) });
+        assert!(bw.is_hovered(), "MouseEnter sets hovered");
+        bw.handle_event(&Event::MouseLeave { pos: Point::new(1, 1) });
+        assert!(!bw.is_hovered(), "MouseLeave clears hovered");
+    }
+
+    /// Press takes both the `pressed` paint flag and the grab; release drops both.
+    #[test]
+    fn base_records_press_and_release_with_the_grab() {
+        let mut bw = make_base();
+        // A press inside the widget's rectangle arms the gesture.
+        bw.handle_event(&Event::MousePress { pos: Point::new(50, 30), button: 1 });
+        assert!(bw.is_pressed());
+        assert!(bw.is_grabbed());
+        bw.handle_event(&Event::MouseRelease { pos: Point::new(50, 30), button: 1 });
+        assert!(!bw.is_pressed());
+        assert!(!bw.is_grabbed());
+    }
+
+    /// A press outside the rectangle must not arm the gesture.
+    ///
+    /// A themed control can paint outside its box; without the hit test its state
+    /// channel would report pressed for a click that landed elsewhere.
+    #[test]
+    fn base_ignores_a_press_outside_its_rectangle() {
+        let mut bw = make_base();
+        bw.handle_event(&Event::MousePress { pos: Point::new(400, 400), button: 1 });
+        assert!(!bw.is_pressed());
+        assert!(!bw.is_grabbed());
+    }
+
+    /// `pressed` is continuous while the grab is not: a drag off clears the paint but
+    /// keeps the ownership, and a drag back restores it.
+    #[test]
+    fn base_keeps_the_grab_while_a_drag_leaves_and_returns() {
+        let mut bw = make_base();
+        bw.handle_event(&Event::MousePress { pos: Point::new(50, 30), button: 1 });
+        bw.handle_event(&Event::MouseMove { pos: Point::new(400, 400) });
+        assert!(!bw.is_pressed(), "dragging off stops painting pressed");
+        assert!(bw.is_grabbed(), "but the gesture is still ours");
+        bw.handle_event(&Event::MouseMove { pos: Point::new(50, 30) });
+        assert!(bw.is_pressed(), "dragging back re-commits the paint");
+    }
+
+    /// A focus ring is painted only for the reasons that warrant one.
+    #[test]
+    fn base_focus_reason_decides_the_ring() {
+        let mut bw = make_base();
+        assert!(!bw.draws_focus_ring(), "no focus, no ring");
+        bw.handle_event(&Event::FocusGained { reason: FocusReason::Pointer });
+        assert!(bw.focus_reason().is_some(), "focused");
+        assert!(!bw.draws_focus_ring(), "a pointer press must not paint a ring");
+        bw.handle_event(&Event::FocusGained { reason: FocusReason::Tab });
+        assert!(bw.draws_focus_ring(), "Tab paints a ring");
+        bw.handle_event(&Event::FocusLost);
+        assert!(bw.focus_reason().is_none(), "FocusLost clears the reason");
     }
 }

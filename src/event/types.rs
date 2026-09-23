@@ -30,16 +30,16 @@ pub mod mouse_button {
 /// # Why the reason must travel with the event
 ///
 /// "This widget has focus" and "the user is navigating with the keyboard" are two
-/// different facts, and only the second should draw a focus ring. Qt Quick encodes
-/// exactly this distinction: its `visualFocus` is
-/// `activeFocus && (reason == Tab | Backtab | Shortcut)` (`qquickcontrol.cpp:1433`).
+/// different facts, and only the second should draw a focus ring. The rule is exactly
+/// this distinction: what is drawn as a focus ring is
+/// `activeFocus && (reason == Tab | Backtab | Shortcut)`.
 ///
 /// Without the reason, a control can only know *that* it is focused, so it either
 /// draws a ring on every click (which looks broken on a mouse-driven desktop) or
 /// never draws one (which makes keyboard navigation invisible). Neither is a
 /// tuning problem: the information was simply not delivered.
 ///
-/// The variants mirror Qt's `Qt::FocusReason`.
+/// The variants mirror the standard toolkit `FocusReason` set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum FocusReason {
     /// A pointer press moved focus — clicking must not show a focus ring.
@@ -62,7 +62,7 @@ impl FocusReason {
     ///
     /// A pointer press is the one reason that must **not**: the pointer already tells
     /// the user where they are, and a ring drawn under the cursor reads as a stuck
-    /// highlight. Qt Quick's rule, verbatim. This is a method rather than a call site
+    /// highlight. This is the standard rule. This is a method rather than a call site
     /// predicate so the one place that knows the answer is the one place that names
     /// the reasons — a new variant must be classified here, not at each draw site.
     pub fn draws_focus_ring(self) -> bool {

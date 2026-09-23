@@ -376,25 +376,73 @@ pub trait Widget: EventHandler + Any {
     /// in, so every such override was unreachable. The mechanism existed end to end except for the
     /// one argument in the middle.
     ///
-    /// The default here answers the two states every control shares (disabled, then resting), which
-    /// is enough for `"<kind>:disabled"` to work everywhere without each control implementing
-    /// anything. A control with richer state overrides this — a button adds hover and pressed, a
-    /// toggle adds checked.
+    /// The default below answers the four states every control shares, read from the base
+    /// fields `BaseWidget` maintains for the primitive input events: disabled, pressed,
+    /// hovered, focused. That is enough for `"<kind>:hover"` to work on a control that
+    /// overrides nothing here. A control with a richer state overrides this to add checked,
+    /// selected, error and the like.
     ///
     /// # Why a single state rather than a set
     ///
-    /// Flutter models `WidgetState` as a `Set` because several states genuinely hold at once
+    /// The shared table models the widget state as a `Set` because several states genuinely hold at once
     /// (`focused | hovered`). Encoding that here would change this type's public shape, which rule
     /// #21 forbids doing silently; the trait method is the additive step. A control that has several
     /// states true at once reports the one with the strongest visual claim, in this order: disabled
     /// (the control is inert), pressed (an active gesture), checked/selected (a persistent fact),
     /// hovered, then resting.
+    ///
+    /// The states that lose this priority contest are not lost: they are the *overlay* a
+    /// draw path may add on top, which is how a control can be focused **and** hovered
+    /// without the theme needing a rule for every combination.
     fn widget_state(&self) -> crate::style::WidgetState {
-        if self.is_enabled() {
-            crate::style::WidgetState::Normal
-        } else {
-            crate::style::WidgetState::Disabled
+        use crate::style::WidgetState;
+        if !self.is_enabled() {
+            return WidgetState::Disabled;
         }
+        let base = self.base();
+        if base.is_pressed() {
+            WidgetState::Pressed
+        } else if base.is_hovered() {
+            WidgetState::Hover
+        } else if base.draws_focus_ring() {
+            WidgetState::Focused
+        } else {
+            WidgetState::Normal
+        }
+    }
+
+    /// Advances this control's self-driven animation by `delta_ms`, reporting whether
+    /// another frame is needed.
+    ///
+    /// # Why this is on the trait
+    ///
+    /// Eleven controls already implement `pub fn tick(&mut self, delta_ms) -> bool` with the
+    /// same shape -- a button's hover fade, a switch's thumb travel, a text cursor's blink,
+    /// a spinner's rotation. Each was an inherent method, so a host holding `&mut dyn Widget`
+    /// could not advance *any* of them, and no production code called one: the animations were
+    /// written, tested, and unreachable. Lifting the shape onto the trait is additive -- the
+    /// default does nothing -- so the 180 controls that do not animate need no change, while
+    /// the ones that do become drivable through a single call.
+    ///
+    /// # Why the answer is a `bool` and not a remaining duration
+    ///
+    /// `false` means "I owe no more frames". That is what lets a host stop scheduling frames
+    /// for a control that has settled -- a resting button costs nothing per frame -- and it is
+    /// the same economy `AnimationController`/`Ticker` implements by stopping when it reaches
+    /// its end. A control that returned `true` forever would keep the whole application
+    /// repainting.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        let _ = delta_ms;
+        false
+    }
+
+    /// Whether this control is *currently* animating.
+    ///
+    /// A host uses this to decide whether a frame is needed at all before paying for a
+    /// sweep. The default is `false`, which is the honest answer for a control with no
+    /// animation state.
+    fn is_animating(&self) -> bool {
+        false
     }
     /// Replaces the whole style record at once, overwriting every style field.
     /// Prefer the individual shorthand setters when only one property changes.
@@ -670,8 +718,8 @@ pub trait Widget: EventHandler + Any {
     ///
     /// "Should I be stretched across the available room?" is not derivable from size: a
     /// slider and a button can report the same `pref` and want opposite answers. A
-    /// control therefore states its own default policy — Qt calls this the item's
-    /// `sizePolicy` — and a caller that wants something else overrides it per child.
+    /// control therefore states its own default policy — this is what the standard
+    /// toolkits call the item's `sizePolicy` — and a caller that wants something else overrides it per child.
     ///
     /// The default is "do not stretch", which is the conservative answer: a widget that
     /// silently absorbed free space would reflow every existing layout. Controls that

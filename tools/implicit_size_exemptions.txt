@@ -103,13 +103,13 @@ src/widget/display_widgets/meter.rs 392 backlog
 src/widget/display_widgets/mini_canvas.rs 89 backlog
 src/widget/display_widgets/mini_chart.rs 129 backlog
 src/widget/display_widgets/progress_circle.rs 164 backlog
-src/widget/display_widgets/progressbar.rs 189 backlog
+src/widget/display_widgets/progressbar.rs 281 backlog
 src/widget/display_widgets/roller.rs 193 backlog
 src/widget/display_widgets/skeleton_loader.rs 136 backlog
 src/widget/display_widgets/slider.rs 463 backlog
 src/widget/input_widgets/auto_complete_edit.rs 330 backlog
 src/widget/input_widgets/cascader.rs 628 backlog
-src/widget/input_widgets/command_link.rs 101 backlog
+src/widget/input_widgets/command_link.rs 99 backlog
 src/widget/input_widgets/ime_preedit.rs 151 backlog
 src/widget/input_widgets/inplace_editor.rs 283 backlog
 src/widget/input_widgets/keyboard.rs 293 backlog
@@ -132,11 +132,11 @@ src/widget/media_widgets/hero_animation.rs 160 backlog
 src/widget/media_widgets/lottie_widget.rs 954 backlog
 src/widget/media_widgets/rive_widget.rs 548 backlog
 src/widget/media_widgets/video_player.rs 251 backlog
-src/widget/menu_toolbar/action.rs 268 backlog
+src/widget/menu_toolbar/action.rs 265 backlog
 src/widget/menu_toolbar/dropdown_menu.rs 275 backlog
 src/widget/menu_toolbar/menu_button.rs 252 backlog
 src/widget/menu_toolbar/status_bar.rs 269 backlog
-src/widget/menu_toolbar/tool_button.rs 248 backlog
+src/widget/menu_toolbar/tool_button.rs 244 backlog
 src/widget/misc_widgets/barcode_scanner.rs 203 backlog
 src/widget/misc_widgets/bezier_curve_editor.rs 235 backlog
 src/widget/misc_widgets/date_range_picker.rs 273 backlog
@@ -150,7 +150,7 @@ src/widget/nav_widgets/bottom_navigation_bar.rs 117 backlog
 src/widget/nav_widgets/navigation_drawer.rs 152 backlog
 src/widget/nav_widgets/navigation_stack.rs 164 backlog
 src/widget/overlay_widgets/banner.rs 377 backlog
-src/widget/overlay_widgets/fab.rs 117 backlog
+src/widget/overlay_widgets/fab.rs 114 backlog
 src/widget/overlay_widgets/refresh_control.rs 181 backlog
 src/widget/overlay_widgets/splash_screen.rs 200 backlog
 src/widget/overlay_widgets/swipe_to_dismiss.rs 137 backlog
@@ -162,7 +162,7 @@ src/widget/special_widgets/code_editor/editor.rs 3036 backlog
 src/widget/special_widgets/color_picker.rs 238 backlog
 src/widget/special_widgets/command_palette.rs 258 backlog
 src/widget/special_widgets/diff_viewer.rs 147 backlog
-src/widget/special_widgets/freeform_shape/shape.rs 703 backlog
+src/widget/special_widgets/freeform_shape/shape.rs 713 backlog
 src/widget/special_widgets/gantt_widget.rs 193 backlog
 src/widget/special_widgets/grid.rs 228 backlog
 src/widget/special_widgets/heatmap.rs 457 backlog

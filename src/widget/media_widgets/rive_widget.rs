@@ -558,6 +558,14 @@ impl Widget for RiveWidget {
     }
 
     impl_widget_property_hooks!();
+    // Trait contract: `u32` ms. This control's own `tick` takes `u64`; widen at the boundary.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        RiveWidget::tick(self, u64::from(delta_ms))
+    }
+
+    fn is_animating(&self) -> bool {
+        self.is_playing()
+    }
 }
 
 /// `RiveWidget`'s property contract.

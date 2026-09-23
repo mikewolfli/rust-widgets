@@ -303,7 +303,7 @@ mod tests {
     /// top-left, and the box is asserted to be `line_height` tall with `"Sample"`'s own width.
     #[test]
     fn the_emitted_path_reproduces_the_glyph_box_exactly() {
-        use crate::render::estimate_cluster_advance;
+        use crate::render::text::estimate_cluster_advance;
         for size in [11.0f32, 12.0, 13.0, 14.0, 20.0, 48.0] {
             let font = Font::new("Arial", size, false, false);
             let origin = crate::core::Point::new(10, 53);

@@ -42,6 +42,19 @@ pub struct ProgressBar {
     ///
     /// Defaults to left-to-right, so a bar that never asks behaves exactly as it did.
     direction: crate::core::TextDirection,
+    /// Whether the bar shows an unknown-progress sweep instead of a value.
+    ///
+    /// An indeterminate bar is the honest state for "work is happening but the amount
+    /// cannot be quantified" — the alternative, showing a fabricated percentage, is worse
+    /// than showing none. When set, `value`/`progress` are ignored and a band sweeps the
+    /// track on a fixed period.
+    indeterminate: bool,
+    /// The sweep phase for the indeterminate state, in `0.0..1.0`.
+    ///
+    /// A single looping value rather than a `Transition` between two ends: the sweep is
+    /// **periodic**, so "half way" is a different concept from "ended" and a transition's
+    /// settle-to-target model does not describe it. `ProgressBar::tick` wraps it.
+    sweep_phase: crate::style::Transition,
     /// Emitted with the new value after any change to `value` — from
     /// `set_value`, the steppers, or keyboard/wheel input. Not emitted when the
     /// value is set to the value it already had.
@@ -59,6 +72,10 @@ impl ProgressBar {
             orientation: Orientation::Horizontal,
             inverted_appearance: false,
             direction: crate::core::TextDirection::default(),
+            indeterminate: false,
+            // The sweep is a slow, steady loop; `slow` is the theme's longest token and matches
+            // the unhurried feel an indeterminate indicator should have.
+            sweep_phase: crate::style::Transition::with_tempo(crate::style::TransitionTempo::Slow),
             value_changed: Signal1::new(),
         }
     }
@@ -168,9 +185,84 @@ impl ProgressBar {
         ((self.value.saturating_sub(self.minimum)) as f32)
             / ((self.maximum.saturating_sub(self.minimum)) as f32)
     }
+
+    /// Whether the bar is showing an indeterminate sweep.
+    pub fn is_indeterminate(&self) -> bool {
+        self.indeterminate
+    }
+
+    /// Switches between the value bar and the indeterminate sweep.
+    ///
+    /// Turning it on starts the sweep from the phase it is already at, so a bar that has
+    /// been indeterminate before resumes rather than jumping; turning it off simply stops
+    /// the frames and the bar returns to showing `value`.
+    pub fn set_indeterminate(&mut self, indeterminate: bool) {
+        if self.indeterminate == indeterminate {
+            return;
+        }
+        self.indeterminate = indeterminate;
+        self.base.request_redraw();
+    }
+
+    /// Advances the indeterminate sweep, reporting whether another frame is needed.
+    ///
+    /// The sweep is a loop, so while indeterminate this always owes a frame; while showing
+    /// a value it owes none, which is why a determinate bar costs nothing per frame.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.indeterminate {
+            return false;
+        }
+        // Advance toward the far end, and when it arrives wrap straight back to the near end
+        // without a settle frame: a sweep that paused at each end would read as a stutter.
+        let arrived = self.sweep_phase.tick(1.0, delta_ms);
+        if !arrived {
+            self.sweep_phase.reset_to(0.0);
+        }
+        self.base.request_redraw();
+        true
+    }
+
+    /// The band the indeterminate sweep is currently painting, as a half-open extent along
+    /// the bar's own axis, or `None` when the bar is determinate.
+    ///
+    /// # Why the band is a fraction of the run, not a fixed width
+    ///
+    /// A fixed-width band would be a huge fraction of a short bar and a sliver of a long one,
+    /// so the same indicator would read as two different things. Deriving it from the run
+    /// keeps "one third of the way through" meaning the same on every bar, which is the same
+    /// rule the scroll bar's minimum length follows.
+    pub fn indeterminate_band(&self) -> Option<(u32, u32)> {
+        if !self.indeterminate {
+            return None;
+        }
+        let rect = self.geometry();
+        let bar = ControlMetrics::centered_band(rect, dimensions::PROGRESS_HEIGHT);
+        let run = match self.orientation {
+            Orientation::Horizontal => bar.width,
+            Orientation::Vertical => bar.height,
+        };
+        if run == 0 {
+            return None;
+        }
+        // A third of the run travels from fully off the near end to fully off the far end, so
+        // the band enters, crosses and leaves rather than appearing in place.
+        let band = (run / 3).max(1);
+        let travel = run + band;
+        let lead = (travel as f32 * self.sweep_phase.progress()) as u32;
+        let start = lead.saturating_sub(band);
+        let visible_start = start.min(run);
+        let visible_end = (lead).min(run);
+        Some((visible_start, visible_end.saturating_sub(visible_start)))
+    }
+
     /// Returns formatted text for display.
     fn format_text(&self) -> String {
         if !self.text_visible {
+            return String::new();
+        }
+        // An indeterminate bar has no number to show, and printing a stale one would be a
+        // fabricated fact — the exact thing the state exists to avoid.
+        if self.indeterminate {
             return String::new();
         }
         let percentage = self.progress() * 100.0;
@@ -194,6 +286,14 @@ impl Widget for ProgressBar {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+    // The indeterminate sweep is the animation; a determinate bar owes no frames.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        ProgressBar::tick(self, delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.indeterminate
+    }
 }
 
 /// `ProgressBar`'s property contract.
@@ -416,6 +516,25 @@ impl Draw for ProgressBar {
                         bar_height / 2,
                         fill,
                     );
+                }
+            }
+        }
+        // Indeterminate sweep: one band travelling the track, drawn **instead of** the value
+        // fill. The band's position is `indeterminate_band`'s, so the animation test and the
+        // draw path cannot disagree about where it is.
+        if let Some((offset, extent)) = self.indeterminate_band() {
+            if extent > 0 {
+                match self.orientation {
+                    Orientation::Horizontal => context.fill_rounded_rect(
+                        Rect::new(bar_rect.x + offset as i32, bar_rect.y, extent, bar_height),
+                        bar_height / 2,
+                        fill,
+                    ),
+                    Orientation::Vertical => context.fill_rounded_rect(
+                        Rect::new(bar_rect.x, bar_rect.y + offset as i32, bar_rect.width, extent),
+                        bar_height / 2,
+                        fill,
+                    ),
                 }
             }
         }
@@ -863,5 +982,53 @@ mod tests {
         let svg = crate::widget::svg::render_to_svg(&mut both);
         let (x, _, w, _) = rects_with_fill(&svg, &rgba)[0];
         assert_eq!((x, w), (0, 120), "inverted and RTL cancel, anchoring to the near edge");
+    }
+
+    // ── Indeterminate sweep (BLUE23 §3.3 F 档) ────────────────────────────────
+
+    /// The sweep band starts off the near end and **moves** across frames.
+    ///
+    /// This is the three-frame criterion for the F 档 control: the band's extent must be
+    /// somewhere different on each frame, and it must progress along the bar rather than
+    /// appear in place.
+    #[test]
+    fn the_indeterminate_band_sweeps_across_frames() {
+        let mut bar = ProgressBar::new(Rect::new(0, 0, 120, 8));
+        bar.set_indeterminate(true);
+        assert!(bar.is_animating(), "an indeterminate bar owes frames");
+
+        let start = bar.indeterminate_band().expect("indeterminate has a band");
+        assert!(bar.tick(120), "the sweep keeps going while indeterminate");
+        let mid = bar.indeterminate_band().expect("band");
+        assert!(bar.tick(120), "still sweeping");
+        let later = bar.indeterminate_band().expect("band");
+
+        assert_ne!(start.0, mid.0, "the band must have moved by the second frame");
+        assert_ne!(mid.0, later.0, "and again by the third");
+        assert!(
+            start.0 < mid.0 && mid.0 < later.0,
+            "the sweep must travel forward: {}/{}/{}",
+            start.0,
+            mid.0,
+            later.0
+        );
+    }
+
+    /// A determinate bar owes no frames and shows no band.
+    #[test]
+    fn a_determinate_bar_has_no_sweep() {
+        let mut bar = ProgressBar::new(Rect::new(0, 0, 120, 8));
+        assert!(!bar.is_animating());
+        assert!(!bar.tick(120), "a value bar must not schedule frames");
+        assert!(bar.indeterminate_band().is_none());
+    }
+
+    /// An indeterminate bar shows no percentage: a fabricated number is worse than none.
+    #[test]
+    fn an_indeterminate_bar_shows_no_percentage() {
+        let mut bar = ProgressBar::new(Rect::new(0, 0, 120, 8));
+        bar.set_value(42);
+        bar.set_indeterminate(true);
+        assert_eq!(bar.format_text(), "", "no number when the amount is unknown");
     }
 }

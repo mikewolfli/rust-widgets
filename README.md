@@ -28,7 +28,7 @@ buffer instead. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ```toml
 [dependencies]
-rust_widgets = "2.6.1"
+rust_widgets = "2.7.0"
 ```
 
 Pick **exactly one device profile**. They are mutually exclusive — `mini` and `embedded` compile parts
@@ -36,11 +36,11 @@ of the crate *out*, so combining one with `desktop` is not a lowest common denom
 build:
 
 ```toml
-rust_widgets = { version = "2.6.1", features = ["desktop"] }                       # default
-rust_widgets = { version = "2.6.1", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "2.6.1", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "2.6.1", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "2.6.1", default-features = false, features = ["mini"] }
+rust_widgets = { version = "2.7.0", features = ["desktop"] }                       # default
+rust_widgets = { version = "2.7.0", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "2.7.0", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "2.7.0", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "2.7.0", default-features = false, features = ["mini"] }
 ```
 
 > `cargo check --features embedded` is **wrong**: `desktop` is a default feature, so that command
@@ -203,6 +203,49 @@ Anything that cannot genuinely be done yet reports `false` from a runtime capabi
 pretending. `supports_custom_widgets()`, `supports_web_engine()` and `has_real_engine()` are honest
 answers, not compile-time stubs.
 
+## Text coverage
+
+**The default build draws Latin/ASCII only.** The crate ships no font data, so glyphs come from a
+fixed 8x8 bitmap face covering `U+0000`–`U+007F`.
+
+| Input | What the default build draws |
+|---|---|
+| `A`, `z`, `7`, `!` | the real glyph |
+| CJK, Cyrillic, Arabic, emoji, any other script | a **fallback glyph** (a hollow box, "tofu") |
+
+The label still lays out and the control still renders — only the glyph is wrong. A line is also
+ordered for painting by the **Unicode bidirectional algorithm**, so an Arabic or Hebrew run draws
+right to left. Ordering is not glyph *shape*: script-specific shaping (Arabic joining, Indic
+reordering) is not applied at all.
+
+This library therefore does **not** implement Unicode text rendering and is not described as
+multilingual. Coverage beyond Latin/ASCII is a separate, opt-in axis that needs font data — and,
+for complex scripts, a shaping step. It is asked for by name, because a `mini` or `embedded`
+profile must not carry glyphs it never draws:
+
+```console
+cargo build --features "desktop,fonts-cjk-bitmap"
+```
+
+`fonts-cjk-bitmap` adds a generated 16x16 CJK face (Han, kana, CJK punctuation and fullwidth
+forms, ~85 KB read on demand). Latin rendering stays byte-identical when it is on: a face is
+appended to the fallback stack and can only answer for characters the base face has no glyph for.
+
+| feature | data | what it adds |
+|---|---|---|
+| `fonts-cjk-bitmap` | 84 996 bytes, generated | a 16x16 CJK bitmap face — Chinese, Japanese, Korean text, no shaping needed |
+| `fonts-vector-latin` | 35 896 bytes, OFL subset | real advances and kerning, from a face named by `Font::family` |
+| `fonts-complex` | 70 576 bytes, OFL subset | Arabic joining, so `بيت` shapes to the word rather than three isolated letters |
+
+None of the three is enabled by any profile, and `--all-features` is the only way to get all of them
+at once. The two vector subsets are lazy-loaded from the binary's read-only section and are recorded,
+with their upstream digests, in [`NOTICE`](NOTICE).
+
+The boundary is asserted from both sides (`render::pipeline::pixel_ops::text_coverage_tests` and
+`render::text::glyph_source`'s tests) — a non-Latin character must resolve to the fallback glyph on
+a default build, and enabling the CJK data must move that boundary by exactly the face it adds — so
+the documentation cannot silently overstate what is drawn.
+
 ## Language bindings
 
 The `C ABI` lives in `src/bindings/` and exposes every control through **130 `rw_*` functions** with a
@@ -237,7 +280,7 @@ MIT — see [LICENSE](LICENSE).
 - Issues: [GitHub Issues](https://github.com/mikewolfli/rust-widgets/issues)
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.6.1-blue)]()
+[![version](https://img.shields.io/badge/version-2.7.0-blue)]()
 [![tests](https://img.shields.io/badge/tests-5600%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 

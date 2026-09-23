@@ -25,7 +25,7 @@
 //!
 //! # What this builder is, and what it deliberately is not
 //!
-//! It holds children, computes its own [`Hints`] from theirs (QML's
+//! It holds children, computes its own [`Hints`] from theirs (the shared
 //! `implicitWidth = max(implicitBackgroundWidth + …, implicitContentWidth + …)`
 //! formula is exactly this), hands each child's hints to
 //! [`Layout::arrange`](crate::layout::Layout::arrange), and applies the rectangles
@@ -55,8 +55,8 @@
 //! [`CompositeBuilder::add_flexible`] is the one addition the first real migration needed.
 //! A row's cross axis takes the **maximum** of its children's preferences, which is right for a
 //! row of buttons and wrong for a row that holds a 48 px field and a 28 px step column: the
-//! column would be stretched to 48 px of face, which is not a step button, it is a slab. Qt's
-//! answer is `Layout.fillHeight: false` on the short child, and this is the same statement: the
+//! column would be stretched to 48 px of face, which is not a step button, it is a slab. The shared
+//! table's answer is `fillHeight: false` on the short child, and this is the same statement: the
 //! child keeps its own preferred extent on that axis while its sibling may be taller.
 //!
 //! It is expressed as a *hint* rather than as a post-hoc rectangle, because the composite's own
@@ -103,8 +103,7 @@ pub struct CompositeBuilder {
     children: Vec<Child>,
     padding: EdgeOffsets,
     /// The background/touch floor: the other arm of
-    /// [`ControlMetrics::implicit_size`]'s `max`, and QML's
-    /// `implicitBackgroundWidth`. A composite made of 5 px labels is still at least
+    /// [`ControlMetrics::implicit_size`]'s `max`, the implicit background extent. A composite made of 5 px labels is still at least
     /// as large as the control it presents itself as.
     floor: Size,
     /// Set when a child's hints or parameters changed, cleared by [`Self::take_dirty`].
@@ -113,13 +112,12 @@ pub struct CompositeBuilder {
     ///
     /// BLUE22 §B.6 rule 10 requires that a hint change **trigger** a relayout rather than
     /// being polled for. The obvious implementation — subscribe to each child and relayout
-    /// from the handler — is what Qt deliberately avoids: it re-runs the whole layout for
+    /// from the handler — is what the shared table deliberately avoids: it re-runs the whole layout for
     /// every property write, so a caller setting four properties on one sub-control lays
     /// the row out four times, and an intermediate call can observe a half-updated tree.
     ///
-    /// Qt instead marks the layout dirty and lets the frame loop consume it
-    /// (`invalidate()` plus a deferred `updatePolish()`, `qquicklayout.cpp:857`). This
-    /// flag is that mechanism in its smallest honest form: `invalidate` records the fact, and
+    /// (`invalidate()` plus a deferred update) is the mechanism this flag
+    /// mirrors.
     /// the **host consumes it once per frame** through `take_dirty`. Coalescing is therefore
     /// automatic — N writes before the next frame cost one relayout — and no observer can
     /// see a partially applied change, because nothing runs between the writes.
@@ -130,7 +128,7 @@ impl CompositeBuilder {
     /// A builder laying its children out with `layout`.
     ///
     /// `floor` is the minimum the composite may shrink to regardless of content
-    /// (QML's `implicitBackgroundWidth/Height`); `padding` is removed from the
+    /// (the implicit background extent); `padding` is removed from the
     /// composite's own rectangle before the layout sees it, so a layout's idea of
     /// "the available room" and the composite's border cannot disagree.
     pub fn new(layout: Box<dyn Layout>, padding: EdgeOffsets, floor: Size) -> Self {
@@ -368,7 +366,7 @@ impl CompositeBuilder {
     /// two shares — every pixel — so the button was left at its preferred width and its own `fill`
     /// was unreachable. The room the caller meant to hand over is proportional, and one unit is the
     /// honest default: "yes, absorb room", with two equal claimants splitting it evenly, which is
-    /// what CSS flexbox's `flex: 1` and Qt's `stretchFactor: 1` both mean.
+    /// what CSS flexbox's `flex: 1` and a stretch factor of 1 both mean.
     fn register(&mut self, id: ObjectId, hints: Hints, params: LayoutParams) {
         let grow = if params.fill { params.stretch.max(1) } else { params.stretch };
         self.layout.add_widget(id, grow);
@@ -417,7 +415,7 @@ impl CompositeBuilder {
     /// A first version summed `child.hints.width.pref` here, which omits each child's
     /// **margins** — and a margin is how a child declares the gap before it, so a row of
     /// three buttons `6 px` apart reported a preferred width `12 px` too small. That is the
-    /// `SpinBox.qml:20-21` relation violated at the composite's own boundary: the row would
+    /// The sibling-column relation violated at the composite's own boundary: the row would
     /// have been placed at a width that does not fit the children the layout is about to
     /// lay out in it. [`total_bounds`] exists for exactly this sum — "how much room do the
     /// children occupy once their gaps are paid for" — and using it here rather than
@@ -478,7 +476,7 @@ impl CompositeBuilder {
     /// Lays the children out inside `rect` and reports each one's geometry.
     ///
     /// The composite's own padding is removed first, so the layout lays out in the
-    /// content box — the same relationship QML's `availableWidth/Height` has to the
+    /// content box — the same relationship the available width and height have to the
     /// control's rectangle. Nothing else is adjusted: the rectangles the layout
     /// returns are the rectangles the children get, which is what makes "the layout
     /// owns placement" true rather than aspirational.
@@ -633,8 +631,8 @@ impl ActionRow {
     ///
     /// Returns the row's own rectangle (the span the buttons actually occupy) and the
     /// rectangle of each button, in the order they were added. The span is what a caller
-    /// needs to keep its own content from overlapping the buttons — the
-    /// `SpinBox.qml:20-21` relation, where the text side's inset is the sibling column's
+    /// needs to keep its own content from overlapping the buttons — the sibling-column
+    /// relation, where the text side's inset is the sibling column's
     /// width.
     pub fn arrange(&self, band: Rect) -> (Rect, Vec<Rect>) {
         let mut placed: Vec<Rect> = Vec::with_capacity(self.builder.len());
