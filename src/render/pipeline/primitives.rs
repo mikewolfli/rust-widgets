@@ -9,7 +9,7 @@
 use crate::compat::Vec;
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::render::pipeline::pixel_ops::{
-    blend_pixel, circle_fill_coverage_grid, circle_stroke_coverage_grid, draw_bitmap_glyph,
+    blend_painted_glyph, blend_pixel, circle_fill_coverage_grid, circle_stroke_coverage_grid,
     inset_rect, line_stroke_coverage_grid, pixel_visible, rounded_rect_coverage,
     rounded_rect_coverage_grid, rounded_rect_effective_radius, set_pixel, GlyphDrawConfig,
 };
@@ -646,6 +646,20 @@ impl SoftwareSurface {
         let tracking = font.letter_spacing() * scale;
         let last_index = shaped.clusters().len().saturating_sub(1);
         let frame = self.buffer.back_mut();
+        // One scratch for the whole line, sized for the tallest and widest cell it needs: a glyph
+        // is rasterised into it, blended, and overwritten by the next — so no glyph is ever
+        // resident, and a line allocates at most once (and never for the 8x8 face, whose cells fit
+        // a small const buffer).
+        let max_cell = shaped
+            .clusters()
+            .iter()
+            .map(|cluster| {
+                let w = cluster.advance.max(1.0).round() as u32;
+                (w as usize) * (glyph_height as usize)
+            })
+            .max()
+            .unwrap_or(0);
+        let mut coverage: crate::compat::Vec<u8> = crate::compat::vec![0u8; max_cell];
         for (index, cluster) in shaped.clusters().iter().enumerate() {
             let glyph_width = cluster.advance.max(1.0).round() as i32;
             let display_char = cluster
@@ -657,15 +671,12 @@ impl SoftwareSurface {
                     canvas: &mut *frame,
                     canvas_width: size.width,
                     canvas_height: size.height,
-                    ch,
-                    x: pen_x.round() as i32,
-                    y: origin.y,
                     w: glyph_width as u32,
                     h: glyph_height as u32,
                     color,
                     clip,
                 };
-                draw_bitmap_glyph(&mut config);
+                blend_painted_glyph(ch, pen_x.round() as i32, origin.y, &mut coverage, &mut config);
             }
             pen_x += cluster.advance;
             if index < last_index {

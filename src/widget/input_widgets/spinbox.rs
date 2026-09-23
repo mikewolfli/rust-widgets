@@ -225,7 +225,7 @@ impl SpinBox {
         // that profile can express it.
         #[cfg(not(full_widgets))]
         {
-            return (
+            (
                 Rect::new(band.x, band.y, band.width.saturating_sub(column_width), band.height),
                 Rect::new(
                     band.x + band.width.saturating_sub(column_width) as i32,
@@ -233,7 +233,7 @@ impl SpinBox {
                     column_width,
                     band.height,
                 ),
-            );
+            )
         }
         #[cfg(full_widgets)]
         {

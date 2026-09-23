@@ -282,20 +282,28 @@ impl PaintBackend for SvgPaintBackend {
             //
             // | | software rasteriser | `<text>` element |
             // |---|---|---|
-            // | glyph source | the `font8x8` 8x8 table (`glyph_bitmap`) | whatever font the viewer has |
+            // | glyph source | the whole font stack (`render::text`) | whatever font the viewer has |
             // | glyph shape | solid rectangles at the set bits | vector outlines |
             // | advance | `estimate_cluster_advance` (0.6 em, 1.0 em wide, 0.33 em space) | the font's own metrics |
             //
             // `snapshots/svg/` exists to be a *picture of what the control draws*, so a snapshot
-            // rendered by a different font engine is a picture of a different control. `font8x8`
-            // is the crate's font — `docs/plans/blue13.md` keeps it in every profile including
-            // `mini`, and there is no TrueType rasteriser to substitute — so the backend that
+            // rendered by a different font engine is a picture of a different control. This crate's
+            // font is `render::text` — kept in every profile including `mini` — so the backend that
             // must change is this one.
             //
-            // The rectangles come from `glyph_rects`, the *same* function `draw_bitmap_glyph`
-            // fills, so the two outputs are one drawing rather than two that have to be kept in
-            // step. There is no baseline conversion either: both backends now paint downward
-            // from `origin.y`, so no shared convention has to be remembered.
+            // # Why this reads the 1-bit view rather than the painted coverage
+            //
+            // The rasteriser blends per-pixel coverage; this backend needs geometry, and a set
+            // source bit is **one rectangle** however large the cell is. Both are views of the same
+            // face — `paint_bitmap` and `glyph_rects` implement one placement rule, and
+            // `glyph_source`'s tests assert they agree pixel for pixel — so the two backends are one
+            // drawing by construction. Compressing is not a shortcut: for an 8x8 glyph in a 40px
+            // box, rectangles-per-source-bit is 30 subpaths against 750 per-destination-pixel.
+            //
+            // A face whose ink is *not* 1-bit (an antialiased vector face, a colour bitmap) is the
+            // case this path cannot express, and it is not silently wrong: `source_cell` is the
+            // hook a future pass uses to emit an outline `<path>` instead. There is no baseline
+            // conversion: both backends paint downward from `origin.y`.
             RenderCommand::DrawText { origin, text, font, color, alignment } => {
                 // `origin` is the glyph box's **top-left**, exactly as for the rasteriser.
                 //
@@ -322,6 +330,17 @@ impl PaintBackend for SvgPaintBackend {
                         .chars()
                         .find(|ch| !is_combining_mark(*ch) && !is_variation_selector(*ch));
                     if let Some(ch) = display_char {
+                        // The rectangles come from `glyph_rects` — the bitmap face's **source-
+                        // pixel** geometry: a set source bit is one rectangle, however large the
+                        // cell. That is the compression this backend wants (30 subpaths instead of
+                        // 750 for an 8x8 glyph in a 40px box), and it is one placement rule shared
+                        // with the rasteriser's coverage rather than a second derivation.
+                        //
+                        // A face whose ink is not 1-bit (an antialiased vector face, a colour
+                        // bitmap) is the case this path cannot express. It is not silently wrong:
+                        // `GlyphSource::paint`'s `source_cell` reports whether the ink was 1-bit,
+                        // and that report is the hook a future pass uses to emit an outline
+                        // `<path>` instead.
                         for (x0, y0, x1, y1) in crate::render::glyph_rects(
                             ch,
                             pen_x.round() as i32,

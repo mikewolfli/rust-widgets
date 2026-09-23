@@ -416,6 +416,11 @@ fn draw_text_cpu_rgba8(
     let glyph_h = 8i32;
     let columns = (rect.width as i32 / glyph_w).max(1);
     let rows = (rect.height as i32 / glyph_h).max(1);
+    let cell = crate::render::text::Cell::new(glyph_w as u32, glyph_h as u32);
+    // One scratch for the whole string, reused per glyph: a glyph is rasterised, blended, and
+    // overwritten. That is what keeps this path free of per-glyph allocation and of any glyph
+    // cache — the same contract the software rasteriser honours (BLUE23 §0A.4, constraint 3).
+    let mut coverage = vec![0u8; cell.area()];
     for (char_index, scalar) in text.chars().enumerate() {
         let grid_index = char_index as i32;
         if grid_index >= columns * rows {
@@ -425,26 +430,43 @@ fn draw_text_cpu_rgba8(
         let row = grid_index / columns;
         let origin_x = rect.x + col * glyph_w;
         let origin_y = rect.y + row * glyph_h;
-        // The glyph's rectangles come from `crate::render::glyph_rects` — the same derivation the
-        // software rasteriser fills and the SVG backend emits, so a glyph lands on the same pixels
-        // in all three renderers. This path used to walk the 8x8 table itself, which meant a face
-        // added by a feature (a CJK face, a vector face) was invisible to it, and that it fell back
-        // to `'?'` for an uncovered character while the other two fell back to the box glyph — the
-        // GPU path's idea of "unsupported" being a third answer nobody chose.
-        let rects: Vec<(i32, i32, i32, i32)> =
-            crate::render::glyph_rects(scalar, origin_x, origin_y, glyph_w as u32, glyph_h as u32)
-                .collect();
-        for (x0, y0, x1, y1) in rects {
-            for py in y0..y1 {
-                for px in x0..x1 {
-                    if px < clip_rect.x
-                        || py < clip_rect.y
-                        || px >= clip_rect.right()
-                        || py >= clip_rect.bottom()
-                    {
-                        continue;
-                    }
-                    set_pixel_cpu_rgba8(pixels, width, px as u32, py as u32, color);
+        // The glyph's ink comes from the **font stack**, through the same `paint` the software
+        // rasteriser blends. This path used to walk the 8x8 table itself, which meant a face added
+        // by a feature (a CJK face, a vector face) was invisible to it, and that it fell back to
+        // `'?'` for an uncovered character while the other two fell back to the box glyph — the GPU
+        // path's idea of "unsupported" being a third answer nobody chose.
+        let Some(painted) = crate::render::text::paint_active(scalar, cell, &mut coverage) else {
+            continue;
+        };
+        // The scratch is glyph-sized, so every pixel of it is inside the cell. Coverage arrives as
+        // a value per pixel rather than as rectangles, so a face with antialiased ink would be drawn
+        // correctly here without a line of new code.
+        let _ = painted;
+        for py in 0..glyph_h {
+            let screen_y = origin_y + py;
+            if screen_y < clip_rect.y || screen_y >= clip_rect.bottom() {
+                continue;
+            }
+            for px in 0..glyph_w {
+                let screen_x = origin_x + px;
+                if screen_x < clip_rect.x || screen_x >= clip_rect.right() {
+                    continue;
+                }
+                let value = coverage[(py * glyph_w + px) as usize];
+                if value == 0 {
+                    continue;
+                }
+                if value == 255 {
+                    set_pixel_cpu_rgba8(pixels, width, screen_x as u32, screen_y as u32, color);
+                } else {
+                    blend_cpu_rgba8(
+                        pixels,
+                        width,
+                        screen_x as u32,
+                        screen_y as u32,
+                        color,
+                        value as f32 / 255.0,
+                    );
                 }
             }
         }
@@ -1345,6 +1367,37 @@ fn set_pixel_cpu_rgba8(pixels: &mut [u8], width: u32, x: u32, y: u32, color: Rgb
     pixels[offset + 1] = color.g;
     pixels[offset + 2] = color.b;
     pixels[offset + 3] = color.a;
+}
+
+fn blend_cpu_rgba8(pixels: &mut [u8], width: u32, x: u32, y: u32, color: Rgba8, coverage: f32) {
+    // The same source-over arithmetic `render::blend_pixel` performs, on this module's flat RGBA
+    // byte order. It exists because this path blends un-premultiplied coverage from a glyph's
+    // paint, which the opaque `set_pixel_cpu_rgba8` cannot express.
+    if coverage <= 0.0 {
+        return;
+    }
+    let offset = y as usize * width as usize + x as usize;
+    let Some(offset) = offset.checked_mul(4) else {
+        return;
+    };
+    if offset + 3 >= pixels.len() {
+        return;
+    }
+    let src_a = (color.a as f32 / 255.0) * coverage.clamp(0.0, 1.0);
+    if src_a >= 1.0 {
+        pixels[offset] = color.r;
+        pixels[offset + 1] = color.g;
+        pixels[offset + 2] = color.b;
+        pixels[offset + 3] = 255;
+        return;
+    }
+    let dst = [pixels[offset], pixels[offset + 1], pixels[offset + 2], pixels[offset + 3]];
+    let mix = |src: u8, dst: u8| (src as f32 * src_a + dst as f32 * (1.0 - src_a)).round() as u8;
+    pixels[offset] = mix(color.r, dst[0]);
+    pixels[offset + 1] = mix(color.g, dst[1]);
+    pixels[offset + 2] = mix(color.b, dst[2]);
+    pixels[offset + 3] =
+        (dst[3] as f32 + 255.0 * src_a * (1.0 - dst[3] as f32 / 255.0)).round() as u8;
 }
 
 #[cfg(test)]

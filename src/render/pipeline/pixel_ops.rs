@@ -1,21 +1,28 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! Pixel-level operations: draw_bitmap_glyph, glyph_rects, fill_pixels,
+//! Pixel-level operations: blend_painted_glyph, glyph_rects, fill_pixels,
 //! blend_pixel, set_pixel, pixel_bytes_len, and anti-aliased coverage/geometry helpers.
 use crate::core::{Color, Point, Rect, Size};
 
-/// Configuration for `draw_bitmap_glyph`.
+/// Where one glyph is painted, and into what.
+///
+/// # Why this is not owned by the glyph
+///
+/// The cell is the caller's decision (a label draws a cluster in a box as wide as its own advance),
+/// not a property of the face — a vector face can rasterise at any cell size. So position and cell
+/// travel together in the caller's struct and the face is asked only "paint into this".
+///
+/// # Why the position is not a field
+///
+/// It **is** the caller's `x`/`y`, and it used to be copied in here as well: `glyph_rects` read the
+/// copies while the caller read the originals, so the two could disagree without anything noticing.
+/// [`blend_painted_glyph`] takes the position as arguments instead, which makes that impossible —
+/// there is one place a glyph's position is written, so there is nothing to keep in step.
 pub(crate) struct GlyphDrawConfig<'a> {
-    /// Glyph character code.
-    pub ch: char,
-    /// X position of the glyph.
-    pub x: i32,
-    /// Y position of the glyph.
-    pub y: i32,
-    /// Glyph width in pixels.
+    /// Cell width in pixels.
     pub w: u32,
-    /// Glyph height in pixels.
+    /// Cell height in pixels.
     pub h: u32,
     /// Glyph color.
     pub color: Color,
@@ -81,19 +88,19 @@ pub(crate) fn glyph_rects(
         // a hypothetical zero-sized face divides nothing.
         if gw > 0 && gh > 0 {
             for gy in 0..gh {
+                let y0 = y + (gy * height) / gh;
+                let mut y1 = y + ((gy + 1) * height) / gh;
+                if y1 <= y0 {
+                    y1 = y0 + 1;
+                }
                 for gx in 0..gw {
                     if !glyph.bit(gx as u32, gy as u32) {
                         continue;
                     }
                     let x0 = x + (gx * width) / gw;
                     let mut x1 = x + ((gx + 1) * width) / gw;
-                    let y0 = y + (gy * height) / gh;
-                    let mut y1 = y + ((gy + 1) * height) / gh;
                     if x1 <= x0 {
                         x1 = x0 + 1;
-                    }
-                    if y1 <= y0 {
-                        y1 = y0 + 1;
                     }
                     rects.push((x0, y0, x1, y1));
                 }
@@ -103,29 +110,76 @@ pub(crate) fn glyph_rects(
     rects.into_iter()
 }
 
-pub(crate) fn draw_bitmap_glyph(config: &mut GlyphDrawConfig) {
-    // The rectangles come from the shared derivation, so the rasteriser and the SVG backend
-    // cannot disagree about where a glyph's ink is. Collected first so the borrow of
-    // `config.canvas` below is the only one taken.
-    let rects: crate::compat::Vec<(i32, i32, i32, i32)> =
-        glyph_rects(config.ch, config.x, config.y, config.w, config.h).collect();
-    for (x0, y0, x1, y1) in rects {
-        for py in y0.max(0)..y1.min(config.canvas_height as i32) {
-            for px in x0.max(0)..x1.min(config.canvas_width as i32) {
-                if pixel_visible(config.clip, px, py) {
-                    blend_pixel(
-                        config.canvas,
-                        config.canvas_width,
-                        px as u32,
-                        py as u32,
-                        config.color,
-                        1.0,
-                    );
-                }
+/// Blend one glyph's ink into a canvas, from a face's painted coverage.
+///
+/// # Why a renderer calls this and not `glyph_rects`
+///
+/// `glyph_rects` answers "which rectangles does this glyph's 1-bit bitmap produce?" — which is
+/// what a *vector* backend wants (one subpath per set source pixel) and what the rasteriser used
+/// to want. It is the wrong question for a rasteriser the moment a face can produce partial
+/// coverage: antialiased ink is a value per destination pixel, not a set of full-intensity
+/// rectangles, and no set of rectangles can express it.
+///
+/// So the rasteriser asks the face to **paint** and blends what it gets, byte per byte. For a
+/// 1-bit face the two are the same picture: [`paint_bitmap`] writes `255` on exactly the pixels
+/// `glyph_rects` would have filled, so every existing snapshot is unchanged — and a vector face
+/// gets antialiasing through the same blend, with no second code path.
+///
+/// `coverage` is a caller-owned scratch of at least `cell.area()` bytes, reused across glyphs so
+/// no per-glyph allocation happens on a paint path (constraint: a glyph is never resident).
+/// Returns whether any ink was blended.
+pub(crate) fn blend_painted_glyph(
+    ch: char,
+    x: i32,
+    y: i32,
+    /* the cell is taken from `config`, so the two cannot disagree */
+    coverage: &mut [u8],
+    config: &mut GlyphDrawConfig,
+) -> bool {
+    if ch.is_whitespace() {
+        return false;
+    }
+    let cell = crate::render::text::Cell::new(config.w, config.h);
+    if cell.is_empty() || coverage.len() < cell.area() {
+        return false;
+    }
+    // `paint` reports which face answered and whether its ink was 1-bit; this consumer only
+    // needs the coverage, so the report is discarded rather than ignored mid-flight.
+    if crate::render::text::paint_active(ch, cell, coverage).is_none() {
+        return false;
+    }
+    let (width, height) = (cell.width as i32, cell.height as i32);
+    let mut any = false;
+    for py in 0..height {
+        let cy = y + py;
+        if cy < 0 || cy >= config.canvas_height as i32 {
+            continue;
+        }
+        for px in 0..width {
+            let value = coverage[(py * width + px) as usize];
+            if value == 0 {
+                continue;
+            }
+            let cx = x + px;
+            if cx < 0 || cx >= config.canvas_width as i32 {
+                continue;
+            }
+            if pixel_visible(config.clip, cx, cy) {
+                blend_pixel(
+                    config.canvas,
+                    config.canvas_width,
+                    cx as u32,
+                    cy as u32,
+                    config.color,
+                    value as f32 / 255.0,
+                );
+                any = true;
             }
         }
     }
+    any
 }
+
 pub(crate) fn pixel_bytes_len(size: Size) -> usize {
     size.width.saturating_mul(size.height).saturating_mul(4) as usize
 }

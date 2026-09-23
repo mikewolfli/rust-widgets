@@ -570,7 +570,7 @@ impl ScrollArea {
                 rect.width.saturating_sub(if v_scroll_visible { bar } else { 0 }),
                 rect.height.saturating_sub(if h_scroll_visible { bar } else { 0 }),
             );
-            return ChromeBands { content, horizontal: h_band, vertical: v_band };
+            ChromeBands { content, horizontal: h_band, vertical: v_band }
         }
         #[cfg(full_widgets)]
         {

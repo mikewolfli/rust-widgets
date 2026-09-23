@@ -41,8 +41,8 @@ pub mod bidi;
 mod cjk_bitmap_data;
 
 pub use glyph_source::{
-    active_stack, resolve, source_for, BitOrder, Font8x8Source, FontStack, GlyphBitmap,
-    GlyphSource, TOFU,
+    active_stack, paint_active, resolve, source_for, BitOrder, Cell, Font8x8Source, FontStack,
+    GlyphBitmap, GlyphSource, Painted, TOFU,
 };
 
 // The wide-scalar table is a property of the characters, needed by the renderer's advance

@@ -28,6 +28,58 @@
 //! Everything here is `Copy` or a `&'static` slice. No allocation, no `std`, no global mutable
 //! state — a stack of sources is a fixed slice chosen by feature, so the default build resolves
 //! a glyph through the same code it always did.
+//!
+//! # Why a face *paints into a buffer* instead of returning pixels
+//!
+//! A 1-bit table's rows can be borrowed forever: they are in the binary. A vector face's pixels
+//! cannot be — they are computed for one cell size, at one moment, and must not become resident
+//! (the third constraint: a headless profile cannot hold thousands of rasterised glyphs). The
+//! two are therefore expressed the same way, as *"write your coverage into this buffer"*, and
+//! the caller owns the buffer.
+//!
+//! That single change is what makes the next two capabilities possible **without** touching this
+//! module's shape again:
+//!
+//! * a vector face writes antialiased **coverage** (`0..=255`) into the same `cell.area()` bytes
+//!   a 1-bit face writes `0` or `255` into — one buffer, one blend, no second code path;
+//! * a colour face writes four bytes per pixel instead of one, which is why [`Painted`] reports
+//!   what it produced rather than the caller guessing.
+//!
+//! [`GlyphBitmap`] survives as the *1-bit view* of a face, because two consumers genuinely need
+//! the bits rather than the coverage: the resolution chain ([`FontStack::resolve`]) and a vector
+//! backend that compresses by source pixel (a set source bit is one rectangle, which is smaller
+//! than one rectangle per destination pixel).
+
+/// A pixel box a glyph is painted into, in device pixels.
+///
+/// The cell is **not** the glyph's own size: it is the box the caller has decided to draw in
+/// (for a label, the cluster's advance wide and the line box tall). A 1-bit face scales its
+/// source cell into it; a vector face rasterises at it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cell {
+    /// Width in device pixels.
+    pub width: u32,
+    /// Height in device pixels.
+    pub height: u32,
+}
+
+impl Cell {
+    /// A cell of `width x height` device pixels.
+    pub const fn new(width: u32, height: u32) -> Self {
+        Self { width, height }
+    }
+
+    /// The number of pixels — and therefore the number of coverage bytes [`GlyphSource::paint`]
+    /// writes.
+    pub const fn area(self) -> usize {
+        self.width as usize * self.height as usize
+    }
+
+    /// Whether the cell has no pixels, in which case painting is a no-op.
+    pub const fn is_empty(self) -> bool {
+        self.width == 0 || self.height == 0
+    }
+}
 
 /// Whether a row's leftmost pixel is the most or least significant bit of its first byte.
 ///
@@ -42,6 +94,111 @@ pub enum BitOrder {
     LsbFirst,
     /// The highest bit of a row is its leftmost pixel (the Unifont `.hex` table).
     MsbFirst,
+}
+
+/// What a face actually produced, so a caller can tell *which* face answered and how.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Painted {
+    /// The name of the source that answered ([`GlyphSource::name`]).
+    pub source: &'static str,
+    /// The 1-bit source cell the ink was scaled from, when there was one.
+    ///
+    /// A vector backend uses this to emit **one rectangle per source pixel** rather than one per
+    /// destination pixel: for an 8x8 glyph scaled into a 40x40 box the difference is 30 subpaths
+    /// against 750. `None` means the ink is not 1-bit (a coverage face), which a bitmap-compressing
+    /// backend must handle the other way.
+    pub source_cell: Option<Cell>,
+}
+
+/// Scale a 1-bit glyph into `cell`, writing one coverage byte per cell pixel.
+///
+/// # The one placement rule for 1-bit faces
+///
+/// A source pixel `gx` covers the destination columns `gx * w / gw .. (gx + 1) * w / gw` —
+/// nearest-neighbour, with integer arithmetic. That is not an approximation invented here: it is
+/// the exact expression the two renderers used when each walked the bitmap itself, so a face that
+/// paints through this function produces the same pixels the crate always drew, and the crate's
+/// 376 committed snapshots do not move. Stated once, tested once, used by every 1-bit face.
+///
+/// Returns whether any ink was written. `out` must be at least `cell.area()` bytes; a shorter
+/// buffer is refused rather than written past (a drawing routine is the wrong place to discover a
+/// sizing bug).
+pub fn paint_bitmap(glyph: &GlyphBitmap, cell: Cell, out: &mut [u8]) -> bool {
+    if cell.is_empty() {
+        return false;
+    }
+    let needed = cell.area();
+    if out.len() < needed {
+        return false;
+    }
+    // A caller reuses one buffer for every glyph, so the previous glyph's ink has to go.
+    out[..needed].fill(0);
+
+    let (width, height) = (cell.width as i32, cell.height as i32);
+    let gw = glyph.width.max(1) as i32;
+    let gh = glyph.height.max(1) as i32;
+    let mut any = false;
+    for gy in 0..gh {
+        if !(0..gh).contains(&gy) {
+            continue;
+        }
+        // The rows a source row covers, and the columns a source column covers. A zero-extent
+        // range (`w < gw`) is widened to one pixel, exactly as the old rectangle walk did.
+        let y0 = gy * height / gh;
+        let y1 = ((gy + 1) * height / gh).max(y0 + 1).min(height);
+        for gx in 0..gw {
+            if !glyph.bit(gx as u32, gy as u32) {
+                continue;
+            }
+            let x0 = gx * width / gw;
+            let x1 = ((gx + 1) * width / gw).max(x0 + 1).min(width);
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    out[(y * width + x) as usize] = 255;
+                    any = true;
+                }
+            }
+        }
+    }
+    any
+}
+
+/// A provider of glyph pixels.
+///
+/// Implementors are `Send + Sync` and live for the whole process, so a stack of them can be a
+/// `&'static` slice with no locking.
+pub trait GlyphSource: Send + Sync {
+    /// This source's glyph for `ch`, or `None` when it does not cover the character.
+    ///
+    /// `None` is the honest answer for "not my character": it is what lets a stack fall through
+    /// to the next source. A source that answered with a placeholder box for everything would
+    /// make every later source unreachable.
+    fn glyph(&self, ch: char) -> Option<GlyphBitmap>;
+
+    /// A stable name, for diagnostics and for a test to assert which source answered.
+    fn name(&self) -> &'static str;
+
+    /// Whether this source covers `ch`. Defaults to asking [`Self::glyph`].
+    fn covers(&self, ch: char) -> bool {
+        self.glyph(ch).is_some()
+    }
+
+    /// Paint `ch`'s coverage into `out`, one byte per pixel of `cell`, row-major.
+    ///
+    /// `out` must be at least `cell.area()` bytes. `None` means this face does not cover `ch` (so
+    /// a stack falls through) or could not paint; a face that covers the character but has no ink
+    /// for it (a space) returns `Some` with the buffer left blank, which is the honest report —
+    /// "this character is mine, and it is empty".
+    ///
+    /// The default implementation is the 1-bit path: take the glyph, scale it by
+    /// [`paint_bitmap`]. A face whose ink is not 1-bit (a vector outline, a colour bitmap)
+    /// overrides this and writes its own coverage.
+    fn paint(&self, ch: char, cell: Cell, out: &mut [u8]) -> Option<Painted> {
+        let glyph = self.glyph(ch)?;
+        let source_cell = Cell::new(glyph.width, glyph.height);
+        paint_bitmap(&glyph, cell, out);
+        Some(Painted { source: self.name(), source_cell: Some(source_cell) })
+    }
 }
 
 /// One glyph's pixels, as packed rows.
@@ -115,27 +272,6 @@ impl GlyphBitmap {
             BitOrder::MsbFirst => 7 - (x % 8),
         };
         byte & (1u8 << shift) != 0
-    }
-}
-
-/// A provider of glyph pixels.
-///
-/// Implementors are `Send + Sync` and live for the whole process, so a stack of them can be a
-/// `&'static` slice with no locking.
-pub trait GlyphSource: Send + Sync {
-    /// This source's glyph for `ch`, or `None` when it does not cover the character.
-    ///
-    /// `None` is the honest answer for "not my character": it is what lets a stack fall through
-    /// to the next source. A source that answered with a placeholder box for everything would
-    /// make every later source unreachable.
-    fn glyph(&self, ch: char) -> Option<GlyphBitmap>;
-
-    /// A stable name, for diagnostics and for a test to assert which source answered.
-    fn name(&self) -> &'static str;
-
-    /// Whether this source covers `ch`. Defaults to asking [`Self::glyph`].
-    fn covers(&self, ch: char) -> bool {
-        self.glyph(ch).is_some()
     }
 }
 
@@ -271,6 +407,24 @@ pub fn active_stack() -> FontStack {
 /// Resolve `ch` through the active stack, falling back to tofu.
 pub fn resolve(ch: char) -> (GlyphBitmap, Option<&'static str>) {
     active_stack().resolve_or_tofu(ch)
+}
+
+/// Paint `ch`'s coverage through the active stack, falling back to tofu.
+///
+/// This is [`resolve`]'s sibling for a renderer that draws *pixels* rather than rectangles, and
+/// the two agree by construction: the tofu fallback paints the same 8x8 block `resolve` returns,
+/// and a covering face paints its own ink either way. `None` means the buffer was too small.
+pub fn paint_active(ch: char, cell: Cell, out: &mut [u8]) -> Option<Painted> {
+    let stack = active_stack();
+    for source in stack.sources() {
+        if let Some(painted) = source.paint(ch, cell, out) {
+            return Some(painted);
+        }
+    }
+    // No face covers the character: tofu, exactly as `resolve` would return it.
+    let tofu = GlyphBitmap::inline8(TOFU);
+    paint_bitmap(&tofu, cell, out);
+    Some(Painted { source: "tofu", source_cell: Some(Cell::new(8, 8)) })
 }
 
 /// Which source answers `ch` on this build, or `None` for tofu.
@@ -414,5 +568,56 @@ mod tests {
         assert_eq!(ink[0], 1 << 7, "the vertical stroke's tip");
         assert_eq!(ink[4], 0x1FFC, "the top bar of the boxed radical");
         assert_eq!(ink[15], 1 << 7, "and the stroke continues to the last row");
+    }
+
+    /// The 1-bit view and the painted coverage are the **same picture**, pixel for pixel.
+    ///
+    /// This is the assertion that makes it safe for the rasteriser to ask faces to *paint* while
+    /// the SVG backend keeps asking them for **rectangles**: if the two derivations ever disagreed,
+    /// a control's raster and its snapshot would be two different drawings, and neither the snapshot
+    /// gate nor any test could say which was right. The reverse holds too — the rasteriser now
+    /// blends real coverage, so anything other than `0`/`255` here would mean antialiasing had
+    /// arrived on a face that has none.
+    #[test]
+    fn the_bitmap_view_and_the_painted_coverage_agree() {
+        // A few cells per glyph: smaller than the 8x8 source, exactly it, and larger on both axes.
+        for ch in ['A', 'g', '5', '\u{4e2d}', '\u{10ffff}'] {
+            for cell in [Cell::new(8, 8), Cell::new(5, 13), Cell::new(19, 23), Cell::new(64, 64)] {
+                let mut coverage = vec![0u8; cell.area()];
+                paint_active(ch, cell, &mut coverage);
+
+                // Every pixel the rectangle walk fills must be fully covered, and every pixel it
+                // leaves out must be empty. `ch.is_whitespace()` short-circuits both paths.
+                let mut expected = vec![0u8; cell.area()];
+                if !ch.is_whitespace() {
+                    for (x0, y0, x1, y1) in
+                        crate::render::glyph_rects(ch, 0, 0, cell.width, cell.height)
+                    {
+                        for y in y0..y1 {
+                            for x in x0..x1 {
+                                expected[(y * cell.width as i32 + x) as usize] = 255;
+                            }
+                        }
+                    }
+                }
+                assert_eq!(
+                    coverage, expected,
+                    "U+{:04X} in {}x{}: painted coverage and the bitmap view must be one picture",
+                    ch as u32, cell.width, cell.height
+                );
+            }
+        }
+    }
+
+    /// A buffer shorter than the cell is refused rather than written past.
+    ///
+    /// A paint routine is the wrong place to discover a caller's sizing bug: writing past the end
+    /// of a slice is undefined, and a drawing call has no way to report it.
+    #[test]
+    fn a_short_buffer_is_refused_rather_than_written_past() {
+        let cell = Cell::new(8, 8);
+        let mut short = [0u8; 63];
+        assert!(!paint_bitmap(&GlyphBitmap::inline8([0xFF; 8]), cell, &mut short));
+        assert!(short.iter().all(|byte| *byte == 0), "nothing may be written");
     }
 }
