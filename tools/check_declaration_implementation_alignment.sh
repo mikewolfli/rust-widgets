@@ -52,13 +52,14 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 . "$ROOT_DIR/tools/lib_timeout.sh"
+. "$ROOT_DIR/tools/lib_cargo_cache.sh"
 . "$ROOT_DIR/tools/lib_python.sh"
 
 STEP_BUDGET="${RW_GATE_TIMEOUT:-900}"
 CENSUS="tools/declaration_alignment_census.txt"
 
 echo "[1/2] alignment: Q1/Q2/Q3 asserted against every registered control"
-if ! rw_run_bounded "$STEP_BUDGET" cargo test \
+if ! rw_cargo_cached "$STEP_BUDGET" test \
     --no-default-features --features desktop \
     --test declaration_alignment_test > /tmp/rw_alignment.log 2>&1; then
     echo "  FAIL  declaration_alignment_test"

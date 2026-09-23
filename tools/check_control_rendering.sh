@@ -65,6 +65,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 . "$ROOT_DIR/tools/lib_timeout.sh"
+. "$ROOT_DIR/tools/lib_cargo_cache.sh"
 # Resolved rather than assumed: on Windows the `python3` name is often the Microsoft
 # Store's execution alias, which blocks on the Store UI instead of running the script,
 # so a bare `python3` turns this gate into a hang (tools/lib_python.sh documents it).
@@ -73,7 +74,7 @@ cd "$ROOT_DIR"
 STEP_BUDGET="${RW_GATE_TIMEOUT:-900}"
 
 echo "[1/4] census: rendering every published control in light and dark"
-if ! rw_run_bounded "$STEP_BUDGET" cargo test \
+if ! rw_cargo_cached "$STEP_BUDGET" test \
     --no-default-features --features desktop \
     --test control_rendering_census_test -- --nocapture > /tmp/rw_rendering_census.log 2>&1; then
     echo "  FAIL  control_rendering_census_test"

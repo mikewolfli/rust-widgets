@@ -37,6 +37,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 . "$ROOT_DIR/tools/lib_timeout.sh"
+. "$ROOT_DIR/tools/lib_cargo_cache.sh"
 
 GATE_TIMEOUT="${GATE_TIMEOUT:-900}"
 
@@ -88,7 +89,7 @@ edition = "2021"
 rust_widgets = { path = "$manifest_path", default-features = false, features = [$features] }
 EOF
   CARGO_TARGET_DIR="$ROOT_DIR/target" \
-    rw_run_bounded "$GATE_TIMEOUT" cargo check --quiet --manifest-path "$PROBE_DIR/Cargo.toml" \
+    rw_cargo_cached "$GATE_TIMEOUT" check --quiet --manifest-path "$PROBE_DIR/Cargo.toml" \
     > /dev/null 2>&1
 }
 

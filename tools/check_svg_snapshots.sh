@@ -44,6 +44,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 . "$ROOT_DIR/tools/lib_timeout.sh"
+. "$ROOT_DIR/tools/lib_cargo_cache.sh"
 . "$ROOT_DIR/tools/lib_python.sh"
 
 STEP_BUDGET="${RW_GATE_TIMEOUT:-900}"
@@ -78,7 +79,7 @@ if [[ ! -s "$BEFORE" ]]; then
 fi
 
 echo "[2/5] regenerate every snapshot in place"
-if ! rw_run_bounded "$STEP_BUDGET" cargo run \
+if ! rw_cargo_cached "$STEP_BUDGET" run \
     --no-default-features --features desktop \
     --example export_control_svgs > "$SCRATCH/export.log" 2>&1; then
     echo "  FAIL  the SVG exporter did not run"

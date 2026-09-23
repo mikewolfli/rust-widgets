@@ -33,6 +33,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 . "$ROOT_DIR/tools/lib_timeout.sh"
+. "$ROOT_DIR/tools/lib_cargo_cache.sh"
 
 GATE_TIMEOUT="${GATE_TIMEOUT:-900}"
 
@@ -71,7 +72,7 @@ fi
 echo "=== iOS targets: ${#TARGETS[@]} target(s), lib type-check only ==="
 for target in "${TARGETS[@]}"; do
   echo "--- $target"
-  if ! rw_run_bounded "$GATE_TIMEOUT" cargo check --lib \
+  if ! rw_cargo_cached "$GATE_TIMEOUT" check --lib \
       --target "$target" --no-default-features --features "$FEATURES"; then
     echo "" >&2
     echo "FAIL: \`$target\` does not type-check with the iOS feature set." >&2

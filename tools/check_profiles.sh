@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 . "$ROOT_DIR/tools/lib_timeout.sh"
+. "$ROOT_DIR/tools/lib_cargo_cache.sh"
 
 # One budget per `cargo` step. A profile check that compiles many modules can
 # take minutes cold, and a `cargo` waiting on a lock never returns on its own —
@@ -49,22 +50,22 @@ run_test_case() {
 }
 
 echo "[1/9] cargo check (default)"
-rw_run_bounded "$PROFILE_TIMEOUT" cargo check
+rw_cargo_cached "$PROFILE_TIMEOUT" check
 
 echo "[2/9] cargo check --examples"
-rw_run_bounded "$PROFILE_TIMEOUT" cargo check --examples
+rw_cargo_cached "$PROFILE_TIMEOUT" check --examples
 
 echo "[3/9] cargo check --no-default-features --features tablet --all-targets"
-rw_run_bounded "$PROFILE_TIMEOUT" cargo check --no-default-features --features tablet --all-targets
+rw_cargo_cached "$PROFILE_TIMEOUT" check --no-default-features --features tablet --all-targets
 
 echo "[4/9] cargo check --no-default-features --features mobile --all-targets"
-rw_run_bounded "$PROFILE_TIMEOUT" cargo check --no-default-features --features mobile --all-targets
+rw_cargo_cached "$PROFILE_TIMEOUT" check --no-default-features --features mobile --all-targets
 
 echo "[5/9] cargo check --no-default-features --features mini --all-targets"
-rw_run_bounded "$PROFILE_TIMEOUT" cargo check --no-default-features --features mini --all-targets
+rw_cargo_cached "$PROFILE_TIMEOUT" check --no-default-features --features mini --all-targets
 
 echo "[6/9] cargo check --no-default-features --features embedded --all-targets"
-rw_run_bounded "$PROFILE_TIMEOUT" cargo check --no-default-features --features embedded --all-targets
+rw_cargo_cached "$PROFILE_TIMEOUT" check --no-default-features --features embedded --all-targets
 
 # The designer's build surface (BLUE19 D7-b-3).
 #
@@ -84,11 +85,11 @@ rw_run_bounded "$PROFILE_TIMEOUT" cargo check --no-default-features --features e
 # them, and it only compiles a probe that calls `GENERATED_MARKER` — not the
 # generator, and not the artifact writer.
 echo "[6a/9] cargo check --features desktop,no-declarative-view --all-targets (designer without the declarative layer)"
-rw_run_bounded "$PROFILE_TIMEOUT" cargo check \
+rw_cargo_cached "$PROFILE_TIMEOUT" check \
   --no-default-features --features desktop,no-declarative-view --all-targets
 
 echo "[6a/9b] cargo check --features tablet,designer --all-targets (the explicit opt-in)"
-rw_run_bounded "$PROFILE_TIMEOUT" cargo check \
+rw_cargo_cached "$PROFILE_TIMEOUT" check \
   --no-default-features --features tablet,designer --all-targets
 
 # Cross-target backend checks.
@@ -150,11 +151,11 @@ if rustc --print target-list 2>/dev/null | grep -qx 'x86_64-pc-windows-msvc' \
     echo "[6b/9] cargo check --target x86_64-pc-windows-msvc (windows backend, mixed profiles)"
     for profile in desktop embedded mini; do
       echo "  - windows target, profile: $profile"
-      rw_run_bounded "$PROFILE_TIMEOUT" cargo check \
+      rw_cargo_cached "$PROFILE_TIMEOUT" check \
         --target x86_64-pc-windows-msvc --no-default-features --features "$profile"
     done
     echo "  - windows target, no device profile and no touch capability"
-    rw_run_bounded "$PROFILE_TIMEOUT" cargo check \
+    rw_cargo_cached "$PROFILE_TIMEOUT" check \
       --target x86_64-pc-windows-msvc --no-default-features \
       --features "windows desktop-runtime controls-native controls-custom"
   fi
@@ -169,7 +170,7 @@ fi
 # to either from the ABI is a hard error. That combination was broken (9 errors)
 # and nothing checked it, so it is checked here.
 echo "[6c/9] cargo check (android-jni feature set, no device profile)"
-rw_run_bounded "$PROFILE_TIMEOUT" cargo check \
+rw_cargo_cached "$PROFILE_TIMEOUT" check \
   --no-default-features \
   --features "android-jni jni mobile-api controls-custom controls-native serde serde_json"
 
@@ -197,7 +198,7 @@ run_test_case "gpu auto-compose mixed scene" \
   cargo test --lib --features gpu-wgpu render::tests::auto_compose_renders_mixed_commands_scene_with_gpu_or_cpu_backend
 run_test_case "gpu auto-compose cpu fallback" \
   cargo test --lib --features gpu-wgpu render::tests::auto_compose_falls_back_to_cpu_backend_when_gpu_path_is_rejected
-rw_run_bounded "$PROFILE_TIMEOUT" cargo check --features gpu-wgpu --example demo_wgpu_control_parity
+rw_cargo_cached "$PROFILE_TIMEOUT" check --features gpu-wgpu --example demo_wgpu_control_parity
 
 # ── `mini` (no_std) × each OS backend ──
 #
@@ -229,13 +230,13 @@ else
   esac
   for backend in $MINI_BACKENDS; do
     echo "  - mini,$backend"
-    rw_run_bounded "$PROFILE_TIMEOUT" cargo check \
+    rw_cargo_cached "$PROFILE_TIMEOUT" check \
       --no-default-features --features "mini,$backend"
   done
   # `i18n` is a capability, not a backend, but it is the largest module on the
   # `compat` bridge and `mini,i18n` was the worst of the three failures.
   echo "  - mini,i18n"
-  rw_run_bounded "$PROFILE_TIMEOUT" cargo check --no-default-features --features "mini,i18n"
+  rw_cargo_cached "$PROFILE_TIMEOUT" check --no-default-features --features "mini,i18n"
 fi
 
 echo "All profile checks passed."

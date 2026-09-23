@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 . "$ROOT_DIR/tools/lib_timeout.sh"
+. "$ROOT_DIR/tools/lib_cargo_cache.sh"
 
 # A snapshot test compiles the default feature set and renders SVG; the bound
 # covers a cold compile. Without it a wedged test binary leaves this gate silent.
@@ -42,7 +43,7 @@ run_snapshot() {
   local out
 
   echo "[*] $label ($filter)"
-  if ! out="$(rw_run_bounded "$SNAPSHOT_TIMEOUT" cargo test "$filter" 2>&1)"; then
+  if ! out="$(rw_cargo_cached "$SNAPSHOT_TIMEOUT" test "$filter" 2>&1)"; then
     printf '%s\n' "$out" | grep -E "^test |test result|error|panicked" | tail -20 >&2
     echo "❌ $label FAILED (see above)" >&2
     return 1

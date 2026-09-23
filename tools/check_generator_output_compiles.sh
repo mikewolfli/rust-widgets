@@ -36,6 +36,7 @@ cd "$ROOT_DIR"
 
 . "$ROOT_DIR/tools/lib_python.sh"
 . "$ROOT_DIR/tools/lib_timeout.sh"
+. "$ROOT_DIR/tools/lib_cargo_cache.sh"
 
 # Each case compiles this library plus a small probe crate. Five compiles, so the budget has to be
 # generous — but it is still a **bound**, per rule #58: a gate that can hang is worse than one that
@@ -43,7 +44,7 @@ cd "$ROOT_DIR"
 GATE_TIMEOUT="${GATE_TIMEOUT:-2400}"
 
 run_cases() {
-    rw_run_bounded "$GATE_TIMEOUT" cargo test \
+    rw_cargo_cached "$GATE_TIMEOUT" test \
         --no-default-features --features desktop \
         --test generator_output_compiles_test -- --ignored --nocapture --test-threads=1
 }
@@ -92,7 +93,7 @@ text = text.replace(
 path.write_text(text)
 PY
 
-if rw_run_bounded "$GATE_TIMEOUT" cargo test \
+if rw_cargo_cached "$GATE_TIMEOUT" test \
     --no-default-features --features desktop \
     --test generator_output_compiles_test -- --ignored --nocapture --test-threads=1 $RUN_CASE \
     > id.1.diag 2>&1; then
@@ -105,7 +106,7 @@ rm -f id.1.diag
 echo "  injection detected as expected (the target refuses the symbol)"
 
 cp "$BACKUP" src/designer/generator.rs
-if ! rw_run_bounded "$GATE_TIMEOUT" cargo test \
+if ! rw_cargo_cached "$GATE_TIMEOUT" test \
     --no-default-features --features desktop \
     --test generator_output_compiles_test -- --ignored --test-threads=1 $RUN_CASE > /dev/null 2>&1; then
     echo "FAIL: the gate does not pass again after the injection is reverted" >&2

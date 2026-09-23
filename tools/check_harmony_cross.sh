@@ -40,6 +40,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 . "$ROOT_DIR/tools/lib_timeout.sh"
+. "$ROOT_DIR/tools/lib_cargo_cache.sh"
 
 # Cross-target work is the slowest thing here: three triples, each checked under
 # several feature sets and then *built and linked* against the SDK sysroot. A
@@ -157,30 +158,30 @@ for triple in "$PRIMARY" "${LINKABLE[@]}"; do
     # what a real HarmonyOS application links against, so it is the case that must
     # work. A `target_os = "ohos"` spelling fails here with E0425/E0428.
     echo "[2/6] ${triple}: backend auto-selected from the target (no 'harmony' feature)"
-    rw_run_bounded "$OHOS_CHECK_TIMEOUT" cargo ohos check -t "$short" --no-default-features \
+    rw_cargo_cached "$OHOS_CHECK_TIMEOUT" ohos check -t "$short" --no-default-features \
         --features "desktop,touch,i18n,serde,serde_json"
 
     echo "[3/6] ${triple}: full feature contact surface"
-    rw_run_bounded "$OHOS_CHECK_TIMEOUT" cargo ohos check -t "$short" --no-default-features --all-targets \
+    rw_cargo_cached "$OHOS_CHECK_TIMEOUT" ohos check -t "$short" --no-default-features --all-targets \
         --features "desktop,harmony,touch,i18n,serde,serde_json,advanced-widgets,controls-custom,controls-native"
 
     echo "[4/6] ${triple}: stripped profile"
-    rw_run_bounded "$OHOS_CHECK_TIMEOUT" cargo ohos check -t "$short" --no-default-features --features embedded
+    rw_cargo_cached "$OHOS_CHECK_TIMEOUT" ohos check -t "$short" --no-default-features --features embedded
 
     # `mini` is `#![no_std]` + `alloc_frugal`, which removes the `std` prelude. Two
     # backends were missing a `use crate::compat::String` and only failed here: the
     # Harmony backend (3 x E0425) and the wasm backend under `mini,wasm`. Neither was
     # covered by this script, which stopped at `embedded`.
     echo "[4a/6] ${triple}: alloc-frugal profile (no_std prelude)"
-    rw_run_bounded "$OHOS_CHECK_TIMEOUT" cargo ohos check -t "$short" --no-default-features --features mini
-    rw_run_bounded "$OHOS_CHECK_TIMEOUT" cargo ohos check -t "$short" --no-default-features --all-targets --features mini
+    rw_cargo_cached "$OHOS_CHECK_TIMEOUT" ohos check -t "$short" --no-default-features --features mini
+    rw_cargo_cached "$OHOS_CHECK_TIMEOUT" ohos check -t "$short" --no-default-features --all-targets --features mini
 
     # `check` never links, so on its own it cannot catch a missing sysroot: the C
     # dependencies in the graph (minimp3-sys, ...) only fail at link/build time.
     # This step produces a real shared object and verifies its machine type, so a
     # silently wrong toolchain cannot pass.
     echo "[4b/6] ${triple}: build + verify the linked artifact is the right machine"
-    rw_run_bounded "$OHOS_BUILD_TIMEOUT" cargo ohos build -t "$short" --no-default-features \
+    rw_cargo_cached "$OHOS_BUILD_TIMEOUT" ohos build -t "$short" --no-default-features \
         --features "desktop,touch,i18n,serde,serde_json"
 
     so="target/${triple}/debug/librust_widgets.so"
@@ -209,7 +210,7 @@ done
 #     redundant with the host clippy run.
 # ---------------------------------------------------------------------------
 echo "[5/6] clippy on ${PRIMARY} (deny warnings)"
-rw_run_bounded "$OHOS_CHECK_TIMEOUT" cargo ohos clippy -t aarch64 --no-default-features \
+rw_cargo_cached "$OHOS_CHECK_TIMEOUT" ohos clippy -t aarch64 --no-default-features \
     --features "desktop,harmony" --all-targets -- -D warnings
 
 # ---------------------------------------------------------------------------
@@ -246,7 +247,7 @@ elif [[ -z "$(rustup component list --installed --toolchain nightly 2>/dev/null 
     note "nightly rust-src unavailable — skipped (rustup component add rust-src --toolchain nightly)"
 else
     note "SDK now ships a loongarch64 lib dir — full build expected"
-    RUSTC_BOOTSTRAP=1 rw_run_bounded "$OHOS_BUILD_TIMEOUT" cargo +nightly check --target "$BUILD_STD_ONLY" \
+    RUSTC_BOOTSTRAP=1 rw_cargo_cached "$OHOS_BUILD_TIMEOUT" +nightly check --target "$BUILD_STD_ONLY" \
         --no-default-features --features "desktop" -Zbuild-std=std,panic_abort
 fi
 

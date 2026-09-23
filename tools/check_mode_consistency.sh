@@ -26,11 +26,12 @@ cd "$ROOT_DIR"
 
 . "$ROOT_DIR/tools/lib_python.sh"
 . "$ROOT_DIR/tools/lib_timeout.sh"
+. "$ROOT_DIR/tools/lib_cargo_cache.sh"
 
 GATE_TIMEOUT="${GATE_TIMEOUT:-900}"
 
 run_cases() {
-    rw_run_bounded "$GATE_TIMEOUT" cargo test \
+    rw_cargo_cached "$GATE_TIMEOUT" test \
         --no-default-features --features desktop --test mode_consistency_test
 }
 

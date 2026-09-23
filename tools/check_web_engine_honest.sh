@@ -41,6 +41,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 . "$ROOT_DIR/tools/lib_timeout.sh"
+. "$ROOT_DIR/tools/lib_cargo_cache.sh"
 . "$ROOT_DIR/tools/lib_python.sh"
 
 STEP_BUDGET="${RW_GATE_TIMEOUT:-900}"
@@ -114,7 +115,7 @@ if ! grep -q "pub fn has_real_engine" src/web/web_engine.rs; then
     echo "  FAIL  WebEngineViewEnhanced::has_real_engine is missing"
     exit 1
 fi
-if ! rw_run_bounded "$STEP_BUDGET" cargo test \
+if ! rw_cargo_cached "$STEP_BUDGET" test \
     --no-default-features --features desktop \
     --lib 'web::web_engine::tests::test_has_real_engine_agrees_with_the_platform' \
     > /tmp/rw_web_honest.log 2>&1; then
@@ -122,7 +123,7 @@ if ! rw_run_bounded "$STEP_BUDGET" cargo test \
     sed -n '1,60p' /tmp/rw_web_honest.log
     exit 1
 fi
-if ! rw_run_bounded "$STEP_BUDGET" cargo test \
+if ! rw_cargo_cached "$STEP_BUDGET" test \
     --no-default-features --features desktop \
     --lib 'web::web_engine::tests::test_no_backend_renders_the_web_today' \
     >> /tmp/rw_web_honest.log 2>&1; then
@@ -140,7 +141,7 @@ fi
 echo "  PASS  has_real_engine() asks the platform and agrees with it"
 
 echo "[4/4] the retained capability (JavaScript) still works"
-if ! rw_run_bounded "$STEP_BUDGET" cargo test \
+if ! rw_cargo_cached "$STEP_BUDGET" test \
     --no-default-features --features desktop \
     --lib 'web::js_engine' > /tmp/rw_web_js.log 2>&1; then
     echo "  FAIL  the JS engine regressed"

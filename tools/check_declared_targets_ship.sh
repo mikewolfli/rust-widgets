@@ -37,6 +37,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 . "$ROOT_DIR/tools/lib_timeout.sh"
+. "$ROOT_DIR/tools/lib_cargo_cache.sh"
 
 ERRORS=0
 error() {
@@ -81,7 +82,7 @@ RAW_LIST="$(mktemp)"
 trap 'rm -f "$PKG_LIST" "$RAW_LIST"' EXIT
 
 # `--list` does not build, but it does resolve the index, so it is bounded.
-if ! rw_run_bounded 300 cargo package --list --allow-dirty >"$RAW_LIST" 2>/dev/null; then
+if ! rw_cargo_cached 300 package --list --allow-dirty >"$RAW_LIST" 2>/dev/null; then
   echo "check_declared_targets_ship: unsupported host (cargo package --list did not complete)" >&2
   exit 0
 fi
