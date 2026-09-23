@@ -216,12 +216,16 @@ fn element_bounds(svg: &str) -> Vec<(String, Option<ElementBounds>)> {
                     out.push((line.to_string(), None));
                     continue;
                 };
-                // The emitted `y` is the glyph box's **top edge**, because the backend writes
-                // `dominant-baseline="text-before-edge"` alongside it — that attribute is what
-                // makes SVG's `y` mean the same thing the rasteriser's `origin.y` means. The
-                // extent is therefore (advance x line height) measured *downward* from `y`.
-                // Reading `y` as a baseline would report every label `ascent` too low and let
-                // a title whose box began above its frame pass (the `group_box` defect).
+                // The emitted `y` is a **baseline**: this crate's `draw_text` takes a glyph
+                // box *top* edge, and the SVG backend converts it by adding the ascent it
+                // measured (`baseline_y = origin.y + ascent`). Emitting an explicit baseline is
+                // what removed the `dominant-baseline="text-before-edge"` attribute — SVG 2
+                // dropped that value, and a keyword a renderer only maps "for backwards
+                // compatibility" cannot be what makes two backends agree about where ink is.
+                //
+                // So the box's top edge is `y - ascent`, and the extent is (advance x line
+                // height) measured *downward* from there. Reading `y` as the top edge would
+                // report every label `ascent` too low.
                 //
                 // The advance must be the **same model the renderer uses**, not an estimate.
                 // `PaintBackend::shape_text` gives one cluster per `char`, each advancing by
@@ -233,9 +237,14 @@ fn element_bounds(svg: &str) -> Vec<(String, Option<ElementBounds>)> {
                 let size = attr(line, "font-size=").map(|s| s as f32).unwrap_or(14.0);
                 let label = element_text(line);
                 let advance: f32 = label.chars().map(|ch| glyph_advance(ch, size)).sum();
+                // The same `ascent` the backend adds, from the same rule: `line_height` is the
+                // font size, and the ascent is 80% of it (`PaintBackend::measure_text`).
+                let line_height = size.max(1.0).round();
+                let ascent = (line_height * 0.8).round();
+                let top = y as f32 - ascent;
                 out.push((
                     line.to_string(),
-                    Some(bounds(x as f32, y as f32, advance.max(glyph_advance('M', size)), size)),
+                    Some(bounds(x as f32, top, advance.max(glyph_advance('M', size)), line_height)),
                 ));
             }
             "<path" => {

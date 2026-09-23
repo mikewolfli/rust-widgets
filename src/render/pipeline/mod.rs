@@ -23,5 +23,6 @@ pub(crate) use pixel_ops::pixel_bytes_len;
 
 // Text-shaping helpers shared with the SVG backend (principle #51).
 pub(crate) use pixel_ops::{
-    cluster_ends_with_zwj, estimate_cluster_advance, is_combining_mark, is_variation_selector,
+    cluster_ends_with_zwj, estimate_cluster_advance, glyph_rects, is_combining_mark,
+    is_variation_selector,
 };

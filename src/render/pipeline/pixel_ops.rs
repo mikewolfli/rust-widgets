@@ -31,42 +31,88 @@ pub(crate) struct GlyphDrawConfig<'a> {
     pub clip: Option<(i32, i32, u32, u32)>,
 }
 
-pub(crate) fn draw_bitmap_glyph(config: &mut GlyphDrawConfig) {
-    let ch = config.ch;
-    if ch.is_whitespace() || config.w == 0 || config.h == 0 {
-        return;
+/// The solid rectangles one glyph's bitmap produces inside its own box.
+///
+/// # Why this is a function and not a loop body
+///
+/// The software rasteriser drew glyphs by walking the `font8x8` bitmap and filling one
+/// rectangle per set bit, computing each rectangle as
+///
+/// ```text
+/// x0 = x + gx * w / 8,  x1 = x + (gx + 1) * w / 8
+/// y0 = y + gy * h / 8,  y1 = y + (gy + 1) * h / 8
+/// ```
+///
+/// while the SVG backend emitted a `<text>` element and let the viewer's font engine pick a
+/// font. Those are two different renderers of the same string: different glyph shapes,
+/// different advances, different ink boxes. Neither can be reconciled with the other by
+/// adjusting a coordinate.
+///
+/// So the geometry lives here, once, and **both** backends read it: the rasteriser fills the
+/// rectangles, the SVG backend emits them as one `<path>`. The two outputs are then the same
+/// drawing by construction — not by resemblance, and not by two implementations that have to
+/// be kept in step.
+///
+/// Returns `(x0, y0, x1, y1)` with `x1`/`y1` **exclusive**, matching the rasteriser's
+/// half-open fill. A set bit always produces a non-empty rectangle: the `(gx + 1) * w / 8`
+/// term can equal `gx * w / 8` when `w < 8`, and a zero-extent rectangle is a drawing command
+/// that paints nothing, so it is widened to one pixel (which is also what the rasteriser's
+/// own guard did).
+pub(crate) fn glyph_rects(
+    ch: char,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+) -> impl Iterator<Item = (i32, i32, i32, i32)> {
+    let width = w as i32;
+    let height = h as i32;
+    let mut rects = crate::compat::Vec::new();
+    // A whitespace glyph and a zero-extent box produce no ink; the rasteriser returns early for
+    // both, and so does this.
+    if !ch.is_whitespace() && w != 0 && h != 0 {
+        let glyph = glyph_bitmap(ch);
+        for gy in 0..8i32 {
+            let row = glyph[gy as usize];
+            for gx in 0..8i32 {
+                if row & (1u8 << gx) == 0 {
+                    continue;
+                }
+                let x0 = x + (gx * width) / 8;
+                let mut x1 = x + ((gx + 1) * width) / 8;
+                let y0 = y + (gy * height) / 8;
+                let mut y1 = y + ((gy + 1) * height) / 8;
+                if x1 <= x0 {
+                    x1 = x0 + 1;
+                }
+                if y1 <= y0 {
+                    y1 = y0 + 1;
+                }
+                rects.push((x0, y0, x1, y1));
+            }
+        }
     }
-    let glyph = glyph_bitmap(ch);
-    let width = config.w as i32;
-    let height = config.h as i32;
-    for gy in 0..8i32 {
-        let row = glyph[gy as usize];
-        for gx in 0..8i32 {
-            if row & (1u8 << gx) == 0 {
-                continue;
-            }
-            let x0 = config.x + (gx * width) / 8;
-            let mut x1 = config.x + ((gx + 1) * width) / 8;
-            let y0 = config.y + (gy * height) / 8;
-            let mut y1 = config.y + ((gy + 1) * height) / 8;
-            if x1 <= x0 {
-                x1 = x0 + 1;
-            }
-            if y1 <= y0 {
-                y1 = y0 + 1;
-            }
-            for py in y0.max(0)..y1.min(config.canvas_height as i32) {
-                for px in x0.max(0)..x1.min(config.canvas_width as i32) {
-                    if pixel_visible(config.clip, px, py) {
-                        blend_pixel(
-                            config.canvas,
-                            config.canvas_width,
-                            px as u32,
-                            py as u32,
-                            config.color,
-                            1.0,
-                        );
-                    }
+    rects.into_iter()
+}
+
+pub(crate) fn draw_bitmap_glyph(config: &mut GlyphDrawConfig) {
+    // The rectangles come from the shared derivation, so the rasteriser and the SVG backend
+    // cannot disagree about where a glyph's ink is. Collected first so the borrow of
+    // `config.canvas` below is the only one taken.
+    let rects: crate::compat::Vec<(i32, i32, i32, i32)> =
+        glyph_rects(config.ch, config.x, config.y, config.w, config.h).collect();
+    for (x0, y0, x1, y1) in rects {
+        for py in y0.max(0)..y1.min(config.canvas_height as i32) {
+            for px in x0.max(0)..x1.min(config.canvas_width as i32) {
+                if pixel_visible(config.clip, px, py) {
+                    blend_pixel(
+                        config.canvas,
+                        config.canvas_width,
+                        px as u32,
+                        py as u32,
+                        config.color,
+                        1.0,
+                    );
                 }
             }
         }

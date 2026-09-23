@@ -3,8 +3,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
-  <text x="96" y="0" dominant-baseline="text-before-edge" font-family="Sans" font-size="48" font-style="normal" font-weight="400" fill="rgba(153,153,153,1.00)">📭</text>
-  <text x="84" y="60" dominant-baseline="text-before-edge" font-family="Sans" font-size="20" font-style="normal" font-weight="600" fill="rgba(225,225,225,1.00)">Sample</text>
-  <text x="40" y="86" dominant-baseline="text-before-edge" font-family="Sans" font-size="14" font-style="normal" font-weight="400" fill="rgba(173,173,173,1.00)">There are no items to</text>
-  <text x="72" y="104" dominant-baseline="text-before-edge" font-family="Sans" font-size="14" font-style="normal" font-weight="400" fill="rgba(173,173,173,1.00)">display yet.</text>
+  <text x="96" y="38" font-family="Sans" font-size="48" font-style="normal" font-weight="400" fill="rgba(153,153,153,1.00)">📭</text>
+  <text x="84" y="76" font-family="Sans" font-size="20" font-style="normal" font-weight="600" fill="rgba(225,225,225,1.00)">Sample</text>
+  <text x="40" y="97" font-family="Sans" font-size="14" font-style="normal" font-weight="400" fill="rgba(173,173,173,1.00)">There are no items to</text>
+  <text x="72" y="115" font-family="Sans" font-size="14" font-style="normal" font-weight="400" fill="rgba(173,173,173,1.00)">display yet.</text>
 </svg>

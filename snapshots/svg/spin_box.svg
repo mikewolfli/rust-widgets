@@ -14,5 +14,5 @@
   <line x1="216" y1="51" x2="220" y2="46" stroke="rgba(225,225,225,1.00)" stroke-width="1" />
   <line x1="220" y1="46" x2="224" y2="51" stroke="rgba(225,225,225,1.00)" stroke-width="1" />
   <line x1="224" y1="51" x2="216" y2="51" stroke="rgba(225,225,225,1.00)" stroke-width="1" />
-  <text x="15" y="53" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">0</text>
+  <text x="15" y="64" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">0</text>
 </svg>

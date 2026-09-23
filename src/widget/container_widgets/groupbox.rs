@@ -172,18 +172,41 @@ impl GroupBox {
             self.title.len() as u32 * 8
         });
         let text_height = self.title_band_height();
+        // The title's leading inset is the frame's own — plus the checkbox's column when the
+        // box is checkable, because the indicator is drawn *before* the title. Without that
+        // term an 18 px indicator on a 10 px inset started at x = -14 and was partly clipped by
+        // the frame it belongs to: the box's own width was derived from a sibling, but its
+        // **space was not reserved**, which is the same §B.9 failure in the other direction.
+        // Qt's `GroupBox.qml` states the relation the same way — the title's padding includes
+        // the indicator's width when there is one.
+        let leading = Self::TITLE_INSET + self.indicator_reserve() as i32;
         let x = match self.alignment {
-            Alignment::Left | Alignment::Top | Alignment::Bottom => rect.x + Self::TITLE_INSET,
+            Alignment::Left | Alignment::Top | Alignment::Bottom => rect.x + leading,
             Alignment::Center => rect.x + ((rect.width.saturating_sub(text_width)) / 2) as i32,
-            Alignment::Right => rect.x + rect.width as i32 - text_width as i32 - Self::TITLE_INSET,
+            Alignment::Right => rect.x + rect.width as i32 - text_width as i32 - leading,
         };
         // Clamped so a tall glyph cannot start above the frame: the origin is the
         // glyph's top, so `rect.y` is the highest row any title pixel can occupy. The band's
         // width is clamped to the frame for the same reason in the trailing direction — a
         // title wider than the group would paint over its neighbour.
-        let width = text_width.min(rect.width.saturating_sub(Self::TITLE_INSET.max(0) as u32));
+        let width = text_width.min(rect.width.saturating_sub(leading.max(0) as u32));
         let x = x.min(rect.x + rect.width.saturating_sub(width) as i32);
-        Rect::new(x.max(rect.x), (rect.y + text_height as i32 / 2).max(rect.y), width, text_height)
+        // The *reserved* inset is what the clamp must respect, so a narrow frame cannot push the
+        // title back under the indicator it just made room for.
+        let x = x.max(rect.x + leading.min(rect.width as i32));
+        Rect::new(x, (rect.y + text_height as i32 / 2).max(rect.y), width, text_height)
+    }
+
+    /// The width the title must leave for the indicator, if the box is checkable: 0 otherwise.
+    ///
+    /// One derivation read by both the reserve above and the indicator's own placement below,
+    /// so the space reserved and the space used cannot disagree — which is what made the
+    /// indicator hang outside the frame while its width was computed correctly.
+    fn indicator_reserve(&self) -> u32 {
+        if !self.checkable {
+            return 0;
+        }
+        dimensions::CHECKBOX_BOX + dimensions::INDICATOR_TEXT_SPACING
     }
 
     /// The height of one row of the control's own chrome: the title band.
@@ -218,8 +241,13 @@ impl GroupBox {
         // group box's checkbox matches the one a `CheckBox` draws in the same form rather than
         // being a second, slightly different box.
         let checkbox_size = dimensions::CHECKBOX_BOX.min(title_rect.height) as i32;
+        // Placed from the title's *leading edge* — the inset the title reserved for it — so the
+        // indicator and the title tile the leading row instead of the indicator hanging off the
+        // frame. The reserve and the placement read one number (`indicator_reserve`).
+        let frame = self.geometry();
+        let x = title_rect.x - dimensions::INDICATOR_TEXT_SPACING as i32 - checkbox_size;
         Some(Rect::new(
-            title_rect.x - checkbox_size - dimensions::INDICATOR_TEXT_SPACING as i32,
+            x.max(frame.x),
             title_rect.y + (title_rect.height as i32 - checkbox_size) / 2,
             checkbox_size.max(0) as u32,
             checkbox_size.max(0) as u32,
@@ -539,6 +567,71 @@ mod tests {
 
         gb.remove_child(child3);
         assert!(gb.children().is_empty());
+    }
+
+    /// A checkable group's indicator is inside the frame, and the title yields to it.
+    ///
+    /// The indicator's *width* was already derived (18 from the shared table), but its **space
+    /// was not reserved**: the title still started at the 10 px inset, so an 18 px box began at
+    /// x = -14 and was partly clipped by the frame it belongs to. Qt's `GroupBox.qml` states the
+    /// relation — the title's padding includes the indicator's width when there is one.
+    #[test]
+    fn a_checkable_groups_indicator_is_inside_the_frame() {
+        let frame = Rect::new(0, 0, 200, 100);
+        let mut gb = GroupBox::new(frame);
+        gb.set_title("Options".to_string());
+
+        // Uncheckable: nothing is reserved and there is no indicator.
+        assert!(gb.checkbox_rect().is_none());
+        let plain = gb.title_rect();
+
+        gb.set_checkable(true);
+        let indicator = gb.checkbox_rect().expect("a checkable group has an indicator");
+        let reserved = gb.title_rect();
+
+        assert!(
+            indicator.x >= frame.x,
+            "the indicator must not start left of the frame: {indicator:?}"
+        );
+        assert!(
+            indicator.x + indicator.width as i32 <= frame.x + frame.width as i32,
+            "and it must not run past the frame: {indicator:?}"
+        );
+        // The indicator and the title tile the leading row: the indicator ends one spacing
+        // before the title begins, and the title moved right by exactly the reserve.
+        assert_eq!(
+            reserved.x,
+            indicator.x + indicator.width as i32 + dimensions::INDICATOR_TEXT_SPACING as i32,
+            "the title begins one gap after the indicator ends"
+        );
+        assert_eq!(
+            reserved.x - plain.x,
+            (dimensions::CHECKBOX_BOX + dimensions::INDICATOR_TEXT_SPACING) as i32,
+            "the title reserved exactly the indicator column"
+        );
+    }
+
+    /// The space the title reserves is the space the indicator uses, at any frame width.
+    #[test]
+    fn the_indicator_reserve_and_placement_are_one_derivation() {
+        for width in [80u32, 200, 400] {
+            let frame = Rect::new(0, 0, width, 100);
+            let mut gb = GroupBox::new(frame);
+            gb.set_title("T".to_string());
+            gb.set_checkable(true);
+            let indicator = gb.checkbox_rect().expect("checkable");
+            let title = gb.title_rect();
+            assert!(
+                indicator.x >= frame.x,
+                "width {width}: the indicator left the frame at {}",
+                indicator.x
+            );
+            assert_eq!(
+                title.x,
+                indicator.x + indicator.width as i32 + dimensions::INDICATOR_TEXT_SPACING as i32,
+                "width {width}: the reserved column and the used column must agree"
+            );
+        }
     }
 
     #[test]

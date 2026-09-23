@@ -6,9 +6,9 @@
   <rect x="0" y="36" width="240" height="48" rx="4" ry="4" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
   <rect x="2" y="38" width="48" height="44" rx="3" ry="3" fill="rgba(81,81,81,1.00)" />
   <rect x="2" y="38" width="48" height="44" rx="3" ry="3" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
-  <text x="21" y="52" dominant-baseline="text-before-edge" font-family="Arial" font-size="16" font-style="normal" font-weight="700" fill="rgba(225,225,225,1.00)">−</text>
+  <text x="21" y="65" font-family="Arial" font-size="16" font-style="normal" font-weight="700" fill="rgba(225,225,225,1.00)">−</text>
   <rect x="190" y="38" width="48" height="44" rx="3" ry="3" fill="rgba(81,81,81,1.00)" />
   <rect x="190" y="38" width="48" height="44" rx="3" ry="3" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
-  <text x="209" y="52" dominant-baseline="text-before-edge" font-family="Arial" font-size="16" font-style="normal" font-weight="700" fill="rgba(225,225,225,1.00)">+</text>
-  <text x="116" y="53" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">0</text>
+  <text x="209" y="65" font-family="Arial" font-size="16" font-style="normal" font-weight="700" fill="rgba(225,225,225,1.00)">+</text>
+  <text x="116" y="64" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">0</text>
 </svg>

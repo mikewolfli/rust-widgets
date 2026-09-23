@@ -6,10 +6,18 @@
 # Why this gate exists
 
 `RenderContext::draw_text(origin, ...)` takes `origin` to be the glyph box's **top-left**
-edge. That is not an inference: the SVG backend emits the same value as `<text y=...>`
-*paired with* `dominant-baseline="text-before-edge"`, which is the attribute that
-redefines SVG's `y` to mean "text box top"; and the software rasteriser blits downward
-from it (`GlyphDrawConfig { y: origin.y }` then `y0 = config.y + (gy * height) / 8`).
+edge. That is not an inference: the software rasteriser blits downward from it
+(`GlyphDrawConfig { y: origin.y }` then `y0 = config.y + (gy * height) / 8`), and the SVG
+backend converts the same value to a baseline with the ascent **it measured**
+(`baseline_y = origin.y + ascent`), emitting no `dominant-baseline` keyword at all.
+
+That second half is worth stating, because it used to be an attribute: the backend emitted
+`dominant-baseline="text-before-edge"` next to `origin.y` and called it a top edge. SVG 2
+**removed** that value (its §11.10.2.6 requires only a backwards-compatibility mapping to
+`text-top`), and `text-top` means "the top of the **em box**" — an edge `ascent` above the
+baseline, which is not the edge the rasteriser blits from. A keyword a renderer maps "for
+compatibility" cannot be the thing two backends agree by. Emitting an explicit baseline
+leaves one arithmetic, in one place, owned by this crate.
 
 Because the origin is a top edge and **not** a baseline, adding `metrics.ascent` to it is
 always wrong, and it fails in two visible ways:

@@ -1067,3 +1067,481 @@ rightPadding: padding + (mirrored ? down.width : up.width)
 | `cargo clippy --all-targets` | 0 warning / 0 error |
 | 五个 profile（desktop/tablet/mobile/mini/embedded） | 全部编译通过 |
 | `tools/run_all_gates.sh` | **PASS=58 FAIL=0 TIMEOUT=0 NOT-RUN=0 SKIP=1**（skip 为 Apple 主机限制） |
+
+---
+
+# 附录 G — 多语言文本：从「拉丁点阵」到「完整塑形」（**用户指令：多语言完美支持**）
+
+> **立此附录的理由**：本附录不是 BLUE22 原有任何一条的延伸，而是一个**独立量级的工程**——
+> 它要新建一个塑形层、引入 2–3 个第三方 crate、把字体从「代码里的表」变成「打包的资源」，
+> 并重新定义本仓对「文本」的全部承诺。与 §F-11「声明式原语另立计划」同一处理。
+>
+> **优先于本附录的**：§F-11 / §F-12 等既有未完成项不受影响；本附录与它们**并行可做**。
+
+## G.0 一句话结论
+
+**当前文本层只支持「LTR + 拉丁/ASCII」，且这一点从未被声明。**
+要「多语言完美支持」，必须补上三样**现在一样都没有**的东西：
+**塑形引擎（shaping）、双向文本（bidi）、覆盖各脚本的字体**。
+
+**两个必须现在就明确的取舍**：
+
+1. **字体数据默认全不带**（用户指令）。因此**默认构建 = 拉丁/ASCII**，
+   「完美支持」是**可选完美**（显式开启 `fonts-*` feature 后获得）。这一事实必须**写进文档**。
+2. **塑形能力与字体数据是两个正交的轴**。中文是「只需数据、不需塑形」的脚本，
+   所以 **`mini`/`embedded` 能用 ~85 KB 的点阵 CJK 拿到可读中文**，
+   而不必把塑形引擎搬上 MCU。
+
+## G.1 现状取证（本轮实跑，非引用）
+
+### G.1.1 「塑形」现在的实际含义
+
+```rust
+// src/render/pipeline/containers.rs:93 —— shape_text
+for scalar in text.chars() {
+    // 相邻的组合符/ZWJ 合并成一个 cluster，这就是全部的「塑形」
+}
+```
+
+```rust
+// src/render/pipeline/primitives.rs:659 —— draw_text
+for cluster in shaped.clusters() {
+    let display_char = cluster.text.chars().find(|ch| !is_combining_mark(*ch) …);
+    draw_bitmap_glyph(display_char);   // 一个 cluster -> 一个字形的位图
+    pen_x += cluster.advance;          // 横向累加，无定位调整
+}
+```
+
+**结论：一个字符映射到一个字形，按输入顺序横向排列。** 没有字形替换（GSUB）、
+没有字形定位（GPOS）、没有双向重排（UBA）。
+
+### G.1.2 字体覆盖（`font8x8` 的实际范围）
+
+| 项目 | 事实 |
+|---|---|
+| 启用表 | 仅 `BASIC_FONTS`（`pixel_ops.rs:8` 的 `use`），即 **U+0000–U+007F** |
+| 未启用 | `LATIN_FONTS` / `GREEK_FONTS` / `BLOCK_FONTS` 等**在 crate 里但本仓没接** |
+| 字形 | 8×8 点阵，有效高 7 行 |
+| 抗锯齿 | **无**（每个置位比特画实心矩形，`pixel_ops.rs:61` 的 `glyph_rects`） |
+| 字宽 | **固定 0.6 em**（`estimate_cluster_advance`），与字形无关：`i` 与 `W` 同宽 |
+| 未知字符 | `pixel_ops.rs:131` 的兜底「豆腐块」 |
+| CJK / emoji / 阿拉伯 / 印度系 | **0 覆盖** |
+
+### G.1.3 改动面（决定本计划的规模）
+
+| 入口 | 消费点数 |
+|---|---|
+| `measure_text` | **176** |
+| `shape_text` | 13 |
+| `estimate_cluster_advance` | 9 |
+
+**176 个 `measure_text` 消费点是本计划最大的风险面**：塑形一旦改变度量，
+所有依赖「宽 = 字数 × 0.6 em」的布局与门禁都要重新校准。
+
+### G.1.4 门禁对当前模型的依赖
+
+| 门禁 / 工具 | 依赖的假设 |
+|---|---|
+| `tools/audit_text_y.py` | 从邻接 rect 推断文本带 |
+| `tools/audit_text_contrast.py` | 从 SVG 的 `x`,`y` 读文本位置 |
+| `tools/check_text_vertically_centred.py` | 源级检查 `y` 表达式 |
+| `tests/control_rendering_census_test.rs` | **镜像 `estimate_cluster_advance`**（0.6 / 1.0 / 0.33 em） |
+| `tools/check_svg_snapshots.sh` | 376 个快照**逐字节可复现** |
+
+**其中 census 测试的那条镜像最脆弱**：它按「0.6 em/字符」推算每个标签的宽度，
+换字体后必须同步改成读取真实度量，否则它会**假红**（要求截断本不需要截断的文本）。
+
+## G.2 对标：两家怎么做到「多语言完美」
+
+| | Flutter | QML / Qt |
+|---|---|---|
+| 塑形 | **HarfBuzz**（引擎内建） | **HarfBuzz**（`QTextLayout`） |
+| 双向 | ICU / `unicode-bidi` 等价能力 | **ICU**（`QTextLayout` 的 bidi） |
+| 字体发现 | 平台字体管理器 + 回退链 | `QFontDatabase` + 回退链 |
+| 字体来源 | 引擎默认 + `pubspec` 打包 | 系统字体 |
+| 测量/绘制同源 | 同一个 `Paragraph` 对象 | 同一个 `QRawFont` 对象 |
+| 复杂脚本 | ✅ 天城文/阿拉伯/泰文 | ✅ |
+| emoji | ✅ 彩色 | ✅ 彩色 |
+
+**共性（本计划必须遵守的三条）**：
+
+1. **塑形和绘制同源** —— 不允许「用 A 度量、用 B 绘制」。
+2. **字体回退链是必需项，不是优化项** —— 一个字符串可以跨多个字体（拉丁 + 中文 + emoji）。
+3. **bidi 是文本层的属性，不是控件的** —— 控件只说「我这一行是 LTR/RTL/自动」。
+
+## G.3 施工方案（分 5 期，逐期可交付、可回退）
+
+### G.3.0 依赖选型（先取证，不凭印象）
+
+| 用途 | crate | 理由 |
+|---|---|---|
+| 塑形 | **`rustybuzz`**（HarfBuzz 的纯 Rust 移植） | 纯 Rust、无 C 依赖 → 不破坏 `check_*_cross.sh` 的 5 个 target |
+| 字体解析 | **`ttf-parser`**（`rustybuzz` 的依赖） | 同上 |
+| 双向 | **`unicode-bidi`** | 纯 Rust，UBA 的标准实现 |
+| 字体数据 | **打包子集 TTF**（见 G.3.4） | 避免系统字体依赖导致的跨平台不一致 |
+| 可选：彩色 emoji | `swash` 或预渲染位图 | **最后做**，收益最小 |
+
+> **为什么是 `rustybuzz` 而不是 `harfbuzz-sys`**：本仓已经为「纯 Rust、跨平台可编译」
+> 付过一次代价（AVIF 从 `dav1d-sys` 换成纯 Rust，见 `Cargo.toml` 的注释）。
+> `harfbuzz-sys` 需要 C 工具链与交叉 sysroot，会让 Android/iOS/wasm 三个门禁变红。
+
+### G.3.1 第 1 期：塑形层原语（不开新字体，先立通道）
+
+**目标**：把「string → 字形序列」变成**可替换的 trait**，现有实现降为其中一个。
+
+```rust
+// src/text/shaping.rs（新建）
+
+/// 一次塑形的结果：字形 id + 每个字形的定位 + 该 run 用的字体。
+pub struct ShapedRun {
+    pub font: FontId,
+    pub glyphs: Vec<ShapedGlyph>,
+}
+
+pub struct ShapedGlyph {
+    pub glyph_id: u32,
+    /// 相对笔位的偏移（GPOS 的产物；纯位图字体下为 0）。
+    pub offset: (f32, f32),
+    pub advance: f32,
+    /// 该字形来自哪个 cluster（用于光标准确定位与截断）。
+    pub cluster: usize,
+}
+
+/// 文本塑形器。
+pub trait Shaper {
+    /// 塑形一段文本。`direction` 由调用方按 bidi 结果给出。
+    fn shape(&self, text: &str, font: &Font, direction: Direction) -> Vec<ShapedRun>;
+}
+```
+
+**判据**：
+
+1. `SimpleTextShaper`（现有 0.6 em 模型）实现 `Shaper`，**行为逐字节不变**。
+2. 新增 `RustybuzzShaper`，用**同一个** `font8x8` 生成的字形表也能塑形（证明通道通了）。
+3. 门禁：`check_shaper_is_the_only_shaping_path` —— 源码中不得有第二处 `chars()` 逐字符推进。
+
+**为什么先做这一期**：它让第 2–5 期都有地方落，且**不改变任何现有输出**，风险为零。
+
+### G.3.2 第 2 期：字体装载与回退链
+
+**目标**：字体从「代码里的表」变成「可装载的资源」，并支持**跨字体回退**。
+
+```rust
+// src/text/font.rs（新建）
+
+pub struct FontId(u32);
+
+/// 已装载的字体集合，按脚本覆盖建立回退链。
+pub struct FontStack {
+    faces: Vec<LoadedFace>,
+}
+
+impl FontStack {
+    /// 为一个字形查找能渲染它的第一个 face。
+    /// 返回 `None` 表示所有 face 都不覆盖 → 由调用方画豆腐块（并让门禁可见）。
+    pub fn resolve(&self, ch: char) -> Option<(FontId, u32)>;
+}
+```
+
+**判据**：
+
+1. 一个字符串跨字体时，`Shape` 结果由**多个 run** 组成，每个 run 记录自己的 `FontId`。
+2. 单测：`"A中B"` 在「拉丁 + CJK」两字体下产生 **3 个 run**，且每个 run 的 glyph 来自正确字体。
+3. 未覆盖字符**不静默**：`FontStack::resolve` 返回 `None`，并且有一条门禁统计「本仓快照里出现了多少未覆盖字符」（当前应为 **0**，非 0 则逐条列出）。
+
+### G.3.3 第 3 期：双向文本（bidi）
+
+**目标**：`unicode-bidi` 接入，控件只需声明方向意图。
+
+```rust
+// src/text/bidi.rs（新建）
+
+/// 控件对方向的声明。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TextDirection {
+    /// 按 UBA 自动判定（首强字符决定）。
+    Auto,
+    /// 强制 LTR。
+    Ltr,
+    /// 强制 RTL。
+    Rtl,
+}
+
+/// 把一段逻辑序文本切成按视觉序排列的 run 序列。
+pub fn reorder(text: &str, base: TextDirection) -> Vec<VisualRun>;
+```
+
+**判据**：
+
+1. 单测：`"abc אבג def"` → 视觉序的 run 序列与 ICU/HarfBuzz 参考一致。
+2. 单测：**往返一致** —— 对 RTL 文本先 reorder 再还原，得到原文（对应 §F-4 的教训：
+   「两个方向的映射必须共用同一个 inset」）。
+3. `TextDirection` **全仓只有一份定义**（原则 #54），`slider` 等活动控件由 `pub use` 接入。
+4. 控件层只出现 `TextDirection`，**不得**出现「左/右」这类视觉词汇。
+
+### G.3.4 第 4 期：字体数据（**本计划体积上最大的决定**）
+
+**目标**：覆盖目标脚本，且**不破坏 `mini`/`embedded`**。
+
+#### G.3.4.1 两个**正交**的轴，不是一个"Unicode 开关"
+
+「多语言支持」在工程上是两件不同的事，它们**必须分开 gate**，否则就会出现
+「为了要中文而被迫引入塑形引擎」或反之的错配：
+
+| 轴 | 回答的问题 | 代价 |
+|---|---|---|
+| **能力轴：`glyph-shaping`** | 「能不能正确地**排列**字形」（取代、定位、双向、回退） | 代码：`rustybuzz` + `unicode-bidi`，几百 KB flash，**不需要堆**（可用 `heapless`/`bumpalo`） |
+| **数据轴：`fonts-*`** | 「有没有那个脚本的**字形**可画」 | 体积，见下表 |
+
+**为什么这个拆分是必要的**（本节的实证）：
+
+| 脚本 | 不做塑形的后果 | 能否只要数据、不要塑形？ |
+|---|---|---|
+| **中文 / 日文 / 韩文** | 汉字是独立方块，**没有连写/重排问题** | ✅ **能** —— 不需要 GSUB/GPOS，**只要有字体数据** |
+| 拉丁扩展 / 希腊 / 西里尔 | 无 | ✅ 能 |
+| **阿拉伯 / 希伯来（RTL）** | 不连写 → **完全不可读**；不倒序 → **倒着读** | ❌ 必须能力轴 |
+| **天城文 / 泰文（复杂塑形）** | 辅音簇不合成 → **错字** | ❌ 必须能力轴 |
+
+> **这条结论直接决定了 `mini` 的可行性**：中文是本仓能"低成本拿下"的脚本，
+> 因为它只需要**数据**，而不需要塑形引擎。
+
+#### G.3.4.2 feature 矩阵（默认不带任何字体数据）
+
+```toml
+# ── 能力轴 ──
+glyph-shaping = ["dep:rustybuzz", "dep:unicode-bidi"]
+
+# ── 数据轴（每个都自己拉能力轴；默认全部关闭）──
+fonts-latin   = ["glyph-shaping", "dep:font-latin-data"]     #  ~60 KB
+fonts-cjk     = ["glyph-shaping", "dep:font-cjk-data"]       #  矢量子集 1.5-3 MB
+fonts-complex = ["glyph-shaping", "dep:font-complex-data"]   #  阿拉伯/天城/泰 ~300 KB
+fonts-emoji   = ["glyph-shaping", "dep:font-emoji-data"]     #  彩色 ~1-5 MB
+
+# ── 点阵数据轴：**不拉能力轴**，因为点阵不需要塑形 ──
+fonts-cjk-bitmap = ["dep:font-cjk-bitmap-data"]               #  见 G.3.4.3
+```
+
+**关键：`fonts-cjk` / `fonts-complex` / `fonts-emoji` 默认关闭**，由使用者自行开启。
+这是一个**明确取舍**，必须写清而非含糊：
+
+> **默认构建不是「完美支持」，而是「拉丁 + ASCII」。**
+> 要完美支持，必须显式选字体 feature。
+> 这个事实必须在 `README` 与 `lib.rs` 文档里写明，否则就是文档欺骗（原则 #18）。
+> 门禁：`check_declared_script_coverage` —— 构建时按实际开启的 feature 打印
+> 「本构建支持的脚本」，非零的未覆盖字符必须逐条可读（同原则 #100 的做法）。
+
+#### G.3.4.3 点阵 CJK：给 `mini`/`embedded` 的中文方案（**实测数字**）
+
+本仓已经会画点阵字形（`glyph_rects` + `font8x8`），所以**点阵 CJK 是同一模型的自然延伸**：
+把「8×8 的 ASCII 表」换成可装载的点阵字体，**零塑形引擎、零新概念**。
+
+实测体积（16×16 点阵，含 RLE 压缩估算）：
+
+| 方案 | 原始 | 压后约 | 适用目标 |
+|---|---|---|---|
+| 16×16，GB2312 6763 字 | 211 KB | **~85 KB** | 有 512KB+ flash 的 MCU |
+| 16×16，常用 3500 字 | 109 KB | **~44 KB** | 有 256KB flash 的 MCU |
+| 12×12，GB2312 6763 字 | 119 KB | **~48 KB** | 小字号设备 |
+| 24×24，GB2312 6763 字 | 476 KB | ~190 KB | 需要较大字号的设备 |
+| 对比：现有 `font8x8` | 1.0 KB | — | — |
+
+**`mini`/`embedded` 的中文方案（均为可选，默认关闭）**：
+
+| feature | 塑形 | 数据 | 体积 | 中文效果 |
+|---|---|---|---|---|
+| （现状）`mini` | — | `font8x8` ASCII | 0 | ❌ 豆腐块 |
+| **`fonts-cjk-bitmap`** | **不需要** | 16×16 GB2312 子集 | **~85 KB** | ✅ **可读**（推荐首选） |
+| `fonts-cjk-bitmap-small` | 不需要 | 12×12 子集 | ~48 KB | ✅ 可读，字小 |
+| `fonts-cjk`（矢量） | 需要 | 矢量子集 | 1.5–3 MB | ✅ 好，但重 |
+
+> **推荐顺序**：`mini`/`embedded` 优先用 **`fonts-cjk-bitmap`**（~85 KB，且不需要塑形引擎）。
+> 只有当设备具备 MB 级 flash **且**需要缩放/高质量排版时，才上矢量 `fonts-cjk`。
+
+#### G.3.4.4 🚨 必须一并解决的：字形**从未**能常驻 RAM
+
+**这是本计划里最容易在真机上翻车的一条。**
+
+| 事实 | 后果 |
+|---|---|
+| 85 KB 点阵数据无法常驻 MCU RAM（典型 64–256 KB） | 必须**从 flash 按需读取** |
+| 但 `font8x8` 现在是 `static` 表，**全程在内存** | 现有模型**不支持**"按需读取" |
+| 点阵 CJK 每字 32 字节，一屏 200 字 = 6.4 KB | 只缓存**当前帧用到的字形**即可 |
+
+**所以要新增一个抽象**（本仓现在没有）：
+
+```rust
+// src/text/glyph_source.rs（新建）
+
+/// 字形位图的来源。
+///
+/// # 为什么必须有这一层
+///
+/// `font8x8` 是一张 `static` 表：它在 binary 里，但**全程占据地址空间**。
+/// 这对 1 KB 的 ASCII 表没问题，对 85 KB 的 CJK 表则不行 —— MCU 没有那么多 RAM，
+/// 而 flash 可以 memory-map 或分页读取。
+///
+/// 因此"取一个字形的位图"必须是一个**可替换的操作**，而不是一次数组索引。
+pub trait GlyphSource {
+    /// 取一个字符的点阵位图。
+    ///
+    /// 返回 `None` 表示本字体不含该字形 —— **不得**由实现方静默返回豆腐块，
+    /// 否则"缺字"就成了不可观测的事实。由调用方统一决定降级方式。
+    fn glyph(&self, ch: char) -> Option<Bitmap>;
+
+    /// 该字形的推进宽度（点阵字体下与字形宽度相关，不是固定 0.6 em）。
+    fn advance(&self, ch: char) -> u32;
+}
+
+/// 一次取字形的位图：点阵字体的通用表示。
+pub struct Bitmap {
+    pub width: u8,
+    pub height: u8,
+    /// 行优先，每行 `width` 个比特，MSB 在左。
+    pub rows: heapless::Vec<u8, 32>,
+}
+```
+
+**实现（按 profile）**：
+
+| profile | `GlyphSource` 实现 | 数据位置 |
+|---|---|---|
+| `desktop`/`tablet`/`mobile` | `RustybuzzGlyphSource`（矢量，运行时光栅化） | 打包的字体文件 |
+| `mini`/`embedded` + `fonts-cjk-bitmap` | `MmappedBitmapFont`（`include_bytes!` + 偏移索引） | binary 内，**按需读** |
+| `mini`/`embedded`（现状） | `Font8x8Source`（包装现有 static 表） | binary 内 |
+
+**判据**：
+
+1. 单测：`Font8x8Source` 与现有行为**逐字节相同**（迁移不改变任何输出）。
+2. 单测：点阵源**不一次装载全部字形** —— 用计数型测试替身断言"渲染 10 个字符只取了 10 次
+   （及其缓存命中）"，而非 6763 次。
+3. 单测：未覆盖字符返回 `None`，**不得**返回豆腐块位图。
+4. 门禁：`check_glyph_source_is_not_a_static_table` —— 除 `Font8x8Source` 外，
+   不得有第二处以 `static` 数组直接索引字形。
+
+#### G.3.4.5 字体数据的其余约束
+
+1. **字体必须随 crate 分发**，不读系统字体 —— 理由见 G.4。
+2. **子集必须可重新生成**：`tools/build_font_subset.py`，输入完整字体 + 字符集，输出子集；
+   子集文件是**产物**，由门禁验证「重新生成结果一致」（同 `check_generated_sources` 的形状）。
+3. **许可**：所有打包字体必须为 OFL/Apache-2.0 等允许再分发的许可，并在 `NOTICE` 中列明。
+   门禁：`check_packaged_fonts_are_licensed`。
+4. **点阵 CJK 的字形来源必须写明**：建议用 `unifont`（GPL+字体例外）或 `wqy-bitmap`（GPL），
+   或自行生成（从 OFL 矢量字体渲染点阵）—— **后者许可最干净**，推荐。
+
+### G.3.5 第 5 期：光栅化质量（与 §G.3.1–G.3.4 并列，可独立交付）
+
+**目标**：矢量字形的抗锯齿 + 真实字宽。
+
+| 项 | 现状 | 目标 |
+|---|---|---|
+| 抗锯齿 | 无（实心矩形） | 覆盖率采样（复用现有 `blend_pixel(…, coverage)`） |
+| 字宽 | 固定 0.6 em | 字体真实 advance（`rustybuzz` 给出） |
+| hinting | 无 | 水平/垂直 subpixel 定位 |
+| 字距 | 无 | GPOS kerning |
+
+**判据**：快照人眼评审「从点阵变成矢量」，且 `check_svg_snapshots` 仍逐字节可复现。
+
+## G.4 明确**不抄**的：系统字体
+
+| 不抄 | 出处 | 为什么 |
+|---|---|---|
+| 读系统字体（fontconfig / CoreText / DirectWrite） | QML 的做法 | ① 5 个平台各一套代码，违反原则 #35–#41 的封装要求；② **同一控件在不同 OS 上外观不同**，而本仓 376 个快照的立命之本是「逐字节可复现」；③ 三个 cross 门禁需真机验证 |
+| 依赖 `harfbuzz-sys` | Flutter 的引擎做法 | 需 C 工具链 + 交叉 sysroot；本仓已为纯 Rust 付过代价（AVIF） |
+| 完整 ICU | — | 体积；本仓只需 UBA + 塑形 |
+
+> **QML 用系统字体是因为它绑定桌面；Flutter 是显式指定字体才一致。**
+> 本仓是「跨平台自绘 + 快照门禁」，两者都不是 —— 所以走 **打包字体**。
+
+## G.5 风险（每条都对应一个已知的翻车形态）
+
+| # | 风险 | 缓解 |
+|---|---|---|
+| 1 | **176 个 `measure_text` 消费点**被度量变化影响 | 第 1 期先把通道立起来且**输出不变**；第 5 期换度量时逐控件评审快照 diff |
+| 2 | `census` 测试**镜像了 0.6 em 模型** | 换字体时同步改为读真实度量；先反向注入证明它会失败 |
+| 3 | 门禁对「文本位置」的推断失效（`audit_text_y` 等） | 这些门禁按**从 SVG 读几何**的方式工作，而 SVG 输出已经改为字形几何（见 §G.6），因此不受字体变化影响 |
+| 4 | `mini` 体积/行为回归 | 字体按 feature gate 分档，默认全关；`check_profiles.sh` 覆盖；体积以**实测**入判据（G.8 #16） |
+| 5 | 字体许可 | `NOTICE` + `check_packaged_fonts_are_licensed` |
+| 6 | 「测 A 绘 B」重新出现 | `check_shaper_is_the_only_shaping_path` + 「测量与绘制同源」单测 |
+| 7 | 快照体积暴涨 | 只对**有文本**的控件重新生成；字形轮廓可复用一个 `<defs>` 符号表 |
+| **8** | **🚨 点阵 CJK 无法常驻 RAM** —— 85 KB 数据放不进 64–256 KB 的 MCU RAM，而现有 `font8x8` 是全程在内存的 `static` 表。这是本计划**最容易在真机上直接跑不起来**的一条 | 新增 `GlyphSource` 抽象（G.3.4.4），字形**按需从 flash 读取**并只缓存当前帧用到的；判据 G.8 #8 用计数型测试替身**证明它确实没全量装载** |
+| **9** | **默认构建不够「完美」引发期望差** —— 用户以为装上就有中文 | 在 `README` + `lib.rs` **明写**默认仅拉丁/ASCII；`check_declared_script_coverage` 在构建时**打印本构建支持的脚本** |
+| **10** | `mini` 的 `no_std`/无堆约束与 `rustybuzz` 冲突 | `rustybuzz`/`ttf-parser` 均为 `no_std` 友好且不要求堆；塑形缓冲用 `heapless` 定长或 `bumpalo`（`mini` 已启用）。**第 1 期必须在 `mini` 上实编验证**，不能只在 desktop 上过 |
+
+## G.6 与第 68 轮已完成工作的关系（**必读，避免重复劳动**）
+
+第 68 轮已经把 **SVG 后端从 `<text>` 改为「同 font8x8 的字形几何」**。
+这一步对本附录是**地基**，不是并行项：
+
+| 第 68 轮的决定 | 对本附录的意义 |
+|---|---|
+| SVG 后端不再交给浏览器字体引擎 | 否则「完美多语言」在 SVG 里由浏览器实现、在窗口里由本仓实现 → **两个渲染器** |
+| 抽出 `glyph_rects` 供两个后端共用 | 第 5 期的抗锯齿/矢量轮廓**只需改这一处** |
+| 不再发 `dominant-baseline`（SVG 2 已移除该值） | 消除了「各家浏览器解释不同」的不确定性 |
+
+**因此本附录的第 5 期是「把 `glyph_rects` 从点阵矩形升级为矢量覆盖率」，而不是重做后端。**
+
+## G.7 分期待办清单（可直接接续）
+
+| 期 | 内容 | 前置 | 可独立交付 |
+|---|---|---|---|
+| **G-1** | `Shaper` trait + `RustybuzzShaper` + 通道门禁 | — | ✅ |
+| **G-2** | `FontStack` 装载与回退链 | G-1 | ✅ |
+| **G-2b** | **`GlyphSource` 抽象**（字形按需读取；点阵/矢量两种实现） | G-1 | ✅ |
+| **G-3** | `unicode-bidi` 接入 + `TextDirection` 统一 | G-1 | ✅ |
+| **G-4a** | 子集生成器 + 许可门禁 + `NOTICE` | G-2 | ✅ |
+| **G-4b** | **点阵 CJK**（`fonts-cjk-bitmap`，~85 KB，**不需塑形**） | G-2b | ✅ |
+| **G-4c** | 矢量子集打包（`fonts-latin` / `fonts-cjk` / `fonts-complex`） | G-4a | ✅ |
+| **G-5** | 矢量光栅化（抗锯齿 + 真实 advance + kerning） | G-1, G-4c | ✅ |
+| **G-6** | 彩色 emoji | G-5 | ✅ |
+
+**推荐施工顺序**：`G-1 → G-2b → G-4b`（先把 `mini` 的中文拿下，因为它的代价最小、
+且不依赖塑形引擎）→ `G-3 → G-2 → G-4a → G-4c → G-5 → G-6`。
+
+## G.8 验收判据（本附录专属）
+
+```text
+--- 塑形与方向（G-1 / G-2 / G-3）---
+1. 单测："A中B" 跨两种字体 -> 3 个 run，各自 FontId 正确
+2. 单测："abc אבג def" 的视觉序 run 序列符合 UBA
+3. 单测：RTL reorder 往返一致
+4. 单测：阿拉伯文 "سلام" 塑形后字形数 > 字符数（连写发生）
+5. 单测：天城文辅音簇合成（"क्ष" 的字形数 < 字符数）
+6. 门禁：check_shaper_is_the_only_shaping_path（无第二处逐字符推进）
+
+--- 字形来源（G-2b / G-4b）---
+7. 单测：Font8x8Source 与迁移前**逐字节相同**
+8. 单测：渲染 10 个字符只取 10 次字形（非 6763 次）—— 证明点阵源按需读取
+9. 单测：未覆盖字符返回 None，**不得**由实现方静默返豆腐块
+10. 单测：Font8x8Source 下现有 376 快照**逐字节不变**（迁移不改变输出）
+11. 门禁：check_glyph_source_is_not_a_static_table
+
+--- 字体数据与声明边界（G-4a/b/c）---
+12. 门禁：check_packaged_fonts_are_licensed（每个字体有 OFL/Apache 元数据 + NOTICE 列明）
+13. 门禁：字体子集重新生成结果一致（同 check_generated_sources 形状）
+14. 门禁：check_declared_script_coverage —— 打印本次构建支持的脚本，
+    且快照中未覆盖字符数 == 0（非 0 逐条列出，同原则 #100）
+15. 文档：README + lib.rs 明写「默认构建仅支持拉丁/ASCII，完美支持需显式开启字体 feature」
+16. 体积：mini + fonts-cjk-bitmap 的 binary 增量 ≤ 120 KB（实测，非估算）
+17. 体积：desktop + fonts-cjk（矢量）的 binary 增量实测并记录（预期 1.5-3 MB）
+
+--- 光栅化与回归（G-5 / G-6）---
+18. 门禁：census 测试的宽度模型 == 真实度量（而非 0.6 em 镜像）
+19. 人眼：拉丁/CJK/阿拉伯 各一个控件的快照可判为「矢量、抗锯齿、字距正常」
+20. 人眼：mini 的点阵 CJK 快照可判为「中文可读」
+21. 回归：mini/embedded 两个 profile 仍编译通过
+22. 回归：376 个快照由 check_svg_snapshots 逐字节复现
+23. 回归：五个 profile × 三个 cross 门禁（android/ios/harmony）全绿
+```
+
+> **判据 16 与 17 是同一条规则**：字体体积是**本计划的核心代价**，必须以**实测**而非估算进入
+> 交付物。一个「估计 85 KB」的字体如果实测 300 KB，它对 MCU 的可行性结论就变了。
+
+## G.9 一句话结论
+
+**本附录的目标可达，但它是「新建一个文本层」，不是「改几处绘制」。**
+
+三样现在都没有的东西（**塑形 / bidi / 字体覆盖**）必须一起补上，缺一样都会输出**错字**
+（阿拉伯不连写、天城文不合成、希伯来不倒序）——而错字比豆腐块更危险，因为它**看起来是对的**。
+
+因此**不要先做第 5 期（美化）**：把点阵变好看，只会让「不连写的阿拉伯文」更好看，
+缺陷反而更难被发现。

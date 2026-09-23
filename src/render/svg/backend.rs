@@ -3,12 +3,12 @@
 
 //! SVG paint backend — converts `RenderCommand`s into SVG elements.
 
-use super::convert::{color_to_rgba, escape_xml, point_attrs, rect_attrs};
+use super::convert::{color_to_rgba, point_attrs, rect_attrs};
 use crate::compat::{format, MiniToString, String, Vec};
 use crate::core::{Color, Font, Size};
 use crate::render::core::command::RenderCommand;
 use crate::render::core::types::{ShapedText, TextCluster, TextMetrics};
-use crate::render::{PaintBackend, SoftwareRenderConfig};
+use crate::render::{is_combining_mark, is_variation_selector, PaintBackend, SoftwareRenderConfig};
 use crate::style::gradient::GradientType;
 
 /// PaintBackend implementation that generates SVG markup from render commands.
@@ -273,69 +273,83 @@ impl PaintBackend for SvgPaintBackend {
             }
 
             // ── Text ───────────────────────────────────────────────────
+            //
+            // # Why this draws glyph bitmaps instead of a `<text>` element
+            //
+            // A `<text>` element hands the string to the viewer's font engine. That is a
+            // *different renderer* from this crate's, in three ways at once:
+            //
+            // | | software rasteriser | `<text>` element |
+            // |---|---|---|
+            // | glyph source | the `font8x8` 8x8 table (`glyph_bitmap`) | whatever font the viewer has |
+            // | glyph shape | solid rectangles at the set bits | vector outlines |
+            // | advance | `estimate_cluster_advance` (0.6 em, 1.0 em wide, 0.33 em space) | the font's own metrics |
+            //
+            // `snapshots/svg/` exists to be a *picture of what the control draws*, so a snapshot
+            // rendered by a different font engine is a picture of a different control. `font8x8`
+            // is the crate's font — `docs/plans/blue13.md` keeps it in every profile including
+            // `mini`, and there is no TrueType rasteriser to substitute — so the backend that
+            // must change is this one.
+            //
+            // The rectangles come from `glyph_rects`, the *same* function `draw_bitmap_glyph`
+            // fills, so the two outputs are one drawing rather than two that have to be kept in
+            // step. There is no baseline conversion either: both backends now paint downward
+            // from `origin.y`, so no shared convention has to be remembered.
             RenderCommand::DrawText { origin, text, font, color, alignment } => {
-                // `origin` is the glyph box's **top-left**: that is the contract the software
-                // rasteriser implements (`SoftwareRasterizer::draw_text` passes `origin.y`
-                // straight to the glyph blitter, which paints downward from it), and the
-                // contract every call site in the crate positions text against.
+                // `origin` is the glyph box's **top-left**, exactly as for the rasteriser.
                 //
-                // SVG's `y` defaults to the **baseline**, so emitting `origin.y` verbatim
-                // made the two backends disagree about where the ink is: the rasteriser put
-                // the glyph 0..line_height *below* the origin, the SVG put most of it
-                // *above*. A title centred with `rect.y + (band - height) / 2` then sat
-                // correctly on the screen and half a line too high in every snapshot, so
-                // the committed SVG showed chrome the raster never produced.
-                //
-                // `dominant-baseline="text-before-edge"` re-states SVG's own semantics as
-                // the renderer's: it makes `y` the *top* edge of the text box, which is
-                // exactly what `origin.y` means here. Doing it in the attribute rather than
-                // by adding an ascent to the number is what keeps this a one-place fix —
-                // the ~40 call sites that already measured and offset against the top-origin
-                // contract stay correct, and none of them has to know which backend it is
-                // painting into.
-                //
-                // # Why the alignment is resolved here instead of emitted as an attribute
-                //
-                // `RenderCommand::DrawText` carries a `HorizontalAlignment`, and
-                // `RenderContext::draw_text`'s contract is that `origin` is the glyph box's
-                // top-left **anchor for that alignment** — not a fixed left edge. The software
-                // rasteriser implements that by shifting the pen before the first glyph
-                // (`primitives.rs`, `adjusted_origin_x`): `Left` keeps `origin.x`, `Center`
-                // starts half the measured advance to the left, `Right` starts a whole advance
-                // to the left. This backend ignored the field, so **every** centred or
-                // right-aligned label in the whole crate was left-aligned in SVG output while
-                // appearing centred on the raster: two backends disagreeing about where the
-                // ink is.
-                //
-                // The disagreement was visible in the committed snapshots rather than only in
-                // theory. A wizard's "Cancel"/"Back" labels are drawn with
-                // `draw_text_fitted(..., Center)`, and `snapshots/svg/wizard_dialog.svg` showed
-                // them starting at the button's own left corner (and "Finish" running past the
-                // canvas edge) because the only thing the backend did with `Center` was drop it.
-                // A `text-anchor="middle"` attribute would be the other way to say this, but it
-                // would move the *resolution* of the alignment into SVG's layout engine while
-                // the raster keeps resolving it in Rust — two implementations of one rule, and
-                // they disagree the moment the advance models differ. Emitting an absolute `x`
-                // that both backends compute the same way keeps one rule with one owner.
+                // `HorizontalAlignment` is resolved here for the same reason it always was:
+                // `origin` is the alignment's *anchor*, and the shift is the measured advance —
+                // the same `shape_text` the rasteriser uses.
+                let shaped = self.shape_text(text, font);
+                // The same two quantities the rasteriser's `draw_text` reads: the measured glyph
+                // box height, and a floating-point pen advanced by each cluster's own advance.
+                let glyph_height = self.measure_text(text, font).height.max(1);
                 let anchor_x = match alignment {
-                    crate::core::HorizontalAlignment::Left => origin.x,
+                    crate::core::HorizontalAlignment::Left => origin.x as f32,
                     crate::core::HorizontalAlignment::Center => {
-                        origin.x - (self.measure_text(text, font).width / 2) as i32
+                        origin.x as f32 - shaped.advance() / 2.0
                     }
-                    crate::core::HorizontalAlignment::Right => {
-                        origin.x - self.measure_text(text, font).width as i32
-                    }
+                    crate::core::HorizontalAlignment::Right => origin.x as f32 - shaped.advance(),
                 };
+                let mut path = String::new();
+                let mut pen_x = anchor_x;
+                for cluster in shaped.clusters() {
+                    let glyph_width = cluster.advance.max(1.0).round() as u32;
+                    let display_char = cluster
+                        .text
+                        .chars()
+                        .find(|ch| !is_combining_mark(*ch) && !is_variation_selector(*ch));
+                    if let Some(ch) = display_char {
+                        for (x0, y0, x1, y1) in crate::render::glyph_rects(
+                            ch,
+                            pen_x.round() as i32,
+                            origin.y,
+                            glyph_width,
+                            glyph_height,
+                        ) {
+                            // Each rectangle is one subpath. Axis-aligned subpaths that never
+                            // overlap need no `fill-rule`.
+                            path.push_str(&format!(
+                                "M{x0} {y0}h{}v{}h-{}z",
+                                x1 - x0,
+                                y1 - y0,
+                                x1 - x0
+                            ));
+                        }
+                    }
+                    pen_x += cluster.advance;
+                }
+                if path.is_empty() {
+                    // Nothing to paint — an empty string, or one whose glyphs are all blank.
+                    // An empty `<path d="">` would be a drawing element that draws nothing,
+                    // which the snapshot gate reads as a defect.
+                    return;
+                }
                 self.push_element(format!(
-                    r#"<text x="{}" y="{}" dominant-baseline="text-before-edge" font-family="{}" font-size="{}" font-style="{}" font-weight="{}" fill="{}">{}</text>"#,
-                    anchor_x,
-                    origin.y,
-                    escape_xml(font.family()),
-                    font.size(),
-                    font.style_css(),
-                    font.weight_css(),
-                    color_to_rgba(color),
-                    escape_xml(text)
+                    r#"<path d="{}" fill="{}" />"#,
+                    path,
+                    color_to_rgba(color)
                 ));
             }
 
@@ -632,7 +646,11 @@ mod tests {
     }
 
     #[test]
-    fn svg_backend_text_escaping() {
+    fn svg_backend_text_is_glyph_geometry_not_a_text_element() {
+        // The string is emitted as the set bits of its `font8x8` bitmaps, so there is nothing
+        // for XML to escape and no `<text>` to hand the viewer's font engine. That is the point:
+        // the SVG is the *rasteriser's* drawing, so a viewer cannot substitute a different font
+        // and move the ink. `<` is the fallback "tofu" glyph, so it still produces rectangles.
         let mut svg = SvgPaintBackend::new(Size::new(100, 50));
         svg.begin_frame(Color::WHITE);
         svg.execute_command(&RenderCommand::DrawText {
@@ -644,7 +662,11 @@ mod tests {
         });
         svg.end_frame();
         let result = svg.finish();
-        assert!(result.contains("&lt;hello&gt; &amp; world"));
+        assert!(
+            !result.contains("<text"),
+            "a `<text>` element would be rendered by the viewer's font, not by this crate"
+        );
+        assert!(result.contains("<path d=\"M"), "the string must be drawn as glyph geometry");
     }
 
     #[test]
@@ -677,25 +699,40 @@ mod tests {
         };
         assert!(width > 0, "the fixture must have a measurable label");
 
-        // The emitted `x` is the first attribute of the `<text>` element.
-        let x_of = |svg: &str| -> i32 {
-            let text = svg.find("<text").expect("the backend emitted a text element");
-            let attr = svg[text..].find("x=\"").expect("the element carries an x") + text + 3;
-            let end = svg[attr..].find('"').expect("the attribute is closed") + attr;
-            svg[attr..end].parse().expect("x is an integer")
+        // The leftmost `M` subpath start in the emitted `<path>` is the alignment's effect, so
+        // the assertion is about where the ink actually begins rather than about an attribute.
+        let first_ink_x = |svg: &str| -> i32 {
+            let d = svg.find("<path d=\"").expect("the backend emitted a glyph path") + 9;
+            let end = svg[d..].find('"').expect("the attribute is closed") + d;
+            svg[d..end]
+                .split('M')
+                .skip(1)
+                .filter_map(|sub| sub.split([' ', 'h']).next()?.parse::<i32>().ok())
+                .min()
+                .expect("the path has at least one subpath")
         };
 
-        assert_eq!(x_of(&region(HorizontalAlignment::Left)), origin.x, "left keeps the origin");
+        // The shift between the three alignments is what the rule is about, and it is exact:
+        // the pen moves by half (centre) or all (right) of the measured **total** advance —
+        // the same quantity `draw_text`'s `adjusted_origin_x` uses, not a per-glyph box.
+        let left = first_ink_x(&region(HorizontalAlignment::Left));
+        let centre = first_ink_x(&region(HorizontalAlignment::Center));
+        let right = first_ink_x(&region(HorizontalAlignment::Right));
+        let total_advance = {
+            let svg = SvgPaintBackend::new(Size::new(200, 50));
+            svg.shape_text("Cancel", &font).advance()
+        };
         assert_eq!(
-            x_of(&region(HorizontalAlignment::Center)),
-            origin.x - width / 2,
-            "centre starts half an advance to the left of the origin"
+            centre - left,
+            -(total_advance / 2.0).round() as i32,
+            "centre shifts half the measured advance to the left"
         );
         assert_eq!(
-            x_of(&region(HorizontalAlignment::Right)),
-            origin.x - width,
-            "right starts a whole advance to the left of the origin"
+            right - left,
+            -total_advance.round() as i32,
+            "right shifts the whole measured advance to the left"
         );
+        assert!(left >= origin.x, "left-aligned ink starts at or after the origin");
     }
 
     #[test]

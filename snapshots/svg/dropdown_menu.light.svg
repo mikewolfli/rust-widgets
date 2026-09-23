@@ -4,6 +4,6 @@
   <rect x="0" y="0" width="240" height="120" fill="rgba(240,240,240,1.00)" />
   <rect x="0" y="0" width="240" height="120" rx="4" ry="4" fill="rgba(221,221,221,1.00)" />
   <rect x="0" y="0" width="240" height="120" rx="4" ry="4" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
-  <text x="8" y="53" dominant-baseline="text-before-edge" font-family="sans-serif" font-size="13" font-style="normal" font-weight="400" fill="rgba(99,99,99,1.00)">Select...</text>
+  <text x="8" y="63" font-family="sans-serif" font-size="13" font-style="normal" font-weight="400" fill="rgba(99,99,99,1.00)">Select...</text>
   <path d="M 222 58 L 232 58 L 227 64 Z" fill="rgba(130,130,130,1.00)" stroke="none" stroke-width="1" />
 </svg>

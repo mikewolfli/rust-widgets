@@ -12,6 +12,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_i64, expect_string
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::dimensions;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -640,6 +641,14 @@ impl Draw for ScrollArea {
         context.fill_rect(rect, style.background_color.unwrap_or(Color::rgb(255, 255, 255)));
         // Draw border
         context.draw_rect(rect, style.border_color.unwrap_or(Color::rgb(200, 200, 200)));
+        // The scroll bar's three surfaces, resolved from the style with the previous greys as
+        // the fallback. `draw_sticky_band` already read the style; the bar did not, which is why
+        // a themed scroll area kept a pale bar. `background_color` is what the bar's groove was
+        // asking for — it is the same surface the control paints — and the thumb is one visible
+        // step toward the ink, so the two read as a groove and a handle in either appearance.
+        let track_color = style.background_color.unwrap_or(Color::rgb(240, 240, 240));
+        let border_color = style.border_color.unwrap_or(Color::rgb(200, 200, 200));
+        let thumb_color = style.text_color.unwrap_or(Color::rgb(120, 120, 120)).with_alpha(120);
         // Set viewport for clipping
         context.push_clip(rect.x, rect.y, rect.width, rect.height);
         // Draw widget via registry, translated by the negative scroll offset so
@@ -675,68 +684,66 @@ impl Draw for ScrollArea {
         // Draw scroll bars if visible
         let h_scroll_visible = self.horizontal_scroll_bar_visible();
         let v_scroll_visible = self.vertical_scroll_bar_visible();
+        // The track's thickness, the corner's size and the shortening of one track where the
+        // other crosses it are **one** number: they are all "the scroll bar's own width". The
+        // previous form spelled it four times as the literal `16` — twice as a thickness, once
+        // as the corner, and twice as the `if v_scroll_visible { … }` term — so changing the
+        // bar's width meant finding all four. `dimensions::SCROLLBAR_THICKNESS` already existed
+        // and was already used by every other control that draws a bar; this file simply did not
+        // read it, which is why one control's bar was twice as thick as its neighbours'.
+        let bar = dimensions::SCROLLBAR_THICKNESS;
+        // The band is the control's own rectangle less the space the *other* bar takes, so a
+        // track never runs under its neighbour and the corner is what is left over.
+        let h_band = Rect::new(
+            rect.x,
+            rect.y + rect.height.saturating_sub(bar) as i32,
+            rect.width.saturating_sub(if v_scroll_visible { bar } else { 0 }),
+            bar.min(rect.height),
+        );
+        let v_band = Rect::new(
+            rect.x + rect.width.saturating_sub(bar) as i32,
+            rect.y,
+            bar.min(rect.width),
+            rect.height.saturating_sub(if h_scroll_visible { bar } else { 0 }),
+        );
         if h_scroll_visible {
-            // Draw horizontal scroll bar
-            let scroll_bar_height = 16;
-            let scroll_bar_y = rect.y as f32 + rect.height as f32 - scroll_bar_height as f32;
-            context.fill_rect(
-                Rect::new(rect.x, scroll_bar_y as i32, rect.width, scroll_bar_height),
-                Color::rgb(240, 240, 240),
-            );
-            context.draw_rect(
-                Rect::new(rect.x, scroll_bar_y as i32, rect.width, scroll_bar_height),
-                Color::rgb(200, 200, 200),
-            );
-            // Draw scroll bar thumb, tracking the horizontal scroll position.
-            let h_track =
-                rect.width.saturating_sub(if v_scroll_visible { scroll_bar_height } else { 0 });
+            // The groove and the thumb both come from the resolved style, so the bar follows an
+            // appearance switch. They used to be three fixed greys, so a scroll area kept a pale
+            // bar in the middle of a dark window — the theme-blind family the rest of this file's
+            // siblings had already fixed.
+            context.fill_rect(h_band, track_color);
+            context.draw_rect(h_band, border_color);
             let (thumb_width, thumb_dx) = Self::thumb_metrics(
-                h_track,
+                h_band.width,
                 self.content_size.width,
                 self.viewport.width.max(1),
                 self.scroll_position.0,
             );
-            let thumb_x = rect.x + thumb_dx;
             context.fill_rect(
-                Rect::new(thumb_x, scroll_bar_y as i32, thumb_width, scroll_bar_height),
-                Color::rgb(180, 180, 180),
+                Rect::new(h_band.x + thumb_dx, h_band.y, thumb_width, h_band.height),
+                thumb_color,
             );
         }
         if v_scroll_visible {
-            // Draw vertical scroll bar
-            let scroll_bar_width = 16;
-            let scroll_bar_x = rect.x as f32 + rect.width as f32 - scroll_bar_width as f32;
-            context.fill_rect(
-                Rect::new(scroll_bar_x as i32, rect.y, scroll_bar_width, rect.height),
-                Color::rgb(240, 240, 240),
-            );
-            context.draw_rect(
-                Rect::new(scroll_bar_x as i32, rect.y, scroll_bar_width, rect.height),
-                Color::rgb(200, 200, 200),
-            );
-            // Draw scroll bar thumb, tracking the vertical scroll position.
-            let v_track =
-                rect.height.saturating_sub(if h_scroll_visible { scroll_bar_width } else { 0 });
+            context.fill_rect(v_band, track_color);
+            context.draw_rect(v_band, border_color);
             let (thumb_height, thumb_dy) = Self::thumb_metrics(
-                v_track,
+                v_band.height,
                 self.content_size.height,
                 self.viewport.height.max(1),
                 self.scroll_position.1,
             );
-            let thumb_y = rect.y + thumb_dy;
             context.fill_rect(
-                Rect::new(scroll_bar_x as i32, thumb_y, scroll_bar_width, thumb_height),
-                Color::rgb(180, 180, 180),
+                Rect::new(v_band.x, v_band.y + thumb_dy, v_band.width, thumb_height),
+                thumb_color,
             );
         }
-        // Draw corner between scroll bars
+        // Draw corner between scroll bars: whatever the two bands leave, derived from the same
+        // thickness rather than from a fourth literal.
         if h_scroll_visible && v_scroll_visible {
-            let corner_size = 16;
-            let corner_x = rect.x as f32 + rect.width as f32 - corner_size as f32;
-            let corner_y = rect.y as f32 + rect.height as f32 - corner_size as f32;
             context.fill_rect(
-                Rect::new(corner_x as i32, corner_y as i32, corner_size as u32, corner_size as u32),
-                Color::rgb(240, 240, 240),
+                Rect::new(v_band.x, h_band.y, bar.min(rect.width), bar.min(rect.height)),
+                track_color,
             );
         }
     }
@@ -809,6 +816,81 @@ mod tests {
         sa.ensure_widget_visible(77);
         assert_eq!(sa.viewport(), viewport);
         assert_eq!(sa.scroll_position(), (200, 200));
+    }
+
+    /// The bar's thickness, the corner and the track's shortening are one number.
+    ///
+    /// They were four spellings of the literal `16` — twice as a thickness, once as the
+    /// corner, and twice as the `if other_bar_visible { … }` term — and none of them was
+    /// `dimensions::SCROLLBAR_THICKNESS`, which every other control that draws a bar reads. One
+    /// control's bar was therefore twice as thick as its neighbours', and changing the shared
+    /// constant would have moved none of them.
+    #[test]
+    fn the_scroll_bar_geometry_comes_from_the_shared_thickness() {
+        let mut sa = ScrollArea::new(Rect::new(0, 0, 200, 120));
+        sa.set_viewport(Rect::new(0, 0, 200, 120));
+        // Content larger than the viewport on both axes, so both bars are owed.
+        sa.set_content_size(Size::new(600, 600));
+        assert!(sa.horizontal_scroll_bar_visible());
+        assert!(sa.vertical_scroll_bar_visible());
+
+        // The drawn bars reach the control's own trailing/bottom edges and are exactly the
+        // shared thickness. Measured from the rendered SVG's own rectangles, so this is about
+        // what a person sees rather than about a helper's return value.
+        let bar = dimensions::SCROLLBAR_THICKNESS;
+        let geometry = sa.geometry();
+        let svg = crate::widget::svg::render_to_svg(&mut sa);
+
+        // Every `<rect>` in the document, as (x, y, w, h).
+        let rects: Vec<(i32, i32, u32, u32)> = svg
+            .lines()
+            .filter_map(|line| {
+                let attr = |name: &str| -> Option<i32> {
+                    let key = format!("{name}=\"");
+                    let at = line.find(&key)? + key.len();
+                    let end = line[at..].find('"')? + at;
+                    line[at..end].parse().ok()
+                };
+                if !line.trim_start().starts_with("<rect") {
+                    return None;
+                }
+                Some((attr("x")?, attr("y")?, attr("width")? as u32, attr("height")? as u32))
+            })
+            .collect();
+
+        let horizontal_bar = rects.iter().any(|(_, y, w, h)| {
+            *h == bar && *y == geometry.y + geometry.height as i32 - bar as i32 && *w > 0
+        });
+        let vertical_bar = rects.iter().any(|(x, _, w, h)| {
+            *w == bar && *x == geometry.x + geometry.width as i32 - bar as i32 && *h > 0
+        });
+        assert!(horizontal_bar, "a horizontal bar of the shared thickness must be drawn");
+        assert!(vertical_bar, "a vertical bar of the shared thickness must be drawn");
+    }
+
+    /// The two bars meet at a corner instead of one running under the other.
+    #[test]
+    fn the_two_bars_do_not_overlap_at_their_corner() {
+        let mut sa = ScrollArea::new(Rect::new(0, 0, 200, 120));
+        sa.set_viewport(Rect::new(0, 0, 200, 120));
+        sa.set_content_size(Size::new(600, 600));
+        let bar = dimensions::SCROLLBAR_THICKNESS;
+        // The tracks tile the control's rectangle: together with the corner they cover the
+        // bottom `bar` rows and the trailing `bar` columns exactly once.
+        let geometry = sa.geometry();
+        let h_band_width = geometry.width - if sa.vertical_scroll_bar_visible() { bar } else { 0 };
+        let v_band_height =
+            geometry.height - if sa.horizontal_scroll_bar_visible() { bar } else { 0 };
+        assert_eq!(
+            h_band_width + bar,
+            geometry.width,
+            "the horizontal track plus the corner is the control's width"
+        );
+        assert_eq!(
+            v_band_height + bar,
+            geometry.height,
+            "the vertical track plus the corner is the control's height"
+        );
     }
 
     #[test]

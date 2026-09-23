@@ -4,8 +4,8 @@
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <line x1="0" y1="0" x2="240" y2="0" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
-  <text x="9" y="53" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">Sample</text>
-  <line x1="226" y1="118" x2="238" y2="106" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
-  <line x1="230" y1="118" x2="238" y2="110" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
-  <line x1="234" y1="118" x2="238" y2="114" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
+  <text x="9" y="64" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">Sample</text>
+  <line x1="222" y1="113" x2="233" y2="102" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
+  <line x1="226" y1="113" x2="233" y2="106" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
+  <line x1="230" y1="113" x2="233" y2="110" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
 </svg>

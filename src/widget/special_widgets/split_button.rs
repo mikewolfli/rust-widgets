@@ -7,6 +7,7 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::style::EdgeOffsets;
 use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -67,7 +68,7 @@ impl SplitButton {
             pressed_arrow: false,
             hovered_primary: false,
             hovered_arrow: false,
-            arrow_width: 22,
+            arrow_width: dimensions::SPLIT_ARROW_COLUMN_WIDTH,
             row_height: 22,
             triggered: Signal1::new(),
             action_selected: Signal1::new(),
@@ -228,6 +229,28 @@ impl SplitButton {
         let band = self.face_band();
         let primary_width = band.width.saturating_sub(self.arrow_width);
         Rect::new(band.x, band.y, primary_width, band.height)
+    }
+
+    /// The trigger's label box: the primary face's interior, inset by the shared padding.
+    ///
+    /// # Why this is a box and not an `x`
+    ///
+    /// The label used to be drawn at `primary_rect.x + 8` with `HorizontalAlignment::Left`,
+    /// and the menu rows at `action_rect.x + 8` — the same literal written twice, in two
+    /// different coordinate systems, with no relation to the control's own padding constant.
+    /// Returning the padded box instead gives the draw call the rectangle it is fitting into,
+    /// so the label is bounded by the trigger rather than by a hand-chosen origin, and the
+    /// trigger and the menu rows derive their leading space from one place.
+    fn primary_label_box(&self, primary: Rect) -> Rect {
+        ControlMetrics::content_box(
+            primary,
+            EdgeOffsets {
+                left: dimensions::SPLIT_BUTTON_PADDING_H,
+                right: dimensions::SPLIT_BUTTON_PADDING_H,
+                top: 0,
+                bottom: 0,
+            },
+        )
     }
 
     fn arrow_rect(&self) -> Rect {
@@ -558,22 +581,30 @@ impl Draw for SplitButton {
         // `draw_text`'s origin is the glyph box's top-left, so `primary_rect.y + height / 2` put
         // that top edge on the middle line and drew the label half a line low. The line box
         // centred in the trigger is the origin; the arrow glyph below shares its band's own.
-        let primary_line = context.text_line(primary_rect, &Font::default());
-        context.draw_text(
-            Point::new(primary_rect.x + 8, primary_line.y),
+        //
+        // The label is centred both ways inside the trigger's padded box. A split button's
+        // primary face *is* a button, so its label follows the same rule `Button` does
+        // (Qt Quick centres `AbstractButton`'s `contentItem`; Flutter M3 centres the child) —
+        // the previous `x + 8` origin left-aligned it against a literal.
+        let primary_box = self.primary_label_box(primary_rect);
+        context.draw_text_fitted(
+            context.text_line(primary_box, &Font::default()),
             &self.text,
             &Font::default(),
             ink,
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Center,
         );
 
-        let arrow_line = context.text_line(arrow, &Font::default());
-        context.draw_text(
-            Point::new(arrow.x + (arrow.width as i32 / 2) - 3, arrow_line.y),
+        // The arrow glyph is centred on its own column rather than offset by a half-glyph
+        // literal: `(arrow.width / 2) - 3` hard-coded a 6 px-wide 'v', so a different font or
+        // size put the glyph off the column's centre. `draw_text_fitted` with `Center` derives
+        // the origin from the measured string inside the column.
+        context.draw_text_fitted(
+            context.text_line(arrow, &Font::default()),
             "v",
             &Font::default(),
             ink.blend(&arrow_bg, 0.35),
-            HorizontalAlignment::Left,
+            HorizontalAlignment::Center,
         );
 
         if self.menu_open {
@@ -593,10 +624,12 @@ impl Draw for SplitButton {
                 if let Some(action) = self.actions.get(index) {
                     // A menu row's label is centred through the shared primitive, since the
                     // glyph origin is a top edge and `action_rect.y + height / 2` placed it
-                    // half a line low.
-                    let action_line = context.text_line(action_rect, &Font::default());
-                    context.draw_text(
-                        Point::new(action_rect.x + 8, action_line.y),
+                    // half a line low. The box is the row's own padded interior — the same
+                    // `SPLIT_BUTTON_PADDING_H` the trigger uses, so a menu row and the trigger
+                    // it hangs from share their leading space rather than each naming it.
+                    let row_box = self.primary_label_box(action_rect);
+                    context.draw_text_fitted(
+                        context.text_line(row_box, &Font::default()),
                         &action.label,
                         &Font::default(),
                         ink,
@@ -810,5 +843,66 @@ mod tests {
         // The popup begins at the face's bottom edge.
         let menu = split.menu_rect();
         assert_eq!(menu.y, band.y + band.height as i32);
+    }
+
+    /// The trigger's label is centred in the trigger, and the arrow in its own column.
+    ///
+    /// Both used to be placed by hand: the label at `primary_rect.x + 8` (left-aligned against
+    /// a literal, so a 240 px control drew a 50 px word flush to the left of a 218 px face) and
+    /// the arrow at `arrow.x + (arrow.width / 2) - 3` (which hard-coded a 6 px-wide 'v', so any
+    /// other glyph or font put the arrow off the column's centre).
+    #[test]
+    fn the_label_and_the_arrow_are_each_centred_in_their_own_box() {
+        let rect = Rect::new(0, 0, 240, 120);
+        let mut split = SplitButton::new("Sample", rect);
+        let primary = split.primary_rect();
+        let arrow = split.arrow_rect();
+
+        let mut backend = crate::render::SvgPaintBackend::new(crate::core::Size::new(240, 120));
+        let context = crate::render::RenderContext::new(&mut backend);
+        let font = Font::default();
+        let label_w = context.measure_text("Sample", &font).width as i32;
+        let arrow_w = context.measure_text("v", &font).width as i32;
+
+        let expected_label_x = primary.x
+            + dimensions::SPLIT_BUTTON_PADDING_H as i32
+            + (primary.width as i32 - 2 * dimensions::SPLIT_BUTTON_PADDING_H as i32 - label_w) / 2;
+        let expected_arrow_x = arrow.x + (arrow.width as i32 - arrow_w) / 2;
+
+        let svg = crate::widget::svg::render_to_svg(&mut split);
+        let found = |needle: &str| -> i32 {
+            svg.lines()
+                .find(|line| line.contains(&format!(">{needle}</text>")))
+                .and_then(|line| {
+                    let at = line.find("x=\"")? + 3;
+                    let end = line[at..].find('"')? + at;
+                    line[at..end].parse().ok()
+                })
+                .unwrap_or_else(|| panic!("{needle} was not rendered"))
+        };
+        assert_eq!(found("Sample"), expected_label_x, "the label belongs in the trigger's middle");
+        assert_ne!(found("Sample"), primary.x + dimensions::SPLIT_BUTTON_PADDING_H as i32);
+        assert_eq!(found("v"), expected_arrow_x, "the arrow belongs in its column's middle");
+    }
+
+    /// The trigger's label box and a menu row's label box share one padding derivation.
+    #[test]
+    fn the_trigger_and_the_menu_rows_share_their_leading_space() {
+        let mut split = SplitButton::new("Run", Rect::new(0, 0, 240, 120));
+        split.set_actions(sample_actions());
+        let primary = split.primary_rect();
+        let trigger_box = split.primary_label_box(primary);
+        let row = split.action_rect(0).expect("the fixture has an action");
+        let row_box = split.primary_label_box(row);
+        assert_eq!(
+            trigger_box.x - primary.x,
+            row_box.x - row.x,
+            "the trigger and its menu rows must inset their labels by the same amount"
+        );
+        assert_eq!(
+            trigger_box.x - primary.x,
+            dimensions::SPLIT_BUTTON_PADDING_H as i32,
+            "and that amount is the named constant, not a literal"
+        );
     }
 }

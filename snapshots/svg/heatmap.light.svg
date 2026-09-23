@@ -16,13 +16,13 @@
   <rect x="103" y="83" width="44" height="11" fill="rgba(46,94,130,1.00)" />
   <rect x="149" y="83" width="44" height="11" fill="rgba(84,172,158,1.00)" />
   <rect x="195" y="83" width="44" height="11" fill="rgba(59,120,140,1.00)" />
-  <text x="3" y="62" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">R1</text>
-  <text x="3" y="75" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">R2</text>
-  <text x="3" y="88" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">R3</text>
-  <text x="70" y="42" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">C1</text>
-  <text x="116" y="42" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">C2</text>
-  <text x="162" y="42" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">C3</text>
-  <text x="208" y="42" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">C4</text>
+  <text x="3" y="73" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">R1</text>
+  <text x="3" y="86" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">R2</text>
+  <text x="3" y="99" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">R3</text>
+  <text x="70" y="53" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">C1</text>
+  <text x="116" y="53" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">C2</text>
+  <text x="162" y="53" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">C3</text>
+  <text x="208" y="53" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">C4</text>
   <rect x="56" y="95" width="1" height="8" fill="rgba(33,68,121,1.00)" />
   <rect x="57" y="95" width="1" height="8" fill="rgba(34,69,121,1.00)" />
   <rect x="58" y="95" width="1" height="8" fill="rgba(34,70,122,1.00)" />
@@ -207,6 +207,6 @@
   <rect x="237" y="95" width="1" height="8" fill="rgba(245,215,123,1.00)" />
   <rect x="238" y="95" width="1" height="8" fill="rgba(247,216,122,1.00)" />
   <rect x="239" y="95" width="1" height="8" fill="rgba(249,216,122,1.00)" />
-  <text x="59" y="105" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">1</text>
-  <text x="229" y="105" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">9</text>
+  <text x="59" y="116" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">1</text>
+  <text x="229" y="116" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">9</text>
 </svg>

@@ -10,6 +10,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::dimensions;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Status bar widget — shows status messages and permanent widgets.
@@ -120,7 +121,49 @@ impl StatusBar {
         self.size_grip_enabled = enabled;
         self.base.request_redraw();
     }
+    /// The size grip's own box, or `None` when the grip is off.
+    ///
+    /// # Why the grip is a box and not a `- 14` literal
+    ///
+    /// The grip was drawn from `rect.x + width - 14` with three lines spanning 12 px, while the
+    /// permanent message reserved `20` for it — two unrelated numbers for one object, so the
+    /// measure of "how much room does the grip need" and the measure of "how much room does the
+    /// grip use" could not be kept in agreement by inspection. The reserve and the drawing now
+    /// read the same box.
+    ///
+    /// `STATUS_GRIP_SIZE` is a named constant because it is also the answer to "how far from the
+    /// strip's corner does the grip sit", which is what the reserve is derived from.
+    fn size_grip_rect(&self, band: Rect) -> Option<Rect> {
+        if !self.size_grip_enabled {
+            return None;
+        }
+        let size = dimensions::STATUS_GRIP_SIZE.min(band.width).min(band.height);
+        // Inset from the corner by the strip's own padding, so the grip's distance from the edge
+        // is the same fact as the message's distance from the edge.
+        let inset = dimensions::STATUS_BAR_PADDING_H;
+        Some(Rect::new(
+            band.x + band.width.saturating_sub(size + inset) as i32,
+            band.y + band.height.saturating_sub(size + inset) as i32,
+            size,
+            size,
+        ))
+    }
+
+    /// The width the permanent message must leave for the grip: 0 when there is no grip.
+    ///
+    /// Derived from the grip's own box (plus its leading gap), so a wider grip narrows the
+    /// message rather than the two overlapping.
+    fn grip_reserve(&self, band: Rect) -> u32 {
+        match self.size_grip_rect(band) {
+            Some(grip) => {
+                { band.x + band.width as i32 - grip.x + dimensions::STATUS_BAR_PADDING_H as i32 }
+                    .max(0) as u32
+            }
+            None => 0,
+        }
+    }
 }
+
 impl Widget for StatusBar {
     fn base(&self) -> &BaseWidget {
         &self.base
@@ -167,6 +210,7 @@ impl EventHandler for StatusBar {
         self.base.handle_event(event);
     }
 }
+
 impl Draw for StatusBar {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
@@ -210,9 +254,11 @@ impl Draw for StatusBar {
                 HorizontalAlignment::Left,
             );
         }
-        // Permanent message (right side, before size grip).
+        // Permanent message (right side, before the size grip).
         if !self.permanent_message.is_empty() {
-            let grip_width = if self.size_grip_enabled { 20 } else { 4 };
+            // The room the grip needs is the grip's own box, not a parallel numeral: the width
+            // reserved and the width drawn were `20` and `12` and could not be kept in step.
+            let reserved = self.grip_reserve(rect);
             // Muted relative to the main message. The old form blended the ink *toward the
             // band*, which on a dark appearance pulled light text 40% of the way toward a dark
             // band — i.e. it lowered the contrast it was meant to preserve, and the light-mode
@@ -221,7 +267,6 @@ impl Draw for StatusBar {
             // amount, then asserting a legible ratio, is the same visual intent without the
             // direction error.
             let muted = ink.blend(&band, 0.25).legible_on(band, 4.5);
-            let reserved = (grip_width + 12) as u32;
             context.draw_text_fitted(
                 Rect {
                     x: rect.x + 6,
@@ -235,17 +280,19 @@ impl Draw for StatusBar {
                 HorizontalAlignment::Right,
             );
         }
-        // Size grip (bottom-right corner).
-        if self.size_grip_enabled {
-            let gx = rect.x + rect.width as i32 - 14;
-            let gy = rect.y + rect.height as i32 - 14;
+        // Size grip (bottom-right corner). Drawn inside the box the reserve above was derived
+        // from, so the message stops exactly where the grip begins.
+        if let Some(grip) = self.size_grip_rect(rect) {
             let grip_ink =
                 style.border_color.unwrap_or_else(|| band.contrast_color().with_alpha(120));
+            // Three diagonals across the grip's own box, so the ink scales with the box rather
+            // than with three separate `i * 4` and `+ 12` literals.
+            let step = (grip.width / 3).max(1) as i32;
             for i in 0..3 {
-                let offset = i * 4;
+                let offset = i * step;
                 context.draw_line(
-                    Point::new(gx + offset, gy + 12),
-                    Point::new(gx + 12, gy + offset),
+                    Point::new(grip.x + offset, grip.y + grip.height as i32 - 1),
+                    Point::new(grip.x + grip.width as i32 - 1, grip.y + offset),
                     grip_ink,
                 );
             }
@@ -257,6 +304,63 @@ impl Draw for StatusBar {
 mod tests {
     use super::*;
     use crate::core::Rect;
+
+    /// The grip's drawn box and the room reserved for it are one derivation.
+    ///
+    /// They were two unrelated numbers: the grip was drawn from `rect.x + width - 14` with three
+    /// lines spanning 12 px, while the permanent message reserved `20` for it. A wider grip, or
+    /// a strip narrow enough for the difference to show, put the message on top of the grip.
+    #[test]
+    fn the_size_grip_and_its_reserve_are_one_derivation() {
+        let band = Rect::new(0, 0, 240, 24);
+        let mut bar = StatusBar::new(band);
+
+        // A fresh status bar shows a grip; turning it off reserves nothing at all, which is the
+        // half the previous code could not express (it reserved `4` for a grip it never drew).
+        bar.set_size_grip_enabled(false);
+        assert!(bar.size_grip_rect(band).is_none(), "a disabled grip has no box");
+        assert_eq!(bar.grip_reserve(band), 0, "and nothing is reserved for it");
+
+        bar.set_size_grip_enabled(true);
+        let grip = bar.size_grip_rect(band).expect("the grip is enabled");
+        let reserve = bar.grip_reserve(band);
+
+        // The grip is inside the strip, and the reserve reaches from the strip's trailing edge
+        // to the grip's own leading edge (plus the strip's padding as the gap).
+        assert!(grip.x >= band.x, "the grip must not leave the strip: {grip:?}");
+        assert!(
+            grip.x + grip.width as i32 <= band.x + band.width as i32,
+            "and must not run past it: {grip:?}"
+        );
+        assert_eq!(
+            reserve,
+            (band.x + band.width as i32 - grip.x) as u32 + dimensions::STATUS_BAR_PADDING_H,
+            "the message's reserve is measured from the grip's own box"
+        );
+        // The message's box therefore stops at or before the grip's leading edge.
+        let message_right = band.x + band.width as i32 - reserve as i32;
+        assert!(
+            message_right <= grip.x,
+            "a right-aligned message must not be painted under the grip:              message ends at {message_right}, grip starts at {}",
+            grip.x
+        );
+    }
+
+    /// The grip scales with the shared size rather than a private set of literals.
+    #[test]
+    fn the_grip_uses_the_shared_size() {
+        let band = Rect::new(0, 0, 240, 24);
+        let mut bar = StatusBar::new(band);
+        bar.set_size_grip_enabled(true);
+        let grip = bar.size_grip_rect(band).expect("enabled");
+        assert_eq!(grip.width, dimensions::STATUS_GRIP_SIZE);
+        assert_eq!(grip.height, dimensions::STATUS_GRIP_SIZE);
+        assert_eq!(
+            band.x + band.width as i32 - (grip.x + grip.width as i32),
+            dimensions::STATUS_BAR_PADDING_H as i32,
+            "the grip keeps the strip's own padding from the corner"
+        );
+    }
 
     #[test]
     fn statusbar_creation_defaults() {

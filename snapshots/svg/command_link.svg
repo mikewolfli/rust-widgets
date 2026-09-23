@@ -2,5 +2,5 @@
 <!-- control: command_link | appearance: dark -->
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
-  <text x="3" y="54" dominant-baseline="text-before-edge" font-family="Arial" font-size="12" font-style="italic" font-weight="400" fill="rgba(225,225,225,1.00)">Sample</text>
+  <text x="3" y="64" font-family="Arial" font-size="12" font-style="italic" font-weight="400" fill="rgba(225,225,225,1.00)">Sample</text>
 </svg>

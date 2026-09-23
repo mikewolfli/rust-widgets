@@ -3,17 +3,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(240,240,240,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="rgba(226,226,226,1.00)" />
-  <text x="13" y="18" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(102,102,102,1.00)">No steps configured</text>
+  <text x="13" y="29" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(102,102,102,1.00)">No steps configured</text>
   <line x1="0" y1="50" x2="240" y2="50" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
   <rect x="0" y="50" width="240" height="22" fill="rgba(217,217,217,1.00)" />
-  <text x="15" y="58" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(102,102,102,1.00)">Add steps to begin</text>
+  <text x="15" y="69" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(102,102,102,1.00)">Add steps to begin</text>
   <line x1="0" y1="72" x2="240" y2="72" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
   <rect x="8" y="78" width="72" height="36" rx="4" ry="4" fill="rgba(199,199,199,1.00)" />
   <rect x="8" y="78" width="72" height="36" rx="4" ry="4" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
-  <text x="22" y="90" dominant-baseline="text-before-edge" font-family="Arial" font-size="12" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">Cancel</text>
+  <text x="22" y="100" font-family="Arial" font-size="12" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">Cancel</text>
   <rect x="80" y="78" width="72" height="36" rx="4" ry="4" fill="rgba(214,214,214,1.00)" />
   <rect x="80" y="78" width="72" height="36" rx="4" ry="4" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
-  <text x="101" y="90" dominant-baseline="text-before-edge" font-family="Arial" font-size="12" font-style="normal" font-weight="400" fill="rgba(79,79,79,1.00)">Back</text>
+  <text x="101" y="100" font-family="Arial" font-size="12" font-style="normal" font-weight="400" fill="rgba(79,79,79,1.00)">Back</text>
   <rect x="160" y="78" width="72" height="36" rx="4" ry="4" fill="rgba(33,150,243,1.00)" />
-  <text x="174" y="90" dominant-baseline="text-before-edge" font-family="Arial" font-size="12" font-style="normal" font-weight="700" fill="rgba(0,0,0,1.00)">Finish</text>
+  <text x="174" y="100" font-family="Arial" font-size="12" font-style="normal" font-weight="700" fill="rgba(0,0,0,1.00)">Finish</text>
 </svg>

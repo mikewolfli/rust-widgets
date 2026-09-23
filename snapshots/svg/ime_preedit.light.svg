@@ -3,6 +3,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(240,240,240,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="rgba(221,221,221,1.00)" />
-  <text x="3" y="0" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">Sample</text>
+  <text x="3" y="11" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">Sample</text>
   <line x1="0" y1="16" x2="50" y2="16" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
 </svg>

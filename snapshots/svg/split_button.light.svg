@@ -7,6 +7,6 @@
   <rect x="0" y="46" width="218" height="28" fill="rgba(221,221,221,1.00)" />
   <rect x="218" y="46" width="22" height="28" fill="rgba(208,208,208,1.00)" />
   <line x1="218" y1="46" x2="218" y2="74" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
-  <text x="8" y="53" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">Sample</text>
-  <text x="226" y="53" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(73,73,73,1.00)">v</text>
+  <text x="84" y="64" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">Sample</text>
+  <text x="225" y="64" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(73,73,73,1.00)">v</text>
 </svg>

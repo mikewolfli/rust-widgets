@@ -8,5 +8,5 @@
   <line x1="48" y1="43" x2="232" y2="43" stroke="rgba(78,78,78,1.00)" stroke-width="1" />
   <line x1="48" y1="8" x2="232" y2="8" stroke="rgba(78,78,78,1.00)" stroke-width="1" />
   <rect x="48" y="8" width="184" height="104" fill="none" stroke="rgba(78,78,78,1.00)" stroke-width="1" />
-  <text x="116" y="54" dominant-baseline="text-before-edge" font-family="Sans" font-size="12" font-style="normal" font-weight="400" fill="rgba(225,225,225,0.63)">No data</text>
+  <text x="116" y="64" font-family="Sans" font-size="12" font-style="normal" font-weight="400" fill="rgba(225,225,225,0.63)">No data</text>
 </svg>

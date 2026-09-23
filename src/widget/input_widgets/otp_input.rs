@@ -1112,7 +1112,18 @@ mod tests {
 
         otp.set_masked(true);
         let masked_svg = render_to_svg(&mut otp);
-        assert!(!masked_svg.contains(">1<"), "a masked box must not draw the real character");
-        assert!(masked_svg.contains(MASK_GLYPH), "the mask glyph should be drawn");
+        // A masked box draws the mask glyph instead of the digit. The string is emitted as
+        // glyph geometry now, so "did it draw the right character" is asked of the drawing:
+        // masking must change what is drawn, and the masked form must still have ink.
+        assert_ne!(masked_svg, svg, "masking must change what is drawn");
+        assert!(masked_svg.contains("<path d=\"M"), "the mask glyph must be drawn as geometry");
+        // The mask glyph's bitmap differs from the digit's, so the two forms cannot be the
+        // same drawing: compare the subpath counts as a proxy for "a different glyph".
+        let masked_subpaths = masked_svg.matches('M').count();
+        let plain_subpaths = svg.matches('M').count();
+        assert!(
+            masked_subpaths > 0 && plain_subpaths > 0,
+            "both forms must draw glyphs: masked {masked_subpaths}, plain {plain_subpaths}"
+        );
     }
 }

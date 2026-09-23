@@ -124,7 +124,8 @@ pub(crate) use pipeline::pixel_bytes_len;
 /// output and the software rasteriser agree on text metrics (principle #51: one
 /// heuristic, not two drifting copies).
 pub(crate) use pipeline::{
-    cluster_ends_with_zwj, estimate_cluster_advance, is_combining_mark, is_variation_selector,
+    cluster_ends_with_zwj, estimate_cluster_advance, glyph_rects, is_combining_mark,
+    is_variation_selector,
 };
 
 /// Arc and circle drawing helpers.

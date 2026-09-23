@@ -5,5 +5,5 @@
   <rect x="48" y="6" width="184" height="108" fill="rgba(221,221,221,1.00)" />
   <rect x="48" y="6" width="184" height="108" fill="none" stroke="rgba(172,172,172,1.00)" stroke-width="1" />
   <line x1="48" y1="60" x2="232" y2="60" stroke="rgba(172,172,172,1.00)" stroke-width="1" />
-  <text x="116" y="54" dominant-baseline="text-before-edge" font-family="Sans" font-size="12" font-style="normal" font-weight="400" fill="rgba(0,0,0,0.63)">No data</text>
+  <text x="116" y="64" font-family="Sans" font-size="12" font-style="normal" font-weight="400" fill="rgba(0,0,0,0.63)">No data</text>
 </svg>

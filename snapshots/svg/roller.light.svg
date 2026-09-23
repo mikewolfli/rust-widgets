@@ -6,6 +6,6 @@
   <clipPath id="clip_0"><rect x="0" y="0" width="240" height="120" /></clipPath>
   <g clip-path="url(#clip_0)">
   <rect x="0" y="46" width="240" height="28" fill="rgba(33,150,243,1.00)" />
-  <text x="95" y="53" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">Sample</text>
+  <text x="95" y="64" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">Sample</text>
   </g>
 </svg>

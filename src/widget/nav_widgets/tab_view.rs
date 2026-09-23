@@ -7,7 +7,7 @@
 //! below showing the selected tab's content. Supports add/remove/clear
 //! operations on tabs and emits a `tab_changed` signal on selection.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -122,6 +122,32 @@ impl TabView {
     pub fn tabs_mut(&mut self) -> &mut Vec<TabPage> {
         &mut self.tabs
     }
+
+    /// The tab strip's height: 40 (Material's `Tab` height, which is a 14 px line plus the
+    /// 48 px touch floor this crate uses for a primary target).
+    ///
+    /// It is a constant rather than the two `let tab_bar_height: u32 = 40;` declarations it
+    /// used to be — one in `draw` and one in `handle_event`. Two copies of one layout fact is
+    /// the drift shape this crate keeps paying for: the hit test would keep accepting presses
+    /// in a strip the renderer had stopped drawing whenever one of them was edited.
+    pub const TAB_BAR_HEIGHT: u32 = 40;
+
+    /// The strip band at the top of the control's own rectangle.
+    ///
+    /// The single derivation the strip's fill, the indicator, the hit test and the content
+    /// area below all read.
+    pub fn tab_bar_rect(&self) -> Rect {
+        let rect = self.geometry();
+        Rect::new(rect.x, rect.y, rect.width, Self::TAB_BAR_HEIGHT.min(rect.height))
+    }
+
+    /// The rectangle the selected tab's content occupies: what the strip leaves.
+    pub fn content_rect(&self) -> Rect {
+        let rect = self.geometry();
+        let strip = self.tab_bar_rect();
+        let top = strip.y + strip.height as i32;
+        Rect::new(rect.x, top, rect.width, (rect.y + rect.height as i32 - top).max(0) as u32)
+    }
 }
 
 impl Widget for TabView {
@@ -170,11 +196,11 @@ impl WidgetProperties for TabView {
 impl Draw for TabView {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        let tab_bar_height: u32 = 40;
-        let tab_bar_rect = Rect::new(rect.x, rect.y, rect.width, tab_bar_height);
-        let content_y = rect.y + tab_bar_height as i32;
-        let content_rect =
-            Rect::new(rect.x, content_y, rect.width, rect.height.saturating_sub(tab_bar_height));
+        // The strip and the content area come from the control's own band derivation, so the
+        // strip's height, the hit test and the content's top edge cannot disagree.
+        let tab_bar_rect = self.tab_bar_rect();
+        let tab_bar_height = tab_bar_rect.height;
+        let content_rect = self.content_rect();
 
         // Chrome colours resolve explicit style first, then the theme's resolved
         // style for this control, and only then a literal. The theme step is what
@@ -253,17 +279,19 @@ impl Draw for TabView {
 
             let text_color = if is_selected { selected_text } else { inactive_text };
 
-            let metrics = context.measure_text(&display_text, &font);
-            let text_x = tab_x + (tab_width as i32 - metrics.width as i32) / 2;
-            // The origin is the glyph box's top edge, so centring in the 40px tab bar is half
-            // the *line box*; the old `+ ascent` dropped the title half a line too far.
-            let text_y = rect.y + (tab_bar_height as i32 - metrics.height as i32) / 2;
-            context.draw_text(
-                Point::new(text_x.max(tab_x), text_y),
+            // The caption is centred on **both** axes through the shared line box. The previous
+            // form computed `rect.y + (tab_bar_height - metrics.height) / 2` by hand and passed
+            // it as the glyph box's top edge — and `metrics.height` is the *measurement* height,
+            // which is the same number as the line height only for a single-line ASCII label.
+            // The line box is what `text_line` derives from the same font, so the caption cannot
+            // sit half a line off; `draw_text_fitted` with `Center` then bounds it to the tab, so
+            // a long title is elided rather than running over its neighbour.
+            context.draw_text_fitted(
+                context.text_line(tab_rect, &font),
                 &display_text,
                 &font,
                 text_color,
-                HorizontalAlignment::Left,
+                HorizontalAlignment::Center,
             );
         }
 
@@ -284,10 +312,12 @@ impl EventHandler for TabView {
         match event {
             Event::MousePress { pos, button } => {
                 if *button == 1 && !self.tabs.is_empty() {
-                    // Check if click is in the tab bar area
+                    // Check if click is in the tab bar area. The band comes from the control's
+                    // own derivation, so the region that accepts a press is by construction the
+                    // region the renderer drew.
+                    let strip = self.tab_bar_rect();
                     let rect = self.geometry();
-                    let tab_bar_height: u32 = 40;
-                    if pos.y >= rect.y && pos.y < rect.y + tab_bar_height as i32 {
+                    if pos.y >= strip.y && pos.y < strip.y + strip.height as i32 {
                         let tab_count = self.tabs.len() as u32;
                         let tab_width = rect.width / tab_count.max(1);
                         let relative_x = (pos.x - rect.x) as u32;
@@ -315,6 +345,62 @@ mod tests {
 
     fn make_tab_view() -> TabView {
         TabView::new(Rect::new(0, 0, 300, 400))
+    }
+
+    /// The band the renderer draws and the band the hit test accepts are one derivation.
+    ///
+    /// The strip's height used to be two separate `let tab_bar_height: u32 = 40;` declarations
+    /// — one in `draw`, one in `handle_event` — so editing one would leave the control
+    /// accepting presses in a strip it had stopped drawing. Both now read
+    /// [`TabView::tab_bar_rect`].
+    #[test]
+    fn the_drawn_strip_and_the_hit_region_are_one_derivation() {
+        let tv = make_tab_view();
+        let strip = tv.tab_bar_rect();
+        let content = tv.content_rect();
+        assert_eq!(strip.height, TabView::TAB_BAR_HEIGHT);
+        assert_eq!(strip.y, tv.geometry().y);
+        // The content area begins exactly where the strip ends — no gap, no overlap.
+        assert_eq!(
+            content.y,
+            strip.y + strip.height as i32,
+            "the content area starts at the strip's bottom edge"
+        );
+        // And together they tile the control's own rectangle.
+        assert_eq!(content.height as i32 + strip.height as i32, tv.geometry().height as i32);
+    }
+
+    /// A tab caption is centred on its tab's own line box, not on a hand-computed pair of axes.
+    ///
+    /// The previous form derived `text_x` and `text_y` inline from `measure_text(..).height` and
+    /// handed both to `draw_text`. The line box is the shared primitive for exactly this, and it
+    /// is what makes a caption with a descender ("/g/j") sit the same as one without.
+    #[test]
+    fn a_tab_caption_sits_on_its_tabs_line_box() {
+        let mut tv = make_tab_view();
+        tv.add_tab("Alpha", None, None::<&str>);
+        tv.add_tab("Beta", None, None::<&str>);
+        let svg = render_to_svg(&mut tv);
+        let strip = tv.tab_bar_rect();
+
+        let font = Font::simple("sans-serif", 12.0);
+        let mut backend = crate::render::SvgPaintBackend::new(crate::core::Size::new(300, 400));
+        let context = crate::render::RenderContext::new(&mut backend);
+        let line_h = context.measure_text("M", &font).height as i32;
+        let expected_y = strip.y + (strip.height as i32 - line_h) / 2;
+
+        let y_of = |needle: &str| -> i32 {
+            svg.lines()
+                .find(|line| line.contains(&format!(">{needle}</text>")))
+                .map(|line| {
+                    let at = line.find("y=\"").expect("y present") + 3;
+                    let end = line[at..].find('"').expect("closed") + at;
+                    line[at..end].parse::<i32>().expect("numeric")
+                })
+                .unwrap_or_else(|| panic!("{needle} was not rendered"))
+        };
+        assert_eq!(y_of("Alpha"), expected_y, "a caption belongs on the strip's line box");
+        assert_eq!(y_of("Beta"), expected_y, "and every caption shares it");
     }
 
     #[test]

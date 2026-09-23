@@ -545,17 +545,14 @@ mod tests {
         let mut label = Label::new("Sample".to_string(), rect);
         let svg = crate::widget::svg::render_to_svg(&mut label);
 
-        // Read the emitted origin back out of the element stream.
+        // Read the emitted **glyph-box top edge** back out of the element stream. The `y` the
+        // backend writes is a baseline, so the reader converts it; see `svg::text_top_of`.
         let text_line = svg
             .lines()
             .find(|line| line.contains("<text"))
             .unwrap_or_else(|| panic!("a label with text must emit one: {svg}"));
-        let y: i32 = text_line
-            .split(" y=\"")
-            .nth(1)
-            .and_then(|rest| rest.split('"').next())
-            .and_then(|value| value.parse().ok())
-            .unwrap_or_else(|| panic!("no y on: {text_line}"));
+        let y: i32 = crate::widget::svg::text_top_of(text_line)
+            .unwrap_or_else(|| panic!("no readable origin on: {text_line}"));
 
         // Centred means the line box sits in the middle, so its top is roughly half the
         // difference between the cell and the line. It must not be pinned to the top edge.

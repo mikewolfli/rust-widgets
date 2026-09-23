@@ -10,6 +10,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::dimensions;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// A single item in a menu.
@@ -385,6 +386,45 @@ impl Menu {
     fn separator_height() -> f32 {
         6.0
     }
+
+    /// The box the check/radio indicator occupies at a row's leading edge.
+    ///
+    /// # Why the indicator is a box and not an `8.0` literal
+    ///
+    /// The check column, the label column and the two trailing columns used to be four
+    /// independent literals in `draw` (`x + 8`, `x + 28`, `right - 8`, `right - 4`), which is
+    /// the exact shape BLUE22 §B.8 lists for this control: with literals, an indicator or an
+    /// arrow that changes size does not *push* its neighbour, it overlaps it. Qt states the
+    /// relation directly in `MenuItem.qml:25-28` —
+    /// `leftPadding: padding + (checkable ? indicator.width + spacing : 0)` — so the label's
+    /// box is whatever the indicator leaves, and the shortcut's box is whatever the submenu
+    /// arrow leaves.
+    fn indicator_box(&self, row: Rect) -> Rect {
+        let size = dimensions::CHECKBOX_BOX.min(row.width).min(row.height);
+        Rect::new(
+            row.x + dimensions::MENU_ROW_PADDING_H as i32,
+            row.y + (row.height as i32 - size as i32) / 2,
+            size,
+            size,
+        )
+    }
+
+    /// The box a row's label may occupy: the row's interior after the indicator column.
+    ///
+    /// Derived from [`Self::indicator_box`], so a wider indicator narrows the label rather
+    /// than letting the two overlap. The column is reserved for **every** row, checkable or
+    /// not, because a menu whose labels shift sideways depending on whether a *sibling* has a
+    /// tick is the classic menu misalignment.
+    fn label_box(&self, row: Rect, indicator: Rect) -> Rect {
+        let left = indicator.x + indicator.width as i32 + dimensions::INDICATOR_TEXT_SPACING as i32;
+        let right = self.trailing_column_x(row);
+        Rect::new(left, row.y, right.saturating_sub(left).max(0) as u32, row.height)
+    }
+
+    /// The x where the trailing columns (shortcut, submenu arrow) begin.
+    fn trailing_column_x(&self, row: Rect) -> i32 {
+        row.x + row.width as i32 - dimensions::MENU_ROW_TRAILING_WIDTH as i32
+    }
     fn _item_rect(&self, index: usize, base_y: f32) -> Rect {
         let rect = self.geometry();
         let mut y = base_y;
@@ -734,45 +774,68 @@ impl Draw for Menu {
             } else {
                 ink
             };
+            // The row every text run and indicator below is placed in, and the two boxes they
+            // are centred in. Deriving all three here means the check column, the label column
+            // and the shortcut column are readings of one row rather than four literals, and
+            // the glyph origins come from `text_line` rather than from `y + height / 2`.
+            //
+            // The latter was the visible defect: `draw_text`'s origin is the glyph box's
+            // **top** edge, so `y + item_height() / 2` put that edge on the row's middle line
+            // and drew every entry label, tick, shortcut and arrow half a line low — the same
+            // error the heading directly above already documented and avoided.
+            let row = Rect::new(rect.x, y as i32, rect.width, Self::item_height() as u32);
+            let indicator = self.indicator_box(row);
+            let label = self.label_box(row, indicator);
             if item.is_checkable() {
                 let check_sym = if item.is_checked() { "✓" } else { " " };
-                context.draw_text(
-                    Point::from_f32(rect.x as f32 + 8.0, y + Self::item_height() / 2.0),
+                context.draw_text_fitted(
+                    context.text_line(indicator, &Font::default()),
                     check_sym,
                     &Font::default(),
                     fg,
-                    HorizontalAlignment::Left,
+                    HorizontalAlignment::Center,
                 );
             }
-            context.draw_text(
-                Point::from_f32(rect.x as f32 + 28.0, y + Self::item_height() / 2.0),
+            context.draw_text_fitted(
+                context.text_line(label, &Font::default()),
                 item.text(),
                 &Font::default(),
                 fg,
                 HorizontalAlignment::Left,
             );
             if !item.shortcut().is_empty() {
-                context.draw_text(
-                    Point::new(
-                        rect.x + rect.width as i32 - 8,
-                        (y + Self::item_height() / 2.0) as i32,
-                    ),
+                // One line box for the shortcut and the arrow: they occupy one trailing column,
+                // so they cannot disagree about where that column's midline is.
+                let trailing = Rect::new(
+                    self.trailing_column_x(row),
+                    row.y,
+                    dimensions::MENU_ROW_TRAILING_WIDTH,
+                    row.height,
+                );
+                context.draw_text_fitted(
+                    context.text_line(trailing, &Font::default()),
                     item.shortcut(),
                     &Font::default(),
                     fg,
-                    HorizontalAlignment::Left,
+                    HorizontalAlignment::Right,
                 );
             }
             if item.has_submenu() {
-                context.draw_text(
-                    Point::new(
-                        rect.x + rect.width as i32 - 4,
-                        (y + Self::item_height() / 2.0) as i32,
-                    ),
+                // Derived from the label box's own right edge, so a longer label shortens the
+                // room the arrow has instead of the two being placed from opposite ends of the
+                // row and colliding in the middle.
+                let arrow_box = Rect::new(
+                    label.x + label.width as i32,
+                    row.y,
+                    (row.x + row.width as i32 - (label.x + label.width as i32)).max(0) as u32,
+                    row.height,
+                );
+                context.draw_text_fitted(
+                    context.text_line(arrow_box, &Font::default()),
                     "▶",
                     &Font::default(),
                     fg,
-                    HorizontalAlignment::Left,
+                    HorizontalAlignment::Center,
                 );
             }
             y += Self::item_height();
@@ -783,6 +846,95 @@ impl Draw for Menu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A menu row's label is centred on its own line box, not offset by half a line.
+    ///
+    /// `draw_text`'s origin is the glyph box's **top** edge, so the previous
+    /// `y + item_height() / 2` origin put that edge on the row's middle line and drew every
+    /// entry half a line low — the same mistake the heading above already avoids. Measured
+    /// through the rendered SVG so the assertion is about what a person sees.
+    #[test]
+    fn a_menu_row_is_centred_on_its_own_line_box() {
+        let mut menu = Menu::new("File", Rect::new(0, 0, 200, 120));
+        menu.add_action("Open");
+        menu.add_action("Save");
+        // A menu is a popup and is born hidden, so its rows are only drawn once opened.
+        menu.open_at(Point::new(0, 0), Rect::new(0, 0, 1000, 800));
+        let svg = crate::widget::svg::render_to_svg(&mut menu);
+
+        // The popup starts below the 20 px heading and 2 px into the body, so the first row is
+        // at y = 22 and is 22 px tall. A 14 px line box centred in it starts at 22 + (22-14)/2.
+        let row_top = Menu::heading_height() as i32 + 2;
+        let line_h = {
+            let mut backend =
+                crate::render::SvgPaintBackend::new(crate::core::Size::new(200, 120));
+            crate::render::RenderContext::new(&mut backend)
+                .measure_text("M", &crate::core::Font::default())
+                .height as i32
+        };
+        let expected_y = row_top + (Menu::item_height() as i32 - line_h) / 2;
+        let label_y = svg
+            .lines()
+            .find(|line| line.contains(">Open</text>"))
+            .map(|line| {
+                let at = line.find("y=\"").expect("y present") + 3;
+                let end = line[at..].find('"').expect("closed") + at;
+                line[at..end].parse::<i32>().expect("numeric")
+            })
+            .expect("the label was rendered");
+        assert_eq!(label_y, expected_y, "the label belongs on its row's line box");
+        assert_ne!(
+            label_y,
+            row_top + Menu::item_height() as i32 / 2,
+            "the row's middle is not a glyph-box top edge"
+        );
+    }
+
+    /// The label's column is whatever the indicator and the trailing column leave.
+    ///
+    /// BLUE22 §B.8 lists this control for exactly this: the check column, the label column and
+    /// the two trailing columns were four independent literals (`x + 8`, `x + 28`, `right - 8`,
+    /// `right - 4`), so a wider indicator or a longer shortcut did not *push* its neighbour.
+    /// Qt states the relation in `MenuItem.qml:25-28`.
+    #[test]
+    fn a_row_reserves_its_indicator_and_trailing_columns() {
+        let menu = Menu::new("File", Rect::new(0, 0, 200, 120));
+        let row = Rect::new(0, 22, 200, Menu::item_height() as u32);
+        let indicator = menu.indicator_box(row);
+        let label = menu.label_box(row, indicator);
+
+        assert_eq!(
+            indicator.x - row.x,
+            dimensions::MENU_ROW_PADDING_H as i32,
+            "the indicator uses the row's own padding"
+        );
+        assert_eq!(
+            label.x,
+            indicator.x + indicator.width as i32 + dimensions::INDICATOR_TEXT_SPACING as i32,
+            "the label's column is derived from the indicator's box"
+        );
+        assert_eq!(
+            label.x + label.width as i32,
+            row.x + row.width as i32 - dimensions::MENU_ROW_TRAILING_WIDTH as i32,
+            "the label yields to the shortcut/arrow column"
+        );
+    }
+
+    /// A wider indicator narrows the label rather than overlapping it (the §B.9 property).
+    #[test]
+    fn a_wider_indicator_pushes_the_label_rather_than_overlapping_it() {
+        let menu = Menu::new("File", Rect::new(0, 0, 200, 120));
+        let short_row = Rect::new(0, 0, 200, dimensions::CHECKBOX_BOX);
+        let tall_row = Rect::new(0, 0, 200, dimensions::CHECKBOX_BOX * 2);
+        let short = menu.label_box(short_row, menu.indicator_box(short_row));
+        let tall = menu.label_box(tall_row, menu.indicator_box(tall_row));
+        assert_eq!(
+            short.x, tall.x,
+            "the indicator column's width is fixed, so the label's start does not move"
+        );
+        assert!(tall.x + tall.width as i32 <= tall_row.x + tall_row.width as i32);
+        assert!(short.x > short_row.x, "the label never starts at the row's own edge");
+    }
 
     #[test]
     fn menu_item_state_accessors_handle_valid_and_oob_indices() {

@@ -731,6 +731,60 @@ pub mod dimensions {
     /// A split button's height: 28, the same compact row as [`BREADCRUMB_HEIGHT`].
     pub const SPLIT_BUTTON_HEIGHT: u32 = 28;
 
+    /// The trailing arrow column's width: 22.
+    ///
+    /// # Why this is a constant and not derived from the glyph
+    ///
+    /// BLUE22 §B.9 asks a sub-part's box to be derived from its sibling, and this is the one
+    /// place in `split_button` where the derivation is **the constant itself**: the column is
+    /// the arrow's own width, so the trigger's width is whatever the column leaves. The two
+    /// boxes therefore tile the band — a wider column *pushes* the trigger narrower instead of
+    /// overlapping it — which is the property that matters. Deriving the number from the 'v'
+    /// glyph's advance instead would tie the column to one character's metric in one font, and
+    /// a 22 px column holding a 8 px glyph is deliberately roomier than the glyph (a 8 px target
+    /// is not a target).
+    ///
+    /// It is a named constant rather than the field initialiser it used to be so the hit test,
+    /// the separator line and the band derivation all read one number (rule #101).
+    pub const SPLIT_ARROW_COLUMN_WIDTH: u32 = 22;
+
+    /// Horizontal padding of a split button's label and a menu row's label: 8.
+    ///
+    /// Qt Basic's `Button.qml` uses `padding: 6` on a compact control and `MenuItem.qml` uses
+    /// `padding: 6` with a `leftPadding` that adds the indicator. 8 is the crate's existing
+    /// value for both, kept as a name so the label and the menu rows cannot drift apart — they
+    /// were two independent `x + 8` literals.
+    pub const SPLIT_BUTTON_PADDING_H: u32 = 8;
+
+    /// A menu row's leading inset: 8, the same compact row padding Qt's `MenuItem.qml` uses.
+    pub const MENU_ROW_PADDING_H: u32 = 8;
+
+    /// The width a menu row reserves for its shortcut and its submenu arrow: 28.
+    ///
+    /// One number for both trailing affordances, because they are drawn in one column area: a
+    /// row shows at most one of them at a time (a submenu entry's shortcut is not useful), so
+    /// two separate reserves would only mean two numbers to keep in step. It is a constant so
+    /// the label's box and the arrow's origin read the same value (rule #101).
+    pub const MENU_ROW_TRAILING_WIDTH: u32 = 28;
+
+    /// A menu row's height: 22 (one 14 px line plus 4 px of air above and below).
+    pub const MENU_ROW_HEIGHT: u32 = 22;
+
+    /// A status bar's horizontal padding: 6.
+    ///
+    /// The distance from the strip's own edge to its first message, and the distance the size
+    /// grip keeps from the strip's corner. One number for both, because they are the same fact:
+    /// how far this control's content sits from its own edge. The grip's box and the message's
+    /// inset were previously two unrelated literals (`- 14` and `+ 6`/`+ 12`), so the room
+    /// reserved for the grip and the room it used could not be kept in agreement.
+    pub const STATUS_BAR_PADDING_H: u32 = 6;
+
+    /// A status bar's size grip: 12 x 12, the classic three-diagonal resize affordance.
+    ///
+    /// Also the answer to "how far from the corner does the grip sit", because the reserve the
+    /// permanent message leaves is derived from this box.
+    pub const STATUS_GRIP_SIZE: u32 = 12;
+
     /// A snackbar's height: 48 (Material's single-line snackbar).
     pub const SNACKBAR_HEIGHT: u32 = 48;
 

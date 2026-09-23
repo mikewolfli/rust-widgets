@@ -91,10 +91,11 @@ def parse_colour(attrs: str, key: str) -> tuple[int, int, int, float] | None:
 def element_contains(tag: str, x: float, y: float) -> bool:
     """Whether a point falls inside a `<rect>`, the only shape that paints a text backdrop.
 
-    The point passed in is the text element's `(x, y)`, which the backend emits as the
-    glyph box's *top-left* (it pairs the value with `dominant-baseline="text-before-edge"`).
-    That is the same edge the rasteriser blits from, so asking "which fill is under the
-    origin" is asking about the surface the glyph actually sits on.
+    The point passed in is the text element's `(x, y)`. The backend emits a **baseline**
+    (`origin.y + ascent`) and no `dominant-baseline` keyword, while the *trigger* — the edge
+    a glyph is blitted from — is the glyph box's top edge. The caller converts between the
+    two (`baseline_y - ascent`); this function only answers "is that point inside the rect".
+    Asking about the box's top edge is asking about the surface the glyph sits on.
     """
     if not tag.startswith("<rect"):
         return False
