@@ -396,10 +396,14 @@ impl Draw for TimelineWidget {
             if let Some(item) = self.items.get(index) {
                 // The label is fitted to the label column rather than spilling into the track:
                 // the old origin was the raw row midpoint, which put the glyph box's top edge
-                // on the middle line and let a long label run under its own bar.
+                // on the middle line and let a long label run under its own bar. Fitting is
+                // only the horizontal half — `draw_text_fitted` leaves `y` at the band's top
+                // — so the row's own line box is taken first; otherwise replacing the midpoint
+                // with the raw `row_height` band would move the same error from "half a line
+                // low" to "pinned to the row's top edge". `draw_text_line` does both.
                 let label_band =
                     Rect::new(rect.x, y, dimensions::CHART_LABEL_GUTTER as u32, self.row_height);
-                context.draw_text_fitted(
+                context.draw_text_line(
                     label_band,
                     &item.label,
                     &Font::default(),

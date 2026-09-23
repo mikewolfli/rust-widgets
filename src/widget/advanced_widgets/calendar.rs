@@ -599,53 +599,65 @@ impl Draw for Calendar {
                 border_color,
             );
             // ◄ button
-            let btn_w = 30i32;
+            //
+            // Every run in this bar is positioned by the shared line box, so the two arrows
+            // and the title share one centre line instead of each carrying its own literal
+            // `+ 7` offset. The literal was correct only for a 14 px font in a 30 px bar; a
+            // 13 px bold title next to it landed a pixel off the arrows' baseline, which is
+            // the kind of drift that a per-run constant always eventually produces.
             let arrow_color = style.text_color.unwrap_or(if enabled {
                 Color::rgb(60, 60, 60)
             } else {
                 dim_color
             });
+            let arrow_font = Font::default();
+            let arrow_line = context.text_line(nav, &arrow_font);
+            // The arrows' own box width, used to reserve the span the title may use.
+            let btn_w = 30i32;
             context.draw_text(
-                Point::new(nav.x + 8, nav.y + 7),
+                Point::new(nav.x + 8, arrow_line.y),
                 "◀",
-                &Font::default(),
+                &arrow_font,
                 arrow_color,
                 HorizontalAlignment::Left,
             );
             // Month/year title: fitted into the band between the two arrow buttons.
             //
-            // A centred string at the navigation bar's midpoint is bounded by nothing: at 13 px
-            // bold the census's 1-em-per-character model advances "September 2026" 182 px from
-            // x = 120 and runs 62 px past the calendar's right edge (x = 302 in a 240 px
-            // control). Only the raster backends' clipping hid it. The box is the span the
-            // arrows leave free, inset by a further 8 px — the same inset the ◀ glyph is drawn
-            // at — so a longer month name is truncated rather than allowed to overlap a button.
+            // A centred string at the navigation bar's midpoint is bounded by nothing, and a
+            // month name is data the user can change, so the box is the span the arrows leave
+            // free — inset by the same 8 px the ◀ glyph is drawn at — and a longer name is
+            // truncated rather than allowed to overlap a button. The renderer charges 0.6 em per
+            // narrow cluster (`estimate_cluster_advance`), so "September 2026" advances about
+            // 109 px at 13 px bold and fits the ~160 px span at the census geometry; the box is
+            // what makes that a *guarantee* rather than a coincidence of the current month.
             //
             // The span is derived from `rect`'s right edge rather than from `nav.width`:
             // `nav.right() - (x + span)` is `rect.x` once the extent is measured from a
             // non-zero origin, so a calendar placed at x > 0 would still overrun by `rect.x`.
             let arrow_inset = 8 + btn_w;
             let left_edge = nav.x + arrow_inset;
+            let title_font = Font::bold("Arial", 13.0);
+            let title_line = context.text_line(nav, &title_font);
             let title_bounds = Rect::new(
                 left_edge,
-                nav.y + 7,
+                title_line.y,
                 (band_right - left_edge).max(0) as u32,
-                Self::NAV_H.saturating_sub(7),
+                title_line.height,
             );
             let title =
                 format!("{} {}", self.display_month.format("%B"), self.display_month.year());
             context.draw_text_fitted(
                 title_bounds,
                 &title,
-                &Font::bold("Arial", 13.0),
+                &title_font,
                 text_color,
                 HorizontalAlignment::Center,
             );
             // ► button
             context.draw_text(
-                Point::new(nav.x + nav.width as i32 - 8 - btn_w, nav.y + 7),
+                Point::new(nav.x + nav.width as i32 - 8 - btn_w, arrow_line.y),
                 "▶",
-                &Font::default(),
+                &arrow_font,
                 arrow_color,
                 HorizontalAlignment::Left,
             );
@@ -688,32 +700,29 @@ impl Draw for Calendar {
                 } else {
                     text_color
                 };
-                // Each label is fitted into the span from its own cell's left edge to the
-                // grid's right edge — deliberately not into the cell alone.
+                // Each weekday label is **centred in its own column**, so the header sits on
+                // the same seven-column grid the day cells do.
                 //
-                // The column is 34 px wide (`hdr.width / 7`, which integer division already
-                // rounds down) and a three-letter label needs 36 under the census's 1-em-per-
-                // character model, so a strictly per-cell box does not fit "Mon" at all:
-                // `draw_text_fitted` would truncate *every* column to a lone "…", replacing
-                // seven readable names with seven identical dots. The binding defect is that the
-                // labels were unbounded, not that they must be confined to one column, so the
-                // box spans to the grid's right edge and a name too long for the room it has is
-                // still truncated rather than allowed to leave the calendar.
-                //
-                // The span also stops one pixel short of the edge, because that is where the
-                // next column's own glyphs begin and because a box ending exactly on the edge
-                // lets a fitted glyph reach it. Column 6 is the one this fixes: centred on the
-                // cell's midpoint, "Sun" started at x = 221 and its 33 px advance ended at 254,
-                // 14 px outside a 240 px control.
-                let span_right = hdr.x + cell_w * 7 - 1;
-                let span_w = (span_right - cell_x).max(0) as u32;
-                let cell_bounds = Rect::new(cell_x, hdr.y + 6, span_w, 11);
+                // This used to span from the cell's left edge to the grid's *right* edge and
+                // left-align inside that, on the stated premise that "a three-letter label needs
+                // 36 under the census's 1-em-per-character model" and so would be truncated to a
+                // lone ellipsis in a 34 px column. That premise is not what the renderer does:
+                // `estimate_cluster_advance` charges 0.6 em per narrow cluster, so "Mon"
+                // advances 20 px, not 36, and fits a 34 px cell with room to spare. The
+                // workaround was therefore unnecessary — and it *was* the defect, because
+                // left-aligning in a span that reaches the grid's right edge pushes the label
+                // into the next column: "Sun" rendered at the far right of a box 33 px wider
+                // than its column, so the seven headings visibly disagreed with the seven
+                // columns of day numbers below them. Bounding each label to its own cell fixes
+                // the reading and keeps the truncation guard where it belongs, on a genuinely
+                // narrow column.
+                let label_bounds = Rect::new(cell_x, hdr.y + 6, cell_w as u32, 11);
                 context.draw_text_fitted(
-                    cell_bounds,
+                    label_bounds,
                     name,
                     &Font::bold("Arial", 11.0),
                     c,
-                    HorizontalAlignment::Left,
+                    HorizontalAlignment::Center,
                 );
             }
         }
@@ -854,22 +863,29 @@ impl Draw for Calendar {
                     } else {
                         text_color
                     };
-                    // Offset by the original 3 px and fitted to what remains of the cell. A
-                    // two-digit day at 11 px advances 22 px, which is inside a 34 px cell, but
-                    // the label was the one run in this grid with no bound at all — and it is
-                    // bounded by the cell, not by the calendar, so a narrower grid would have
-                    // let it cross into its neighbour.
+                    // The day number is **centred in its cell** on both axes, which is what a
+                    // calendar cell is for: Qt's `QCalendarWidget`, Flutter's
+                    // `CalendarDatePicker`, and the platform pickers all put the number in the
+                    // middle of the cell, because the cell's own tint (selection, "today") is
+                    // the thing being pointed at and the number labels it. The previous form
+                    // left-aligned the run at `cx + 3` inside a `cy + 3` line box, so a one-digit
+                    // day sat flush against the cell's left rule with ten pixels of dead space
+                    // to its right — the digits and the grid visibly disagreed about which cell
+                    // a number belonged to, which is how it was reported.
+                    //
+                    // The box is the cell, not the today-highlight inset: the highlight is
+                    // drawn two pixels short of the cell's own right/bottom rule so it cannot
+                    // overhang into its neighbour, but the *number* belongs to the whole cell
+                    // and must stay centred when that highlight is absent. Centring inside the
+                    // tinted band instead would have shifted every non-today number by a pixel.
+                    let day_font = Font::new("Arial", 11.0, false, false);
+                    let day_line = context.text_line(cell_rect, &day_font);
                     context.draw_text_fitted(
-                        Rect::new(
-                            cx + 3,
-                            cy + 3,
-                            today_band.width.saturating_sub(3),
-                            (inner_y - (cy + 3)).max(0) as u32,
-                        ),
+                        day_line,
                         &format!("{day_num}"),
-                        &Font::new("Arial", 11.0, false, false),
+                        &day_font,
                         day_color,
-                        HorizontalAlignment::Left,
+                        HorizontalAlignment::Center,
                     );
                 }
             }
@@ -885,7 +901,7 @@ impl Draw for Calendar {
 #[cfg(all(test, full_widgets))]
 mod tests {
     use super::*;
-    use crate::core::Rect;
+    use crate::core::{Rect, Size};
     use chrono::NaiveDate;
 
     #[test]
@@ -1066,5 +1082,105 @@ mod tests {
         let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
         let svg = crate::widget::svg::render_to_svg(&mut cal);
         assert!(svg.starts_with("<svg"));
+    }
+
+    /// Parses `<text x y>content</text>` elements out of a rendered SVG.
+    fn texts(svg: &str) -> Vec<(i32, i32, String)> {
+        let mut out = Vec::new();
+        for line in svg.lines() {
+            let Some(start) = line.find("<text ") else { continue };
+            let Some(gt) = line[start..].find('>') else { continue };
+            let head = &line[start..start + gt];
+            let body_end = line.rfind("</text>").unwrap_or(line.len());
+            let body = line[start + gt + 1..body_end].to_string();
+            let attr = |name: &str| -> i32 {
+                let key = format!("{name}=\"");
+                let at = head.find(&key).expect("attribute present") + key.len();
+                let end = head[at..].find('"').expect("closed") + at;
+                head[at..end].parse().expect("numeric")
+            };
+            out.push((attr("x"), attr("y"), body));
+        }
+        out
+    }
+
+    /// A day number sits in the **middle of its cell**, on both axes.
+    ///
+    /// The cell's own tint (selection, "today") is the thing being pointed at and the number
+    /// labels it; Qt's `QCalendarWidget`, Flutter's `CalendarDatePicker` and the platform
+    /// pickers all centre it. The previous form left-aligned the run at `cx + 3` inside a
+    /// `cy + 3` line box, so a one-digit day hugged the cell's left rule and the digits
+    /// visibly disagreed with the grid about which cell they labelled.
+    #[test]
+    fn a_day_number_is_centred_in_its_cell() {
+        // A month whose first day makes the arithmetic readable, and a geometry where the
+        // cell extents divide exactly (240 / 7 and (120 - 54) / 6 are both whole here).
+        let rect = Rect::new(0, 0, 240, 120);
+        let mut cal = Calendar::new(rect);
+        let grid = cal.grid_rect();
+        let cell_w = (grid.width / 7).max(1) as i32;
+        let cell_h = (grid.height / 6).max(1) as i32;
+        let blanks = cal.leading_blank_count() as i32;
+        let svg = crate::widget::svg::render_to_svg(&mut cal);
+        let rendered = texts(&svg);
+
+        let font = Font::new("Arial", 11.0, false, false);
+        let mut backend = crate::render::SvgPaintBackend::new(Size::new(240, 120));
+        let context = RenderContext::new(&mut backend);
+        let line_h = context.measure_text("M", &font).height as i32;
+
+        // Check every day number the grid holds against its own cell's centre.
+        let mut checked = 0;
+        for index in 0..42 {
+            let day_num = index - blanks + 1;
+            if !(1..=28).contains(&day_num) {
+                continue;
+            }
+            let row = index / 7;
+            let col = index % 7;
+            let cx = grid.x + col * cell_w;
+            let cy = grid.y + row * cell_h;
+            let label = day_num.to_string();
+            let width =
+                RenderContext::new(&mut crate::render::SvgPaintBackend::new(Size::new(1, 1)))
+                    .measure_text(&label, &font)
+                    .width as i32;
+            let expected_x = cx + (cell_w - width) / 2;
+            let expected_y = cy + (cell_h - line_h) / 2;
+            let found = rendered
+                .iter()
+                .find(|(_, _, body)| body == &label)
+                .unwrap_or_else(|| panic!("day {day_num} was not rendered"));
+            assert_eq!(found.0, expected_x, "day {day_num} x must be the cell's horizontal centre");
+            assert_eq!(found.1, expected_y, "day {day_num} y must be the cell's vertical centre");
+            checked += 1;
+        }
+        assert!(checked >= 28, "the fixture must have measured a whole month, got {checked}");
+    }
+
+    /// A weekday heading sits in the middle of the same column its days do.
+    #[test]
+    fn a_weekday_heading_is_centred_in_its_column() {
+        let rect = Rect::new(0, 0, 240, 120);
+        let mut cal = Calendar::new(rect);
+        let hdr = cal.day_header_rect();
+        let cell_w = (hdr.width / 7).max(1) as i32;
+        let svg = crate::widget::svg::render_to_svg(&mut cal);
+        let rendered = texts(&svg);
+
+        let font = Font::bold("Arial", 11.0);
+        let mut backend = crate::render::SvgPaintBackend::new(Size::new(240, 120));
+        let measure = RenderContext::new(&mut backend);
+        let names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+        for (i, name) in names.iter().enumerate() {
+            let cell_x = hdr.x + cell_w * i as i32;
+            let width = measure.measure_text(name, &font).width as i32;
+            let expected_x = cell_x + (cell_w - width) / 2;
+            let found = rendered
+                .iter()
+                .find(|(_, _, body)| body == name)
+                .unwrap_or_else(|| panic!("{name} was not rendered"));
+            assert_eq!(found.0, expected_x, "{name} must be centred in column {i}");
+        }
     }
 }

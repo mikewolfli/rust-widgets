@@ -3,7 +3,7 @@
 
 //! Button widget implementation.
 use crate::compat::{format, String, ToString};
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler, FocusReason};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -744,16 +744,38 @@ impl Draw for Button {
             // Vertically centred through the shared primitive, so the label sits in the
             // button's middle instead of having its glyph-box top edge on that middle line.
             let line = context.text_line(rect, font);
-            // The label is placed at the control's own horizontal padding rather than at a
-            // literal, so a themed padding and a wider font move the text together — the
-            // same derivation the intrinsic size uses (`ControlMetrics::implicit_size`).
-            let label_x = rect.x + dimensions::BUTTON_PADDING_H as i32;
-            context.draw_text(
-                Point { x: label_x, y: line.y },
+            // Horizontally centred in the button's own box, which is what a push button's
+            // label is: Qt Quick's `Button.qml` declares `contentItem` as an `AbstractButton`
+            // whose `Text` has `horizontalAlignment: Text.AlignHCenter`, and Flutter M3's
+            // `TextButton`/`ElevatedButton` centre their child the same way. The label used to
+            // start at `rect.x + BUTTON_PADDING_H`, i.e. flush to the left inside a pill many
+            // times its own width — the label read as a left-aligned caption rather than as
+            // the button's own name, and `snapshots/svg/button.svg` showed it at x = 12 in a
+            // 240-wide control while `toggle_button` and `tool_button` centred theirs.
+            //
+            // `BUTTON_PADDING_H` is still the right constant here, but as the **minimum**
+            // inset from either edge rather than as a left anchor: it is what keeps a label
+            // that nearly fills the button from touching the border, and it is the same
+            // number `size_hint` adds to the content when deriving the intrinsic width, so the
+            // drawn label and the reported size cannot disagree. Centring inside the padded
+            // box, rather than inside the raw rectangle, is what gives a wide button the room
+            // the constant promises.
+            let content = ControlMetrics::content_box(
+                rect,
+                EdgeOffsets {
+                    left: dimensions::BUTTON_PADDING_H,
+                    right: dimensions::BUTTON_PADDING_H,
+                    top: 0,
+                    bottom: 0,
+                },
+            );
+            let label_bounds = Rect::new(content.x, line.y, content.width, line.height);
+            context.draw_text_fitted(
+                label_bounds,
                 &self.text,
                 font,
                 text_color,
-                HorizontalAlignment::Left,
+                HorizontalAlignment::Center,
             );
         }
 
@@ -1689,6 +1711,59 @@ mod tests {
             rest_svg, hover_svg,
             "a completed hover transition must change the rendered fill"
         );
+    }
+
+    /// A push button's label is centred in its own box, not hung off its left padding.
+    ///
+    /// Qt Quick centres a button's `contentItem` and Flutter M3 centres the `TextButton`
+    /// child, so a label flush to the left edge is wrong however wide the button is — and at
+    /// the census rectangle the button is 240 px wide while a 14 px "Sample" is 50 px, which
+    /// is what made `snapshots/svg/button.svg` read as a left-aligned caption.
+    #[test]
+    fn the_label_is_centred_in_the_button() {
+        let rect = Rect::new(0, 0, 240, 40);
+        let mut b = Button::new("Sample".to_string(), rect);
+        let svg = crate::widget::svg::render_to_svg(&mut b);
+        let x = text_x(&svg);
+        let font = Font::default();
+        let mut backend = crate::render::SvgPaintBackend::new(Size::new(240, 40));
+        let width = RenderContext::new(&mut backend).measure_text("Sample", &font).width as i32;
+        let content = ControlMetrics::content_box(
+            rect,
+            EdgeOffsets {
+                left: dimensions::BUTTON_PADDING_H,
+                right: dimensions::BUTTON_PADDING_H,
+                top: 0,
+                bottom: 0,
+            },
+        );
+        assert_eq!(
+            x,
+            content.x + (content.width as i32 - width) / 2,
+            "the label must sit in the middle of the button's padded box"
+        );
+        assert_ne!(x, rect.x + dimensions::BUTTON_PADDING_H as i32, "not flush to the padding");
+    }
+
+    /// A narrow button still honours the minimum padding rather than touching its border.
+    #[test]
+    fn a_label_wider_than_the_padding_keeps_the_padding() {
+        let rect = Rect::new(0, 0, 90, 40);
+        let mut b = Button::new("A very wide label".to_string(), rect);
+        let svg = crate::widget::svg::render_to_svg(&mut b);
+        let x = text_x(&svg);
+        assert!(
+            x >= rect.x + dimensions::BUTTON_PADDING_H as i32 - 1,
+            "a fitted label must not start left of the button's own padding, got {x}"
+        );
+    }
+
+    /// The `x` of the first `<text>` element in a rendered SVG.
+    fn text_x(svg: &str) -> i32 {
+        let start = svg.find("<text").expect("the button rendered a label");
+        let attr = svg[start..].find("x=\"").expect("the element carries an x") + start + 3;
+        let end = svg[attr..].find('"').expect("the attribute is closed") + attr;
+        svg[attr..end].parse().expect("x is an integer")
     }
 
     #[test]

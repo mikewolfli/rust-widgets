@@ -246,6 +246,79 @@ empty text element** — both classes are now at zero, down from three and six.
 
 ---
 
+### 9. Both backends now resolve `HorizontalAlignment` the same way
+
+`RenderCommand::DrawText` carries a `HorizontalAlignment`, and `RenderContext::draw_text`'s
+contract is that `origin` is that alignment's **anchor**. The software rasteriser implemented it
+(shifting the pen before the first glyph); the **SVG backend dropped the field**. Every centred or
+right-aligned label in the crate was therefore left-aligned in SVG output while appearing centred
+on the raster — a wizard's `Cancel`/`Back`/`Finish` all started at their button's left edge in the
+committed snapshots.
+
+The fix resolves the alignment in the backend, using the same measurement as the rasteriser
+(`estimate_cluster_advance`), so both compute one absolute `x` from one rule. A `text-anchor`
+attribute was rejected: it would move the resolution into SVG's layout engine while the raster keeps
+resolving in Rust, i.e. two implementations of one rule.
+
+### 10. A composite is assembled by a layout, and the layout's own defects surfaced
+
+`src/widget/composite.rs` adds the declare → assemble → apply chain the code path was missing while
+the JSON path had it all: `CompositeBuilder` creates children through the registry, **reads each
+child's own `hints()`**, hands them to `Layout::arrange`, and applies the rectangles that come back.
+It contains no layout algorithm — no direction, no wrap rule, no alignment. `ActionRow` is the
+§B.7 `dialog_with_actions` template on top of it, whose right-alignment is expressed as
+`justify_content = FlexEnd` rather than as arithmetic.
+
+Routing real composites through `arrange` exposed **three defects in `FlexLayout`** that are
+invisible on paper and affect every layout that uses the channel:
+
+- the leftover room was dumped on the last child, so `justify_content` could never see any —
+  `FlexEnd` was unreachable and a fixed-width row came back flush left;
+- the shrink branch applied each child's `min_size` and then a "cap at available" pass that cut
+  straight through it, down to zero — two 100 px buttons in a 120 px band came back 57 px each;
+- `consumed` added each child's leading margin on top of a size that already included it, so every
+  gap was counted twice and a 240 px band's 20 px of spare room read as 8.
+
+A fourth, narrower one: a child's floor is expressed in its own box while the solver works in outer
+sizes, so a 64 px floor with a 6 px margin was laid out at an outer 64 and drawn 58 wide. The floor
+now carries the margins, and the floor is honoured by **overhanging** rather than by shrinking —
+CSS flexbox's `min-width: auto` and Qt's `implicitMinimumWidth` make the same choice, because a
+button narrower than its label is a button whose label elides.
+
+`min` and `fill` are separate declarations and both now survive the hand-off: `fill` is a
+zero-weight request to absorb the leftover, so it is translated into a grow weight rather than
+being indistinguishable from "no parameters at all".
+
+### 11. Eleven observable defects fixed, each with a test that fails when reverted
+
+Found by scanning for the *pattern* after the reported ones, not by fixing only what was reported:
+
+| # | Defect | Effect |
+|---|---|---|
+| 1 | SVG backend dropped `HorizontalAlignment` | every centred/right-aligned label, crate-wide |
+| 2 | `Button` treated `BUTTON_PADDING_H` as a left anchor | label not horizontally centred |
+| 3 | `Calendar` drew day numbers at the cell's top-left plus 3 px | numbers and grid visibly disagreed |
+| 4 | `Calendar`'s weekday headings spanned to the grid's right edge | based on a false "1 em per character" premise; `Mon` is 20 px, not 36 |
+| 5 | `EmptyState`'s icon box overlapped its title by 28 px | caption painted across the glyph |
+| 6 | `Keyboard` key caps top-anchored (comment claimed otherwise) | 124 keys, each half a line high |
+| 7 | `Gantt`/`Timeline` row labels, same | every task name |
+| 8 | `draw_arc_segments` used a fixed 40 samples | zero-length lines; a 115 px arc collapsed to 3 distinct pixels |
+| 9–11 | the three `FlexLayout` defects above | every layout on the hint channel |
+
+### 12. `control.md` — every control's two snapshots, grouped and gated
+
+The repository root now carries a generated gallery: 188 controls in 17 families, each with its dark
+and light snapshot. It is produced by `tools/generate_control_index.py` from the registry and the
+source tree — a *view* of the snapshots, not a second copy of them — and `check_svg_snapshots.sh`
+gained a step that regenerates it and requires a byte-identical match.
+
+That step's first version was **vacuous**: it ran the generator (which rewrites `control.md` in
+place) and then compared, so a hand-edit was erased before the comparison and the gate passed.
+Injection proved it. It now preserves the committed copy first, and the injection fails as it
+should.
+
+---
+
 ## 2.6.0 (2026-09-22) — Every Label Sits Where It Belongs, and the Controls That Were Invisible Are Visible
 
 Backward compatible: no public signature was removed. The additions are one rendering primitive

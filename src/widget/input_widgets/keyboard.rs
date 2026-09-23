@@ -555,14 +555,22 @@ impl Draw for Keyboard {
                     // rounded down to a **negative** x for a label wider than its key — the
                     // 36 px Shift key drew "Shift" at x = -3 — and the vertical term only
                     // subtracted half the line height, so the glyph box sat below centre.
-                    // `draw_text_fitted` with `Center` derives the origin from the fitted
-                    // string *inside* the key, so neither can leave it.
+                    //
+                    // `draw_text_fitted` fixes the horizontal half but **not** the vertical
+                    // one: its contract is *fit horizontally, align horizontally*, and its
+                    // origin is `bounds.y` unchanged (see `RenderContext::draw_text_fitted`).
+                    // Using it for a key cap therefore still pinned every cap to the key's top
+                    // edge and left the glyph box two pixels below where a centred one belongs
+                    // — the `keyboard.svg` keys drew their letters at `key_rect.y + 2` with no
+                    // share of the 30 px row's remaining height. `draw_text_line` is the entry
+                    // point that does both halves, and it is the one the doc-comment above
+                    // already promised.
                     let key_text = if key.key_code == 16 && self.shift {
                         shift_bg.contrast_color()
                     } else {
                         text_color
                     };
-                    context.draw_text_fitted(
+                    context.draw_text_line(
                         inner,
                         &label,
                         &default_font,

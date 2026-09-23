@@ -298,15 +298,15 @@ impl Draw for ProgressCircle {
             let start_angle = -std::f32::consts::FRAC_PI_2;
             let end_angle = start_angle + 2.0 * std::f32::consts::PI * self.value;
 
-            // A non-zero value is not yet a non-degenerate arc. `draw_arc_segments` drops a sweep
-            // below 0.001 rad (`arc_helpers.rs`), but a value in `(0.001 / 2pi, ~0.02)` sits in a
-            // gap between two guards: the angle sum is still under that threshold, so
-            // `point_on_circle`'s `as i32` rounds every vertex of all 40 segments onto one pixel —
-            // `(radius * angle.cos()).round() as i32` stops moving — and the helper emits 40
-            // zero-length `<line>` elements. That is the same degenerate element this round removes
-            // from `progress_bar`: a stream full of drawing commands that draw nothing. The sweep is
-            // therefore resolved to whole pixels first, the way `progressbar.rs` floors its
-            // `filled_len`, and the arc is skipped when it rounds away entirely.
+            // A sweep too small to advance a pixel is skipped rather than emitted as a stream
+            // of zero-length lines. This guard used to be the only thing standing between a
+            // tiny `value` and 40 degenerate `<line>` elements, because the helper's vertex
+            // rounding collapsed every sample onto one pixel. `draw_arc_segments` now derives
+            // its sample count from the arc's own pixel length and drops any chord whose
+            // endpoints round together, so it is degenerate-safe on its own; the explicit
+            // check stays because "no arc at all" is a decision about *this* control's
+            // contract (a rounded-away sweep is nothing to draw), and stating it here keeps
+            // the intent readable without relying on a helper's internals.
             let sweep_px = (radius * (end_angle - start_angle)).round() as u32;
             if sweep_px > 0 {
                 let prog_color =

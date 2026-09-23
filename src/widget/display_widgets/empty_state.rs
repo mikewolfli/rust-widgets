@@ -234,11 +234,18 @@ impl Draw for EmptyState {
 
         let center_x = rect.x + rect.width as i32 / 2;
 
-        // Helper to draw text centered horizontally at a given Y baseline.
+        // Rows are addressed by the **top edge of their glyph box**, which is what the
+        // renderer's `origin.y` means (see `RenderContext::draw_text`). The original helper
+        // took a `y` and used it as the box's top while its own doc-comment called it "a given
+        // Y baseline", and the two conventions were then mixed in the same stack: the icon was
+        // passed `icon_y + icon_size` while the title was passed `icon_y + icon_size + gap`,
+        // i.e. 12 px below the icon's *bottom* under one reading and 28 px inside its 48 px box
+        // under the other. `snapshots/svg/empty_state.svg` showed the \"Sample\" caption painted
+        // across the mailbox glyph because of it. One convention, stated once, is the fix.
         let draw_centered =
-            |ctx: &mut RenderContext, y: i32, text: &str, font: &Font, color: Color| {
+            |ctx: &mut RenderContext, top_y: i32, text: &str, font: &Font, color: Color| {
                 let metrics = ctx.measure_text(text, font);
-                let origin = Point::new(center_x - (metrics.width as i32 / 2), y);
+                let origin = Point::new(center_x - (metrics.width as i32 / 2), top_y);
                 ctx.draw_text(origin, text, font, color, HorizontalAlignment::Left);
             };
 
@@ -253,21 +260,21 @@ impl Draw for EmptyState {
         let icon_size: i32 = 48;
         let title_font_size: i32 = 20;
         let message_font_size: i32 = 14;
-        // Row pitch, and the count that follows from it. The comment above the block records
-        // why the pitch is not the capacity: a line's *glyph box* is a full `line_height`
-        // tall, only four of the fourteen rows are covered by the gap, and the first line
-        // starts at its top edge with no leading above it. So the count has to be derived
-        // from the line height and the layout's fixed offsets, not from the pitch — the old
-        // `height / line_step` read a 34 px band as "two lines fit" and drew the second line
-        // four pixels below the control's bottom edge.
-        //
-        // `message_top_offset` is the distance from the box's top edge to the first line's
-        // top edge: the fixed header (icon + gaps + title) divided the same way, plus the six
-        // pixels between the title and the message.
+        // One line box, measured through the renderer rather than assumed from the font
+        // size, is the unit every row below is placed with. A row's *pitch* is that box
+        // plus the inter-row gap; the header's contribution to the stack is the icon box
+        // and the title box in sequence, so the message's rows begin below both.
+        let title_font = Font::with_weight("Sans", title_font_size as f32, 600, false);
+        let icon_font = Font::with_weight("Sans", icon_size as f32, 400, false);
         let message_font = Font::with_weight("Sans", message_font_size as f32, 400, false);
+        let icon_height = context.measure_text("M", &icon_font).height.max(1) as i32;
+        let title_height = context.measure_text("M", &title_font).height.max(1) as i32;
         let line_height = context.measure_text("M", &message_font).height.max(1) as i32;
         let line_step = line_height + 4;
-        let message_top_offset = (icon_size + SECTION_GAP + title_font_size + 6).max(0);
+        // The message band is what is left of the box after the icon and the title have
+        // taken their rows and their two gaps — derived from the same three heights the
+        // draws below use, so the band and the rows cannot disagree.
+        let message_top_offset = icon_height + SECTION_GAP + title_height + 6;
         let message_band = (rect.height as i32 - message_top_offset).max(0);
         // `1 + (band - line_height) / step` is the number of whole lines that fit when the
         // first one consumes `line_height` and each subsequent one `line_step`.
@@ -275,9 +282,9 @@ impl Draw for EmptyState {
         let action_extra =
             if self.action_text.is_empty() { 0 } else { ACTION_BUTTON_HEIGHT as i32 + SECTION_GAP };
         // The stack is measured from the band the message may use, so
-        // `icon_size + gap + title + 6 + the centred band` is exactly the control's height.
-        // A tall box therefore fills it, while a short one starts its first row inside the
-        // frame via the `max(rect.y)` floor below.
+        // `icon_height + gap + title_height + 6 + the centred band` is exactly the control's
+        // height. A tall box therefore fills it, while a short one starts its first row
+        // inside the frame via the `max(rect.y)` floor below.
         let stack_height = message_top_offset + message_band.max(line_height) + action_extra;
         // `(rect.height - stack_height) / 2` is negative for a short box, which pushes the
         // stack above the top edge; `max(rect.y)` keeps the first row inside instead.
@@ -285,13 +292,13 @@ impl Draw for EmptyState {
         // The icon is the palest ink on the surface; disabled fades it further.
         let icon_color =
             if is_enabled { ink.blend(&surface, 0.35) } else { ink.blend(&surface, 0.75) };
-        let icon_font = Font::with_weight("Sans", icon_size as f32, 400, false);
-        draw_centered(context, icon_y + icon_size, &self.icon, &icon_font, icon_color);
+        draw_centered(context, icon_y, &self.icon, &icon_font, icon_color);
 
         // ── Title ──
-        let title_y = icon_y + icon_size + SECTION_GAP;
+        // One gap below the icon's *box*, which is `icon_y + icon_height` — the same sum the
+        // stack height above was built from, so the drawn title and the reserved space agree.
+        let title_y = icon_y + icon_height + SECTION_GAP;
         let title_color = if is_enabled { ink } else { ink.blend(&surface, 0.65) };
-        let title_font = Font::with_weight("Sans", title_font_size as f32, 600, false);
         let title_metrics = context.measure_text(&self.title, &title_font);
         let title_origin = Point::new(center_x - (title_metrics.width as i32 / 2), title_y);
         context.draw_text(
@@ -303,7 +310,7 @@ impl Draw for EmptyState {
         );
 
         // ── Message ──
-        let message_y = title_y + title_font_size + 6;
+        let message_y = title_y + title_height + 6;
         // The message is the title's ink, one step closer to the surface.
         let message_color =
             if is_enabled { ink.blend(&surface, 0.25) } else { ink.blend(&surface, 0.7) };
@@ -435,6 +442,7 @@ fn wrap_text(context: &RenderContext, text: &str, font: &Font, max_width: usize)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::{Font, Size};
     use std::sync::{Arc, Mutex};
 
     #[test]
@@ -646,5 +654,119 @@ mod tests {
     fn empty_state_kind() {
         let es = EmptyState::new(Rect::new(0, 0, 200, 150));
         assert_eq!(es.kind(), WidgetKind::EmptyState);
+    }
+
+    /// Parses `<text x y>content</text>` elements out of a rendered SVG.
+    fn texts(svg: &str) -> Vec<(i32, i32, String)> {
+        let mut out = Vec::new();
+        for line in svg.lines() {
+            let Some(start) = line.find("<text ") else { continue };
+            let Some(gt) = line[start..].find('>') else { continue };
+            let head = &line[start..start + gt];
+            let body_end = line.rfind("</text>").unwrap_or(line.len());
+            let body = line[start + gt + 1..body_end].to_string();
+            let attr = |name: &str| -> i32 {
+                let key = format!("{name}=\"");
+                let at = head.find(&key).expect("attribute present") + key.len();
+                let end = head[at..].find('"').expect("closed") + at;
+                head[at..end].parse().expect("numeric")
+            };
+            out.push((attr("x"), attr("y"), body));
+        }
+        out
+    }
+
+    /// The stack's rows do not overlap: each begins at or below the previous row's bottom edge.
+    ///
+    /// The icon was passed a `y` that the helper treated as the glyph box's top while every
+    /// other row was positioned as though the same number were the box's bottom — so the
+    /// 48 px icon box covered y 48..96 and the title was drawn at y = 60, **28 px inside it**.
+    /// `snapshots/svg/empty_state.svg` showed the caption painted across the mailbox glyph.
+    #[test]
+    fn the_stack_rows_do_not_overlap() {
+        let mut es = EmptyState::new(Rect::new(0, 0, 240, 120));
+        let svg = crate::widget::svg::render_to_svg(&mut es);
+        let rendered = texts(&svg);
+        assert!(rendered.len() >= 3, "the fixture must render the icon, title and message");
+
+        // Each row's glyph box is `font.size()` tall, which is the renderer's measurement
+        // contract (`measure_text("M", font).height == font.size()`), and rows appear in the
+        // order they are drawn: icon, title, message lines.
+        let mut backend = crate::render::SvgPaintBackend::new(Size::new(240, 120));
+        let context = RenderContext::new(&mut backend);
+        let sizes: Vec<i32> = [48.0f32, 20.0, 14.0, 14.0]
+            .iter()
+            .map(|s| {
+                context.measure_text("M", &Font::with_weight("Sans", *s, 400, false)).height as i32
+            })
+            .collect();
+
+        for window in rendered.windows(2) {
+            let (_, top_a, text_a) = &window[0];
+            let (_, top_b, text_b) = &window[1];
+            // Match each row to its font by content, so a reordering cannot silently pass.
+            let height_of = |text: &str| -> i32 {
+                if text.chars().next().is_some_and(|c| c as u32 >= 0x1F300) {
+                    sizes[0]
+                } else if text == "Sample" {
+                    sizes[1]
+                } else {
+                    sizes[2]
+                }
+            };
+            let bottom_a = top_a + height_of(text_a);
+            assert!(
+                *top_b >= bottom_a,
+                "{text_b:?} starts at y={top_b}, inside {text_a:?}'s box ({top_a}..{bottom_a})"
+            );
+        }
+    }
+
+    /// Parses `<text x y size>content</text>` elements, including the emitted font size.
+    ///
+    /// The size is read back from the document rather than guessed from the content: the point
+    /// of the check is that the *drawn* origin matches the *drawn* width, so both halves must
+    /// come from the same place the renderer used.
+    fn texts_with_size(svg: &str) -> Vec<(i32, i32, f32, String)> {
+        let mut out = Vec::new();
+        for line in svg.lines() {
+            let Some(start) = line.find("<text ") else { continue };
+            let Some(gt) = line[start..].find('>') else { continue };
+            let head = &line[start..start + gt];
+            let body_end = line.rfind("</text>").unwrap_or(line.len());
+            let body = line[start + gt + 1..body_end].to_string();
+            let attr = |name: &str| -> &str {
+                let key = format!("{name}=\"");
+                let at = head.find(&key).expect("attribute present") + key.len();
+                let end = head[at..].find('"').expect("closed") + at;
+                &head[at..end]
+            };
+            out.push((
+                attr("x").parse().expect("numeric x"),
+                attr("y").parse().expect("numeric y"),
+                attr("font-size").parse().expect("numeric font-size"),
+                body,
+            ));
+        }
+        out
+    }
+
+    /// Every row is centred on the control's own vertical axis.
+    #[test]
+    fn every_stack_row_is_centred_horizontally() {
+        let mut es = EmptyState::new(Rect::new(0, 0, 240, 120));
+        let svg = crate::widget::svg::render_to_svg(&mut es);
+        let center = 120;
+        for (x, _, size, text) in texts_with_size(&svg) {
+            // The renderer charges 0.6 em per narrow cluster and 0.33 em for a space, so the
+            // measured width is what the draw call itself used; a self-consistent check is that
+            // the row's own midpoint lands on the control's midpoint.
+            let mut backend = crate::render::SvgPaintBackend::new(Size::new(240, 120));
+            let context = RenderContext::new(&mut backend);
+            let width = context
+                .measure_text(&text, &Font::with_weight("Sans", size, 400, false))
+                .width as i32;
+            assert_eq!(x + width / 2, center, "{text:?} must be centred on the control's axis");
+        }
     }
 }

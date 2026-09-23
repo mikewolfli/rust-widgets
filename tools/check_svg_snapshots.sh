@@ -53,7 +53,7 @@ SNAPSHOT_DIR="snapshots/svg"
 SCRATCH="$(mktemp -d)"
 trap 'rm -rf "$SCRATCH"' EXIT
 
-echo "[1/4] capture the committed state, then regenerate into a scratch tree"
+echo "[1/5] capture the committed state, then regenerate into a scratch tree"
 # The committed files are hashed BEFORE anything regenerates. Comparing `git diff` AFTER
 # the exporter has run in place cannot detect a changed snapshot: the exporter overwrites
 # the change and the tree looks clean again. That made the first version of this gate pass
@@ -77,7 +77,7 @@ if [[ ! -s "$BEFORE" ]]; then
     exit 1
 fi
 
-echo "[2/4] regenerate every snapshot in place"
+echo "[2/5] regenerate every snapshot in place"
 if ! rw_run_bounded "$STEP_BUDGET" cargo run \
     --no-default-features --features desktop \
     --example export_control_svgs > "$SCRATCH/export.log" 2>&1; then
@@ -103,7 +103,7 @@ if ! diff -q "$BEFORE" "$AFTER" > /dev/null; then
 fi
 echo "  PASS  regeneration reproduces every committed byte"
 
-echo "[3/4] count, naming and drawing content"
+echo "[3/5] count, naming and drawing content"
 CONTROLS="$("$PYTHON" -c '
 import re, pathlib
 src = pathlib.Path("src/widget/capability/properties.rs").read_text(encoding="utf-8")
@@ -116,7 +116,7 @@ if [[ "$COMMITTED" -ne $((CONTROLS * 2)) ]]; then
 fi
 echo "  PASS  $CONTROLS controls x 2 appearances = $COMMITTED files"
 
-echo "[3b/4] every file has a drawing element, not just an svg skeleton"
+echo "[3b/5] every file has a drawing element, not just an svg skeleton"
 EMPTY="$("$PYTHON" - <<'PY'
 import pathlib
 
@@ -139,7 +139,7 @@ if [[ -n "$EMPTY" ]]; then
 fi
 echo "  PASS  every snapshot contains at least one drawing element"
 
-echo "[4/4] the appearances differ for every control, or the control is recorded as exempt"
+echo "[4/5] the appearances differ for every control, or the control is recorded as exempt"
 SAME="$("$PYTHON" - <<'PY'
 # A control whose two appearances render identically is theme-blind. That is the P3
 # judgement `tools/check_control_rendering.sh` already makes, with the same two exemption
@@ -212,6 +212,38 @@ if [[ -n "$SAME" ]]; then
     echo "  tools/control_color_exemptions.txt; if it is a defect, fix the control."
     exit 1
 fi
+
+echo "[5/5] the committed gallery index matches the snapshot set"
+# `control.md` is generated from the registry by `tools/generate_control_index.py`, so it is
+# a *view* of the snapshots rather than a second copy of them. Its value is exactly that
+# property, and it is lost the moment someone edits the page by hand or adds a control
+# without regenerating it — the page would then describe a set that no longer exists, which
+# is the same "current picture" failure the snapshots themselves are guarded against.
+#
+# The check regenerates into a scratch file and diffs, so the committed page must equal its
+# producer's output byte for byte. Exit 1 with the diff, not with prose: the fix is always
+# "run the generator".
+GALLERY_SCRATCH="$(mktemp -d 2>/dev/null || mktemp -d -t gallery)"
+trap 'rm -rf "$GALLERY_SCRATCH"' EXIT
+# The generator writes `control.md` **in place**, so the committed copy has to be preserved
+# *before* it runs: comparing afterwards would compare the fresh output with itself and the
+# gate would pass over any hand-edit — which is precisely the defect this step exists to
+# catch, and the first version of this step had it. `cp` rather than `git show` so the check
+# works on a tree whose changes are not yet staged.
+cp control.md "$GALLERY_SCRATCH/committed.md"
+if ! python3 tools/generate_control_index.py > "$GALLERY_SCRATCH/gen.log" 2>&1; then
+    echo "  FAIL  the gallery generator itself failed:"
+    sed 's/^/        /' "$GALLERY_SCRATCH/gen.log"
+    cp "$GALLERY_SCRATCH/committed.md" control.md
+    exit 1
+fi
+if ! diff -u "$GALLERY_SCRATCH/committed.md" control.md > "$GALLERY_SCRATCH/gallery.diff"; then
+    echo "  FAIL  control.md is stale — it does not match what the generator produces now:"
+    sed 's/^/        /' "$GALLERY_SCRATCH/gallery.diff" | head -40
+    echo "        regenerate with: python3 tools/generate_control_index.py"
+    exit 1
+fi
+echo "  PASS  control.md matches the generated index ($(grep -c '^### ' control.md) controls listed)"
 
 echo ""
 echo "check_svg_snapshots: checked=$CONTROLS skipped=0 failed=0 (each with a dark and a light snapshot)"

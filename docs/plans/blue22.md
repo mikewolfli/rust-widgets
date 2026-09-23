@@ -912,6 +912,11 @@ rightPadding: padding + (mirrored ? down.width : up.width)
 
 ## F.2 未完成项（按优先级）
 
+> **⚠️ 第 68 轮更新（2026-09-23 同日续）**：F-2（§B.7 样板）与 §B.5.2 第三步
+> （`CompositeBuilder`）**已完成**，并在此过程中修掉 `FlexLayout` 的三个共享缺陷。
+> 详见 [`../log/log-20260923-1.md`](../log/log-20260923-1.md) 第 68 轮 §4.5 / §5。
+> 新的状态见本附录末尾的 **F.5**。
+
 ### F.2.1 P0 级（计划的核心目标，尚未铺开）
 
 | # | 条目 | 计划出处 | 现状取证 | 施工要点 |
@@ -1004,3 +1009,61 @@ rightPadding: padding + (mirrored ? down.width : up.width)
 **「控件不再把自己当成容器」** —— 单控件层面本计划的目标已达成（174 个控件的绘制盒
 由度量体系推导，零尺寸与空文本元素归零，五个 profile 全部编译干净）。
 **「组合控件由布局组装」**（F-1/F-2）是本计划剩下的主体，施工细则已备于 F.2.2。
+
+---
+
+## F.5 第 68 轮状态更新（2026-09-23 同日续，替代 F.2.1 中已完成的条目）
+
+> 执行记录见 [`../log/log-20260923-1.md`](../log/log-20260923-1.md) 第 68 轮。
+
+### F.5.1 本轮完成（有独立判据）
+
+| 计划条目 | 状态 | 判据 |
+|---|---|---|
+| **§B.5.2 步 3 `CompositeBuilder`** | ✅ | 新增 `src/widget/composite.rs`（工厂创建 + 读子控件 `hints()` + 交给 `arrange` + 回写）；5 条单测，含「子控件变宽 ⇒ 组合控件变宽」 |
+| **§B.7 样板 `dialog_with_actions`** | ✅ | `composite.rs` 的 `ActionRow`（4 条单测）；右对齐由 `justify_content = FlexEnd` 表达，**零行位置算术** |
+| **§B.6 规则 3（固有尺寸向上传播）** | ✅ | `hints()` 的主轴取 `sum`、交叉轴取 `max`，聚合用 `layout::hints` 的 `total_bounds`/`total_minimum`/`max_preferred` |
+| **§B.6 规则 9（`min` 与 `fill` 分开）** | ✅ | `fill` 在 `add()` 译成 grow 权重（`FlexLayout` 只读 `flex_grow`）；单测断言同 `pref` 的 `fill`/非 `fill` 拉伸行为不同 |
+| **§6.7 门禁 `check_svg_snapshots`（复核 + 加厚）** | ✅ | 新增第 [5/5] 步：`control.md` 必须等于生成器输出；**反向注入证明可失败**（第一版是假绿，已修） |
+| **用户指令 #4（`control.md` 控件图像总览）** | ✅ | `tools/generate_control_index.py`；188/188 控件归入 17 个分组，0 unclassified；376/376 链接可解析 |
+
+### F.5.2 本轮**新发现并修复**的缺陷（不在原计划里）
+
+| # | 缺陷 | 影响面 | 证据 |
+|---|---|---|---|
+| **R-1** | **SVG 后端丢弃 `HorizontalAlignment`** | 全仓**每一个**居中/右对齐标签在 SVG 输出里都是左对齐 | 探针实跑：`Left`/`Center`/`Right` 都发 `x=100` |
+| **R-2** | `Button` 把 `BUTTON_PADDING_H` 当左锚点 | 按钮标签不水平居中 | `button.svg` 的 `x` 12 → 95 |
+| **R-3** | `Calendar` 日期数字画在单元格**左上角 + 3px** | 数字与表格错行（用户报告） | 单测 `a_day_number_is_centred_in_its_cell` |
+| **R-4** | `Calendar` 表头基于**假前提**（「1 em/字符 ⇒ Mon 需 36px」）而跨列 | 7 个列名与 7 列数字不同列 | 实测 `Mon` 推进 20px；单测 `a_weekday_heading_is_centred_in_its_column` |
+| **R-5** | `EmptyState` 图标盒与标题**重叠 28px** | 标题横穿图标 | 单测 `the_stack_rows_do_not_overlap`；反向注入可失败 |
+| **R-6** | `Keyboard` 键帽文字钉在顶边（注释声称居中） | 124 个键 | 快照 `y` 2 → 8 |
+| **R-7** | `Gantt`/`Timeline` 行标签同上 | 每个任务名 | 改为 `draw_text_line` |
+| **R-8** | `draw_arc_segments` 采样数写死 40 ⇒ **零长度线段**，115px 弧只剩 3 个像素 | spinner / progress_circle | 零长度 `<line>` 2 → 0；两条单测 + 两个反向注入 |
+| **R-9** | **`FlexLayout` 剩余空间塞给最后一个孩子** ⇒ `justify_content` 不可达 | 所有走 `arrange` 的布局 | 3×60px 在 240px 带里 `x=0`（应 60） |
+| **R-10** | **`FlexLayout` shrink 分支穿过 `min_size` 地板** | 子控件被压到低于自己申报的最小值 | 两个 100px 按钮各得 57px |
+| **R-11** | **`FlexLayout` `consumed` 双倍计 margin** | 剩余空间被吃光 ⇒ `FlexEnd` 失效 | 220px 行的 20px 剩余被算成 8px |
+
+> **R-9/R-10/R-11 是「被组合控件逼出来的共享缺陷」**。它们无法在纸面上推理出来：
+> 只有当 `CompositeBuilder` **真的**把子控件交给 `arrange`，布局里沉睡的假设才会暴露。
+> 这印证了 §B.3 的判断——**不接尺寸通道，这三条永远发现不了**。
+
+### F.5.3 仍然未完成的（按优先级）
+
+| # | 条目 | 出处 | 说明 |
+|---|---|---|---|
+| **F-1'** | §B.8 其余组合控件逐个改造 | §B.8 | `CompositeBuilder` 与规范和样板已就绪；`split_button`/`combo_box`/`menu` 等仍为手算。**注意 §5.4 的判断**：`dialog` 族的按钮行**刻意不合并**到 `ActionRow`（两者要求真的不同） |
+| **F-3** | §B.6 规则 10（提示变化主动通知布局） | §B.6-10 | 仍未做：需要「脏」标记 + 宿主帧末消费 |
+| **F-4 ~ F-12** | RTL 铺开 / a11y 三态 / 契约加厚 / E6 分组原语 / `stepper` 命名 / 主题装饰 token / `Font` 补字段 / 声明式原语 / 输入装饰槽 | F.2.3–F.2.4 | **本轮未动**，状态同 F.2.3/F.2.4 |
+| **F-13** | §6.7 剩余 3 条门禁 | §6.7 | 仍未做 |
+| **F-14** | `check_mechanism_has_a_consumer` 陈旧债 | — | 本轮全量门控已 **PASS**（58/58），该条已不再报红 |
+| **F-15** | `tests/mounted_control_follows_window_test.rs` | — | 预存在，需真实 macOS 窗口会话 |
+| **F-16** | `check_android_cross.sh` | — | host-limited skip，非缺陷 |
+
+### F.5.4 本轮验证（全量一次）
+
+| 项 | 结果 |
+|---|---|
+| `cargo test --lib --features desktop` | **5515 passed / 0 failed**（上轮 5513） |
+| `cargo clippy --all-targets` | 0 warning / 0 error |
+| 五个 profile（desktop/tablet/mobile/mini/embedded） | 全部编译通过 |
+| `tools/run_all_gates.sh` | **PASS=58 FAIL=0 TIMEOUT=0 NOT-RUN=0 SKIP=1**（skip 为 Apple 主机限制） |

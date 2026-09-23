@@ -240,10 +240,28 @@ impl FlexLayout {
                 main_sizes.push(size);
                 distributed += size - intrinsic_main[i];
             }
-            // Adjust if rounding caused leftover.
-            let leftover = remaining - distributed;
-            if leftover > 0 && !main_sizes.is_empty() {
-                main_sizes[count - 1] += leftover;
+            // # Why the rounding remainder is not dumped on the last child anymore
+            //
+            // The remainder of an integer split used to be added to `main_sizes[count - 1]`
+            // unconditionally. For a row whose children all grow that is harmless — the room
+            // was going to be distributed anyway, and one pixel either way is invisible. But
+            // the same line also runs for a caller that *did* ask for growth and had some of it
+            // refused by a `max_size`, and, more importantly, its sibling branch below (no
+            // growth asked for at all) had the identical line — where it did real damage: the
+            // entire leftover was added to the last child, so `justify_content` could never see
+            // any leftover to distribute.
+            //
+            // Concretely: a `FlexEnd` row of three fixed-width buttons in a 240 px band had
+            // 12 px of leftover, and instead of shifting the row 12 px to the right the layout
+            // made its *last button* 12 px wider. The row was then flush left, the trailing
+            // button was the wrong size, and "right-aligned" was unreachable — which is why the
+            // `dialog_with_actions` template could not be built on `justify_content`. The
+            // remainder is still given to the last child here, because in this branch the caller
+            // asked for the room to be spent on the children; it is the *no-growth* branch that
+            // must leave it for the justification.
+            let remainder = remaining - distributed;
+            if remainder > 0 && !main_sizes.is_empty() {
+                main_sizes[count - 1] += remainder;
             }
         } else if remaining < 0 {
             // Shrink items proportionally to flex-shrink.
@@ -263,21 +281,25 @@ impl FlexLayout {
                 let size = (intrinsic_main[i] - shrink).max(min_main);
                 main_sizes.push(size);
             }
-            // If we couldn't shrink enough, cap at available
-            let actual_shrunk = total_intrinsic - main_sizes.iter().sum::<i32>() - gaps;
-            if actual_shrunk < deficit {
-                // Distribute the remaining deficit
-                let mut remaining_deficit = deficit - actual_shrunk;
-                for s in main_sizes.iter_mut().rev() {
-                    if remaining_deficit <= 0 {
-                        break;
-                    }
-                    let possible = *s;
-                    let cut = possible.min(remaining_deficit);
-                    *s -= cut;
-                    remaining_deficit -= cut;
-                }
-            }
+            // # Why the deficit is *not* redistributed past the minimum
+            //
+            // This block used to keep cutting the children until the row fit — "if we couldn't
+            // shrink enough, cap at available" — which defeated the `max(min_main)` two lines
+            // above it: the floor was applied and then immediately overridden, down to zero.
+            // Two 100 px buttons in a 120 px row came back 57 px each, i.e. narrower than their
+            // own labels, and a button narrower than its label is a button whose label elides.
+            //
+            // The floor is a statement about what the *child* can survive, and a layout that
+            // ignores it to satisfy its own extent trades a visible overflow for an unreadable
+            // control. CSS flexbox makes the same choice (`min-width: auto` item floors win over
+            // `flex-shrink`), and Qt's `implicitMinimumWidth` is likewise a hard bound. The
+            // honest answer is therefore to leave the children at their floors and let the row
+            // be wider than its parent: overflowing content is visible, elided content looks
+            // like a correct label that happens to be short.
+            //
+            // The row's own caller is what decides how to present the overhang — a dialog sizes
+            // itself from the row's width, and one that is handed a too-small rectangle keeps its
+            // own width rather than rewriting its children's.
         } else {
             main_sizes = intrinsic_main;
         }
@@ -730,15 +752,54 @@ impl Layout for FlexLayout {
         // so a caller that also sets the layout's `gap` gets both — the same double spacing the
         // crate has always allowed, and the reason the assembly rules put inter-element space on
         // one of the two and not both.
-        let solver = FlexLayout { child_sizes: sizes.clone(), ..self.clone() };
+        let mut solver = FlexLayout { child_sizes: sizes.clone(), ..self.clone() };
+        // Each child's *own floor* is what it may be squeezed to, and the hints channel is the
+        // only place that number arrives — `add_widget(id, stretch)` carries no size at all, so
+        // `FlexItem::min_size` defaults to zero and the solver's `flex_shrink` step would
+        // happily compress a child below the minimum it stated. That is the defect this line
+        // fixes: two 100 px buttons in a 120 px row came back 57 px each, i.e. narrower than
+        // their own labels, and a button narrower than its label is a button whose label elides
+        // (BLUE22 §B.10, the "shrink rather than shrink to nothing" risk).
+        //
+        // The floor is written into the solver's own items rather than passed alongside them
+        // because the solver reads `item.min_size` — and doing it here keeps `add_widget`'s
+        // signature unchanged, so the fifteen layouts that never call `arrange` are unaffected
+        // (principle #21).
+        for (index, info) in described.iter().enumerate() {
+            if let (Some(item), Some(info)) = (solver.items.get_mut(index), info) {
+                // The solver works in **outer** sizes (a child's box plus its margins — see
+                // `sizes` above), while `hints.width.min` describes the child's *box*. The floor
+                // therefore has to carry the margins too, or the drawn extent would come out
+                // `min - margins`: a button whose floor is 64 px with a 6 px leading margin was
+                // laid out at an outer 64 and drawn 58 wide, i.e. below the minimum it stated,
+                // which is the very thing the floor was added to prevent. Adding the margins back
+                // is what makes the two units agree.
+                item.min_size = Size::new(
+                    info.hints.width.min.saturating_add(info.params.margins.horizontal_total()),
+                    info.hints.height.min.saturating_add(info.params.margins.vertical_total()),
+                );
+            }
+        }
         let (solved_main, _total_grow, _total_main) =
             solver.compute_main_sizes(available_main, self.gap);
-        // The leftover is measured against what the solver produced rather than against the
-        // children's request: when the solver shrank them, the row really does fill the parent
-        // and there is nothing left to justify.
-        let consumed: i32 = (0..solved_main.len())
-            .map(|index| solved_main[index] + if index > 0 { inset(index).0 } else { 0 })
-            .sum::<i32>()
+        // The leftover is what the justification distributes, and it is measured as the room the
+        // band has minus the room the children **occupy** — their boxes *plus* the margins that
+        // produced the gaps.
+        //
+        // # Why the leading margin is not added a second time here
+        //
+        // The solver is driven by the outer sizes (`child.bounds()` = preferred extent + margins)
+        // and returns the same outer sizes when nothing grows, so each `solved_main[i]` already
+        // *includes* that child's margins. The previous form added `inset(index).0` on top for
+        // every child but the first, which double-counted every gap: a three-button row wanted
+        // 220 px in a 240 px band, so the true leftover was 20 px, but the repeated margin made
+        // `consumed` read 232 and the leftover read 8 — and for a wider margin it read zero, at
+        // which point `justify_content` had nothing to distribute at all. That is the reason
+        // `FlexEnd` appeared to do nothing and the row sat flush left.
+        //
+        // The solver's own `gap` is a separate term and is *not* part of `solved_main`, so it is
+        // still counted once here.
+        let consumed: i32 = solved_main.iter().sum::<i32>()
             + self.gap * (solved_main.len().saturating_sub(1)) as i32;
         let leftover = (available_main - consumed).max(0);
         let first_offset = match self.justify_content {
@@ -866,7 +927,8 @@ impl Layout for FlexLayout {
 mod tests {
     use super::*;
     use crate::compat::HashMap;
-    use crate::layout::Hints;
+    use crate::layout::{AxisHints, ChildInfo, Hints, LayoutParams};
+    use crate::style::EdgeOffsets;
 
     #[test]
     fn flex_layout_default_creates_empty() {
@@ -1321,6 +1383,175 @@ mod tests {
     }
 
     // ── The hints channel (BLUE22 §B.5.2) ───────────────────────────────
+
+    #[test]
+    fn justify_content_distributes_the_leftover_it_is_given() {
+        // The leftover-absorbing branch used to dump the whole surplus on the *last* child,
+        // so a row of fixed-width children could never leave anything for the justification.
+        // `FlexEnd` was consequently unreachable: a three-button row in a 240 px band with
+        // 20 px of spare room came back flush left with a 20 px wider last button.
+        let mut layout = FlexLayout::with_params(
+            FlexDirection::Row,
+            FlexWrap::NoWrap,
+            JustifyContent::FlexEnd,
+            AlignItems::Stretch,
+            0,
+            0,
+        );
+        for id in [1u64, 2, 3] {
+            layout.add_widget(id, 0);
+        }
+        let children = vec![
+            ChildInfo::new(1, Hints::fixed(60, 30)),
+            ChildInfo::new(2, Hints::fixed(60, 30)),
+            ChildInfo::new(3, Hints::fixed(60, 30)),
+        ];
+        let mut rects = HashMap::new();
+        layout.arrange(Rect::new(0, 0, 240, 40), &children, &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+
+        // The row is 180 px in a 240 px band: 60 px spare, all of it *before* the children.
+        assert_eq!(
+            rects.get(&1).map(|r| r.x),
+            Some(60),
+            "FlexEnd pins the row to the trailing edge"
+        );
+        // The row is 180 px in a 240 px band: 60 px spare, all of it *before* the children.
+        assert_eq!(
+            rects.get(&1).map(|r| r.x),
+            Some(60),
+            "FlexEnd pins the row to the trailing edge"
+        );
+        assert_eq!(rects.get(&3).map(|r| r.x), Some(180));
+        assert_eq!(rects.get(&3).map(|r| r.x + r.width as i32), Some(240));
+        for id in [1u64, 2, 3] {
+            assert_eq!(
+                rects.get(&id).map(|r| r.width),
+                Some(60),
+                "a non-growing child must keep its own width, not absorb the leftover"
+            );
+        }
+    }
+
+    #[test]
+    fn justification_measures_the_leftover_including_the_gaps() {
+        // The leftover is `band - occupied`, and "occupied" must count each gap **once**. The
+        // previous form added each child's leading margin on top of a size that already
+        // included it, so every gap was counted twice: 20 px of genuine spare room read as 8,
+        // and with a slightly wider gap it read as zero and the justification had nothing to
+        // distribute at all. A row of three buttons 6 px apart is the shape this has to hold
+        // for, because that is what a dialog's action row is.
+        let mut layout = FlexLayout::with_params(
+            FlexDirection::Row,
+            FlexWrap::NoWrap,
+            JustifyContent::FlexEnd,
+            AlignItems::Stretch,
+            0,
+            0,
+        );
+        for id in [1u64, 2, 3] {
+            layout.add_widget(id, 0);
+        }
+        let gap = 6u32;
+        let children: Vec<ChildInfo> = [1u64, 2, 3]
+            .iter()
+            .enumerate()
+            .map(|(index, id)| {
+                ChildInfo::new(*id, Hints::fixed(60, 30)).with_params(
+                    LayoutParams::new().with_margins(EdgeOffsets::new(
+                        0,
+                        0,
+                        0,
+                        if index == 0 { 0 } else { gap },
+                    )),
+                )
+            })
+            .collect();
+        let mut rects = HashMap::new();
+        layout.arrange(Rect::new(0, 0, 240, 40), &children, &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+
+        // Occupied = 3 x 60 buttons + 2 x 6 gaps = 192, so 48 px of spare room, and FlexEnd
+        // puts all of it before the first button.
+        assert_eq!(
+            rects.get(&1).map(|r| r.x),
+            Some(48),
+            "the leftover must be measured net of each gap exactly once"
+        );
+        assert_eq!(rects.get(&3).map(|r| r.x + r.width as i32), Some(240));
+        for id in [1u64, 2, 3] {
+            assert_eq!(rects.get(&id).map(|r| r.width), Some(60));
+        }
+    }
+
+    #[test]
+    fn a_child_is_never_squeezed_below_its_own_minimum() {
+        // The shrink branch applied `max(item.min_size)` and then a "if we couldn't shrink
+        // enough, cap at available" pass that cut straight through it, down to zero. Two
+        // 100 px children in a 120 px band therefore came back 57 px each — narrower than the
+        // labels they were about to draw.
+        let mut layout = FlexLayout::new();
+        layout.add_widget(1, 0);
+        layout.add_widget(2, 0);
+        let children = vec![
+            ChildInfo::new(
+                1,
+                Hints { width: AxisHints::new(100, 100, 200), height: AxisHints::new(30, 30, 30) },
+            ),
+            ChildInfo::new(
+                2,
+                Hints { width: AxisHints::new(100, 100, 200), height: AxisHints::new(30, 30, 30) },
+            ),
+        ];
+        let mut rects = HashMap::new();
+        layout.arrange(Rect::new(0, 0, 120, 40), &children, &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+
+        for id in [1u64, 2] {
+            let width = rects.get(&id).map(|r| r.width).expect("both children were placed");
+            assert!(width >= 100, "child {id} was squeezed to {width}, below its 100 px floor");
+        }
+    }
+
+    #[test]
+    fn a_margin_is_a_gap_and_not_a_reduction_of_the_childs_own_size() {
+        // `min_size` is expressed in the solver's *outer* units, which include the child's
+        // margins. A 64 px floor on a child with a 6 px leading margin was previously
+        // floored to an outer 64 and then drawn 58 wide — below its own minimum — because
+        // the margin was subtracted after the floor was applied.
+        let mut layout = FlexLayout::new();
+        layout.add_widget(1, 0);
+        layout.add_widget(2, 0);
+        let children = vec![
+            ChildInfo::new(1, Hints::at_least(64, 30)),
+            ChildInfo::new(2, Hints::at_least(64, 30))
+                .with_params(LayoutParams::new().with_margins(EdgeOffsets::new(0, 0, 0, 6))),
+        ];
+        let rects = {
+            let mut rects = HashMap::new();
+            // A band too narrow for both floors: the layout must overhang, not squeeze.
+            layout.arrange(Rect::new(0, 0, 120, 40), &children, &mut |id, rect| {
+                rects.insert(id, rect);
+            });
+            rects
+        };
+
+        let second = rects.get(&2).copied().expect("the second child was placed");
+        assert!(
+            second.width >= 64,
+            "the drawn box must honour the floor, margin excluded: got {}",
+            second.width
+        );
+        let first = rects.get(&1).copied().expect("the first child was placed");
+        assert_eq!(
+            second.x - (first.x + first.width as i32),
+            6,
+            "the margin must remain the gap between the two boxes"
+        );
+    }
 
     #[test]
     fn a_layout_can_size_its_children_without_being_told_in_advance() {

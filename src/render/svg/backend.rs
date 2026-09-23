@@ -273,7 +273,7 @@ impl PaintBackend for SvgPaintBackend {
             }
 
             // ── Text ───────────────────────────────────────────────────
-            RenderCommand::DrawText { origin, text, font, color, .. } => {
+            RenderCommand::DrawText { origin, text, font, color, alignment } => {
                 // `origin` is the glyph box's **top-left**: that is the contract the software
                 // rasteriser implements (`SoftwareRasterizer::draw_text` passes `origin.y`
                 // straight to the glyph blitter, which paints downward from it), and the
@@ -293,9 +293,42 @@ impl PaintBackend for SvgPaintBackend {
                 // the ~40 call sites that already measured and offset against the top-origin
                 // contract stay correct, and none of them has to know which backend it is
                 // painting into.
+                //
+                // # Why the alignment is resolved here instead of emitted as an attribute
+                //
+                // `RenderCommand::DrawText` carries a `HorizontalAlignment`, and
+                // `RenderContext::draw_text`'s contract is that `origin` is the glyph box's
+                // top-left **anchor for that alignment** — not a fixed left edge. The software
+                // rasteriser implements that by shifting the pen before the first glyph
+                // (`primitives.rs`, `adjusted_origin_x`): `Left` keeps `origin.x`, `Center`
+                // starts half the measured advance to the left, `Right` starts a whole advance
+                // to the left. This backend ignored the field, so **every** centred or
+                // right-aligned label in the whole crate was left-aligned in SVG output while
+                // appearing centred on the raster: two backends disagreeing about where the
+                // ink is.
+                //
+                // The disagreement was visible in the committed snapshots rather than only in
+                // theory. A wizard's "Cancel"/"Back" labels are drawn with
+                // `draw_text_fitted(..., Center)`, and `snapshots/svg/wizard_dialog.svg` showed
+                // them starting at the button's own left corner (and "Finish" running past the
+                // canvas edge) because the only thing the backend did with `Center` was drop it.
+                // A `text-anchor="middle"` attribute would be the other way to say this, but it
+                // would move the *resolution* of the alignment into SVG's layout engine while
+                // the raster keeps resolving it in Rust — two implementations of one rule, and
+                // they disagree the moment the advance models differ. Emitting an absolute `x`
+                // that both backends compute the same way keeps one rule with one owner.
+                let anchor_x = match alignment {
+                    crate::core::HorizontalAlignment::Left => origin.x,
+                    crate::core::HorizontalAlignment::Center => {
+                        origin.x - (self.measure_text(text, font).width / 2) as i32
+                    }
+                    crate::core::HorizontalAlignment::Right => {
+                        origin.x - self.measure_text(text, font).width as i32
+                    }
+                };
                 self.push_element(format!(
                     r#"<text x="{}" y="{}" dominant-baseline="text-before-edge" font-family="{}" font-size="{}" font-style="{}" font-weight="{}" fill="{}">{}</text>"#,
-                    origin.x,
+                    anchor_x,
                     origin.y,
                     escape_xml(font.family()),
                     font.size(),
@@ -612,6 +645,57 @@ mod tests {
         svg.end_frame();
         let result = svg.finish();
         assert!(result.contains("&lt;hello&gt; &amp; world"));
+    }
+
+    #[test]
+    fn svg_backend_honours_horizontal_alignment() {
+        // Rule: the two backends must put the ink in the same place. The software rasteriser
+        // shifts the pen before the first glyph by the alignment (half an advance for
+        // `Center`, a whole one for `Right`); this backend used to drop the field entirely,
+        // so every centred or right-aligned label in the crate was left-aligned in SVG
+        // output. That was visible in the committed snapshots — a wizard's "Cancel", "Back"
+        // and "Finish" all started at their button's left edge — and it made the SVG
+        // surface an unreliable judge of any layout work.
+        let font = Font::simple("Arial", 12.0);
+        let origin = Point::new(100, 20);
+        let region = |alignment| {
+            let mut svg = SvgPaintBackend::new(Size::new(200, 50));
+            svg.begin_frame(Color::WHITE);
+            svg.execute_command(&RenderCommand::DrawText {
+                origin,
+                text: "Cancel".to_string(),
+                font: font.clone(),
+                color: Color::BLACK,
+                alignment,
+            });
+            svg.end_frame();
+            svg.finish()
+        };
+        let width = {
+            let svg = SvgPaintBackend::new(Size::new(200, 50));
+            svg.measure_text("Cancel", &font).width as i32
+        };
+        assert!(width > 0, "the fixture must have a measurable label");
+
+        // The emitted `x` is the first attribute of the `<text>` element.
+        let x_of = |svg: &str| -> i32 {
+            let text = svg.find("<text").expect("the backend emitted a text element");
+            let attr = svg[text..].find("x=\"").expect("the element carries an x") + text + 3;
+            let end = svg[attr..].find('"').expect("the attribute is closed") + attr;
+            svg[attr..end].parse().expect("x is an integer")
+        };
+
+        assert_eq!(x_of(&region(HorizontalAlignment::Left)), origin.x, "left keeps the origin");
+        assert_eq!(
+            x_of(&region(HorizontalAlignment::Center)),
+            origin.x - width / 2,
+            "centre starts half an advance to the left of the origin"
+        );
+        assert_eq!(
+            x_of(&region(HorizontalAlignment::Right)),
+            origin.x - width,
+            "right starts a whole advance to the left of the origin"
+        );
     }
 
     #[test]

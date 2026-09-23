@@ -360,11 +360,15 @@ impl Draw for GanttWidget {
                 context.fill_rect(Rect::new(rect.x, y, rect.width, self.row_height), selected_lane);
             }
 
-            // The lane label is centred through the shared primitive: the raw midpoint put the
-            // glyph box's *top* edge on the lane's middle line, half a line low.
+            // The lane label is centred in its lane. The raw midpoint put the glyph box's
+            // *top* edge on the lane's middle line, half a line low; the fix is the shared
+            // *line-box* primitive, not a wider band — `draw_text_fitted` centres only the
+            // horizontal axis and leaves `y` at the band's top edge, so handing it a
+            // `row_height`-tall band pinned every task name to the top of its lane again.
+            // `draw_text_line` is the entry point that centres on both axes.
             let label_band =
                 Rect::new(rect.x, y, track_x.saturating_sub(rect.x) as u32, self.row_height);
-            context.draw_text_fitted(
+            context.draw_text_line(
                 label_band,
                 &task.label,
                 &Font::default(),

@@ -52,6 +52,15 @@ pub mod base;
 /// profile-specific *parts* — the property schema tables, the legacy centralised
 /// access layer, the factory and its registration — are gated, below.
 pub mod capability;
+// Composite assembly needs the factory (to create children by name) and `Box` (to own the
+// layout and the created widgets). Neither exists in the stripped profiles: `WidgetFactory`
+// follows `widgets_unstripped`, and `Box` is unavailable under `alloc_frugal`. The same
+// `full_widgets` gate the widget modules use is therefore the accurate condition here —
+// "a device profile *and* an unstripped widget set" (principle #47), not a hand-written
+// `not(any(mini, embedded))` which is true for a `--no-default-features --features gpu`
+// build that has no factory either.
+#[cfg(full_widgets)]
+pub mod composite;
 pub mod draw;
 /// The bridge that connects a self-painting widget to `dyn Widget`.
 ///
