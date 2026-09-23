@@ -630,9 +630,15 @@ mod tests {
             fill_count > 1,
             "a hidden popover must still paint its card, got only the background fill: {svg}"
         );
+        // The placeholder label is painted while the popover is hidden. It is `font8x8` glyph
+        // geometry rather than a `<text>` element, so it is checked as ink on the card rather
+        // than as a string in the document.
+        let (left, top, right, bottom) = crate::widget::svg::text_ink_box(&svg)
+            .unwrap_or_else(|| panic!("the placeholder label must be painted: {svg}"));
+        assert!(right > left, "the placeholder laid down ink: {left}..{right}");
         assert!(
-            svg.contains("Popover (empty)"),
-            "the placeholder label must be painted while the popover is hidden: {svg}"
+            (0..Rect::new(0, 0, 300, 200).height as i32).contains(&top) && bottom <= 200,
+            "the label sits inside the control, got {top}..{bottom}"
         );
 
         // A hidden popover and a shown one must still differ: the shown card is opaque and
@@ -650,30 +656,34 @@ mod tests {
     /// `bounds.y` unchanged. Deriving the line box with `context.text_line` first is what
     /// centres it vertically, and this asserts the *result* rather than the call, so a
     /// future change that reintroduces a bare `bounds.y` fails here.
+    ///
+    /// The assertion is on the **ink**, not on an element's `y` attribute: text leaves the
+    /// backend as the `font8x8` rectangles the rasteriser fills, so there is no `y` to read and
+    /// no baseline to undo — the document holds a picture of the run. That is the stronger
+    /// check, because the old form verified the coordinate the backend had written down rather
+    /// than where the ink actually landed.
     #[test]
     fn popover_empty_placeholder_is_centred_in_the_card() {
         let rect = Rect::new(0, 0, 240, 120);
         let mut popover = Popover::new(rect);
         let svg = render_to_svg(&mut popover);
 
-        let y = svg
-            .lines()
-            .find(|line| line.contains("Popover (empty)"))
-            .and_then(|line| line.split(" y=\"").nth(1))
-            .and_then(|rest| rest.split('"').next())
-            .and_then(|value| value.parse::<i32>().ok())
+        let (left, top, right, bottom) = crate::widget::svg::text_ink_box(&svg)
             .expect("the empty-state placeholder must be drawn");
+        assert!(right > left && bottom > top, "the placeholder laid down ink: {svg}");
 
         // The card is inset by the arrow on the left and fills the control vertically, so
         // the placeholder's line box should be near the control's vertical middle — not at
-        // its top edge. Half the control's height is the tolerance centre; a top-edge origin
-        // would be around the content padding (8), which this bound rejects.
+        // its top edge. `top` is the run's glyph-box top edge, i.e. the line-box `y` the
+        // shown form used, because a glyph bitmap is stretched across the whole box height.
+        // Half the control's height is the tolerance centre; a top-edge origin would be
+        // around the content padding (8), which this bound rejects.
         let middle = rect.height as i32 / 2;
         assert!(
-            (y - middle).abs() <= LINE_TOLERANCE,
-            "the empty-state placeholder must be vertically centred: y={y}, centre={middle}"
+            (top - middle).abs() <= LINE_TOLERANCE,
+            "the empty-state placeholder must be vertically centred: top={top}, centre={middle}"
         );
         // And it must sit *below* the padding, which a top-edge origin would not.
-        assert!(y > 8, "a top-edge origin would pin the placeholder at y=8, got {y}");
+        assert!(top > 8, "a top-edge origin would pin the placeholder at y=8, got {top}");
     }
 }

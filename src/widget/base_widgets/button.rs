@@ -1719,12 +1719,21 @@ mod tests {
     /// child, so a label flush to the left edge is wrong however wide the button is — and at
     /// the census rectangle the button is 240 px wide while a 14 px "Sample" is 50 px, which
     /// is what made `snapshots/svg/button.svg` read as a left-aligned caption.
+    ///
+    /// The assertion is on the **ink**, not on an element's attribute: text leaves the backend
+    /// as the `font8x8` rectangles the rasteriser fills (see
+    /// `SvgPaintBackend::execute_command`), so the document holds a picture of the label rather
+    /// than a `<text>` element to read. That is the stronger check — the old form asserted the
+    /// `x` the backend had written down, so a label drawn a pixel off its own reported origin
+    /// would still have passed.
     #[test]
     fn the_label_is_centred_in_the_button() {
         let rect = Rect::new(0, 0, 240, 40);
         let mut b = Button::new("Sample".to_string(), rect);
         let svg = crate::widget::svg::render_to_svg(&mut b);
-        let x = text_x(&svg);
+        let (x, _, right, _) = crate::widget::svg::text_ink_box(&svg)
+            .unwrap_or_else(|| panic!("the button must paint its label: {svg}"));
+        assert!(right > x, "the label laid down ink: {x}..{right}");
         let font = Font::default();
         let mut backend = crate::render::SvgPaintBackend::new(Size::new(240, 40));
         let width = RenderContext::new(&mut backend).measure_text("Sample", &font).width as i32;
@@ -1737,12 +1746,18 @@ mod tests {
                 bottom: 0,
             },
         );
-        assert_eq!(
-            x,
-            content.x + (content.width as i32 - width) / 2,
-            "the label must sit in the middle of the button's padded box"
+        // The centred origin is an upper bound on where the ink can begin: a glyph's first
+        // bitmap column is set somewhere inside the 8-column raster, so the ink starts at the
+        // origin or to its right and never before it.
+        let centred = content.x + (content.width as i32 - width) / 2;
+        assert!(
+            x >= centred && x < centred + width / 4,
+            "the label must sit in the middle of the button's padded box: ink at {x}, centre {centred}"
         );
-        assert_ne!(x, rect.x + dimensions::BUTTON_PADDING_H as i32, "not flush to the padding");
+        assert!(
+            x > rect.x + dimensions::BUTTON_PADDING_H as i32,
+            "not flush to the padding: ink at {x}"
+        );
     }
 
     /// A narrow button still honours the minimum padding rather than touching its border.
@@ -1751,19 +1766,13 @@ mod tests {
         let rect = Rect::new(0, 0, 90, 40);
         let mut b = Button::new("A very wide label".to_string(), rect);
         let svg = crate::widget::svg::render_to_svg(&mut b);
-        let x = text_x(&svg);
+        let (x, _, right, _) = crate::widget::svg::text_ink_box(&svg)
+            .unwrap_or_else(|| panic!("the button must paint its fitted label: {svg}"));
+        assert!(right > x, "the label laid down ink: {x}..{right}");
         assert!(
             x >= rect.x + dimensions::BUTTON_PADDING_H as i32 - 1,
             "a fitted label must not start left of the button's own padding, got {x}"
         );
-    }
-
-    /// The `x` of the first `<text>` element in a rendered SVG.
-    fn text_x(svg: &str) -> i32 {
-        let start = svg.find("<text").expect("the button rendered a label");
-        let attr = svg[start..].find("x=\"").expect("the element carries an x") + start + 3;
-        let end = svg[attr..].find('"').expect("the attribute is closed") + attr;
-        svg[attr..end].parse().expect("x is an integer")
     }
 
     #[test]

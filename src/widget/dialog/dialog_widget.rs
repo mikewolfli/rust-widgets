@@ -454,6 +454,20 @@ mod tests {
         let plain = crate::widget::svg::render_to_svg(&mut titleless);
         let decorated = crate::widget::svg::render_to_svg(&mut titled);
         assert_ne!(plain, decorated);
-        assert!(decorated.contains("Details"));
+        // The title is `font8x8` glyph geometry rather than a `<text>` element, so the string is
+        // not in the document and the check is on **where the ink landed**: a titled dialog gains
+        // a run on the title strip, and a titleless one paints no text at all.
+        let (left, top, right, bottom) = crate::widget::svg::text_ink_box(&decorated)
+            .unwrap_or_else(|| panic!("a titled dialog must paint its title: {decorated}"));
+        assert!(right > left, "the title laid down ink: {left}..{right}");
+        assert!(
+            (0..DIALOG_TITLE_BAR_HEIGHT as i32).contains(&top)
+                && bottom <= DIALOG_TITLE_BAR_HEIGHT as i32,
+            "the title must sit on the title strip, got {top}..{bottom}"
+        );
+        assert!(
+            crate::widget::svg::text_ink_box(&plain).is_none(),
+            "a titleless dialog paints no title ink: {plain}"
+        );
     }
 }

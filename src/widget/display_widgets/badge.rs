@@ -578,6 +578,14 @@ mod tests {
     /// construction — and any change to the pill's height or to the theme's font would
     /// have separated them. The label is now the pill's own line box, so its top edge is
     /// exactly half a line above the pill's middle line.
+    ///
+    /// # Why the label is read as ink
+    ///
+    /// The label is no longer a `<text>` element carrying its own `y`: the backend emits the
+    /// glyphs as `font8x8` rectangles in a single `<path>` (see `text_ink_box`). The ink is a
+    /// *stronger* witness than the attribute was — it is where the glyphs actually landed, at
+    /// the run's own pixel resolution, rather than where the element claimed to start.
+    #[cfg(not(alloc_frugal))]
     #[test]
     fn the_label_sits_on_the_pills_own_line_box() {
         let mut badge = Badge::new(crate::widget::census::CENSUS_RECT);
@@ -600,25 +608,20 @@ mod tests {
         let (pill_y, pill_h) = (attr("y"), attr("height"));
         let pill_mid = pill_y + pill_h / 2;
 
-        let label_tag = svg.split("<text").nth(1).expect("the badge paints its label");
-        let label_y = label_tag
-            .split("y=\"")
-            .nth(1)
-            .and_then(|rest| rest.split('"').next())
-            .and_then(|value| value.parse::<i32>().ok())
-            .expect("the label carries a y");
+        let (_, label_top, _, _) = crate::widget::svg::text_ink_box(&svg)
+            .expect("the badge paints its label as glyph geometry");
 
         // A line box that is a whole number of pixels tall centred on `pill_mid` puts
         // its top edge at `pill_mid - height / 2`, so the label is never more than a
         // pixel off the pill's own middle whatever the font's metrics are.
         assert!(
-            (label_y - (pill_mid - dimensions::BADGE_LABEL_FONT_SIZE as i32 / 2)).abs() <= 4,
-            "the label ({label_y}) must hang from the pill's centre ({pill_mid}): {svg}"
+            (label_top - (pill_mid - dimensions::BADGE_LABEL_FONT_SIZE as i32 / 2)).abs() <= 4,
+            "the label ({label_top}) must hang from the pill's centre ({pill_mid}): {svg}"
         );
         // And it stays inside the pill, which the old literal nearly did not.
         assert!(
-            label_y >= pill_y && label_y < pill_y + pill_h,
-            "the label ({label_y}) must sit within the pill ({pill_y}..{})",
+            label_top >= pill_y && label_top < pill_y + pill_h,
+            "the label ({label_top}) must sit within the pill ({pill_y}..{})",
             pill_y + pill_h
         );
     }

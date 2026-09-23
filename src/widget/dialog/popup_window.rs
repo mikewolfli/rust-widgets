@@ -355,7 +355,20 @@ mod tests {
         let decorated = crate::widget::svg::render_to_svg(&mut titled);
 
         assert_ne!(plain, decorated, "a titled popup must paint more than a titleless one");
-        assert!(decorated.contains("Details"), "the title text must appear in the rendered output");
+        // The title is `font8x8` glyph geometry rather than a `<text>` element, so the string is
+        // not in the document and the check is on **where the ink landed**: the titled popup
+        // gains a run on its title bar, and the titleless one paints no text at all.
+        let (left, top, right, bottom) = crate::widget::svg::text_ink_box(&decorated)
+            .unwrap_or_else(|| panic!("a titled popup must paint its title: {decorated}"));
+        assert!(right > left, "the title laid down ink: {left}..{right}");
+        assert!(
+            (0..TITLE_BAR_HEIGHT as i32).contains(&top) && bottom <= TITLE_BAR_HEIGHT as i32,
+            "the title must sit on the title bar, got {top}..{bottom}"
+        );
+        assert!(
+            crate::widget::svg::text_ink_box(&plain).is_none(),
+            "a titleless popup paints no title ink: {plain}"
+        );
     }
 
     /// A titleless popup keeps the whole rect for its content.

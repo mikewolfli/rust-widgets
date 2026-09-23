@@ -552,8 +552,7 @@
   <rect x="164" y="74" width="10" height="1" fill="rgba(66,133,244,1.00)" />
   <rect x="167" y="75" width="7" height="1" fill="rgba(66,133,244,1.00)" />
   <rect x="170" y="76" width="3" height="1" fill="rgba(66,133,244,1.00)" />
-  <text x="157" y="36" font-family="sans-serif" font-size="10" font-style="normal" font-weight="400" fill="rgba(173,173,173,1.00)">…</text>
-  <text x="142" y="44" font-family="sans-serif" font-size="9" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">3…</text>
+  <path d="M142 37h1v1h-1zM143 37h1v1h-1zM143 37h1v1h-1zM144 37h1v1h-1zM142 38h1v1h-1zM142 38h1v1h-1zM144 38h1v1h-1zM145 38h1v1h-1zM144 39h1v1h-1zM145 39h1v1h-1zM143 40h1v1h-1zM143 40h1v1h-1zM144 40h1v1h-1zM144 41h1v1h-1zM145 41h1v1h-1zM142 42h1v1h-1zM142 42h1v1h-1zM144 42h1v1h-1zM145 42h1v1h-1zM142 43h1v1h-1zM143 43h1v1h-1zM143 43h1v1h-1zM144 43h1v1h-1zM147 37h1v1h-1zM147 37h1v1h-1zM148 37h1v1h-1zM148 37h1v1h-1zM149 37h1v1h-1zM150 37h1v1h-1zM150 37h1v1h-1zM151 37h1v1h-1zM147 38h1v1h-1zM151 38h1v1h-1zM147 39h1v1h-1zM148 39h1v1h-1zM148 39h1v1h-1zM149 39h1v1h-1zM150 39h1v1h-1zM151 39h1v1h-1zM147 40h1v1h-1zM148 40h1v1h-1zM150 40h1v1h-1zM151 40h1v1h-1zM147 41h1v1h-1zM148 41h1v1h-1zM148 41h1v1h-1zM149 41h1v1h-1zM150 41h1v1h-1zM151 41h1v1h-1zM147 42h1v1h-1zM151 42h1v1h-1zM147 43h1v1h-1zM147 43h1v1h-1zM148 43h1v1h-1zM148 43h1v1h-1zM149 43h1v1h-1zM150 43h1v1h-1zM150 43h1v1h-1zM151 43h1v1h-1z" fill="rgba(0,0,0,1.00)" />
   <rect x="122" y="61" width="1" height="1" fill="rgba(219,68,55,1.00)" />
   <rect x="124" y="62" width="2" height="1" fill="rgba(219,68,55,1.00)" />
   <rect x="127" y="63" width="2" height="1" fill="rgba(219,68,55,1.00)" />
@@ -1587,8 +1586,7 @@
   <rect x="106" y="57" width="5" height="1" fill="rgba(219,68,55,1.00)" />
   <rect x="111" y="58" width="3" height="1" fill="rgba(219,68,55,1.00)" />
   <rect x="115" y="59" width="2" height="1" fill="rgba(219,68,55,1.00)" />
-  <text x="106" y="106" font-family="sans-serif" font-size="10" font-style="normal" font-weight="400" fill="rgba(173,173,173,1.00)">…</text>
-  <text x="105" y="94" font-family="sans-serif" font-size="9" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">5…</text>
+  <path d="M105 87h1v1h-1zM105 87h1v1h-1zM106 87h1v1h-1zM106 87h1v1h-1zM107 87h1v1h-1zM108 87h1v1h-1zM105 88h1v1h-1zM105 88h1v1h-1zM105 89h1v1h-1zM105 89h1v1h-1zM106 89h1v1h-1zM106 89h1v1h-1zM107 89h1v1h-1zM107 90h1v1h-1zM108 90h1v1h-1zM107 91h1v1h-1zM108 91h1v1h-1zM105 92h1v1h-1zM105 92h1v1h-1zM107 92h1v1h-1zM108 92h1v1h-1zM105 93h1v1h-1zM106 93h1v1h-1zM106 93h1v1h-1zM107 93h1v1h-1zM110 87h1v1h-1zM110 87h1v1h-1zM111 87h1v1h-1zM111 87h1v1h-1zM112 87h1v1h-1zM113 87h1v1h-1zM113 87h1v1h-1zM114 87h1v1h-1zM110 88h1v1h-1zM114 88h1v1h-1zM110 89h1v1h-1zM111 89h1v1h-1zM111 89h1v1h-1zM112 89h1v1h-1zM113 89h1v1h-1zM114 89h1v1h-1zM110 90h1v1h-1zM111 90h1v1h-1zM113 90h1v1h-1zM114 90h1v1h-1zM110 91h1v1h-1zM111 91h1v1h-1zM111 91h1v1h-1zM112 91h1v1h-1zM113 91h1v1h-1zM114 91h1v1h-1zM110 92h1v1h-1zM114 92h1v1h-1zM110 93h1v1h-1zM110 93h1v1h-1zM111 93h1v1h-1zM111 93h1v1h-1zM112 93h1v1h-1zM113 93h1v1h-1zM113 93h1v1h-1zM114 93h1v1h-1z" fill="rgba(0,0,0,1.00)" />
   <rect x="69" y="38" width="2" height="1" fill="rgba(244,180,0,1.00)" />
   <rect x="68" y="39" width="5" height="1" fill="rgba(244,180,0,1.00)" />
   <rect x="68" y="40" width="8" height="1" fill="rgba(244,180,0,1.00)" />
@@ -2074,7 +2072,6 @@
   <rect x="119" y="53" width="1" height="1" fill="rgba(244,180,0,1.00)" />
   <rect x="119" y="54" width="1" height="1" fill="rgba(244,180,0,1.00)" />
   <rect x="119" y="55" width="1" height="1" fill="rgba(244,180,0,1.00)" />
-  <text x="93" y="26" font-family="sans-serif" font-size="10" font-style="normal" font-weight="400" fill="rgba(173,173,173,1.00)">…</text>
-  <text x="96" y="36" font-family="sans-serif" font-size="9" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">2…</text>
+  <path d="M96 29h1v1h-1zM97 29h1v1h-1zM97 29h1v1h-1zM98 29h1v1h-1zM96 30h1v1h-1zM96 30h1v1h-1zM98 30h1v1h-1zM99 30h1v1h-1zM98 31h1v1h-1zM99 31h1v1h-1zM97 32h1v1h-1zM97 32h1v1h-1zM98 32h1v1h-1zM96 33h1v1h-1zM97 33h1v1h-1zM96 34h1v1h-1zM96 34h1v1h-1zM98 34h1v1h-1zM99 34h1v1h-1zM96 35h1v1h-1zM96 35h1v1h-1zM97 35h1v1h-1zM97 35h1v1h-1zM98 35h1v1h-1zM99 35h1v1h-1zM101 29h1v1h-1zM101 29h1v1h-1zM102 29h1v1h-1zM102 29h1v1h-1zM103 29h1v1h-1zM104 29h1v1h-1zM104 29h1v1h-1zM105 29h1v1h-1zM101 30h1v1h-1zM105 30h1v1h-1zM101 31h1v1h-1zM102 31h1v1h-1zM102 31h1v1h-1zM103 31h1v1h-1zM104 31h1v1h-1zM105 31h1v1h-1zM101 32h1v1h-1zM102 32h1v1h-1zM104 32h1v1h-1zM105 32h1v1h-1zM101 33h1v1h-1zM102 33h1v1h-1zM102 33h1v1h-1zM103 33h1v1h-1zM104 33h1v1h-1zM105 33h1v1h-1zM101 34h1v1h-1zM105 34h1v1h-1zM101 35h1v1h-1zM101 35h1v1h-1zM102 35h1v1h-1zM102 35h1v1h-1zM103 35h1v1h-1zM104 35h1v1h-1zM104 35h1v1h-1zM105 35h1v1h-1z" fill="rgba(0,0,0,1.00)" />
   <circle cx="120" cy="60" r="56" fill="none" stroke="rgba(111,111,111,1.00)" stroke-width="1" />
 </svg>

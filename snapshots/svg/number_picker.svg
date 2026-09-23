@@ -4,7 +4,7 @@
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <rect x="0" y="46" width="240" height="28" fill="rgba(130,130,130,1.00)" />
-  <text x="115" y="37" font-family="Sans" font-size="15.400001" font-style="normal" font-weight="400" fill="rgba(225,225,225,0.75)">1</text>
-  <text x="115" y="65" font-family="Sans" font-size="15.400001" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">0</text>
+  <path d="M118 25h1v1h-1zM119 25h1v1h-1zM117 26h1v2h-1zM118 26h1v2h-1zM119 26h1v2h-1zM118 28h1v2h-1zM119 28h1v2h-1zM118 30h1v2h-1zM119 30h1v2h-1zM118 32h1v2h-1zM119 32h1v2h-1zM118 34h1v2h-1zM119 34h1v2h-1zM116 36h1v2h-1zM117 36h1v2h-1zM118 36h1v2h-1zM119 36h1v2h-1zM120 36h1v2h-1zM121 36h1v2h-1z" fill="rgba(225,225,225,0.75)" />
+  <path d="M117 53h1v1h-1zM118 53h1v1h-1zM119 53h1v1h-1zM120 53h1v1h-1zM121 53h1v1h-1zM116 54h1v2h-1zM117 54h1v2h-1zM121 54h1v2h-1zM122 54h1v2h-1zM116 56h1v2h-1zM117 56h1v2h-1zM120 56h1v2h-1zM121 56h1v2h-1zM122 56h1v2h-1zM116 58h1v2h-1zM117 58h1v2h-1zM119 58h1v2h-1zM120 58h1v2h-1zM121 58h1v2h-1zM122 58h1v2h-1zM116 60h1v2h-1zM117 60h1v2h-1zM118 60h1v2h-1zM119 60h1v2h-1zM121 60h1v2h-1zM122 60h1v2h-1zM116 62h1v2h-1zM117 62h1v2h-1zM118 62h1v2h-1zM121 62h1v2h-1zM122 62h1v2h-1zM117 64h1v2h-1zM118 64h1v2h-1zM119 64h1v2h-1zM120 64h1v2h-1zM121 64h1v2h-1z" fill="rgba(0,0,0,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
 </svg>

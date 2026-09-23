@@ -2,9 +2,26 @@
 // SPDX-License-Identifier: MIT
 
 //! SplitButton widget with primary action and drop-down action list.
+//!
+//! # The face is assembled from two columns, not computed from one edge
+//!
+//! BLUE22 §B.8 lists this control's defect as "master face + arrow by hand", and the fix is not
+//! a nicer arithmetic: it is that the two columns must **tile** the face, so a wider arrow column
+//! *pushes* the trigger narrower instead of being placed from the trailing edge while the trigger
+//! is placed from the leading one.
+//!
+//! The assembly therefore goes through [`CompositeBuilder`]/[`FlexLayout`]: the layout reads each
+//! column's own [`Hints`], places them in order, and reports the rectangles. Nothing here computes
+//! an `x`. The one thing that is *declared* rather than derived is the arrow's preferred
+//! width ([`dimensions::SPLIT_ARROW_COLUMN_WIDTH`]) — see that constant for why the number is a
+//! constant and not the `v` glyph's advance.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::compat::Vec;
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
+use crate::layout::{
+    AlignItems, FlexDirection, FlexLayout, FlexWrap, JustifyContent, LayoutParams,
+};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::style::EdgeOffsets;
@@ -12,9 +29,17 @@ use crate::widget::capability::coercion::{expect_bool, expect_string, expect_u32
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::composite::CompositeBuilder;
 use crate::widget::metrics::{dimensions, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, Widget, WidgetFactory, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// The character the arrow column paints.
+///
+/// Named because the assembled face creates its arrow column from this text and then paints the
+/// same glyph: two spellings of one fact, and the template test asserts the arrow column the
+/// layout reported is the box the glyph is centred in.
+const ARROW_LABEL: &str = "v";
 
 /// One selectable action in a split button drop-down list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,7 +236,7 @@ impl SplitButton {
         self.base.request_redraw();
     }
 
-    /// The face the button actually paints: full width,
+    /// The band the button actually paints: full width,
     /// `dimensions::SPLIT_BUTTON_HEIGHT` tall, centred in the rectangle it was given.
     ///
     /// # Why the face is not the rectangle
@@ -225,10 +250,84 @@ impl SplitButton {
         ControlMetrics::full_width_band(self.geometry(), dimensions::SPLIT_BUTTON_HEIGHT)
     }
 
-    fn primary_rect(&self) -> Rect {
+    /// The trigger and the arrow column, placed by the layout that owns the tiling.
+    ///
+    /// # Why the two columns are assembled rather than computed
+    ///
+    /// This used to be `primary_width = band.width - arrow_width` with the arrow placed from the
+    /// band's trailing edge: two derivations from two different edges, so the trigger's box and
+    /// the arrow's box agreed only because both subtracted the same constant. The layout holds
+    /// the two facts the arithmetic was hiding — that they are ordered, and that they tile — and
+    /// it states them once. The arrow's width is the *ground* fact here (a constant, see
+    /// [`dimensions::SPLIT_ARROW_COLUMN_WIDTH`]); the trigger's is what the layout computes as the
+    /// remainder.
+    ///
+    /// # Why the arrow is `add_flexible(.., Height)`
+    ///
+    /// Both columns are declared at the face's own height, so the cross axis has nothing to
+    /// resolve and `Stretch` and "keep the preferred height" agree. Declaring it anyway is what
+    /// makes the assembly say *why* the arrow is 28 px: it is what the arrow asked for, not
+    /// whatever the row's tallest child happened to be.
+    fn assemble_face(&self) -> (Rect, Rect) {
         let band = self.face_band();
-        let primary_width = band.width.saturating_sub(self.arrow_width);
-        Rect::new(band.x, band.y, primary_width, band.height)
+        let factory = WidgetFactory::new_with_defaults();
+        let mut builder = CompositeBuilder::new(
+            Box::new(FlexLayout::with_params(
+                FlexDirection::Row,
+                FlexWrap::NoWrap,
+                JustifyContent::FlexStart,
+                AlignItems::Stretch,
+                0,
+                0,
+            )),
+            EdgeOffsets::all(0),
+            Size::new(0, 0),
+        );
+        // The liveness of the two columns is the assembly's precondition, and a silent `None`
+        // would place a face with no trigger in it. `WidgetFactory::create` answers `Some` for
+        // every core kind in every profile (`button` and `label` are registered unconditionally),
+        // so the honest answer is a debug assertion rather than a production branch that cannot
+        // be reached and would therefore never be tested.
+        let trigger = builder.add_sized(
+            &factory,
+            "label",
+            &self.text,
+            Size::new(self.trigger_hint_width(), band.height),
+            LayoutParams::filled(),
+        );
+        debug_assert!(trigger.is_some(), "the trigger column is a core control");
+        let arrow = builder.add_sized(
+            &factory,
+            "label",
+            ARROW_LABEL,
+            Size::new(self.arrow_width, band.height),
+            LayoutParams::new(),
+        );
+        debug_assert!(arrow.is_some(), "the arrow column is a core control");
+
+        let mut placed: Vec<Rect> = Vec::with_capacity(2);
+        builder.arrange(band, &mut |_, rect| placed.push(rect));
+        match (placed.first(), placed.get(1)) {
+            (Some(trigger), Some(arrow)) => (*trigger, *arrow),
+            // A layout that reported nothing is not a face. Falling back to the band for the
+            // trigger and an empty arrow keeps every downstream box inside the control instead of
+            // painting a zero-extent arrow into the corner — and `debug_assert!` above makes this
+            // arm unreachable in a debug build, so it cannot be entered unnoticed in practice.
+            _ => (band, Rect::new(band.x + band.width as i32, band.y, 0, band.height)),
+        }
+    }
+
+    /// The width the trigger's own label asks for.
+    ///
+    /// The label control measures itself (`len * 8 + 2 * BUTTON_PADDING_H`), which is the same
+    /// model `SplitButton` used, so the assembled face's columns tile exactly as the hand-computed
+    /// pair did while now being derived from the text.
+    fn trigger_hint_width(&self) -> u32 {
+        self.text.len() as u32 * 8 + dimensions::BUTTON_PADDING_H * 2
+    }
+
+    fn primary_rect(&self) -> Rect {
+        self.assemble_face().0
     }
 
     /// The trigger's label box: the primary face's interior, inset by the shared padding.
@@ -254,9 +353,7 @@ impl SplitButton {
     }
 
     fn arrow_rect(&self) -> Rect {
-        let band = self.face_band();
-        let arrow_x = band.x + band.width as i32 - self.arrow_width as i32;
-        Rect::new(arrow_x, band.y, self.arrow_width, band.height)
+        self.assemble_face().1
     }
 
     fn menu_rect(&self) -> Rect {
@@ -601,7 +698,7 @@ impl Draw for SplitButton {
         // the origin from the measured string inside the column.
         context.draw_text_fitted(
             context.text_line(arrow, &Font::default()),
-            "v",
+            ARROW_LABEL,
             &Font::default(),
             ink.blend(&arrow_bg, 0.35),
             HorizontalAlignment::Center,
@@ -818,6 +915,149 @@ mod tests {
         assert_eq!(got, vec![true, false]);
     }
 
+    /// The assembled face is the pair of columns the hand-computed geometry produced.
+    ///
+    /// # Why this test exists at all
+    ///
+    /// BLUE22 §B.6 rule 2 asks placement to belong to the layout, and the risk of adopting a
+    /// layout for a two-column chrome is precisely that it *changes* the geometry — a face that
+    /// now includes a padding the old arithmetic did not, or a trigger that no longer ends where
+    /// the arrow begins. This states the three properties that make the assembly correct rather
+    /// than merely different, and it is checked at several control widths because the two columns
+    /// have a fixed arrow width and a text-driven trigger width: they collide exactly where one
+    /// derivation is dropped.
+    ///
+    /// The old form was `primary_width = band.width - arrow_width` with the arrow placed from the
+    /// band's trailing edge, so the tiling held only because both subtracted the same constant.
+    #[test]
+    fn the_two_columns_tile_the_face() {
+        // Every width that can hold both columns. `MIN_TILE_WIDTH` is the narrowest face for which
+        // tiling is *possible at all* — it is not a threshold the code applies, it is the sum of
+        // the two columns' own sizes, and the assertion below is that the assembly tiles exactly
+        // wherever tiling is representable.
+        let min_tile_width = split_hint_width("Run") + dimensions::SPLIT_ARROW_COLUMN_WIDTH;
+        for width in [min_tile_width, 100, 240, 400] {
+            let split = SplitButton::new("Run", Rect::new(0, 0, width, 120));
+            let band = split.face_band();
+            let primary = split.primary_rect();
+            let arrow = split.arrow_rect();
+            assert_eq!(
+                primary.x, band.x,
+                "the trigger starts at the face's leading edge at width {width}"
+            );
+            assert_eq!(
+                primary.x + primary.width as i32,
+                arrow.x,
+                "the trigger ends where the arrow column begins at width {width}"
+            );
+            assert_eq!(
+                arrow.x + arrow.width as i32,
+                band.x + band.width as i32,
+                "the arrow ends where the face ends at width {width}"
+            );
+            assert_eq!(primary.height, band.height, "both columns are the face's own height");
+            assert_eq!(arrow.height, band.height);
+        }
+    }
+
+    /// A face too narrow for both columns overhangs rather than squeezing one of them.
+    ///
+    /// # What this pins, and what it deliberately does not promise
+    ///
+    /// The two columns between them need `split_hint_width("Run") + SPLIT_ARROW_COLUMN_WIDTH`.
+    /// A face narrower than that cannot be tiled, and there are three things the code could do:
+    /// squeeze the trigger below its own declared width, squeeze the arrow column below its own,
+    /// or let the row overhang. The layout's answer — "a child is never squeezed below its own
+    /// floor; the row overhangs" (BLUE22 §B.10) — is the right one for a row of *content*, and it
+    /// is what this control inherits rather than overrides, so the trigger keeps its width and the
+    /// arrow column is pushed past the face.
+    ///
+    /// That is **not** a good outcome and the test does not dress it up as one: a sub-part outside
+    /// its control is invisible, because the SVG backend emits absolute coordinates and nothing
+    /// clips at this layer. It is pinned here so the behaviour is a decision on record rather than
+    /// an accident, and so a later fix (eliding the trigger, or refusing to draw the face at all)
+    /// has a failing assertion to argue against instead of a silent gap. What the test *does*
+    /// guarantee is the part that matters at any width: neither column is drawn at a size it did
+    /// not ask for.
+    #[test]
+    fn a_face_too_narrow_for_both_columns_overhangs_rather_than_squeezing_one() {
+        let width = 48u32;
+        let split = SplitButton::new("Run", Rect::new(0, 0, width, 120));
+        let primary = split.primary_rect();
+        let arrow = split.arrow_rect();
+        assert_eq!(
+            primary.width,
+            split_hint_width("Run"),
+            "the trigger is never squeezed below the width its own label asked for"
+        );
+        assert_eq!(
+            arrow.width,
+            dimensions::SPLIT_ARROW_COLUMN_WIDTH,
+            "nor is the arrow column squeezed below its own width"
+        );
+        assert!(
+            arrow.x + arrow.width as i32 > split.face_band().x + width as i32,
+            "the row therefore overhangs the face (the known defect), rather than shrinking a \
+             column the caller sized"
+        );
+    }
+
+    /// The width `SplitButton` measures a trigger label at: `len * 8 + 2 * BUTTON_PADDING_H`.
+    fn split_hint_width(text: &str) -> u32 {
+        text.len() as u32 * 8 + dimensions::BUTTON_PADDING_H * 2
+    }
+
+    /// A wider arrow column pushes the trigger narrower rather than overlapping it.
+    ///
+    /// This is BLUE22 §B.9's rule stated for this control: the trigger's width is *derived* from
+    /// the sibling column, so the two cannot be placed from opposite edges of the face. It is the
+    /// property the layout provides and the previous `band.width - arrow_width` arithmetic only
+    /// happened to satisfy.
+    #[test]
+    fn a_wider_arrow_column_pushes_the_trigger() {
+        let mut split = SplitButton::new("Run", Rect::new(0, 0, 240, 120));
+        let before = split.primary_rect().width;
+        split.arrow_width = dimensions::SPLIT_ARROW_COLUMN_WIDTH + 10;
+        let after = split.primary_rect().width;
+        assert_eq!(
+            before - after,
+            10,
+            "the trigger yields exactly the room the arrow took ({before} -> {after})"
+        );
+        assert_eq!(
+            after + split.arrow_rect().width,
+            split.face_band().width,
+            "the two columns still tile the face after the arrow grew"
+        );
+    }
+
+    /// The arrow column is the box the glyph is painted into.
+    ///
+    /// The assembled face creates the arrow column from [`ARROW_LABEL`] and then paints that same
+    /// glyph, so this is the "one fact, one derivation" check between the two: a column the layout
+    /// reported somewhere other than where the glyph is centred would mean the assembly and the
+    /// paint were reading different boxes.
+    #[test]
+    fn the_arrow_glyph_is_centred_in_the_column_the_layout_reported() {
+        let mut split = SplitButton::new("Run", Rect::new(0, 0, 240, 120));
+        let svg = crate::widget::svg::render_to_svg(&mut split);
+        let boxes = text_run_boxes(&svg);
+        assert_eq!(boxes.len(), 2, "the face paints a trigger run and an arrow run: {boxes:?}");
+        let arrow = split.arrow_rect();
+        let (left, top, right, bottom) = boxes[1];
+        let glyph_cx = (left + right) as f32 / 2.0;
+        let column_cx = arrow.x as f32 + arrow.width as f32 / 2.0;
+        assert!(
+            (glyph_cx - column_cx).abs() <= 1.5,
+            "the arrow must be centred in the column the layout reported: glyph {glyph_cx}, \
+             column {column_cx}"
+        );
+        assert!(
+            top >= arrow.y && bottom <= arrow.y + arrow.height as i32,
+            "the arrow must stay inside its own column: ink {top}..{bottom}, column {arrow:?}"
+        );
+    }
+
     /// The button's face is one compact row, and the popup hangs from it.
     ///
     /// The defect this pins: the face and its two halves were sized from `rect`, so a 240x120
@@ -845,12 +1085,64 @@ mod tests {
         assert_eq!(menu.y, band.y + band.height as i32);
     }
 
+    /// One ink box per text `<path>` in document order, as `(left, top, right, bottom)`.
+    ///
+    /// # Why the ink and not the string
+    ///
+    /// Text leaves the SVG backend as the `font8x8` rectangles the rasteriser fills — one
+    /// axis-aligned subpath per set bitmap bit — so neither the label nor the arrow is in the
+    /// document in any form, and a test has to locate a run by *where* it is. That is the
+    /// stronger check: the old form matched `>Sample</text>` and read the element's `x`, so a
+    /// glyph placed off its column's centre with a correct attribute would have passed it.
+    ///
+    /// One element is one `draw_text`, so this is one box per run. Subpaths are not
+    /// deduplicated: a glyph box wider than the 8 bitmap columns maps two columns to one pixel
+    /// and emits the same rectangle twice, exactly as the rasteriser fills it twice.
+    fn text_run_boxes(svg: &str) -> Vec<(i32, i32, i32, i32)> {
+        let mut boxes = Vec::new();
+        for line in svg.lines() {
+            let Some(path_at) = line.find("<path ") else { continue };
+            let Some(d_at) = line[path_at..].find("d=\"") else { continue };
+            let start = path_at + d_at + 3;
+            let Some(end) = line[start..].find('"') else { continue };
+            let mut bounds: Option<(i32, i32, i32, i32)> = None;
+            for subpath in line[start..start + end].split('M').skip(1) {
+                let numbers: Vec<i32> = subpath
+                    .split(|c: char| !c.is_ascii_digit() && c != '-')
+                    .filter(|part| !part.is_empty())
+                    .filter_map(|part| part.parse().ok())
+                    .collect();
+                if numbers.len() < 4 {
+                    continue;
+                }
+                let (x, y, w, h) = (numbers[0], numbers[1], numbers[2], numbers[3]);
+                let bit = (x, y, x + w, y + h);
+                bounds = Some(match bounds {
+                    None => bit,
+                    Some((l, t, r, b)) => (l.min(bit.0), t.min(bit.1), r.max(bit.2), b.max(bit.3)),
+                });
+            }
+            if let Some(union) = bounds {
+                boxes.push(union);
+            }
+        }
+        boxes
+    }
+
     /// The trigger's label is centred in the trigger, and the arrow in its own column.
     ///
     /// Both used to be placed by hand: the label at `primary_rect.x + 8` (left-aligned against
     /// a literal, so a 240 px control drew a 50 px word flush to the left of a 218 px face) and
     /// the arrow at `arrow.x + (arrow.width / 2) - 3` (which hard-coded a 6 px-wide 'v', so any
     /// other glyph or font put the arrow off the column's centre).
+    ///
+    /// The check is on the emitted **ink**, not on a `<text x>` attribute. The two runs are told
+    /// apart by the band their ink's centre falls in — the trigger's box or the trailing arrow's
+    /// column — rather than by the string they spell, which is no longer in the document at all.
+    /// A run's centre is compared to the box centre it must be centred on, within the fitter's
+    /// own margin: a `font8x8` bitmap maps 8 columns onto `round(0.6 * size)` pixels, so the lit
+    /// columns rarely start on the box's first pixel. Asserting the margin keeps this a statement
+    /// about the layout rather than about the glyph table.
     #[test]
     fn the_label_and_the_arrow_are_each_centred_in_their_own_box() {
         let rect = Rect::new(0, 0, 240, 120);
@@ -858,31 +1150,62 @@ mod tests {
         let primary = split.primary_rect();
         let arrow = split.arrow_rect();
 
-        let mut backend = crate::render::SvgPaintBackend::new(crate::core::Size::new(240, 120));
-        let context = crate::render::RenderContext::new(&mut backend);
-        let font = Font::default();
-        let label_w = context.measure_text("Sample", &font).width as i32;
-        let arrow_w = context.measure_text("v", &font).width as i32;
-
-        let expected_label_x = primary.x
-            + dimensions::SPLIT_BUTTON_PADDING_H as i32
-            + (primary.width as i32 - 2 * dimensions::SPLIT_BUTTON_PADDING_H as i32 - label_w) / 2;
-        let expected_arrow_x = arrow.x + (arrow.width as i32 - arrow_w) / 2;
-
         let svg = crate::widget::svg::render_to_svg(&mut split);
-        let found = |needle: &str| -> i32 {
-            svg.lines()
-                .find(|line| line.contains(&format!(">{needle}</text>")))
-                .and_then(|line| {
-                    let at = line.find("x=\"")? + 3;
-                    let end = line[at..].find('"')? + at;
-                    line[at..end].parse().ok()
-                })
-                .unwrap_or_else(|| panic!("{needle} was not rendered"))
-        };
-        assert_eq!(found("Sample"), expected_label_x, "the label belongs in the trigger's middle");
-        assert_ne!(found("Sample"), primary.x + dimensions::SPLIT_BUTTON_PADDING_H as i32);
-        assert_eq!(found("v"), expected_arrow_x, "the arrow belongs in its column's middle");
+        let runs = text_run_boxes(&svg);
+        // The label's ink is centred in the trigger, which is the same point as the centre of the
+        // trigger's *padded* content box: the padding is symmetric.
+        let label = runs
+            .iter()
+            .find(|(l, _, r, _)| {
+                let centre = (l + r) / 2;
+                centre >= primary.x && centre < primary.x + primary.width as i32
+            })
+            .copied()
+            .unwrap_or_else(|| panic!("the label painted no ink in the trigger: {svg}"));
+        let arrow_run = runs
+            .iter()
+            .find(|(l, _, r, _)| {
+                let centre = (l + r) / 2;
+                centre >= arrow.x && centre < arrow.x + arrow.width as i32
+            })
+            .copied()
+            .unwrap_or_else(|| panic!("the arrow painted no ink in its column: {svg}"));
+
+        let margin = crate::render::TEXT_FIT_MARGIN as i32;
+        let label_centre = (label.0 + label.2) / 2;
+        let primary_centre = primary.x + primary.width as i32 / 2;
+        assert!(
+            (label_centre - primary_centre).abs() <= margin,
+            "the label's ink centre {label_centre} must be the trigger's centre {primary_centre}"
+        );
+        // The old literal origin was the trigger's left padding: a centred label cannot start
+        // there, because the padding alone is narrower than half the label's shortfall.
+        assert!(
+            label.0 > primary.x + dimensions::SPLIT_BUTTON_PADDING_H as i32,
+            "the label is centred, not left-aligned at the padding: {label:?}"
+        );
+        assert!(label.2 > label.0, "the label laid down ink: {label:?}");
+        // The arrow's glyph is centred on its column, which is the fact the literal
+        // `(arrow.width / 2) - 3` got wrong for any glyph but a 6 px-wide 'v'.
+        let arrow_centre = (arrow_run.0 + arrow_run.2) / 2;
+        let column_centre = arrow.x + arrow.width as i32 / 2;
+        assert!(
+            (arrow_centre - column_centre).abs() <= margin,
+            "the arrow's ink centre {arrow_centre} must be the column's centre {column_centre}"
+        );
+        // And the two runs occupy their own halves of the face rather than colliding in it.
+        assert!(
+            label.2 <= arrow_run.0,
+            "the label {label:?} must not reach into the arrow column {arrow_run:?}"
+        );
+        // Both runs are painted inside the face band, so neither can drift off the control.
+        let band = split.face_band();
+        for (name, run) in [("label", label), ("arrow", arrow_run)] {
+            assert!(
+                run.1 >= band.y && run.3 <= band.y + band.height as i32,
+                "the {name} ink {run:?} must stay inside the face {band:?}"
+            );
+        }
     }
 
     /// The trigger's label box and a menu row's label box share one padding derivation.

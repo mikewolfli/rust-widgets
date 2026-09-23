@@ -2,17 +2,31 @@
 // SPDX-License-Identifier: MIT
 
 //! Tool bar widget.
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+//!
+//! # The strip is assembled from its items
+//!
+//! BLUE22 §B.8 lists this control's defect as "item positions from a step literal", and the fix is
+//! the one the composite section exists for: the items are handed to a [`FlexLayout`] and the
+//! widget reads the rectangles that come back. A toolbar is a row (or a column) of chrome, which is
+//! precisely what a layout owns, so nothing here accumulates an offset or re-derives the direction.
+
+use crate::compat::{String, ToString, Vec};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
+use crate::layout::{
+    AlignItems, FlexDirection, FlexLayout, FlexWrap, JustifyContent, LayoutParams,
+};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::style::EdgeOffsets;
 use crate::widget::capability::access::tool_bar_orientation_to_str;
 use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_toolbar_orientation};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::composite::CompositeBuilder;
 use crate::widget::metrics::{dimensions, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, Widget, WidgetFactory, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Orientation of a toolbar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -376,9 +390,6 @@ impl ToolBar {
     pub fn item_checked(&self, index: usize) -> Option<bool> {
         self.items.get(index).map(|item| item.is_checked())
     }
-    fn button_size(&self) -> f32 {
-        self.icon_size + dimensions::TOOLBAR_SPACING as f32
-    }
 
     /// The strip the control actually paints: a full-width band
     /// [`dimensions::TOOLBAR_HEIGHT`] tall, centred in the area the control was given.
@@ -401,31 +412,75 @@ impl ToolBar {
         // [`dimensions::TOOLBAR_ITEM_INSET`]. Deriving the item's height from `geometry()`
         // made a 240x120 census cell give every item a 116 px hover square, so the strip's
         // own hover fill covered the whole cell rather than the row the item sits on.
+        self.item_bands().get(index).copied().unwrap_or(Rect { x: 0, y: 0, width: 0, height: 0 })
+    }
+
+    /// Every item's box, placed by the layout that owns the running accumulator.
+    ///
+    /// # Why the items are assembled rather than walked
+    ///
+    /// The previous form carried its own `let mut offset = TOOLBAR_ITEM_INSET` and added each
+    /// item's step to it as it scanned for the requested index — the same "accumulate boxes in
+    /// sequence" that [`FlexLayout`] does, with the direction, the gap and the cross-axis
+    /// alignment each re-spelled in the widget. It was also why an item's size was a *step* rather
+    /// than a size: `icon_size + TOOLBAR_SPACING` is an advance, so a separator and a button could
+    /// only differ by comparing their two constants.
+    ///
+    /// Declaring each item's own box and handing them to a row makes the strip's geometry a
+    /// reading of the layout's answer: a wider icon, a different spacing or a vertical orientation
+    /// moves the whole arrangement without a second place to keep in step. `item_rect` is a lookup
+    /// into what the layout returned, so the hit test and the paint path cannot disagree.
+    fn item_bands(&self) -> Vec<Rect> {
         let band = self.band_rect();
-        let btn_sz = self.icon_size as u32 + dimensions::TOOLBAR_SPACING;
-        let sep_sz = dimensions::TOOLBAR_SPACING;
-        let mut offset = dimensions::TOOLBAR_ITEM_INSET as i32;
-        for (i, item) in self.items.iter().enumerate() {
-            let sz = if item.is_separator() { sep_sz } else { btn_sz };
-            if i == index {
-                return match self.orientation {
-                    ToolBarOrientation::Horizontal => Rect {
-                        x: band.x + offset,
-                        y: band.y + dimensions::TOOLBAR_ITEM_INSET as i32,
-                        width: sz,
-                        height: band.height.saturating_sub(dimensions::TOOLBAR_ITEM_INSET * 2),
-                    },
-                    ToolBarOrientation::Vertical => Rect {
-                        x: band.x + dimensions::TOOLBAR_ITEM_INSET as i32,
-                        y: band.y + offset,
-                        width: band.width.saturating_sub(dimensions::TOOLBAR_ITEM_INSET * 2),
-                        height: sz,
-                    },
-                };
-            }
-            offset += sz as i32;
+        if self.items.is_empty() {
+            return Vec::new();
         }
-        Rect { x: 0, y: 0, width: 0, height: 0 }
+        let horizontal = self.orientation == ToolBarOrientation::Horizontal;
+        let factory = WidgetFactory::new_with_defaults();
+        let mut row = CompositeBuilder::new(
+            Box::new(FlexLayout::with_params(
+                if horizontal { FlexDirection::Row } else { FlexDirection::Column },
+                FlexWrap::NoWrap,
+                JustifyContent::FlexStart,
+                AlignItems::Stretch,
+                0,
+                0,
+            )),
+            EdgeOffsets::all(dimensions::TOOLBAR_ITEM_INSET),
+            Size::new(0, 0),
+        );
+        for item in &self.items {
+            // A button occupies one icon square *plus the toolbar's own spacing*, exactly as the
+            // step accumulator did (`icon_size + TOOLBAR_SPACING` was the advance it added). The
+            // gap is therefore **inside the item's advance** rather than between two boxes, which
+            // is why the layout's own `gap` is zero: putting the spacing on the layout's gap as
+            // well would pay it twice and move every item after the first.
+            //
+            // A separator occupies just the spacing. Both boxes are declared on both axes, because
+            // the box an item paints in is the box its hover fill and its hit test use — and then
+            // the layout's cross axis has nothing to resolve.
+            let step = if item.is_separator() {
+                dimensions::TOOLBAR_SPACING
+            } else {
+                self.icon_size as u32 + dimensions::TOOLBAR_SPACING
+            };
+            let size = if horizontal {
+                Size::new(step, band.height.saturating_sub(dimensions::TOOLBAR_ITEM_INSET * 2))
+            } else {
+                Size::new(band.width.saturating_sub(dimensions::TOOLBAR_ITEM_INSET * 2), step)
+            };
+            let created = row.add_sized(&factory, "label", item.text(), size, LayoutParams::new());
+            debug_assert!(created.is_some(), "a toolbar item is a core control");
+        }
+        let mut placed: Vec<Rect> = Vec::with_capacity(self.items.len());
+        row.arrange(band, &mut |_, rect| placed.push(rect));
+        // A layout that reported fewer items than were registered is not a strip to paint into:
+        // the hit test would find a zero box for the missing ones, which reads as an item that is
+        // simply not clickable. Saturating the list keeps `item_rect` total.
+        while placed.len() < self.items.len() {
+            placed.push(Rect { x: 0, y: 0, width: 0, height: 0 });
+        }
+        placed
     }
     fn hit_item(&self, pos: Point) -> Option<usize> {
         // `Rect::contains_point`, not a hand-written comparison: the crate's
@@ -564,7 +619,6 @@ impl Draw for ToolBar {
         // — the fill, the rule, the separators and the item squares — is taken from this one
         // band, and `item_rect` (and therefore the hit test) reads the same one.
         let rect = self.band_rect();
-        let _btn_sz = self.button_size();
         let style = self.style();
         // Background
         //
@@ -665,5 +719,91 @@ mod tests {
         tool_bar.set_item_checked(idx, true);
         assert_eq!(tool_bar.item_checked(idx), Some(true));
         assert_eq!(tool_bar.item_checked(99), None);
+    }
+
+    /// The items tile the strip in sequence, each with the width its icon size implies.
+    ///
+    /// # What this pins
+    ///
+    /// BLUE22 §F.2.2 describes this control as "item positions from a step literal", and the
+    /// property that replaces it is that an item's box is what the *layout* reports. The test
+    /// asserts the sequence directly: each item's leading edge is the previous one's trailing edge
+    /// plus the toolbar's own spacing, so an item that grew (a wider icon) moves every later one
+    /// rather than overlapping it.
+    #[test]
+    fn the_items_tile_the_strip_in_sequence() {
+        // The band is the strip's own height, clamped to whatever the control was given: a census
+        // cell is 240x120, and a form usually gives the strip exactly its height. Use a rectangle
+        // tall enough to hold the strip, so the assertion is about the item boxes rather than about
+        // the clamping.
+        let strip_height = dimensions::TOOLBAR_HEIGHT + dimensions::TOOLBAR_ITEM_INSET * 2;
+        let mut tool_bar = ToolBar::new(Rect::new(0, 0, 240, strip_height));
+        tool_bar.set_icon_size(24.0);
+        tool_bar.add_action("save", "Save");
+        tool_bar.add_separator();
+        tool_bar.add_action("open", "Open");
+        let bands = tool_bar.item_bands();
+        assert_eq!(bands.len(), 3, "one band per item, separators included");
+        assert_eq!(bands[0].x, dimensions::TOOLBAR_ITEM_INSET as i32);
+        for pair in bands.windows(2) {
+            assert_eq!(
+                pair[1].x,
+                pair[0].x + pair[0].width as i32,
+                "each item follows the previous one's own box — the run is contiguous: {bands:?}"
+            );
+        }
+        // A button is one icon square *plus the spacing*, which is the control's own historic step:
+        // `icon_size + TOOLBAR_SPACING` is an item's advance. A separator is one spacing wide. Both
+        // read the same constant, so an item's advance and the separator's own box cannot drift.
+        let button = 24u32 + dimensions::TOOLBAR_SPACING;
+        assert_eq!(bands[0].width, button);
+        assert_eq!(bands[1].width, dimensions::TOOLBAR_SPACING);
+        assert_eq!(bands[2].width, button);
+        // Every item is inset vertically from the **strip**, so the hover fill is a row, not the
+        // cell. The item's own declared height is the strip minus the inset at both ends, and the
+        // layout's padding is that same inset — two readings of one constant, so the assertion is
+        // stated against the constant rather than against the layout's arithmetic.
+        let strip = tool_bar.band_rect();
+        let expected_height =
+            dimensions::TOOLBAR_HEIGHT.saturating_sub(dimensions::TOOLBAR_ITEM_INSET * 2);
+        for band in &bands {
+            assert_eq!(band.y, strip.y + dimensions::TOOLBAR_ITEM_INSET as i32);
+            assert_eq!(band.height, expected_height);
+        }
+    }
+
+    /// A wider icon size moves every later item rather than only the one it belongs to.
+    ///
+    /// This is §B.9's rule in its mechanical form — "the position of a sibling is derived from the
+    /// size of the one before it" — which a running accumulator of constants can also satisfy, and
+    /// which the previous step-per-item form did. The difference is that the *layout* now owns it:
+    /// the same assertion holds for a vertical toolbar without a second code path.
+    #[test]
+    fn a_wider_icon_moves_every_later_item() {
+        let mut tool_bar = ToolBar::new(Rect::new(0, 0, 240, dimensions::TOOLBAR_HEIGHT));
+        tool_bar.set_icon_size(24.0);
+        tool_bar.add_action("a", "A");
+        tool_bar.add_action("b", "B");
+        let before = tool_bar.item_bands()[1].x;
+
+        tool_bar.set_icon_size(40.0);
+        let after = tool_bar.item_bands()[1].x;
+        assert_eq!(after - before, 16, "the second item moves by exactly the growth of the first");
+    }
+
+    /// A vertical toolbar stacks its items down the strip with the same relation.
+    #[test]
+    fn a_vertical_toolbar_stacks_its_items_down_the_strip() {
+        let mut tool_bar = ToolBar::new(Rect::new(0, 0, 40, 240));
+        tool_bar.set_orientation(ToolBarOrientation::Vertical);
+        tool_bar.add_action("a", "A");
+        tool_bar.add_action("b", "B");
+        let bands = tool_bar.item_bands();
+        assert_eq!(bands[0].x, bands[1].x, "both items occupy the one column");
+        assert_eq!(
+            bands[1].y,
+            bands[0].y + bands[0].height as i32,
+            "the second item follows the first one's own box down the strip: {bands:?}"
+        );
     }
 }

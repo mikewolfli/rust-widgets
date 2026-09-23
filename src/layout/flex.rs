@@ -264,9 +264,31 @@ impl FlexLayout {
                 main_sizes[count - 1] += remainder;
             }
         } else if remaining < 0 {
-            // Shrink items proportionally to flex-shrink.
+            // Shrink items proportionally to flex-shrink, then spend whatever room the floors
+            // would not give up by shrinking the children that *can* still give.
+            //
+            // # Why one pass is not enough
+            //
+            // The proportional pass alone leaves the row wider than its band whenever a child's
+            // floor is above its proportional share, and the overhang is not distributed — it is
+            // simply left after the last child, because the positions are packed from the leading
+            // edge. A row of a 110 px label and a 22 px column in a 48 px band therefore came back
+            // as `x = 0, width = 110` and `x = 110, width = 22`: the second column was painted at
+            // x = 110, i.e. 62 px outside the control it belongs to, and the SVG backend emits
+            // absolute coordinates, so it left the picture entirely. A sub-part outside its own
+            // control is a worse outcome than a compressed one: it is invisible, and the failure is
+            // silent.
+            //
+            // #6 rule 9 already says the child declares its floor, so the second pass may not
+            // cross one; the children that *can* shrink are the ones whose floor is still below
+            // their size. If the floors between them leave nothing to give, the row genuinely does
+            // not fit and the children stay at their floors — the same refusal the comment below
+            // describes. What changes here is only that the room a floor *does* release is used,
+            // so "the smallest the children may be" is a reachable layout rather than an
+            // aspiration the packing pass never consults.
             let deficit = -remaining;
             let total_flex_shrink: f32 = self.items.iter().map(|i| i.flex_shrink).sum();
+            let mut floors: Vec<i32> = Vec::with_capacity(count);
             for (i, item) in self.items.iter().enumerate() {
                 let shrink = if total_flex_shrink > 0.0 {
                     ((deficit as f32) * (item.flex_shrink / total_flex_shrink)).round() as i32
@@ -280,22 +302,66 @@ impl FlexLayout {
                 };
                 let size = (intrinsic_main[i] - shrink).max(min_main);
                 main_sizes.push(size);
+                floors.push(min_main);
             }
-            // # Why the deficit is *not* redistributed past the minimum
+            let mut leftover = -(available_main - gaps - main_sizes.iter().sum::<i32>());
+            // Repeated rounds rather than one, because releasing one child's floor can itself
+            // expose another's: a child that was already at its floor in the first pass is
+            // untouched here, but the *others* can now give more than they did when the deficit was
+            // shared between all of them.
+            let mut progress = true;
+            while leftover > 0 && progress {
+                progress = false;
+                let give: Vec<i32> = main_sizes
+                    .iter()
+                    .zip(floors.iter())
+                    .map(|(size, floor)| (size - floor).max(0))
+                    .collect();
+                let total_give: i32 = give.iter().sum();
+                if total_give <= 0 {
+                    break;
+                }
+                for (index, room) in give.iter().enumerate() {
+                    if *room <= 0 {
+                        continue;
+                    }
+                    let share = ((leftover as i64 * *room as i64) / total_give as i64) as i32;
+                    let take = share.min(*room).min(leftover);
+                    main_sizes[index] -= take;
+                    leftover -= take;
+                    if take > 0 {
+                        progress = true;
+                    }
+                }
+                // The integer division above always rounds *down*, for every child, so a deficit
+                // smaller than the number of givers releases nothing at all and the loop would spin
+                // on `leftover` forever. The last giver whose floor allows it takes the remainder.
+                if leftover > 0 && progress {
+                    if let Some(index) = (0..main_sizes.len())
+                        .rev()
+                        .find(|index| main_sizes[*index] > floors[*index])
+                    {
+                        let take = leftover.min(main_sizes[index] - floors[index]);
+                        main_sizes[index] -= take;
+                        leftover -= take;
+                    }
+                }
+            }
+            // # Why the deficit is *not* pushed past the minimum
             //
             // This block used to keep cutting the children until the row fit — "if we couldn't
-            // shrink enough, cap at available" — which defeated the `max(min_main)` two lines
-            // above it: the floor was applied and then immediately overridden, down to zero.
-            // Two 100 px buttons in a 120 px row came back 57 px each, i.e. narrower than their
-            // own labels, and a button narrower than its label is a button whose label elides.
+            // shrink enough, cap at available" — which defeated the `max(min_main)` above it: the
+            // floor was applied and then immediately overridden, down to zero. Two 100 px buttons in
+            // a 120 px row came back 57 px each, i.e. narrower than their own labels, and a button
+            // narrower than its label is a button whose label elides.
             //
             // The floor is a statement about what the *child* can survive, and a layout that
             // ignores it to satisfy its own extent trades a visible overflow for an unreadable
             // control. CSS flexbox makes the same choice (`min-width: auto` item floors win over
-            // `flex-shrink`), and Qt's `implicitMinimumWidth` is likewise a hard bound. The
-            // honest answer is therefore to leave the children at their floors and let the row
-            // be wider than its parent: overflowing content is visible, elided content looks
-            // like a correct label that happens to be short.
+            // `flex-shrink`), and Qt's `implicitMinimumWidth` is likewise a hard bound. The honest
+            // answer is therefore to leave the children at their floors and let the row be wider
+            // than its parent once the floors are exhausted: overflowing content is visible, elided
+            // content looks like a correct label that happens to be short.
             //
             // The row's own caller is what decides how to present the overhang — a dialog sizes
             // itself from the row's width, and one that is handed a too-small rectangle keeps its
@@ -782,6 +848,28 @@ impl Layout for FlexLayout {
         }
         let (solved_main, _total_grow, _total_main) =
             solver.compute_main_sizes(available_main, self.gap);
+        // # A known defect this pass does **not** repair (BLUE22 · logged as G-1)
+        //
+        // The solver may return a box that exceeds the room, and the positions below are packed
+        // from the leading edge, so the *last* children of an over-full row are placed past the
+        // band's far edge. Nothing clips at this layer, so such a child is painted outside its own
+        // control — and, because the SVG backend emits absolute coordinates, it leaves the picture
+        // entirely: `split_button` at 48 px wide put its 22 px arrow column at `x = 48` in a 48 px
+        // face, i.e. a sub-part that is not there rather than one that is compressed.
+        //
+        // The obvious repair — cap each child at the room actually left — was implemented and
+        // **reverted**, because it does not fix the row, it moves the failure onto a different
+        // child: a row of two 100 px buttons in a 120 px band then came back `100 + 20` instead of
+        // `100 + 100`, so the second button was drawn 20 px wide, below its own stated floor. Two
+        // hundred-pixel buttons in a hundred-and-twenty-pixel band *cannot* be laid out, and the
+        // shrink pass is right to say so by overhanging: `a_child_is_never_squeezed_below_its_own_minimum`
+        // pins that, and a silent 20 px button is exactly the defect it was written to prevent.
+        //
+        // The honest statement is therefore that **the row's own extent and its children's floors
+        // can disagree**, and that the disagreement is currently surfaced as an overhang rather
+        // than resolved. Resolving it needs a decision this pass does not own — whether the row
+        // clips, elides, or pushes back on the caller for more room — so it is left as it was
+        // found rather than traded for a quieter but worse failure.
         // The leftover is what the justification distributes, and it is measured as the room the
         // band has minus the room the children **occupy** — their boxes *plus* the margins that
         // produced the gaps.
@@ -835,12 +923,27 @@ impl Layout for FlexLayout {
             let solved = solved_main.get(index).copied().unwrap_or(0);
             let main_len = (solved - left - right).max(0);
             let cross_len = (outer_cross(index) - top - bottom).min(available_cross).max(0);
-            // Cross-axis alignment inside the child's own inset box. `Stretch` is the default and
-            // the only mode the previous implementation expressed, and it stays the answer for a
-            // child that declared no alignment of its own.
+            // Cross-axis alignment inside the child's own inset box.
+            //
+            // # Why `Stretch` is "grow to the band, unless the child asked for less"
+            //
+            // `Stretch` is the crate's default alignment and was unconditionally "the full band",
+            // which is right for a child that has no opinion (a row of labels, a `fill` column) and
+            // wrong for one that declares its own cross extent: a 2 px-inset toolbar item wants a
+            // 52 px row inside a 56 px strip, and stretching it to 56 drew a hover fill that bled
+            // over the inset the strip reserves. `outer_cross` is `hints.height.pref` (plus
+            // margins) — the child's own statement of what it needs — so honouring a value *below*
+            // the band is the same rule every other alignment already follows, while a child that
+            // asked for more than the band gets the band (nothing clips at this layer, so painting
+            // outside the parent would be a layout violation rather than a graceful degradation).
+            //
+            // A child with no opinion reports `0` here, which is also what it did before: the
+            // `min(available_cross)` collapses it to the band exactly as the old line did.
+            let declared_cross = (outer_cross(index) - top - bottom).min(available_cross).max(0);
+            let stretch_cross = if declared_cross == 0 { available_cross } else { declared_cross };
             let (cross_start, cross_len) =
                 match self.items[index].align_self.unwrap_or(self.align_items) {
-                    AlignItems::Stretch => (0, cross_len),
+                    AlignItems::Stretch => (0, stretch_cross),
                     AlignItems::FlexStart => (0, outer_cross(index) - top - bottom),
                     AlignItems::FlexEnd => {
                         (available_cross - cross_len, outer_cross(index) - top - bottom)
@@ -1550,6 +1653,142 @@ mod tests {
             second.x - (first.x + first.width as i32),
             6,
             "the margin must remain the gap between the two boxes"
+        );
+    }
+
+    /// A child that *can* still shrink gives up the room a floored sibling cannot.
+    ///
+    /// # What this pins
+    ///
+    /// The proportional shrink pass alone stops as soon as any child reaches its floor, and the
+    /// room that child would not release is then simply never taken from anyone else — so a row of
+    /// a floored child and a freely-shrinkable one stayed wider than its band for no reason: the
+    /// second child was at its comfortable size while the row overhung.
+    ///
+    /// This is the case a composite hits constantly, and it is why it mattered: a split button's
+    /// face is a *text-driven* trigger (plenty of room above its floor) beside a *fixed* arrow
+    /// column (no room above its floor at all). Narrowing the face had to compress the trigger,
+    /// and before this it did not — the arrow column was pushed out of the control instead.
+    ///
+    /// Note that the split button's own case still overhangs (its trigger *declares* its floor as
+    /// its own width, so it is floored too); see `a_child_is_never_squeezed_below_its_own_minimum`
+    /// for the rule this second pass may never cross.
+    #[test]
+    fn a_child_that_can_shrink_gives_up_the_room_a_floored_sibling_cannot() {
+        let mut layout = FlexLayout::new();
+        layout.add_widget(1, 0);
+        layout.add_widget(2, 0);
+        let children = vec![
+            // 100 px wide with a 60 px floor: it can give up 40.
+            ChildInfo::new(1, Hints { width: AxisHints::new(60, 100, 200), ..Hints::default() }),
+            // 100 px wide with a 100 px floor: it can give up nothing.
+            ChildInfo::new(2, Hints::fixed(100, 30)),
+        ];
+        let mut rects = HashMap::new();
+        // A 140 px band: 60 px of deficit, of which the second child can release none and the
+        // first child can release 40.
+        layout.arrange(Rect::new(0, 0, 140, 40), &children, &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+
+        let first = rects.get(&1).copied().expect("the first child was placed");
+        let second = rects.get(&2).copied().expect("the second child was placed");
+        assert!(
+            first.width >= 60,
+            "the second pass may not cross the first child's own floor: got {}",
+            first.width
+        );
+        assert_eq!(second.width, 100, "the floored child keeps its size");
+        assert_eq!(
+            first.width, 60,
+            "the child with room above its floor gives up exactly what the row needs"
+        );
+    }
+
+    /// A row whose children's floors do not fit cannot be laid out, and overhangs by that much.
+    ///
+    /// # What this pins, and why it is written down
+    ///
+    /// Two 100 px floors cannot be satisfied in a 140 px band, and the shrink pass is explicit
+    /// that a child is never squeezed below its own floor (a button narrower than its label is a
+    /// button whose label elides). The consequence is that the row is 200 px wide in a 140 px band
+    /// and the packing places the second child 60 px past the far edge.
+    ///
+    /// That is a **known defect** (BLUE22, logged as G-1) rather than a design: nothing clips at
+    /// this layer, so a sub-part past the far edge of its own control is painted outside the
+    /// control — and, since the SVG backend emits absolute coordinates, outside the picture. The
+    /// obvious repair, capping each child at the room that is left, was implemented and reverted:
+    /// it does not resolve the contradiction, it just moves the failure onto a narrower child
+    /// (the same row came back `100 + 40`, i.e. a 40 px button). The contradiction belongs to the
+    /// caller — a row that does not fit needs the row to elide, clip or ask for more room — so it
+    /// is pinned here as the honest description of what the layout does today.
+    #[test]
+    fn floors_that_do_not_fit_overhang_rather_than_being_crossed() {
+        let mut layout = FlexLayout::new();
+        layout.add_widget(1, 0);
+        layout.add_widget(2, 0);
+        let children = vec![
+            ChildInfo::new(1, Hints::fixed(100, 30)),
+            ChildInfo::new(2, Hints::fixed(100, 30)),
+        ];
+        let mut rects = HashMap::new();
+        layout.arrange(Rect::new(0, 0, 140, 40), &children, &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+        let first = rects.get(&1).copied().expect("the first child was placed");
+        let second = rects.get(&2).copied().expect("the second child was placed");
+        assert_eq!(first.width, 100, "the first child keeps its floor");
+        assert_eq!(
+            second.x, 100,
+            "and the overhang appears past the far edge, not by shrinking a child"
+        );
+    }
+
+    /// A child that declares its own cross extent is not stretched past it.
+    ///
+    /// # What this pins
+    ///
+    /// `AlignItems::Stretch` used to be "the full band", unconditionally. That is right for a child
+    /// with no opinion — a row of labels, a `fill` column — and wrong for a child that states its
+    /// own cross size: a toolbar item reserves 2 px of inset at each end of its strip, so a 56 px
+    /// strip holds 52 px rows. Stretching the item to the full 56 drew its hover fill over the
+    /// inset the strip had reserved.
+    ///
+    /// The fix reads the child's own `hints.pref` on the cross axis, so "I want to fill the cross
+    /// axis" is still expressed by declaring no preference (which reports `0` and is then expanded
+    /// to the band, exactly as before).
+    #[test]
+    fn a_child_that_declares_its_cross_size_is_not_stretched_past_it() {
+        let mut layout = FlexLayout::new();
+        layout.add_widget(1, 0);
+        let children = vec![ChildInfo::new(1, Hints::fixed(40, 30))];
+        let mut rects = HashMap::new();
+        // A 60 px tall band: the child asked for 30 and the default alignment is `Stretch`.
+        layout.arrange(Rect::new(0, 0, 200, 60), &children, &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+        let placed = rects.get(&1).copied().expect("the child was placed");
+        assert_eq!(placed.height, 30, "the child's own cross size wins over the band: {placed:?}");
+    }
+
+    /// A child with no cross opinion still fills the band.
+    ///
+    /// The companion to the test above: the crate's default alignment must keep doing what it did
+    /// for the overwhelming majority of children, which declare a size on one axis only.
+    #[test]
+    fn a_child_with_no_cross_opinion_still_fills_the_band() {
+        let mut layout = FlexLayout::new();
+        layout.add_widget(1, 0);
+        let children =
+            vec![ChildInfo::new(1, Hints { width: AxisHints::fixed(60), ..Default::default() })];
+        let mut rects = HashMap::new();
+        layout.arrange(Rect::new(0, 0, 200, 60), &children, &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+        let placed = rects.get(&1).copied().expect("the child was placed");
+        assert_eq!(
+            placed.height, 60,
+            "a child that declared no cross size is stretched to the band: {placed:?}"
         );
     }
 

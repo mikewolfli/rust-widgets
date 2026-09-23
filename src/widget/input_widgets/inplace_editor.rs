@@ -666,6 +666,14 @@ mod tests {
     /// The old anchor was `rect.y + padding + font_size`, which put the glyph origin a whole
     /// font size down from the field's top — the value was drawn on the row *after* the one
     /// it belonged to, and the caret spanned a different band from the text.
+    ///
+    /// # Why the check is on the ink
+    ///
+    /// The value is no longer a `<text>` element carrying a `y`: the backend emits the same
+    /// `font8x8` rectangles the software rasteriser fills, as subpaths of a single `<path>`
+    /// (see `crate::widget::svg::text_ink_box`). The string is absent from the document, and
+    /// the ink box is the stronger witness anyway — it is where the glyphs landed, not what an
+    /// element claimed.
     #[cfg(not(alloc_frugal))]
     #[test]
     fn the_value_sits_inside_the_field() {
@@ -674,24 +682,13 @@ mod tests {
         let svg = crate::widget::svg::render_to_svg(&mut ie);
         let field = ie.field_rect();
 
-        let ys: Vec<i32> = svg
-            .lines()
-            .filter(|l| l.contains("<text"))
-            .filter_map(|l| {
-                l.split(" y=\"")
-                    .nth(1)
-                    .and_then(|rest| rest.split('"').next())
-                    .and_then(|value| value.parse().ok())
-            })
-            .collect();
-        assert!(!ys.is_empty(), "an editor with text draws it: {svg}");
-        for y in ys {
-            assert!(y >= field.y, "the value starts inside the field: y={y}, field={field:?}");
-            assert!(
-                y < field.y + field.height as i32,
-                "and above the field's bottom edge: y={y}, field={field:?}"
-            );
-        }
+        let (_, top, _, bottom) = crate::widget::svg::text_ink_box(&svg)
+            .expect("an editor with text draws it as glyph geometry");
+        assert!(top >= field.y, "the value starts inside the field: y={top}, field={field:?}");
+        assert!(
+            bottom <= field.y + field.height as i32,
+            "and above the field's bottom edge: y={bottom}, field={field:?}"
+        );
     }
 
     #[test]

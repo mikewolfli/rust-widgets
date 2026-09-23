@@ -370,11 +370,60 @@ mod tests {
         assert_eq!(content.height as i32 + strip.height as i32, tv.geometry().height as i32);
     }
 
+    /// One ink box per text `<path>` in document order, as `(left, top, right, bottom)`.
+    ///
+    /// # Why the ink and not the string
+    ///
+    /// Text leaves the SVG backend as the `font8x8` rectangles the rasteriser fills — one
+    /// axis-aligned subpath per set bitmap bit — so a caption is not in the document in any form
+    /// and a test has to locate a run by *where* it is. That is the stronger check: the old form
+    /// matched `>Alpha</text>` and read the element's `y`, so a caption drawn on the wrong line
+    /// with a correct attribute would have passed it.
+    ///
+    /// One element is one `draw_text`, so this is one box per caption. Subpaths are not
+    /// deduplicated: a glyph box wider than the 8 bitmap columns maps two columns to one pixel
+    /// and emits the same rectangle twice, exactly as the rasteriser fills it twice.
+    fn text_run_boxes(svg: &str) -> Vec<(i32, i32, i32, i32)> {
+        let mut boxes = Vec::new();
+        for line in svg.lines() {
+            let Some(path_at) = line.find("<path ") else { continue };
+            let Some(d_at) = line[path_at..].find("d=\"") else { continue };
+            let start = path_at + d_at + 3;
+            let Some(end) = line[start..].find('"') else { continue };
+            let mut bounds: Option<(i32, i32, i32, i32)> = None;
+            for subpath in line[start..start + end].split('M').skip(1) {
+                let numbers: Vec<i32> = subpath
+                    .split(|c: char| !c.is_ascii_digit() && c != '-')
+                    .filter(|part| !part.is_empty())
+                    .filter_map(|part| part.parse().ok())
+                    .collect();
+                if numbers.len() < 4 {
+                    continue;
+                }
+                let (x, y, w, h) = (numbers[0], numbers[1], numbers[2], numbers[3]);
+                let bit = (x, y, x + w, y + h);
+                bounds = Some(match bounds {
+                    None => bit,
+                    Some((l, t, r, b)) => (l.min(bit.0), t.min(bit.1), r.max(bit.2), b.max(bit.3)),
+                });
+            }
+            if let Some(union) = bounds {
+                boxes.push(union);
+            }
+        }
+        boxes
+    }
+
     /// A tab caption is centred on its tab's own line box, not on a hand-computed pair of axes.
     ///
     /// The previous form derived `text_x` and `text_y` inline from `measure_text(..).height` and
     /// handed both to `draw_text`. The line box is the shared primitive for exactly this, and it
     /// is what makes a caption with a descender ("/g/j") sit the same as one without.
+    ///
+    /// The captions are located by the **tab they lie in** rather than by the string they spell:
+    /// the string is no longer in the document, and a geometric lookup is what the assertion is
+    /// about anyway. Both captions start with a bitmap row that is lit in its first row, so a
+    /// run's ink top is its glyph box's top edge.
     #[test]
     fn a_tab_caption_sits_on_its_tabs_line_box() {
         let mut tv = make_tab_view();
@@ -389,18 +438,34 @@ mod tests {
         let line_h = context.measure_text("M", &font).height as i32;
         let expected_y = strip.y + (strip.height as i32 - line_h) / 2;
 
-        let y_of = |needle: &str| -> i32 {
-            svg.lines()
-                .find(|line| line.contains(&format!(">{needle}</text>")))
-                .map(|line| {
-                    let at = line.find("y=\"").expect("y present") + 3;
-                    let end = line[at..].find('"').expect("closed") + at;
-                    line[at..end].parse::<i32>().expect("numeric")
+        let tab_width = tv.geometry().width / 2;
+        let runs = text_run_boxes(&svg);
+        let caption_of = |index: usize| -> (i32, i32, i32, i32) {
+            let left = tv.geometry().x + (index as u32 * tab_width) as i32;
+            runs.iter()
+                .find(|(l, _, r, _)| {
+                    let centre = (l + r) / 2;
+                    centre >= left && centre < left + tab_width as i32
                 })
-                .unwrap_or_else(|| panic!("{needle} was not rendered"))
+                .copied()
+                .unwrap_or_else(|| panic!("tab {index} painted no caption in {left}.."))
         };
-        assert_eq!(y_of("Alpha"), expected_y, "a caption belongs on the strip's line box");
-        assert_eq!(y_of("Beta"), expected_y, "and every caption shares it");
+        let alpha = caption_of(0);
+        let beta = caption_of(1);
+        assert_eq!(alpha.1, expected_y, "a caption belongs on the strip's line box");
+        assert_eq!(beta.1, expected_y, "and every caption shares it");
+        // The caption is bounded by its own tab, which the attribute assertion could not see: a
+        // run centred on the strip but not on its tab would still have had the right `y`.
+        for (index, run) in [alpha, beta].into_iter().enumerate() {
+            let left = tv.geometry().x + (index as u32 * tab_width) as i32;
+            assert!(
+                run.0 >= left && run.2 <= left + tab_width as i32,
+                "tab {index}: caption {run:?} must stay inside {left}..{}",
+                left + tab_width as i32
+            );
+            assert!(run.2 > run.0, "tab {index}: the caption laid down ink: {run:?}");
+        }
+        assert!(alpha.0 < beta.0, "the tabs read left to right: {alpha:?} then {beta:?}");
     }
 
     #[test]

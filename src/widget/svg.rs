@@ -79,64 +79,174 @@ pub fn render_widget_to_svg_on<T: Draw + ?Sized>(
     backend.finish()
 }
 
-/// Reads the **top edge of the glyph box** out of a `<text>` element's emitted `y`.
+/// The ink box of the first text run in an SVG document, as `(left, top, right, bottom)`.
 ///
-/// # Why this conversion exists, and why it is here
+/// This is the geometry-side entry point for a test that wants to check where text was drawn.
+/// Together with [`text_subpath_count`] it replaces the `svg.contains("OK")` / `line.contains("<text")`
+/// assertions the crate used before text became geometry: the string is no longer in the
+/// document in any form, so a caller must either measure the ink ([`text_ink_box`]) or count it
+/// ([`text_subpath_count`]).
 ///
-/// The SVG backend emits a **baseline** for `y`, not a top edge: SVG's `y` is a baseline by
-/// definition, and the renderer's own contract is a top edge, so the backend adds the ascent it
-/// measured (`origin.y + ascent`). That is the whole conversion, and it is deliberately the
-/// only place it happens.
+/// # Why an ink box and not a single coordinate
 ///
-/// A test that wants to assert "this label is centred in its box" has to undo it, and the undo
-/// is what makes the assertion meaningful: comparing a baseline against a box's top edge is not
-/// a near-miss, it is comparing two different quantities, and the difference is a whole ascent
-/// (11 px at the default font). Five tests in this crate did exactly that and reported
-/// failures the moment the backend stopped emitting a legacy keyword. Rather than have each of
-/// them re-derive `y - ascent` — and one of them eventually getting it wrong — the arithmetic
-/// lives beside the code that performs the forward conversion.
+/// Text leaves the renderer as **glyph geometry**, not as a `<text>` element: the SVG backend
+/// emits the same `font8x8` rectangles the software rasteriser fills (see
+/// `SvgPaintBackend::execute_command`, `RenderCommand::DrawText`). There is therefore no
+/// `y` to read and no baseline to subtract — the document simply contains the drawing, and the
+/// only way to interrogate it is geometrically.
 ///
-/// Returns `None` when the line is not a `<text>` element or carries no numeric `y`, so a
-/// caller can skip documents it does not understand instead of guessing.
+/// This existed as `text_top_of`, which undid the `origin.y + ascent` baseline conversion the
+/// backend used to perform for a `<text>` element. That conversion is gone: it was needed only
+/// because the viewer's font engine, not this crate's, rasterised the string, so the two
+/// renderers disagreed about where the ink was. Asserting against the emitted geometry is now
+/// both possible and *stronger*: it pins the position **and** the extent, where a baseline
+/// assertion pinned a quantity that did not exist in the output at all.
+///
+/// Text runs are emitted as a single `<path>` whose `d` holds one axis-aligned subpath per set
+/// bitmap bit (`M{x0} {y0}h{w}v{h}h-{w}z`), so the union of those subpaths is exactly the ink.
+///
+/// Returns `None` for a document with no text path, or one whose `d` cannot be parsed.
 ///
 /// ```text
-/// let y = text_top_of(svg_line).expect("a text element");
-/// assert_eq!(y, expected_box_top);
+/// let (left, top, _, _) = text_ink_box(&svg).expect("a text path");
+/// assert_eq!(top, expected_glyph_box_top);
 /// ```
-pub fn text_top_of(svg_line: &str) -> Option<i32> {
-    if !svg_line.contains("<text") {
+pub fn text_ink_box(svg: &str) -> Option<(i32, i32, i32, i32)> {
+    // Only text is a `<path>` in this backend; shapes are `<rect>`/`<circle>`/`<line>`. The
+    // fill colour is the other marker, so a future non-text path does not silently satisfy a
+    // text assertion.
+    let mut best: Option<(i32, i32, i32, i32)> = None;
+    for line in svg.lines() {
+        if !line.contains("<path") {
+            continue;
+        }
+        let Some(d) = attribute_str(line, "d") else {
+            continue;
+        };
+        let Some(bounds) = path_bounds(d) else {
+            continue;
+        };
+        // The first path in document order is the first text run painted; a widget paints its
+        // chrome before its text, and chrome is never a path.
+        best = Some(bounds);
+        break;
+    }
+    best
+}
+
+/// The number of **subpaths** in the document's text paths.
+///
+/// One subpath is one set bit of one glyph bitmap, so this is a direct measure of how much ink
+/// the string laid down — enough to tell `"OK"` from `""`, or to notice that a longer string
+/// produced no more ink than a shorter one (which is what a lost advance looks like).
+///
+/// A caller that wants "this string was drawn at all" should prefer this to
+/// `svg.contains("OK")`: the string is no longer in the document in any form.
+pub fn text_subpath_count(svg: &str) -> usize {
+    svg.lines()
+        .filter(|line| line.contains("<path"))
+        .filter_map(|line| attribute_str(line, "d"))
+        .map(|d| d.matches('M').count())
+        .sum()
+}
+
+/// The bounds of an axis-aligned `<path d>` made of `M x y h w v h h -w z` subpaths.
+///
+/// Unknown commands are ignored rather than misread: a `d` this cannot understand yields the
+/// bounds of the parts it does, and a `d` with nothing understood yields `None`.
+fn path_bounds(d: &str) -> Option<(i32, i32, i32, i32)> {
+    let bytes = d.as_bytes();
+    let mut i = 0usize;
+    let mut bounds: Option<(i32, i32, i32, i32)> = None;
+    let mut cursor: Option<(i32, i32)> = None;
+    while i < bytes.len() {
+        let command = bytes[i];
+        i += 1;
+        match command {
+            b'M' => {
+                let (x, y, next) = number_pair(d, i)?;
+                i = next;
+                cursor = Some((x, y));
+                include(&mut bounds, x, y);
+            }
+            b'h' | b'v' => {
+                let (delta, next) = number(d, i)?;
+                i = next;
+                let (x, y) = cursor?;
+                let point = if command == b'h' { (x + delta, y) } else { (x, y + delta) };
+                cursor = Some(point);
+                include(&mut bounds, point.0, point.1);
+            }
+            b'H' | b'V' => {
+                let (value, next) = number(d, i)?;
+                i = next;
+                let (x, y) = cursor?;
+                let point = if command == b'H' { (value, y) } else { (x, value) };
+                cursor = Some(point);
+                include(&mut bounds, point.0, point.1);
+            }
+            b'z' | b'Z' | b' ' | b',' | b'\t' | b'\n' => {}
+            _ => {
+                // An unrecognised command: skip its numeric operand if there is one, so the
+                // scan cannot desynchronise and read a coordinate as a command letter.
+                if let Some((_, next)) = number(d, i) {
+                    i = next;
+                }
+            }
+        }
+    }
+    bounds
+}
+
+/// Widens `bounds` to cover `(x, y)`.
+fn include(bounds: &mut Option<(i32, i32, i32, i32)>, x: i32, y: i32) {
+    *bounds = Some(match *bounds {
+        None => (x, y, x, y),
+        Some((left, top, right, bottom)) => (left.min(x), top.min(y), right.max(x), bottom.max(y)),
+    });
+}
+
+/// Reads a run of digits (and an optional leading `-`) starting at `at`.
+fn number(text: &str, at: usize) -> Option<(i32, usize)> {
+    let bytes = text.as_bytes();
+    let mut i = at;
+    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b',') {
+        i += 1;
+    }
+    let start = i;
+    if i < bytes.len() && (bytes[i] == b'-' || bytes[i] == b'+') {
+        i += 1;
+    }
+    let digits_start = i;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == digits_start {
         return None;
     }
-    let y = attribute_i32(svg_line, "y")?;
-    let size = attribute_f32(svg_line, "font-size")?;
-    // The same rule `SvgPaintBackend::execute_command` applies, from the same measurement:
-    // `line_height = round(font.size)` and `ascent = round(line_height * 0.8)`.
-    let line_height = size.max(1.0).round();
-    let ascent = (line_height as f32 * 0.8).round() as i32;
-    Some(y - ascent)
+    text[start..i].parse().ok().map(|value| (value, i))
 }
 
-/// The value of an integer SVG attribute, e.g. `x` in `<text x="12" ...>`.
-fn attribute_i32(line: &str, name: &str) -> Option<i32> {
+/// Reads two numbers separated by whitespace or a comma.
+fn number_pair(text: &str, at: usize) -> Option<(i32, i32, usize)> {
+    let (first, after_first) = number(text, at)?;
+    let (second, after_second) = number(text, after_first)?;
+    Some((first, second, after_second))
+}
+
+/// The value of a string SVG attribute, e.g. `d` in `<path d="..." />`.
+fn attribute_str<'a>(line: &'a str, name: &str) -> Option<&'a str> {
     let key = format!("{name}=\"");
     let at = line.find(&key)? + key.len();
     let end = line[at..].find('"')? + at;
-    line[at..end].parse().ok()
-}
-
-/// The value of a float SVG attribute, e.g. `font-size`.
-fn attribute_f32(line: &str, name: &str) -> Option<f32> {
-    let key = format!("{name}=\"");
-    let at = line.find(&key)? + key.len();
-    let end = line[at..].find('"')? + at;
-    line[at..end].parse().ok()
+    Some(&line[at..end])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Font;
     use crate::compat::MiniToString;
+    use crate::core::Font;
     use crate::core::Rect;
     use crate::widget::Button;
 
@@ -166,28 +276,26 @@ mod tests {
         assert!(svg.contains("width=\"80\""));
     }
 
-    /// The emitted SVG ink box equals the rasteriser's ink box, at every font size.
+    /// The emitted SVG ink box equals the rasteriser's ink box, exactly.
     ///
-    /// This is the guarantee that makes the snapshots a trustworthy picture of the control:
-    /// the software rasteriser blits an 8x8 bitmap across the **whole** glyph box
-    /// (`0..height` measured down from `origin.y`), and the SVG backend emits a baseline
-    /// (`origin.y + ascent`). Those two describe the same box exactly when
-    ///
-    /// ```text
-    /// baseline - ascent == origin.y            (the top edge)
-    /// baseline + descent == origin.y + height  (the bottom edge)
-    /// ```
-    ///
-    /// and both hold because `ascent + descent == height` in the crate's own `measure_text`.
-    /// The test asserts it rather than proving it on paper, because the property is the whole
-    /// reason the backend adds an ascent at all and it would be silent to break: a label would
+    /// This is the guarantee that makes the snapshots a trustworthy picture of the control: the
+    /// software rasteriser blits an 8x8 bitmap across the **whole** glyph box (`0..height`
+    /// measured down from `origin.y`), and the SVG backend emits those same rectangles as
+    /// `<path>` subpaths. Both read `glyph_rects`, so the test asserts the property the shared
+    /// derivation exists to provide — and it would be silent to break, because a label would
     /// simply be a few pixels off in every snapshot, which no other gate can see.
+    ///
+    /// The old form of this test compared an emitted baseline against `origin.y + ascent`,
+    /// which was a check on the *legacy* `<text>` path. There is no baseline any more, and the
+    /// replacement is stronger: the top-left of the ink is asserted to be the glyph box's
+    /// top-left, and the box is asserted to be `line_height` tall with `"Sample"`'s own width.
     #[test]
-    fn the_emitted_baseline_reproduces_the_glyph_box_exactly() {
+    fn the_emitted_path_reproduces_the_glyph_box_exactly() {
+        use crate::render::estimate_cluster_advance;
         for size in [11.0f32, 12.0, 13.0, 14.0, 20.0, 48.0] {
             let font = Font::new("Arial", size, false, false);
             let origin = crate::core::Point::new(10, 53);
-            let mut backend = crate::render::SvgPaintBackend::new(Size::new(240, 120));
+            let mut backend = crate::render::SvgPaintBackend::new(Size::new(400, 160));
             {
                 use crate::render::RenderContext;
                 let mut context = RenderContext::new(&mut backend);
@@ -200,37 +308,73 @@ mod tests {
                 );
             }
             let document = backend.finish();
-            let line = document
-                .lines()
-                .find(|line| line.contains("<text"))
-                .expect("a text element was emitted");
 
-            // The crate's own metrics, which both backends share.
-            let height = font.size().max(1.0).round();
-            let ascent = (height * 0.8).round() as i32;
-            let descent = height as i32 - ascent;
+            let (left, top, right, bottom) =
+                text_ink_box(&document).expect("a text path was emitted");
 
-            let baseline = attribute_i32(line, "y").expect("the element carries a y");
-            assert_eq!(
-                baseline - ascent,
-                origin.y,
-                "size {size}: the glyph box's top edge must be where the rasteriser put it"
+            // The glyph box's top edge is where the rasteriser put it. The bottom edge is one
+            // line height down, because the bitmap is stretched across the whole box.
+            let height = font.size().max(1.0).round() as i32;
+            assert_eq!(top, origin.y, "size {size}: the glyph box top edge");
+            assert_eq!(bottom, origin.y + height, "size {size}: the glyph box bottom edge");
+            // And the ink starts at the left edge, because `Left` alignment anchors there and
+            // `S`'s bitmap has its leftmost set bit in column 0.
+            assert_eq!(left, origin.x, "size {size}: left-aligned ink starts at the origin");
+            // The ink cannot be wider than the string's own advance. `estimate_cluster_advance`
+            // charges one cluster at a time, so the run's advance is the sum over `"Sample"`'s
+            // six clusters — the same sum `shape_text` performs.
+            let advance: i32 = "Sample"
+                .chars()
+                .map(|ch| estimate_cluster_advance(&ch.to_string(), size, 1.0).round() as i32)
+                .sum();
+            assert!(
+                right - left <= advance,
+                "size {size}: ink width {} exceeds the {advance}px advance",
+                right - left
             );
-            assert_eq!(
-                baseline + descent,
-                origin.y + height as i32,
-                "size {size}: the glyph box's bottom edge must be where the rasteriser put it"
-            );
-            // And the reader that undoes the conversion agrees with the forward one.
-            assert_eq!(text_top_of(line), Some(origin.y));
+            assert!(right > left, "size {size}: the string drew no ink at all");
         }
     }
 
-    /// `text_top_of` refuses a line it cannot read, rather than inventing a top edge.
+    /// Every rendered glyph contributes subpaths, so `text_subpath_count` separates "drew a
+    /// string" from "drew nothing" — the assertion the deleted `svg.contains("OK")` form used
+    /// to make, before text stopped being a `<text>` element.
     #[test]
-    fn reading_a_top_edge_from_a_non_text_line_is_none() {
-        assert_eq!(text_top_of("<rect x=\"0\" y=\"5\" width=\"1\" height=\"1\" />"), None);
-        assert_eq!(text_top_of("<text x=\"0\" font-size=\"14\">x</text>"), None);
-        assert_eq!(text_top_of("<text x=\"0\" y=\"5\">x</text>"), None);
+    fn text_subpath_count_separates_a_drawn_string_from_an_empty_one() {
+        let font = Font::new("Arial", 14.0, false, false);
+        let paint = |text: &str| {
+            let mut backend = crate::render::SvgPaintBackend::new(Size::new(200, 60));
+            {
+                use crate::render::RenderContext;
+                let mut context = RenderContext::new(&mut backend);
+                context.draw_text(
+                    crate::core::Point::new(4, 4),
+                    text,
+                    &font,
+                    crate::core::Color::BLACK,
+                    crate::core::HorizontalAlignment::Left,
+                );
+            }
+            backend.finish()
+        };
+        assert_eq!(text_subpath_count(&paint("")), 0);
+        assert_eq!(text_subpath_count(&paint(" ")), 0);
+        let one = text_subpath_count(&paint("O"));
+        let two = text_subpath_count(&paint("OO"));
+        assert!(one > 0, "a drawn glyph has set bits");
+        // Two identical glyphs a pen apart double the ink. This is the property a lost
+        // per-cluster advance would break, and it is invisible to a bounding-box assertion.
+        assert_eq!(two, one * 2, "the pen advanced so the second O is a second glyph");
+    }
+
+    /// The readers refuse a document they cannot understand, rather than inventing an answer.
+    #[test]
+    fn reading_text_geometry_from_a_document_without_text_is_none() {
+        assert_eq!(text_ink_box(r#"<rect x="0" y="5" width="1" height="1" />"#), None);
+        assert_eq!(text_ink_box(r##"<path d="" fill="#000" />"##), None);
+        assert_eq!(text_ink_box(r##"<path fill="#000" />"##), None);
+        assert_eq!(text_subpath_count(r#"<rect x="0" y="1" width="2" height="3" />"#), 0);
+        // One subpath: `M0 0h1v1h-1z` is a unit square at the top-left of the box.
+        assert_eq!(text_ink_box("<path d=\"M0 0h1v1h-1z\" fill=\"#000\" />"), Some((0, 0, 1, 1)));
     }
 }

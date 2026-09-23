@@ -610,13 +610,69 @@ mod tests {
         bc.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
     }
 
+    /// One ink box per text `<path>`, in document order.
+    ///
+    /// # Why the geometry and not the string
+    ///
+    /// Text leaves the backend as the `font8x8` rectangles the software rasteriser fills — one
+    /// axis-aligned `<path>` subpath per set bitmap bit — so the rendered string is **not in the
+    /// document in any form** and `svg.contains("100.0")` can never be true. A run can only be
+    /// located by *where it is*: the union of one `<path>`'s subpaths is its ink box.
+    ///
+    /// # Why subpaths are not de-duplicated
+    ///
+    /// When a glyph box is wider than 8 pixels two bitmap columns map onto the same pixel via
+    /// integer division, so the same rectangle is emitted twice. That is the rasteriser's own
+    /// geometry — it fills that pixel twice — so collapsing it here would make this disagree with
+    /// the drawing.
+    #[cfg(feature = "chart")]
+    fn ink_paths(svg: &str) -> Vec<(i32, i32, i32, i32)> {
+        let mut runs = Vec::new();
+        for line in svg.lines() {
+            let Some(path_at) = line.find("<path ") else { continue };
+            let Some(d_at) = line[path_at..].find("d=\"") else { continue };
+            let start = path_at + d_at + 3;
+            let Some(end) = line[start..].find('"') else { continue };
+            let mut bounds: Option<(i32, i32, i32, i32)> = None;
+            for subpath in line[start..start + end].split('M').skip(1) {
+                let numbers: Vec<i32> = subpath
+                    .split(|c: char| !c.is_ascii_digit() && c != '-')
+                    .filter(|part| !part.is_empty())
+                    .filter_map(|part| part.parse().ok())
+                    .collect();
+                if numbers.len() < 4 {
+                    continue;
+                }
+                let (x, y, w, h) = (numbers[0], numbers[1], numbers[2], numbers[3]);
+                bounds = Some(match bounds {
+                    None => (x, y, x + w, y + h),
+                    Some((left, top, right, bottom)) => {
+                        (left.min(x), top.min(y), right.max(x + w), bottom.max(y + h))
+                    }
+                });
+            }
+            if let Some(bounds) = bounds {
+                runs.push(bounds);
+            }
+        }
+        runs
+    }
+
     /// The widget must render through the shared chart engine rather than its
     /// own copy of the axis/tick math — that duplication is what this refactor
     /// removed.
     ///
     /// Observable proof: `draw_y_ticks` emits a numeric value label for every
-    /// tick, which the widget's previous hand-rolled grid loop did not draw. So
-    /// rendered output now contains the resolved Y-range bounds as text.
+    /// tick, which the widget's previous hand-rolled grid loop did not draw. The labels are not
+    /// searchable as strings — they are `font8x8` rectangles now — so the check is on where the
+    /// ink landed. `draw_text` anchors every y-tick label's glyph box at `plot_x - 44 = 20`, and
+    /// the value decides how much ink follows: `100.0` is 17 px wide, `0.0` is 29 px because a
+    /// three-character label is ellipsised to `0…` in the 29 px-wide `bar_width` band. A widget
+    /// drawing only bars produces no run on that anchor at all.
+    ///
+    /// Gated on the feature, like `ink_paths` and the module's other `chart`-dependent items:
+    /// a build without `chart` compiles this test module and the engine it exercises is absent.
+    #[cfg(feature = "chart")]
     #[test]
     fn bar_chart_renders_axis_value_labels_from_the_shared_engine() {
         let mut bc = BarChart::new(Rect::new(0, 0, 300, 200));
@@ -624,14 +680,33 @@ mod tests {
         bc.set_value_range(Some(0.0), Some(100.0));
 
         let svg = render_to_svg(&mut bc);
+        let runs = ink_paths(&svg);
 
-        // `draw_y_ticks` labels ticks with `{value:.1}`, so the configured range
-        // bounds must appear. A widget drawing only bars would not produce these.
+        // `draw_y_ticks` walks `tick_count = 4` plus the inclusive upper bound, so five labels
+        // are painted. The bars' own `{:.1}` value labels are here too, which is why the
+        // assertion picks the runs out by geometry rather than by count.
         assert!(
-            svg.contains("100.0"),
-            "y-axis upper bound label missing; widget no longer uses the shared tick engine"
+            runs.len() >= 8,
+            "the shared tick engine must label every tick (bars included), got {} runs",
+            runs.len()
         );
-        assert!(svg.contains("0.0"), "y-axis lower bound label missing");
+        let (left, _, right, _) = runs[0];
+        assert_eq!(left, 20, "the topmost y-tick label starts at the engine's `plot_x - 44`");
+        assert_eq!(right - left, 17, "...and `100.0` is five characters of ink, not the bar label");
+        let (short_left, _, short_right, _) = runs[4];
+        assert_eq!(
+            (short_left, short_right - short_left),
+            (20, 29),
+            "the bottom y-tick label is `0.0`, which the 29 px bar band ellipsises to `0…`"
+        );
+        assert!(
+            runs.iter().any(|run| run.0 == 20 && run.2 - run.0 == 17),
+            "at least one five-character label sits on the y-axis anchor"
+        );
+        // The two runs differ, so the engine drew a *value* label rather than repeating one
+        // string at every tick: a widget that lost the tick loop's `min_y + span * t` would
+        // paint five identical boxes.
+        assert_ne!(runs[0], runs[4], "the ticks carry different values, so different ink");
     }
 
     /// Grid toggling must reach the shared engine: `draw_y_ticks` adds grid lines

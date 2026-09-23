@@ -4,5 +4,5 @@
   <rect x="0" y="0" width="240" height="120" fill="rgba(240,240,240,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="rgba(240,240,240,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
-  <text x="116" y="64" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">?</text>
+  <path d="M117 53h1v1h-1zM118 53h1v1h-1zM119 53h1v1h-1zM120 53h1v1h-1zM116 54h1v2h-1zM117 54h1v2h-1zM120 54h1v2h-1zM121 54h1v2h-1zM120 56h1v2h-1zM121 56h1v2h-1zM119 58h1v2h-1zM120 58h1v2h-1zM118 60h1v1h-1zM119 60h1v1h-1zM118 63h1v2h-1zM119 63h1v2h-1z" fill="rgba(0,0,0,1.00)" />
 </svg>

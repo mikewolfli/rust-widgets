@@ -637,6 +637,51 @@ mod tests {
     use crate::widget::svg::render_to_svg;
     use std::sync::{Arc, Mutex};
 
+    /// One ink box `(left, top, right, bottom)` per text `<path>`, in document order.
+    ///
+    /// # Why the runs are recovered geometrically
+    ///
+    /// A text run leaves the backend as `font8x8` glyph geometry — one axis-aligned subpath per
+    /// set bitmap bit, the same rectangles the software rasteriser fills — so the document holds
+    /// a picture of the string rather than the string (see `crate::widget::svg::text_ink_box`).
+    /// A test that needs a run other than the first must therefore find it by *where it is*.
+    ///
+    /// Subpaths are not deduplicated: a glyph box wider than 8 px maps two bitmap columns onto
+    /// one pixel column and the backend emits that rectangle twice, exactly as the rasteriser
+    /// fills it twice. The union is unaffected either way.
+    #[cfg(not(alloc_frugal))]
+    fn ink_runs(svg: &str) -> Vec<(i32, i32, i32, i32)> {
+        let mut runs = Vec::new();
+        for line in svg.lines() {
+            let Some(path_at) = line.find("<path ") else { continue };
+            let Some(d_at) = line[path_at..].find("d=\"") else { continue };
+            let start = path_at + d_at + 3;
+            let Some(end) = line[start..].find('"') else { continue };
+            let mut bounds: Option<(i32, i32, i32, i32)> = None;
+            for subpath in line[start..start + end].split('M').skip(1) {
+                let numbers: Vec<i32> = subpath
+                    .split(|c: char| !c.is_ascii_digit() && c != '-')
+                    .filter(|part| !part.is_empty())
+                    .filter_map(|part| part.parse().ok())
+                    .collect();
+                if numbers.len() < 4 {
+                    continue;
+                }
+                let (x, y, w, h) = (numbers[0], numbers[1], numbers[2], numbers[3]);
+                bounds = Some(match bounds {
+                    None => (x, y, x + w, y + h),
+                    Some((left, top, right, bottom)) => {
+                        (left.min(x), top.min(y), right.max(x + w), bottom.max(y + h))
+                    }
+                });
+            }
+            if let Some(bounds) = bounds {
+                runs.push(bounds);
+            }
+        }
+        runs
+    }
+
     #[test]
     fn floating_label_default_creation() {
         let fl = FloatingLabel::new(Rect::new(0, 0, 200, 50));
@@ -871,9 +916,25 @@ mod tests {
     /// The three behaviours must produce three *different* drawings, which is the whole
     /// point of publishing the property: a flag that does not reach the paint pass is the
     /// declaration-without-behaviour defect this control already had once.
+    ///
+    /// # Why the label is located as ink
+    ///
+    /// The label is no longer a `<text>` element with a `y` attribute to read: the backend emits
+    /// the `font8x8` rectangles the software rasteriser fills, one subpath per set bitmap bit,
+    /// in a single `<path>` (see `crate::widget::svg::text_ink_box`). The string is absent from
+    /// the document, so the run is found by *where it is* — the float position is above the
+    /// input line, which is the only difference the policies make.
+    #[cfg(not(alloc_frugal))]
     #[test]
     fn floating_label_behavior_changes_the_drawn_label_position() {
-        fn label_y_for(behavior: FloatingLabelBehavior, focused: bool) -> i32 {
+        /// The ink box `(left, top, right, bottom)` of the caption when the policy allows it
+        /// above the input line, and of the label resting **inline** otherwise.
+        ///
+        /// The field draws its label (or a placeholder) on the input line and the value on the
+        /// same line, so the inline case has more than one run. The caption is the run the
+        /// float moves, and the question the test asks is whether *any* run sits above the
+        /// inline line, so the topmost run is the right witness in both cases.
+        fn label_ink(behavior: FloatingLabelBehavior, focused: bool) -> (i32, i32, i32, i32) {
             let mut fl = FloatingLabel::new(Rect::new(0, 0, 200, 50));
             fl.set_label("Email".to_string());
             fl.set_behavior(behavior);
@@ -881,23 +942,23 @@ mod tests {
             // Settle the animation at whatever target the policy chose.
             fl.tick(1000);
             let svg = render_to_svg(&mut fl);
-            svg.lines()
-                .find(|line| line.contains(">Email<") || line.contains(">Email…<"))
-                .and_then(|line| line.split(" y=\"").nth(1))
-                .and_then(|rest| rest.split('"').next())
-                .and_then(|y| y.parse::<i32>().ok())
-                .expect("the label must be drawn as a text element")
+            let mut runs = ink_runs(&svg);
+            assert!(!runs.is_empty(), "the label must be drawn as ink: {svg}");
+            runs.sort_by_key(|run| run.1);
+            runs[0]
         }
 
-        let auto_unfocused = label_y_for(FloatingLabelBehavior::Auto, false);
-        let auto_focused = label_y_for(FloatingLabelBehavior::Auto, true);
-        let always_unfocused = label_y_for(FloatingLabelBehavior::Always, false);
-        let never_focused = label_y_for(FloatingLabelBehavior::Never, true);
+        let auto_unfocused = label_ink(FloatingLabelBehavior::Auto, false);
+        let auto_focused = label_ink(FloatingLabelBehavior::Auto, true);
+        let always_unfocused = label_ink(FloatingLabelBehavior::Always, false);
+        let never_focused = label_ink(FloatingLabelBehavior::Never, true);
 
         // Floating means a smaller y (higher on the field) than resting inline.
         assert!(
-            auto_focused < auto_unfocused,
-            "auto must float on focus: {auto_unfocused} -> {auto_focused}"
+            auto_focused.1 < auto_unfocused.1,
+            "auto must float on focus: {} -> {}",
+            auto_unfocused.1,
+            auto_focused.1
         );
         assert_eq!(
             always_unfocused, auto_focused,

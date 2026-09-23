@@ -24,10 +24,6 @@
   <line x1="72" y1="72" x2="100" y2="72" stroke="rgba(225,225,225,1.00)" stroke-width="1" />
   <line x1="72" y1="72" x2="72" y2="100" stroke="rgba(225,225,225,1.00)" stroke-width="1" />
   <line x1="72" y1="72" x2="44" y2="72" stroke="rgba(225,225,225,1.00)" stroke-width="1" />
-  <text x="72" y="37" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(90,90,90,1.00)">…</text>
-  <text x="110" y="75" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(90,90,90,1.00)">…</text>
-  <text x="72" y="113" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(90,90,90,1.00)">…</text>
-  <text x="34" y="75" font-family="Sans" font-size="10" font-style="normal" font-weight="400" fill="rgba(90,90,90,1.00)">…</text>
   <line x1="72" y1="72" x2="72" y2="56" stroke="rgba(66,133,244,1.00)" stroke-width="1" />
   <line x1="72" y1="72" x2="94" y2="72" stroke="rgba(66,133,244,1.00)" stroke-width="1" />
   <line x1="72" y1="56" x2="94" y2="72" stroke="rgba(66,133,244,1.00)" stroke-width="1" />

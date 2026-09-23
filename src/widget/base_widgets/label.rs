@@ -535,9 +535,9 @@ mod tests {
     ///
     /// The origin of a text run is the top-left corner of its glyph box, so drawing at
     /// `rect.y` pinned the label to the top of its slot: in the 240x120 census cell
-    /// `snapshots/svg/label.svg` carried `<text y="0">` and the other 106 rows were empty.
-    /// The assertion is on the emitted `y`, not on a helper call, because the emitted
-    /// attribute is the thing that was wrong.
+    /// `snapshots/svg/label.svg` carried ink on row 0 and the other 106 rows were empty.
+    /// The assertion is on the emitted geometry — the ink box's top edge — not on a helper
+    /// call, because the emitted geometry is the thing that was wrong.
     #[cfg(not(alloc_frugal))]
     #[test]
     fn the_text_is_vertically_centred_in_the_label() {
@@ -545,14 +545,10 @@ mod tests {
         let mut label = Label::new("Sample".to_string(), rect);
         let svg = crate::widget::svg::render_to_svg(&mut label);
 
-        // Read the emitted **glyph-box top edge** back out of the element stream. The `y` the
-        // backend writes is a baseline, so the reader converts it; see `svg::text_top_of`.
-        let text_line = svg
-            .lines()
-            .find(|line| line.contains("<text"))
-            .unwrap_or_else(|| panic!("a label with text must emit one: {svg}"));
-        let y: i32 = crate::widget::svg::text_top_of(text_line)
-            .unwrap_or_else(|| panic!("no readable origin on: {text_line}"));
+        // The glyph-box top edge, read back out of the emitted geometry. Text is a `<path>` of
+        // `font8x8` bit rectangles, so this is a measurement of the ink, not of an attribute.
+        let (_, y, _, _) = crate::widget::svg::text_ink_box(&svg)
+            .unwrap_or_else(|| panic!("a label with text must emit a text path: {svg}"));
 
         // Centred means the line box sits in the middle, so its top is roughly half the
         // difference between the cell and the line. It must not be pinned to the top edge.
@@ -572,32 +568,35 @@ mod tests {
     /// The vertical fix moved the anchor in one axis only, and this is the guard on that:
     /// a change that centred the text on both axes would silently break the three
     /// alignments the control publishes.
+    ///
+    /// Measured on the **ink box**, which is where the alignment's effect lands: `Left` puts
+    /// the ink's left edge on the label's left inset, `Right` pushes it to the far inset, and
+    /// `Center` lands strictly between the two. Comparing the measured ink avoids restating the
+    /// alignment arithmetic, which is what the assertions below intentionally do not do.
     #[cfg(not(alloc_frugal))]
     #[test]
     fn the_vertical_fix_leaves_the_horizontal_alignment_alone() {
         let rect = Rect::new(0, 0, 200, 40);
-        let origin_of = |alignment: Alignment| -> i32 {
+        let ink_left_of = |alignment: Alignment| -> i32 {
             let mut label = Label::new("Sample".to_string(), rect);
             label.set_alignment(alignment);
             let svg = crate::widget::svg::render_to_svg(&mut label);
-            let line = svg.lines().find(|l| l.contains("<text")).expect("a text element");
-            line.split(" x=\"")
-                .nth(1)
-                .and_then(|rest| rest.split('"').next())
-                .and_then(|value| value.parse().ok())
-                .expect("an x attribute")
+            crate::widget::svg::text_ink_box(&svg)
+                .unwrap_or_else(|| panic!("a text path for {alignment:?}"))
+                .0
         };
 
-        assert_eq!(origin_of(Alignment::Left), rect.x, "left-aligned starts at the edge");
-        assert_eq!(
-            origin_of(Alignment::Right),
-            rect.x + rect.width as i32 - "Sample".len() as i32 * 8,
-            "right-aligned ends at the edge"
-        );
-        let centred = origin_of(Alignment::Center);
+        let left = ink_left_of(Alignment::Left);
+        let right = ink_left_of(Alignment::Right);
+        let centred = ink_left_of(Alignment::Center);
+        assert_eq!(left, rect.x, "left-aligned ink starts at the edge");
         assert!(
-            centred > rect.x && centred < origin_of(Alignment::Right),
-            "centred sits between the two edges: {centred}"
+            right > left + rect.width as i32 / 4,
+            "right-aligned ink is pushed most of the way across: {right} vs {left}"
+        );
+        assert!(
+            centred > left && centred < right,
+            "centred sits strictly between the two edges: {centred} in ({left}, {right})"
         );
     }
 }

@@ -859,6 +859,25 @@ pub mod dimensions {
     /// The padding a `stepper` leaves between its own edge and its row: 2.
     pub const STEPPER_PADDING: u32 = 2;
 
+    /// The width of one `spin_box` step button: 20.
+    ///
+    /// # Why this is in the shared table and not in the widget
+    ///
+    /// It is read by three things that must not disagree: the assembled step column's width, the
+    /// floor `size_hint` reports, and the arrow's own box. It used to be `SPIN_BOX_BUTTON_WIDTH`
+    /// inside `spinbox.rs`, which was fine while the widget owned the arithmetic — but the moment
+    /// the value box is "whatever the column leaves", the column's width is the relation rather
+    /// than a local detail, and the hint cannot restate it without becoming a second derivation.
+    ///
+    /// Tiny by desktop standards and deliberately so: this is the value the control's drawing has
+    /// always used, and the migration's contract is that the geometry becomes *derivable* without
+    /// becoming *different*. [`TOUCH_TARGET_MIN`] (48) would be the tappable floor a finger needs,
+    /// but that is a project-wide metric change rather than a geometry fix.
+    pub const SPIN_BOX_STEP_BUTTON_WIDTH: u32 = 20;
+
+    /// The number of buttons in a `spin_box`'s step column: 2 (up and down).
+    pub const SPIN_BOX_STEP_BUTTONS: u32 = 2;
+
     /// The height of a `search_box`'s field: 48, the same value [`TEXT_FIELD_MIN_HEIGHT`]
     /// names for every other text entry control.
     ///

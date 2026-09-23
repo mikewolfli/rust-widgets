@@ -2,6 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 //! List view widget.
+//!
+//! # One row height, read by the paint and the hit test
+//!
+//! BLUE22 §B.8 lists this control's defect as "the row height computed by hand". It was a `20`
+//! literal in three places — the paint loop and both press arms of `handle_event` — and the two
+//! sides **disagreed about where row 0 starts**: the loop measured from `ContentMetrics`'s content
+//! box while the press arms measured from `rect.y`. A press on the first row therefore selected the
+//! second. [`Self::row_rect`] is now the one derivation both read.
 use crate::core::Color;
 use crate::core::HorizontalAlignment;
 use crate::core::Rect;
@@ -12,7 +20,7 @@ use crate::widget::capability::coercion::{expect_selection_mode, expect_usize, e
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::ControlMetrics;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::sync::Arc;
@@ -26,6 +34,14 @@ const LIST_INSET: u32 = 2;
 
 /// The inset of a row's label from its row's left edge: 2 px.
 const LIST_TEXT_INSET: i32 = 2;
+
+/// Height of one list row: 22.
+///
+/// The shared list-row metric, so a `list_view` row is the same band a `list_box` and every menu
+/// entry use. It was the literal `20` written in three places here (the paint loop and both press
+/// arms), which is how the paint and the hit test ended up measuring rows from two different
+/// origins.
+pub const LIST_ROW_HEIGHT: u32 = dimensions::MENU_ROW_HEIGHT;
 
 /// List model abstraction for list-like views.
 pub trait ListModel: Send + Sync {
@@ -339,6 +355,65 @@ impl ListView {
         self.selection.current_row = self.selection.current_row.filter(|row| *row < row_count);
         self.focused_row = self.focused_row.filter(|row| *row < row_count);
     }
+
+    /// The rows the control can actually paint: everything that fits the content box.
+    ///
+    /// A count rather than a predicate, because a caller wants to know "how many rows are visible"
+    /// as often as it wants "is row `i` visible", and deriving one from the other at each call site
+    /// is the shape this crate keeps deleting.
+    #[allow(dead_code)]
+    fn visible_row_count(&self) -> usize {
+        let content = ControlMetrics::band_inset(self.base.geometry(), LIST_INSET);
+        (content.height / LIST_ROW_HEIGHT) as usize
+    }
+
+    /// Row `index`'s own band, or `None` when the row is past the last visible one.
+    ///
+    /// # Why this is one derivation and not three
+    ///
+    /// The band's origin and its height were spelled three times — the paint loop used the content
+    /// box while both press arms of `handle_event` used the control's `rect.y`, so a press on the
+    /// first row landed on the second. The row height was a `20` literal in all three. Returning the
+    /// band from one function is what makes the drawn rows and the clickable rows the same rows; the
+    /// caller cannot forget one of the four numbers because it never handles them.
+    fn row_rect(&self, index: usize) -> Option<Rect> {
+        let content = ControlMetrics::band_inset(self.base.geometry(), LIST_INSET);
+        let y = content.y + (LIST_ROW_HEIGHT * index as u32) as i32;
+        // A row that would extend past the content box is not visible: the clip is the content
+        // box's bottom edge, and a partially visible row is not painted at all rather than being
+        // painted truncated — a half-height row reads as a rendering error.
+        if y + LIST_ROW_HEIGHT as i32 > content.y + content.height as i32 {
+            return None;
+        }
+        Some(Rect::new(content.x, y, content.width, LIST_ROW_HEIGHT))
+    }
+
+    /// The row index a point falls on, if it falls on a visible row.
+    ///
+    /// The inverse of [`Self::row_rect`] and deliberately built on it: a point is a row's when it
+    /// is inside that row's band, so the two directions cannot disagree about where row 0 begins.
+    fn row_at_point(&self, point: crate::core::Point) -> Option<usize> {
+        let content = ControlMetrics::band_inset(self.base.geometry(), LIST_INSET);
+        if !content.contains_point(point) {
+            return None;
+        }
+        let index = ((point.y - content.y) / LIST_ROW_HEIGHT as i32) as usize;
+        (index < self.row_count()).then_some(index)
+    }
+
+    /// Focuses and selects the row under `point`, if there is one.
+    ///
+    /// One implementation for the mouse and the touch paths, which were two copies of the same
+    /// sixteen lines that had already drifted from the paint loop's own idea of where rows are.
+    fn select_row_at_point(&mut self, point: crate::core::Point) {
+        let Some(index) = self.row_at_point(point) else { return };
+        self.focused_row = Some(index);
+        self.selection.select_row(index);
+        if let Some(row) = self.focused_row {
+            self.selection_changed.emit(row);
+            self.focused_row_changed.emit(Some(row));
+        }
+    }
 }
 impl Widget for ListView {
     fn base(&self) -> &BaseWidget {
@@ -446,12 +521,6 @@ impl WidgetProperties for ListView {
 impl Draw for ListView {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.base.geometry();
-        // Rows are laid out from the control's inset content box rather than from its
-        // literal top edge. Every row used to start at `rect.y` and draw its label at
-        // `y + item_height / 2` with a top-left origin, so the first row's glyph box began on
-        // the frame's own stroke. `band_inset` reserves the margin and `text_line` centres
-        // each label on its row's own band.
-        let content = ControlMetrics::band_inset(rect, LIST_INSET);
 
         // Chrome colours resolve explicit style first, then the theme's resolved style for
         // this control, and only then a literal. The theme step is what makes an appearance
@@ -489,21 +558,21 @@ impl Draw for ListView {
         // control, and the label's line box is derived from the row rather than from
         // `y + item_height / 2` — which put the glyph box's top edge on the row's middle
         // line and left the first row pinned to y=0.
-        if let Some(ref model) = self.model {
-            let item_height = 20;
-            let row_count = model.row_count();
+        //
+        // The row box comes from `row_rect`, which is also what the hit test reads: the row height
+        // used to be a `20` literal in three places (this loop, and both press arms of
+        // `handle_event`) and the press arms measured from `rect.y` while this loop measured from
+        // the content box, so a press on the first row selected the second.
+        if self.model.is_some() {
+            let row_count = self.row_count();
             let current_row = self.focused_row;
             let font = crate::core::Font::default();
             for i in 0..row_count {
-                let y = content.y + item_height * i as i32;
-                if y + item_height > content.y + content.height as i32 {
-                    break;
-                }
-                let row = crate::core::Rect::new(content.x, y, content.width, item_height as u32);
+                let Some(row) = self.row_rect(i) else { break };
                 if Some(i) == current_row {
                     context.fill_rect(row, focused_bg);
                 }
-                if let Some(text) = model.data(i) {
+                if let Some(text) = self.model.as_ref().and_then(|model| model.data(i)) {
                     if !text.is_empty() {
                         let cell = crate::core::Rect::new(
                             row.x + LIST_TEXT_INSET,
@@ -531,37 +600,11 @@ impl crate::event::EventHandler for ListView {
         }
         match event {
             crate::event::Event::MousePress { pos, button } if *button == 1 => {
-                let rect = self.base.geometry();
-                let item_height = 20;
-                if pos.y >= rect.y {
-                    let index = ((pos.y - rect.y) / item_height) as usize;
-                    let row_count = self.row_count();
-                    if index < row_count {
-                        self.focused_row = Some(index);
-                        self.selection.select_row(index);
-                        if let Some(row) = self.focused_row {
-                            self.selection_changed.emit(row);
-                            self.focused_row_changed.emit(Some(row));
-                        }
-                    }
-                }
+                self.select_row_at_point(*pos);
             }
             #[cfg(feature = "touch")]
             crate::event::Event::Tap { pos } => {
-                let rect = self.base.geometry();
-                let item_height = 20;
-                if pos.y >= rect.y {
-                    let index = ((pos.y - rect.y) / item_height) as usize;
-                    let row_count = self.row_count();
-                    if index < row_count {
-                        self.focused_row = Some(index);
-                        self.selection.select_row(index);
-                        if let Some(row) = self.focused_row {
-                            self.selection_changed.emit(row);
-                            self.focused_row_changed.emit(Some(row));
-                        }
-                    }
-                }
+                self.select_row_at_point(*pos);
             }
             _ => { /* Other events are not relevant */ }
         }
@@ -625,5 +668,60 @@ mod tests {
         assert!(view.model_ref().is_some());
         assert_eq!(view.row_count(), 2);
         assert_eq!(view.item(99), None);
+    }
+
+    /// The rows tile the view's content box in sequence.
+    ///
+    /// # What this pins
+    ///
+    /// BLUE22 §B.8 lists this control's defect as "the row height computed by hand". It was a `20`
+    /// literal in the paint loop and in both press arms, and the two sides measured from different
+    /// origins — the loop from the content box and the presses from `rect.y`. [`ListView::row_rect`]
+    /// is now the one derivation, so this states the sequence outright.
+    #[test]
+    fn the_rows_tile_the_content_box_in_sequence() {
+        let view = ListView::new(Rect::new(0, 0, 200, 120));
+        let first = view.row_rect(0).expect("the first row is visible");
+        assert_eq!(first.height, LIST_ROW_HEIGHT);
+        for index in 0..view.visible_row_count() {
+            let row = view.row_rect(index).expect("a visible index has a row");
+            assert_eq!(row.x, first.x, "the rows share one column");
+            assert_eq!(row.width, first.width);
+        }
+        for index in 1..view.visible_row_count() {
+            let previous = view.row_rect(index - 1).expect("previous is visible");
+            let row = view.row_rect(index).expect("this index is visible");
+            assert_eq!(
+                row.y,
+                previous.y + previous.height as i32,
+                "each row follows the previous one's own band: index {index}"
+            );
+        }
+        // And a row past the content box is not visible at all rather than truncated.
+        assert!(view.row_rect(view.visible_row_count()).is_none());
+    }
+
+    /// A press selects the row it is *on*, measured from the same origin the rows are painted from.
+    ///
+    /// This is the defect the migration fixed: the press arms measured from `rect.y` while the paint
+    /// measured from the content box, so the first row's band was hit-tested as the second row's.
+    /// The test drives a point inside each painted row and asserts that row is the one selected.
+    #[test]
+    fn a_press_selects_the_row_it_is_painted_on() {
+        let mut view = ListView::new(Rect::new(0, 0, 200, 120));
+        // A model taller than a row, so a press beyond the last row has somewhere to go and the
+        // bound under test is the *content box* rather than the model's length.
+        view.set_model(Arc::new(VecListModel::new((0..8).map(|n| n.to_string()).collect())));
+        for index in 0..view.visible_row_count().min(view.row_count()) {
+            let row = view.row_rect(index).expect("visible");
+            let centre = crate::core::Point::new(row.x + 1, row.y + row.height as i32 / 2);
+            assert_eq!(
+                view.row_at_point(centre),
+                Some(index),
+                "the centre of the painted row {index} must resolve to that row: {row:?}"
+            );
+        }
+        // A point in the view's own frame, outside the content box, is no row at all.
+        assert_eq!(view.row_at_point(crate::core::Point::new(0, 0)), None);
     }
 }

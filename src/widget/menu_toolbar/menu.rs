@@ -2,16 +2,31 @@
 // SPDX-License-Identifier: MIT
 
 //! Menu widget.
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+//!
+//! # The popup's rows are assembled by a layout
+//!
+//! BLUE22 §B.8 lists `menu` / `menu_item`'s defect as "the check and arrow paddings written by
+//! hand". The *columns* of a row were already derived (see [`Menu::indicator_box`] and
+//! [`Menu::label_box`], which state Qt's `MenuItem.qml:25-28` relations), but the *run* of rows was
+//! a `let mut y` inside `draw`. [`Menu::item_bands`] now asks a [`FlexLayout`] column where each
+//! row is, so the run is a layout answer rather than a second accumulator.
+
+use crate::compat::Vec;
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
+use crate::layout::{
+    AlignItems, FlexDirection, FlexLayout, FlexWrap, JustifyContent, LayoutParams,
+};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::style::EdgeOffsets;
 use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::composite::CompositeBuilder;
 use crate::widget::metrics::dimensions;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, Widget, WidgetFactory, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// A single item in a menu.
 #[derive(Debug, Clone)]
@@ -379,6 +394,68 @@ impl Menu {
     fn item_height() -> f32 {
         22.0
     }
+
+    /// The box of every entry, separators included, in popup coordinates.
+    ///
+    /// The boxes are in **popup coordinates** — the origin is the popup's top-left, not the
+    /// control's — because that is the frame the entries are painted in; the caller translates to
+    /// `rect` when it draws.
+    ///
+    /// The popup's own `MENU_POPUP_PADDING` is the column's padding rather than a `+ 2.0` the paint
+    /// loop added before the first row, so the inset is part of the run instead of a constant that
+    /// only the first row knows about.
+    fn item_bands(&self) -> Vec<Rect> {
+        if self.items.is_empty() {
+            return Vec::new();
+        }
+        let height = self.popup_height() as u32;
+        let factory = WidgetFactory::new_with_defaults();
+        let mut column = CompositeBuilder::new(
+            Box::new(FlexLayout::with_params(
+                FlexDirection::Column,
+                FlexWrap::NoWrap,
+                JustifyContent::FlexStart,
+                AlignItems::Stretch,
+                0,
+                0,
+            )),
+            EdgeOffsets::new(
+                dimensions::MENU_POPUP_PADDING,
+                0,
+                dimensions::MENU_POPUP_PADDING,
+                0,
+            ),
+            Size::new(0, 0),
+        );
+        for item in self.items.iter() {
+            let row_height = if item.is_separator() {
+                Self::separator_height() as u32
+            } else {
+                Self::item_height() as u32
+            };
+            // The label text is passed so a row the layout reports is identifiable, not so the
+            // layout reads it: the row's height is the control's own `MENU_ROW_HEIGHT`, whatever the
+            // label says. A separator carries no text, which is also how it reads on screen.
+            let created = column.add_sized(
+                &factory,
+                "label",
+                item.text(),
+                Size::new(self.geometry().width, row_height),
+                LayoutParams::new(),
+            );
+            debug_assert!(created.is_some(), "a menu row is a core control");
+        }
+        let mut placed: Vec<Rect> = Vec::new();
+        // The column is given the popup's own extent: the control's width, and the height the rows
+        // between them add up to (already the sum of the same two constants the loop above used).
+        column.arrange(Rect::new(0, 0, self.geometry().width, height), &mut |_, rect| {
+            placed.push(rect)
+        });
+        while placed.len() < self.items.len() {
+            placed.push(Rect::new(0, 0, 0, 0));
+        }
+        placed
+    }
     /// The height of the title heading the menu draws above its popup body.
     fn heading_height() -> f32 {
         20.0
@@ -740,27 +817,25 @@ impl Draw for Menu {
             face.blend(&ink, 0.22),
         );
         context.draw_rect(Rect::new(rect.x, popup_y, rect.width, popup_h as u32), border);
-        let mut y = popup_y as f32 + 2.0;
+        // The run of rows, placed by the layout. `bands` is in popup coordinates, so it is offset by
+        // the popup's own top edge once here rather than accumulated per row.
+        let bands = self.item_bands();
         for (i, item) in self.items.iter().enumerate() {
+            let Some(row) = bands.get(i).copied() else { continue };
+            let row = Rect::new(rect.x + row.x, popup_y + row.y, row.width, row.height);
             if item.is_separator() {
-                let sep_y = y + Self::separator_height() / 2.0;
+                let sep_y = row.y + row.height as i32 / 2;
                 context.draw_line(
-                    Point::new(rect.x + 4, sep_y as i32),
-                    Point::new(rect.x + rect.width as i32 - 4, sep_y as i32),
+                    Point::new(rect.x + 4, sep_y),
+                    Point::new(rect.x + rect.width as i32 - 4, sep_y),
                     border,
                 );
-                y += Self::separator_height();
                 continue;
             }
             let is_hovered = self.hovered_index == Some(i);
             if is_hovered {
                 context.fill_rect(
-                    Rect::new(
-                        rect.x + 2,
-                        y as i32,
-                        rect.width.saturating_sub(4),
-                        Self::item_height() as u32,
-                    ),
+                    Rect::new(row.x + 2, row.y, row.width.saturating_sub(4), row.height),
                     primary,
                 );
             }
@@ -783,7 +858,8 @@ impl Draw for Menu {
             // **top** edge, so `y + item_height() / 2` put that edge on the row's middle line
             // and drew every entry label, tick, shortcut and arrow half a line low — the same
             // error the heading directly above already documented and avoided.
-            let row = Rect::new(rect.x, y as i32, rect.width, Self::item_height() as u32);
+            //
+            // The row's own box comes from `item_bands`, so this loop no longer carries a `y`.
             let indicator = self.indicator_box(row);
             let label = self.label_box(row, indicator);
             if item.is_checkable() {
@@ -838,7 +914,6 @@ impl Draw for Menu {
                     HorizontalAlignment::Center,
                 );
             }
-            y += Self::item_height();
         }
     }
 }
@@ -846,6 +921,50 @@ impl Draw for Menu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One ink box per text `<path>` in document order, as `(left, top, right, bottom)`.
+    ///
+    /// # Why the ink and not the string
+    ///
+    /// Text leaves the SVG backend as the `font8x8` rectangles the rasteriser fills — one
+    /// axis-aligned subpath per set bitmap bit — so the label is not in the document in any form
+    /// and a test has to locate a run by *where* it is. That is the stronger check: the old form
+    /// matched `>Open</text>` and read the element's `y`, so a glyph placed a line away with a
+    /// correct attribute would have passed it.
+    ///
+    /// One element is one `draw_text`, so this is one box per label here. Subpaths are not
+    /// deduplicated: a glyph box wider than the 8 bitmap columns maps two columns to one pixel
+    /// and emits the same rectangle twice, exactly as the rasteriser fills it twice.
+    fn text_run_boxes(svg: &str) -> Vec<(i32, i32, i32, i32)> {
+        let mut boxes = Vec::new();
+        for line in svg.lines() {
+            let Some(path_at) = line.find("<path ") else { continue };
+            let Some(d_at) = line[path_at..].find("d=\"") else { continue };
+            let start = path_at + d_at + 3;
+            let Some(end) = line[start..].find('"') else { continue };
+            let mut bounds: Option<(i32, i32, i32, i32)> = None;
+            for subpath in line[start..start + end].split('M').skip(1) {
+                let numbers: Vec<i32> = subpath
+                    .split(|c: char| !c.is_ascii_digit() && c != '-')
+                    .filter(|part| !part.is_empty())
+                    .filter_map(|part| part.parse().ok())
+                    .collect();
+                if numbers.len() < 4 {
+                    continue;
+                }
+                let (x, y, w, h) = (numbers[0], numbers[1], numbers[2], numbers[3]);
+                let bit = (x, y, x + w, y + h);
+                bounds = Some(match bounds {
+                    None => bit,
+                    Some((l, t, r, b)) => (l.min(bit.0), t.min(bit.1), r.max(bit.2), b.max(bit.3)),
+                });
+            }
+            if let Some(union) = bounds {
+                boxes.push(union);
+            }
+        }
+        boxes
+    }
 
     /// A menu row's label is centred on its own line box, not offset by half a line.
     ///
@@ -866,28 +985,42 @@ mod tests {
         // at y = 22 and is 22 px tall. A 14 px line box centred in it starts at 22 + (22-14)/2.
         let row_top = Menu::heading_height() as i32 + 2;
         let line_h = {
-            let mut backend =
-                crate::render::SvgPaintBackend::new(crate::core::Size::new(200, 120));
+            let mut backend = crate::render::SvgPaintBackend::new(crate::core::Size::new(200, 120));
             crate::render::RenderContext::new(&mut backend)
                 .measure_text("M", &crate::core::Font::default())
                 .height as i32
         };
         let expected_y = row_top + (Menu::item_height() as i32 - line_h) / 2;
-        let label_y = svg
-            .lines()
-            .find(|line| line.contains(">Open</text>"))
-            .map(|line| {
-                let at = line.find("y=\"").expect("y present") + 3;
-                let end = line[at..].find('"').expect("closed") + at;
-                line[at..end].parse::<i32>().expect("numeric")
-            })
-            .expect("the label was rendered");
-        assert_eq!(label_y, expected_y, "the label belongs on its row's line box");
+        // The rows are located by the band they occupy, not by the string they spell: a run
+        // belongs to a row when its glyph box's top edge falls inside that row's own band. Every
+        // label ('O', 'S', 'F') lights its bitmap's first row, so the ink's top edge *is* the
+        // glyph box's top edge and the band test is exact.
+        let runs = text_run_boxes(&svg);
+        let on_row = |index: usize| -> (i32, i32, i32, i32) {
+            let top = row_top + index as i32 * Menu::item_height() as i32;
+            runs.iter()
+                .find(|(_, t, _, _)| *t >= top && *t < top + Menu::item_height() as i32)
+                .copied()
+                .unwrap_or_else(|| panic!("row {index} painted no ink (rows at {top})"))
+        };
+        let first = on_row(0);
+        assert_eq!(first.1, expected_y, "the label belongs on its row's line box");
+        // Every row derives its origin the same way, so the second row's line box is the first's
+        // shifted down by exactly one row.
+        assert_eq!(
+            on_row(1).1,
+            expected_y + Menu::item_height() as i32,
+            "and every row derives its own line box the same way"
+        );
         assert_ne!(
-            label_y,
+            first.1,
             row_top + Menu::item_height() as i32 / 2,
             "the row's middle is not a glyph-box top edge"
         );
+        assert!(first.2 > first.0, "the label laid down ink: {first:?}");
+        // The ink must stay inside the row it labels, which the old attribute check could not
+        // see: the label column is inset by the indicator, so it cannot start at the row's edge.
+        assert!(first.0 > 0 && first.2 <= 200, "the label stays within the popup: {first:?}");
     }
 
     /// The label's column is whatever the indicator and the trailing column leave.
@@ -1076,5 +1209,73 @@ mod tests {
         let drawn = menu.popup_height() as i32;
         assert!(menu.contains_point(Point::new(5, drawn - 1)));
         assert!(!menu.contains_point(Point::new(5, drawn)));
+    }
+
+    /// The rows tile the popup in sequence, below its own padding.
+    ///
+    /// # What this pins
+    ///
+    /// BLUE22 §B.8 lists this control's defect as "the check and arrow paddings written by hand".
+    /// The columns inside a row were already derived; what this pins is the **run**: each row starts
+    /// where the previous one ended, separators get `MENU_SEPARATOR_HEIGHT` and entries
+    /// `MENU_ROW_HEIGHT`, and the first row starts `MENU_POPUP_PADDING` below the popup's top edge.
+    /// The old form carried that arithmetic as a `let mut y` inside the painting loop, so nothing
+    /// could ask for a row's box without painting the menu.
+    #[test]
+    fn the_rows_tile_the_popup_in_sequence() {
+        let mut menu = Menu::new("File", Rect::new(0, 0, 200, 120));
+        menu.add_action("Open");
+        menu.add_separator();
+        menu.add_action("Save");
+
+        let bands = menu.item_bands();
+        assert_eq!(bands.len(), 3, "one band per entry, separators included");
+        assert_eq!(
+            bands[0].y,
+            dimensions::MENU_POPUP_PADDING as i32,
+            "the first row starts below the popup's own padding: {bands:?}"
+        );
+        for pair in bands.windows(2) {
+            assert_eq!(
+                pair[1].y,
+                pair[0].y + pair[0].height as i32,
+                "each row follows the previous one's own box: {bands:?}"
+            );
+        }
+        assert_eq!(bands[0].height, Menu::item_height() as u32);
+        assert_eq!(bands[1].height, Menu::separator_height() as u32);
+        assert_eq!(bands[2].height, Menu::item_height() as u32);
+        // The run is exactly as tall as the popup the control reports.
+        let last = bands.last().expect("three bands");
+        assert_eq!(
+            last.y + last.height as i32 + dimensions::MENU_POPUP_PADDING as i32,
+            menu.popup_height() as i32,
+            "the rows and the popup's padding add up to the popup's own height"
+        );
+    }
+
+    /// A separator sits between two entries and does not disturb their alignment.
+    ///
+    /// The companion invariant to the run: the columns of a row are read from the row's own box, so
+    /// a separator shifting every later row down must not shift their *labels* sideways.
+    #[test]
+    fn a_separator_shifts_the_rows_but_not_their_columns() {
+        let mut menu = Menu::new("File", Rect::new(0, 0, 200, 120));
+        menu.add_action("Open");
+        menu.add_action("Save");
+        let without: Vec<i32> = menu
+            .item_bands()
+            .iter()
+            .map(|row| menu.label_box(*row, menu.indicator_box(*row)).x)
+            .collect();
+
+        menu.add_separator();
+        let with: Vec<i32> = menu
+            .item_bands()
+            .iter()
+            .take(2)
+            .map(|row| menu.label_box(*row, menu.indicator_box(*row)).x)
+            .collect();
+        assert_eq!(without, with, "a separator must not move the label columns");
     }
 }

@@ -25,9 +25,23 @@ filled with the window's own colour is the third: the shape is drawn, and it is 
 # What it asserts
 
 For each entry, the control's dark snapshot (`snapshots/svg/<control>.svg`) must contain the
-required patterns and must not contain the forbidden ones. Both halves matter: "a `<text>` exists"
-alone does not distinguish `floating_label`'s caption from its input text, while the forbidden
-pattern states exactly what the defect looked like in the file.
+required patterns and must not contain the forbidden ones. Both halves matter: "a text run
+exists" alone does not distinguish `floating_label`'s caption from its input text, while the
+forbidden pattern states exactly what the defect looked like in the file.
+
+# What a "text run" looks like in the snapshot
+
+Text is no longer a `<text>` element: the SVG backend emits the **same `font8x8` rectangles the
+software rasteriser fills**, one axis-aligned subpath per set bitmap bit, inside a single
+`<path d="M{x} {y}h{w}v{h}h-{w}z...">`. Two consequences shape the markers below:
+
+* the rendered string is **not in the document in any form**, so a marker cannot be `>Sample<`;
+  a run has to be identified by its **geometry** (where its ink starts, `M<left> <top>`) or by its
+  **fill**, which is what separates two runs drawn at the same size and place.
+* `M<left> <top>` is a stable spelling for a run's **glyph-box top-left**, because the union of a
+  run's subpaths spans the whole box and `left`/`top` are the box's own edges. A marker of the form
+  `M9 13h` therefore means "a run whose glyph box starts at (9, 13)" — which is exactly the
+  quantity a re-export changes when the feature moves or disappears.
 
 # Why the markers are literals from the current snapshot rather than a geometry model
 
@@ -42,6 +56,12 @@ when the feature is removed. That is the evidence that makes each row a check in
 The "why" on each entry states the defect the marker would catch, because a marker whose purpose is
 not written down becomes a mystery the next person deletes when a legitimate colour change makes it
 red.
+
+A defect can be either "a wrong spelling appears" or "the right spelling is missing", and the two
+are caught by the two halves: `requires` catches a missing feature, `forbids` catches a wrong one.
+Where the defect is purely *absence* — the caption not drawn at all, the second tab never created —
+`forbids` is empty rather than restated as a positive marker that the feature legitimately contains;
+writing the feature's own spelling into `forbids` would make the row unsatisfiable.
 
 # Reverse injection
 
@@ -72,35 +92,45 @@ SNAPSHOTS = REPO / "snapshots" / "svg"
 FEATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...], str], ...] = (
     (
         "floating_label",
-        # The caption is drawn as text. `Sample` is `CENSUS_TEXT`, the label the exporter applies.
-        ("<text", ">Sample</text>"),
-        # The defect: the label property was unpublished, so the caption landed in the input
-        # instead. Both strings are drawn at font-size 14 in this control, so the *fill* is what
-        # tells them apart — the caption is the input ink damped toward the field (rgba(155,155,
-        # 155) in dark, rgba(81,81,81) in light), the input text is the undamped ink
-        # (rgba(225,225,225) / rgba(0,0,0)). A regression to the input-text spelling means the
-        # floating-label control is demonstrating a plain text field.
-        ('fill="rgba(225,225,225,1.00)">Sample<',),
+        # The caption, drawn as a text run whose ink spans (8,13)-(56,27) and painted in the
+        # *damped* ink (`rgba(155,155,155)` in dark, `rgba(81,81,81)` in light). Both markers are
+        # needed: the geometry alone would also match a run that happened to land there, and the
+        # fill alone would also match a differently-placed one.
+        ('<path d="M9 13h', 'fill="rgba(155,155,155,1.00)"'),
+        # The defect is *absence*: `draw_label` returned early, so there was no caption run at all
+        # and the control was a plain text field. Verified by injecting `if true { return; }` at
+        # the top of `draw_label` — the snapshot then contains not a single `<path>`. There is no
+        # positive spelling to forbid, so the defect is expressed by the missing `requires`
+        # markers above, and `forbids` is empty rather than restated as the thing that must exist.
+        (),
         "the control is named `floating_label`, so its snapshot must contain a floating caption. "
         "It shipped with **no label at all** — `label` was unpublished and the shared label "
         "helper took `text` first, so the caption was written into the input and `draw_label` "
         "returned early. A text field with no caption is the one thing a floating-label control "
-        "cannot be, and the ink check is what distinguishes the caption from the input text "
+        "cannot be, and the ink colour is what distinguishes the caption from the input text "
         "drawn at the same size and place",
     ),
     (
         "tab_widget",
-        # Two tabs: the first title carries the exporter's `Sample`, the second keeps the name
-        # `create_tab_widget` gave it. The second tab's `x="74"` rect and its text are the band
-        # chrome. The content area starting at y=24 is the remaining proof a 24px band sits above.
-        ("<text", ">Tab 2</text>", 'x="74" y="0" width="64" height="24"', 'x="0" y="24" width="240" height="96"'),
-        # A single-tab drawing is what a tab widget looks like when it has not been given tabs.
-        (">Tab 1</text>",),
+        # Two tabs, so two title runs on the 24px band, and the second tab's own `x="74"` rect.
+        # The content area starting at y=24 is the remaining proof a 24px band sits above. The two
+        # runs are required to be **distinct** (different glyph-box left edges), which is what a
+        # second tab means and what a one-tab regression removes.
+        (
+            '<path d="M12 5h',
+            '<path d="M87 5h',
+            'x="74" y="0" width="64" height="24"',
+            'x="0" y="24" width="240" height="96"',
+        ),
+        # The defect is again *absence* rather than a wrong spelling: verified by removing the
+        # second `add_tab` from `create_tab_widget`, which leaves only the `x="0"` rect and one
+        # title run — the `requires` entries above fail on the missing second tab.
+        (),
         "the tab band is what a `tab_widget` is, and it shipped with **zero tabs**, so the band "
         "and its titles were absent from the picture entirely. The marker requires a second tab "
-        "(`Tab 2` plus its own rect) and the 24px band that the content area starts below, so a "
-        "regression to one or no tabs fails rather than passing on the chrome the control draws "
-        "anyway",
+        "(`Tab 2` as its own glyph-box run, plus its own rect) and the 24px band that the content "
+        "area starts below, so a regression to one or no tabs fails rather than passing on the "
+        "chrome the control draws anyway",
     ),
     (
         "badge",

@@ -1070,6 +1070,69 @@ rightPadding: padding + (mirrored ? down.width : up.width)
 
 ---
 
+## F.6 第 70 轮状态更新（2026-09-23 同日续，第 70 轮）
+
+> 执行记录见 [`../log/log-20260923-1.md`](../log/log-20260923-1.md) 第 70 轮。
+> **本轮是 §B.8 的主体施工轮**：第一批量 2 个控件 + 第二批量 5 个家族，共 **9 个控件家族**。
+
+### F.6.1 本轮完成（有独立判据）
+
+| 计划条目 | 状态 | 判据 |
+|---|---|---|
+| **§B.8 优先级 1 `spin_box`** | ✅ | `assemble_row()` = `FlexLayout(Row)` + `CompositeBuilder`；value 列 `filled`、步骤列 `add_sized`。**快照几何逐字节不变** |
+| **§B.8 优先级 2 `split_button`** | ✅ | `assemble_face()` 两列由布局排序并 tile；**快照几何逐字节不变** |
+| **§B.8 优先级 3 `combo_box` 族** | ✅ | `IndicatorGeometry::for_band` 由组装产出两个盒子（4 个变体）；**快照几何逐字节不变** |
+| **§B.8 优先级 5 `menu` / `menu_item`** | ✅ | `item_bands()`（FlexLayout Column）；`MENU_POPUP_PADDING` 改为列 padding；**快照几何逐字节不变** |
+| **§B.8 优先级 6 `tool_bar`** | ✅ | `item_bands()`（Row/Column 随 orientation）；`item_rect` 退化为查表；删除了已死代码 `button_size` |
+| **§B.8 优先级 7 `status_bar`** | ✅ | `segment_boxes()`（`justify_content = FlexEnd`）；右对齐成为布局属性 |
+| **§B.8 优先级 8 `tab_widget` / `tab_view`** | ✅ | `tab_run()` 返回条带坐标下的矩形序列，四个 `TabPosition` 共用一份 |
+| **§B.10 判据 9**（`grep FlexLayout::new src/widget/` → 非空） | ✅ | 由 0 变为 6 个文件 |
+| **`CompositeBuilder` 的两处一般性缺口** | ✅ | `add_sized`（子控件自己的尺寸）；`fill` 权重从 `u32::MAX` 改为 **1**（否则同一行里第二个 `fill` 不可达） |
+| **§B.9「留白由兄弟推导」的机械判据** | ✅ | 每个控件一条「子控件变宽 ⇒ 相邻段起点随之移动」的单测 |
+
+### F.6.2 本轮**新发现并修复**的缺陷（不在原计划里）
+
+| # | 缺陷 | 影响面 | 证据 |
+|---|---|---|---|
+| **G-1**（**已知缺陷，故意留下**） | `FlexLayout` 在「所有孩子的 `min_size` 之和 > band」时溢出，且位置从前沿排开 ⇒ 溢出全落在末尾孩子身上（可能被画到自己控件之外，SVG 下发绝对坐标 ⇒ 整块消失） | 所有走 `arrange` 的组合控件 | 单测 `floors_that_do_not_fit_overhang_rather_than_being_crossed`。**「按剩余房间封顶」的修法被实现后回退**：它会把第二个 100px 按钮压到 20px，即把失败从「溢出」换成「比标签窄的按钮」 |
+| **R-13** | `fill` 的权重写成 `u32::MAX` ⇒ 同一行有两个 `fill` 时第一个独吞剩余，第二个的 `fill` **不可达** | 所有用 `LayoutParams::filled()` 的组合 | 改为 `max(1)`（= CSS `flex: 1` / Qt `stretchFactor: 1`） |
+| **R-14** | **`FlexLayout` 的 shrink 只做一轮比例分配**：一个孩子顶到地板后，它没让出的房间**谁都不再让** ⇒ 行超出 band | 所有「可缩 + 不可缩」混排的行 | `split_button` 的 48px 快照：箭头列被推到 `x=48..70`（band 只有 48 宽）。第二轮向「地板上方还有空间」的孩子继续要，绝不越过任何地板 |
+| **R-15** | **`AlignItems::Stretch` 无条件拉满交叉轴**，无视子控件申报的 `hints.height.pref` | 所有在交叉轴上声明了尺寸的组合（`tool_bar` 的 item 得 56 而不是 52） | CSS/Qt 的 `stretch` 语义只作用于「交叉轴无确定尺寸」的子项。修后有两条对偶测试（申报 ⇒ 用申报值；不申报 ⇒ 拉满） |
+| **R-16** | 「列自己的尾部内边距」写成 trailing margin 会被前面的 `fill` 子控件**吃掉**（`leftover` 在 margins 之后才扣） | `combo_box` 的 indicator：尾部内边距消失，箭头漂到 band 最右缘 | 快照 `<line>` x1 由 210 → 222。修法：内边距并进列自己的宽度 |
+
+### F.6.3 §F.2.2 队列现状
+
+| 优先 | 控件 | 状态 |
+|---|---|---|
+| 1 | `spin_box` / `number_picker` | ✅ 第 70 轮 |
+| 2 | `split_button` | ✅ 第 70 轮 |
+| 3 | `combo_box` 族（4 个） | ✅ 第 70 轮 |
+| 4 | `group_box` | ⬜ |
+| 5 | `menu` / `menu_item` | ✅ 第 70 轮 |
+| 6 | `tool_bar` | ✅ 第 70 轮 |
+| 7 | `status_bar` | ✅ 第 70 轮 |
+| 8 | `tab_widget` / `tab_view` | ✅ 第 70 轮 |
+| 9 | `dialog` 按钮行 | 部分（`ActionRow` 就绪；8 个对话框**刻意不合并**，见 §5.4） |
+| 10 | `scroll_area` | ⬜ |
+| 11 | `list_view` / `grid_table` | ⬜ |
+
+### F.6.4 本轮验证（全量一次）
+
+| 项 | 结果 |
+|---|---|
+| `cargo test --lib --no-default-features --features desktop` | **5550 passed / 0 failed**（上轮 5531，+19） |
+| `cargo clippy --all-targets --no-default-features --features desktop -- -D warnings` | **0 warning / 0 error** |
+| 五个 profile（desktop/tablet/mobile/mini/embedded） | 全部 `Finished` |
+| `tools/check_profiles.sh` | `All profile checks passed.` |
+| `tools/check_android_cross.sh` | `android cross-target checks passed.` |
+| `tools/run_all_gates.sh` | **PASS=58 FAIL=0 TIMEOUT=0 NOT-RUN=0 SKIP=1** |
+| `tools/check_svg_snapshots.sh` | `checked=188 skipped=0 failed=0` |
+| `tools/check_control_rendering.sh` | `checked=188 skipped=0 failed=0` |
+| `tools/generate_control_index.py` | 188 控件，`control.md` **无变化** |
+| **9 个控件家族的快照 `rect`/`line` 几何** | **全部逐字节不变**（比 §8 判据 8 的「人眼判为一致」更强） |
+
+---
+
 # 附录 G — 多语言文本：从「拉丁点阵」到「完整塑形」（**用户指令：多语言完美支持**）
 
 > **立此附录的理由**：本附录不是 BLUE22 原有任何一条的延伸，而是一个**独立量级的工程**——
@@ -1169,7 +1232,10 @@ for cluster in shaped.clusters() {
 2. **字体回退链是必需项，不是优化项** —— 一个字符串可以跨多个字体（拉丁 + 中文 + emoji）。
 3. **bidi 是文本层的属性，不是控件的** —— 控件只说「我这一行是 LTR/RTL/自动」。
 
-## G.3 施工方案（分 5 期，逐期可交付、可回退）
+## G.3 施工方案（逐期可交付、可回退）
+
+> **期号说明**：本节按**能力**组织（G.3.1–G.3.5），而 §G.7 按**交付单元**列出
+> （G-1…G-6 含字体分档的子项）。两者的对应关系写在 §G.7 的推荐顺序里。
 
 ### G.3.0 依赖选型（先取证，不凭印象）
 
@@ -1545,3 +1611,11 @@ pub struct Bitmap {
 
 因此**不要先做第 5 期（美化）**：把点阵变好看，只会让「不连写的阿拉伯文」更好看，
 缺陷反而更难被发现。
+
+**三个一句话结论**：
+
+1. **能力与数据分开 gate** —— 否则「要中文」会被迫连塑形引擎一起吃下去。
+2. **默认不带字体数据** —— 于是默认不是「完美」，这个事实必须**写进 README**，
+   而不是让使用者自己发现（原则 #18）。
+3. **`mini` 的中文路径是点阵而不是矢量** —— ~85 KB、不需塑形引擎、复用本仓已有的点阵绘制模型，
+   但**必须先有 `GlyphSource`**，否则 85 KB 在 64 KB RAM 的 MCU 上根本装不下。

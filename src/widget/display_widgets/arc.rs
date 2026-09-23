@@ -497,10 +497,20 @@ mod tests {
     /// whose hole is smaller than the text the digits were painted over the arc they annotate —
     /// invisible in a raster (clipped) and visible in the SVG. This pins the two halves of the
     /// fix: a roomy ring still shows the reading, and a ring with no hole at all (a disc, below
-    /// the thickness) emits no text element.
+    /// the thickness) lays down no text ink.
+    ///
+    /// # Why the measure is ink and not a `<text>` element
+    ///
+    /// The backend no longer hands the string to the viewer's font engine: it emits the same
+    /// `font8x8` rectangles the software rasteriser fills, inside a single `<path>` (see
+    /// `text_subpath_count`). The string is therefore absent from the document in every form,
+    /// and "was the reading drawn?" is a question about **ink** — subpath count and ink box —
+    /// rather than about the presence of an element.
+    #[cfg(not(alloc_frugal))]
     #[test]
     fn arc_value_is_drawn_only_when_it_fits_in_the_ring_hole() {
-        fn text_elements(arc: &mut Arc, side: u32) -> usize {
+        /// The ink the reading leaves, as `(subpaths, ink box)`.
+        fn reading_ink(arc: &mut Arc, side: u32) -> (usize, Option<(i32, i32, i32, i32)>) {
             let mut backend = SoftwarePaintBackend::new(Size::new(side, side), 1.0);
             backend.begin_frame(Color::WHITE);
             {
@@ -509,16 +519,39 @@ mod tests {
             }
             backend.end_frame();
             let svg = crate::widget::svg::render_to_svg(arc);
-            svg.matches("<text").count()
+            (crate::widget::svg::text_subpath_count(&svg), crate::widget::svg::text_ink_box(&svg))
         }
 
         // A 200 px ring with the default 20 px thickness has a 140 px hole: the 0% fits.
         let mut roomy = Arc::new(Rect::new(0, 0, 200, 200));
         roomy.set_show_value(true);
+        let (subpaths, ink) = reading_ink(&mut roomy, 200);
+        assert!(subpaths > 0, "a reading that fits inside the ring hole must still be drawn");
+        // …and it is drawn in the hole, not over the ring. `0%` is `0`'s bitmap followed by
+        // `%`'s, so the run's ink is one pixel narrower on each side than the glyph box the
+        // width test above accepted. A label left at the arc's own radius, or one wider than
+        // the hole, overflows these bounds.
+        let (left, top, right, _) = ink.expect("the drawn reading has an ink box");
+        let field = roomy.geometry();
+        let outer_radius = field.width.min(field.height).saturating_sub(2) / 2;
+        let inner_radius = outer_radius.saturating_sub(roomy.thickness);
+        let center_x = field.x + field.width as i32 / 2;
+        let center_y = field.y + field.height as i32 / 2;
+        // The run is drawn on the hole's **own** centre line and its ink fits inside the hole:
+        // `inner_radius` is that hole's half-width, so both edges of the ink are within
+        // `inner_radius - 1` of `center_x`. A reading placed at the arc's own radius (the
+        // defect this pins) overshoots that bound; one positioned from the field rather than
+        // from the hole lands off the hole's centre line entirely.
         assert!(
-            text_elements(&mut roomy, 200) > 0,
-            "a reading that fits inside the ring hole must still be drawn"
+            left >= center_x - inner_radius as i32 && right <= center_x + inner_radius as i32,
+            "the reading's ink {left}..{right} must lie within the hole's centre ± {inner_radius}"
         );
+        assert_eq!(
+            left + right,
+            2 * center_x - 1,
+            "the reading hangs on the hole's own centre line, not the field's"
+        );
+        assert_eq!(top, center_y - 7, "and is centred on the hole's middle line");
 
         // A ring whose thickness equals its radius has no hole for the label, so there is
         // nowhere legal to put it — it is dropped rather than overprinted on the arc.
@@ -526,8 +559,8 @@ mod tests {
         solid.set_show_value(true);
         solid.set_thickness(99);
         assert_eq!(
-            text_elements(&mut solid, 200),
-            0,
+            reading_ink(&mut solid, 200),
+            (0, None),
             "with no ring hole the reading must be dropped, not drawn over the arc"
         );
     }

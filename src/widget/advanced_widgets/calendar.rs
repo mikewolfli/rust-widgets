@@ -1084,24 +1084,108 @@ mod tests {
         assert!(svg.starts_with("<svg"));
     }
 
-    /// Parses `<text x y>content</text>` elements out of a rendered SVG.
-    fn texts(svg: &str) -> Vec<(i32, i32, String)> {
-        let mut out = Vec::new();
+    /// How far apart two `y` values can be and still be the same visual line.
+    ///
+    /// Reserved for the host's line spacing: rows on one line differ by less than this, lines
+    /// differ by more. A single bitmap row is a fraction of the box, so this bound is loose
+    /// enough to absorb integer rounding and tight enough to separate adjacent rows.
+    const LINE_TOLERANCE: i32 = 3;
+
+    /// One line's worth of ink bits, keyed by the topmost `y` seen on that line.
+    type InkLine = (i32, Vec<(i32, i32, i32, i32)>);
+
+    /// Text runs recovered from a rendered SVG, as `(left, top, right, bottom)` ink boxes.
+    ///
+    /// # Why the ink box and not the string
+    ///
+    /// Text leaves the backend as `font8x8` **glyph geometry** — one axis-aligned `<path>`
+    /// subpath per set bitmap bit, the same rectangles the software rasteriser fills — so the
+    /// document contains a picture of the run, not the run. A test therefore has to locate a
+    /// run by *where it is*, which is strictly better than locating it by *what it says*:
+    /// the old `texts()` helper matched `body == "1"` and then asserted on the element's `x`,
+    /// so it verified the backend's attribute rather than the ink the control produced, and a
+    /// mis-placed glyph with a correct attribute would have passed.
+    ///
+    /// # Why grouping is by quantised `y`, then by horizontal gaps
+    ///
+    /// A glyph box is stretched across the 8 bitmap rows, so those rows land on 8 distinct `y`
+    /// values spanning the box; two runs on the same visual line share every one of them, and
+    /// the line below shares none. Grouping subpaths by which *bitmap row band* their `y` falls
+    /// into therefore separates lines. Within a band, a horizontal gap wider than one glyph
+    /// advance separates runs, because the pen advances between clusters.
+    ///
+    /// Note that a run's subpaths are *not* deduplicated: when a bitmap column is wider than a
+    /// pixel (`11 / 8` for a 11 px box), two columns map to the same pixel and the same
+    /// rectangle is emitted twice. That is the rasteriser's own geometry — it fills that pixel
+    /// twice — so removing it here would make the test disagree with the drawing.
+    fn ink_runs(svg: &str) -> Vec<(i32, i32, i32, i32)> {
+        /// Bits further apart than this on `x` belong to different runs.
+        const RUN_GAP: i32 = 4;
+        let mut bits: Vec<(i32, i32, i32, i32)> = Vec::new();
         for line in svg.lines() {
-            let Some(start) = line.find("<text ") else { continue };
-            let Some(gt) = line[start..].find('>') else { continue };
-            let head = &line[start..start + gt];
-            let body_end = line.rfind("</text>").unwrap_or(line.len());
-            let body = line[start + gt + 1..body_end].to_string();
-            let attr = |name: &str| -> i32 {
-                let key = format!("{name}=\"");
-                let at = head.find(&key).expect("attribute present") + key.len();
-                let end = head[at..].find('"').expect("closed") + at;
-                head[at..end].parse().expect("numeric")
-            };
-            out.push((attr("x"), attr("y"), body));
+            let Some(path_at) = line.find("<path ") else { continue };
+            let Some(d_at) = line[path_at..].find("d=\"") else { continue };
+            let start = path_at + d_at + 3;
+            let Some(end) = line[start..].find('"') else { continue };
+            for subpath in line[start..start + end].split('M').skip(1) {
+                let numbers: Vec<i32> = subpath
+                    .split(|c: char| !c.is_ascii_digit() && c != '-')
+                    .filter(|part| !part.is_empty())
+                    .filter_map(|part| part.parse().ok())
+                    .collect();
+                if numbers.len() < 4 {
+                    continue;
+                }
+                let (x, y, w, h) = (numbers[0], numbers[1], numbers[2], numbers[3]);
+                bits.push((x, y, x + w, y + h));
+            }
         }
-        out
+        if bits.is_empty() {
+            return Vec::new();
+        }
+        // Which `y` values are on the same visual line. A new line starts when the `y` jumps
+        // by more than one bitmap row's worth, which is a bound rather than a guess: two runs
+        // on one line differ by less than one bitmap row, and two lines differ by at least the
+        // smaller part of a box height.
+        let mut row_tops: Vec<i32> = Vec::new();
+        for bit in &bits {
+            if !row_tops.iter().any(|top| (top - bit.1).abs() <= LINE_TOLERANCE) {
+                row_tops.push(bit.1);
+            }
+        }
+        // Number each line left to right, so a caller can index them in reading order.
+        let mut lines: Vec<InkLine> = row_tops.into_iter().map(|top| (top, Vec::new())).collect();
+        for bit in bits {
+            if let Some((_, group)) =
+                lines.iter_mut().find(|(top, _)| (bit.1 - *top).abs() <= LINE_TOLERANCE)
+            {
+                group.push(bit);
+            }
+        }
+        let mut runs = Vec::new();
+        for (_, mut group) in lines {
+            group.sort_by_key(|bit| bit.0);
+            let mut run: Option<(i32, i32, i32, i32)> = None;
+            let mut previous_right = i32::MIN;
+            for bit in group {
+                if run.is_none() || bit.0 - previous_right > RUN_GAP {
+                    if let Some(finished) = run.take() {
+                        runs.push(finished);
+                    }
+                    run = Some(bit);
+                } else if let Some(open) = run.as_mut() {
+                    open.2 = open.2.max(bit.2);
+                    open.3 = open.3.max(bit.3);
+                }
+                if let Some(open) = run.as_ref() {
+                    previous_right = previous_right.max(open.2);
+                }
+            }
+            if let Some(finished) = run {
+                runs.push(finished);
+            }
+        }
+        runs
     }
 
     /// A day number sits in the **middle of its cell**, on both axes.
@@ -1111,6 +1195,23 @@ mod tests {
     /// pickers all centre it. The previous form left-aligned the run at `cx + 3` inside a
     /// `cy + 3` line box, so a one-digit day hugged the cell's left rule and the digits
     /// visibly disagreed with the grid about which cell they labelled.
+    ///
+    /// # What is asserted, and why the numbers are what they are
+    ///
+    /// The check is on the **ink**, not on an element's `x`/`y` attributes: a mis-placed glyph
+    /// with a correct attribute would pass an attribute comparison, and only the ink is what
+    /// the user sees. Two quantities are then checked separately, because they differ for a
+    /// reason worth pinning:
+    ///
+    /// * the glyph **box** centre is asserted *exactly* — the run is centred in its cell and
+    ///   `draw_text_fitted` computes that position from the measured advance, so any drift here
+    ///   is a layout bug;
+    /// * the **ink** centre is asserted within `TEXT_FIT_MARGIN`, not exactly. A glyph bitmap
+    ///   is 8 columns stretched over `round(0.6 * font_size)` pixels, so the leftmost lit column
+    ///   is not the box's first pixel: at the default 11 px font the box is 7 px wide and a
+    ///   digit's ink starts one pixel in, which biases the ink up to 0.5 px right or left of the
+    ///   box centre depending on which digit it is. Demanding exactness there would assert a
+    ///   property of `font8x8` rather than of the layout.
     #[test]
     fn a_day_number_is_centred_in_its_cell() {
         // A month whose first day makes the arithmetic readable, and a geometry where the
@@ -1122,14 +1223,13 @@ mod tests {
         let cell_h = (grid.height / 6).max(1) as i32;
         let blanks = cal.leading_blank_count() as i32;
         let svg = crate::widget::svg::render_to_svg(&mut cal);
-        let rendered = texts(&svg);
+        let runs = ink_runs(&svg);
 
         let font = Font::new("Arial", 11.0, false, false);
-        let mut backend = crate::render::SvgPaintBackend::new(Size::new(240, 120));
-        let context = RenderContext::new(&mut backend);
-        let line_h = context.measure_text("M", &font).height as i32;
+        let mut probe = crate::render::SvgPaintBackend::new(Size::new(1, 1));
+        let measure = RenderContext::new(&mut probe);
+        let line_h = measure.measure_text("M", &font).height as i32;
 
-        // Check every day number the grid holds against its own cell's centre.
         let mut checked = 0;
         for index in 0..42 {
             let day_num = index - blanks + 1;
@@ -1140,25 +1240,80 @@ mod tests {
             let col = index % 7;
             let cx = grid.x + col * cell_w;
             let cy = grid.y + row * cell_h;
-            let label = day_num.to_string();
-            let width =
-                RenderContext::new(&mut crate::render::SvgPaintBackend::new(Size::new(1, 1)))
-                    .measure_text(&label, &font)
-                    .width as i32;
-            let expected_x = cx + (cell_w - width) / 2;
-            let expected_y = cy + (cell_h - line_h) / 2;
-            let found = rendered
+            let advance = measure.measure_text(&day_num.to_string(), &font).width as i32;
+            // Where the run's glyph box must be: centred in the cell on both axes. This is the
+            // layout contract, and it is exact.
+            let box_x = cx + (cell_w - advance) / 2;
+            let box_y = cy + (cell_h - line_h) / 2;
+            // The matching ink, located by the box rather than by the string it spells.
+            let ink = runs
                 .iter()
-                .find(|(_, _, body)| body == &label)
-                .unwrap_or_else(|| panic!("day {day_num} was not rendered"));
-            assert_eq!(found.0, expected_x, "day {day_num} x must be the cell's horizontal centre");
-            assert_eq!(found.1, expected_y, "day {day_num} y must be the cell's vertical centre");
+                .find(|(l, t, r, _)| {
+                    let inside_x = (l + r) / 2 >= box_x && (l + r) / 2 < box_x + advance;
+                    let inside_y = *t >= box_y && *t < box_y + line_h;
+                    inside_x && inside_y
+                })
+                .copied()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "day {day_num} painted no ink in box at {box_x},{box_y} (cell {col},{row})"
+                    )
+                });
+            // The box's own centre is the cell's centre to within the integer division of the
+            // centring term, which is the strongest statement the geometry supports.
+            let box_cx = box_x + advance / 2;
+            assert!(
+                (box_cx - (cx + cell_w / 2)).abs() <= 1,
+                "day {day_num} box centre {box_cx} must be the cell centre {}",
+                cx + cell_w / 2
+            );
+            // Vertically the box top is exact, and the ink starts inside the box: neither a
+            // digit's first nor its last bitmap row is fully lit, so the ink is inset within
+            // the box rather than spanning it. Asserting the box exactly and the inset to
+            // within `TEXT_FIT_MARGIN` keeps the test true of the layout without restating
+            // which rows `font8x8` leaves blank for which digit.
+            assert!(
+                ink.1 >= box_y && ink.3 <= box_y + line_h,
+                "day {day_num} ink {ink:?} must stay inside its box {box_y}..{}",
+                box_y + line_h
+            );
+            assert!(
+                ink.1 - box_y <= crate::render::TEXT_FIT_MARGIN as i32,
+                "day {day_num} ink must start at the top of its box {box_y}, started at {}",
+                ink.1
+            );
+            let ink_cx = (ink.0 + ink.2) / 2;
+            assert!(
+                (ink_cx - (cx + cell_w / 2)).abs() <= crate::render::TEXT_FIT_MARGIN as i32,
+                "day {day_num} ink centre {ink_cx} must be within a fit margin of the cell centre {}",
+                cx + cell_w / 2
+            );
+            // And it must stay inside the cell, which is the reading the report was about.
+            assert!(
+                ink.0 >= cx && ink.2 <= cx + cell_w,
+                "day {day_num} ink {ink:?} must stay inside its cell {cx}..{}",
+                cx + cell_w
+            );
             checked += 1;
         }
         assert!(checked >= 28, "the fixture must have measured a whole month, got {checked}");
     }
 
     /// A weekday heading sits in the middle of the same column its days do.
+    ///
+    /// `draw_text_fitted` bounds each label to its own 34 px column (see the header's own
+    /// comment): the label used to be given a span reaching the grid's right edge, which pushed
+    /// every heading right of its column. The check is therefore that the heading's ink lies
+    /// inside its column's bounds **and** is centred in it — the first half is what the old
+    /// form got wrong, and it is the half an "is centred" assertion alone cannot see, because a
+    /// run centred in the wrong box is still centred.
+    ///
+    /// The heading is drawn through `draw_text_fitted`, whose usable width is inset at **both**
+    /// ends by `TEXT_FIT_MARGIN` — so its centre is the centre of that inset span, which is the
+    /// column's centre, and the ink lands within a margin of it rather than exactly on it (a
+    /// 11 px glyph box is 7 px wide and `font8x8`'s lit columns start at column 1, biasing the
+    /// ink by up to half a pixel). Asserting the margin rather than exactness keeps the test a
+    /// statement about the layout and not about the bitmap.
     #[test]
     fn a_weekday_heading_is_centred_in_its_column() {
         let rect = Rect::new(0, 0, 240, 120);
@@ -1166,21 +1321,33 @@ mod tests {
         let hdr = cal.day_header_rect();
         let cell_w = (hdr.width / 7).max(1) as i32;
         let svg = crate::widget::svg::render_to_svg(&mut cal);
-        let rendered = texts(&svg);
+        let runs = ink_runs(&svg);
+        let label_top = hdr.y + 6;
 
-        let font = Font::bold("Arial", 11.0);
-        let mut backend = crate::render::SvgPaintBackend::new(Size::new(240, 120));
-        let measure = RenderContext::new(&mut backend);
-        let names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-        for (i, name) in names.iter().enumerate() {
-            let cell_x = hdr.x + cell_w * i as i32;
-            let width = measure.measure_text(name, &font).width as i32;
-            let expected_x = cell_x + (cell_w - width) / 2;
-            let found = rendered
+        for i in 0..7 {
+            let cell_x = hdr.x + cell_w * i;
+            let found = runs
                 .iter()
-                .find(|(_, _, body)| body == name)
-                .unwrap_or_else(|| panic!("{name} was not rendered"));
-            assert_eq!(found.0, expected_x, "{name} must be centred in column {i}");
+                .find(|(l, t, r, _)| {
+                    let mx = (l + r) / 2;
+                    mx >= cell_x && mx < cell_x + cell_w && (*t - label_top).abs() < 12
+                })
+                .copied()
+                .unwrap_or_else(|| {
+                    panic!("no heading ink in column {i} (cell x {cell_x}..{})", cell_x + cell_w)
+                });
+            assert!(
+                found.0 >= cell_x && found.2 <= cell_x + cell_w,
+                "column {i}: heading ink {found:?} must stay inside {cell_x}..{}",
+                cell_x + cell_w
+            );
+            let ink_cx = (found.0 + found.2) / 2;
+            assert!(
+                (ink_cx - (cell_x + cell_w / 2)).abs() <= crate::render::TEXT_FIT_MARGIN as i32,
+                "column {i}: heading ink centre {ink_cx} must be within a fit margin of the column centre {}",
+                cell_x + cell_w / 2
+            );
+            assert_eq!(found.1, label_top, "column {i}: the heading starts on its line box top");
         }
     }
 }

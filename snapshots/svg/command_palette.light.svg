@@ -5,5 +5,5 @@
   <rect x="0" y="0" width="240" height="120" fill="rgba(180,180,180,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
   <rect x="0" y="0" width="240" height="24" fill="rgba(169,169,169,1.00)" />
-  <text x="11" y="16" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">&gt; </text>
+  <path d="M12 5h1v1h-1zM13 5h1v1h-1zM13 6h1v2h-1zM14 6h1v2h-1zM14 8h1v2h-1zM15 8h1v2h-1zM15 10h1v2h-1zM16 10h1v2h-1zM14 12h1v1h-1zM15 12h1v1h-1zM13 13h1v2h-1zM14 13h1v2h-1zM12 15h1v2h-1zM13 15h1v2h-1z" fill="rgba(0,0,0,1.00)" />
 </svg>

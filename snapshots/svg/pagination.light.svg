@@ -3,9 +3,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(240,240,240,1.00)" />
   <rect x="0" y="44" width="240" height="32" fill="rgba(240,240,240,1.00)" />
-  <text x="36" y="63" font-family="Sans" font-size="12.8" font-style="normal" font-weight="400" fill="rgba(96,96,96,1.00)">‹</text>
+  <path d="M36 53h1v1h-1zM37 53h1v1h-1zM38 53h1v1h-1zM39 53h1v1h-1zM40 53h1v1h-1zM41 53h1v1h-1zM42 53h1v1h-1zM43 53h1v1h-1zM36 54h1v2h-1zM43 54h1v2h-1zM36 56h1v1h-1zM38 56h1v1h-1zM39 56h1v1h-1zM40 56h1v1h-1zM41 56h1v1h-1zM43 56h1v1h-1zM36 57h1v2h-1zM38 57h1v2h-1zM41 57h1v2h-1zM43 57h1v2h-1zM36 59h1v2h-1zM38 59h1v2h-1zM39 59h1v2h-1zM40 59h1v2h-1zM41 59h1v2h-1zM43 59h1v2h-1zM36 61h1v1h-1zM43 61h1v1h-1zM36 62h1v2h-1zM37 62h1v2h-1zM38 62h1v2h-1zM39 62h1v2h-1zM40 62h1v2h-1zM41 62h1v2h-1zM42 62h1v2h-1zM43 62h1v2h-1z" fill="rgba(96,96,96,1.00)" />
   <rect x="80" y="44" width="80" height="32" fill="rgba(158,158,158,1.00)" />
-  <text x="116" y="63" font-family="Sans" font-size="12.8" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">1</text>
-  <text x="196" y="63" font-family="Sans" font-size="12.8" font-style="normal" font-weight="400" fill="rgba(96,96,96,1.00)">›</text>
+  <path d="M118 53h1v1h-1zM119 53h1v1h-1zM117 54h1v2h-1zM118 54h1v2h-1zM119 54h1v2h-1zM118 56h1v1h-1zM119 56h1v1h-1zM118 57h1v2h-1zM119 57h1v2h-1zM118 59h1v2h-1zM119 59h1v2h-1zM118 61h1v1h-1zM119 61h1v1h-1zM116 62h1v2h-1zM117 62h1v2h-1zM118 62h1v2h-1zM119 62h1v2h-1zM120 62h1v2h-1zM121 62h1v2h-1z" fill="rgba(0,0,0,1.00)" />
+  <path d="M196 53h1v1h-1zM197 53h1v1h-1zM198 53h1v1h-1zM199 53h1v1h-1zM200 53h1v1h-1zM201 53h1v1h-1zM202 53h1v1h-1zM203 53h1v1h-1zM196 54h1v2h-1zM203 54h1v2h-1zM196 56h1v1h-1zM198 56h1v1h-1zM199 56h1v1h-1zM200 56h1v1h-1zM201 56h1v1h-1zM203 56h1v1h-1zM196 57h1v2h-1zM198 57h1v2h-1zM201 57h1v2h-1zM203 57h1v2h-1zM196 59h1v2h-1zM198 59h1v2h-1zM199 59h1v2h-1zM200 59h1v2h-1zM201 59h1v2h-1zM203 59h1v2h-1zM196 61h1v1h-1zM203 61h1v1h-1zM196 62h1v2h-1zM197 62h1v2h-1zM198 62h1v2h-1zM199 62h1v2h-1zM200 62h1v2h-1zM201 62h1v2h-1zM202 62h1v2h-1zM203 62h1v2h-1z" fill="rgba(96,96,96,1.00)" />
   <rect x="0" y="44" width="240" height="32" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
 </svg>

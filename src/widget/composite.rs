@@ -49,6 +49,19 @@
 //! (`base.rs`: it does not update either side's child list). So the builder holds
 //! [`ChildInfo`] (id + hints + params) and a factory, and reports the boxes it
 //! created; the caller owns them.
+//!
+//! # Why a child's own axis can be relieved of the sibling's floor
+//!
+//! [`CompositeBuilder::add_flexible`] is the one addition the first real migration needed.
+//! A row's cross axis takes the **maximum** of its children's preferences, which is right for a
+//! row of buttons and wrong for a row that holds a 48 px field and a 28 px step column: the
+//! column would be stretched to 48 px of face, which is not a step button, it is a slab. Qt's
+//! answer is `Layout.fillHeight: false` on the short child, and this is the same statement: the
+//! child keeps its own preferred extent on that axis while its sibling may be taller.
+//!
+//! It is expressed as a *hint* rather than as a post-hoc rectangle, because the composite's own
+//! size is derived from the hints — a child that wanted 48 px and was trimmed afterwards would
+//! still have made the composite 48 px tall.
 
 use crate::compat::Vec;
 use crate::core::{ObjectId, Rect, Size};
@@ -64,6 +77,21 @@ struct Child {
     id: ObjectId,
     hints: Hints,
     params: LayoutParams,
+}
+
+/// Which axis a size may be squeezed on, for [`CompositeBuilder::add_flexible`].
+///
+/// # Why an axis and not a fraction
+///
+/// "This column is 28 px tall because it is a column of two step buttons, not because the field
+/// beside it is 48 px" is a statement about one axis, and expressing it as a ratio would make it
+/// depend on the sibling's size — which is the coupling the distinction exists to remove.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlexibleAxis {
+    /// The child keeps its preferred **width** whatever the row's cross-axis preference is.
+    Width,
+    /// The child keeps its preferred **height** whatever the column's cross-axis preference is.
+    Height,
 }
 
 /// Assembles a composite control from a layout and factory-created children.
@@ -118,18 +146,114 @@ impl CompositeBuilder {
         // The hints are read *now*, from the widget itself. This is the whole point
         // of the channel: nothing outside the child decides what the child wants.
         let hints = widget.hints();
-        // `fill` and `stretch` are two spellings of one request — "absorb the leftover
-        // room" — and the layouts take it as a grow weight. A `fill` child that declared
-        // no stretch therefore still needs a weight, or it would be registered as asking
-        // for nothing and stay at its preferred size: `FlexLayout` grows by
-        // `flex_grow`, which `add_widget` sets from its `stretch` argument alone, so
-        // passing `params.stretch` verbatim would make `LayoutParams::filled()`
-        // indistinguishable from `LayoutParams::new()`. Translating here keeps the
-        // distinction the caller expressed (§B.6 rule 9) rather than dropping it at the
-        // boundary between the two spellings.
+        self.register(id, hints, params);
+        Some(widget)
+    }
+
+    /// Creates a child that keeps `axis` at its own preferred size.
+    ///
+    /// See [`FlexibleAxis`] for why this is a per-axis statement rather than a rectangle the
+    /// composite trims afterwards: the composite's own size is derived from the hints, so a child
+    /// that wanted 48 px and was clipped later would still have made the composite 48 px tall.
+    ///
+    /// Only the *preferred* extent is pinned: the floor and the ceiling the child declared are
+    /// untouched, so a caller that genuinely needs to squeeze it still can.
+    pub fn add_flexible(
+        &mut self,
+        factory: &WidgetFactory,
+        kind_or_name: &str,
+        text: &str,
+        geometry: Rect,
+        params: LayoutParams,
+        axis: FlexibleAxis,
+    ) -> Option<Box<dyn Widget>> {
+        let widget = factory.create(kind_or_name, geometry, text)?;
+        let id = widget.id();
+        let mut hints = widget.hints();
+        match axis {
+            FlexibleAxis::Width => {
+                let pref = hints.width.pref;
+                hints.width =
+                    AxisHints::new(hints.width.min.min(pref), pref, hints.width.max.max(pref));
+            }
+            FlexibleAxis::Height => {
+                let pref = hints.height.pref;
+                hints.height =
+                    AxisHints::new(hints.height.min.min(pref), pref, hints.height.max.max(pref));
+            }
+        }
+        self.register(id, hints, params);
+        Some(widget)
+    }
+
+    /// Creates a child at `size` on both axes, whatever the control's own `hints()` say.
+    ///
+    /// # Why a column of chrome declares its own size
+    ///
+    /// A `label` measures itself as `text + 4` by `20`, which is right for a label and wrong for a
+    /// **column of a control**: a split button's arrow column is 22 px wide and as tall as the
+    /// face, and a spin box's step column is one button wide and half the field tall. Those numbers
+    /// are the composite's, not the child control's, and the composite is the only thing that
+    /// knows them.
+    ///
+    /// The earlier form passed them through `geometry`, which a layout ignores — the child's
+    /// `hints()` are what a layout places by. The result was a step column whose preferred height
+    /// was the label's line height rather than the field's, i.e. a column that did not reach the
+    /// bottom of the control it belonged to. Declaring the size here makes the *stack the
+    /// composite is offering* explicit on the same axis the layout reads, at both ends.
+    pub fn add_sized(
+        &mut self,
+        factory: &WidgetFactory,
+        kind_or_name: &str,
+        text: &str,
+        size: Size,
+        params: LayoutParams,
+    ) -> Option<Box<dyn Widget>> {
+        let widget =
+            factory.create(kind_or_name, Rect::new(0, 0, size.width, size.height), text)?;
+        let id = widget.id();
+        self.register(id, Hints::fixed(size.width, size.height), params);
+        Some(widget)
+    }
+
+    /// Files a created child and its hints with the layout.
+    ///
+    /// A `fill` child that declared no stretch still needs a weight, so a caller that says
+    /// "absorb the leftover" without saying "by how much" is taken at its word for **one** unit
+    /// and no more.
+    ///
+    /// # Why the weight is 1 and not `u32::MAX`
+    ///
+    /// It was `u32::MAX`, on the reasoning that a child which asked to fill should win the whole
+    /// leftover. That is true when it is the only child asking, and wrong the moment a second one
+    /// does: a row holding a filling label *and* a filling button gave the label `u32::MAX` of the
+    /// two shares — every pixel — so the button was left at its preferred width and its own `fill`
+    /// was unreachable. The room the caller meant to hand over is proportional, and one unit is the
+    /// honest default: "yes, absorb room", with two equal claimants splitting it evenly, which is
+    /// what CSS flexbox's `flex: 1` and Qt's `stretchFactor: 1` both mean.
+    fn register(&mut self, id: ObjectId, hints: Hints, params: LayoutParams) {
         let grow = if params.fill { params.stretch.max(1) } else { params.stretch };
         self.layout.add_widget(id, grow);
         self.children.push(Child { id, hints, params });
+    }
+
+    /// Creates a child and registers it at its own `hints()`, derived from the child itself.
+    ///
+    /// Kept separate from [`Self::add`] and marked `pub(crate)` because [`Self::add`]'s
+    /// `geometry` argument is read by every existing sample; a migration that does not need the
+    /// caller to hand in a starting rectangle goes through here.
+    #[allow(dead_code)]
+    pub(crate) fn add_at_hint(
+        &mut self,
+        factory: &WidgetFactory,
+        kind_or_name: &str,
+        text: &str,
+        params: LayoutParams,
+    ) -> Option<Box<dyn Widget>> {
+        let widget = factory.create(kind_or_name, Rect::new(0, 0, 0, 0), text)?;
+        let id = widget.id();
+        let hints = widget.hints();
+        self.register(id, hints, params);
         Some(widget)
     }
 

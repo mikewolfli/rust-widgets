@@ -14,5 +14,5 @@
   <line x1="216" y1="51" x2="220" y2="46" stroke="rgba(225,225,225,1.00)" stroke-width="1" />
   <line x1="220" y1="46" x2="224" y2="51" stroke="rgba(225,225,225,1.00)" stroke-width="1" />
   <line x1="224" y1="51" x2="216" y2="51" stroke="rgba(225,225,225,1.00)" stroke-width="1" />
-  <text x="15" y="64" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(225,225,225,1.00)">0</text>
+  <path d="M16 53h1v1h-1zM17 53h1v1h-1zM18 53h1v1h-1zM19 53h1v1h-1zM20 53h1v1h-1zM15 54h1v2h-1zM16 54h1v2h-1zM20 54h1v2h-1zM21 54h1v2h-1zM15 56h1v2h-1zM16 56h1v2h-1zM19 56h1v2h-1zM20 56h1v2h-1zM21 56h1v2h-1zM15 58h1v2h-1zM16 58h1v2h-1zM18 58h1v2h-1zM19 58h1v2h-1zM20 58h1v2h-1zM21 58h1v2h-1zM15 60h1v1h-1zM16 60h1v1h-1zM17 60h1v1h-1zM18 60h1v1h-1zM20 60h1v1h-1zM21 60h1v1h-1zM15 61h1v2h-1zM16 61h1v2h-1zM17 61h1v2h-1zM20 61h1v2h-1zM21 61h1v2h-1zM16 63h1v2h-1zM17 63h1v2h-1zM18 63h1v2h-1zM19 63h1v2h-1zM20 63h1v2h-1z" fill="rgba(225,225,225,1.00)" />
 </svg>

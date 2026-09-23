@@ -1018,11 +1018,61 @@ mod tests {
         assert!(!me.focused, "a press below the drawn field must not focus it");
     }
 
+    /// One ink box per text `<path>` in the document, as `(left, top, right, bottom)`.
+    ///
+    /// # Why per element, not per merged run
+    ///
+    /// Text leaves the backend as `font8x8` **glyph geometry** — one axis-aligned subpath per
+    /// set bitmap bit — so the string is not in the document in any form and a test has to
+    /// locate ink by *where* it is rather than by what it says. This control draws one
+    /// character per `draw_text`, so each element is exactly one glyph's ink; the boundary is
+    /// therefore the element, which is what makes "every glyph" expressible.
+    ///
+    /// The union of a `<path>`'s subpaths is its ink. Subpaths are deliberately **not**
+    /// deduplicated: a glyph box wider than the 8 bitmap columns maps two columns onto the same
+    /// pixel (`gx * w / 8`), so the same rectangle is emitted twice — exactly as the rasteriser
+    /// fills that pixel twice.
+    fn text_run_boxes(svg: &str) -> Vec<(i32, i32, i32, i32)> {
+        let mut boxes = Vec::new();
+        for line in svg.lines() {
+            let Some(path_at) = line.find("<path ") else { continue };
+            let Some(d_at) = line[path_at..].find("d=\"") else { continue };
+            let start = path_at + d_at + 3;
+            let Some(end) = line[start..].find('"') else { continue };
+            let mut bounds: Option<(i32, i32, i32, i32)> = None;
+            for subpath in line[start..start + end].split('M').skip(1) {
+                let numbers: Vec<i32> = subpath
+                    .split(|c: char| !c.is_ascii_digit() && c != '-')
+                    .filter(|part| !part.is_empty())
+                    .filter_map(|part| part.parse().ok())
+                    .collect();
+                if numbers.len() < 4 {
+                    continue;
+                }
+                let (x, y, w, h) = (numbers[0], numbers[1], numbers[2], numbers[3]);
+                let bit = (x, y, x + w, y + h);
+                bounds = Some(match bounds {
+                    None => bit,
+                    Some((l, t, r, b)) => (l.min(bit.0), t.min(bit.1), r.max(bit.2), b.max(bit.3)),
+                });
+            }
+            if let Some(union) = bounds {
+                boxes.push(union);
+            }
+        }
+        boxes
+    }
+
     /// The ink is vertically centred inside the **field**, not below its middle line.
     ///
     /// The old anchor was `geom.y + (geom.height - font.size) / 2`, derived from a
     /// rectangle that was already too tall. Drawing down from that origin put a 13 px glyph
     /// near the bottom of the field. The line box is now taken from the field itself.
+    ///
+    /// The check is on the emitted **ink**, not on a `<text y>` attribute: the backend now
+    /// paints the `font8x8` rectangles the rasteriser fills, so the document holds a picture of
+    /// the run rather than the run. Measuring the ink is also the stronger statement — a glyph
+    /// drawn a line low with a correct attribute would have passed the old form.
     #[test]
     fn the_ink_is_vertically_centred_in_the_field() {
         let mut me = MaskedEdit::new(Rect::new(0, 0, 240, 120));
@@ -1031,24 +1081,36 @@ mod tests {
         let svg = render_to_svg(&mut me);
         let field = me.field_rect();
 
-        let ys: Vec<i32> = svg
-            .lines()
-            .filter(|l| l.contains("<text"))
-            .filter_map(|l| {
-                l.split(" y=\"")
-                    .nth(1)
-                    .and_then(|rest| rest.split('"').next())
-                    .and_then(|value| value.parse().ok())
-            })
-            .collect();
-        assert!(!ys.is_empty(), "a filled masked field draws glyphs: {svg}");
-        for y in ys {
-            assert!(y >= field.y, "ink starts inside the field: y={y}, field={field:?}");
+        let runs = text_run_boxes(&svg);
+        assert!(!runs.is_empty(), "a filled masked field draws glyphs: {svg}");
+        // Every character is placed on the field's own line box, so every glyph's ink has to sit
+        // inside that box — and the topmost ink has to *be* the box's top edge, because a digit's
+        // bitmap lights its first row. The box top is `field.y + (height - line) / 2`, derived
+        // from the measured line height rather than from a copied literal so this stays a
+        // statement about the layout. The defect was an origin below the field's middle line,
+        // which pushes the whole box down by at least a line and fails both halves.
+        let mut font_probe = crate::render::SvgPaintBackend::new(crate::core::Size::new(240, 120));
+        let line_h = crate::render::RenderContext::new(&mut font_probe)
+            .measure_text("M", &Font::simple("monospace", 13.0))
+            .height as i32;
+        let expected_top = field.y + (field.height as i32 - line_h) / 2;
+        let mut highest = i32::MAX;
+        for (left, top, right, bottom) in runs {
+            assert!(right > left, "a glyph painted ink: {left}..{right}");
+            assert!(top >= expected_top, "glyph ink {top}..{bottom} starts on or below the box");
             assert!(
-                y < field.y + field.height as i32,
-                "ink starts above the field's bottom edge: y={y}, field={field:?}"
+                bottom <= expected_top + line_h,
+                "glyph ink {top}..{bottom} stays inside the one-line box ending at {}",
+                expected_top + line_h
             );
+            assert!(top >= field.y, "ink starts inside the field: top={top}, field={field:?}");
+            assert!(
+                top < field.y + field.height as i32,
+                "ink starts above the field's bottom edge: top={top}, field={field:?}"
+            );
+            highest = highest.min(top);
         }
+        assert_eq!(highest, expected_top, "the line box's top edge is where the ink begins");
     }
 
     /// The five chrome colours were fixed literals, so a themed field carried unthemed text:
@@ -1126,10 +1188,15 @@ mod tests {
         let light = render(crate::theme::AppearanceMode::Light, "Sample");
         assert_ne!(dark, light, "the field's ink must respond to the appearance");
 
-        // The text element's fill is the ink; the second `<rect>` fill is the field.
+        // The text path's fill is the ink; the second `<rect>` fill is the field.
+        //
+        // Text is no longer a `<text>` element: the backend emits the same `font8x8` rectangles
+        // the rasteriser fills, so the ink's colour is now the fill of a `<path>`. Only text is a
+        // path in this backend — the field, the border and the caret are `<rect>`s — so the first
+        // path carrying a fill is the body run.
         let ink = |svg: &str| -> Color {
             svg.lines()
-                .find(|l| l.contains("<text") && l.contains("fill="))
+                .find(|l| l.contains("<path ") && l.contains("fill="))
                 .and_then(|l| l.split("fill=\"").nth(1))
                 .and_then(|rest| rest.split('"').next())
                 .and_then(parse_rgba)
@@ -1161,9 +1228,12 @@ mod tests {
             render_to_svg(&mut me)
         };
         // A placeholder must still be distinguishable from the field it sits on.
+        //
+        // The mask characters are separate glyph runs, so each is its own `<path>`; the ink is
+        // read from the path's fill rather than from a `<text>` element, which no longer exists.
         let placeholders: Vec<Color> = with_mask
             .lines()
-            .filter(|l| l.contains("<text"))
+            .filter(|l| l.contains("<path "))
             .filter_map(|l| l.split("fill=\"").nth(1))
             .filter_map(|rest| rest.split('"').next())
             .filter_map(parse_rgba)

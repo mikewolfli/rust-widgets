@@ -147,6 +147,41 @@ fn global_software_render_config() -> &'static Mutex<SoftwareRenderConfig> {
 /// the two places.
 pub const TEXT_FIT_MARGIN: u32 = 3;
 
+/// The glyph-box origin for `text` fitted into `bounds` under `alignment`.
+///
+/// # Why the usable extent is inset on **both** ends
+///
+/// `TEXT_FIT_MARGIN` exists so a fitted label does not touch the frame it sits in, and that is
+/// a statement about both ends of the box. The width handed to the fitter was nevertheless
+/// `bounds.width - inset`, i.e. inset at one end only, so a string measured to "fit" filled
+/// `bounds.width - 3` and then had to be *positioned* in the full `bounds.width`.
+///
+/// For `Left` that was invisible, because the origin is the box's own left edge plus the inset.
+/// For `Center` and `Right` it was a **half-inset displacement**: the string was centred in the
+/// box, so the surplus `inset` was split as `inset / 2` on the right and `(inset - inset / 2)`
+/// on the left — a floor division that lands one pixel to the left at the crate's default
+/// margin. Measured over the census geometries, every centred label sat 1-2 px left of its
+/// box's centre, and the error was largest exactly where it is most visible: the calendar's
+/// ~34 px cells and the badge and keyboard key caps.
+///
+/// The two halves of the contract are now the same statement. The free space is
+/// `width - advance`, both ends are inset by `inset`, and what is left over is split **evenly**
+/// and with the same rounding on both sides — `inset + (free - inset + 1) / 2` has to be written
+/// with the `+ 1` so that the odd pixel goes to the left half rather than being dropped every
+/// time. A caller that wants a different inset changes `TEXT_FIT_MARGIN` and both the fit and
+/// the position follow, which is what the constant is named for.
+fn fitted_origin(bounds: Rect, advance: i32, alignment: HorizontalAlignment) -> Point {
+    let inset = TEXT_FIT_MARGIN as i32;
+    let left = bounds.x.saturating_add(inset);
+    let right = (bounds.x + bounds.width as i32 - inset).max(left);
+    let free = (right - left) - advance;
+    match alignment {
+        HorizontalAlignment::Left => Point::new(left, bounds.y),
+        HorizontalAlignment::Center => Point::new(left + (free + 1) / 2, bounds.y),
+        HorizontalAlignment::Right => Point::new(right - advance, bounds.y),
+    }
+}
+
 /// Where a single line of text sits inside the band it is drawn in.
 ///
 /// # Why this is not [`HorizontalAlignment`]
@@ -604,23 +639,13 @@ impl<'a> RenderContext<'a> {
         alignment: HorizontalAlignment,
     ) -> crate::compat::String {
         let inset = TEXT_FIT_MARGIN as i32;
-        let available = (bounds.width as i32 - inset).max(0) as f32;
+        // Both ends are inset, so the width a string may occupy is the box less one inset at
+        // each end. The old form subtracted a single inset and then placed the result in the
+        // full box, which is what shifted every centred label left; see `fitted_origin`.
+        let available = (bounds.width as i32 - 2 * inset).max(0) as f32;
         let fitted = fit_text_to_width(text, available, font, self.backend);
-        let origin = match alignment {
-            // The caller's origin is the glyph's top-left, so a left-aligned label starts
-            // at the box's own left edge plus the inset.
-            HorizontalAlignment::Left => Point::new(bounds.x + inset, bounds.y),
-            // Centred and right-aligned labels are positioned from the box, not from the
-            // pointer, so the fitted string cannot drift as it shortens.
-            HorizontalAlignment::Center => {
-                let width = self.measure_text(&fitted, font).width as i32;
-                Point::new(bounds.x + (bounds.width as i32 - width) / 2, bounds.y)
-            }
-            HorizontalAlignment::Right => {
-                let width = self.measure_text(&fitted, font).width as i32;
-                Point::new(bounds.x + bounds.width as i32 - width - inset, bounds.y)
-            }
-        };
+        let advance = self.measure_text(&fitted, font).width as i32;
+        let origin = fitted_origin(bounds, advance, alignment);
         self.draw_text(origin, &fitted, font, color, HorizontalAlignment::Left);
         fitted
     }

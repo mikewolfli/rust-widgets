@@ -533,6 +533,50 @@ mod tests {
     use super::*;
     use crate::widget::svg::render_to_svg;
 
+    /// One ink box per text `<path>`, in document order.
+    ///
+    /// Text leaves the backend as the `font8x8` rectangles the software rasteriser fills — one
+    /// axis-aligned `<path>` subpath per set bitmap bit — so the rendered string is **not in the
+    /// document in any form** and `svg.contains("50.0")` can never be true. A run can only be
+    /// located by *where it is*: the union of one `<path>`'s subpaths is its ink box.
+    ///
+    /// Subpaths are deliberately not de-duplicated: when a glyph box is wider than 8 pixels two
+    /// bitmap columns land on the same pixel via integer division, so the same rectangle is
+    /// emitted twice. That is the rasteriser's own geometry, and collapsing it here would make
+    /// this disagree with the drawing.
+    #[cfg(feature = "chart")]
+    fn ink_paths(svg: &str) -> Vec<(i32, i32, i32, i32)> {
+        let mut runs = Vec::new();
+        for line in svg.lines() {
+            let Some(path_at) = line.find("<path ") else { continue };
+            let Some(d_at) = line[path_at..].find("d=\"") else { continue };
+            let start = path_at + d_at + 3;
+            let Some(end) = line[start..].find('"') else { continue };
+            let mut bounds: Option<(i32, i32, i32, i32)> = None;
+            for subpath in line[start..start + end].split('M').skip(1) {
+                let numbers: Vec<i32> = subpath
+                    .split(|c: char| !c.is_ascii_digit() && c != '-')
+                    .filter(|part| !part.is_empty())
+                    .filter_map(|part| part.parse().ok())
+                    .collect();
+                if numbers.len() < 4 {
+                    continue;
+                }
+                let (x, y, w, h) = (numbers[0], numbers[1], numbers[2], numbers[3]);
+                bounds = Some(match bounds {
+                    None => (x, y, x + w, y + h),
+                    Some((left, top, right, bottom)) => {
+                        (left.min(x), top.min(y), right.max(x + w), bottom.max(y + h))
+                    }
+                });
+            }
+            if let Some(bounds) = bounds {
+                runs.push(bounds);
+            }
+        }
+        runs
+    }
+
     #[test]
     fn line_chart_default_creation() {
         let lc = LineChart::new(Rect::new(0, 0, 300, 200));
@@ -648,9 +692,16 @@ mod tests {
     /// removed.
     ///
     /// Observable proof: with labels enabled the engine emits numeric tick
-    /// labels for both axes, and the explicit axis range must appear in them.
-    /// The previous hand-rolled path drew the same labels, so this also guards
-    /// that the migration kept that behaviour.
+    /// labels for both axes. They are `font8x8` glyph geometry now, so the string is not in the
+    /// document and the check is on where the ink landed. `draw_y_ticks` anchors every label at
+    /// `plot_x - 44 = 20` and `draw_x_ticks` spreads five labels across the plot, each clamped
+    /// inside it — so the y-axis column and the x-axis row are two different bands, and a widget
+    /// that drew neither (or drew one axis only) cannot produce both. The previous hand-rolled
+    /// path drew them too, so this also guards that the migration kept that behaviour.
+    ///
+    /// Gated on the feature, like `ink_paths` and the module's other `chart`-dependent items:
+    /// a build without `chart` compiles this test module and the engine it exercises is absent.
+    #[cfg(feature = "chart")]
     #[test]
     fn line_chart_renders_axis_tick_labels_from_the_shared_engine() {
         let mut lc = LineChart::new(Rect::new(0, 0, 300, 200));
@@ -659,12 +710,37 @@ mod tests {
         lc.set_show_labels(true);
 
         let svg = render_to_svg(&mut lc);
+        let runs = ink_paths(&svg);
 
+        // The Y axis: five labels at x = 20, and `0.0`/`50.0` are two characters of ink wide
+        // where `25.0` is three. `draw_y_ticks` labels `min_y + span * t`, so the ticks carry
+        // different values and therefore different ink.
+        let y_axis: Vec<_> = runs.iter().filter(|run| run.0 == 20 && run.2 > 20).collect();
+        assert_eq!(y_axis.len(), 5, "one y-tick label per tick: {y_axis:?}");
         assert!(
-            svg.contains("50.0"),
-            "y-axis upper bound label missing; widget no longer uses the shared tick engine"
+            y_axis.iter().any(|run| run.2 - run.0 == 17),
+            "a `25.0` / `50.0` label is three characters of ink wide: {y_axis:?}"
         );
-        assert!(svg.contains("10.0"), "x-axis upper bound label missing");
+        assert!(
+            y_axis.iter().all(|run| run.1 < 160),
+            "every y label sits above the x-tick row, so the two axes are distinct: {y_axis:?}"
+        );
+        // The bounds differ, so the engine drew real *values* rather than one string repeated:
+        // a tick loop that lost its `min_y + span * t` would paint five identical boxes.
+        assert_ne!(y_axis[0], y_axis[4], "the y ticks carry different values: {y_axis:?}");
+
+        // The X axis: five labels in a row below the plot, which is y = 160..168 for this
+        // geometry, and they reach past `plot_x` into the plot's own horizontal band.
+        let x_axis: Vec<_> = runs.iter().filter(|run| run.1 >= 158 && run.1 <= 162).collect();
+        assert_eq!(x_axis.len(), 5, "one x-tick label per tick: {x_axis:?}");
+        assert!(
+            x_axis.iter().all(|run| run.0 >= 64),
+            "every x label is clamped inside the plot area: {x_axis:?}"
+        );
+        assert!(
+            x_axis.iter().any(|run| run.0 > 200),
+            "the labels are distributed along the axis, not stacked on one tick: {x_axis:?}"
+        );
     }
 
     /// Grid toggling must reach the shared engine: enabling it increases the

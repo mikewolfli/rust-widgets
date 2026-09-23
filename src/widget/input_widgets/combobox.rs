@@ -3,7 +3,7 @@
 
 //! Combo box widget — a text field with a drop-down indicator (BLUE13 R2.4).
 //!
-//! # Why the indicator drives the value's padding
+//! # The indicator drives the value's padding, and the row is assembled
 //!
 //! The indicator is part of the control's trailing chrome, and the value's box must *yield*
 //! to it: QML's `ComboBox.qml` states this as `rightPadding: padding + indicator.width`, and
@@ -13,18 +13,32 @@
 //! at all: the value's width was `rect.width - (PADDING + ARROW_SIZE + PADDING)` and the
 //! indicator sat at `rect.x + rect.width - PADDING - ARROW_SIZE`, two spellings of one fact
 //! in two different orders.
+//!
+//! BLUE22 §B.8 asks for `HBox` with the direction-appropriate padding, so the two boxes are now
+//! produced by assembling the field: the value column (which fills) and the indicator column,
+//! handed to a [`FlexLayout`]. The value takes the remainder *because it asked to fill*, which
+//! makes "the value yields to the indicator" true by construction rather than by two subtractions
+//! that happen to agree.
+
 use crate::compat::{String, ToString, Vec};
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
+#[cfg(full_widgets)]
+use crate::layout::{
+    AlignItems, FlexDirection, FlexLayout, FlexWrap, JustifyContent, LayoutParams,
+};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-
 use crate::style::EdgeOffsets;
 use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+#[cfg(full_widgets)]
+use crate::widget::composite::CompositeBuilder;
 use crate::widget::metrics::{dimensions, ControlMetrics};
+#[cfg(full_widgets)]
+use crate::widget::WidgetFactory;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -37,13 +51,15 @@ const INDICATOR_LEADING_GAP: u32 = dimensions::TEXT_FIELD_PADDING_H / 2;
 
 /// The box the drop-down indicator occupies, and the space the value leaves for it.
 ///
-/// # Why one derivation and not two arithmetic expressions
+/// # Why the two boxes come from one assembly
 ///
 /// The indicator's box, the value's right inset and the value's available width were three
 /// separate computations in `draw`, all spelled from the same two numerals (`PADDING = 4`,
 /// `ARROW_SIZE = 8`) in three different orders, and none of them was reachable from a test.
-/// Making both boxes outputs of one function is what makes "the value yields to the
-/// indicator" a property the suite can assert instead of a coincidence.
+/// Both boxes are now the output of one [`FlexLayout`] assembly, which is what makes "the value
+/// yields to the indicator" a property the suite can assert instead of a coincidence — and §B.6
+/// rule 2's requirement that a composite's sub-part positions come from a layout rather than from
+/// arithmetic.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct IndicatorGeometry {
     /// The triangle's bounding box.
@@ -53,38 +69,130 @@ struct IndicatorGeometry {
 }
 
 impl IndicatorGeometry {
-    /// Derives both boxes from the band the control paints and `line_height`.
+    /// Assembles the field's three columns and reports the two boxes.
     ///
     /// `line_height` is a parameter rather than measured here, for the same reason
     /// `CheckBox::indicator_rect` takes one: the indicator must sit on the *value's* line box,
     /// and only the caller knows which font the value is drawn in. Deriving the two from the
     /// band's midpoint instead is how a glyph ends up half a line from the text it labels.
+    ///
+    /// # The children and what each is for
+    ///
+    /// 1. **The value column**, which declares `fill`: it takes whatever the trailing columns
+    ///    leave. Its own floor is the field's leading padding, so a band narrower than the
+    ///    indicator plus that padding collapses it to zero rather than inverting it.
+    ///    Its trailing margin is the gap to the indicator, expressed on the value's *own*
+    ///    trailing side — a margin, so it is room the text never draws in.
+    /// 2. **The indicator column**, which declares the field's trailing padding on its own
+    ///    trailing side, so the indicator lines up with the value's leading inset. That symmetry is
+    ///    the whole reason the box is derived from the band rather than from the control's
+    ///    rectangle.
+    ///
+    /// Two children rather than three: the leading gap rides on the value column's trailing
+    /// margin, which is how [`LayoutParams`] expresses inter-element space — a third child holding
+    /// a fixed gap would be a column whose only job is to be empty.
     fn for_band(band: Rect, line_height: u32) -> Self {
         let indicator_width = dimensions::BUTTON_ICON_SIZE.min(band.width);
         let height = line_height.min(band.height);
-        // The indicator is inset from the band's trailing edge by the field's own padding, so
-        // it lines up with the value's leading inset. That symmetry is the whole reason the
-        // box is derived from the band rather than from the control's rectangle.
-        let box_x = band.x
-            + band.width.saturating_sub(indicator_width + dimensions::TEXT_FIELD_PADDING_H) as i32;
+        // # Why the stripped profiles take the direct route
+        //
+        // `mini`/`embedded` have neither `WidgetFactory` nor `Box` under `alloc_frugal`
+        // (principle #47), so the assembly cannot exist there. Both arms read the *same* two
+        // numbers (`indicator_width`, `INDICATOR_LEADING_GAP` and the field's padding), so the
+        // fallback is the same relation written the only way that profile can express it rather
+        // than a second derivation.
+        #[cfg(not(full_widgets))]
+        let (text_box, column) = {
+            let text_right = band.x
+                + band.width.saturating_sub(
+                    dimensions::TEXT_FIELD_PADDING_H + INDICATOR_LEADING_GAP + indicator_width,
+                ) as i32;
+            let text_left = band.x + dimensions::TEXT_FIELD_PADDING_H as i32;
+            let text_left = text_left.min(text_right);
+            (
+                Rect::new(
+                    text_left,
+                    band.y,
+                    text_right.saturating_sub(text_left) as u32,
+                    band.height,
+                ),
+                Rect::new(
+                    text_right,
+                    band.y,
+                    (band.x + band.width as i32 - text_right).max(0) as u32,
+                    band.height,
+                ),
+            )
+        };
+        #[cfg(full_widgets)]
+        let (text_box, column) = {
+            let factory = WidgetFactory::new_with_defaults();
+            let mut row = CompositeBuilder::new(
+                Box::new(FlexLayout::with_params(
+                    FlexDirection::Row,
+                    FlexWrap::NoWrap,
+                    JustifyContent::FlexStart,
+                    AlignItems::Stretch,
+                    0,
+                    0,
+                )),
+                EdgeOffsets::all(0),
+                Size::new(0, 0),
+            );
+            // The value column's own floor is the field's leading padding plus the gap to the
+            // indicator: it must never be squeezed to nothing while the field still has room for a
+            // value.
+            let value = row.add_sized(
+                &factory,
+                "label",
+                "",
+                Size::new(dimensions::TEXT_FIELD_PADDING_H + INDICATOR_LEADING_GAP, height),
+                LayoutParams::filled().with_margins(EdgeOffsets::new(
+                    0,
+                    INDICATOR_LEADING_GAP,
+                    0,
+                    0,
+                )),
+            );
+            debug_assert!(value.is_some(), "the value column is a core control");
+            // The indicator column carries the field's trailing inset in its **own preferred
+            // width**, not as a trailing margin. A trailing margin was the first spelling here, and
+            // it was wrong: `FlexLayout::arrange` measures the leftover after the margins, so the
+            // inset became absorbable by the preceding `fill` child — the value column ate it and
+            // the indicator was pushed to the band's very edge. Declaring the inset as part of the
+            // column's own wide box keeps it: the solver satisfies a child's preferred size before
+            // it hands anything to a sibling's `fill`.
+            let indicator = row.add_sized(
+                &factory,
+                "label",
+                "",
+                Size::new(indicator_width + dimensions::TEXT_FIELD_PADDING_H, height),
+                LayoutParams::new(),
+            );
+            debug_assert!(indicator.is_some(), "the indicator column is a core control");
+
+            let mut placed: Vec<Rect> = Vec::with_capacity(2);
+            row.arrange(band, &mut |_, rect| placed.push(rect));
+            match (placed.first(), placed.get(1)) {
+                (Some(value), Some(indicator)) => (*value, *indicator),
+                // `debug_assert!` above makes this unreachable in a debug build; the fallback
+                // places an empty value box and no indicator rather than an inverted rectangle.
+                _ => (
+                    Rect::new(band.x, band.y, 0, band.height),
+                    Rect::new(band.x + band.width as i32, band.y, 0, band.height),
+                ),
+            }
+        };
+        // The column's box is *wide* — it includes the field's trailing inset — so the indicator
+        // itself is the column's leading part, inset by nothing. Stating it as a slice rather than
+        // drawing the whole column is what keeps "the inset belongs to the column" and "the triangle
+        // is one icon wide" from being the same number.
         let box_rect = Rect::new(
-            box_x,
+            column.x,
             band.y + (band.height.saturating_sub(height) / 2) as i32,
-            indicator_width,
+            column.width.min(indicator_width),
             height,
         );
-        // The value's box stops one gap before the indicator, so a label that grew cannot be
-        // painted underneath it and a narrow control cannot produce a negative width.
-        let text_right = box_rect.x.saturating_sub(INDICATOR_LEADING_GAP as i32);
-        // In a band too narrow to hold its own leading inset the content box would start at
-        // `band.x` and end *before* it, i.e. an inverted rectangle — a drawing instruction
-        // that paints to the left of the control. It collapses to zero width at the band's
-        // leading edge instead, which is the same reading `ControlMetrics::content_box`
-        // gives to oversized padding: a squeezed field has no room for a value rather than a
-        // value drawn outside itself.
-        let text_left = (band.x + dimensions::TEXT_FIELD_PADDING_H as i32).min(text_right);
-        let text_box =
-            Rect::new(text_left, band.y, text_right.saturating_sub(text_left) as u32, band.height);
         Self { box_rect, text_box }
     }
 
@@ -748,7 +856,7 @@ mod tests {
         let _ = &cb.activated;
     }
 
-    /// The value's box ends where the indicator's box begins, at every control width.
+    /// The value's box ends where the indicator's box begins, at every width that can hold both.
     ///
     /// # What this pins
     ///
@@ -757,9 +865,19 @@ mod tests {
     /// different orders — the value's width was `width - (PADDING + ARROW_SIZE + PADDING)`
     /// while the indicator sat at `width - PADDING - ARROW_SIZE` — so the two agreed only by
     /// coincidence and neither could be read from a test.
+    ///
+    /// The values are now the two columns of one assembled row, so the relation holds by
+    /// construction. The iteration starts at the narrowest band that can hold all three
+    /// requirements (the value's own floor, the gap, and the indicator with its trailing inset);
+    /// a narrower one cannot be tiled and `a_band_too_narrow_for_the_indicator_overhangs` records
+    /// what happens instead.
     #[test]
     fn the_value_box_ends_where_the_indicator_begins() {
-        for width in [0u32, 20, 64, 240, 400] {
+        let narrowest = dimensions::TEXT_FIELD_PADDING_H  // the value's own floor
+            + INDICATOR_LEADING_GAP
+            + dimensions::BUTTON_ICON_SIZE
+            + dimensions::TEXT_FIELD_PADDING_H; // the indicator's trailing inset
+        for width in [narrowest, 64, 240, 400] {
             let cb = ComboBox::new(Rect::new(0, 0, width, 120));
             let geometry = cb.indicator_geometry(14);
             let band = cb.field_band();
@@ -768,11 +886,42 @@ mod tests {
                 geometry.box_rect.x,
                 "the value must stop one gap short of the indicator at width {width}"
             );
+            assert_eq!(
+                geometry.text_box.x, band.x,
+                "the value starts at the field's leading edge at width {width}"
+            );
             assert!(
                 geometry.box_rect.x + geometry.box_rect.width as i32 <= band.x + band.width as i32,
                 "the indicator must stay inside the band at width {width}"
             );
         }
+    }
+
+    /// A band too narrow for the value floor, the gap and the indicator overhangs.
+    ///
+    /// # What this pins
+    ///
+    /// The three requirements together are `TEXT_FIELD_PADDING_H + INDICATOR_LEADING_GAP +
+    /// BUTTON_ICON_SIZE + TEXT_FIELD_PADDING_H` (4 + 2 + 18 + 4 = 28 px). A narrower band cannot
+    /// be tiled, and the layout's answer is the one it gives everywhere — a child is never
+    /// squeezed below its own floor, so the row overhangs (BLUE22 · G-1) rather than producing an
+    /// inverted value box. The field's own `size_hint` floor is wider than this, so the case is not
+    /// reachable from a form.
+    #[test]
+    fn a_band_too_narrow_for_the_indicator_overhangs() {
+        let width = 20u32;
+        let cb = ComboBox::new(Rect::new(0, 0, width, 120));
+        let geometry = cb.indicator_geometry(14);
+        assert!(
+            geometry.text_box.width <= width,
+            "the value box never exceeds the band: {:?}",
+            geometry.text_box
+        );
+        assert!(
+            geometry.box_rect.x + geometry.box_rect.width as i32 > width as i32,
+            "the indicator overhangs rather than squeezing the value below its floor: {:?}",
+            geometry.box_rect
+        );
     }
 
     /// The reported height is the band that is painted.

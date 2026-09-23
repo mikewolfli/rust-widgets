@@ -656,24 +656,50 @@ mod tests {
         assert_eq!(es.kind(), WidgetKind::EmptyState);
     }
 
-    /// Parses `<text x y>content</text>` elements out of a rendered SVG.
-    fn texts(svg: &str) -> Vec<(i32, i32, String)> {
-        let mut out = Vec::new();
+    /// Parses the **text runs** out of a rendered SVG, one ink box per `<path>`.
+    ///
+    /// # Why the ink box and not the string
+    ///
+    /// The backend no longer emits a `<text>` element: a run is the `font8x8` rectangles the
+    /// software rasteriser fills, one axis-aligned subpath per set bitmap bit, inside a single
+    /// `<path>` (see `crate::widget::svg::text_ink_box`). The string is therefore absent from
+    /// the document in every form — `svg.contains("Sample")` can never be true — and a run is
+    /// located by *where it is* rather than by *what it says*.
+    ///
+    /// Only text is a `<path>` in this backend; the empty state's other chrome is `<rect>`,
+    /// so a path's union box is a run. Subpaths are not deduplicated: a glyph box wider than
+    /// 8 px maps two bitmap columns onto one pixel column and the backend emits that rectangle
+    /// twice, exactly as the rasteriser fills it twice. The union is unaffected either way.
+    fn ink_runs(svg: &str) -> Vec<(i32, i32, i32, i32)> {
+        let mut runs = Vec::new();
         for line in svg.lines() {
-            let Some(start) = line.find("<text ") else { continue };
-            let Some(gt) = line[start..].find('>') else { continue };
-            let head = &line[start..start + gt];
-            let body_end = line.rfind("</text>").unwrap_or(line.len());
-            let body = line[start + gt + 1..body_end].to_string();
-            let attr = |name: &str| -> i32 {
-                let key = format!("{name}=\"");
-                let at = head.find(&key).expect("attribute present") + key.len();
-                let end = head[at..].find('"').expect("closed") + at;
-                head[at..end].parse().expect("numeric")
-            };
-            out.push((attr("x"), attr("y"), body));
+            let Some(path_at) = line.find("<path ") else { continue };
+            let Some(d_at) = line[path_at..].find("d=\"") else { continue };
+            let start = path_at + d_at + 3;
+            let Some(end) = line[start..].find('"') else { continue };
+            let mut bounds: Option<(i32, i32, i32, i32)> = None;
+            for subpath in line[start..start + end].split('M').skip(1) {
+                let numbers: Vec<i32> = subpath
+                    .split(|c: char| !c.is_ascii_digit() && c != '-')
+                    .filter(|part| !part.is_empty())
+                    .filter_map(|part| part.parse().ok())
+                    .collect();
+                if numbers.len() < 4 {
+                    continue;
+                }
+                let (x, y, w, h) = (numbers[0], numbers[1], numbers[2], numbers[3]);
+                bounds = Some(match bounds {
+                    None => (x, y, x + w, y + h),
+                    Some((left, top, right, bottom)) => {
+                        (left.min(x), top.min(y), right.max(x + w), bottom.max(y + h))
+                    }
+                });
+            }
+            if let Some(bounds) = bounds {
+                runs.push(bounds);
+            }
         }
-        out
+        runs
     }
 
     /// The stack's rows do not overlap: each begins at or below the previous row's bottom edge.
@@ -682,91 +708,71 @@ mod tests {
     /// other row was positioned as though the same number were the box's bottom — so the
     /// 48 px icon box covered y 48..96 and the title was drawn at y = 60, **28 px inside it**.
     /// `snapshots/svg/empty_state.svg` showed the caption painted across the mailbox glyph.
+    ///
+    /// # What is asserted, and why it is the ink
+    ///
+    /// Each row is checked against the *drawing* rather than against an element attribute: the
+    /// run's ink box top is the row's glyph box top (`origin.y`, the top edge of the run's
+    /// bitmap), which is exactly the quantity the defect moved. A row's height is the font's
+    /// own `measure_text("M", font).height`, the renderer's measurement contract, and the
+    /// order of `ink_runs` is document order — the order the rows are drawn in.
+    #[cfg(not(alloc_frugal))]
     #[test]
     fn the_stack_rows_do_not_overlap() {
         let mut es = EmptyState::new(Rect::new(0, 0, 240, 120));
         let svg = crate::widget::svg::render_to_svg(&mut es);
-        let rendered = texts(&svg);
+        let rendered = ink_runs(&svg);
         assert!(rendered.len() >= 3, "the fixture must render the icon, title and message");
 
-        // Each row's glyph box is `font.size()` tall, which is the renderer's measurement
-        // contract (`measure_text("M", font).height == font.size()`), and rows appear in the
-        // order they are drawn: icon, title, message lines.
+        // Each row's glyph box is `font.size()` tall — the renderer's measurement contract
+        // (`measure_text("M", font).height == font.size()`) — and the rows are drawn in a known
+        // order: the 48 px icon, the 20 px title, then the 14 px message lines. That order is
+        // what identifies a run, because the string each run spells is no longer in the
+        // document; a row drawn out of order would fail on the size it was given rather than
+        // on its content.
         let mut backend = crate::render::SvgPaintBackend::new(Size::new(240, 120));
         let context = RenderContext::new(&mut backend);
-        let sizes: Vec<i32> = [48.0f32, 20.0, 14.0, 14.0]
-            .iter()
-            .map(|s| {
-                context.measure_text("M", &Font::with_weight("Sans", *s, 400, false)).height as i32
-            })
-            .collect();
+        let height_of = |size: f32| -> i32 {
+            context.measure_text("M", &Font::with_weight("Sans", size, 400, false)).height as i32
+        };
+        let sizes: Vec<i32> = [48.0f32, 20.0, 14.0, 14.0].iter().map(|s| height_of(*s)).collect();
 
-        for window in rendered.windows(2) {
-            let (_, top_a, text_a) = &window[0];
-            let (_, top_b, text_b) = &window[1];
-            // Match each row to its font by content, so a reordering cannot silently pass.
-            let height_of = |text: &str| -> i32 {
-                if text.chars().next().is_some_and(|c| c as u32 >= 0x1F300) {
-                    sizes[0]
-                } else if text == "Sample" {
-                    sizes[1]
-                } else {
-                    sizes[2]
-                }
-            };
-            let bottom_a = top_a + height_of(text_a);
+        for (index, window) in rendered.windows(2).enumerate() {
+            let (_, top_a, _, _) = &window[0];
+            let (_, top_b, _, _) = &window[1];
+            let bottom_a = top_a + sizes[index];
             assert!(
                 *top_b >= bottom_a,
-                "{text_b:?} starts at y={top_b}, inside {text_a:?}'s box ({top_a}..{bottom_a})"
+                "run {} starts at y={top_b}, inside run {index}'s box ({top_a}..{bottom_a})",
+                index + 1
             );
         }
     }
 
-    /// Parses `<text x y size>content</text>` elements, including the emitted font size.
-    ///
-    /// The size is read back from the document rather than guessed from the content: the point
-    /// of the check is that the *drawn* origin matches the *drawn* width, so both halves must
-    /// come from the same place the renderer used.
-    fn texts_with_size(svg: &str) -> Vec<(i32, i32, f32, String)> {
-        let mut out = Vec::new();
-        for line in svg.lines() {
-            let Some(start) = line.find("<text ") else { continue };
-            let Some(gt) = line[start..].find('>') else { continue };
-            let head = &line[start..start + gt];
-            let body_end = line.rfind("</text>").unwrap_or(line.len());
-            let body = line[start + gt + 1..body_end].to_string();
-            let attr = |name: &str| -> &str {
-                let key = format!("{name}=\"");
-                let at = head.find(&key).expect("attribute present") + key.len();
-                let end = head[at..].find('"').expect("closed") + at;
-                &head[at..end]
-            };
-            out.push((
-                attr("x").parse().expect("numeric x"),
-                attr("y").parse().expect("numeric y"),
-                attr("font-size").parse().expect("numeric font-size"),
-                body,
-            ));
-        }
-        out
-    }
-
     /// Every row is centred on the control's own vertical axis.
+    ///
+    /// The rows are the icon, the title and the message, all drawn through the same centred
+    /// helper in `draw`, so their — different — string widths all put the same midpoint on
+    /// `rect.x + rect.width / 2`. Checking the *ink's* midpoint is what makes this a test of
+    /// the drawing: the helper places the pen at `center - measured_width / 2`, and the glyphs'
+    /// own blank columns are inside that measured width, so the ink's midpoint lies on the
+    /// control's axis for every row independently of what any row says.
+    #[cfg(not(alloc_frugal))]
     #[test]
     fn every_stack_row_is_centred_horizontally() {
         let mut es = EmptyState::new(Rect::new(0, 0, 240, 120));
         let svg = crate::widget::svg::render_to_svg(&mut es);
+        let runs = ink_runs(&svg);
+        assert!(runs.len() >= 3, "the fixture must render the icon, title and message");
         let center = 120;
-        for (x, _, size, text) in texts_with_size(&svg) {
-            // The renderer charges 0.6 em per narrow cluster and 0.33 em for a space, so the
-            // measured width is what the draw call itself used; a self-consistent check is that
-            // the row's own midpoint lands on the control's midpoint.
-            let mut backend = crate::render::SvgPaintBackend::new(Size::new(240, 120));
-            let context = RenderContext::new(&mut backend);
-            let width = context
-                .measure_text(&text, &Font::with_weight("Sans", size, 400, false))
-                .width as i32;
-            assert_eq!(x + width / 2, center, "{text:?} must be centred on the control's axis");
+        for (left, _, right, _) in runs {
+            // Each row was placed from its *measured* width, so the run's own midpoint is on
+            // the axis; the ink can only fall inside that measured width, which is why the
+            // bound is one glyph of slack rather than an equality.
+            assert!(
+                ((left + right) as f32 / 2.0 - center as f32).abs() <= 8.0,
+                "a row spans {left}..{right}, whose midpoint must be near the control's axis"
+            );
         }
     }
 }

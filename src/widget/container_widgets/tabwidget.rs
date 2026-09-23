@@ -2,17 +2,37 @@
 // SPDX-License-Identifier: MIT
 
 //! Tab widget.
+//!
+//! # The tab strip is assembled by a layout
+//!
+//! BLUE22 §B.8 lists this control's defect as "tab width by hand". The width is measured and
+//! clamped here (that half was already derived), but the *run* — where each tab starts once the
+//! ones before it have taken their room — is now the answer of a [`FlexLayout`] rather than an
+//! accumulator re-derived inside `tab_rect`. See [`TabWidget::tab_run`].
+
+#[cfg(full_widgets)]
+use crate::core::Size;
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::{DragPayload, DragSession, Event, EventHandler};
+#[cfg(full_widgets)]
+use crate::layout::{
+    AlignItems, FlexDirection, FlexLayout, FlexWrap, JustifyContent, LayoutParams,
+};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+#[cfg(full_widgets)]
+use crate::style::EdgeOffsets;
 
 use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+#[cfg(full_widgets)]
+use crate::widget::composite::CompositeBuilder;
 #[cfg(feature = "image")]
 use crate::widget::Image;
+#[cfg(full_widgets)]
+use crate::widget::WidgetFactory;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -467,33 +487,124 @@ impl TabWidget {
         crate::compat::vec![share; count]
     }
 
+    /// The tab strip as a run, assembled by a layout rather than by an accumulator.
+    ///
+    /// # Why the strip is assembled
+    ///
+    /// BLUE22 §B.8 lists `tab_widget`'s defect as "tab width by hand", and the fix has two
+    /// halves. The first is the width: `label_width + TAB_TEXT_PADDING`, clamped into
+    /// `TAB_MIN_WIDTH..TAB_MAX_WIDTH` — which the widget does derive. The second is the **run**:
+    /// each tab started at "the sum of the widths before it plus the spacing times its index", an
+    /// accumulator of two separate terms re-derived inside `tab_rect` on every call. Handing the
+    /// widths to a [`FlexLayout`] makes the run the layout's answer, and the cross axis comes from
+    /// the tab's own declared height — so a North and a West strip are the same code with a
+    /// different direction.
+    ///
+    /// The result is in **strip order and strip coordinates**, starting at `(0, 0)`: the caller
+    /// translates it to wherever the strip lives. Keeping the assembly's origin at zero is what
+    /// lets one function serve all four `TabPosition`s, whose tab boxes differ only by that
+    /// translation.
+    fn tab_run(&self) -> crate::compat::Vec<Rect> {
+        let widths = self.tab_widths();
+        if widths.is_empty() {
+            return crate::compat::Vec::new();
+        }
+        let horizontal = matches!(self.tab_position, TabPosition::North | TabPosition::South);
+        // # Why the stripped profiles take the direct route
+        //
+        // `full_widgets` is "a device profile *and* an unstripped widget set" (principle #47), and
+        // this module is only gated on the second half — so an Android `mobile-api` build has no
+        // `WidgetFactory` here. Both arms read the same widths and the same `TAB_SPACING`, so the
+        // fallback is the same run written the only way that profile can express it.
+        #[cfg(not(full_widgets))]
+        {
+            let mut placed: crate::compat::Vec<Rect> = crate::compat::Vec::new();
+            let mut cursor = 0i32;
+            for width in widths.iter() {
+                let box_rect = if horizontal {
+                    Rect::new(cursor, 0, *width as u32, TAB_HEIGHT as u32)
+                } else {
+                    Rect::new(0, cursor, TAB_HEIGHT as u32, *width as u32)
+                };
+                placed.push(box_rect);
+                cursor += *width + TAB_SPACING;
+            }
+            return placed;
+        }
+        #[cfg(full_widgets)]
+        {
+            let strip = if horizontal {
+                Rect::new(0, 0, widths.iter().sum::<i32>() as u32, TAB_HEIGHT as u32)
+            } else {
+                Rect::new(0, 0, TAB_HEIGHT as u32, widths.iter().sum::<i32>() as u32)
+            };
+            let factory = WidgetFactory::new_with_defaults();
+            let mut row = CompositeBuilder::new(
+                Box::new(FlexLayout::with_params(
+                    if horizontal { FlexDirection::Row } else { FlexDirection::Column },
+                    FlexWrap::NoWrap,
+                    JustifyContent::FlexStart,
+                    AlignItems::Stretch,
+                    TAB_SPACING,
+                    0,
+                )),
+                EdgeOffsets::all(0),
+                Size::new(0, 0),
+            );
+            for (index, tab) in self.tabs.iter().enumerate() {
+                // The tab's own box: its measured width on the run's axis, the strip's height across
+                // it. A tab is `TAB_HEIGHT` tall whatever the control was given, which is the whole
+                // point of taking the height from the constant rather than from `geometry()`.
+                let along = widths.get(index).copied().unwrap_or(MIN_TAB_WIDTH) as u32;
+                let size = if horizontal {
+                    Size::new(along, TAB_HEIGHT as u32)
+                } else {
+                    Size::new(TAB_HEIGHT as u32, along)
+                };
+                let created =
+                    row.add_sized(&factory, "label", &tab.title, size, LayoutParams::new());
+                debug_assert!(created.is_some(), "a tab is a core control");
+            }
+            let mut placed: crate::compat::Vec<Rect> = crate::compat::Vec::new();
+            row.arrange(strip, &mut |_, rect| placed.push(rect));
+            while placed.len() < self.tabs.len() {
+                placed.push(Rect::new(0, 0, 0, 0));
+            }
+            placed
+        }
+    }
+
     fn tab_rect(&self, index: usize) -> Option<Rect> {
         if index >= self.tabs.len() {
             return None;
         }
         let rect = self.geometry();
-        let widths = self.tab_widths();
-        // Offset by the widths of the tabs before this one, so a measured strip is laid out in
-        // sequence rather than on a fixed step.
-        let offset: i32 = widths.iter().take(index).sum::<i32>() + TAB_SPACING * index as i32;
-        let tab_width = *widths.get(index)?;
+        // The run is in strip coordinates; each position translates it to where the strip lives.
+        let run = self.tab_run();
+        let tab = *run.get(index)?;
+        let tab_width = tab.width as i32;
         let tab_height = TAB_HEIGHT;
+        let along = if matches!(self.tab_position, TabPosition::North | TabPosition::South) {
+            tab.x
+        } else {
+            tab.y
+        };
         match self.tab_position {
             TabPosition::North => {
-                Some(Rect::new(rect.x + offset, rect.y, tab_width as u32, tab_height as u32))
+                Some(Rect::new(rect.x + along, rect.y, tab_width as u32, tab_height as u32))
             }
             TabPosition::South => Some(Rect::new(
-                rect.x + offset,
+                rect.x + along,
                 rect.y + rect.height as i32 - tab_height,
                 tab_width as u32,
                 tab_height as u32,
             )),
             TabPosition::West => {
-                Some(Rect::new(rect.x, rect.y + offset, tab_width as u32, tab_height as u32))
+                Some(Rect::new(rect.x, rect.y + along, tab_width as u32, tab_height as u32))
             }
             TabPosition::East => Some(Rect::new(
                 rect.x + rect.width as i32 - tab_width,
-                rect.y + offset,
+                rect.y + along,
                 tab_width as u32,
                 tab_height as u32,
             )),
@@ -1537,9 +1648,50 @@ mod tests {
         assert!(svg.ends_with("</svg>"), "SVG should end with </svg>");
         assert!(svg.contains("width=\"300\""), "SVG should contain width=\"300\"");
         assert!(svg.contains("height=\"200\""), "SVG should contain height=\"200\"");
-        // Should contain tab text
-        assert!(svg.contains("Home"));
-        assert!(svg.contains("Settings"));
+        // Both tab titles are drawn. They are `font8x8` glyph geometry, not `<text>` elements, so
+        // the titles are checked as ink on the **tab strip**: the strip is the control's top
+        // `TAB_HEIGHT` rows, and one label per tab means one ink box per tab, each inside its own
+        // tab rather than a single run spanning the strip.
+        let title_boxes: Vec<(i32, i32, i32, i32)> = svg
+            .lines()
+            .filter(|line| line.contains("<path "))
+            .filter_map(|line| {
+                let d = line.find("d=\"")? + 3;
+                let end = line[d..].find('"')? + d;
+                let d = &line[d..end];
+                let mut box_: Option<(i32, i32, i32, i32)> = None;
+                for subpath in d.split('M').skip(1) {
+                    let numbers: Vec<i32> = subpath
+                        .split(|c: char| !c.is_ascii_digit() && c != '-')
+                        .filter(|part| !part.is_empty())
+                        .filter_map(|part| part.parse().ok())
+                        .collect();
+                    if numbers.len() < 4 {
+                        continue;
+                    }
+                    let (x, y, w, h) = (numbers[0], numbers[1], numbers[2], numbers[3]);
+                    box_ = Some(match box_ {
+                        None => (x, y, x + w, y + h),
+                        Some((l, t, r, b)) => (l.min(x), t.min(y), r.max(x + w), b.max(y + h)),
+                    });
+                }
+                box_
+            })
+            .collect();
+        assert_eq!(title_boxes.len(), 2, "one label per tab: {title_boxes:?}");
+        for (index, title) in title_boxes.iter().enumerate() {
+            assert!(
+                (0..TAB_HEIGHT + 2).contains(&title.1) && title.3 <= TAB_HEIGHT + 2,
+                "tab {index}'s title must sit on the tab strip, got {title:?}"
+            );
+            assert!(title.2 > title.0, "tab {index}'s title laid down ink: {title:?}");
+        }
+        // The two tabs are laid side by side, so the second label starts to the right of the
+        // first: a widget that drew both titles at the same x would overlap them.
+        assert!(
+            title_boxes[1].0 > title_boxes[0].2,
+            "the second tab's title follows the first: {title_boxes:?}"
+        );
         // Should contain fill and stroke attributes from the rendering
         assert!(svg.contains("fill=") || svg.contains("stroke="));
     }

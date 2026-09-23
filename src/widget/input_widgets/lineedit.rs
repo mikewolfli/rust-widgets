@@ -1068,26 +1068,41 @@ mod tests {
     ///
     /// The origin of a text run is its glyph box's top-left corner, so the old
     /// `rect.y + rect.height / 2` put that corner on the field's middle line and drew the
-    /// value half a line low. Pinning the emitted `y` keeps the line box — not the origin
-    /// — on the centre.
+    /// value half a line low. Pinning the drawn line box — not the origin — to the centre is
+    /// what keeps the two from agreeing by accident.
+    ///
+    /// # Why the check reads the ink
+    ///
+    /// The value is no longer a `<text>` element carrying a `y`: the backend emits the same
+    /// `font8x8` rectangles the software rasteriser fills, as subpaths of one `<path>` (see
+    /// `crate::widget::svg::text_ink_box`). The ink box is also the better witness, because it
+    /// is where the glyphs actually landed rather than what an element claimed.
     #[cfg(not(alloc_frugal))]
     #[test]
     fn the_value_sits_on_the_fields_middle_line() {
         let mut le = LineEdit::new(Rect::new(0, 0, 240, 120));
         le.set_text("Sample");
         let svg = crate::widget::svg::render_to_svg(&mut le);
-        let line = svg.lines().find(|l| l.contains("<text")).expect("a text element");
-        let y: i32 = line
-            .split(" y=\"")
-            .nth(1)
-            .and_then(|rest| rest.split('"').next())
-            .and_then(|value| value.parse().ok())
-            .expect("a y attribute");
         let field = le.field_rect();
-        assert!(y >= field.y, "the text starts inside the field: y={y}");
+
+        let (_, top, _, bottom) = crate::widget::svg::text_ink_box(&svg)
+            .expect("a field with a value draws it as glyph geometry");
+        assert!(top >= field.y, "the value starts inside the field: y={top}");
         assert!(
-            y < field.y + field.height as i32,
-            "and above its bottom edge: y={y}, field={field:?}"
+            bottom <= field.y + field.height as i32,
+            "and above its bottom edge: y={bottom}, field={field:?}"
+        );
+        // And it is *centred*, not merely contained: the field's own line box is the reference
+        // the value was moved onto, so its ink shares that box's middle line. A value left on
+        // the old `rect.y + rect.height / 2` anchor sits a whole half line below it.
+        let mut backend = crate::render::SvgPaintBackend::new(crate::core::Size::new(240, 120));
+        let context = RenderContext::new(&mut backend);
+        let font = crate::core::Font::default();
+        let line = context.text_line(field, &font);
+        assert_eq!(
+            top + bottom,
+            line.y * 2 + line.height as i32,
+            "the value hangs on the field's own line box middle line"
         );
     }
 
@@ -1095,20 +1110,36 @@ mod tests {
     ///
     /// A field's text is inset from its edge by [`dimensions::TEXT_FIELD_PADDING_H`]; the
     /// origin was a local literal `4`, which is a different fact written in a second place.
+    ///
+    /// # Why the edge is read off the ink
+    ///
+    /// There is no `x` attribute to read any more: the backend emits the string as `font8x8`
+    /// glyph rectangles inside one `<path>` (see `crate::widget::svg::text_ink_box`), so the
+    /// run's left edge is where the pen actually put its first set bit. `context.text_line`
+    /// centres the line box's *height*, not each cluster, so the pen itself is `field.x +
+    /// TEXT_FIELD_PADDING_H` exactly; what is left over is the first glyph's own blank lead
+    /// column, which the `font8x8` table gives as 0 for `S`. The assertion is still a real
+    /// constraint on the padding: the pen is what the padding places, and the test would read
+    /// `padding + 20` (or any other literal) instead of `padding` if the draw site stopped
+    /// reading [`dimensions::TEXT_FIELD_PADDING_H`].
     #[cfg(not(alloc_frugal))]
     #[test]
     fn the_value_starts_at_the_fields_horizontal_padding() {
         let mut le = LineEdit::new(Rect::new(0, 0, 240, 120));
         le.set_text("Sample");
         let svg = crate::widget::svg::render_to_svg(&mut le);
-        let line = svg.lines().find(|l| l.contains("<text")).expect("a text element");
-        let x: i32 = line
-            .split(" x=\"")
-            .nth(1)
-            .and_then(|rest| rest.split('"').next())
-            .and_then(|value| value.parse().ok())
-            .expect("an x attribute");
-        assert_eq!(x, dimensions::TEXT_FIELD_PADDING_H as i32);
+        // The fixture paints only the field's own chrome — a fill and a border — so what is
+        // left is the value's ink, which no other string in this control can supply.
+        assert_eq!(svg.matches("<rect").count(), 2, "only the field's fill and border are rects");
+        let field = le.field_rect();
+
+        let (left, _, _, _) = crate::widget::svg::text_ink_box(&svg)
+            .expect("a field with a value draws it as glyph geometry");
+        assert_eq!(
+            left,
+            field.x + dimensions::TEXT_FIELD_PADDING_H as i32,
+            "the value starts at the field's own padding: field={field:?}"
+        );
     }
 
     #[test]

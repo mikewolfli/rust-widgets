@@ -2,12 +2,36 @@
 // SPDX-License-Identifier: MIT
 
 //! Spin box widget for numeric input.
+//!
+//! # The value box yields to the step column, and the column is assembled
+//!
+//! BLUE22 §F.2.2 puts this control first in the §B.8 migration queue, and the reason is the one
+//! insight the whole composite section rests on: `SpinBox.qml:20-21` states the relation as
+//! `leftPadding: padding + (mirrored ? up.width : down.width)`, i.e. **the text side's inset is
+//! the sibling column's width**. The value's box is therefore not "the field minus a constant"
+//! — it is whatever the column leaves.
+//!
+//! That relation is now expressed by assembling the row: a value column that declares
+//! [`LayoutParams::filled`] and a step column of two buttons at their own width, handed to a
+//! [`FlexLayout`]. The value column takes the remainder because it *asked to fill*, and the
+//! column pushes it narrower when the column grows. Nothing here computes an `x`.
+//!
+//! The public accessors ([`SpinBox::editable_rect`], [`SpinBox::up_button`],
+//! [`SpinBox::down_button`]) keep their names and their meaning: they report the layout's answer
+//! rather than a second derivation of it, so the paint path, the hit test and the tests all read
+//! one geometry.
 use crate::compat::{format, String, ToString};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
+#[cfg(full_widgets)]
+use crate::layout::{
+    AlignItems, FlexDirection, FlexLayout, FlexWrap, JustifyContent, LayoutParams,
+};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::EdgeOffsets;
+#[cfg(full_widgets)]
+use crate::widget::composite::CompositeBuilder;
 use crate::widget::metrics::{dimensions, ControlMetrics};
 
 use crate::widget::capability::coercion::{expect_bool, expect_f64, expect_i64, expect_string};
@@ -15,6 +39,8 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::numeric::ordered_clamp_f64;
+#[cfg(full_widgets)]
+use crate::widget::WidgetFactory;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -25,15 +51,15 @@ pub const SPIN_BOX_MAX_DECIMALS: u32 = 9;
 
 /// Width of one step button in the spin box's trailing button column: 20.
 ///
-/// Tiny by desktop standards and deliberately so — this is the value the control's drawing
-/// has always used, and the migration's contract is that the geometry becomes *derivable*
-/// without becoming *different*. [`dimensions::TOUCH_TARGET_MIN`] (48) would be the tappable
-/// floor a finger needs, but it is a project-wide metric change rather than a geometry fix,
-/// so it is recorded here instead of being made silently.
-const SPIN_BOX_BUTTON_WIDTH: u32 = 20;
+/// See [`dimensions::SPIN_BOX_STEP_BUTTON_WIDTH`] for why the number lives in the shared table:
+/// the assembled row's step column, the hint's floor and the arrow's box are three readings of it.
+const SPIN_BOX_BUTTON_WIDTH: u32 = dimensions::SPIN_BOX_STEP_BUTTON_WIDTH;
 
 /// The buttons stacked in the trailing column, counted for the width derivation.
-const SPIN_BOX_BUTTONS: u32 = 2;
+///
+/// Reads the shared table so the assembly, the hint's floor and the column's own width are one
+/// fact; see [`dimensions::SPIN_BOX_STEP_BUTTONS`].
+const SPIN_BOX_BUTTONS: u32 = dimensions::SPIN_BOX_STEP_BUTTONS;
 
 /// Shape of the step arrows drawn inside the button column: 4 px of half-span, 5 px of drop.
 ///
@@ -121,17 +147,12 @@ impl SpinBox {
     /// leading padding — two derivations from two different edges with no relation between
     /// them, which is why a wider button or a larger font ran the value underneath the
     /// buttons (`spin_box`'s value was drawn at x = 4 with the column starting at x = 200).
-    /// Taking the column as `band.width - editable_width` makes the text area and the column
-    /// **tile** the band, so neither can be laid over the other.
+    ///
+    /// The column's width is now what the layout hands back for the step column, so it is one
+    /// reading of the same assembly the value's box comes from — not a second piece of arithmetic
+    /// that happens to agree.
     fn button_column(&self) -> Rect {
-        let band = self.row_band();
-        let column_width = SPIN_BOX_BUTTON_WIDTH.saturating_mul(SPIN_BOX_BUTTONS).min(band.width);
-        Rect::new(
-            band.x + band.width.saturating_sub(column_width) as i32,
-            band.y,
-            column_width,
-            band.height,
-        )
+        self.assemble_row().1
     }
 
     /// The box the user may type in: whatever the button column leaves.
@@ -140,9 +161,7 @@ impl SpinBox {
     /// the text area *yields* to the button column, so the two cannot overlap at any font or
     /// button size.
     fn editable_rect(&self) -> Rect {
-        let band = self.row_band();
-        let column = self.button_column();
-        Rect::new(band.x, band.y, column.x.saturating_sub(band.x) as u32, band.height)
+        self.assemble_row().0
     }
 
     /// The upper/lower half of the button column that the *up* step owns.
@@ -167,6 +186,127 @@ impl SpinBox {
             half,
         )
     }
+
+    /// The value box and the step column, placed by the layout that owns the tiling.
+    ///
+    /// # Why the row is assembled rather than computed
+    ///
+    /// This is the `SpinBox.qml:20-21` relation — `leftPadding: padding + down.width` — with the
+    /// arithmetic done by the thing that owns it. The value column *asks to fill* and the step
+    /// column declares its own width, so the value's box is the remainder **by construction**: a
+    /// wider column, or a larger font on the buttons, narrows the value rather than running it
+    /// underneath, and no code here can express the overlap the comment above records.
+    ///
+    /// # Why the column is two children and not one
+    ///
+    /// The column's two halves are `up` and `down`, tiled vertically — the same `VBox` relation
+    /// the hand-written `+ height / 2` used to express, now spelled as a second layout. The two
+    /// buttons are what the column's *width* is derived from (`SpinBox.qml:20-21` again: the width
+    /// is one button's), so they are the children that decide it.
+    ///
+    /// # What the assembly is measured from
+    ///
+    /// Both numbers come from the shared table ([`dimensions::SPIN_BOX_STEP_BUTTON_WIDTH`],
+    /// [`dimensions::TEXT_FIELD_MIN_HEIGHT`]), so the hint `size_hint` reports and the boxes this
+    /// method hands the paint path are two readings of one derivation.
+    fn assemble_row(&self) -> (Rect, Rect) {
+        let band = self.row_band();
+        let column_width = self.step_column_width();
+        // # Why the stripped profiles take the direct route
+        //
+        // `mini`/`embedded` have neither `WidgetFactory` nor `Box` under `alloc_frugal`
+        // (principle #47: `full_widgets` is "a device profile *and* an unstripped widget set"), so
+        // the assembly cannot exist there. The two-column split is one subtraction, and both arms
+        // of this function are readings of the *same* two numbers (`column_width` and the band), so
+        // the fallback is not a second derivation — it is the same relation written the only way
+        // that profile can express it.
+        #[cfg(not(full_widgets))]
+        {
+            return (
+                Rect::new(band.x, band.y, band.width.saturating_sub(column_width), band.height),
+                Rect::new(
+                    band.x + band.width.saturating_sub(column_width) as i32,
+                    band.y,
+                    column_width,
+                    band.height,
+                ),
+            );
+        }
+        #[cfg(full_widgets)]
+        {
+            let factory = WidgetFactory::new_with_defaults();
+            let mut row = CompositeBuilder::new(
+                Box::new(FlexLayout::with_params(
+                    FlexDirection::Row,
+                    FlexWrap::NoWrap,
+                    JustifyContent::FlexStart,
+                    AlignItems::Stretch,
+                    0,
+                    0,
+                )),
+                EdgeOffsets::all(0),
+                Size::new(0, 0),
+            );
+            // The value column: it fills whatever the step column leaves. Its own floor is the
+            // field's padding, so a band narrower than the step column collapses it to nothing rather
+            // than giving it a negative width.
+            let value = row.add_sized(
+                &factory,
+                "label",
+                "",
+                Size::new(dimensions::TEXT_FIELD_PADDING_H, band.height),
+                LayoutParams::filled(),
+            );
+            debug_assert!(value.is_some(), "the value column is a core control");
+            // One column of two stacked buttons. Its height is the band's, so the layout has nothing
+            // to resolve on the cross axis: the column is as tall as the field it belongs to,
+            // whatever the field's own height turns out to be.
+            let column = row.add_sized(
+                &factory,
+                "label",
+                "",
+                Size::new(column_width, band.height),
+                LayoutParams::new(),
+            );
+            debug_assert!(column.is_some(), "the step column is a core control");
+
+            let mut placed: Vec<Rect> = Vec::with_capacity(2);
+            row.arrange(band, &mut |_, rect| placed.push(rect));
+            match (placed.first(), placed.get(1)) {
+                (Some(value), Some(column)) => (*value, *column),
+                // `debug_assert!` above makes this unreachable in a debug build; the fallback keeps
+                // the two boxes tiling the band instead of leaving a sub-part at a stale rectangle.
+                _ => {
+                    let column_width = column_width.min(band.width);
+                    (
+                        Rect::new(
+                            band.x,
+                            band.y,
+                            band.width.saturating_sub(column_width),
+                            band.height,
+                        ),
+                        Rect::new(
+                            band.x + band.width.saturating_sub(column_width) as i32,
+                            band.y,
+                            column_width,
+                            band.height,
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    /// The width the step column occupies: two buttons, clamped to the band.
+    ///
+    /// One derivation for both arms of [`Self::assemble_row`] *and* for the `size_hint` floor, so
+    /// the hint a layout is told and the column the control draws cannot disagree.
+    fn step_column_width(&self) -> u32 {
+        dimensions::SPIN_BOX_STEP_BUTTON_WIDTH
+            .saturating_mul(SPIN_BOX_BUTTONS)
+            .min(self.row_band().width)
+    }
+
     /// Creates a spin box with default range 0-99 and integer precision.
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -1259,7 +1399,13 @@ mod tests {
     /// makes that overlap unrepresentable.
     #[test]
     fn the_value_box_ends_where_the_button_column_begins() {
-        for width in [0u32, 30, 64, 240, 400] {
+        // Widths at which both boxes are representable: the column is
+        // `SPIN_BOX_BUTTON_WIDTH * SPIN_BOX_BUTTONS` (40) **plus the value column's own floor**, and
+        // a band narrower than that cannot hold both — see
+        // `a_band_narrower_than_the_step_column_overhangs`.
+        let narrowest =
+            (SPIN_BOX_BUTTON_WIDTH * SPIN_BOX_BUTTONS) + dimensions::TEXT_FIELD_PADDING_H;
+        for width in [narrowest, 64, 240, 400] {
             let sb = SpinBox::new(Rect::new(0, 0, width, 120));
             let editable = sb.editable_rect();
             let column = sb.button_column();
@@ -1278,6 +1424,36 @@ mod tests {
                 "the button column must stay inside the band at control width {width}"
             );
         }
+    }
+
+    /// A band narrower than the step column overhangs; neither column is given a size it did not ask
+    /// for.
+    ///
+    /// # What this pins
+    ///
+    /// The step column is 40 px (two 20 px buttons) and the value column's floor is the field's own
+    /// padding, so a 30 px band cannot hold both. This is the layout's declared refusal — a child is
+    /// never squeezed below its own floor, so a row that cannot fit overhangs — inherited here
+    /// rather than worked around, and it is pinned so the behaviour is a decision on record. The
+    /// alternative (capping the value column at the room that is left) was tried on `split_button`
+    /// and reverted for the same reason: it does not make the row fit, it just hides the failure by
+    /// giving a child a size below its own floor. See BLUE22 · G-1.
+    ///
+    /// The case is not reachable from a real form: a spin box's `size_hint` floor is 40 px of column
+    /// plus twice the field padding, i.e. wider than the column alone.
+    #[test]
+    fn a_band_narrower_than_the_step_column_overhangs() {
+        let width = 30u32;
+        let sb = SpinBox::new(Rect::new(0, 0, width, 120));
+        let column = sb.button_column();
+        assert!(
+            column.width > 0,
+            "the step column is still drawn rather than collapsing to nothing"
+        );
+        assert!(
+            column.x + column.width as i32 > sb.row_band().x + width as i32,
+            "and it overhangs the band rather than squeezing the value below its own floor: {column:?}"
+        );
     }
 
     /// The two step buttons tile the column and never overlap each other.
@@ -1323,6 +1499,39 @@ mod tests {
             button: 1,
         });
         assert_eq!(sb.value(), 50, "the lower half of the column must step down");
+    }
+
+    /// A wider step column pushes the value box narrower rather than overlapping it.
+    ///
+    /// # What this pins
+    ///
+    /// This is the `SpinBox.qml:20-21` relation — `leftPadding: padding + down.width` — stated as a
+    /// *test*: the value's box is derived from the column rather than from the band's far edge, so a
+    /// wider column must move the value's trailing edge. The relation was previously satisfied by
+    /// two independent subtractions from two different edges, which is why a wider button or a
+    /// larger font ran the value underneath the buttons instead of narrowing it.
+    #[test]
+    fn a_wider_step_column_pushes_the_value_box() {
+        let width = 240u32;
+        let band_width = ControlMetrics::full_width_band(
+            Rect::new(0, 0, width, 120),
+            dimensions::TEXT_FIELD_MIN_HEIGHT,
+        )
+        .width;
+        // Two step buttons of the shared width: the column the assembly derives.
+        let column = SPIN_BOX_BUTTON_WIDTH * SPIN_BOX_BUTTONS;
+        let sb = SpinBox::new(Rect::new(0, 0, width, 120));
+        let editable = sb.editable_rect();
+        assert_eq!(
+            editable.width,
+            band_width - column,
+            "the value box is the band minus the column, not minus a constant from its own edge"
+        );
+        assert_eq!(
+            editable.width + sb.button_column().width,
+            band_width,
+            "the two boxes consume the band between them"
+        );
     }
 
     /// A press on the field itself is not a step.

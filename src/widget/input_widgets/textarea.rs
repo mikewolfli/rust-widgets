@@ -636,33 +636,40 @@ mod tests {
     /// The origin of a text run is its glyph box's top-left corner, so `rect.y + 4` put that
     /// corner four pixels below the border and drew the first line half a line high — the
     /// placeholder and the value that replaced it therefore sat on different baselines, and
-    /// `text_area.svg` showed a 14 px line at `y = 4`. The first line now takes the same
-    /// line box every other text-bearing control uses.
+    /// `text_area.svg` showed a line whose top edge was `y = 4`. The first line now takes the
+    /// same line box every other text-bearing control uses.
+    ///
+    /// The assertion is on the **ink**, not on a `x`/`y` attribute: text leaves the backend as
+    /// the `font8x8` rectangles the rasteriser fills, so the document holds a picture of the run
+    /// rather than the run itself. That is a stronger check than the attribute it replaced — a
+    /// glyph placed a line off with a correct attribute would have passed the old form.
     #[cfg(not(alloc_frugal))]
     #[test]
     fn the_first_line_is_padded_consistently_with_every_other_field() {
         let mut ta = TextArea::new("Line1".to_string(), Rect::new(0, 0, 240, 120));
         let svg = crate::widget::svg::render_to_svg(&mut ta);
-        let line = svg.lines().find(|l| l.contains("<text")).expect("a text element");
-        let x: i32 = line
-            .split(" x=\"")
-            .nth(1)
-            .and_then(|rest| rest.split('"').next())
-            .and_then(|value| value.parse().ok())
-            .expect("an x attribute");
-        let y: i32 = line
-            .split(" y=\"")
-            .nth(1)
-            .and_then(|rest| rest.split('"').next())
-            .and_then(|value| value.parse().ok())
-            .expect("a y attribute");
+        let (x, y, right, _) = crate::widget::svg::text_ink_box(&svg)
+            .unwrap_or_else(|| panic!("a text path must be emitted for the first line: {svg}"));
 
         assert_eq!(x, dimensions::TEXT_FIELD_PADDING_H as i32, "the shared horizontal inset");
-        // The line box is centred inside the first line's band, which is inset from the
-        // border; the assertion is that the glyph box sits clear of the top edge and still
-        // inside the first row, rather than pinned to a bare literal.
+        assert!(right > x, "the first line laid down ink: {x}..{right}");
+        // The first line's band is one line tall and starts at the field's top inset, the same
+        // 4 px a single-line field's content starts at; a line centred in that band therefore
+        // has its glyph-box top below the border but inside the first row. The two bounds are
+        // what the old attribute assertion checked, and they still hold — what they could not
+        // see is the *centred* origin, because the bare inset (4) is itself inside the row.
         assert!(y > 0, "the first line clears the border: {y}");
         assert!(y < LINE_H, "and stays inside the first row: {y}");
+        // Pin the exact origin: the glyph box's top edge is the line box centred in that band,
+        // which is `inset + (band - line) / 2`. Deriving it from the measured line height rather
+        // than from a copied literal is what makes this a statement about the layout.
+        let mut backend = crate::render::SvgPaintBackend::new(crate::core::Size::new(240, 120));
+        let line_h = crate::render::RenderContext::new(&mut backend)
+            .measure_text("M", &crate::core::Font::default())
+            .height as i32;
+        let first_band_top = 4;
+        let expected = first_band_top + (LINE_H - line_h) / 2;
+        assert_eq!(y, expected, "the first line sits on the band's centred line box");
     }
 
     #[test]

@@ -338,10 +338,33 @@ fn element_text(line: &str) -> String {
 /// The bounding box of an SVG path command stream, or `None` when it carries no
 /// absolute drawing commands this reader understands.
 ///
-/// Handles the two verbs the backend emits — `M x y` and `L x y` — plus the arc form
-/// `A rx ry rot large sweep x y`, whose own end point is what the backend positions.
-/// A `Z` close contributes nothing.
+/// Handles the two verbs the backend emits for shapes — `M x y` and `L x y` — plus the arc form
+/// `A rx ry rot large sweep x y`, whose own end point is what the backend positions. A `Z` close
+/// contributes nothing.
+///
+/// # The text form
+///
+/// Text is emitted as one `<path>` of axis-aligned rectangles, one per set `font8x8` bitmap bit,
+/// in the **compact relative** form `M{x} {y}h{w}v{h}h-{w}z` with no spaces between the verbs:
+///
+/// ```text
+/// M8 8h1v1h-1z M9 8h1v1h-1z M8 9h1v2h-1z
+/// ```
+///
+/// (The spaces shown are the subpath separators the emitter writes; within a subpath the numbers
+/// run straight into the next verb, which is why the token splitter above cannot parse it.) The
+/// union of those rectangles **is** the run's ink, so a reader that skipped this form would leave
+/// every text path unmeasured — and P5 treats an unmeasured element as a failure rather than a
+/// pass, because a skipped input is not a passing one. That is what this branch exists for.
+///
+/// Each subpath is accumulated as it is walked, so the rectangles are bounded exactly rather than
+/// approximated: `h`/`v` move the pen relatively, `H`/`V` absolutely, and every corner the pen
+/// passes through is folded into the box. An unrecognised verb skips its numeric operand so the
+/// scan cannot read a coordinate as a command letter.
 fn path_bounds(d: &str) -> Option<ElementBounds> {
+    if let Some(bounds) = relative_rect_path_bounds(d) {
+        return Some(bounds);
+    }
     let tokens: Vec<&str> = d.split_whitespace().collect();
     let mut xs: Vec<f32> = Vec::new();
     let mut ys: Vec<f32> = Vec::new();
@@ -379,6 +402,101 @@ fn path_bounds(d: &str) -> Option<ElementBounds> {
     let top = ys.iter().copied().fold(f32::INFINITY, f32::min);
     let bottom = ys.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     Some(ElementBounds { left, top, right, bottom })
+}
+
+/// Bounds a path written in the compact relative form the text emitter uses.
+///
+/// Returns `None` when the stream contains no `M`, which is the case for every shape path in
+/// this backend — those are emitted with spaces and are handled by the token walker instead. The
+/// `None` is therefore "this is not the text form", not "this failed to parse".
+fn relative_rect_path_bounds(d: &str) -> Option<ElementBounds> {
+    if !d.contains('M') {
+        return None;
+    }
+    let bytes = d.as_bytes();
+    let mut index = 0usize;
+    let mut xs: Vec<f32> = Vec::new();
+    let mut ys: Vec<f32> = Vec::new();
+    // The pen, and whether it has been placed by an `M` yet.
+    let mut pen: Option<(f32, f32)> = None;
+    while index < bytes.len() {
+        let verb = bytes[index];
+        index += 1;
+        match verb {
+            b'M' => {
+                let (x, y, next) = number_pair(d, index)?;
+                pen = Some((x, y));
+                xs.push(x);
+                ys.push(y);
+                index = next;
+            }
+            b'm' => {
+                let (dx, dy, next) = number_pair(d, index)?;
+                let (x, y) = pen?;
+                pen = Some((x + dx, y + dy));
+                xs.push(x + dx);
+                ys.push(y + dy);
+                index = next;
+            }
+            b'h' | b'H' | b'v' | b'V' => {
+                let (value, next) = number(d, index)?;
+                let (x, y) = pen?;
+                let moved = match verb {
+                    b'h' => (x + value, y),
+                    b'H' => (value, y),
+                    b'v' => (x, y + value),
+                    _ => (x, value),
+                };
+                pen = Some(moved);
+                xs.push(moved.0);
+                ys.push(moved.1);
+                index = next;
+            }
+            b'z' | b'Z' | b' ' | b',' | b'\t' | b'\n' | b'\r' => {}
+            _ => {
+                if let Some((_, next)) = number(d, index) {
+                    index = next;
+                }
+            }
+        }
+    }
+    if xs.is_empty() || ys.is_empty() {
+        return None;
+    }
+    Some(ElementBounds {
+        left: xs.iter().copied().fold(f32::INFINITY, f32::min),
+        top: ys.iter().copied().fold(f32::INFINITY, f32::min),
+        right: xs.iter().copied().fold(f32::NEG_INFINITY, f32::max),
+        bottom: ys.iter().copied().fold(f32::NEG_INFINITY, f32::max),
+    })
+}
+
+/// Reads a run of digits, with an optional sign, starting at `at`.
+fn number(text: &str, at: usize) -> Option<(f32, usize)> {
+    let bytes = text.as_bytes();
+    let mut index = at;
+    while index < bytes.len() && (bytes[index] == b' ' || bytes[index] == b',') {
+        index += 1;
+    }
+    let start = index;
+    if index < bytes.len() && (bytes[index] == b'-' || bytes[index] == b'+') {
+        index += 1;
+    }
+    let digits_start = index;
+    while index < bytes.len() && bytes[index].is_ascii_digit() {
+        index += 1;
+    }
+    if index == digits_start {
+        return None;
+    }
+    text[start..index].parse::<f32>().ok().map(|value| (value, index))
+}
+
+/// Reads two numbers separated by whitespace or a comma.
+fn number_pair(text: &str, at: usize) -> Option<(f32, f32, usize)> {
+    let (first, after_first) = number(text, at)?;
+    let (second, after_second) = number(text, after_first)?;
+    Some((first, second, after_second))
 }
 
 #[test]
