@@ -3,6 +3,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <circle cx="121" cy="61" r="58" fill="rgba(0,0,0,0.24)" />
-  <circle cx="120" cy="60" r="58" fill="rgba(18,18,18,1.00)" />
+  <circle cx="120" cy="60" r="58" fill="rgba(30,30,33,1.00)" />
   <path d="M114 45h3v5h-3zM117 45h3v5h-3zM114 50h3v5h-3zM117 50h3v5h-3zM108 55h3v5h-3zM111 55h3v5h-3zM114 55h3v5h-3zM117 55h3v5h-3zM120 55h3v5h-3zM123 55h3v5h-3zM114 60h3v5h-3zM117 60h3v5h-3zM114 65h3v5h-3zM117 65h3v5h-3z" fill="rgba(225,225,225,1.00)" />
 </svg>

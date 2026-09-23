@@ -86,6 +86,33 @@ impl Rating {
         self.star_size = size;
         self.base.request_redraw();
     }
+
+    /// The fraction of the row that is filled, in `0.0..=1.0`.
+    ///
+    /// # Why this is derived here and not in each consumer
+    ///
+    /// A rating appears as a number, as a row of stars, and as a bar in a summary card. All three are
+    /// the same statement — "this much of the range" — and computing it in each place is how they come
+    /// to disagree about whether three of five stars is 60% or 50%. Reads `max_rating().max(1)`, so a
+    /// control whose ceiling was somehow zero reports `0.0` rather than dividing by zero.
+    pub fn fill_fraction(&self) -> f32 {
+        (self.rating as f32 / self.max_rating.max(1) as f32).clamp(0.0, 1.0)
+    }
+
+    /// The rating as it should be spoken or shown: `"3 of 5"`, or `"no rating"` when unset.
+    ///
+    /// # Why "no rating" rather than "0 of 5"
+    ///
+    /// Zero stars means the user has not rated yet, which is a different statement from having rated
+    /// it the lowest possible. A screen reader announcing "0 of 5" makes an unrated control sound like
+    /// a one-star verdict; the same distinction [`crate::platform::accessibility::A11yState::checked`]
+    /// documents for `Option<bool>`.
+    pub fn display_text(&self) -> String {
+        if self.rating == 0 {
+            return "no rating".to_string();
+        }
+        format!("{} of {}", self.rating, self.max_rating)
+    }
     /// The single column the whole star row is measured from.
     ///
     /// # Why the row is not the control's rectangle
@@ -155,6 +182,13 @@ impl Widget for Rating {
 
 /// `Rating`'s property contract.
 ///
+/// # The defect this replaces
+///
+/// `value` and `max` describe the *number*, and nothing described the control. `star_size` had a
+/// setter and no way to be read or written through the contract, and the little text a rating can
+/// legitimately show ("3 of 5") was not published at all — so a consumer had to re-derive it from
+/// `value` and `max`, which is exactly the second derivation the property contract exists to remove.
+///
 /// Read/write semantics are carried over unchanged from the centralised
 /// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, so callers see
 /// the same coercions and the same errors as before. The widget stores both the
@@ -166,6 +200,14 @@ impl WidgetProperties for Rating {
         match name {
             "value" => Ok(CapabilityValue::Float(f64::from(self.rating()))),
             "max" => Ok(CapabilityValue::UInt(u64::from(self.max_rating()))),
+            "star_size" => Ok(CapabilityValue::UInt(u64::from(self.star_size()))),
+            // The proportional fill, in `0.0..=1.0`. `value` alone is not enough for a consumer that
+            // wants a bar or a percentage: it would have to know `max`, and dividing in the consumer is
+            // the second derivation this contract removes.
+            "fill" => Ok(CapabilityValue::Float(f64::from(self.fill_fraction()))),
+            // "3 of 5" — the announcement text, derived once here so a screen reader, a tooltip and a
+            // snapshot all say the same thing.
+            "display_text" => Ok(CapabilityValue::String(self.display_text())),
             _ => base_property_get(self, name),
         }
     }
@@ -184,12 +226,19 @@ impl WidgetProperties for Rating {
                 self.set_max_rating(expect_u32(value)?);
                 Ok(())
             }
+            "star_size" => {
+                self.set_star_size(expect_u32(value)?);
+                Ok(())
+            }
+            // Derived from `value` and `max`, so writing either would be a second way to say the same
+            // thing — and one of the two would be able to disagree.
+            "fill" | "display_text" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["value", "max", BASE_PROPERTY_NAMES]
+        property_names_of!["value", "max", "star_size", "fill", "display_text", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `rating` publishes.
@@ -422,6 +471,63 @@ mod tests {
     fn rating_star_size_min_eight() {
         let mut r = Rating::new(Rect::new(0, 0, 200, 40));
         r.set_star_size(2);
+        assert_eq!(r.star_size(), 8);
+    }
+
+    /// The two derived readings agree with `value`/`max`, and "unrated" is not "zero of five".
+    ///
+    /// # The defect this pins
+    ///
+    /// The contract published only `value` and `max`, so every consumer that wanted a proportion or a
+    /// label recomputed it — and a rating's zero means *unrated*, which "0 of 5" gets wrong.
+    #[test]
+    fn the_contract_publishes_the_fill_and_the_display_text() {
+        use crate::widget::capability::WidgetProperties;
+
+        let mut r = Rating::new(Rect::new(0, 0, 200, 40));
+        assert_eq!(r.get("value").unwrap(), CapabilityValue::Float(0.0));
+        assert_eq!(r.get("fill").unwrap(), CapabilityValue::Float(0.0));
+        assert_eq!(
+            r.get("display_text").unwrap().as_str(),
+            Some("no rating"),
+            "zero means unrated, not a zero-star verdict"
+        );
+
+        r.set_rating(3);
+        assert_eq!(r.fill_fraction(), 0.6, "three of five is 60%");
+        // The published value is an `f32` widened to `f64` for the contract, so `3/5` arrives as
+        // `0.6000000238…` rather than exactly `0.6`. Comparing with a tolerance is the honest
+        // assertion: the contract is a proportion, not a decimal literal.
+        match r.get("fill").unwrap() {
+            CapabilityValue::Float(fill) => {
+                assert!((fill - 0.6).abs() < 1e-5, "three of five published as {fill}");
+            }
+            other => panic!("`fill` must be a Float, got {other:?}"),
+        }
+        assert_eq!(r.get("display_text").unwrap().as_str(), Some("3 of 5"));
+
+        // The ceiling moves the proportion with it, which is the trap a per-consumer division hits.
+        r.set_max_rating(10);
+        assert_eq!(r.fill_fraction(), 0.3, "three of ten is 30%");
+        assert_eq!(r.get("display_text").unwrap().as_str(), Some("3 of 10"));
+
+        // The derived two are read-only: a second writer would be a second way to say the same thing.
+        assert!(r.set("fill", CapabilityValue::Float(1.0)).is_err());
+        assert!(r.set("display_text", CapabilityValue::String("x".into())).is_err());
+    }
+
+    /// `star_size` is reachable from the contract, so the setter is no longer unreachable.
+    #[test]
+    fn star_size_round_trips_through_the_property_api() {
+        use crate::widget::capability::WidgetProperties;
+
+        let mut r = Rating::new(Rect::new(0, 0, 200, 40));
+        assert_eq!(r.get("star_size").unwrap().as_u64(), Some(24));
+        r.set("star_size", CapabilityValue::UInt(32)).unwrap();
+        assert_eq!(r.star_size(), 32);
+        assert_eq!(r.get("star_size").unwrap().as_u64(), Some(32));
+        // The floor still applies through the contract, not only through the setter.
+        r.set("star_size", CapabilityValue::UInt(1)).unwrap();
         assert_eq!(r.star_size(), 8);
     }
 

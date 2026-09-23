@@ -1164,6 +1164,25 @@ pub trait ControlBackend: Send + Sync {
     fn set_widget_accessibility_name(&self, widget_id: ObjectId, name: &str) -> bool;
     /// Read accessibility name/label for a widget.
     fn get_widget_accessibility_name(&self, widget_id: ObjectId) -> String;
+    /// Derive a full accessibility state for a widget, or `None` when the id addresses nothing.
+    ///
+    /// # Why this is the bridge and not a method on each backend
+    ///
+    /// [`crate::platform::accessibility::A11yState`] has eleven fields, and until this existed
+    /// **nothing in production code built one from a live control** — so `checked` and `mixed` were
+    /// structurally unreachable no matter what a check box published. A backends' `register_widget`
+    /// had to be handed a state by the host, which meant the host had to re-derive the mapping.
+    ///
+    /// The default answers the same question from the widget trait's own accessors, which every
+    /// backend already exposes through its name/value accessors, so a backend that does nothing gets
+    /// the derivation and one that has richer information can override it.
+    fn widget_a11y_state(
+        &self,
+        widget_id: ObjectId,
+    ) -> Option<crate::platform::accessibility::A11yState> {
+        let _ = widget_id;
+        None
+    }
     /// Set clipboard text.
     fn set_clipboard_text(&self, _text: &str) -> bool {
         false

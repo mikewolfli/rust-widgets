@@ -137,6 +137,15 @@ macro_rules! impl_properties_other {
         #[cfg(not(alloc_frugal))]
         pub(crate) const DROP_ZONE_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("accepted_type", PropertyValueKind::String, true, true),
+            // The five feedback states. Writable so a drag session can be driven without a live
+            // pointer (a document, a test, an automated walkthrough).
+            PropertySchema::enumerated(
+                "state",
+                true,
+                true,
+                &["idle", "hovering", "accepted", "rejected", "dropped"],
+            ),
+            // Derived from `state`: `true` exactly when the zone would take a drop.
             PropertySchema::new("hovered", PropertyValueKind::Bool, true, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
@@ -590,6 +599,9 @@ macro_rules! impl_properties_other {
         #[cfg(not(alloc_frugal))]
         pub(crate) const APP_BAR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("title", PropertyValueKind::String, true, true),
+            // Which side the back arrow and the action are placed on. The bar's leading affordance
+            // belongs where the reader starts, so this is not a cosmetic setting.
+            PropertySchema::enumerated("direction", true, true, &["ltr", "rtl"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -619,6 +631,12 @@ macro_rules! impl_properties_other {
         pub(crate) const RATING_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("value", PropertyValueKind::Float, true, true),
             PropertySchema::new("max", PropertyValueKind::UInt, true, true),
+            // The control's own geometry of the row. `star_size` had a setter that nothing could reach
+            // through the contract, and the two derived readings are what a consumer would otherwise
+            // have to recompute from `value`/`max`.
+            PropertySchema::new("star_size", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("fill", PropertyValueKind::Float, true, false),
+            PropertySchema::new("display_text", PropertyValueKind::String, true, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

@@ -12,7 +12,7 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::undo::{TextSnapshotCommand, UndoStack};
-use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::coercion::{expect_string, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -264,6 +264,58 @@ impl AutoCompleteEdit {
             }
         }
     }
+
+    /// Returns the index of the highlighted suggestion, or `None` when none is.
+    ///
+    /// # Why this exists as a public accessor
+    ///
+    /// The dropdown draws a highlight and the arrow keys move it, but nothing outside the control could
+    /// ask *where* it was — so the property contract could only publish `suggestion_count`. A driver
+    /// that cannot read the highlight cannot confirm its own navigation worked.
+    pub fn selected_suggestion(&self) -> Option<usize> {
+        self.selected_suggestion
+    }
+
+    /// Highlights the suggestion at `index`, or clears the highlight if it is out of range.
+    ///
+    /// Out of range clears rather than being ignored: the caller asked for a highlight that cannot be
+    /// shown, and leaving the previous one up would silently select a different suggestion than the one
+    /// requested.
+    pub fn set_selected_suggestion(&mut self, index: usize) {
+        let next = if index < self.filtered_suggestions.len() { Some(index) } else { None };
+        if self.selected_suggestion != next {
+            self.selected_suggestion = next;
+            self.base.request_redraw();
+        }
+    }
+
+    /// Clears the highlight, leaving the dropdown open.
+    ///
+    /// Distinct from `hide_dropdown`, which also closes the list — the two are different facts and the
+    /// property contract publishes them separately.
+    pub fn clear_selected_suggestion(&mut self) {
+        if self.selected_suggestion.is_some() {
+            self.selected_suggestion = None;
+            self.base.request_redraw();
+        }
+    }
+
+    /// Returns how many rows the dropdown will show at once.
+    pub fn max_visible(&self) -> usize {
+        self.max_visible
+    }
+
+    /// Sets how many rows the dropdown shows at once, floored at one.
+    ///
+    /// A zero would draw an open dropdown with no rows in it, which reads as a glitch rather than as a
+    /// setting, so the floor is applied here rather than left to the caller.
+    pub fn set_max_visible(&mut self, max_visible: usize) {
+        let next = max_visible.max(1);
+        if self.max_visible != next {
+            self.max_visible = next;
+            self.base.request_redraw();
+        }
+    }
 }
 
 impl Widget for AutoCompleteEdit {
@@ -284,6 +336,14 @@ impl Widget for AutoCompleteEdit {
 
 /// `AutoCompleteEdit`'s property contract.
 ///
+/// # The defect this replaces
+///
+/// The control published `suggestion_count` and nothing else — a *derived* number. A consumer driving
+/// it could count the suggestions but could not read which one was highlighted, could not ask whether
+/// the dropdown was actually open, and could not ask whether an undo was available, even though the
+/// control answers all three (`selected_suggestion`, `show_dropdown`, `can_undo`). Those are the
+/// facts a driver or a test needs; a count alone describes the list but not the control's *state*.
+///
 /// Read/write semantics are carried over unchanged from the centralised
 /// `access_read_input.in.rs` / `access_write_input.in.rs` dispatch, so callers see
 /// the same coercions and the same errors as before. `suggestion_count` is derived
@@ -294,6 +354,28 @@ impl WidgetProperties for AutoCompleteEdit {
         match name {
             "text" => Ok(CapabilityValue::String(self.text().to_string())),
             "suggestion_count" => Ok(CapabilityValue::UInt(self.suggestion_count() as u64)),
+            // `Null` for "nothing highlighted", the same encoding `hovered_index`-style properties
+            // use elsewhere in the crate: index 0 is a real selection and must not stand in for
+            // "none".
+            "selected_index" => match self.selected_suggestion() {
+                Some(index) => Ok(CapabilityValue::UInt(index as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
+            "selected_suggestion" => Ok(match self.selected_suggestion() {
+                Some(index) => match self.filtered_suggestions.get(index) {
+                    Some(text) => CapabilityValue::String(text.clone()),
+                    None => CapabilityValue::Null,
+                },
+                None => CapabilityValue::Null,
+            }),
+            // `dropdown_visible` is the *state*; `suggestion_count` is the size of what it would show.
+            // A consumer that only reads `suggestion_count > 0` is guessing.
+            "dropdown_visible" => Ok(CapabilityValue::Bool(self.is_showing_dropdown())),
+            "max_visible" => Ok(CapabilityValue::UInt(self.max_visible as u64)),
+            // Publishing undo/redo availability is what lets a toolbar button bind to it; the
+            // commands exist regardless, so a driver that cannot ask ends up issuing a no-op.
+            "can_undo" => Ok(CapabilityValue::Bool(self.can_undo())),
+            "can_redo" => Ok(CapabilityValue::Bool(self.can_redo())),
             _ => base_property_get(self, name),
         }
     }
@@ -304,13 +386,45 @@ impl WidgetProperties for AutoCompleteEdit {
                 self.set_text(expect_string(value)?);
                 Ok(())
             }
-            "suggestion_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            // Selecting an index is a real write the control already supported through
+            // `set_selected_suggestion`; publishing it makes keyboard-style navigation drivable.
+            "selected_index" => match value {
+                CapabilityValue::Null => {
+                    self.clear_selected_suggestion();
+                    Ok(())
+                }
+                other => {
+                    self.set_selected_suggestion(expect_usize(other)?);
+                    Ok(())
+                }
+            },
+            "max_visible" => {
+                self.set_max_visible(expect_usize(value)?);
+                Ok(())
+            }
+            // Derived or read-only: the two counts describe the list, and the two booleans describe
+            // what the control has already done.
+            "suggestion_count"
+            | "selected_suggestion"
+            | "dropdown_visible"
+            | "can_undo"
+            | "can_redo" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["text", "suggestion_count", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "text",
+            "suggestion_count",
+            "selected_index",
+            "selected_suggestion",
+            "dropdown_visible",
+            "max_visible",
+            "can_undo",
+            "can_redo",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `auto_complete_edit` publishes.
@@ -635,5 +749,69 @@ mod tests {
         let svg = render_to_svg(&mut edit);
         assert!(svg.starts_with("<svg"));
         assert!(svg.ends_with("</svg>"));
+    }
+
+    /// The contract describes the control's *state*, not just the size of its list.
+    ///
+    /// # The defect this pins
+    ///
+    /// `suggestion_count` was the only property, and it is derived: a consumer could count the rows
+    /// but could not ask whether the dropdown was open, which row was highlighted, or whether an undo
+    /// was available — all three of which the control already knew.
+    #[test]
+    fn the_contract_reports_the_dropdown_and_highlight_state() {
+        use crate::widget::capability::WidgetProperties;
+
+        let mut edit = AutoCompleteEdit::new(Rect::new(0, 0, 200, 30));
+        assert_eq!(edit.get("dropdown_visible").unwrap().as_bool(), Some(false));
+        assert_eq!(edit.get("selected_index").unwrap(), CapabilityValue::Null);
+        assert_eq!(edit.get("selected_suggestion").unwrap(), CapabilityValue::Null);
+        assert_eq!(edit.get("max_visible").unwrap().as_u64(), Some(5));
+        assert_eq!(edit.get("can_undo").unwrap().as_bool(), Some(false));
+
+        edit.add_suggestion("Alpha".to_string());
+        edit.add_suggestion("Alpine".to_string());
+        edit.set_text("Al".to_string());
+
+        // Typing opens the dropdown and highlights the first row, which the contract must now show.
+        assert_eq!(edit.get("suggestion_count").unwrap().as_u64(), Some(2));
+        assert_eq!(edit.get("dropdown_visible").unwrap().as_bool(), Some(true));
+        assert_eq!(edit.get("selected_index").unwrap().as_u64(), Some(0));
+        assert_eq!(edit.get("selected_suggestion").unwrap().as_str(), Some("Alpha"));
+
+        // `selected_suggestion` is the *text* of the highlighted row; it follows the index.
+        edit.set("selected_index", CapabilityValue::UInt(1)).unwrap();
+        assert_eq!(edit.get("selected_suggestion").unwrap().as_str(), Some("Alpine"));
+
+        // And `Null` index clears the highlight without closing the list, which is a different fact.
+        edit.set("selected_index", CapabilityValue::Null).unwrap();
+        assert_eq!(edit.get("selected_index").unwrap(), CapabilityValue::Null);
+        assert_eq!(edit.get("dropdown_visible").unwrap().as_bool(), Some(true));
+    }
+
+    /// An index out of range clears the highlight rather than silently selecting a different row.
+    #[test]
+    fn selecting_an_index_out_of_range_clears_the_highlight() {
+        let mut edit = AutoCompleteEdit::new(Rect::new(0, 0, 200, 30));
+        edit.add_suggestion("Alpha".to_string());
+        edit.set_text("Al".to_string());
+        assert_eq!(edit.selected_suggestion(), Some(0));
+
+        edit.set_selected_suggestion(99);
+        assert_eq!(
+            edit.selected_suggestion(),
+            None,
+            "an unreachable index must not leave the previous row highlighted"
+        );
+    }
+
+    /// `max_visible` floors at one, so an open dropdown can never be asked to draw no rows.
+    #[test]
+    fn max_visible_floors_at_one_row() {
+        let mut edit = AutoCompleteEdit::new(Rect::new(0, 0, 200, 30));
+        edit.set_max_visible(0);
+        assert_eq!(edit.max_visible(), 1);
+        edit.set("max_visible", CapabilityValue::UInt(3)).unwrap();
+        assert_eq!(edit.max_visible(), 3);
     }
 }

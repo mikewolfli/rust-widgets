@@ -19,6 +19,9 @@ macro_rules! impl_properties_advanced {
             PropertySchema::new("movable", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tab_min_width", PropertyValueKind::UInt, true, true),
             PropertySchema::new("tab_max_width", PropertyValueKind::UInt, true, true),
+            // Only the horizontal strip reads this: a `West`/`East` strip is not mirrored, because
+            // the side a strip is attached to is a layout decision rather than a reading one.
+            PropertySchema::enumerated("direction", true, true, &["ltr", "rtl"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

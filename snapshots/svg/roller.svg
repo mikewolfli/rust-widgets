@@ -2,7 +2,7 @@
 <!-- control: roller | appearance: dark -->
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
-  <rect x="0" y="0" width="240" height="120" fill="rgba(35,35,35,1.00)" />
+  <rect x="0" y="0" width="240" height="120" fill="rgba(46,46,48,1.00)" />
   <clipPath id="clip_0"><rect x="0" y="0" width="240" height="120" /></clipPath>
   <g clip-path="url(#clip_0)">
   <rect x="0" y="46" width="240" height="28" fill="rgba(100,181,246,1.00)" />

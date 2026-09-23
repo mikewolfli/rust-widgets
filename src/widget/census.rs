@@ -268,6 +268,23 @@ pub fn census_all_controls() -> Vec<ControlCensus> {
         select(AppearanceMode::Light);
         let light_background = active_background();
         crate::theme::apply_active_theme(&mut *widget);
+
+        // Give the data-bearing controls their content, exactly as the SVG export does.
+        //
+        // # Why the census wants this too
+        //
+        // `AppearanceCensus::detail` is documented as "text/border/icon presence" — a *proxy* for
+        // "this control has something in it". An empty table satisfies P1 (its frame is paint) and
+        // reports `detail` from its border alone, so the baseline recorded a number that could not
+        // distinguish "the table drew its rows" from "the table drew its frame". Filling the sample
+        // data makes that column measure the thing it is named after.
+        //
+        // The control is filled **after** the theme is applied and **before** the first render, so both
+        // appearances see the same content — which is what keeps the light/dark comparison a comparison
+        // of the theme rather than of two different datasets.
+        #[cfg(full_widgets)]
+        crate::widget::sample_fill::apply(name, widget.as_mut());
+
         let light = render_one(&mut *widget, CENSUS_PROBE_BACKGROUND);
         // Second reading of the same theme/instance, composited over the surface the
         // control actually sits on. This is what P2 needs: a control that fills with

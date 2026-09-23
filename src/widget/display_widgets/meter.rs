@@ -589,9 +589,16 @@ impl Draw for Meter {
         // own colour to encode a range, so those are data, not chrome.
         let style = self.style().clone();
         let theme = crate::style::resolved_theme_style("meter");
-        let accent = style
-            .background_color
-            .or_else(|| crate::style::semantic_color(crate::style::SemanticColor::Info))
+        // The accent the gauge's value arc is drawn in. It is **not** read from
+        // `style.background_color`: this control classifies as `WidgetRole::Accent`, so that field
+        // carries the accent the role assigned it — but a role's fill is also what a *container*
+        // would carry, and `Surface` now resolves to `surface_container` rather than to the window
+        // fill. Reading the role's fill here would therefore make the arc's colour depend on which
+        // role the surface table happens to give a meter, which is not a fact about a meter. The
+        // semantic token is the direct answer, and the role fill is the fallback for a theme that
+        // sets none.
+        let accent = crate::style::semantic_color(crate::style::SemanticColor::Info)
+            .or(style.background_color)
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
             .unwrap_or(Color::rgb(0, 120, 215));
         let track_color = style
@@ -1118,6 +1125,21 @@ mod tests {
 
     #[test]
     fn meter_draws_with_thresholds_and_labels_without_panicking() {
+        // # Why this test takes the theme guard
+        //
+        // It renders the meter and then looks for the **needle's** colour in the pixels, and the needle
+        // colour is derived from the process-wide active theme (`needle_color_on(&accent, &meter_surface)`
+        // inside `draw`). A test that switches the theme concurrently can therefore land between this
+        // test's own read and the render — the assertion then looks for one theme's needle in another
+        // theme's picture, and fails. Measured: 2 failures in 6 full-suite runs before the guard, 0 in 15
+        // after. The guard is the crate's existing answer to exactly this (see its own doc), and taking it
+        // for a *read* of shared mutable state is the same requirement as taking it for a write.
+        //
+        // Gated on `device_profile` because that is what compiles the theme registry at all: the stripped
+        // profiles have `theme_manager()` as a placeholder, so there is nothing to serialise against and
+        // no guard to take.
+        #[cfg(device_profile)]
+        let _guard = crate::theme::theme_test_guard();
         let mut meter = Meter::new(Rect::new(0, 0, 200, 200));
         meter.set_value(72);
         meter.set_unit("°C");

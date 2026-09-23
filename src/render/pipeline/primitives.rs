@@ -636,8 +636,17 @@ impl SoftwareSurface {
         let glyph_height = metrics.height.max(1) as i32;
         let size = self.buffer.size();
         let clip = self.current_clip();
+        // The tracking is a **gap between clusters**, not a trailing space: paying it after the last
+        // cluster would make a centred label sit left of centre and a right-aligned one fall short of
+        // its box. `shape_text` counts `clusters.len() - 1` gaps for the same reason, so the two
+        // readings of one run agree.
+        //
+        // Read before the frame borrow below, because `dpi_scale` borrows `self` immutably.
+        let scale = self.dpi_scale();
+        let tracking = font.letter_spacing() * scale;
+        let last_index = shaped.clusters().len().saturating_sub(1);
         let frame = self.buffer.back_mut();
-        for cluster in shaped.clusters() {
+        for (index, cluster) in shaped.clusters().iter().enumerate() {
             let glyph_width = cluster.advance.max(1.0).round() as i32;
             let display_char = cluster
                 .text
@@ -659,6 +668,9 @@ impl SoftwareSurface {
                 draw_bitmap_glyph(&mut config);
             }
             pen_x += cluster.advance;
+            if index < last_index {
+                pen_x += tracking;
+            }
         }
     }
     /// Draws an RGBA image at the specified position and size.

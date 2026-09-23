@@ -20,7 +20,9 @@ use crate::layout::{
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::EdgeOffsets;
-use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::coercion::{
+    expect_string, expect_text_direction, text_direction_to_str,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -210,6 +212,21 @@ pub struct Menu {
     pub about_to_show: GenericSignal,
     /// Emitted just before the menu is hidden, from [`Self::hide`].
     pub about_to_hide: GenericSignal,
+    /// The writing direction the menu's *horizontal* arrow keys follow.
+    ///
+    /// # Why a vertical list still needs this
+    ///
+    /// A menu of entries runs top to bottom, which no script reverses — `Up`/`Down` walk the list in
+    /// every locale. But a menu is also the child of a menu **bar**, and the left/right pair is what
+    /// steps between a bar's drop-downs and into a submenu. Those two directions *are* a line of text
+    /// direction, so in an Arabic or Hebrew interface `Right` means "the previous entry" and `Left`
+    /// means "the next", the opposite of the Latin reading.
+    ///
+    /// The field therefore governs the horizontal pair only; [`Self::move_hovered_vertically`] ignores
+    /// it deliberately.
+    ///
+    /// Defaults to left-to-right, so a menu that never asks behaves exactly as it did.
+    direction: crate::core::TextDirection,
 }
 impl Menu {
     /// Creates a menu titled `title`, initially **hidden**.
@@ -230,6 +247,7 @@ impl Menu {
             triggered_index: Signal1::new(),
             about_to_show: GenericSignal::new(),
             about_to_hide: GenericSignal::new(),
+            direction: crate::core::TextDirection::default(),
         };
         // A menu is a popup, so it starts hidden. `BaseWidget` defaults to visible,
         // which is right for a control that owns part of the surface but wrong for
@@ -296,6 +314,101 @@ impl Menu {
     /// The menu's title, drawn as its heading.
     pub fn title(&self) -> &str {
         &self.title
+    }
+
+    /// Returns the writing direction the menu's horizontal arrow keys follow.
+    pub fn direction(&self) -> crate::core::TextDirection {
+        self.direction
+    }
+
+    /// Sets the writing direction the menu's horizontal arrow keys follow, and repaints.
+    ///
+    /// `Left`/`Right` step along a line of reading order, so in a right-to-left interface `Right`
+    /// moves to the **previous** entry and `Left` to the next. `Up`/`Down` are unaffected: a list of
+    /// entries runs down in every locale. See the field for the reasoning.
+    pub fn set_direction(&mut self, direction: crate::core::TextDirection) {
+        if self.direction != direction {
+            self.direction = direction;
+            self.base.request_redraw();
+        }
+    }
+
+    /// Moves the highlight by `delta` entries in reading order, skipping anything that cannot be
+    /// chosen, and reports whether it landed on an enabled entry.
+    ///
+    /// # Why the highlight wraps and skips
+    ///
+    /// A menu whose highlight ran off the end and stopped would make every entry past the first
+    /// ↓ unreachable without a mouse — the wrap is what makes a keyboard-only menu possible. A
+    /// separator has no label to select and a disabled entry cannot be chosen, so both are stepped
+    /// over; stopping *on* one would leave `Enter` doing nothing with no visible explanation.
+    ///
+    /// # Why the entry count, not the index count
+    ///
+    /// The caller passes a delta already expressed in reading order, so this function needs no
+    /// knowledge of the direction. Keeping the conversion at the key handler means the vertical and
+    /// horizontal steps share one implementation and cannot disagree about what "next" means.
+    fn move_hovered_vertically(&mut self, delta: i32) -> bool {
+        let count = self.items.len();
+        if count == 0 || delta == 0 {
+            return false;
+        }
+        // The starting point is the current highlight, or the list edge when nothing is highlighted
+        // and the caller is stepping *toward* the list — so a first `Down` enters at the top and a
+        // first `Up` at the bottom.
+        let start = match self.hovered_index {
+            Some(index) => index as i32,
+            None if delta > 0 => -1,
+            None => count as i32,
+        };
+        let mut index = start;
+        for _ in 0..count {
+            index += delta;
+            if index < 0 {
+                index = count as i32 - 1;
+            } else if index >= count as i32 {
+                index = 0;
+            }
+            let candidate = &self.items[index as usize];
+            if !candidate.is_separator() && candidate.is_enabled() {
+                self.hovered_index = Some(index as usize);
+                self.base.request_redraw();
+                return true;
+            }
+        }
+        // Every entry is a separator or disabled: nothing to select, and the highlight must not be
+        // invented. Returning `false` lets the caller decide whether that is an error.
+        false
+    }
+
+    /// Moves the highlight by one entry in the direction a horizontal arrow key names.
+    ///
+    /// `ArrowRight` steps toward the end of the line in left-to-right and toward its beginning in
+    /// right-to-left, which is the whole content of the direction field as it applies here.
+    fn move_hovered_horizontally(&mut self, arrow_right: bool) -> bool {
+        // "Right" is +1 in left-to-right; the direction's step conversion is exactly the negation
+        // rule, so a third direction would extend one place instead of two.
+        let step = if arrow_right { 1 } else { -1 };
+        let delta = self.direction.begin_step_to_left_step(step);
+        self.move_hovered_vertically(delta)
+    }
+
+    /// Triggers the entry the highlight is on, if it can still be chosen.
+    fn activate_hovered(&mut self) -> bool {
+        let Some(index) = self.hovered_index else {
+            return false;
+        };
+        let Some(item) = self.items.get(index) else {
+            return false;
+        };
+        if item.is_separator() || !item.is_enabled() {
+            return false;
+        }
+        let text = item.text().to_string();
+        self.triggered.emit(text);
+        self.triggered_index.emit(index);
+        self.hide();
+        true
     }
     /// Replaces the title, which the menu draws as its heading.
     ///
@@ -419,12 +532,7 @@ impl Menu {
                 0,
                 0,
             )),
-            EdgeOffsets::new(
-                dimensions::MENU_POPUP_PADDING,
-                0,
-                dimensions::MENU_POPUP_PADDING,
-                0,
-            ),
+            EdgeOffsets::new(dimensions::MENU_POPUP_PADDING, 0, dimensions::MENU_POPUP_PADDING, 0),
             Size::new(0, 0),
         );
         for item in self.items.iter() {
@@ -573,6 +681,9 @@ impl WidgetProperties for Menu {
                 Some(idx) => Ok(CapabilityValue::UInt(idx as u64)),
                 None => Ok(CapabilityValue::Null),
             },
+            "direction" => {
+                Ok(CapabilityValue::String(text_direction_to_str(self.direction()).to_string()))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -583,6 +694,10 @@ impl WidgetProperties for Menu {
                 self.set_title(expect_string(value)?);
                 Ok(())
             }
+            "direction" => {
+                self.set_direction(expect_text_direction(value)?);
+                Ok(())
+            }
             "hovered_index" => Err(CapabilityAccessError::ReadOnlyProperty),
             "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
@@ -590,7 +705,7 @@ impl WidgetProperties for Menu {
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["title", "item_count", "hovered_index", BASE_PROPERTY_NAMES]
+        property_names_of!["title", "item_count", "hovered_index", "direction", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `menu` publishes.
@@ -702,21 +817,41 @@ impl EventHandler for Menu {
                 // the menu is no longer topmost, so nothing further is needed here.
             }
             Event::KeyPress { key, .. } => {
-                if *key == 27 {
-                    self.hide();
-                }
-                // Escape
-                else if *key == 13 {
-                    // Enter — trigger hovered
-                    if let Some(idx) = self.hovered_index {
-                        if let Some(item) = self.items.get(idx) {
-                            if !item.is_separator() && item.is_enabled() {
-                                let text = item.text().to_string();
-                                self.triggered.emit(text);
-                                self.hide();
-                            }
-                        }
+                // Key codes are the framework convention (see `Key::from_key_code`): 27 Escape,
+                // 13/10 Enter, 38 Up, 40 Down, 37 Left, 39 Right, 36 Home, 35 End.
+                match *key {
+                    27 => self.hide(),
+                    10 | 13 => {
+                        // Enter chooses the highlighted entry. An empty highlight (or one that
+                        // cannot be chosen) leaves the menu open, which is what makes a stray Enter
+                        // harmless rather than a dismissal with no selection.
+                        self.activate_hovered();
                     }
+                    38 => {
+                        self.move_hovered_vertically(-1);
+                    }
+                    40 => {
+                        self.move_hovered_vertically(1);
+                    }
+                    // The horizontal pair is the only part of the navigation that follows the
+                    // writing direction; see the `direction` field.
+                    39 => {
+                        self.move_hovered_horizontally(true);
+                    }
+                    37 => {
+                        self.move_hovered_horizontally(false);
+                    }
+                    36 => {
+                        // Home/End jump to the ends of the *list*, which is a vertical walk, so they
+                        // are not mirrored either.
+                        self.move_hovered_vertically(-(self.items.len() as i32));
+                    }
+                    35 => {
+                        self.move_hovered_vertically(self.items.len() as i32);
+                    }
+                    // Any other key belongs to whoever opened the menu; swallowing it here would
+                    // make a menu absorb an application shortcut.
+                    _ => {}
                 }
             }
             _ => { /* Other events are not relevant */ }
@@ -921,6 +1056,8 @@ impl Draw for Menu {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::svg::render_to_svg;
+    use std::sync::{Arc, Mutex};
 
     /// One ink box per text `<path>` in document order, as `(left, top, right, bottom)`.
     ///
@@ -1277,5 +1414,141 @@ mod tests {
             .map(|row| menu.label_box(*row, menu.indicator_box(*row)).x)
             .collect();
         assert_eq!(without, with, "a separator must not move the label columns");
+    }
+
+    /// The highlight must walk the entry list, wrap at both ends, and step over separators.
+    ///
+    /// # The defect this pins
+    ///
+    /// The menu handled Escape and Enter and nothing else, so every entry past the first was
+    /// unreachable without a mouse even though `open_at` pre-selects one "so keyboard navigation has
+    /// a starting point". A selection that no key can move is an affordance that is declared and not
+    /// delivered.
+    #[test]
+    fn arrow_keys_walk_the_entries_and_skip_separators() {
+        let mut menu = context_menu();
+        menu.open_at(Point::new(10, 10), Rect::new(0, 0, 400, 400));
+        // `open_at` pre-selects the first actionable entry.
+        assert_eq!(menu.hovered_index(), Some(0));
+
+        // Down: 0 -> 1 -> (separator skipped) -> 3.
+        menu.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(menu.hovered_index(), Some(1), "Down must move to the next entry");
+        menu.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(menu.hovered_index(), Some(3), "Down must step over the separator");
+        // Down again wraps to the top.
+        menu.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(menu.hovered_index(), Some(0), "Down past the end must wrap");
+
+        // Up wraps the other way, again without landing on the separator.
+        menu.handle_event(&Event::KeyPress { key: 38, modifiers: 0 });
+        assert_eq!(menu.hovered_index(), Some(3), "Up past the start must wrap to the last entry");
+        assert!(menu.is_visible(), "navigating must not dismiss the menu");
+    }
+
+    /// A disabled entry is not a destination: the highlight must step over it too.
+    ///
+    /// Stopping *on* one would leave Enter doing nothing with no visible explanation, which reads as a
+    /// frozen menu rather than a disabled entry.
+    #[test]
+    fn arrow_keys_skip_disabled_entries() {
+        let mut menu = Menu::new("Edit", Rect::new(0, 0, 160, 100));
+        menu.add_action("Cut");
+        let disabled = menu.add_action("Copy");
+        menu.add_action("Paste");
+        menu.set_item_enabled(disabled, false);
+        menu.open_at(Point::new(0, 0), Rect::new(0, 0, 400, 400));
+
+        assert_eq!(menu.hovered_index(), Some(0));
+        menu.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+        assert_eq!(menu.hovered_index(), Some(2), "Down must step over the disabled entry");
+        menu.handle_event(&Event::KeyPress { key: 38, modifiers: 0 });
+        assert_eq!(menu.hovered_index(), Some(0), "and Up must step back over it");
+    }
+
+    /// Enter chooses the highlighted entry; a menu with nothing choosable stays open.
+    #[test]
+    fn enter_activates_the_highlight_and_leaves_an_empty_menu_open() {
+        let mut menu = context_menu();
+        menu.open_at(Point::new(0, 0), Rect::new(0, 0, 400, 400));
+        menu.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+
+        let chosen = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let sink = chosen.clone();
+        menu.triggered_index.connect(move |index| {
+            sink.lock().unwrap().push(*index);
+        });
+        menu.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
+        assert_eq!(*chosen.lock().unwrap(), vec![1], "Enter must trigger the highlighted entry");
+        assert!(!menu.is_visible(), "choosing an entry must dismiss the menu");
+
+        // Nothing highlighted: Enter is inert rather than a dismissal with no selection.
+        let mut empty = Menu::new("Edit", Rect::new(0, 0, 160, 100));
+        empty.add_separator();
+        empty.open_at(Point::new(0, 0), Rect::new(0, 0, 400, 400));
+        assert_eq!(empty.hovered_index(), None, "a separator is not a starting point");
+        empty.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
+        assert!(empty.is_visible(), "Enter with no highlight must leave the menu open");
+    }
+
+    /// Right/Left follow the writing direction; Up/Down do not.
+    ///
+    /// A list of entries runs downward in every locale, but the horizontal pair steps along a line of
+    /// reading order — and a menu is the child of a menu bar, where that pair is what moves between a
+    /// bar's drop-downs and into a submenu. Mirroring the vertical pair instead would make an Arabic
+    /// menu's Up key walk backwards.
+    #[test]
+    fn horizontal_arrows_follow_the_direction_and_vertical_ones_do_not() {
+        for (direction, right_is_forward) in [
+            (crate::core::TextDirection::LeftToRight, true),
+            (crate::core::TextDirection::RightToLeft, false),
+        ] {
+            let mut menu = context_menu();
+            menu.set_direction(direction);
+            menu.open_at(Point::new(0, 0), Rect::new(0, 0, 400, 400));
+            assert_eq!(menu.hovered_index(), Some(0));
+
+            // Key 39 is Right, key 37 is Left.
+            let (key, expected) = if right_is_forward { (39, Some(1)) } else { (39, Some(3)) };
+            menu.handle_event(&Event::KeyPress { key, modifiers: 0 });
+            assert_eq!(
+                menu.hovered_index(),
+                expected,
+                "{direction:?}: Right must move {}",
+                if right_is_forward { "forward" } else { "backward" }
+            );
+
+            // The vertical pair is untouched by the direction: Down always advances a row.
+            let mut vertical = context_menu();
+            vertical.set_direction(direction);
+            vertical.open_at(Point::new(0, 0), Rect::new(0, 0, 400, 400));
+            vertical.handle_event(&Event::KeyPress { key: 40, modifiers: 0 });
+            assert_eq!(
+                vertical.hovered_index(),
+                Some(1),
+                "{direction:?}: Down must advance a row in every locale"
+            );
+        }
+    }
+
+    /// The default must be byte-identical, so a menu that never asks behaves exactly as it did.
+    #[test]
+    fn the_default_menu_is_still_left_to_right() {
+        let mut untouched = context_menu();
+        untouched.open_at(Point::new(0, 0), Rect::new(0, 0, 400, 400));
+        let mut ltr = context_menu();
+        ltr.set_direction(crate::core::TextDirection::LeftToRight);
+        ltr.open_at(Point::new(0, 0), Rect::new(0, 0, 400, 400));
+        assert_eq!(render_to_svg(&mut untouched), render_to_svg(&mut ltr));
+    }
+
+    /// The direction is reachable from the property API with a matching read-back token.
+    #[test]
+    fn the_direction_round_trips_through_the_property_api() {
+        let mut menu = context_menu();
+        assert_eq!(menu.get("direction").unwrap().as_str(), Some("ltr"));
+        menu.set("direction", CapabilityValue::String("rtl".to_string())).unwrap();
+        assert_eq!(menu.direction(), crate::core::TextDirection::RightToLeft);
+        assert_eq!(menu.get("direction").unwrap().as_str(), Some("rtl"));
     }
 }

@@ -327,7 +327,20 @@ impl Draw for ModalBottomSheet {
         // a freshly constructed sheet painted nothing at all; keeping it unconditional gives
         // the control a rendered extent at rest while leaving the sheet itself the opaque
         // element of the open state.
-        let scrim = ink.blend(&sheet_fill, 0.55);
+        //
+        // # Why the theme's `scrim` role is read here
+        //
+        // This used to be `ink.blend(&sheet_fill, 0.55)` — an inline derivation of the very
+        // quantity `Colors::scrim` exists to name. The two are not equivalent: the inline form
+        // blends the *ink* toward the sheet, so on a dark theme it produces a pale veil that
+        // **lightens** the background instead of dimming it, which is the BLUE21 B23 defect stated
+        // in `Colors::scrim`'s own documentation. Reading the role lets a dark theme lighten the
+        // scrim deliberately while a light theme darkens it, and it gives the role the consumer it
+        // was added for. The blend survives only as the fallback for a theme that predates the role.
+        let scrim = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.scrim)
+            .unwrap_or_else(|| ink.blend(&sheet_fill, 0.55));
         let overlay_rect = Rect::new(rect.x, rect.y, rect.width, rect.height);
         context.fill_rect(overlay_rect, scrim);
 

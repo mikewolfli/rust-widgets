@@ -32,6 +32,9 @@ use crate::signal::{GenericSignal, Signal1};
 use crate::style::EdgeOffsets;
 #[cfg(full_widgets)]
 use crate::widget::composite::CompositeBuilder;
+use crate::widget::decorations::{
+    DecorationLayout, DecorationMetrics, DecorationSlots, DECORATION_GAP,
+};
 use crate::widget::metrics::{dimensions, ControlMetrics};
 
 use crate::widget::capability::coercion::{expect_bool, expect_f64, expect_i64, expect_string};
@@ -555,13 +558,35 @@ impl SpinBox {
         }
     }
     /// Returns display text: the special value text, or prefix + number + suffix.
-    fn display_text(&self) -> String {
+    ///
+    /// # Why this is the *announcement* string and not what is drawn
+    ///
+    /// Reading out `$12` is correct — a screen reader should hear the unit. But **drawing** it as one
+    /// string puts the prefix inside the value's glyph run, which makes the value's own origin include
+    /// it: the caret lands after the `$` at position 0, and a select-all would take the `$` with it. The
+    /// painter therefore draws [`Self::value_text`] in the value's box and the two slots in their own,
+    /// while this stays the form a caller announces or logs — which is why it is `pub`.
+    ///
+    /// See [`crate::widget::decorations`] for the full argument.
+    pub fn display_text(&self) -> String {
         if let Some(special) = &self.special_value_text {
             if self.value == self.minimum {
                 return special.clone();
             }
         }
         format!("{}{}{}", self.prefix, self.formatted_value(), self.suffix)
+    }
+
+    /// The text drawn inside the value's own box: the special value text, or just the number.
+    ///
+    /// The slots are **excluded**, which is what makes the value's origin independent of them.
+    fn value_text(&self) -> String {
+        if let Some(special) = &self.special_value_text {
+            if self.value == self.minimum {
+                return special.clone();
+            }
+        }
+        self.formatted_value()
     }
 }
 
@@ -693,6 +718,12 @@ impl WidgetProperties for SpinBox {
             "decimals" => Ok(CapabilityValue::Int(self.decimals() as i64)),
             "prefix" => Ok(CapabilityValue::String(self.prefix().to_string())),
             "suffix" => Ok(CapabilityValue::String(self.suffix().to_string())),
+            // The announcement form: `$12`, or the special text at the minimum. Published because it is
+            // what a caller shows in a log or reads aloud, and re-deriving it from `value` + the two
+            // slots in the consumer is the second derivation this contract exists to remove.
+            "display_text" => Ok(CapabilityValue::String(self.display_text())),
+            // Just the number, without the unit marks — the string the painter puts in the value's box.
+            "value_text" => Ok(CapabilityValue::String(self.value_text())),
             "special_value_text" => match self.special_value_text() {
                 Some(text) => Ok(CapabilityValue::String(text.to_string())),
                 None => Ok(CapabilityValue::Null),
@@ -760,6 +791,9 @@ impl WidgetProperties for SpinBox {
                 self.set_wrapping(expect_bool(value)?);
                 Ok(())
             }
+            // Both are derived from the value and the two slots, so a writer would be a second way to
+            // say something the control already answers — and one of the two could disagree.
+            "display_text" | "value_text" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
@@ -776,6 +810,8 @@ impl WidgetProperties for SpinBox {
             "suffix",
             "special_value_text",
             "wrapping",
+            "display_text",
+            "value_text",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -888,7 +924,8 @@ impl Draw for SpinBox {
         let editable = self.editable_rect();
         let down_button = self.down_button();
         let up_button = self.up_button();
-        let text_x = editable.x + dimensions::TEXT_FIELD_PADDING_H as i32;
+        // The value's own text origin. The slots are laid out *below* from the same `editable` box, so
+        // the value's start is derived once rather than the two being separate sums of the same padding.
         let style = self.style();
         let bg = style.background_color.unwrap_or(Color::rgb(255, 255, 255));
         let text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
@@ -919,19 +956,62 @@ impl Draw for SpinBox {
         // Draw text. The value is bounded to the **editable** box, so it is fitted into the
         // space the button column left instead of being written from the field's leading
         // padding and allowed to run under the buttons.
-        let display_text = self.display_text();
-        if !display_text.is_empty() {
+        //
+        // # Why the slots are drawn separately rather than concatenated
+        //
+        // `display_text()` still produces the announcement form (`$12`), because that is what a screen
+        // reader should hear. What is *painted* is `value_text()` inside the value's own box, with the
+        // prefix in its box on the leading side and the suffix anchored to the trailing one. Drawing the
+        // concatenated string instead put the `$` inside the value's glyph run, so the value's origin
+        // included it — the caret would sit after the `$` at the start of the field, and a select-all
+        // would copy the unit along with the number.
+        let slots = DecorationSlots {
+            prefix: self.prefix.clone(),
+            suffix: self.suffix.clone(),
+            ..Default::default()
+        };
+        let metrics =
+            DecorationMetrics::measure(&slots, |text| context.measure_text(text, font).width);
+        let line_height = font.effective_line_height().max(1.0) as u32;
+        let layout = DecorationLayout::compute(
+            editable,
+            dimensions::TEXT_FIELD_PADDING_H,
+            line_height,
+            DECORATION_GAP,
+            metrics,
+            0,
+            &slots,
+        );
+        let value_text = self.value_text();
+        if !value_text.is_empty() {
             let line = context.text_line(editable, font);
             context.draw_text_fitted(
-                Rect::new(
-                    text_x,
-                    line.y,
-                    editable.width.saturating_sub((text_x - editable.x) as u32),
-                    line.height,
-                ),
-                &display_text,
+                Rect::new(layout.value.x, line.y, layout.value.width, line.height),
+                &value_text,
                 font,
                 text_color,
+                HorizontalAlignment::Left,
+            );
+        }
+        // The slots are chrome, not content, so they are drawn a step toward the field's own fill —
+        // the same "less prominent than the value" reading `lineedit` uses for the same two slots.
+        let slot_color = text_color.blend(&bg, 0.35);
+        let line = context.text_line(editable, font);
+        if let Some(prefix_box) = layout.prefix {
+            context.draw_text(
+                Point::new(prefix_box.x, line.y),
+                &self.prefix,
+                font,
+                slot_color,
+                HorizontalAlignment::Left,
+            );
+        }
+        if let Some(suffix_box) = layout.suffix {
+            context.draw_text(
+                Point::new(suffix_box.x, line.y),
+                &self.suffix,
+                font,
+                slot_color,
                 HorizontalAlignment::Left,
             );
         }
@@ -1017,6 +1097,108 @@ mod tests {
         assert_eq!(sb.suffix(), " USD");
         sb.set_prefix(String::new());
         assert!(sb.prefix().is_empty());
+    }
+
+    /// The two forms differ: the announcement string carries the unit marks, and the drawn value does
+    /// not.
+    ///
+    /// # The defect this pins
+    ///
+    /// The painter used the concatenated string, so the value's own glyph run contained the `$` — which
+    /// made the value's origin include it. That is the same string a caret would be measured against, so
+    /// on a spin box it was invisible (there is no caret), but it made `value_text` and `display_text` the
+    /// same thing, and the two are genuinely different statements: one is read out, one is drawn.
+    #[test]
+    fn the_announcement_string_carries_the_units_and_the_drawn_value_does_not() {
+        use crate::widget::capability::WidgetProperties;
+
+        let mut sb = SpinBox::new(Rect::new(0, 0, 100, 24));
+        sb.set_value(12);
+        assert_eq!(sb.value_text(), "12", "the drawn value is the number alone");
+        assert_eq!(sb.display_text(), "12", "and with no units the two agree");
+
+        sb.set_prefix("$".to_string());
+        sb.set_suffix(" USD".to_string());
+        assert_eq!(sb.value_text(), "12", "the units are not part of the value");
+        assert_eq!(sb.display_text(), "$12 USD", "but they are part of the announcement");
+
+        // Both are reachable through the contract, and neither is writable.
+        assert_eq!(sb.get("display_text").unwrap().as_str(), Some("$12 USD"));
+        assert_eq!(sb.get("value_text").unwrap().as_str(), Some("12"));
+        assert!(sb.set("display_text", CapabilityValue::String("x".into())).is_err());
+        assert!(sb.set("value_text", CapabilityValue::String("x".into())).is_err());
+    }
+
+    /// The prefix is drawn to the **left** of the value and the suffix to its right, as two runs.
+    ///
+    /// This is what makes the slots chrome rather than content, and it is readable from the SVG: three
+    /// separate `draw_text` calls produce three paths, and their order on the x axis is the layout.
+    #[test]
+    fn the_slots_are_drawn_on_either_side_of_the_value() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 200, 24));
+        sb.set_value(7);
+        sb.set_prefix("$".to_string());
+        sb.set_suffix("%".to_string());
+        let svg = crate::widget::svg::render_to_svg(&mut sb);
+
+        let mut runs = crate::widget::svg::text_ink_boxes(&svg);
+        runs.sort_by_key(|b| b.0);
+        assert_eq!(runs.len(), 3, "a prefix, a value and a suffix are three runs: {runs:?}");
+        // Read left to right the order is prefix, value, suffix.
+        assert!(
+            runs[0].2 <= runs[1].0,
+            "the prefix ({:?}) must end before the value ({:?}) begins",
+            runs[0],
+            runs[1]
+        );
+        assert!(
+            runs[1].2 <= runs[2].0,
+            "the value ({:?}) must end before the suffix ({:?}) begins",
+            runs[1],
+            runs[2]
+        );
+        // And with no slots at all there is exactly one run, so the slots are what added the others.
+        let mut bare = SpinBox::new(Rect::new(0, 0, 200, 24));
+        bare.set_value(7);
+        let bare_svg = crate::widget::svg::render_to_svg(&mut bare);
+        assert_eq!(crate::widget::svg::text_ink_boxes(&bare_svg).len(), 1);
+    }
+
+    /// A prefix wide enough to consume the field's inner box leaves the value **no room**, and the clamp
+    /// is what stops the two from overlapping.
+    ///
+    /// # Why the assertion is "one run", not "two runs that do not overlap"
+    ///
+    /// The prefix is 17 characters in a field whose editable box is roughly 170 px wide at this font, so
+    /// the prefix legitimately takes all of it. The value's box then clamps to zero width and nothing is
+    /// painted for it — which *is* the no-overlap guarantee, expressed as "the second run was not drawn"
+    /// rather than as "the second run was drawn somewhere harmless". Asserting two runs would be asserting
+    /// that the value was painted on top of the prefix.
+    #[test]
+    fn a_prefix_wide_enough_to_fill_the_field_leaves_the_value_no_room() {
+        let mut sb = SpinBox::new(Rect::new(0, 0, 200, 24));
+        sb.set_value(7);
+        assert_eq!(sb.value_text(), "7");
+
+        let mut bare = SpinBox::new(Rect::new(0, 0, 200, 24));
+        bare.set_value(7);
+        let bare_runs =
+            crate::widget::svg::text_ink_boxes(&crate::widget::svg::render_to_svg(&mut bare));
+        assert_eq!(bare_runs.len(), 1, "the value is drawn when nothing squeezes it");
+
+        sb.set_prefix("a-very-long-prefix".to_string());
+        let runs = crate::widget::svg::text_ink_boxes(&crate::widget::svg::render_to_svg(&mut sb));
+        assert_eq!(
+            runs.len(),
+            1,
+            "the value's box clamped to zero width, so only the prefix has ink: {runs:?}"
+        );
+        // And what was drawn starts at or after the field's padding — nothing was pushed off the leading
+        // edge.
+        assert!(
+            runs[0].0 >= sb.editable_rect().x + dimensions::TEXT_FIELD_PADDING_H as i32,
+            "the prefix must not escape the field: {runs:?}"
+        );
     }
 
     #[test]
@@ -1426,34 +1608,38 @@ mod tests {
         }
     }
 
-    /// A band narrower than the step column overhangs; neither column is given a size it did not ask
-    /// for.
+    /// A band narrower than the step column keeps both columns inside it.
     ///
-    /// # What this pins
+    /// # What this pins (and what G-1 changed)
     ///
     /// The step column is 40 px (two 20 px buttons) and the value column's floor is the field's own
-    /// padding, so a 30 px band cannot hold both. This is the layout's declared refusal — a child is
-    /// never squeezed below its own floor, so a row that cannot fit overhangs — inherited here
-    /// rather than worked around, and it is pinned so the behaviour is a decision on record. The
-    /// alternative (capping the value column at the room that is left) was tried on `split_button`
-    /// and reverted for the same reason: it does not make the row fit, it just hides the failure by
-    /// giving a child a size below its own floor. See BLUE22 · G-1.
+    /// padding, so a 30 px band cannot hold both at those sizes — arithmetic, not a bug.
     ///
-    /// The case is not reachable from a real form: a spin box's `size_hint` floor is 40 px of column
-    /// plus twice the field padding, i.e. wider than the column alone.
+    /// Before G-1 was resolved the value column kept its floor and the step column was pushed past
+    /// the band's trailing edge, which on the SVG backend means **no step buttons in the picture at
+    /// all** rather than step buttons that overflow. The teardown of a numeric field that silently
+    /// loses its steppers is exactly the kind of loss that is worse than a compressed control, so
+    /// the assertion is containment.
+    ///
+    /// The case is not reachable from a real form: a spin box's `size_hint` floor is the whole
+    /// column plus twice the field padding, which is wider than this band.
     #[test]
-    fn a_band_narrower_than_the_step_column_overhangs() {
+    fn a_band_narrower_than_the_step_column_keeps_both_inside_it() {
         let width = 30u32;
         let sb = SpinBox::new(Rect::new(0, 0, width, 120));
+        let band = sb.row_band();
+        let value = sb.editable_rect();
         let column = sb.button_column();
-        assert!(
-            column.width > 0,
-            "the step column is still drawn rather than collapsing to nothing"
-        );
-        assert!(
-            column.x + column.width as i32 > sb.row_band().x + width as i32,
-            "and it overhangs the band rather than squeezing the value below its own floor: {column:?}"
-        );
+        for (label, rect) in [("value", value), ("step column", column)] {
+            assert!(
+                rect.x >= band.x && rect.x + rect.width as i32 <= band.x + band.width as i32,
+                "the {label} must stay inside the band: {rect:?} in {band:?}"
+            );
+            assert!(rect.width > 0, "and neither is dropped: the {label} is {rect:?}");
+        }
+        // They still tile the band: the value yields to the column, which is the control's relation.
+        assert_eq!(value.x + value.width as i32, column.x, "the two boxes share an edge");
+        assert_eq!(value.width + column.width, width, "and they account for the band");
     }
 
     /// The two step buttons tile the column and never overlap each other.

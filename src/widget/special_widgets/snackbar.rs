@@ -278,11 +278,29 @@ impl Draw for Snackbar {
         let background = resolved.blend(&text_color, 0.08);
         // The floating bar is the control's own emphasis surface: a first step away
         // from the panel, so it stays distinct in either appearance.
-        let bar_background = background.blend(&text_color, 0.85);
+        //
+        // # Why the theme's `inverse_surface` / `on_inverse_surface` pair is read here
+        //
+        // A snackbar deliberately **inverts** — it is the one surface in a window that is meant to
+        // read as "above" the rest by being the opposite of it — and that inversion used to be two
+        // inline blends of the panel's own colours (`background.blend(&text_color, 0.85)` for the
+        // bar and the reverse for its text). The pair is what names that intent, and it is not
+        // equivalent to the blend: a theme that wants its snackbar to *not* invert (a high-contrast
+        // or print theme) can now say so, where the blend could only ever produce the inverted
+        // pair. The blends survive as the fallback for a theme that predates the roles.
+        let (inverse_surface, on_inverse_surface) = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| (active.colors.inverse_surface, active.colors.on_inverse_surface))
+            .unwrap_or_else(|| {
+                let surface = background.blend(&text_color, 0.85);
+                let on_surface = surface.blend(&background, 0.92);
+                (surface, on_surface)
+            });
+        let bar_background = inverse_surface;
         let bar_border = bar_background.blend(&text_color, 0.18);
-        // Text on the bar is pushed back toward the panel, which is the reading the
-        // literal pair encoded (dark bar, near-white text) without hardcoding it.
-        let bar_text = bar_background.blend(&background, 0.92);
+        // Text on the bar is the role's own paired ink, which is the reading the literal pair
+        // encoded (dark bar, near-white text) without hardcoding either end.
+        let bar_text = on_inverse_surface;
         // The action is a brand action, so it reads the theme's primary token rather
         // than a literal blue.
         let action_background = crate::style::resolved_theme_style("button")

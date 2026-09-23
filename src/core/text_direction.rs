@@ -160,4 +160,41 @@ mod tests {
         assert_eq!(TextDirection::LeftToRight.begin_step_to_left_step(-1), -1);
         assert_eq!(TextDirection::RightToLeft.begin_step_to_left_step(-1), 1);
     }
+
+    /// Mirroring the fraction and then mirroring the *step* compose into the same thing as
+    /// mirroring the role: the maximum ends up wherever the minimum used to be, and the step that
+    /// walks toward it flips sign exactly once.
+    ///
+    /// # Why this is stated as an invariant rather than as four examples
+    ///
+    /// Two conversions exist (fraction and step) and each is written with its own `match`, so
+    /// nothing in the type stops one of them from being extended to a third direction with the
+    /// *other* one left behind. The composition check pins the pair together: whoever adds an arm
+    /// has to make both agree, and the failure is a test rather than an off-by-a-sign handle that
+    /// only appears in an Arabic locale.
+    #[test]
+    fn mirroring_the_line_and_the_step_agree() {
+        for direction in [TextDirection::LeftToRight, TextDirection::RightToLeft] {
+            let flipped = if direction.is_right_to_left() {
+                TextDirection::LeftToRight
+            } else {
+                TextDirection::RightToLeft
+            };
+            // "The beginning" of one frame is "the end" of the other.
+            assert_eq!(
+                direction.begin_fraction_to_left_fraction(0.0),
+                flipped.begin_fraction_to_left_fraction(1.0)
+            );
+            assert_eq!(
+                direction.begin_fraction_to_left_fraction(1.0),
+                flipped.begin_fraction_to_left_fraction(0.0)
+            );
+            // A step toward the maximum in one frame walks toward the minimum in the other.
+            assert_eq!(
+                direction.begin_step_to_left_step(1),
+                -flipped.begin_step_to_left_step(1),
+                "{direction:?} and {flipped:?} must disagree about which way is forward"
+            );
+        }
+    }
 }

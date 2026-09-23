@@ -12,7 +12,9 @@ use crate::core::{Color, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-use crate::widget::capability::coercion::expect_f64;
+use crate::widget::capability::coercion::{
+    expect_f64, expect_text_direction, text_direction_to_str,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -44,11 +46,40 @@ pub struct RangeSlider {
     step: f64,
     orientation: RangeSliderOrientation,
     min_range: f64,
+    /// The writing direction the horizontal value axis runs in.
+    ///
+    /// A range selector's two handles sit on a line, and "the lower value is nearer the start" is a
+    /// statement about the *reading* order of that line. In an Arabic or Hebrew interface the line
+    /// begins at the right, so the lower handle belongs on the right and dragging toward it means
+    /// dragging right — otherwise the handles move the opposite way from the numbers they show.
+    ///
+    /// The vertical axis is not affected: the block axis runs top-to-bottom in every direction.
+    /// Defaults to left-to-right, so a selector that never asks behaves exactly as it did.
+    direction: crate::core::TextDirection,
     /// Emitted when the range (lower, upper) changes.
     pub range_changed: Signal1<(f64, f64)>,
     /// Which handle is currently being dragged: None, Some(true) for lower, Some(false) for upper.
     dragging: Option<bool>,
 }
+
+/// The radius of a range slider's handle, in logical pixels.
+///
+/// # Why this is a named constant and not a local `8`
+///
+/// The value was spelled four times: in `value_to_pixel`, in `pixel_to_value`, as the drawn radius,
+/// and again in the hit test's own `10`. That is the BLUE22 §4.3 defect class — the two conversions
+/// and the two drawing paths each deriving one inset from their own literal — and it is what made a
+/// click on a handle return a different value from the one the handle was drawn at. One name means
+/// the drawn disc, its hit area and both mappings cannot disagree.
+pub const RANGE_SLIDER_HANDLE_RADIUS: u32 = 8;
+
+/// How much larger than the handle the clickable area is.
+///
+/// A touch target may be kinder than the mark it belongs to — that is what
+/// [`dimensions::TOUCH_TARGET_MIN`] is for — but it must be expressed as a **relation to the
+/// handle**, not as a second absolute number. `is_handle_hit` used to carry its own `let handle_radius
+/// = 10i32`, so widening the drawn handle would silently have narrowed its hit area's margin.
+pub const RANGE_SLIDER_HIT_SLOP: u32 = 2;
 
 impl RangeSlider {
     /// Creates a new RangeSlider with the given geometry.
@@ -62,8 +93,9 @@ impl RangeSlider {
             lower_value: 25.0,
             upper_value: 75.0,
             step: 1.0,
-            orientation: RangeSliderOrientation::Horizontal,
+            orientation: RangeSliderOrientation::default(),
             min_range: 0.0,
+            direction: crate::core::TextDirection::default(),
             range_changed: Signal1::new(),
             dragging: None,
         }
@@ -191,6 +223,41 @@ impl RangeSlider {
         self.min_range
     }
 
+    /// Returns the writing direction the horizontal value axis runs in.
+    pub fn direction(&self) -> crate::core::TextDirection {
+        self.direction
+    }
+
+    /// Returns the axis the selector's track runs along.
+    pub fn orientation(&self) -> RangeSliderOrientation {
+        self.orientation
+    }
+
+    /// Sets the axis the selector's track runs along, and repaints.
+    ///
+    /// # Why this exists
+    ///
+    /// The field was constructible only through the default, so a vertical range selector was
+    /// unreachable from the public API even though `draw`, both coordinate mappings and the hit test
+    /// all had a vertical arm. That is the "declared but unreachable" shape principle #22 forbids, and
+    /// it is why the vertical arm had no test: nothing could put the control in that state.
+    pub fn set_orientation(&mut self, orientation: RangeSliderOrientation) {
+        self.orientation = orientation;
+        self.base.request_redraw();
+    }
+
+    /// Sets the writing direction the horizontal value axis runs in, and repaints.
+    ///
+    /// A right-to-left selector places the *lower* value at the right edge, because that is where its
+    /// line begins — so both the handles' positions and the mapping from a click's x-coordinate flip
+    /// together. They flip through the same inset
+    /// ([`RangeSlider::track_begin_and_length`] plus [`crate::core::TextDirection`]), which is the
+    /// property that stops a click on a handle from returning a different value from the one drawn.
+    pub fn set_direction(&mut self, direction: crate::core::TextDirection) {
+        self.direction = direction;
+        self.base.request_redraw();
+    }
+
     /// Sets the minimum allowed range between handles.
     pub fn set_min_range(&mut self, min_range: f64) {
         self.min_range = min_range.max(0.0);
@@ -208,60 +275,89 @@ impl RangeSlider {
     }
 
     /// Converts a value to pixel position on the track.
+    ///
+    /// # Why the two directions share one derivation
+    ///
+    /// This and [`Self::pixel_to_value`] are inverses, so they must measure the track from the same
+    /// inset — the handle's own radius, because a handle is a disc and its centre must never travel
+    /// closer than that to either end. Both used to spell the inset as a local `8i32`, and `draw` and
+    /// `is_handle_hit` spell it a third and fourth time; BLUE22 §4.3 records the same defect in
+    /// `slider` (half a handle one way, a full width the other, so a click on the handle returned a
+    /// different value from the one drawn). The two conversions are therefore expressed **through one
+    /// pair of helpers**, and the inset has one name.
     fn value_to_pixel(&self, value: f64, rect: &Rect) -> i32 {
-        let handle_radius = 8i32;
-        let track_start = rect.x + handle_radius;
-        let track_end = rect.x + rect.width as i32 - handle_radius;
-        let track_length = (track_end - track_start) as f64;
-        if self.orientation == RangeSliderOrientation::Horizontal {
-            if (self.max_value - self.min_value).abs() < f64::EPSILON {
-                return track_start;
+        let (begin, length) = self.track_begin_and_length(rect);
+        if (self.max_value - self.min_value).abs() < f64::EPSILON {
+            return begin;
+        }
+        let ratio = (value - self.min_value) / (self.max_value - self.min_value);
+        // The horizontal axis runs in **reading order**: a value is placed from the beginning of the
+        // line, which is the right edge in an RTL locale. `TextDirection` is the one conversion
+        // between "a fraction along the line" and "a fraction from the left edge".
+        match self.orientation {
+            RangeSliderOrientation::Horizontal => {
+                let left_ratio = self.direction.begin_fraction_to_left_fraction(ratio as f32);
+                begin + (length as f64 * left_ratio as f64) as i32
             }
-            let ratio = (value - self.min_value) / (self.max_value - self.min_value);
-            track_start + (track_length * ratio) as i32
-        } else {
-            // Vertical: bottom is min, top is max
-            let track_start_v = rect.y + handle_radius;
-            let track_end_v = rect.y + rect.height as i32 - handle_radius;
-            let track_length_v = (track_end_v - track_start_v) as f64;
-            if (self.max_value - self.min_value).abs() < f64::EPSILON {
-                return track_end_v;
-            }
-            let ratio = (value - self.min_value) / (self.max_value - self.min_value);
-            track_end_v - (track_length_v * ratio) as i32
+            // The block axis is not a reading direction, so the vertical arm does not consult the
+            // direction at all — the same rule `slider` and `progress_bar` apply.
+            RangeSliderOrientation::Vertical => begin + length - (length as f64 * ratio) as i32,
         }
     }
 
-    /// Converts a pixel position to a value on the track.
+    /// Converts a pixel position to a value on the track (the inverse of [`Self::value_to_pixel`]).
     fn pixel_to_value(&self, pos: i32, rect: &Rect) -> f64 {
-        let handle_radius = 8i32;
-        if self.orientation == RangeSliderOrientation::Horizontal {
-            let track_start = rect.x + handle_radius;
-            let track_end = rect.x + rect.width as i32 - handle_radius;
-            let track_length = (track_end - track_start) as f64;
-            if track_length <= 0.0 {
-                return self.min_value;
+        let (begin, length) = self.track_begin_and_length(rect);
+        if length <= 0 {
+            return self.min_value;
+        }
+        let end = begin + length;
+        let clamped = pos.clamp(begin.min(end), begin.max(end));
+        let begin_ratio = match self.orientation {
+            RangeSliderOrientation::Horizontal => {
+                let left_ratio = (clamped - begin) as f64 / length as f64;
+                self.direction.left_fraction_to_begin_fraction(left_ratio as f32) as f64
             }
-            let clamped_pos = pos.clamp(track_start, track_end);
-            let ratio = (clamped_pos - track_start) as f64 / track_length;
-            self.min_value + ratio * (self.max_value - self.min_value)
-        } else {
-            let track_start = rect.y + handle_radius;
-            let track_end = rect.y + rect.height as i32 - handle_radius;
-            let track_length = (track_end - track_start) as f64;
-            if track_length <= 0.0 {
-                return self.min_value;
+            RangeSliderOrientation::Vertical => (end - clamped) as f64 / length as f64,
+        };
+        self.min_value + begin_ratio * (self.max_value - self.min_value)
+    }
+
+    /// The track's **beginning** and its usable length, in pixels along its axis.
+    ///
+    /// The beginning is the coordinate the *minimum value* sits at when the direction is
+    /// left-to-right and the axis is horizontal; for the vertical axis it is the **top** edge, which
+    /// is where the maximum sits — the vertical arm's own value-to-position mapping accounts for that,
+    /// so both conversions can share one origin and one length without either re-deriving the inset.
+    ///
+    /// The inset is the handle's own radius at both ends, so the disc never overhangs the track — the
+    /// property §4.3 says the two conversions must agree about.
+    fn track_begin_and_length(&self, rect: &Rect) -> (i32, i32) {
+        let r = RANGE_SLIDER_HANDLE_RADIUS as i32;
+        match self.orientation {
+            RangeSliderOrientation::Horizontal => {
+                let begin = rect.x + r;
+                let end = rect.x + rect.width as i32 - r;
+                (begin, (end - begin).max(0))
             }
-            let clamped_pos = pos.clamp(track_start, track_end);
-            let ratio = (track_end - clamped_pos) as f64 / track_length;
-            self.min_value + ratio * (self.max_value - self.min_value)
+            RangeSliderOrientation::Vertical => {
+                let begin = rect.y + r;
+                let end = rect.y + rect.height as i32 - r;
+                (begin, (end - begin).max(0))
+            }
         }
     }
 
     /// Checks if a point is within a handle's hit area.
+    ///
+    /// The centre comes from [`Self::value_to_pixel`] — the same function the paint path uses — so a
+    /// click is answered by the handle that was *drawn*, not by a second derivation of where it ought
+    /// to be. The radius is the drawn radius plus [`RANGE_SLIDER_HIT_SLOP`], which is how a touch
+    /// target is widened here: a relation to the mark, so changing the mark cannot silently shrink the
+    /// margin.
     fn is_handle_hit(&self, pos: Point, rect: &Rect, is_lower: bool) -> bool {
         let value = if is_lower { self.lower_value } else { self.upper_value };
-        let handle_radius = 10i32; // hit area radius
+        let handle_radius = (RANGE_SLIDER_HANDLE_RADIUS + RANGE_SLIDER_HIT_SLOP) as i32;
         let cx = self.value_to_pixel(value, rect);
         let cy = if self.orientation == RangeSliderOrientation::Horizontal {
             rect.y + rect.height as i32 / 2
@@ -311,6 +407,16 @@ impl WidgetProperties for RangeSlider {
             "max_value" => Ok(CapabilityValue::Float(self.max_value())),
             "lower" => Ok(CapabilityValue::Float(self.lower_value())),
             "upper" => Ok(CapabilityValue::Float(self.upper_value())),
+            "orientation" => Ok(CapabilityValue::String(
+                match self.orientation() {
+                    RangeSliderOrientation::Horizontal => "horizontal",
+                    RangeSliderOrientation::Vertical => "vertical",
+                }
+                .to_string(),
+            )),
+            "direction" => {
+                Ok(CapabilityValue::String(text_direction_to_str(self.direction()).to_string()))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -333,12 +439,39 @@ impl WidgetProperties for RangeSlider {
                 self.set_upper_value(expect_f64(value)?);
                 Ok(())
             }
+            "orientation" => {
+                let token = match value {
+                    CapabilityValue::String(ref v) => crate::compat::String::to_string(v),
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                };
+                // Matched here rather than through `expect_orientation`, because the range
+                // selector has its own orientation enum: sharing the parser would force a
+                // conversion at every call site and one more place for the two to drift.
+                match crate::widget::capability::coercion::normalize_key(&token).as_str() {
+                    "horizontal" => self.set_orientation(RangeSliderOrientation::Horizontal),
+                    "vertical" => self.set_orientation(RangeSliderOrientation::Vertical),
+                    _ => return Err(CapabilityAccessError::TypeMismatch),
+                }
+                Ok(())
+            }
+            "direction" => {
+                self.set_direction(expect_text_direction(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["min_value", "max_value", "lower", "upper", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "min_value",
+            "max_value",
+            "lower",
+            "upper",
+            "orientation",
+            "direction",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `range_slider` publishes.
@@ -358,7 +491,9 @@ impl Draw for RangeSlider {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
-        let handle_radius = 8u32;
+        // The drawn radius is the same constant both conversions and the hit test measure their inset
+        // from, so the disc, the track's ends and a click's answer are one derivation.
+        let handle_radius = RANGE_SLIDER_HANDLE_RADIUS;
 
         // Chrome colours resolve the explicit style first, then the theme's resolved style for
         // this control, and only then fall back to a literal. Every colour below used to be a
@@ -644,5 +779,134 @@ mod tests {
         let svg = render_to_svg(&mut rs);
         assert!(svg.starts_with("<svg"));
         assert!(svg.ends_with("</svg>"));
+    }
+
+    /// A right-to-left selector puts the lower value at the **right** edge.
+    ///
+    /// # What this pins
+    ///
+    /// BLUE22 · F-4. A range selector's two handles sit on a line, and "the lower value is nearer the
+    /// start" is a statement about that line's reading order. In an Arabic or Hebrew locale the line
+    /// begins at the right, so the lower handle belongs on the right; without this the handles moved
+    /// the opposite way from the numbers they show, which is not a translation defect but a wrong
+    /// reading of the same control.
+    #[test]
+    fn a_right_to_left_selector_mirrors_its_handles() {
+        let rect = Rect::new(0, 0, 300, 40);
+        let mut ltr = RangeSlider::new(rect);
+        ltr.set_range(0.0, 100.0);
+        ltr.set_lower_value(25.0);
+        ltr.set_upper_value(75.0);
+        let (ltr_lower, ltr_upper) =
+            (ltr.value_to_pixel(25.0, &rect), ltr.value_to_pixel(75.0, &rect));
+
+        let mut rtl = RangeSlider::new(rect);
+        rtl.set_direction(crate::core::TextDirection::RightToLeft);
+        let (rtl_lower, rtl_upper) =
+            (rtl.value_to_pixel(25.0, &rect), rtl.value_to_pixel(75.0, &rect));
+
+        assert!(ltr_lower < ltr_upper, "LTR puts the lower value on the left");
+        assert!(rtl_lower > rtl_upper, "RTL puts it on the right: {rtl_lower} vs {rtl_upper}");
+        // The mirror is exact: the two frames are reflections about the track's centre, so a value
+        // keeps its *distance from its own beginning*.
+        let (begin, length) = ltr.track_begin_and_length(&rect);
+        assert_eq!(ltr_lower - begin, (begin + length) - rtl_lower);
+        assert_eq!(ltr_upper - begin, (begin + length) - rtl_upper);
+    }
+
+    /// The two mappings are inverses in **both** directions, using one inset.
+    ///
+    /// # Why this is the important test
+    ///
+    /// BLUE22 §4.3 records the defect this guards: `slider`'s `value_to_pixel` inset by half a handle
+    /// while its `pixel_to_value` used the full width, so the two were not inverses and a click on a
+    /// handle returned a different value from the one the handle was drawn at. `range_slider` was
+    /// right at the time because both of its arms happened to spell the same `8`; `value_to_pixel` and
+    /// `pixel_to_value` now share [`RangeSlider::track_begin_and_length`] outright, so the relation is
+    /// a property of the code rather than of two literals agreeing.
+    ///
+    /// The round trip is checked in both directions and at the extremes, where an off-by-one inset is
+    /// most visible.
+    #[test]
+    fn the_two_mappings_round_trip_in_both_directions() {
+        let rect = Rect::new(0, 0, 300, 40);
+        for direction in
+            [crate::core::TextDirection::LeftToRight, crate::core::TextDirection::RightToLeft]
+        {
+            let mut rs = RangeSlider::new(rect);
+            rs.set_direction(direction);
+            rs.set_range(0.0, 100.0);
+            for value in [0.0, 1.0, 25.0, 50.0, 99.0, 100.0] {
+                let pixel = rs.value_to_pixel(value, &rect);
+                let back = rs.pixel_to_value(pixel, &rect);
+                assert!(
+                    (back - value).abs() <= 1.0,
+                    "{direction:?}: value {value} -> x {pixel} -> {back}"
+                );
+            }
+        }
+    }
+
+    /// The vertical axis is not mirrored, so the two orientations of one value agree on which end
+    /// the minimum sits at.
+    ///
+    /// The block axis runs top-to-bottom in every direction — the same rule `slider` and
+    /// `progress_bar` state — so a vertical selector must ignore the direction entirely rather than
+    /// flipping its values upside down in an RTL locale.
+    #[test]
+    fn the_vertical_axis_ignores_direction() {
+        let rect = Rect::new(0, 0, 40, 300);
+        let mut rtl = RangeSlider::new(rect);
+        rtl.set_orientation(RangeSliderOrientation::Vertical);
+        rtl.set_direction(crate::core::TextDirection::RightToLeft);
+        rtl.set_range(0.0, 100.0);
+        let mut ltr = RangeSlider::new(rect);
+        ltr.set_orientation(RangeSliderOrientation::Vertical);
+        ltr.set_range(0.0, 100.0);
+        for value in [0.0, 50.0, 100.0] {
+            assert_eq!(
+                rtl.value_to_pixel(value, &rect),
+                ltr.value_to_pixel(value, &rect),
+                "value {value} must land at the same row either way"
+            );
+        }
+        // And the minimum is still at the **bottom**, which is the reading the horizontal arm's
+        // left-to-right case gives at the left edge.
+        assert!(ltr.value_to_pixel(0.0, &rect) > ltr.value_to_pixel(100.0, &rect));
+    }
+
+    /// A click on a handle returns the value the handle was drawn at.
+    ///
+    /// The end-to-end form of the round-trip test above, driven through the hit test the event
+    /// handler uses: the point at a handle's own drawn centre must resolve to *that* handle, in both
+    /// directions. This is what a user experiences as "dragging works", and it is the property §4.3
+    /// says the two mappings must share one inset to have.
+    #[test]
+    fn clicking_a_handle_finds_that_handle_in_both_directions() {
+        let rect = Rect::new(0, 0, 300, 40);
+        for direction in
+            [crate::core::TextDirection::LeftToRight, crate::core::TextDirection::RightToLeft]
+        {
+            let mut rs = RangeSlider::new(rect);
+            rs.set_direction(direction);
+            rs.set_range(0.0, 100.0);
+            rs.set_lower_value(20.0);
+            rs.set_upper_value(80.0);
+            let centre_y = rect.y + rect.height as i32 / 2;
+            let lower_centre = Point::new(rs.value_to_pixel(20.0, &rect), centre_y);
+            let upper_centre = Point::new(rs.value_to_pixel(80.0, &rect), centre_y);
+            assert!(
+                rs.is_handle_hit(lower_centre, &rect, true),
+                "{direction:?}: the lower handle's own centre must hit the lower handle"
+            );
+            assert!(
+                rs.is_handle_hit(upper_centre, &rect, false),
+                "{direction:?}: the upper handle's own centre must hit the upper handle"
+            );
+            // Each handle's centre is the *other* handle's answer only when the two coincide, which
+            // they do not here — so a hit test that ignored the argument would be caught.
+            assert!(!rs.is_handle_hit(lower_centre, &rect, false));
+            assert!(!rs.is_handle_hit(upper_centre, &rect, true));
+        }
     }
 }

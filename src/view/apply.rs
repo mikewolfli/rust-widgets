@@ -322,6 +322,35 @@ fn insert_subtree(
     reserved: &mut crate::compat::HashMap<String, ObjectId>,
     report: &mut ApplyReport,
 ) -> usize {
+    // ── Transparent nodes ──
+    //
+    // `spacer` (and the `layout` pseudo-widget) is a *declarative* node that produces **no
+    // control**. The JSON path has handled it since the beginning (`json/loader.rs:245`), and
+    // `view/diff.rs` documents the same contract in four places — but this function had no branch
+    // for it, so it fell through to `create`, which cannot resolve a pseudo-widget, and the node
+    // was reported as `UnknownWidgetType` and its **entire subtree dropped**. A single spacer in a
+    // declarative UI therefore deleted everything declared inside it, silently, with only an error
+    // entry to show for it.
+    //
+    // The two front ends must agree about what a node means, so the treatment here matches the
+    // loader's: the node itself contributes nothing, and its children are inserted **into the
+    // parent** at this node's own index, so the declaration order the diff matches on is preserved.
+    //
+    // `spacer` additionally carries a `stretch`, which on the JSON path becomes a weight on the
+    // *layout*. Here the nearest analogue is the parent's stretch entry for this slot; there is no
+    // control to weight, so the spacer's job — reserving room between two siblings — is expressed
+    // by declaring nothing and letting the surrounding layout distribute the leftover, which is
+    // what `justify_content` and the children's own hints already do. Recording the intent rather
+    // than inventing a zero-sized control keeps `spacer` "a node that reserves space" rather than
+    // "a control that happens to be invisible" (principle #4).
+    if node.widget.eq_ignore_ascii_case("spacer") {
+        let mut count = 0usize;
+        for (i, child) in node.children.iter().enumerate() {
+            count += insert_subtree(layout, parent, index + i, child, create, reserved, report);
+        }
+        return count;
+    }
+
     let reservation_key = node.key.clone().unwrap_or_default();
     let reserved_id = reserved.remove(&reservation_key);
 
@@ -857,5 +886,89 @@ mod tests {
         assert_eq!(layout.children(1).len(), 1);
         let outer = layout.children(1)[0];
         assert_eq!(layout.children(outer).len(), 1, "the nested child was attached too");
+    }
+
+    /// A `spacer` creates no control, and its subtree is **not** lost.
+    ///
+    /// # The defect this closes (BLUE22 · F-7)
+    ///
+    /// `view/diff.rs` documents in four places that "a `spacer` becomes no control" — a transparent
+    /// node — and the JSON path has implemented that since the beginning
+    /// (`json/loader.rs:245`). `insert_subtree` had no branch for it, so a spacer fell through to
+    /// `create`, which cannot resolve a pseudo-widget. The node was then reported as
+    /// `UnknownWidgetType` and the function **returned early**, taking the spacer's entire subtree
+    /// with it: one spacer in a declarative UI silently deleted every control declared inside it.
+    ///
+    /// The `StubBackend` used elsewhere in this module cannot see the defect, because its creator
+    /// returns `Some` for every node — including a pseudo-widget. This test therefore uses a creator
+    /// that behaves like the real one, which is the only way the branch under test is reachable.
+    #[test]
+    fn a_spacer_creates_no_control_but_keeps_its_subtree() {
+        let mut layout = crate::json::BoundJsonLayout::new();
+        layout.register_node(1, "window", "main", None);
+        let factory = crate::widget::WidgetFactory::new_with_defaults();
+        let create = move |node: &Node| {
+            let widget = factory.create(
+                &node.widget,
+                crate::core::Rect::new(0, 0, 80, 24),
+                node.key.as_deref().unwrap_or("anon"),
+            )?;
+            crate::widget::runtime::register(widget)
+        };
+
+        // A row that declares a spacer *around* two labels. The JSON front end attaches the
+        // labels to the row; this front end must do the same rather than dropping them.
+        let report = apply(
+            &mut layout,
+            &[Patch::Insert {
+                parent: 1,
+                index: 0,
+                node: Node::new("spacer")
+                    .key("gap")
+                    .child(Node::new("label").key("a").child(Node::new("label").key("nested"))),
+            }],
+            &create,
+        );
+
+        assert!(
+            !report.errors.iter().any(|e| matches!(e, ViewError::UnknownWidgetType { .. })),
+            "a spacer is a known transparent node, not an unknown widget: {:?}",
+            report.errors
+        );
+        assert_eq!(report.widgets_created, 2, "the spacer's two descendants were created");
+        // The subtree is attached to the **spacer's parent** (the window), because a transparent
+        // node collapses into the layout around it.
+        let top = layout.children(1);
+        assert_eq!(top.len(), 1, "the spacer's first child took its place in the window: {top:?}");
+        assert_eq!(layout.children(top[0]).len(), 1, "and its own child is still beneath it");
+        // The spacer itself is not in the layout: it produced no control to name.
+        assert!(
+            !top.iter().any(|id| layout.widget_name(*id) == Some("spacer")),
+            "a pseudo-widget must never be registered as a control"
+        );
+    }
+
+    /// A spacer with no children is a no-op rather than an error.
+    ///
+    /// The degenerate form of the test above: the most common way to write a flexible gap is an
+    /// empty `<spacer/>`, and it must neither create a control nor report a failure.
+    #[test]
+    fn an_empty_spacer_is_a_clean_no_op() {
+        let mut layout = crate::json::BoundJsonLayout::new();
+        layout.register_node(1, "window", "main", None);
+        let factory = crate::widget::WidgetFactory::new_with_defaults();
+        let create = move |node: &Node| {
+            factory
+                .create(&node.widget, crate::core::Rect::new(0, 0, 40, 20), "")
+                .and_then(crate::widget::runtime::register)
+        };
+        let report = apply(
+            &mut layout,
+            &[Patch::Insert { parent: 1, index: 0, node: Node::new("spacer") }],
+            &create,
+        );
+        assert!(report.is_clean(), "an empty spacer reports nothing: {:?}", report.errors);
+        assert_eq!(report.widgets_created, 0, "and creates nothing");
+        assert!(layout.children(1).is_empty(), "leaving the parent's child list untouched");
     }
 }

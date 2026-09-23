@@ -711,32 +711,47 @@ mod tests {
         assert_eq!(buttons[0].x, span.x, "the span begins at the first button");
     }
 
-    /// A row too wide for its band keeps every button at or above its own floor.
+    /// A row too narrow for its buttons keeps every button *inside* the band.
     ///
-    /// The floor is the button's own declaration — `size_hint` reports `BUTTON_MIN` (64) as
-    /// the minimum for a short label — and NOT the geometry the caller happened to pass. The
-    /// contract under test is that the layout honours that floor instead of shrinking the
-    /// buttons to whatever fits: a button narrower than its label is a button whose label
-    /// elides, and a row of unreadable commands is worse than a row that overhangs.
+    /// # What this pins (and what G-1 changed)
+    ///
+    /// The action row's buttons declare `BUTTON_MIN` (64) as their floor, so a 120 px band cannot
+    /// hold two of them plus the gap — 134 px of requirement against 120 px of room. Before G-1 was
+    /// resolved the row was left at its floors and the *second* button was placed past the band's
+    /// trailing edge. Because the SVG backend emits absolute coordinates and nothing clips at this
+    /// layer, that button was not "overflowing", it was **absent**: a dialog whose Cancel button is
+    /// simply not drawn.
+    ///
+    /// The layout now shares the shortfall proportionally, so the property to pin is containment:
+    /// every button is inside the band the caller offered, and the span the row reports is that
+    /// band rather than a wider one. Its own `preferred_width` still reports the un-squeezed
+    /// requirement, which is what a dialog sizing itself around the row needs.
     #[test]
-    fn a_row_wider_than_its_band_does_not_shrink_below_the_floor() {
+    fn a_row_too_narrow_for_its_buttons_keeps_them_inside_the_band() {
         let factory = WidgetFactory::new_with_defaults();
         let mut row = ActionRow::new(6);
-        let one = row.add(&factory, "One", Size::new(100, 36)).expect("button is published");
-        let two = row.add(&factory, "Two", Size::new(100, 36)).expect("button is published");
-        let floors = [one.hints().width.min, two.hints().width.min];
-        let (_, buttons) = row.arrange(Rect::new(0, 0, 120, 40));
-        for (button, floor) in buttons.iter().zip(floors) {
+        row.add(&factory, "One", Size::new(100, 36)).expect("button is published");
+        row.add(&factory, "Two", Size::new(100, 36)).expect("button is published");
+        let band = Rect::new(0, 0, 120, 40);
+        let (span, buttons) = row.arrange(band);
+        assert_eq!(buttons.len(), 2);
+        for button in &buttons {
             assert!(
-                button.width >= floor,
-                "a button must never be squeezed below its own floor {floor}, got {}",
-                button.width
+                button.x >= band.x && button.x + button.width as i32 <= band.x + band.width as i32,
+                "every button must stay inside the band: {button:?} in {band:?}"
             );
+            assert!(button.width > 0, "and none is dropped: {button:?}");
         }
-        // The row therefore overhangs rather than fitting: its own extent is the buttons plus
-        // the gap, which is wider than the 120 px band it was offered.
-        let total = buttons.iter().map(|b| b.width).sum::<u32>() + 6;
-        assert!(total > 120, "the row must overhang rather than violate the floors: {total}");
+        assert!(
+            span.x + span.width as i32 <= band.x + band.width as i32,
+            "the span the row reports must be inside the band: {span:?}"
+        );
+        // The row still *asks* for room for both buttons: a caller that can give it more should.
+        assert!(
+            row.preferred_width() > 120,
+            "the row's own preference is still the unsqueezed requirement: {}",
+            row.preferred_width()
+        );
     }
 
     /// An empty row occupies nothing and does not fabricate a button.

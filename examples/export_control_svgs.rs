@@ -74,6 +74,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut written = 0usize;
     let mut failed: Vec<String> = Vec::new();
+    // Counted so the number of controls that received sample data is *reported* rather than assumed. A
+    // control whose fill silently stopped matching its name would otherwise be indistinguishable from one
+    // that never had data to begin with.
+    let mut filled = 0usize;
 
     for name in &names {
         for (appearance, suffix) in [(AppearanceMode::Dark, ""), (AppearanceMode::Light, ".light")]
@@ -89,6 +93,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // this the two appearances produced identical drawings — the files existed and
             // proved nothing, which is precisely the failure rule #106 is about.
             rust_widgets::theme::apply_theme_to_widget(widget.as_mut());
+
+            // Give the data-bearing controls their content.
+            //
+            // # Why here and not in the factory
+            //
+            // `create` is the production path, so a host that asked for an empty table must get an empty
+            // one; the sample data exists for the picture. Applying it after construction and before the
+            // first draw is what keeps those two requirements apart. See
+            // `widget::sample_fill`'s module docs.
+            if rust_widgets::widget::sample_fill::apply(name, widget.as_mut()) {
+                filled += 1;
+            }
 
             let Some(drawable) = draw_of(widget.as_mut()) else {
                 failed.push(format!("{name}: the widget has no `Draw` implementation"));
@@ -117,7 +133,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fs::write(dir.join("README.md"), index(&names))?;
 
     println!("wrote {written} SVG snapshots for {} controls into {OUTPUT_DIR}/", names.len());
-    println!("checked={} skipped=0 failed={}", names.len(), failed.len());
+    println!(
+        "checked={} skipped=0 failed={} sample-filled={}",
+        names.len(),
+        failed.len(),
+        // Two appearances per control, so the counter is per-export; halved for the control count.
+        filled / 2
+    );
     if !failed.is_empty() {
         for entry in &failed {
             eprintln!("  {entry}");

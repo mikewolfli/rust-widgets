@@ -12,7 +12,7 @@
 //! Most users should use [`render_widget_to_svg()`] as it is zero-maintenance
 //! and guaranteed accurate.
 
-use crate::compat::String;
+use crate::compat::{String, Vec};
 use crate::core::{Rect, Size};
 use crate::render::{PaintBackend, RenderContext, SvgPaintBackend};
 use crate::widget::{Draw, Widget};
@@ -112,10 +112,26 @@ pub fn render_widget_to_svg_on<T: Draw + ?Sized>(
 /// assert_eq!(top, expected_glyph_box_top);
 /// ```
 pub fn text_ink_box(svg: &str) -> Option<(i32, i32, i32, i32)> {
-    // Only text is a `<path>` in this backend; shapes are `<rect>`/`<circle>`/`<line>`. The
-    // fill colour is the other marker, so a future non-text path does not silently satisfy a
-    // text assertion.
-    let mut best: Option<(i32, i32, i32, i32)> = None;
+    text_ink_boxes(svg).first().copied()
+}
+
+/// The ink box of **every** text run in an SVG document, in document order.
+///
+/// # Why `text_ink_box` was not enough
+///
+/// One `draw_text` call emits one `<path>`, so a control that paints two strings — a field with a unit
+/// mark and a value, a header with a sort indicator and a label, a support row with a message and a
+/// counter — produces two paths. [`text_ink_box`] returns only the first, which silently answers "where
+/// is the first thing that was written" rather than "where is the thing I meant". A test that compares
+/// two runs, or looks for the *second* one, cannot be expressed with the single-run form at all and
+/// ends up asserting against whichever run happened to be painted first.
+///
+/// Returning all of them makes the run under test *selectable*, so a two-run assertion can say which
+/// run it means instead of depending on paint order.
+///
+/// A control that paints nothing yields an empty list; the caller decides whether that is a failure.
+pub fn text_ink_boxes(svg: &str) -> Vec<(i32, i32, i32, i32)> {
+    let mut boxes = Vec::new();
     for line in svg.lines() {
         if !line.contains("<path") {
             continue;
@@ -123,15 +139,11 @@ pub fn text_ink_box(svg: &str) -> Option<(i32, i32, i32, i32)> {
         let Some(d) = attribute_str(line, "d") else {
             continue;
         };
-        let Some(bounds) = path_bounds(d) else {
-            continue;
-        };
-        // The first path in document order is the first text run painted; a widget paints its
-        // chrome before its text, and chrome is never a path.
-        best = Some(bounds);
-        break;
+        if let Some(bounds) = path_bounds(d) {
+            boxes.push(bounds);
+        }
     }
-    best
+    boxes
 }
 
 /// The number of **subpaths** in the document's text paths.

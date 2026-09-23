@@ -94,7 +94,20 @@ impl Divider {
             return self.color;
         }
         crate::style::resolved_theme_style("divider")
-            .and_then(|style| style.border_color.or(style.background_color))
+            .and_then(|style| style.border_color)
+            // # Why a divider reads `outline_variant`
+            //
+            // A divider is the *weakest* separator a theme has: it structures content and must
+            // recede behind it. `outline` is the stronger role — the one a focus ring and a control
+            // border read — and `Colors::outline`'s own documentation separates the two for exactly
+            // this reason. Before this, a divider fell back to whatever `border_color` the theme
+            // resolved for it, which on several presets is the *same* colour a focused control
+            // draws its ring in: the two separated quantities had one value.
+            .or_else(|| {
+                crate::style::theme_manager()
+                    .current_theme()
+                    .map(|active| active.colors.outline_variant)
+            })
             .unwrap_or(self.color)
     }
 }

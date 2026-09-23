@@ -960,45 +960,59 @@ mod tests {
         }
     }
 
-    /// A face too narrow for both columns overhangs rather than squeezing one of them.
+    /// A face too narrow for both columns still keeps both of them inside it.
     ///
-    /// # What this pins, and what it deliberately does not promise
+    /// # What this pins
     ///
-    /// The two columns between them need `split_hint_width("Run") + SPLIT_ARROW_COLUMN_WIDTH`.
-    /// A face narrower than that cannot be tiled, and there are three things the code could do:
-    /// squeeze the trigger below its own declared width, squeeze the arrow column below its own,
-    /// or let the row overhang. The layout's answer — "a child is never squeezed below its own
-    /// floor; the row overhangs" (BLUE22 §B.10) — is the right one for a row of *content*, and it
-    /// is what this control inherits rather than overrides, so the trigger keeps its width and the
-    /// arrow column is pushed past the face.
+    /// The two columns between them need `split_hint_width("Run") + SPLIT_ARROW_COLUMN_WIDTH`. A
+    /// narrower face cannot be tiled at those sizes — that is arithmetic, not a bug.
     ///
-    /// That is **not** a good outcome and the test does not dress it up as one: a sub-part outside
-    /// its control is invisible, because the SVG backend emits absolute coordinates and nothing
-    /// clips at this layer. It is pinned here so the behaviour is a decision on record rather than
-    /// an accident, and so a later fix (eliding the trigger, or refusing to draw the face at all)
-    /// has a failing assertion to argue against instead of a silent gap. What the test *does*
-    /// guarantee is the part that matters at any width: neither column is drawn at a size it did
-    /// not ask for.
+    /// What the layout owes the caller is that the shortfall is **shared and contained** rather
+    /// than deferred to whichever column comes last. Before G-1 was resolved the trigger kept its
+    /// full width and the arrow was placed past the face's trailing edge; because the SVG backend
+    /// emits absolute coordinates and nothing clips at this layer, that arrow was not overflowing,
+    /// it was **absent** — a split button that silently has no drop-down affordance.
+    ///
+    /// The test therefore asserts containment (both columns inside the face) and the *relation* that
+    /// makes a split button a split button: the arrow column stays one arrow wide, so a squeezed face
+    /// loses trigger, not the affordance.
     #[test]
-    fn a_face_too_narrow_for_both_columns_overhangs_rather_than_squeezing_one() {
+    fn a_face_too_narrow_for_both_columns_keeps_both_inside_it() {
         let width = 48u32;
         let split = SplitButton::new("Run", Rect::new(0, 0, width, 120));
+        let face = split.face_band();
         let primary = split.primary_rect();
         let arrow = split.arrow_rect();
+        assert_eq!(face.width, width);
+        for (label, rect) in [("trigger", primary), ("arrow", arrow)] {
+            assert!(
+                rect.x >= face.x && rect.x + rect.width as i32 <= face.x + face.width as i32,
+                "the {label} column must stay inside the face, got {rect:?} in {face:?}"
+            );
+        }
         assert_eq!(
-            primary.width,
-            split_hint_width("Run"),
-            "the trigger is never squeezed below the width its own label asked for"
+            primary.width + arrow.width,
+            width,
+            "and the two columns must still account for the face: {primary:?} + {arrow:?}"
         );
-        assert_eq!(
+        // Both columns are inside the face and the face is the sum of them — that is containment,
+        // which is the part G-1 was about. Their *sizes* are scaled by the same factor, so a narrow
+        // face is honestly described as "this control is smaller than its contents": the arrow keeps
+        // its **share** rather than being dropped, which is the property that matters (an absent
+        // drop-down arrow is a split button that is not a split button).
+        let scale =
+            width as f32 / (split_hint_width("Run") + dimensions::SPLIT_ARROW_COLUMN_WIDTH) as f32;
+        assert!(
+            (arrow.width as f32 - dimensions::SPLIT_ARROW_COLUMN_WIDTH as f32 * scale).abs() <= 1.0,
+            "the arrow keeps its proportional share of a squeezed face: {} vs {} × {scale:.2}",
             arrow.width,
-            dimensions::SPLIT_ARROW_COLUMN_WIDTH,
-            "nor is the arrow column squeezed below its own width"
+            dimensions::SPLIT_ARROW_COLUMN_WIDTH
         );
         assert!(
-            arrow.x + arrow.width as i32 > split.face_band().x + width as i32,
-            "the row therefore overhangs the face (the known defect), rather than shrinking a \
-             column the caller sized"
+            arrow.width > 0 && primary.width > 0,
+            "neither column is dropped: trigger {}, arrow {}",
+            primary.width,
+            arrow.width
         );
     }
 

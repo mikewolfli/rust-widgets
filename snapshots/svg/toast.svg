@@ -2,10 +2,10 @@
 <!-- control: toast | appearance: dark -->
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
-  <rect x="0" y="36" width="240" height="48" fill="rgba(35,35,35,1.00)" />
+  <rect x="0" y="36" width="240" height="48" fill="rgba(46,46,48,1.00)" />
   <rect x="0" y="36" width="240" height="48" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
-  <rect x="0" y="36" width="4" height="48" fill="rgba(123,158,216,1.00)" />
+  <rect x="0" y="36" width="4" height="48" fill="rgba(124,160,218,1.00)" />
   <path d="M16 53h1v1h-1zM17 53h1v1h-1zM18 53h1v1h-1zM19 53h1v1h-1zM15 54h1v2h-1zM16 54h1v2h-1zM19 54h1v2h-1zM20 54h1v2h-1zM15 56h1v2h-1zM16 56h1v2h-1zM17 56h1v2h-1zM16 58h1v2h-1zM17 58h1v2h-1zM18 58h1v2h-1zM18 60h1v1h-1zM19 60h1v1h-1zM20 60h1v1h-1zM15 61h1v2h-1zM16 61h1v2h-1zM19 61h1v2h-1zM20 61h1v2h-1zM16 63h1v2h-1zM17 63h1v2h-1zM18 63h1v2h-1zM19 63h1v2h-1zM24 56h1v2h-1zM25 56h1v2h-1zM26 56h1v2h-1zM27 56h1v2h-1zM27 58h1v2h-1zM28 58h1v2h-1zM24 60h1v1h-1zM25 60h1v1h-1zM26 60h1v1h-1zM27 60h1v1h-1zM28 60h1v1h-1zM23 61h1v2h-1zM24 61h1v2h-1zM27 61h1v2h-1zM28 61h1v2h-1zM24 63h1v2h-1zM25 63h1v2h-1zM26 63h1v2h-1zM28 63h1v2h-1zM29 63h1v2h-1zM32 56h1v2h-1zM33 56h1v2h-1zM36 56h1v2h-1zM37 56h1v2h-1zM32 58h1v2h-1zM33 58h1v2h-1zM34 58h1v2h-1zM35 58h1v2h-1zM36 58h1v2h-1zM37 58h1v2h-1zM38 58h1v2h-1zM32 60h1v1h-1zM33 60h1v1h-1zM34 60h1v1h-1zM35 60h1v1h-1zM36 60h1v1h-1zM37 60h1v1h-1zM38 60h1v1h-1zM32 61h1v2h-1zM33 61h1v2h-1zM35 61h1v2h-1zM37 61h1v2h-1zM38 61h1v2h-1zM32 63h1v2h-1zM33 63h1v2h-1zM37 63h1v2h-1zM38 63h1v2h-1zM40 56h1v2h-1zM41 56h1v2h-1zM43 56h1v2h-1zM44 56h1v2h-1zM45 56h1v2h-1zM41 58h1v2h-1zM42 58h1v2h-1zM45 58h1v2h-1zM46 58h1v2h-1zM41 60h1v1h-1zM42 60h1v1h-1zM45 60h1v1h-1zM46 60h1v1h-1zM41 61h1v2h-1zM42 61h1v2h-1zM43 61h1v2h-1zM44 61h1v2h-1zM45 61h1v2h-1zM41 63h1v2h-1zM42 63h1v2h-1zM40 65h1v2h-1zM41 65h1v2h-1zM42 65h1v2h-1zM43 65h1v2h-1zM50 53h1v1h-1zM51 53h1v1h-1zM52 53h1v1h-1zM51 54h1v2h-1zM52 54h1v2h-1zM51 56h1v2h-1zM52 56h1v2h-1zM51 58h1v2h-1zM52 58h1v2h-1zM51 60h1v1h-1zM52 60h1v1h-1zM51 61h1v2h-1zM52 61h1v2h-1zM50 63h1v2h-1zM51 63h1v2h-1zM52 63h1v2h-1zM53 63h1v2h-1zM58 56h1v2h-1zM59 56h1v2h-1zM60 56h1v2h-1zM61 56h1v2h-1zM57 58h1v2h-1zM58 58h1v2h-1zM61 58h1v2h-1zM62 58h1v2h-1zM57 60h1v1h-1zM58 60h1v1h-1zM59 60h1v1h-1zM60 60h1v1h-1zM61 60h1v1h-1zM62 60h1v1h-1zM57 61h1v2h-1zM58 61h1v2h-1zM58 63h1v2h-1zM59 63h1v2h-1zM60 63h1v2h-1zM61 63h1v2h-1z" fill="rgba(225,225,225,1.00)" />
-  <line x1="223" y1="56" x2="231" y2="64" stroke="rgba(149,149,149,1.00)" stroke-width="1" />
-  <line x1="231" y1="56" x2="223" y2="64" stroke="rgba(149,149,149,1.00)" stroke-width="1" />
+  <line x1="223" y1="56" x2="231" y2="64" stroke="rgba(153,153,154,1.00)" stroke-width="1" />
+  <line x1="231" y1="56" x2="223" y2="64" stroke="rgba(153,153,154,1.00)" stroke-width="1" />
 </svg>

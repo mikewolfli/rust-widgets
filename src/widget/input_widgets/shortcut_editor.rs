@@ -290,6 +290,38 @@ impl ShortcutEditor {
         self.undo_stack.can_redo()
     }
 
+    /// Returns how many shortcuts are in the table, before filtering.
+    pub fn shortcut_count(&self) -> usize {
+        self.shortcuts.len()
+    }
+
+    /// Returns how many shortcuts match the current filter.
+    ///
+    /// Separate from the total because "the table is empty" and "the filter matched nothing" look the
+    /// same in a list but need different responses — the first means there is nothing to configure, the
+    /// second means the query is wrong.
+    pub fn visible_count(&self) -> usize {
+        self.filtered_shortcuts().len()
+    }
+
+    /// Returns how many distinct categories the matching shortcuts span.
+    pub fn category_count(&self) -> usize {
+        self.shortcuts_by_category().len()
+    }
+
+    /// Returns the distinct category names of the matching shortcuts, in first-seen order.
+    pub fn categories(&self) -> Vec<String> {
+        self.shortcuts_by_category().into_iter().map(|(name, _)| name).collect()
+    }
+
+    /// Returns whether the editor currently offers an empty state to draw.
+    ///
+    /// True when the table holds nothing at all, which is the condition the control's placeholder row is
+    /// for. Derived here so the painter and a test agree about when it applies.
+    pub fn is_empty(&self) -> bool {
+        self.shortcuts.is_empty()
+    }
+
     fn record_shortcut_state(&mut self, before: Vec<ShortcutEntry>) {
         if before == self.shortcuts {
             return;
@@ -347,12 +379,28 @@ impl Widget for ShortcutEditor {
 
 /// `ShortcutEditor`'s property contract.
 ///
+/// # The defect this replaces
+///
+/// `filter_text` was the *only* property. That is the one thing the caller already knows — it is what
+/// they typed — while everything the control knows and the caller needs was unpublished: how many
+/// shortcuts there are, how many the filter left, which categories they span, and whether an undo is
+/// available. A consumer could set a filter and then had no way to ask what it did.
+///
 /// The writer takes `&str` (`set_filter`) rather than an owned `String`, so the
 /// coerced value is borrowed before the call — the same shape the old arm used.
 impl WidgetProperties for ShortcutEditor {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
             "filter_text" => Ok(CapabilityValue::String(self.filter_text().to_string())),
+            "shortcut_count" => Ok(CapabilityValue::UInt(self.shortcut_count() as u64)),
+            "visible_count" => Ok(CapabilityValue::UInt(self.visible_count() as u64)),
+            "category_count" => Ok(CapabilityValue::UInt(self.category_count() as u64)),
+            // A comma-joined list rather than an array: `CapabilityValue` has no list carrier, and
+            // inventing one for a single property would widen the wire format for everything.
+            "categories" => Ok(CapabilityValue::String(self.categories().join(", "))),
+            "empty" => Ok(CapabilityValue::Bool(self.is_empty())),
+            "can_undo" => Ok(CapabilityValue::Bool(self.can_undo())),
+            "can_redo" => Ok(CapabilityValue::Bool(self.can_redo())),
             _ => base_property_get(self, name),
         }
     }
@@ -364,13 +412,27 @@ impl WidgetProperties for ShortcutEditor {
                 self.set_filter(&text);
                 Ok(())
             }
+            // Every other name above is derived from the table, the filter or the history stack, so
+            // writing one would be a second way to say something the control already answers.
+            "shortcut_count" | "visible_count" | "category_count" | "categories" | "empty"
+            | "can_undo" | "can_redo" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
         // Mirrors `SHORTCUT_EDITOR_PROPERTIES`.
-        property_names_of!["filter_text", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "filter_text",
+            "shortcut_count",
+            "visible_count",
+            "category_count",
+            "categories",
+            "empty",
+            "can_undo",
+            "can_redo",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `shortcut_editor` publishes.
@@ -802,5 +864,85 @@ mod tests {
         assert_eq!(keycode_to_name(0x20, 0x01), "Shift+Space");
         assert_eq!(keycode_to_name(0x70, 0), "F1");
         assert_eq!(keycode_to_name(0x75, 0x02), "Ctrl+F6");
+    }
+
+    /// The contract describes what the *filter did*, not just what was typed into it.
+    ///
+    /// # The defect this pins
+    ///
+    /// `filter_text` was the only published property, and it is the one fact the caller supplied
+    /// themselves. A consumer could set a filter and then had no way to ask how many shortcuts survived
+    /// it — so an "N results" label or an "empty" state had to be rebuilt from the table, and a
+    /// `filter_text` that matched nothing was indistinguishable from one that worked.
+    #[test]
+    fn the_contract_reports_what_the_filter_matched() {
+        use crate::widget::capability::WidgetProperties;
+
+        let mut se = ShortcutEditor::new(Rect::new(0, 0, 400, 300));
+        assert_eq!(se.get("shortcut_count").unwrap().as_u64(), Some(0));
+        assert_eq!(se.get("empty").unwrap().as_bool(), Some(true));
+        assert_eq!(se.get("categories").unwrap().as_str(), Some(""));
+
+        se.add_shortcut(ShortcutEntry::new("save", "Save", "File"));
+        se.add_shortcut(ShortcutEntry::new("open", "Open", "File"));
+        se.add_shortcut(ShortcutEntry::new("copy", "Copy", "Edit"));
+
+        assert_eq!(se.get("shortcut_count").unwrap().as_u64(), Some(3));
+        assert_eq!(se.get("visible_count").unwrap().as_u64(), Some(3));
+        assert_eq!(se.get("category_count").unwrap().as_u64(), Some(2));
+        assert_eq!(se.get("categories").unwrap().as_str(), Some("File, Edit"));
+        assert_eq!(se.get("empty").unwrap().as_bool(), Some(false));
+
+        // A filter that matches narrows all of them together.
+        se.set_filter("sa");
+        assert_eq!(se.get("filter_text").unwrap().as_str(), Some("sa"));
+        assert_eq!(se.get("visible_count").unwrap().as_u64(), Some(1));
+        assert_eq!(se.get("category_count").unwrap().as_u64(), Some(1));
+        assert_eq!(se.get("categories").unwrap().as_str(), Some("File"));
+        // The total is unchanged: the table still holds three, the filter only hid two.
+        assert_eq!(
+            se.get("shortcut_count").unwrap().as_u64(),
+            Some(3),
+            "hiding rows must not look like deleting them"
+        );
+        assert!(!se.is_empty(), "a filter matching nothing is not an empty table");
+
+        // A filter matching nothing is a different state from an empty table.
+        se.set_filter("zzzz");
+        assert_eq!(se.get("visible_count").unwrap().as_u64(), Some(0));
+        assert_eq!(se.get("empty").unwrap().as_bool(), Some(false));
+
+        // Every derived name is read-only.
+        for name in [
+            "shortcut_count",
+            "visible_count",
+            "category_count",
+            "categories",
+            "empty",
+            "can_undo",
+            "can_redo",
+        ] {
+            assert!(
+                se.set(name, CapabilityValue::UInt(0)).is_err(),
+                "{name} must be refused as read-only"
+            );
+        }
+    }
+
+    /// Undo availability is published, so a toolbar button can bind to it.
+    #[test]
+    fn the_contract_publishes_undo_availability() {
+        use crate::widget::capability::WidgetProperties;
+
+        let mut se = ShortcutEditor::new(Rect::new(0, 0, 400, 300));
+        assert_eq!(se.get("can_undo").unwrap().as_bool(), Some(false));
+        assert_eq!(se.get("can_redo").unwrap().as_bool(), Some(false));
+
+        se.add_shortcut(ShortcutEntry::new("save", "Save", "File"));
+        assert_eq!(se.get("can_undo").unwrap().as_bool(), Some(true));
+
+        se.undo();
+        assert_eq!(se.get("can_undo").unwrap().as_bool(), Some(false));
+        assert_eq!(se.get("can_redo").unwrap().as_bool(), Some(true));
     }
 }

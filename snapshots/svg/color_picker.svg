@@ -2,14 +2,14 @@
 <!-- control: color_picker | appearance: dark -->
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
-  <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
-  <rect x="0" y="0" width="240" height="120" fill="none" stroke="rgba(64,64,64,1.00)" stroke-width="1" />
+  <rect x="0" y="0" width="240" height="120" fill="rgba(30,30,33,1.00)" />
+  <rect x="0" y="0" width="240" height="120" fill="none" stroke="rgba(73,73,75,1.00)" stroke-width="1" />
   <rect x="8" y="8" width="192" height="68" fill="rgba(255,64,64,1.00)" />
-  <rect x="8" y="8" width="192" height="68" fill="none" stroke="rgba(101,101,101,1.00)" stroke-width="1" />
-  <rect x="206" y="8" width="12" height="68" fill="rgba(39,39,39,1.00)" />
-  <rect x="206" y="8" width="12" height="68" fill="none" stroke="rgba(90,90,90,1.00)" stroke-width="1" />
-  <rect x="222" y="8" width="10" height="68" fill="rgba(39,39,39,1.00)" />
-  <rect x="222" y="8" width="10" height="68" fill="none" stroke="rgba(80,80,80,1.00)" stroke-width="1" />
+  <rect x="8" y="8" width="192" height="68" fill="none" stroke="rgba(108,108,110,1.00)" stroke-width="1" />
+  <rect x="206" y="8" width="12" height="68" fill="rgba(50,50,52,1.00)" />
+  <rect x="206" y="8" width="12" height="68" fill="none" stroke="rgba(98,98,100,1.00)" stroke-width="1" />
+  <rect x="222" y="8" width="10" height="68" fill="rgba(50,50,52,1.00)" />
+  <rect x="222" y="8" width="10" height="68" fill="none" stroke="rgba(89,89,91,1.00)" stroke-width="1" />
   <rect x="8" y="98" width="18" height="18" fill="rgba(244,67,54,1.00)" />
   <rect x="8" y="98" width="18" height="18" fill="none" stroke="rgba(0,0,0,0.35)" stroke-width="1" />
   <rect x="30" y="98" width="18" height="18" fill="rgba(33,150,243,1.00)" />

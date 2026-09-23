@@ -7,7 +7,10 @@ use crate::core::{Color, Orientation, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::widget::capability::coercion::{expect_i64, expect_orientation, orientation_to_str};
+use crate::widget::capability::coercion::{
+    expect_i64, expect_orientation, expect_text_direction, orientation_to_str,
+    text_direction_to_str,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -24,6 +27,22 @@ pub struct ScrollBar {
     single_step: i32,
     page_step: i32,
     orientation: Orientation,
+    /// The writing direction the trough runs in.
+    ///
+    /// # Why a scroll bar needs this
+    ///
+    /// The bar places a *value* on a line, exactly as a slider does, and in a right-to-left interface
+    /// the line's beginning is its right edge: value `minimum` belongs on the right, and the `LineUp`
+    /// action — "move toward the minimum" — must walk leftward. Every mapping below read the trough
+    /// left-to-right, so the thumb sat at the mirrored position and the arrows moved it the wrong
+    /// way.
+    ///
+    /// Only the **horizontal** trough is a line of text direction. A vertical bar's axis is the block
+    /// flow, which is not reversed by a right-to-left script, so `direction` is ignored when the
+    /// orientation is vertical — the same scoping [`crate::core::TextDirection`] documents.
+    ///
+    /// Defaults to left-to-right, so a bar that never asks behaves exactly as it did.
+    direction: crate::core::TextDirection,
     /// Emitted with the new value when the scroll position changes, whether
     /// from user input or a programmatic setter.
     pub value_changed: Signal1<i32>,
@@ -49,6 +68,7 @@ impl ScrollBar {
             single_step: 1,
             page_step: 10,
             orientation: Orientation::Horizontal,
+            direction: crate::core::TextDirection::default(),
             value_changed: Signal1::new(),
             slider_moved: Signal1::new(),
             slider_pressed: GenericSignal::new(),
@@ -128,6 +148,23 @@ impl ScrollBar {
     /// Sets orientation.
     pub fn set_orientation(&mut self, orientation: Orientation) {
         self.orientation = orientation;
+    }
+
+    /// Returns the writing direction the horizontal trough runs in.
+    pub fn direction(&self) -> crate::core::TextDirection {
+        self.direction
+    }
+
+    /// Sets the writing direction the horizontal trough runs in, and repaints.
+    ///
+    /// A right-to-left bar puts `minimum` at the right end and grows leftward, so a drag and the
+    /// arrow actions move the way the reader's eye does. The vertical orientation ignores it: the
+    /// block axis is not reversed by a right-to-left script. See the field for the reasoning.
+    pub fn set_direction(&mut self, direction: crate::core::TextDirection) {
+        if self.direction != direction {
+            self.direction = direction;
+            self.base.request_redraw();
+        }
     }
     /// Returns slider size as percentage of visible area.
     pub fn slider_size(&self) -> f32 {
@@ -218,6 +255,15 @@ impl ScrollBar {
             return self.minimum;
         }
         let relative = (pos - origin) / available;
+        // The pointer arrives in the left-edge frame and the value lives in reading order, so this
+        // is the one place the conversion belongs — and `value_to_pixel_pos` applies the same one in
+        // the other direction, which is what keeps a drag reading back the value the thumb was drawn
+        // at. Only a horizontal trough is a line of text direction; see the field.
+        let relative = if self.orientation == Orientation::Horizontal {
+            self.direction.left_fraction_to_begin_fraction(relative)
+        } else {
+            relative
+        };
         let value = self.minimum as f32 + range * relative.clamp(0.0, 1.0);
         value.round() as i32
     }
@@ -243,7 +289,10 @@ impl ScrollBar {
         if range == 0.0 {
             return origin + cell;
         }
-        let relative = (clamped - self.minimum) as f32 / range;
+        let mut relative = (clamped - self.minimum) as f32 / range;
+        if self.orientation == Orientation::Horizontal {
+            relative = self.direction.begin_fraction_to_left_fraction(relative);
+        }
         let available = (length - cell * 2.0).max(0.0) * (1.0 - slider_size);
         origin + cell + available * relative
     }
@@ -336,6 +385,9 @@ impl WidgetProperties for ScrollBar {
             "orientation" => {
                 Ok(CapabilityValue::String(orientation_to_str(self.orientation()).to_string()))
             }
+            "direction" => {
+                Ok(CapabilityValue::String(text_direction_to_str(self.direction()).to_string()))
+            }
             "slider_size" => Ok(CapabilityValue::Float(self.slider_size() as f64)),
             "slider_position" => Ok(CapabilityValue::Float(self.slider_position() as f64)),
             _ => base_property_get(self, name),
@@ -368,6 +420,10 @@ impl WidgetProperties for ScrollBar {
                 self.set_orientation(expect_orientation(value)?);
                 Ok(())
             }
+            "direction" => {
+                self.set_direction(expect_text_direction(value)?);
+                Ok(())
+            }
             // Derived from the range: no setter exists, so the contract says so.
             "slider_size" | "slider_position" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
@@ -383,6 +439,7 @@ impl WidgetProperties for ScrollBar {
             "single_step",
             "page_step",
             "orientation",
+            "direction",
             "slider_size",
             "slider_position",
             BASE_PROPERTY_NAMES
@@ -883,5 +940,127 @@ mod tests {
         let _slider_moved = &sb.slider_moved;
         let _slider_pressed = &sb.slider_pressed;
         let _slider_released = &sb.slider_released;
+    }
+
+    /// A right-to-left trough puts its **minimum** at the right end.
+    ///
+    /// # The defect this pins
+    ///
+    /// The bar maps a value onto a line, and the line it maps onto runs from where the reader starts
+    /// to where they finish. Reading the trough left-to-right unconditionally put the thumb at the
+    /// mirrored position in an Arabic or Hebrew interface, so "scrolled to the end" looked like
+    /// "scrolled to the start".
+    #[test]
+    fn a_right_to_left_trough_puts_the_minimum_on_the_right() {
+        use crate::core::TextDirection;
+        let geometry = Rect::new(0, 0, 200, 16);
+        let mut ltr = ScrollBar::new(geometry);
+        let mut rtl = ScrollBar::new(geometry);
+        for sb in [&mut ltr, &mut rtl] {
+            sb.set_range(0, 100);
+            sb.set_value(0);
+        }
+        rtl.set_direction(TextDirection::RightToLeft);
+
+        let band = ltr.track_band();
+        assert_eq!(band, rtl.track_band(), "the direction must not move the trough itself");
+        let left_end = band.x as f32 + 1.0;
+        let right_end = band.right() as f32 - 1.0;
+
+        // The trough's two ends are the two extremes, and the direction decides which is which.
+        assert!(
+            ltr.pixel_pos_to_value(left_end) < ltr.pixel_pos_to_value(right_end),
+            "LTR: values must grow left to right"
+        );
+        assert!(
+            rtl.pixel_pos_to_value(left_end) > rtl.pixel_pos_to_value(right_end),
+            "RTL: values must grow right to left"
+        );
+
+        // And the thumb follows: the RTL bar parks the minimum to the right of the maximum.
+        assert!(
+            rtl.value_to_pixel_pos(0) > rtl.value_to_pixel_pos(100),
+            "an RTL bar must draw the minimum to the right of the maximum"
+        );
+        assert!(
+            ltr.value_to_pixel_pos(0) < ltr.value_to_pixel_pos(100),
+            "the default direction must be unchanged"
+        );
+    }
+
+    /// The pointer → value and value → pointer mappings must stay **ordered the same way** in both
+    /// directions, so a drag toward the end the user is heading for raises the value.
+    ///
+    /// The two functions are not exact inverses in this control: `pixel_pos_to_value` measures from
+    /// the band's edge while `value_to_pixel_pos` first skips an arrow cell, and that asymmetry
+    /// predates the direction field. What the direction must not do is break it — so the assertion
+    /// is that both stay monotonic and agree about which end is which.
+    #[test]
+    fn the_value_and_pixel_mappings_agree_about_which_way_is_forward() {
+        use crate::core::TextDirection;
+        for direction in [TextDirection::LeftToRight, TextDirection::RightToLeft] {
+            let mut sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+            sb.set_range(0, 1000);
+            sb.set_direction(direction);
+            for value in (0..1000).step_by(50) {
+                let here = sb.value_to_pixel_pos(value);
+                let next = sb.value_to_pixel_pos(value + 50);
+                let forward = next - here;
+                assert!(
+                    forward.abs() > 0.0,
+                    "{direction:?}: value {value} and {} drew at the same pixel",
+                    value + 50
+                );
+                let expected_sign = if direction.is_right_to_left() { -1.0 } else { 1.0 };
+                assert_eq!(
+                    forward.signum(),
+                    expected_sign,
+                    "{direction:?}: {value} → {} must move {expected_sign}px, moved {forward}",
+                    value + 50
+                );
+            }
+            // And reading the pixel back returns a value in the same half of the range.
+            for value in [0, 250, 750, 1000] {
+                let back = sb.pixel_pos_to_value(sb.value_to_pixel_pos(value));
+                let half = 500;
+                assert_eq!(
+                    back >= half,
+                    value >= half,
+                    "{direction:?}: value {value} read back as {back}, which is the other half"
+                );
+            }
+        }
+    }
+
+    /// The vertical bar is the block axis, which a right-to-left script does not reverse, so the
+    /// direction must not move its thumb.
+    #[test]
+    fn a_vertical_trough_ignores_the_direction() {
+        use crate::core::TextDirection;
+        let geometry = Rect::new(0, 0, 16, 200);
+        let mut ltr = ScrollBar::new(geometry);
+        let mut rtl = ScrollBar::new(geometry);
+        for sb in [&mut ltr, &mut rtl] {
+            sb.set_orientation(Orientation::Vertical);
+            sb.set_range(0, 100);
+        }
+        rtl.set_direction(TextDirection::RightToLeft);
+        for value in [0, 25, 50, 100] {
+            assert_eq!(
+                ltr.value_to_pixel_pos(value),
+                rtl.value_to_pixel_pos(value),
+                "a vertical bar moved when only the direction changed (value {value})"
+            );
+        }
+    }
+
+    /// The direction is reachable from the property API and the token written is the token read back.
+    #[test]
+    fn the_direction_round_trips_through_the_property_api() {
+        let mut sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        assert_eq!(sb.get("direction").unwrap().as_str(), Some("ltr"));
+        sb.set("direction", CapabilityValue::String("rtl".to_string())).unwrap();
+        assert_eq!(sb.direction(), crate::core::TextDirection::RightToLeft);
+        assert_eq!(sb.get("direction").unwrap().as_str(), Some("rtl"));
     }
 }

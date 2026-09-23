@@ -316,7 +316,18 @@ impl Draw for CollapsiblePane {
         };
         // The content area is one step more inset than the header, so the two read as
         // separate regions in either appearance.
-        let content_bg = header_bg.blend(&text_color, 0.03);
+        //
+        // # Why the raised step is read rather than blended
+        //
+        // This is what `Colors::surface_container_high` exists for: "a raised step above
+        // `surface_container`". The blend produced the same *intent* but could not express it as a
+        // choice — a theme that wants its nested region flat, or more strongly raised, had no way to
+        // say so, and the token was declared for exactly that purpose and read by nothing (BLUE22 ·
+        // F-9). The blend survives as the fallback for a theme that predates the role.
+        let content_bg = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.surface_container_high)
+            .unwrap_or_else(|| header_bg.blend(&text_color, 0.03));
 
         // --- Draw header background ---
         // A disabled pane dims toward its own ink rather than to a fixed light grey, which
@@ -619,12 +630,27 @@ mod tests {
 
         // The colour each region resolves to under the active theme, computed from the same
         // inputs the draw uses rather than read back out of the SVG.
+        //
+        // # Why the derivation reads `surface_container` rather than `background`
+        //
+        // The pane is a container, so it classifies as `WidgetRole::Surface`, and that role now
+        // resolves to the theme's `surface_container` token instead of to the window's own
+        // `background`. The draw reads it the same way — through the resolved theme style — so the
+        // expectation has to follow the same route or the test is asserting the old role's fill.
+        // The fallback mirrors the draw's own: a theme with no container role falls back to a step
+        // away from the window fill, which is one of that role's defaults.
+        let theme = crate::style::resolved_theme_style("collapsible_pane");
         let window_fill = crate::style::theme_manager()
             .current_theme()
             .map(|active| active.colors.background)
             .unwrap_or(Color::WHITE);
-        let header_expected = window_fill.blend(&Color::BLACK, 0.08);
-        let content_expected = header_expected.blend(&Color::BLACK, 0.03);
+        let text_color = theme.as_ref().and_then(|t| t.text_color).unwrap_or(Color::rgb(0, 0, 0));
+        let header_expected = theme
+            .as_ref()
+            .and_then(|t| t.background_color)
+            .filter(|resolved| *resolved != window_fill)
+            .unwrap_or_else(|| window_fill.blend(&text_color, 0.08));
+        let content_expected = header_expected.blend(&text_color, 0.03);
         let rgb = |c: Color| format!("{},{},{}", c.r, c.g, c.b);
 
         let mut svg_backend = SvgPaintBackend::new(Size::new(200, 100));

@@ -69,21 +69,76 @@ cd "$ROOT_DIR"
 
 SUMMARY_ONLY=0
 FILTER=""
+ALLOW_TOOLCHAIN_SWITCH=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --summary) SUMMARY_ONLY=1 ;;
+    --allow-toolchain-switch) ALLOW_TOOLCHAIN_SWITCH=1 ;;
     --filter)
       shift || true
       FILTER="${1:-}"
       ;;
     *)
       echo "unknown argument: $1" >&2
-      echo "usage: tools/run_all_gates.sh [--summary] [--filter SUBSTRING]" >&2
+      echo "usage: tools/run_all_gates.sh [--summary] [--filter SUBSTRING] [--allow-toolchain-switch]" >&2
       exit 2
       ;;
   esac
   shift || true
 done
+
+# ── Toolchain guard ─────────────────────────────────────────────
+#
+# 21 of the 59 gates shell out to `cargo`. If the resolved `cargo` is a *different
+# toolchain* than the one this workspace's `target/` was built with, every one of
+# those 21 pays a **full rebuild of the crate** — which took a real run from 432 s
+# to over 45 minutes and made it report `NOT-RUN` for the gates it never reached.
+#
+# That is a property of the *invocation*, not of the gates: it happens by putting
+# another toolchain's `bin/` on `PATH` (a `nightly` directory ahead of the default
+# `stable`), which looks like a harmless way to make `cargo` resolvable when the
+# default one is broken. It is not, and its symptom — a run that appears to hang —
+# is indistinguishable from a genuine wedge, so it is worth failing loudly instead.
+#
+# # How the switch is detected
+#
+# The signal is the **resolved `cargo` binary's path**, not `RUSTUP_TOOLCHAIN`:
+# rustup reports the active toolchain *consistently with* whatever override is in
+# force, so comparing the two agrees in both cases (measured, not assumed). The
+# difference is where `cargo` lands:
+#
+#   default                       ~/.cargo/bin/cargo          ← rustup's proxy
+#   nightly's bin/ first on PATH  ~/.rustup/toolchains/<tc>/bin/cargo
+#
+# A rustup proxy is a directory literally named `.cargo`; a toolchain binary lives
+# under a `toolchains/` directory. So "does the resolved path contain
+# `/toolchains/`" is the question, and it has no false positive on a normal
+# install (and none at all without rustup, which the first line handles).
+check_toolchain_is_consistent() {
+  local resolved
+  resolved="$(command -v cargo 2>/dev/null)" || return 0
+  [[ -n "$resolved" ]] || return 0
+  [[ "$resolved" == *"/toolchains/"* ]] || return 0
+  cat >&2 <<EOF
+run_all_gates: refusing to run with a toolchain binary directly on PATH.
+
+  resolved cargo: $resolved
+
+\`cargo\` here is a toolchain's own binary rather than rustup's proxy, so this is not
+the toolchain the workspace's \`target/\` was built with. Every gate that shells out
+to \`cargo\` would pay a full rebuild: a 432 s sweep becomes the better part of an
+hour and reports \`NOT-RUN\` for the gates it never reaches, which is
+indistinguishable from a wedge.
+
+Use the default toolchain (do not put a \`toolchains/*/bin\` directory on PATH),
+or pass --allow-toolchain-switch if a cold rebuild is what you want.
+EOF
+  return 1
+}
+
+if [[ "$ALLOW_TOOLCHAIN_SWITCH" -eq 0 ]]; then
+  check_toolchain_is_consistent || exit 3
+fi
 
 # Per-gate budget. Larger than `RW_TIMEOUT_DEFAULT` because a gate may drive
 # several `cargo` invocations across profiles (check_profiles runs ~15), and a

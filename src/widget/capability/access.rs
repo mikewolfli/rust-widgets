@@ -338,6 +338,7 @@ pub fn default_widget_property_default_value(
             "text_visible" => CapabilityValue::Bool(true),
             "orientation" => CapabilityValue::String("horizontal".to_string()),
             "inverted_appearance" => CapabilityValue::Bool(false),
+            "direction" => CapabilityValue::String("ltr".to_string()),
             "progress" => CapabilityValue::Float(0.0),
             _ => return None,
         },
@@ -348,6 +349,7 @@ pub fn default_widget_property_default_value(
             "single_step" => CapabilityValue::Int(1),
             "page_step" => CapabilityValue::Int(10),
             "orientation" => CapabilityValue::String("horizontal".to_string()),
+            "direction" => CapabilityValue::String("ltr".to_string()),
             "slider_size" => CapabilityValue::Float(0.1),
             "slider_position" => CapabilityValue::Float(0.0),
             _ => return None,
@@ -372,6 +374,9 @@ pub fn default_widget_property_default_value(
             "decimals" => CapabilityValue::UInt(0),
             "prefix" => CapabilityValue::String(String::new()),
             "suffix" => CapabilityValue::String(String::new()),
+            // A fresh box holds its minimum with no decimals, no unit marks and no special text, so the
+            // two derived strings are both `"0"` — the same answer `formatted_value` gives.
+            "display_text" | "value_text" => CapabilityValue::String("0".to_string()),
             "special_value_text" => CapabilityValue::Null,
             "wrapping" => CapabilityValue::Bool(false),
             _ => return None,
@@ -470,6 +475,7 @@ pub fn default_widget_property_default_value(
             "movable" => CapabilityValue::Bool(false),
             "tab_min_width" => CapabilityValue::UInt(40),
             "tab_max_width" => CapabilityValue::UInt(200),
+            "direction" => CapabilityValue::String("ltr".to_string()),
             _ => return None,
         },
         WidgetKind::Calendar => match property_name {
@@ -507,6 +513,11 @@ pub fn default_widget_property_default_value(
             "max_length" => CapabilityValue::Null,
             "read_only" => CapabilityValue::Bool(false),
             "cursor_position" => CapabilityValue::UInt(0),
+            // A fresh field shows nothing but its value, so every decoration slot is empty and the
+            // derived pair is "no counter" / "nothing refused".
+            "prefix" | "suffix" | "helper" | "error" => CapabilityValue::String(String::new()),
+            "counter" => CapabilityValue::Null,
+            "over_limit" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::ListView => match property_name {
@@ -692,6 +703,7 @@ pub fn default_widget_property_default_value(
             "title" => CapabilityValue::String(String::new()),
             "item_count" => CapabilityValue::UInt(0),
             "hovered_index" => CapabilityValue::Null,
+            "direction" => CapabilityValue::String("ltr".to_string()),
             _ => return None,
         },
         WidgetKind::MenuBar => match property_name {
@@ -831,6 +843,7 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::DropZone => match property_name {
             "accepted_type" => CapabilityValue::String("text/plain".to_string()),
+            "state" => CapabilityValue::String("idle".to_string()),
             "hovered" => CapabilityValue::Bool(false),
             _ => return None,
         },
@@ -1174,6 +1187,7 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::AppBar => match property_name {
             "title" => CapabilityValue::String(String::new()),
+            "direction" => CapabilityValue::String("ltr".to_string()),
             _ => return None,
         },
         WidgetKind::MobileDatePicker => match property_name {
@@ -1195,6 +1209,12 @@ pub fn default_widget_property_default_value(
         WidgetKind::Rating => match property_name {
             "value" => CapabilityValue::Float(0.0),
             "max" => CapabilityValue::UInt(5),
+            "star_size" => {
+                CapabilityValue::UInt(crate::widget::metrics::dimensions::RATING_STAR_SIZE as u64)
+            }
+            // Unrated, so nothing is filled — and the text says so rather than claiming "0 of 5".
+            "fill" => CapabilityValue::Float(0.0),
+            "display_text" => CapabilityValue::String("no rating".to_string()),
             _ => return None,
         },
         WidgetKind::Avatar => match property_name {
@@ -1335,6 +1355,15 @@ pub fn default_widget_property_default_value(
         WidgetKind::AutoCompleteEdit => match property_name {
             "text" => CapabilityValue::String(String::new()),
             "suggestion_count" => CapabilityValue::UInt(0),
+            // `Null` is the default for "nothing highlighted", matching what `get` publishes.
+            "selected_index" => CapabilityValue::Null,
+            "selected_suggestion" => CapabilityValue::Null,
+            "dropdown_visible" => CapabilityValue::Bool(false),
+            // `AutoCompleteEdit::new` seeds `max_visible` with 5, so that is the default a fresh
+            // control reports and therefore the one the schema must publish.
+            "max_visible" => CapabilityValue::UInt(5),
+            "can_undo" => CapabilityValue::Bool(false),
+            "can_redo" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::MultiSelectComboBox => match property_name {
@@ -1347,6 +1376,10 @@ pub fn default_widget_property_default_value(
             "max_value" => CapabilityValue::Float(100.0),
             "lower" => CapabilityValue::Float(25.0),
             "upper" => CapabilityValue::Float(75.0),
+            // The control's own default is `Horizontal`; publishing the matching token is what lets
+            // the schema-driven property API round-trip it.
+            "orientation" => CapabilityValue::String("horizontal".to_string()),
+            "direction" => CapabilityValue::String("ltr".to_string()),
             _ => return None,
         },
         WidgetKind::FloatingLabel => match property_name {
@@ -1434,6 +1467,12 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::ShortcutEditor => match property_name {
             "filter_text" => CapabilityValue::String(String::new()),
+            // A freshly constructed editor has an empty table, so every derived count is zero and the
+            // empty-state flag is true. The control's own accessors are the authority; these mirror them.
+            "shortcut_count" | "visible_count" | "category_count" => CapabilityValue::UInt(0),
+            "categories" => CapabilityValue::String(String::new()),
+            "empty" => CapabilityValue::Bool(true),
+            "can_undo" | "can_redo" => CapabilityValue::Bool(false),
             _ => return None,
         },
 

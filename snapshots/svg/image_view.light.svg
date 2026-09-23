@@ -2,7 +2,7 @@
 <!-- control: image_view | appearance: light -->
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(240,240,240,1.00)" />
-  <rect x="0" y="0" width="240" height="120" fill="rgba(240,240,240,1.00)" />
+  <rect x="0" y="0" width="240" height="120" fill="rgba(243,237,247,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
   <path d="M117 53h1v1h-1zM118 53h1v1h-1zM119 53h1v1h-1zM120 53h1v1h-1zM116 54h1v2h-1zM117 54h1v2h-1zM120 54h1v2h-1zM121 54h1v2h-1zM120 56h1v2h-1zM121 56h1v2h-1zM119 58h1v2h-1zM120 58h1v2h-1zM118 60h1v1h-1zM119 60h1v1h-1zM118 63h1v2h-1zM119 63h1v2h-1z" fill="rgba(0,0,0,1.00)" />
 </svg>

@@ -2,6 +2,6 @@
 <!-- control: menu_bar | appearance: light -->
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(240,240,240,1.00)" />
-  <rect x="0" y="0" width="240" height="28" fill="rgba(226,226,226,1.00)" />
+  <rect x="0" y="0" width="240" height="28" fill="rgba(228,223,232,1.00)" />
   <line x1="0" y1="27" x2="240" y2="27" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
 </svg>

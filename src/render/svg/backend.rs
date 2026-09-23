@@ -567,8 +567,11 @@ impl PaintBackend for SvgPaintBackend {
         // Same advance heuristic as the software rasteriser, so layout computed
         // against the SVG output agrees with the rasterised frame.
         let scale = self.dpi_scale;
-        let line_height = (font.size() * scale).max(1.0);
-        let height = line_height.round() as u32;
+        // The font's effective leading, not its point size: the software surface derives its line
+        // box the same way, and the two backends must agree about how tall a line is or a control
+        // sized against one renders wrong in the other.
+        let line_height = font.effective_line_height().max(1.0) * scale;
+        let height = line_height.round().max(1.0) as u32;
         let ascent = (line_height * 0.8).round() as u32;
         let descent = height.saturating_sub(ascent);
         let shaped = self.shape_text(text, font);
@@ -601,10 +604,17 @@ impl PaintBackend for SvgPaintBackend {
             }
         }
         let mut total_advance = 0.0f32;
+        let tracking = font.letter_spacing() * scale;
         for cluster in &mut clusters {
             cluster.advance =
                 crate::render::estimate_cluster_advance(&cluster.text, font.size(), scale);
             total_advance += cluster.advance;
+        }
+        // `clusters - 1` gaps: a trailing tracking would push a centred or right-aligned run off its
+        // own centre. The rasteriser's `shape_text` counts the same way, so the SVG output and the
+        // rasterised frame agree about how wide a tracked run is.
+        if tracking != 0.0 && !clusters.is_empty() {
+            total_advance += tracking * (clusters.len() - 1) as f32;
         }
         ShapedText { clusters, advance: total_advance }
     }

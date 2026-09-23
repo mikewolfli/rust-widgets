@@ -963,7 +963,7 @@ rightPadding: padding + (mirrored ? down.width : up.width)
 |---|---|---|---|
 | **F-9** | 主题装饰 token 的消费者 | P2-1 | 7 个角色已在 `Colors` 里，但只有 `outline` 被焦点环消费。需让卡片/面板/模态遮罩/吐司真正读 `scrim`/`surface_container*`/`inverse_*` |
 | **F-10** | `Font::letter_spacing` / `line_height`（2× 文本缩放的前置） | P2-3 | **未做** |
-| **F-11** | 另立计划：声明式原语（portal/生命周期/上下文/错误边界）、`code_editor` 语法配色 | P2-4 | BLUE21 已明确「另立计划」 |
+| **F-11** | **已落位到 [`blue23.md`](blue23.md) §5A**：声明式原语（`portal`/生命周期钩子/上下文传播/错误边界）+ `code_editor` 语法配色 | P2-4 | BLUE21 说「另立计划」而那时**那个计划不存在**；现已在 BLUE23 立为 **§5A（P1-12～P1-16）**，含逐条判据与批次（批 7/8） |
 | **F-12** | A.4.1 文本输入的**装饰槽模型**（`prefix`/`suffix`/`helper`/`error`/`counter`） | BLUE21 A.4.1 | 整块未做 |
 
 ### F.2.5 门禁与工程债
@@ -1132,6 +1132,175 @@ rightPadding: padding + (mirrored ? down.width : up.width)
 | **9 个控件家族的快照 `rect`/`line` 几何** | **全部逐字节不变**（比 §8 判据 8 的「人眼判为一致」更强） |
 
 ---
+
+## F.7 第 71 轮状态更新（2026-09-23 同日续，第 71 轮）
+
+> 执行记录见 [`../log/log-20260923-1.md`](../log/log-20260923-1.md) 第 71 轮（§16 起）。
+> **本轮把 F-4 六条全部做完，并把 §B.8 的最后一项 `grid_table` 结清 —— §B.8 共 11 项至此全部结束。**
+
+### F.7.1 本轮完成（有独立判据）
+
+| 计划条目 | 状态 | 判据 |
+|---|---|---|
+| **F-4** `tab_bar` | ✅ | 第 70 轮遗留的编译断点先修；补 `direction` 属性契约 + schema + 默认值；**新增 5 测试**（右端起排 / 溢出不出界 / 默认逐字节不变 / 竖条不镜像 / 属性往返） |
+| **F-4** `app_bar` | ✅ | 两个 affordance 改由 `leading_zone()`/`trailing_zone()` **一处推导**，绘制与命中同源；7 个常量具名；**新增 5 测试** |
+| **F-4** `scroll_bar` | ✅ | 两个映射各接一次 `direction`（水平轴才转，竖直轴是块流）；**新增 4 测试** |
+| **F-4** `menu` | ✅ | 补 `38/40`、`37/39`、`36/35`；水平跟方向、竖直不跟；环绕与跳过 separator/disabled；**新增 6 测试** |
+| **F-4** `progress_bar` / `range_slider` | ✅ | 补 schema + 默认值（并补上 `range_slider.orientation` 这条**从未进过 schema** 的属性） |
+| **§B.8 优先级 4** `group_box` | ✅ | `indicator_reserve()` 从「声明」变「交付」：两个 arm 都读它；**新增 2 测试** |
+| **§B.8 优先级 11** `grid_table` | ✅ | 五处独立手算 → `visible_column_spans` + `column_span_at_x` + `RESIZE_HANDLE_WIDTH`；**新增 3 测试** |
+
+### F.7.2 本轮**新发现并修复**的缺陷（不在原计划里）
+
+| # | 缺陷 | 危害 | 修法 |
+|---|---|---|---|
+| **R-17** | `default_property_value` 不认新属性 ⇒ 「加了 schema 却没加默认值」等于对 schema 消费者**不交付** | 既有测试 `schema_defaults_are_readable_and_writable_when_declared` 主动变红 | 为 6 个 kind 补 `direction` 默认值 + `RangeSlider.orientation` |
+| **R-18** | `app_bar` 的命中区是**第二套手算**（`48`/`80`），与绘制的 `12`/`16` 各写一份 | 镜像后「画对了、点不到」 | 一处推导、两处消费（`leading_zone`/`trailing_zone`） |
+| **R-19** | `group_box::indicator_reserve` 在**所有** profile 下 never used（两个 arm 各自重算） | 文档声称「两个 arm 都读它」而代码不是 | 两个 arm 都改为读该访问器 |
+| **R-20** | `grid_table` 的列几何被**五遍**独立手算，停止规则五份不同 | 拖柄/表头/单元格三者只要一份被改就会错位 | 单一 `visible_column_spans`；`RESIZE_HANDLE_WIDTH` 具名 |
+| **R-21**（**本轮我自己引入又修好的**） | `visible_column_spans` 首版把「装得下」的停止规则复用给了命中路径，导致**数据区最左侧 1px 点不到第一列** | 被既有 2 条测试立即抓住 | 停止规则改为「**开始**在 extent 内即收入」；包含性测试移到 `column_span_at_x` |
+
+### F.7.3 本轮登记的已知缺陷（**留者不静默**）
+
+| # | 缺陷 | 现状 |
+|---|---|---|
+| **G-1** | `FlexLayout` 孩子地板之和 > band 时整体缩放 | 可见后果仅 `tab_widget` 两列 72→71 / 64→63 |
+| **G-2** | `ScrollBar::pixel_pos_to_value` / `value_to_pixel_pos` **不是精确互逆**（前者从 band 边缘量，后者先跳 arrow cell） | **预存在、与 RTL 无关**；本体只保证两方向下同向单调。修它会改所有 `scroll_bar` 快照，另行处理 |
+| **G-3** | `menu` 的 Left/Right 在**子菜单**没有出口 | 本仓 `Menu` 无嵌套菜单模型 ⇒ 是模型不存在，不是做漏了 |
+
+### F.7.4 本轮验证（全量一次）
+
+| 项 | 结果 |
+|---|---|
+| `cargo test --lib --no-default-features --features desktop` | **5592 passed / 0 failed**（第 70 轮 5567，+25） |
+| `cargo clippy --all-targets --no-default-features --features desktop` | **0 warning / 0 error** |
+| 五个 profile（desktop/tablet/mobile/mini/embedded） | 全部 `Finished`，**每个 profile 0 warning** |
+| `tools/check_android_cross.sh` | `android cross-target checks passed.` |
+| 快照导出 + 几何比对 | `checked=188 skipped=0 failed=0`；本轮涉及的 10 个控件（除 G-1 已登记的 `tab_widget` 外）**几何逐字节不变** |
+
+> 设计上的理由：默认方向是 `LeftToRight`，所以本轮所有 RTL 改动对**不请求方向**的调用方
+> 是**零像素影响** —— 这也正是每条都配一条「默认逐字节不变」测试的原因。
+
+### F.7.5 下一批（按用户指示的顺序）
+
+| 优先 | 条目 | 说明 |
+|---|---|---|
+| 1 | **F-5** a11y 三态填充 | 比计划描述的更差：`grep "A11yState {"` 在生产代码 **0 命中**，`checked`/`mixed` 无人填 —— 需接 `checkbox`/`switch`/`radio` |
+| 2 | **F-6** 契约加厚 | `drop_zone` 只有 `hovered`（缺另 4 个反馈态）；`auto_complete_edit` / `rating` / `shortcut_editor` 契约过薄 |
+| 3 | **F-12** 输入装饰槽 | `lineedit` 无 `prefix`/`suffix`/`helper`/`error`/`counter`；`spin_box` 只有 prefix/suffix |
+| 4 | **F-13** 剩余 3 条门禁 | 每条必须配**反向注入**证明；用户指示「门禁先等一下」⇒ **最后做** |
+| — | **F-11** 声明式原语 | ➡️ **已落位到 [`blue23.md`](blue23.md) §5A**（P1-12～P1-16）|
+
+---
+
+## F.8 第 71 轮（续）状态更新 — F-5 / F-6 / F-12 与全量门禁收口
+
+> 执行记录见 [`../log/log-20260923-1.md`](../log/log-20260923-1.md) 第 71 轮 §27 起。
+> 本轮把 **F-5 / F-6 / F-12 全部做完**，并跑出 **PASS=58 FAIL=0** 的全量门禁。
+
+### F.8.1 本轮完成
+
+| 计划条目 | 状态 | 判据 |
+|---|---|---|
+| **F-5** a11y 三态填充 | ✅ | 实测发现比计划描述更差：**生产代码里根本没有 `A11yState` 的生产者**（`grep` 命中全在 tree/provider/tests）。新增 `A11yState::from_widget`（唯一映射）+ 后端 `widget_a11y_state` 桥；**5 条测试**，含一条**端到端**的（挂载 check box → 属性写入 → a11y 改判） |
+| **F-6** `drop_zone` 反馈态 | ✅ | 一个 `hovered: bool` → `DropZoneState` 五态（`idle`/`hovering`/`accepted`/`rejected`/`dropped`）。旧布尔使**可接受与将被拒绝的反馈完全相同**，是主动误导；**6 条测试**，含「五态两两 SVG 不同」 |
+| **F-6** 三个薄契约 | ✅ | `auto_complete_edit`（+6 属性、+5 访问器）、`rating`（+`star_size`/`fill`/`display_text`）、`shortcut_editor`（+7 派生属性）；**8 条新测试** |
+| **F-12** 输入装饰槽 | ✅ | 新模块 `src/widget/decorations.rs`（`DecorationSlots` / `DecorationMetrics` / `DecorationLayout`，**12 条单测**）；`line_edit` + `spin_box` 接入；**9 条控件测试** |
+
+### F.8.2 本轮**新发现并修复**的缺陷
+
+| # | 缺陷 | 危害 | 修法 |
+|---|---|---|---|
+| **R-25** | `Color::blend` 把权重夹在 `0.0..=1.0` ⇒ 负权重是**静默 no-op** | 我第一版写的 `blend(&ink, -0.10)` 会让 `Rejected` 与 `Idle` **逐字节相同**——即「改进了但新缺陷隐身」 | 改用本仓已有的往黑里压惯例 |
+| **R-26** | `LineEdit::set_text` **不**执行 `max_length`，而 `insert_text` 执行 | 程序写入可超过自己的限制，`counter` 随即报 `8/5` | 两条路径都夹取；抽出 `byte_index_of_char`（`max_length` 数**字符**，切片是**字节**） |
+| **R-27** | `svg::text_ink_box` 只返回**第一条**文字路径 | 多串控件（装饰槽 / 支持行）的断言会**默默取错运行** | 新增 `svg::text_ink_boxes` 返回全部；测试改为排序后按位置选 |
+| **R-28** | `meter` 的一个测试**真 flaky**（6 跑红 2） | 使「全量测试绿」这个结论不可信；且它在门禁报红时会被归错因 | 取 crate 自己的 `theme::theme_test_guard()`；修复后**连跑 15 次全绿** |
+
+### F.8.3 全量门禁（首次报 5 个 FAIL，逐个定性后清零）
+
+| 门禁 | 定性 | 处理 |
+|---|---|---|
+| `check_theme_fixtures.sh` | **假红** | 并行 cargo 争 `target/` 锁；单独重跑 PASS |
+| `check_harmony_cross.sh` | **假红** | 同上 |
+| `check_profiles.sh` | **真红（我引入）** | `"OK".to_string()` 在 `alloc_frugal` 下 `ToString` 不在作用域 ⇒ 改 `String::from` |
+| `check_control_feature_visible_in_own_snapshot.sh` | **真红（合法变更）** | `tab_widget` 第二个 tab 的标记 87→86 / 74-64→73-63，**是 G-1 的已知可见后果**；按门禁自己的说明更新标记并写清理由 |
+| `check_control_rendering.sh` | **正红** | `window` 不再需要 P2 表面重合豁免（F-9 的成果）；删除该条目，列表变空 |
+
+### F.8.4 本轮验证（全量一次）
+
+| 项 | 结果 |
+|---|---|
+| `cargo test --lib --no-default-features --features desktop` | **5629 passed / 0 failed**，**连跑 15 次全绿** |
+| `cargo clippy --all-targets --no-default-features --features desktop` | **0 warning / 0 error** |
+| 五个 profile（含 `--all-targets`） | 全部 `Finished`，**0 warning** |
+| `tools/check_profiles.sh` | `All profile checks passed.` |
+| `tools/check_harmony_cross.sh` | `All HarmonyOS cross-target checks passed.` |
+| `tools/check_android_cross.sh` | `android cross-target checks passed.` |
+| **`tools/run_all_gates.sh`** | **PASS=58 FAIL=0 TIMEOUT=0 NOT-RUN=0 SKIP=1** |
+| `export_control_svgs` | `checked=188 skipped=0 failed=0` |
+| `tools/generate_control_index.py` | 188 控件 / 17 家族，`control.md` **无变化** |
+
+### F.8.5 剩余
+
+| 优先 | 条目 |
+|---|---|
+| 1 | **F-13** §6.7 剩余 3 条门禁（`check_implicit_size_uses_metrics` / `check_spacing_is_not_sibling_layout` / `check_focus_ring_respects_reason`），每条配**反向注入**。用户指示「门禁先等一下」⇒ 下一轮 |
+| — | **F-11** 声明式原语 | ➡️ **已落位到 [`blue23.md`](blue23.md) §5A（P1-12～P1-16）**。本节不再是「另立计划」的占位——那个计划现在存在 |
+| — | **F-15** `tests/mounted_control_follows_window_test.rs`（需 macOS 窗口会话，非本轮引入） |
+
+---
+
+## F.9 第 71 轮（续 6）— 数据控件的快照不再空白
+
+> 执行记录见 [`../log/log-20260923-1.md`](../log/log-20260923-1.md) 第 71 轮 §49 起。
+> 用户要求：「数据控件，可以随机用一组手写数据填进去吧，不至于空白吧。」
+
+### F.9.1 本轮完成
+
+| 新增 | 作用 | 判据 |
+|---|---|---|
+| `src/widget/sample_data.rs` | 手写的样本数据（表头/行、列表项、菜单项、页签、柱/饼/折线/ K 线、字体名、树行） | 自带 **5 条测试**（行填满列 / 值不退化 / 图表跨量级 / K 线包住实体 / owned 与常量一致） |
+| `src/widget/sample_fill.rs` | 把样本数据按**规范名**下转并写入控件 | **3 条测试**，其中一条遍历**每一个**声明的名字要求下转成功 |
+| 接入点 | `export_control_svgs`（`sample-filled=18`）+ `census_all_controls` | 生产路径 `WidgetFactory::create` **不动** |
+
+### F.9.2 🔴 本轮最重要的区分：形状少 ≠ 控件坏了
+
+实测后把「空白」和「正确的最小画面」分开了，**没有去动本来就对的控件**：
+
+| 控件 | 结论 |
+|---|---|
+| `list_view` / `list_box` / `data_grid` / `grid_table` / `virtual_table` / `table_widget` / `tree_view` | **真空白**（只有外框）⇒ 本轮修复 |
+| `tab_widget` | **不是** —— 构造器自己就加了两页。我曾错误地又加三页（R-32），已改回不填 |
+| `bar_chart` / `pie_chart` / `line_chart` | **不是** —— 构造器已 `set_bars`/`set_slices`/`set_data`。它们是「喂数据」这种做法**本来就对**的正面证据 |
+| `combo_box` / `dropdown` / `*_combo_box` | **不是** —— 收起的字段只画当前值 + 指示器，条目在 popup 里 |
+| `menu` | **不是** —— 生来隐藏是它文档写明的行为 |
+
+### F.9.3 本轮**新发现并修复**的缺陷
+
+| # | 缺陷 | 危害 | 修法 |
+|---|---|---|---|
+| **R-29** | `virtual_table` 被当作 `TableWidget` 填 | 下转 `None` ⇒ **默默没填** | 单独一种类型，读 `IncrementalTableDataSource` |
+| **R-30** | 四个 `*combo_box` 共用一个 `widget_as_mut::<ComboBox>` 臂 | `EditableComboBox`/`FontComboBox`/`MultiSelectComboBox` 是三个独立类型 ⇒ 四个里三个没填 | 四个臂各写自己的 |
+| **R-31** | 把 `list_widget` 当成一个名字 | 注册表**只发布 `list_view`** ⇒ 该臂是死代码（`context_menu` 则是 `menu` 的 alias，走同一臂）| 删掉；新增覆盖测试防复发 |
+| **R-32** | 给 `tab_widget` 又加了三页 | 两页变五页，快照与构造器不一致 | 改为**不填** |
+| **F-14'** | `tools/control_rendering_baseline.txt` **早已过期** | **在干净 `HEAD` 上**实测：已提交 baseline 与实际相差 **166 行**（例：`switch` 10920→708；`candlestick_chart` 0→876；`table` 716→9319）| 重生（188 行）；`check_control_rendering.sh` 重新全绿。**取证过程见日志 §53** |
+
+> **R-29～R-31 都是静默失败**，靠读代码不能发现——它们是被一条「每个声明的名字都必须下转成功」的断言逐条抓出的。
+> 这正是把「覆盖」写成测试而不是写进注释的价值。
+
+### F.9.4 本轮验证
+
+| 项 | 结果 |
+|---|---|
+| `cargo test --lib --no-default-features --features desktop` | **5637 passed / 0 failed** |
+| `cargo clippy --all-targets --no-default-features --features desktop` | **0 warning / 0 error** |
+| 五个 profile（含 `--all-targets`） | 全部 `Finished`，**0 warning** |
+| `examples/export_control_svgs` | `checked=188 skipped=0 failed=0 sample-filled=18` |
+| `tools/check_control_rendering.sh` | `checked=188 skipped=0 failed=0` |
+| 快照形状数 | `virtual_table` 3→**51**、`table_widget` 5→**37**、`grid_table` 3→**30**、`data_grid` 3→**23**、`tab_bar` 8→**17**、`list_box` 3→**15**、`cascader` 6→**14** |
+
+> **未重跑全量门禁**：用户在扫描过程中主动中断并指示「这几个不用跑了，回写记录吧」。
+> 因此本节只声明实测过的项，不把「应当会过」写成结论（原则 #56）。
 
 # 附录 G — 多语言文本：从「拉丁点阵」到「完整塑形」（**用户指令：多语言完美支持**）
 

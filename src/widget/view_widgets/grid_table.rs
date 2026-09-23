@@ -124,6 +124,13 @@ impl GridTableWidget {
     /// See [`Self::DEFAULT_GRID_COLOR`].
     const DEFAULT_SELECTED_BG: Color = Color::rgb(200, 220, 250);
 
+    /// How far either side of a column's right edge the resize handle answers, in pixels.
+    ///
+    /// Named because the hit test and the drawn boundary are the same edge: the handle used the
+    /// literal `5` while the painter drew the column's own `x + width`, so changing one could move
+    /// the grab region away from the line it is meant to be grabbing.
+    const RESIZE_HANDLE_WIDTH: u32 = 5;
+
     /// Creates a new empty grid table with default appearance and the given geometry.
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -275,7 +282,7 @@ impl GridTableWidget {
     /// each defaulting to a reasonable initial width.
     fn ensure_column_widths(&mut self, count: usize) {
         if self.column_widths.len() < count {
-            let default_w = 120u32.max(self.min_column_width);
+            let default_w = self.default_column_width();
             self.column_widths.resize(count, default_w);
         }
     }
@@ -295,7 +302,14 @@ impl GridTableWidget {
 
     /// Returns the width of a specific column, or a default if unset.
     pub fn column_width(&self, col: usize) -> u32 {
-        self.column_widths.get(col).copied().unwrap_or(120u32.max(self.min_column_width))
+        // The floor is applied on the way *out*, so a width that entered the vector below
+        // `min_column_width` — or a `min_column_width` raised after the fact — is still reported as the
+        // column the painters, the hit tests and the fit walk all agree on.
+        self.column_widths
+            .get(col)
+            .copied()
+            .unwrap_or_else(|| self.default_column_width())
+            .max(self.min_column_width)
     }
 
     // -----------------------------------------------------------------------
@@ -350,6 +364,18 @@ impl GridTableWidget {
     // -----------------------------------------------------------------------
 
     /// Recalculates how many rows and columns fit in the current viewport.
+    ///
+    /// # Why the walks below are the *only* place the fit is decided
+    ///
+    /// Five paths need to know where a column starts or ends: the header painter, the data-cell
+    /// painter, the pointer hit test, the header hit test and the resize-handle hit test. Each used to
+    /// walk the widths itself, with its own copy of the default width, its own `min_column_width`
+    /// clamp and its own stopping rule — so "which column is under this pixel" was answered five
+    /// slightly different ways. They agree only while all five are edited together, which is exactly
+    /// the arrangement that put a resize handle under the neighbouring column once before.
+    ///
+    /// [`Self::column_span_at`] and [`Self::column_span_at_x`] are now the one derivation, and the
+    /// five consumers name the offset they have.
     fn update_visibility(&mut self) {
         let rect = self.base.geometry();
         let rh = self.row_height.max(1) as i32;
@@ -362,12 +388,13 @@ impl GridTableWidget {
         self.visible_rows = if rh > 0 { (data_h / rh) as usize } else { 0 };
         self.visible_columns = 0;
 
-        // Walk column widths to count how many fit horizontally
+        // `data_w` is an *extent*, which is what the fit test wants: "would this column end past the
+        // data area".
         let mut acc = 0i32;
         let cols = self.column_count();
         self.ensure_column_widths(cols);
-        for &w in &self.column_widths {
-            let iw = w as i32;
+        for ci in 0..cols {
+            let iw = self.column_width(ci) as i32;
             if acc + iw > data_w {
                 break;
             }
@@ -377,6 +404,77 @@ impl GridTableWidget {
 
         self.visible_rows = self.visible_rows.max(1);
         self.visible_columns = self.visible_columns.max(1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Column geometry — one derivation, five consumers
+    // -----------------------------------------------------------------------
+
+    /// The width every column falls back to when the caller has not sized it.
+    ///
+    /// Both the default and the floor are the same fact — a column is never narrower than
+    /// [`Self::min_column_width`] and its unsized width is at least 120 — and they were spelled
+    /// separately in four places. Read through [`Self::column_width`] by every walk.
+    fn default_column_width(&self) -> u32 {
+        120u32.max(self.min_column_width)
+    }
+
+    /// The columns that fit in the data area, in draw order: `(column, x, width)` with `x` **relative
+    /// to the data area's left edge**.
+    ///
+    /// # Why the extent is a parameter and not `geometry()`
+    ///
+    /// The two callers measure room differently, and both are right:
+    ///
+    /// * a painter asks "how much room from my own left edge to the control's far edge", because every
+    ///   run it draws starts at `scroll_column`; a horizontally scrolled table therefore has a *smaller*
+    ///   budget, not a shifted one;
+    /// * a hit test asks "how far is this pixel into the data area", which is the same extent measured
+    ///   from the same edge — the pointer's x *is* the offset.
+    ///
+    /// Passing the extent keeps one loop for both instead of a "fit" copy and a "hit" copy that can
+    /// disagree about the last column.
+    ///
+    /// # Why the containment test is on the *start*, not the end
+    ///
+    /// A column is in the run when it **begins** inside the extent, even if it ends past it. Testing
+    /// `x + width <= extent` instead would drop the last column as soon as it was partly scrolled out —
+    /// and for a pointer test that is fatal: [`Self::column_span_at_x`] passes the pointer's own offset
+    /// as the extent, so a 100 px column would be "not in the run" for every offset below 100 and the
+    /// first column would stop answering at all. The painter wants the same rule: a column that starts
+    /// on screen is drawn and clipped, not skipped.
+    fn visible_column_spans(&self, extent: i32) -> Vec<(usize, i32, i32)> {
+        let cols = self.column_count();
+        let mut spans = Vec::new();
+        let mut x = 0i32;
+        for ci in self.scroll_column..cols {
+            if x >= extent {
+                break;
+            }
+            spans.push((ci, x, self.column_width(ci) as i32));
+            x += self.column_width(ci) as i32;
+        }
+        spans
+    }
+
+    /// The data column occupying `x_offset` pixels into the data area, as `(column, x, width)`.
+    ///
+    /// The counterpart of [`Self::visible_column_spans`] for a *point*: the extent covers exactly the
+    /// pixels up to and including the pointer, and the span containing it is returned.
+    ///
+    /// Containment is tested here, on the finished spans, rather than inside the walk. The walk asks
+    /// "does this column *start* before the pointer", which is the right question for building the run
+    /// but not for picking a cell: it would return the last *begun* column for a pointer sitting in a
+    /// gap or past every column. Selecting the containing span means "the cell you clicked" and "the
+    /// cell you can see" are the same run, which is what the old, separately-accumulated copy in the
+    /// hit test could not guarantee.
+    fn column_span_at_x(&self, x_offset: i32) -> Option<(usize, i32, i32)> {
+        if x_offset < 0 {
+            return None;
+        }
+        self.visible_column_spans(x_offset.saturating_add(1))
+            .into_iter()
+            .find(|(_, x, w)| x_offset >= *x && x_offset < x + w)
     }
 
     // -----------------------------------------------------------------------
@@ -426,25 +524,8 @@ impl GridTableWidget {
     /// returns which visible column index (within the current scroll window) is hit,
     /// or `None` if past the last column.
     fn horizontal_column_at(&self, x_offset: i32) -> Option<usize> {
-        if x_offset < 0 {
-            return None;
-        }
-        let cols = self.column_count();
-        let default_w = 120u32.max(self.min_column_width) as i32;
-        let mut acc = 0i32;
-        for i in self.scroll_column..cols {
-            let iw = self
-                .column_widths
-                .get(i)
-                .copied()
-                .unwrap_or(default_w as u32)
-                .max(self.min_column_width) as i32;
-            if x_offset >= acc && x_offset < acc + iw {
-                return Some(i - self.scroll_column);
-            }
-            acc += iw;
-        }
-        None
+        let (cardinal, _, _) = self.column_span_at_x(x_offset)?;
+        Some(cardinal - self.scroll_column)
     }
 
     /// Returns the column index of the header at the given point, or `None`.
@@ -461,33 +542,27 @@ impl GridTableWidget {
     }
 
     /// Returns the column whose right-edge resize handle is at `point`, or `None`.
+    ///
+    /// # Why this reads the spans instead of accumulating widths
+    ///
+    /// The handle straddles a boundary: it is the `HANDLE_WIDTH` pixels either side of a column's right
+    /// edge. Accumulating widths here and accumulating them again in the painter is how the handle and
+    /// the line it sits on came apart — the boundary is whichever `x + width` the spans document, so
+    /// asking *them* for it makes the two the same number.
     fn resize_handle_at_point(&self, point: Point) -> Option<usize> {
         let rect = self.base.geometry();
         let rnw = self.row_number_width as i32;
-        let handle_width = 5i32;
+        let header_h = self.header_height as i32;
 
-        if point.y < rect.y || point.y >= rect.y + (self.header_height as i32) {
+        if point.y < rect.y || point.y >= rect.y + header_h {
             return None;
         }
 
-        let cols = self.column_count();
-        let default_w = 120u32.max(self.min_column_width) as i32;
-        let mut acc = rect.x + rnw;
-        for i in self.scroll_column..cols {
-            let iw = self
-                .column_widths
-                .get(i)
-                .copied()
-                .unwrap_or(default_w as u32)
-                .max(self.min_column_width) as i32;
-            let right_edge = acc + iw;
-            // The handle area is the last `handle_width` pixels before the right edge
-            if (point.x - right_edge).abs() <= handle_width {
-                return Some(i);
-            }
-            acc += iw;
-            if acc > rect.x + rect.width as i32 {
-                break;
+        let extent = (rect.x + rect.width as i32) - (rect.x + rnw);
+        let handle_width = Self::RESIZE_HANDLE_WIDTH as i32;
+        for (ci, x, cw) in self.visible_column_spans(extent) {
+            if (point.x - (rect.x + rnw + x + cw)).abs() <= handle_width {
+                return Some(ci);
             }
         }
         None
@@ -754,12 +829,7 @@ impl Draw for GridTableWidget {
             context.draw_rect(header_rect, grid_color);
 
             let mut hx = data_left;
-            for ci in self.scroll_column..cols {
-                let cw = self.column_width(ci) as i32;
-                if hx >= rect.x + rect.width as i32 {
-                    break;
-                }
-
+            for (ci, _, cw) in self.visible_column_spans(rect.x + rect.width as i32 - data_left) {
                 let cell_rect = Rect::new(hx, rect.y, cw as u32, self.header_height);
                 context.draw_rect(cell_rect, grid_color);
 
@@ -833,12 +903,7 @@ impl Draw for GridTableWidget {
             }
 
             let mut cx = data_left;
-            for ci in self.scroll_column..cols.min(self.scroll_column + self.visible_columns) {
-                let cw = self.column_width(ci) as i32;
-                if cx + cw > rect.x + rect.width as i32 {
-                    break;
-                }
-
+            for (ci, _, cw) in self.visible_column_spans(rect.x + rect.width as i32 - data_left) {
                 let cell_rect = Rect::new(cx, cy, cw as u32, self.row_height);
 
                 // Selection highlight
@@ -1312,6 +1377,117 @@ mod tests {
         // Far from edge → None
         let none = tbl.resize_handle_at_point(Point::new(60, 5));
         assert!(none.is_none());
+    }
+
+    /// The `§B.9` judgement for this control: widening a column must move everything that follows it.
+    ///
+    /// # Why this is the criterion and not "the widths are stored"
+    ///
+    /// The defect class this replaces is *five* independent walks of the same widths — the header
+    /// painter, the cell painter, the pointer hit test, the header hit test and the resize-handle hit
+    /// test. A control whose paints and whose hit tests each accumulate their own x agrees with itself
+    /// until one of them is edited, and the failure appears as "the resize handle is next to the line"
+    /// rather than as a bad number. Asserting that a width change *propagates to every consumer* is what
+    /// pins them to one derivation.
+    #[test]
+    fn widening_a_column_moves_every_follower() {
+        fn build(first: u32) -> GridTableWidget {
+            let mut tbl = GridTableWidget::new(Rect::new(0, 0, 600, 400));
+            tbl.set_data_source(Arc::new(TestSource { rows: 5, cols: 5 }));
+            tbl.ensure_column_widths(5);
+            tbl.set_column_width(0, first);
+            tbl.set_column_width(1, 80);
+            tbl.update_visibility();
+            tbl
+        }
+
+        let narrow = build(100);
+        let wide = build(180);
+        let rnw = narrow.row_number_width as i32;
+        let header_y = 5;
+
+        // The column the pointer lands in. Column 0 is 100 px wide, so 110 px in is already inside
+        // column 1; growing column 0 to 180 moves the boundary past the pointer, so it lands on a
+        // different *index* at the same pixel.
+        //
+        // # Why the index changes rather than the position
+        //
+        // The columns do not reflow — each keeps its own width — so widening the first one shifts every
+        // follower rightward, and a fixed pixel falls into an earlier column. Asserting on both the
+        // header and the cell below it is what shows the shift is shared.
+        assert_eq!(narrow.header_at_point(Point::new(rnw + 110, header_y)), Some(1));
+        assert_eq!(
+            wide.header_at_point(Point::new(rnw + 110, header_y)),
+            Some(0),
+            "a wider first column must take over the pixel the follower used to own"
+        );
+        assert_eq!(
+            wide.header_at_point(Point::new(rnw + 180, header_y)),
+            Some(1),
+            "and the follower's header begins at the first column's new right edge"
+        );
+
+        // The resize handle follows the same edge.
+        assert_eq!(narrow.resize_handle_at_point(Point::new(rnw + 100, header_y)), Some(0));
+        assert_eq!(
+            wide.resize_handle_at_point(Point::new(rnw + 100, header_y)),
+            None,
+            "the first column's right edge moved away from x = 100"
+        );
+        assert_eq!(
+            wide.resize_handle_at_point(Point::new(rnw + 180, header_y)),
+            Some(0),
+            "and the handle is now at the new edge"
+        );
+
+        // The data cells move with their headers, which is what "one derivation" has to mean.
+        let row_y = narrow.header_height as i32 + 5;
+        assert_eq!(narrow.cell_at_point(Point::new(rnw + 110, row_y)), Some((0, 1)));
+        assert_eq!(wide.cell_at_point(Point::new(rnw + 110, row_y)), Some((0, 0)));
+    }
+
+    /// A pointer inside the data area's first pixels must hit the **first** column, not `None`.
+    ///
+    /// This is the case that the fit walk and the hit walk genuinely answer differently, and it was a
+    /// real regression when the hit test was made to reuse the fit walk: the fit walk stops at the first
+    /// column whose *end* passes the extent, so handing it the pointer's own small offset dropped the
+    /// column the pointer was standing in.
+    #[test]
+    fn a_pointer_near_the_data_edges_hits_the_first_column_and_row() {
+        let mut tbl = GridTableWidget::new(Rect::new(0, 0, 600, 400));
+        tbl.set_data_source(Arc::new(TestSource { rows: 5, cols: 5 }));
+        tbl.ensure_column_widths(5);
+        tbl.update_visibility();
+
+        let rnw = tbl.row_number_width as i32;
+        let header_h = tbl.header_height as i32;
+        // The very first pixel of the data area, and the very first column's last pixel.
+        assert_eq!(tbl.cell_at_point(Point::new(rnw, header_h)), Some((0, 0)));
+        assert_eq!(tbl.cell_at_point(Point::new(rnw + 119, header_h)), Some((0, 0)));
+        assert_eq!(tbl.cell_at_point(Point::new(rnw + 120, header_h)), Some((0, 1)));
+        // And the gutter and header themselves are not cells.
+        assert_eq!(tbl.cell_at_point(Point::new(rnw - 1, header_h)), None);
+        assert_eq!(tbl.cell_at_point(Point::new(rnw, header_h - 1)), None);
+    }
+
+    /// A column that only *partly* fits is still drawn and still answers — otherwise growing a column
+    /// could make the table's own last column unreachable.
+    #[test]
+    fn a_partly_visible_column_is_still_drawn_and_hit() {
+        let mut tbl = GridTableWidget::new(Rect::new(0, 0, 260, 400));
+        tbl.set_data_source(Arc::new(TestSource { rows: 5, cols: 5 }));
+        tbl.ensure_column_widths(5);
+        for i in 0..5 {
+            tbl.set_column_width(i, 100);
+        }
+        tbl.update_visibility();
+
+        // 260 - 48 = 212 px of data area: two whole 100 px columns and 12 px of the third.
+        let rnw = tbl.row_number_width as i32;
+        let spans = tbl.visible_column_spans(212);
+        assert_eq!(spans.len(), 3, "the third column starts on screen: {spans:?}");
+        assert_eq!(spans[2], (2, 200, 100));
+        assert_eq!(tbl.cell_at_point(Point::new(rnw + 205, 30)), Some((0, 2)));
     }
 
     // -----------------------------------------------------------------------

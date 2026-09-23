@@ -3,12 +3,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <path d="M 154 94 L 150 97 L 146 100 L 142 103 L 137 105 L 132 106 L 128 107 L 123 108 L 117 108 L 112 107 L 108 106 L 103 105 L 98 103 L 94 100 L 90 97 L 86 94 L 83 90 L 80 86 L 77 82 L 75 77 L 74 72 L 73 68 L 72 63 L 72 57 L 73 52 L 74 48 L 75 43 L 77 38 L 80 34 L 83 30 L 86 26 L 90 23 L 94 20 L 98 17 L 103 15 L 108 14 L 112 13 L 117 12 L 123 12 L 128 13 L 132 14 L 137 15 L 142 17 L 146 20 L 150 23 L 154 26" fill="none" stroke="rgba(255,217,169,1.00)" stroke-width="1" />
-  <line x1="145" y1="85" x2="150" y2="90" stroke="rgba(255,171,64,1.00)" stroke-width="1" />
-  <line x1="107" y1="94" x2="105" y2="99" stroke="rgba(255,171,64,1.00)" stroke-width="1" />
-  <line x1="84" y1="58" x2="78" y2="58" stroke="rgba(255,171,64,1.00)" stroke-width="1" />
-  <line x1="107" y1="26" x2="105" y2="21" stroke="rgba(255,171,64,1.00)" stroke-width="1" />
-  <line x1="145" y1="35" x2="150" y2="30" stroke="rgba(255,171,64,1.00)" stroke-width="1" />
-  <line x1="120" y1="60" x2="150" y2="90" stroke="rgba(255,171,64,1.00)" stroke-width="2" />
-  <circle cx="120" cy="60" r="4" fill="rgba(255,171,64,1.00)" />
-  <path d="M117 102h1v1h-1zM118 102h1v1h-1zM119 102h1v1h-1zM120 102h1v1h-1zM121 102h1v1h-1zM117 103h1v2h-1zM117 103h1v2h-1zM121 103h1v2h-1zM122 103h1v2h-1zM117 105h1v1h-1zM117 105h1v1h-1zM120 105h1v1h-1zM121 105h1v1h-1zM122 105h1v1h-1zM117 106h1v2h-1zM117 106h1v2h-1zM119 106h1v2h-1zM120 106h1v2h-1zM121 106h1v2h-1zM122 106h1v2h-1zM117 108h1v1h-1zM117 108h1v1h-1zM118 108h1v1h-1zM119 108h1v1h-1zM121 108h1v1h-1zM122 108h1v1h-1zM117 109h1v2h-1zM117 109h1v2h-1zM118 109h1v2h-1zM121 109h1v2h-1zM122 109h1v2h-1zM117 111h1v1h-1zM118 111h1v1h-1zM119 111h1v1h-1zM120 111h1v1h-1zM121 111h1v1h-1z" fill="rgba(255,171,64,1.00)" />
+  <line x1="145" y1="85" x2="150" y2="90" stroke="rgba(138,180,248,1.00)" stroke-width="1" />
+  <line x1="107" y1="94" x2="105" y2="99" stroke="rgba(138,180,248,1.00)" stroke-width="1" />
+  <line x1="84" y1="58" x2="78" y2="58" stroke="rgba(138,180,248,1.00)" stroke-width="1" />
+  <line x1="107" y1="26" x2="105" y2="21" stroke="rgba(138,180,248,1.00)" stroke-width="1" />
+  <line x1="145" y1="35" x2="150" y2="30" stroke="rgba(138,180,248,1.00)" stroke-width="1" />
+  <line x1="120" y1="60" x2="150" y2="90" stroke="rgba(138,180,248,1.00)" stroke-width="2" />
+  <circle cx="120" cy="60" r="4" fill="rgba(138,180,248,1.00)" />
+  <path d="M117 102h1v1h-1zM118 102h1v1h-1zM119 102h1v1h-1zM120 102h1v1h-1zM121 102h1v1h-1zM117 103h1v2h-1zM117 103h1v2h-1zM121 103h1v2h-1zM122 103h1v2h-1zM117 105h1v1h-1zM117 105h1v1h-1zM120 105h1v1h-1zM121 105h1v1h-1zM122 105h1v1h-1zM117 106h1v2h-1zM117 106h1v2h-1zM119 106h1v2h-1zM120 106h1v2h-1zM121 106h1v2h-1zM122 106h1v2h-1zM117 108h1v1h-1zM117 108h1v1h-1zM118 108h1v1h-1zM119 108h1v1h-1zM121 108h1v1h-1zM122 108h1v1h-1zM117 109h1v2h-1zM117 109h1v2h-1zM118 109h1v2h-1zM121 109h1v2h-1zM122 109h1v2h-1zM117 111h1v1h-1zM118 111h1v1h-1zM119 111h1v1h-1zM120 111h1v1h-1zM121 111h1v1h-1z" fill="rgba(138,180,248,1.00)" />
 </svg>

@@ -7,7 +7,9 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 
-use crate::widget::capability::coercion::{expect_bool, expect_usize};
+use crate::widget::capability::coercion::{
+    expect_bool, expect_text_direction, expect_usize, text_direction_to_str,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -123,6 +125,20 @@ pub struct TabBar {
     /// uses for its title) makes hit testing, layout and painting agree *after* the
     /// first frame, and [`estimate_text_width`] only has to carry the first one.
     measured_title_widths: Vec<u32>,
+    /// The writing direction the horizontal strip runs in.
+    ///
+    /// # Why a tab strip needs this
+    ///
+    /// A tab strip is a *sequence*: "the first tab is where the strip begins" is a statement about
+    /// the line's reading order, not about its geometry. In an Arabic or Hebrew interface the strip
+    /// begins at the right, so tab 0 belongs on the right and the overflow grows leftward — otherwise
+    /// the visual order of the tabs contradicts the order of the pages they select, and the keyboard
+    /// arrows move along the strip the opposite way from the one the reader's eye follows.
+    ///
+    /// Only the horizontal positions are affected: `West`/`East` strips are *not* mirrored onto each
+    /// other, because the side a strip is attached to is a layout decision rather than a reading one.
+    /// Defaults to left-to-right, so a strip that never asks behaves exactly as it did.
+    direction: crate::core::TextDirection,
     /// Emitted when the current tab index changes.
     pub current_changed: Signal1<usize>,
     /// Emitted when a tab close is requested (closable tabs only).
@@ -147,6 +163,7 @@ impl TabBar {
             tab_min_width: TAB_MIN_WIDTH,
             tab_max_width: TAB_MAX_WIDTH,
             measured_title_widths: Vec::new(),
+            direction: crate::core::TextDirection::default(),
             current_changed: Signal1::new(),
             tab_close_requested: Signal1::new(),
             tab_moved: Signal1::new(),
@@ -312,6 +329,24 @@ impl TabBar {
         }
     }
 
+    /// Returns the writing direction the horizontal strip runs in.
+    pub fn direction(&self) -> crate::core::TextDirection {
+        self.direction
+    }
+
+    /// Sets the writing direction the horizontal strip runs in, and repaints.
+    ///
+    /// A right-to-left strip starts at its **right** edge, so tab 0 and the overflow both grow
+    /// leftward — the visual order then matches the order of the pages the tabs select. The vertical
+    /// positions are unaffected; see the field for why the side a strip is attached to is not a
+    /// reading fact.
+    pub fn set_direction(&mut self, direction: crate::core::TextDirection) {
+        if self.direction != direction {
+            self.direction = direction;
+            self.base.request_redraw();
+        }
+    }
+
     // ---------------------------------------------------------------------------
     // Tab shape
     // ---------------------------------------------------------------------------
@@ -454,15 +489,32 @@ impl TabBar {
         }
         let rect = self.base.geometry();
         let spacing = TAB_SPACING;
+        // The strip's *reading* order decides which end tab 0 is at, and the direction is applied to
+        // the finished offset rather than to the index: `offset` is "how far into the strip this tab
+        // begins in reading order", and the conversion to a left-edge distance is
+        // `TextDirection`'s single job. Doing it the other way — reversing the index — would also
+        // reverse the overflow, so the tabs would grow off the *wrong* end once they stopped fitting.
+        let rtl = self.direction.is_right_to_left();
         match self.tab_position {
             TabPosition::North | TabPosition::South => {
                 let tab_width = self.fitted_tab_width();
-                let x = rect.x + (tab_width as i32 + spacing) * index as i32;
-                // The last tab must end *inside* the strip. `fitted_tab_width` divides by the
-                // count and subtracts the whole gap budget, so this holds for the last index by
-                // construction; the clamp is the assertion of that, and it also covers a tab
-                // whose own measured width is larger than its fitted slot.
-                let width = tab_width.min((rect.right() - x).max(0) as u32);
+                let offset = (tab_width as i32 + spacing) * index as i32;
+                let x =
+                    if rtl { rect.right() - offset - tab_width as i32 } else { rect.x + offset };
+                // The last tab must end *inside* the strip. `fitted_tab_width` divides by the count
+                // and subtracts the whole gap budget, so a tab entirely on screen needs the whole
+                // run to fit; the clamp still holds for a tab whose own measured width is larger
+                // than its slot, and it is what keeps the assertion of that visible rather than
+                // implicit.
+                //
+                // In RTL the tab's **leading** edge is on its right, so the room it may take is
+                // measured from the strip's left edge — the mirror of the LTR clamp, not a second
+                // rule.
+                let width = if rtl {
+                    tab_width.min((x + tab_width as i32 - rect.x).max(0) as u32)
+                } else {
+                    tab_width.min((rect.right() - x).max(0) as u32)
+                };
                 let y = if self.tab_position == TabPosition::North {
                     rect.y
                 } else {
@@ -473,6 +525,9 @@ impl TabBar {
             TabPosition::West | TabPosition::East => {
                 let tab_height = TAB_HEIGHT as u32;
                 let y = rect.y + (TAB_HEIGHT + spacing) * index as i32;
+                // The side a vertical strip is attached to is a layout choice, not a reading one, so
+                // the direction does not move it: a `West` strip stays on the left in every locale,
+                // and its tabs still run top-to-bottom.
                 let x = if self.tab_position == TabPosition::West {
                     rect.x
                 } else {
@@ -749,6 +804,9 @@ impl WidgetProperties for TabBar {
             "movable" => Ok(CapabilityValue::Bool(self.movable())),
             "tab_min_width" => Ok(CapabilityValue::UInt(self.tab_min_width() as u64)),
             "tab_max_width" => Ok(CapabilityValue::UInt(self.tab_max_width() as u64)),
+            "direction" => {
+                Ok(CapabilityValue::String(text_direction_to_str(self.direction()).to_string()))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -783,6 +841,10 @@ impl WidgetProperties for TabBar {
                 self.set_tab_max_width(expect_usize(value)? as u32);
                 Ok(())
             }
+            "direction" => {
+                self.set_direction(expect_text_direction(value)?);
+                Ok(())
+            }
             "tab_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
@@ -796,6 +858,7 @@ impl WidgetProperties for TabBar {
             "movable",
             "tab_min_width",
             "tab_max_width",
+            "direction",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1201,6 +1264,150 @@ mod tests {
         assert_eq!(tb.tab_rect(1).unwrap().width, fitted, "fitted tabs share one width");
         assert!(fitted >= tb.tab_min_width());
         assert!(fitted * 2 < tb.geometry().width, "two tabs must not fill a 400px strip");
+    }
+
+    /// In a right-to-left strip the first tab belongs at the strip's **right** edge, and the strip
+    /// fills leftward.
+    ///
+    /// # The defect this pins
+    ///
+    /// A tab strip is a sequence, so "where does tab 0 sit" is a statement about reading order. The
+    /// control placed tab 0 at `rect.x` unconditionally, which in an Arabic or Hebrew interface put
+    /// the first tab where the reader looks last and made the visual order contradict the order of
+    /// the pages the tabs select.
+    #[test]
+    fn a_right_to_left_strip_starts_at_its_right_edge() {
+        let geometry = Rect::new(0, 0, 240, 120);
+        for count in [1usize, 2, 3, 6] {
+            let mut tb = TabBar::new(geometry);
+            for i in 0..count {
+                tb.add_tab(format!("Tab {i}"));
+            }
+            tb.set_direction(crate::core::TextDirection::RightToLeft);
+
+            let first = tb.tab_rect(0).expect("every added tab has a rect");
+            assert_eq!(
+                first.right(),
+                geometry.right(),
+                "with {count} tabs, tab 0 must begin at the strip's beginning (its right edge)"
+            );
+
+            // The order is reversed on screen: every later tab is strictly further left.
+            let mut previous_x = first.x;
+            for i in 1..count {
+                let r = tb.tab_rect(i).expect("every added tab has a rect");
+                assert!(
+                    r.right() <= previous_x,
+                    "tab {i} of {count} must sit left of tab {} ({} > {})",
+                    i - 1,
+                    r.right(),
+                    previous_x
+                );
+                previous_x = r.x;
+            }
+            // And the run as a whole stays inside the control on the left as well.
+            let last = tb.tab_rect(count - 1).unwrap();
+            assert!(
+                last.x >= geometry.x,
+                "the last tab of {count} starts at {} and escapes the strip",
+                last.x
+            );
+        }
+    }
+
+    /// The mirror of the overflow rule: an RTL strip whose tabs no longer fit must shrink them
+    /// rather than let the run grow off the left end.
+    ///
+    /// This is the case where reversing the *index* instead of the *offset* would have looked
+    /// correct while the tabs still fit and broken as soon as they did not, so the test drives the
+    /// shrinking path deliberately.
+    #[test]
+    fn a_right_to_left_strip_keeps_every_tab_inside_when_they_overflow() {
+        let geometry = Rect::new(0, 0, 120, 120);
+        let mut tb = TabBar::new(geometry);
+        for i in 0..8 {
+            tb.add_tab(format!("Tab {i}"));
+        }
+        tb.set_direction(crate::core::TextDirection::RightToLeft);
+        for i in 0..8 {
+            let r = tb.tab_rect(i).expect("every added tab has a rect");
+            assert!(
+                r.x >= geometry.x && r.right() <= geometry.right(),
+                "tab {i} at {r:?} escapes the {geometry:?} strip"
+            );
+            assert!(r.width > 0, "tab {i} was shrunk to nothing");
+        }
+    }
+
+    /// A left-to-right strip must be byte-for-byte what it was before the field existed, and the
+    /// two directions must genuinely differ — otherwise "defaults to LTR" could be satisfied by
+    /// ignoring the setting entirely.
+    #[test]
+    fn setting_the_strip_direction_moves_the_tabs_and_defaults_unchanged() {
+        fn render(direction: Option<crate::core::TextDirection>) -> String {
+            let mut tb = TabBar::new(Rect::new(0, 0, 300, 120));
+            tb.add_tab("One".to_string());
+            tb.add_tab("Two".to_string());
+            tb.add_tab("Three".to_string());
+            if let Some(d) = direction {
+                tb.set_direction(d);
+            }
+            crate::widget::svg::render_to_svg(&mut tb)
+        }
+
+        let untouched = render(None);
+        let ltr = render(Some(crate::core::TextDirection::LeftToRight));
+        let rtl = render(Some(crate::core::TextDirection::RightToLeft));
+        assert_eq!(untouched, ltr, "the default must be left-to-right, so the output is identical");
+        assert_ne!(ltr, rtl, "a right-to-left strip must draw its tabs somewhere else");
+    }
+
+    /// The vertical strips are attached to a side, not to a line, so the direction must not mirror
+    /// them onto each other.
+    ///
+    /// # Why this is an assertion and not a comment
+    ///
+    /// `West` and `East` are two of the four `TabPosition` values the same field could plausibly be
+    /// applied to. "Which side is the strip on" is a layout choice a caller made; applying the
+    /// writing direction to it would silently move a strip the caller had explicitly placed.
+    #[test]
+    fn a_vertical_strip_is_not_mirrored_by_the_direction() {
+        for position in [TabPosition::West, TabPosition::East] {
+            let mut ltr = TabBar::new(Rect::new(0, 0, 240, 120));
+            let mut rtl = TabBar::new(Rect::new(0, 0, 240, 120));
+            for tb in [&mut ltr, &mut rtl] {
+                tb.add_tab("One".to_string());
+                tb.add_tab("Two".to_string());
+                tb.set_tab_position(position);
+            }
+            rtl.set_direction(crate::core::TextDirection::RightToLeft);
+            for i in 0..2 {
+                assert_eq!(
+                    ltr.tab_rect(i),
+                    rtl.tab_rect(i),
+                    "{position:?} tab {i} moved when only the direction changed"
+                );
+            }
+        }
+    }
+
+    /// The direction is reachable from the property API, and the token written is the token read
+    /// back.
+    ///
+    /// A settable-only field, or one whose `get` and `set` spellings disagree, would leave a caller
+    /// driving the control from a document unable to restore what they just set.
+    #[test]
+    fn the_direction_round_trips_through_the_property_api() {
+        let mut tb = TabBar::new(Rect::new(0, 0, 240, 24));
+        tb.add_tab("One".to_string());
+
+        assert_eq!(tb.get("direction").unwrap().as_str(), Some("ltr"), "default is ltr");
+        tb.set("direction", CapabilityValue::String(String::from("rtl"))).unwrap();
+        assert_eq!(tb.direction(), crate::core::TextDirection::RightToLeft);
+        assert_eq!(tb.get("direction").unwrap().as_str(), Some("rtl"));
+        // The long spelling is accepted too, so a caller need not know which one this crate picked.
+        tb.set("direction", CapabilityValue::String(String::from("left_to_right"))).unwrap();
+        assert_eq!(tb.direction(), crate::core::TextDirection::LeftToRight);
     }
 
     /// The three `TabShape` values were drawn identically, so the property changed nothing on

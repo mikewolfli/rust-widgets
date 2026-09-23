@@ -2,12 +2,12 @@
 <!-- control: otp_input | appearance: light -->
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(240,240,240,1.00)" />
-  <rect x="0" y="36" width="240" height="48" fill="rgba(216,216,216,1.00)" />
-  <rect x="0" y="36" width="36" height="48" fill="rgba(210,210,210,1.00)" />
+  <rect x="0" y="36" width="240" height="48" fill="rgba(243,237,247,1.00)" />
+  <rect x="0" y="36" width="36" height="48" fill="rgba(235,229,238,1.00)" />
   <rect x="0" y="36" width="36" height="48" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
-  <rect x="40" y="36" width="36" height="48" fill="none" stroke="rgba(140,140,140,1.00)" stroke-width="1" />
-  <rect x="80" y="36" width="36" height="48" fill="none" stroke="rgba(140,140,140,1.00)" stroke-width="1" />
-  <rect x="120" y="36" width="36" height="48" fill="none" stroke="rgba(140,140,140,1.00)" stroke-width="1" />
-  <rect x="160" y="36" width="36" height="48" fill="none" stroke="rgba(140,140,140,1.00)" stroke-width="1" />
-  <rect x="200" y="36" width="40" height="48" fill="none" stroke="rgba(140,140,140,1.00)" stroke-width="1" />
+  <rect x="40" y="36" width="36" height="48" fill="none" stroke="rgba(158,154,161,1.00)" stroke-width="1" />
+  <rect x="80" y="36" width="36" height="48" fill="none" stroke="rgba(158,154,161,1.00)" stroke-width="1" />
+  <rect x="120" y="36" width="36" height="48" fill="none" stroke="rgba(158,154,161,1.00)" stroke-width="1" />
+  <rect x="160" y="36" width="36" height="48" fill="none" stroke="rgba(158,154,161,1.00)" stroke-width="1" />
+  <rect x="200" y="36" width="40" height="48" fill="none" stroke="rgba(158,154,161,1.00)" stroke-width="1" />
 </svg>

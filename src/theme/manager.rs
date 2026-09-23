@@ -429,7 +429,21 @@ fn role_colors(theme: &Theme, class_name: &str) -> (Option<Color>, Option<Color>
             (Some(theme.colors.error), Some(theme.colors.error.contrast_color()), None)
         }
         WidgetRole::Surface => (
-            Some(theme.colors.background),
+            // # Why a surface is not the window's own background
+            //
+            // This arm used to resolve to `theme.colors.background` — literally the colour a window
+            // paints. Every control that falls through to `Surface` (a card, a panel, a group box, a
+            // container, and any third-party kind the role table does not name) was therefore filled
+            // with the colour behind it, so its extent was invisible: the frame rendered correctly
+            // and showed nothing where the control was. The same defect the `Input` arm's own
+            // documentation records for list boxes, one role over.
+            //
+            // `Colors::surface_container` is the role that exists for exactly this: "the container
+            // colour for cards and panels sitting on `background`". A theme whose container really is
+            // the window colour still gets it, because the default derivation of the role is a step
+            // away from `background` — see its `default_surface_container_color` — and a theme may
+            // override it to anything, including `background` itself.
+            Some(theme.colors.surface_container),
             Some(theme.colors.foreground),
             Some(theme.colors.secondary),
         ),

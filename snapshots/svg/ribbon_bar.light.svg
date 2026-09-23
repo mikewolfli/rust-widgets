@@ -2,12 +2,12 @@
 <!-- control: ribbon_bar | appearance: light -->
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(240,240,240,1.00)" />
-  <rect x="0" y="0" width="240" height="120" fill="rgba(221,221,221,1.00)" />
-  <rect x="220" y="2" width="16" height="16" fill="rgba(199,199,199,1.00)" />
+  <rect x="0" y="0" width="240" height="120" fill="rgba(243,237,247,1.00)" />
+  <rect x="220" y="2" width="16" height="16" fill="rgba(219,213,222,1.00)" />
   <rect x="220" y="2" width="16" height="16" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
   <line x1="225" y1="11" x2="228" y2="8" stroke="rgba(0,0,0,1.00)" stroke-width="1" />
   <line x1="228" y1="8" x2="231" y2="11" stroke="rgba(0,0,0,1.00)" stroke-width="1" />
-  <rect x="0" y="22" width="240" height="3" fill="rgba(186,186,186,1.00)" />
-  <rect x="0" y="25" width="240" height="95" fill="rgba(172,172,172,1.00)" />
+  <rect x="0" y="22" width="240" height="3" fill="rgba(204,199,207,1.00)" />
+  <rect x="0" y="25" width="240" height="95" fill="rgba(190,185,193,1.00)" />
   <rect x="0" y="22" width="240" height="98" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
 </svg>

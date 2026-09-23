@@ -116,12 +116,12 @@ pub use crate::style::HighContrastMode;
 pub use manager::theme_test_guard;
 pub use manager::{
     global_high_contrast, global_theme_manager, resolved_theme_style, resolved_theme_style_for,
-    resolved_theme_style_for_state,
-    semantic_color, set_global_high_contrast, SemanticColor, ThemeManager,
+    resolved_theme_style_for_state, semantic_color, set_global_high_contrast, SemanticColor,
+    ThemeManager,
 };
 pub use types::{
-    AppearanceMode, Borders, Colors, Fonts, Motion, ShadowOverride, ShadowToken, Spacing,
-    Theme, ThemeOverrides, ThemeStyleToken, WidgetRole,
+    AppearanceMode, Borders, Colors, Fonts, Motion, ShadowOverride, ShadowToken, Spacing, Theme,
+    ThemeOverrides, ThemeStyleToken, WidgetRole,
 };
 
 #[cfg(test)]
@@ -624,11 +624,22 @@ mod tests {
 
         // And the misclassification this guards against is still what a bare class name does:
         // a name that is not a control kind resolves as Surface when it is used *as* the kind.
+        //
+        // The expected value is read from the live theme rather than written as the literal the
+        // test used to carry (`rgb(240,240,240)`): what the assertion is *about* is that `"primary"`
+        // lands on the **same role as any unknown kind**, not about which colour that role happens
+        // to resolve to. Hardcoding the colour made the test fail the moment the role's fill was
+        // corrected — a false alarm about the wrong thing.
         let as_kind = manager.resolve_style_for("primary", None, None);
+        let unknown_kind = manager.resolve_style_for("SomeThirdPartyWidget", None, None);
         assert_eq!(
-            as_kind.background_color,
-            Some(Color::rgb(240, 240, 240)),
-            "the regression this test pins: 'primary' is not a control kind"
+            as_kind.background_color, unknown_kind.background_color,
+            "the regression this test pins: 'primary' is not a control kind, so it resolves as \
+             the same role an unknown kind does"
+        );
+        assert_ne!(
+            as_kind.background_color, by_kind.background_color,
+            "and that role must not be the one a button gets"
         );
     }
 
@@ -657,6 +668,106 @@ mod tests {
             styled.background_color,
             Some(Color::rgb(1, 2, 3)),
             "a theme override keyed by the class must still win over the role default"
+        );
+    }
+
+    /// A container's role resolves to the container token, not to the window's own fill.
+    ///
+    /// # The defect this closes (BLUE22 · F-9)
+    ///
+    /// `Colors::surface_container` was declared with the documentation "the container colour for
+    /// cards and panels sitting on `background`" and had **no consumer at all**: the `Surface` role —
+    /// the arm every card, panel, group box, container and unnamed third-party kind falls through to
+    /// — resolved to `theme.colors.background`, i.e. the very colour a window paints. Every such
+    /// control was therefore filled with the colour behind it, so its extent was invisible: the
+    /// frame rendered correctly and showed nothing where the control was. Measured on the committed
+    /// snapshots, `adaptive_scaffold` and `carousel` both carried `rgba(18,18,18)` fills identical to
+    /// their own backdrop.
+    ///
+    /// The assertion is the *distinction*, not a literal colour: a container must not be
+    /// byte-identical to the surface it sits on, because a control whose fill equals its backdrop has
+    /// no extent at all. That is the property the role exists for, and it is what makes this a
+    /// statement about the theme rather than about one preset's numbers.
+    #[test]
+    fn a_surface_role_is_not_byte_identical_to_the_window_fill() {
+        let _guard = theme_test_guard();
+        let manager = global_theme_manager();
+        // A kind the role table does not name: the pure `Surface` case, which is what a card, a
+        // panel and a container all are.
+        let container = manager.resolve_style_for("SomeThirdPartyContainer", None, None);
+        let Some(fill) = container.background_color else {
+            panic!("a surface role must resolve a fill; a container with none cannot be seen")
+        };
+        let Some(active) = manager.current_theme() else {
+            panic!("a theme must be active for this test to mean anything")
+        };
+        assert_ne!(
+            fill, active.colors.background,
+            "a container painted in the window's own fill has no visible extent"
+        );
+        assert_eq!(
+            fill, active.colors.surface_container,
+            "and the fill it does use is the container token that exists for it"
+        );
+    }
+
+    /// Every token the crate adds for a role has a consumer in `src/`.
+    ///
+    /// # Why this is a test and not a comment
+    ///
+    /// BLUE22 · F-9 found **six of seven** new `Colors` roles with zero consumers: `outline_variant`,
+    /// `scrim`, `surface_container`, `surface_container_high`, `inverse_surface` and
+    /// `on_inverse_surface` were declared, documented with the control each was for, and read by
+    /// nobody. Principle #4 forbids exactly this ("zero-consumer mechanisms must not exist"), and the
+    /// way it happens is that the token is added in one round and its consumer is deferred — so the
+    /// check belongs next to the declaration, where the next addition will see it.
+    ///
+    /// The source scan is deliberately textual and narrow: it looks for `colors.<token>` outside this
+    /// file, which is the only shape a consumer can take (`Colors` is a plain struct). A token added
+    /// without a consumer therefore fails here rather than shipping as decoration.
+    #[test]
+    fn every_new_colour_role_has_a_consumer_outside_the_theme_module() {
+        // The roles added by P0-10. Each names the control that reads it, in its own doc comment.
+        let tokens = [
+            "outline",
+            "outline_variant",
+            "scrim",
+            "surface_container",
+            "surface_container_high",
+            "inverse_surface",
+            "on_inverse_surface",
+        ];
+        let mut sources = String::new();
+        let mut stack = vec![std::path::PathBuf::from("src")];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    // This file *declares* the roles, so it can never be a consumer.
+                    if path.ends_with("src/theme/types.rs") {
+                        continue;
+                    }
+                    if let Ok(text) = std::fs::read_to_string(&path) {
+                        sources.push_str(&text);
+                    }
+                }
+            }
+        }
+        let mut unconsumed = Vec::new();
+        for token in tokens {
+            let needle = format!("colors.{token}");
+            if !sources.contains(&needle) {
+                unconsumed.push(token);
+            }
+        }
+        assert!(
+            unconsumed.is_empty(),
+            "these colour roles are declared and documented but read by nothing, so a theme author \
+             can set them and see no effect: {unconsumed:?}. Either give each one its consumer or \
+             remove the role (principle #4)."
         );
     }
 }

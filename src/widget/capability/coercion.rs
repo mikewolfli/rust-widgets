@@ -43,7 +43,7 @@ use chrono::{NaiveDate, Weekday};
 use super::CapabilityAccessError;
 use super::CapabilityValue;
 use crate::compat::String;
-use crate::core::{Alignment, Orientation};
+use crate::core::{Alignment, Orientation, TextDirection};
 #[cfg(full_widgets)]
 use crate::widget::advanced_widgets::date_edit::Date;
 #[cfg(full_widgets)]
@@ -531,6 +531,42 @@ pub fn expect_orientation(value: CapabilityValue) -> Result<Orientation, Capabil
         "horizontal" => Ok(Orientation::Horizontal),
         "vertical" => Ok(Orientation::Vertical),
         _ => Err(CapabilityAccessError::TypeMismatch),
+    }
+}
+
+/// Parses a [`TextDirection`]: `ltr`/`left_to_right` or `rtl`/`right_to_left`.
+///
+/// # Why both a short and a long spelling
+///
+/// `ltr`/`rtl` is what a designer or a locale table carries and what appears in the SVG snapshot
+/// names, while `left_to_right`/`right_to_left` is what the enum variant reads as. Accepting one and
+/// not the other would force every caller to know which convention this crate picked, so both are
+/// taken and [`text_direction_to_str`] publishes the short one.
+///
+/// Case- and separator-insensitive; accepts a string payload only.
+pub fn expect_text_direction(
+    value: CapabilityValue,
+) -> Result<TextDirection, CapabilityAccessError> {
+    let token = match value {
+        CapabilityValue::String(v) => normalize_key(&v),
+        _ => return Err(CapabilityAccessError::TypeMismatch),
+    };
+
+    match token.as_str() {
+        "ltr" | "lefttoright" => Ok(TextDirection::LeftToRight),
+        "rtl" | "righttoleft" => Ok(TextDirection::RightToLeft),
+        _ => Err(CapabilityAccessError::TypeMismatch),
+    }
+}
+
+/// The spelling [`expect_text_direction`] publishes for a direction.
+///
+/// `get` and `set` have to agree about the token or a read → write → read round-trip would not
+/// close, so both sides come from this pair rather than each holding its own literal.
+pub const fn text_direction_to_str(direction: TextDirection) -> &'static str {
+    match direction {
+        TextDirection::LeftToRight => "ltr",
+        TextDirection::RightToLeft => "rtl",
     }
 }
 

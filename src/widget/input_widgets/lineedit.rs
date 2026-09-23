@@ -15,10 +15,14 @@ use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usi
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::decorations::{
+    DecorationLayout, DecorationMetrics, DecorationSlots, DECORATION_GAP,
+};
 use crate::widget::metrics::{dimensions, ControlMetrics};
-use crate::widget::text_utils::floor_char_boundary;
+use crate::widget::text_utils::{byte_index_of_char, floor_char_boundary};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
 /// Single-line text edit widget.
 pub struct LineEdit {
     base: BaseWidget,
@@ -39,6 +43,12 @@ pub struct LineEdit {
     /// `crate::widget::runtime::focus_widget`). Without it the field had no way to
     /// know, and the caret was never drawn at all.
     focused: bool,
+    /// The five non-value strings this field shows: `prefix`/`suffix` inside it, and
+    /// `helper`/`error`/`counter` on the row below.
+    ///
+    /// Held as one record rather than five fields so a caller assembling a form from a document can
+    /// replace all five in one step, and so the painted state is one value that can be compared.
+    decorations: DecorationSlots,
     /// The caret's blink state, advanced by [`LineEdit::tick`].
     ///
     /// Borrowed from [`crate::style::CursorBlink`] rather than reimplemented, so this field's caret
@@ -85,6 +95,7 @@ impl LineEdit {
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
             focused: false,
+            decorations: DecorationSlots::default(),
             cursor_blink: crate::style::CursorBlink::new(),
             text_changed: Signal1::new(),
             editing_finished: GenericSignal::new(),
@@ -137,6 +148,22 @@ impl LineEdit {
     /// Sets text and emits text_changed signal if different.
     pub fn set_text(&mut self, text: impl Into<String>) {
         let text = text.into();
+        // `max_length` is enforced here as well as in `insert_text`.
+        //
+        // # Why the two paths have to agree
+        //
+        // `insert_text` clamped to the limit and this did not, so a programmatic `set_text` could leave
+        // the field holding a longer value than its own limit — and once the `counter` is derived from
+        // the value and that limit, the two disagreed visibly (`8/5`). A limit the control enforces only
+        // for typing is not a limit, it is a hint. The truncation goes through `floor_char_boundary`
+        // because `max_length` counts **characters** and the slice is in bytes.
+        let text = match self.max_length {
+            Some(max) if text.chars().count() > max => {
+                let byte = byte_index_of_char(&text, max);
+                text[..byte].to_string()
+            }
+            _ => text,
+        };
         if self.text == text {
             return;
         }
@@ -390,6 +417,131 @@ impl LineEdit {
     fn field_rect(&self) -> Rect {
         ControlMetrics::full_width_band(self.geometry(), dimensions::TEXT_FIELD_MIN_HEIGHT)
     }
+
+    // ---------------------------------------------------------------------------
+    // Decoration slots
+    // ---------------------------------------------------------------------------
+
+    /// Returns the five decoration strings this field shows.
+    pub fn decorations(&self) -> &DecorationSlots {
+        &self.decorations
+    }
+
+    /// Replaces the whole decoration set at once.
+    ///
+    /// Prefer the individual setters when only one slot changes; this exists because a caller
+    /// assembling a form from a document has all five at once and five separate calls would repaint
+    /// five times.
+    pub fn set_decorations(&mut self, decorations: DecorationSlots) {
+        let changed = self.decorations != decorations;
+        self.decorations = decorations;
+        if changed {
+            self.base.request_layout();
+            self.base.request_redraw();
+        }
+    }
+
+    /// Returns the unit marker written before the value.
+    pub fn prefix(&self) -> &str {
+        &self.decorations.prefix
+    }
+
+    /// Sets the unit marker written before the value.
+    ///
+    /// # Why this does not touch `text`
+    ///
+    /// The prefix is **chrome**, not content: it is drawn in its own box, so the caret can still sit at
+    /// the start of what the user is editing and a select-all copies the value alone. Folding it into
+    /// `text` would make all three of those wrong while looking the same on screen.
+    pub fn set_prefix(&mut self, prefix: impl Into<String>) {
+        let mut next = self.decorations.clone();
+        next.prefix = prefix.into();
+        self.set_decorations(next);
+    }
+
+    /// Returns the unit marker written after the value.
+    pub fn suffix(&self) -> &str {
+        &self.decorations.suffix
+    }
+
+    /// Sets the unit marker written after the value, anchored to the field's trailing edge.
+    pub fn set_suffix(&mut self, suffix: impl Into<String>) {
+        let mut next = self.decorations.clone();
+        next.suffix = suffix.into();
+        self.set_decorations(next);
+    }
+
+    /// Returns the quiet hint shown below the field.
+    pub fn helper_text(&self) -> &str {
+        &self.decorations.helper
+    }
+
+    /// Sets the quiet hint shown below the field, displaced by any error.
+    pub fn set_helper_text(&mut self, helper: impl Into<String>) {
+        let mut next = self.decorations.clone();
+        next.helper = helper.into();
+        self.set_decorations(next);
+    }
+
+    /// Returns the refusal message shown below the field.
+    pub fn error_text(&self) -> &str {
+        &self.decorations.error
+    }
+
+    /// Sets the refusal message, which displaces the helper and paints in the theme's error colour.
+    ///
+    /// Pass an empty string to clear it. This does not *validate* anything — it is the caller's report
+    /// — but [`Self::set_max_length`] does drive the counter and the over-limit state on its own,
+    /// because the field knows both numbers itself.
+    pub fn set_error_text(&mut self, error: impl Into<String>) {
+        let mut next = self.decorations.clone();
+        next.error = error.into();
+        self.set_decorations(next);
+    }
+
+    /// Returns the usage counter shown at the field's trailing lower edge, if any.
+    ///
+    /// Derived from the value's length and `max_length` rather than stored, so it cannot go stale: a
+    /// counter the caller has to keep in step with the text is a counter that will disagree with it.
+    pub fn counter_text(&self) -> Option<String> {
+        DecorationLayout::counter_text(self.text.chars().count(), self.max_length)
+    }
+
+    /// Returns whether the current value exceeds `max_length`.
+    ///
+    /// The field's own answer, so an over-long value is *reported* rather than silently truncated.
+    pub fn is_over_limit(&self) -> bool {
+        DecorationLayout::over_limit(self.text.chars().count(), self.max_length) > 0
+    }
+
+    /// The boxes the field's five regions occupy, measured for the current font.
+    ///
+    /// # Why the layout is computed from `field_rect()` and not from `geometry()`
+    ///
+    /// The decoration slots belong to the **field**, which on a tall control is a band centred inside
+    /// it. Measuring from the control's rectangle would put the helper row under the control instead of
+    /// under the field, and the support row would be as wide as the cell rather than as the input.
+    fn decoration_layout(&self, context: &mut RenderContext) -> DecorationLayout {
+        let field = self.field_rect();
+        let style = self.base.style().clone();
+        let default_font = crate::core::Font::default();
+        let font = style.font.as_ref().unwrap_or(&default_font);
+        let metrics = DecorationMetrics::measure(&self.decorations, |text| {
+            context.measure_text(text, font).width
+        });
+        let counter_width =
+            self.counter_text().map(|text| context.measure_text(&text, font).width).unwrap_or(0);
+        let line_height = font.effective_line_height().max(1.0) as u32;
+        DecorationLayout::compute(
+            field,
+            dimensions::TEXT_FIELD_PADDING_H,
+            line_height,
+            DECORATION_GAP,
+            metrics,
+            counter_width,
+            &self.decorations,
+        )
+    }
 }
 // Implement Widget trait
 impl Widget for LineEdit {
@@ -410,6 +562,15 @@ impl Widget for LineEdit {
 
 /// `LineEdit`'s property contract.
 ///
+/// # The decoration slots
+///
+/// `prefix`, `suffix`, `helper`, `error` and `counter` are all published here. They are the five strings
+/// a text entry shows that are **not** its value, and before they existed the control could only be
+/// announced and driven by its text and placeholder.
+///
+/// `counter` is published read-only: it is derived from the value's own length and `max_length`, so a
+/// caller that could write it would be able to make the count disagree with the text it counts.
+///
 /// `echo_mode` is intentionally absent: the centralised layer never exposed it,
 /// so publishing it here would add a property rather than preserve one.
 impl WidgetProperties for LineEdit {
@@ -423,6 +584,15 @@ impl WidgetProperties for LineEdit {
             },
             "read_only" => Ok(CapabilityValue::Bool(self.is_read_only())),
             "cursor_position" => Ok(CapabilityValue::UInt(self.cursor_position() as u64)),
+            "prefix" => Ok(CapabilityValue::String(self.prefix().to_string())),
+            "suffix" => Ok(CapabilityValue::String(self.suffix().to_string())),
+            "helper" => Ok(CapabilityValue::String(self.helper_text().to_string())),
+            "error" => Ok(CapabilityValue::String(self.error_text().to_string())),
+            "counter" => match self.counter_text() {
+                Some(text) => Ok(CapabilityValue::String(text)),
+                None => Ok(CapabilityValue::Null),
+            },
+            "over_limit" => Ok(CapabilityValue::Bool(self.is_over_limit())),
             _ => base_property_get(self, name),
         }
     }
@@ -448,6 +618,25 @@ impl WidgetProperties for LineEdit {
                 self.set_read_only(expect_bool(value)?);
                 Ok(())
             }
+            "prefix" => {
+                self.set_prefix(expect_string(value)?);
+                Ok(())
+            }
+            "suffix" => {
+                self.set_suffix(expect_string(value)?);
+                Ok(())
+            }
+            "helper" => {
+                self.set_helper_text(expect_string(value)?);
+                Ok(())
+            }
+            "error" => {
+                self.set_error_text(expect_string(value)?);
+                Ok(())
+            }
+            // Derived from the value and the limit: a writer would be a second way to say what the
+            // text already determines, and one of the two would be able to disagree.
+            "counter" | "over_limit" => Err(CapabilityAccessError::ReadOnlyProperty),
             "cursor_position" => {
                 self.set_cursor_position(expect_usize(value)?);
                 Ok(())
@@ -464,6 +653,12 @@ impl WidgetProperties for LineEdit {
             "max_length",
             "read_only",
             "cursor_position",
+            "prefix",
+            "suffix",
+            "helper",
+            "error",
+            "counter",
+            "over_limit",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -666,7 +861,14 @@ impl Draw for LineEdit {
         // — is taken from this one box, so they cannot disagree about where the field is.
         let rect = self.field_rect();
         let style = self.style();
-        let text_x = rect.x + dimensions::TEXT_FIELD_PADDING_H as i32;
+        // ── The decorated layout ──
+        //
+        // Every box below comes from **one** derivation, measured against the renderer's own font. The
+        // value's origin, the two slots and the support row cannot disagree, because they are the same
+        // answer read for different purposes. `text_x` used to be `rect.x + padding` regardless of any
+        // slot, so a `$` would have been drawn *over* the value it marks.
+        let layout = self.decoration_layout(context);
+        let text_x = layout.value.x;
         // Draw background
         let bg = style.background_color.unwrap_or(Color::rgb(255, 255, 255));
         context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), bg);
@@ -689,14 +891,14 @@ impl Draw for LineEdit {
         } else {
             &self.display_text()
         };
+        let default_font = crate::core::Font::default();
+        let font = style.font.as_ref().unwrap_or(&default_font);
+        let value_line = context.text_line(rect, font);
+        let text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
         if !display_text.is_empty() {
-            let text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
-            let default_font = crate::core::Font::default();
-            let font = style.font.as_ref().unwrap_or(&default_font);
             // The field's own line box. A glyph origin is the box's top-left edge, so the
             // previous `rect.y + rect.height / 2` placed that edge on the field's middle line
             // and drew the value half a line low.
-            let value_line = context.text_line(rect, font);
             context.draw_text(
                 Point::new(text_x, value_line.y),
                 display_text,
@@ -705,10 +907,77 @@ impl Draw for LineEdit {
                 HorizontalAlignment::Left,
             );
         }
+
+        // ── The in-field slots ──
+        //
+        // Drawn in their **own** boxes, in a muted tone of the field's ink so they read as unit marks
+        // rather than as content. They are deliberately not folded into `display_text`: the caret below
+        // is measured against `self.text` alone, so a prefix in the string would put `cursor_position
+        // == 0` after the `$` and make the start of the value unreachable.
+        let slot_color = text_color.blend(&bg, 0.35);
+        if let Some(prefix_box) = layout.prefix {
+            context.draw_text(
+                Point::new(prefix_box.x, value_line.y),
+                &self.decorations.prefix,
+                font,
+                slot_color,
+                HorizontalAlignment::Left,
+            );
+        }
+        if let Some(suffix_box) = layout.suffix {
+            context.draw_text(
+                Point::new(suffix_box.x, value_line.y),
+                &self.decorations.suffix,
+                font,
+                slot_color,
+                HorizontalAlignment::Left,
+            );
+        }
+
+        // ── The support row ──
+        //
+        // Message on the leading edge, counter on the trailing one. The error takes the theme's error
+        // colour, because a refusal that is painted in the same ink as a hint is a refusal the user has
+        // to read to notice.
+        if let Some(row) = layout.support {
+            let message = self.decorations.support_message();
+            if !message.is_empty() {
+                let message_color = if self.decorations.has_error() {
+                    crate::style::resolved_theme_style("line_edit")
+                        .and_then(|theme| theme.border_color)
+                        .map(|border| border.blend(&Color::rgb(220, 40, 40), 0.6))
+                        .unwrap_or(Color::rgb(200, 40, 40))
+                } else {
+                    slot_color
+                };
+                let row_line = context.text_line(row, font);
+                context.draw_text(
+                    Point::new(row.x, row_line.y),
+                    message,
+                    font,
+                    message_color,
+                    HorizontalAlignment::Left,
+                );
+            }
+            if let Some(counter_box) = layout.counter {
+                let counter_line = context.text_line(counter_box, font);
+                // The counter is a *budget* reading, so it turns to the error colour once the value
+                // exceeds the limit — the one moment it has something to warn about.
+                let counter_color =
+                    if self.is_over_limit() { Color::rgb(200, 40, 40) } else { slot_color };
+                if let Some(counter) = self.counter_text() {
+                    context.draw_text(
+                        Point::new(counter_box.x, counter_line.y),
+                        &counter,
+                        font,
+                        counter_color,
+                        HorizontalAlignment::Right,
+                    );
+                }
+            }
+        }
         // Draw the caret for whichever field owns keyboard focus.
         if self.focused && !self.read_only && self.cursor_blink.is_visible() {
-            let default_font = crate::core::Font::default();
-            let font = style.font.as_ref().unwrap_or(&default_font);
             // The caret sits at **`cursor_position`**, not at the end of the value.
             //
             // This measured the whole string, so the marker was always drawn after the last
@@ -725,11 +994,12 @@ impl Draw for LineEdit {
             let caret_byte = floor_char_boundary(self.text.as_str(), self.cursor_position);
             let prefix = &self.text[..caret_byte];
             let caret_x = text_x + context.measure_text(prefix, font).width as i32;
-            // The marker is clipped to the field's inner box. A caret beyond the visible text
-            // (a value wider than the field) belongs at the last pixel a user can see, not
-            // outside the control.
-            let caret_x =
-                caret_x.min(rect.x + rect.width as i32 - dimensions::TEXT_FIELD_PADDING_H as i32);
+            // The marker is clipped to the **value's** box. A caret beyond the visible text (a value
+            // wider than the room it has) belongs at the last pixel a user can see, not outside the
+            // control and not under the suffix. Clipping to the whole field instead would let the caret
+            // sit on top of a `%` and read as if the unit were part of the value.
+            let caret_x = caret_x.min(layout.value.x + layout.value.width as i32);
+            let caret_x = caret_x.max(layout.value.x);
             // The caret spans the field's own content band, inset so it does not touch the
             // border. The band is the field's, not the control's: with the field centred in
             // a tall cell, `rect` alone would have drawn a caret taller than the field it
@@ -1140,6 +1410,195 @@ mod tests {
             field.x + dimensions::TEXT_FIELD_PADDING_H as i32,
             "the value starts at the field's own padding: field={field:?}"
         );
+    }
+
+    // ─── Decoration slots (F-12) ───
+
+    /// A field that never sets a slot must paint exactly as it did, and reserve nothing extra.
+    ///
+    /// This is the non-change guarantee: the slots are additive, so every existing caller keeps its
+    /// pixels and its height.
+    #[test]
+    fn a_field_with_no_slots_is_unchanged() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 240, 120));
+        le.set_text("Sample");
+        assert!(le.decorations().is_empty());
+        assert_eq!(le.get("prefix").unwrap().as_str(), Some(""));
+        assert_eq!(le.get("counter").unwrap(), CapabilityValue::Null, "no limit means no counter");
+
+        let svg = crate::widget::svg::render_to_svg(&mut le);
+        // The value is still the only ink, and it still starts at the field's padding.
+        let (left, _, _, _) = crate::widget::svg::text_ink_box(&svg).expect("the value is drawn");
+        assert_eq!(left, le.field_rect().x + dimensions::TEXT_FIELD_PADDING_H as i32);
+    }
+
+    /// A prefix is drawn **before** the value, and the value moves right to make room.
+    ///
+    /// # The defect this pins
+    ///
+    /// The shortcut is to concatenate `prefix + value` into one string. That draws nearly the same
+    /// glyphs in nearly the same place, so it looks right — while it also (a) makes `cursor_position ==
+    /// 0` render after the `$`, and (b) makes a select-all copy the `$`. The distinguishing fact is that
+    /// the two are **separate ink runs** with the prefix to the left of the value, so the test reads all
+    /// runs and orders them rather than trusting which one was painted first.
+    #[test]
+    fn a_prefix_is_drawn_before_the_value_and_shifts_it() {
+        let mut plain = LineEdit::new(Rect::new(0, 0, 240, 120));
+        plain.set_text("12");
+        let plain_svg = crate::widget::svg::render_to_svg(&mut plain);
+        let plain_runs = crate::widget::svg::text_ink_boxes(&plain_svg);
+        assert_eq!(plain_runs.len(), 1, "a plain field draws its value as one run");
+        let (plain_left, _, plain_right, _) = plain_runs[0];
+
+        let mut prefixed = LineEdit::new(Rect::new(0, 0, 240, 120));
+        prefixed.set_text("12");
+        prefixed.set_prefix("$");
+        let prefixed_svg = crate::widget::svg::render_to_svg(&mut prefixed);
+        let mut runs = crate::widget::svg::text_ink_boxes(&prefixed_svg);
+        assert_eq!(
+            runs.len(),
+            2,
+            "the prefix and the value are two runs, not one concatenated string"
+        );
+        runs.sort_by_key(|b| b.0);
+        let (prefix_left, prefix_right) = (runs[0].0, runs[0].2);
+        let (value_left, value_right) = (runs[1].0, runs[1].2);
+
+        // The `$` takes the field's leading padding. The run's left edge is the *ink*, and the `$`
+        // bitmap has no set bit in its leftmost column, so the ink starts a glyph-bit right of the
+        // origin — the same inset a value at the padding shows. Asserting the origin would need the
+        // pen position, which the SVG does not carry; asserting the relation to the plain field is the
+        // honest form.
+        assert_eq!(
+            prefix_left, plain_left,
+            "the prefix starts where a value with no prefix starts: the field's leading padding"
+        );
+        // …and the value is pushed clear of it rather than starting there too.
+        assert!(
+            value_left > prefix_right,
+            "the value must begin past the prefix: prefix ends at {prefix_right}, value at {value_left}"
+        );
+        assert!(
+            value_left > plain_left,
+            "and further right than it sat without a prefix ({plain_left})"
+        );
+        // The value's own ink is the same width as before — only its origin moved, so the prefix did not
+        // disturb the glyphs it marks.
+        assert_eq!(
+            value_right - value_left,
+            plain_right - plain_left,
+            "the prefix shifted the value without reshaping it"
+        );
+
+        assert_eq!(prefixed.get("prefix").unwrap().as_str(), Some("$"));
+        assert!(
+            plain_left >= plain.field_rect().x + dimensions::TEXT_FIELD_PADDING_H as i32,
+            "the value is inset by the field's padding, not on the border"
+        );
+    }
+
+    /// The caret is measured against the **value**, so at `cursor_position == 0` it sits at the value's
+    /// origin — after a prefix, not after the `$`'s own box.
+    ///
+    /// This is the property that makes keeping the slots separate worth the trouble: with the prefix
+    /// folded into the text, `cursor_position == 0` would place the caret to the right of the `$` and
+    /// the start of the value would be unreachable.
+    #[test]
+    fn the_caret_at_position_zero_sits_at_the_values_origin_not_after_the_prefix() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 240, 120));
+        le.set_prefix("$");
+        le.set_text("12");
+        le.set_cursor_position(0);
+        le.set_focused(true);
+
+        // The layout is computed against the **real** SVG backend's metrics — the same backend the
+        // painter uses — and then read for the two facts that matter: the prefix has a box, and the
+        // value begins past it.
+        let mut backend = crate::render::svg::SvgPaintBackend::new(le.geometry().size());
+        let layout = {
+            let mut context = crate::render::RenderContext::new(&mut backend);
+            le.decoration_layout(&mut context)
+        };
+        let prefix = layout.prefix.expect("the prefix has a box of its own");
+        assert!(
+            layout.value.x >= prefix.right(),
+            "the value must begin at or past the prefix's trailing edge: {layout:?}"
+        );
+        assert!(layout.value.width > 0, "and it must keep some room: {layout:?}");
+    }
+
+    /// An error displaces the helper and paints on its own row; the counter shares that row and is
+    /// derived from the value and the limit.
+    #[test]
+    fn the_support_row_shows_the_error_and_a_derived_counter() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 240, 120));
+        le.set_max_length(Some(5));
+        le.set_text("abc");
+        assert_eq!(le.get("counter").unwrap().as_str(), Some("3/5"));
+        assert_eq!(le.get("over_limit").unwrap().as_bool(), Some(false));
+
+        // The helper shows while there is no error…
+        le.set_helper_text("Up to five characters");
+        assert_eq!(le.decorations().support_message(), "Up to five characters");
+        assert!(le.decorations().needs_support_row());
+
+        // …and the error displaces it rather than joining it.
+        le.set_error_text("Too long");
+        assert_eq!(le.decorations().support_message(), "Too long");
+        assert!(le.decorations().has_error());
+        assert_eq!(le.get("error").unwrap().as_str(), Some("Too long"));
+        assert_eq!(
+            le.get("helper").unwrap().as_str(),
+            Some("Up to five characters"),
+            "the helper is displaced, not deleted"
+        );
+
+        // Over the limit is reported, and the counter says how far. `set_text` enforces the limit too —
+        // a limit the control honours only while typing is a hint, not a limit — so the value is clamped
+        // and the pair stays consistent.
+        le.set_text("abcdefgh");
+        assert_eq!(le.text(), "abcde", "`set_text` must honour `max_length` like typing does");
+        assert_eq!(le.get("counter").unwrap().as_str(), Some("5/5"));
+        assert_eq!(
+            le.get("over_limit").unwrap().as_bool(),
+            Some(false),
+            "the stored value cannot exceed a limit it was clamped to"
+        );
+
+        // Clearing the error restores the helper without the caller having to re-set it.
+        le.set_error_text("");
+        assert_eq!(le.decorations().support_message(), "Up to five characters");
+    }
+
+    /// The counter is read-only, and the two in-field slots round-trip through the contract.
+    #[test]
+    fn the_slots_round_trip_through_the_property_api() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 240, 120));
+        le.set("prefix", CapabilityValue::String("$".to_string())).unwrap();
+        le.set("suffix", CapabilityValue::String("%".to_string())).unwrap();
+        le.set("helper", CapabilityValue::String("Hint".to_string())).unwrap();
+        le.set("error", CapabilityValue::String("Bad".to_string())).unwrap();
+
+        assert_eq!(le.get("prefix").unwrap().as_str(), Some("$"));
+        assert_eq!(le.get("suffix").unwrap().as_str(), Some("%"));
+        assert_eq!(le.get("helper").unwrap().as_str(), Some("Hint"));
+        assert_eq!(le.get("error").unwrap().as_str(), Some("Bad"));
+
+        // The two derived names are refused, so there is no second writer to disagree with.
+        assert!(le.set("counter", CapabilityValue::String("1/1".to_string())).is_err());
+        assert!(le.set("over_limit", CapabilityValue::Bool(true)).is_err());
+    }
+
+    /// A field too narrow for its slots still draws its field chrome and does not panic.
+    #[test]
+    fn a_field_squeezed_by_its_slots_still_paints() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 40, 120));
+        le.set_prefix("verylongprefix");
+        le.set_suffix("verylongsuffix");
+        le.set_text("value");
+        let svg = crate::widget::svg::render_to_svg(&mut le);
+        assert!(svg.starts_with("<svg"));
+        assert!(svg.ends_with("</svg>"));
     }
 
     #[test]

@@ -33,6 +33,22 @@ pub fn floor_char_boundary(text: &str, index: usize) -> usize {
     boundary
 }
 
+/// The byte index of the `count`-th character in `text`, or `text.len()` when it has fewer.
+///
+/// # Why a character count is not a byte offset
+///
+/// `max_length` on a text field counts **characters** — that is what a user typing sees, and what the
+/// `counter` reports — while every slice in this crate is in bytes. `text[..max]` therefore panics on
+/// any multi-byte input, and `text.len() <= max` is the wrong test: a five-character CJK value is
+/// fifteen bytes and was being rejected as "over a limit of five". This is the one conversion between
+/// those two frames, so no control has to spell it out.
+pub fn byte_index_of_char(text: &str, count: usize) -> usize {
+    match text.char_indices().nth(count) {
+        Some((index, _)) => index,
+        None => text.len(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

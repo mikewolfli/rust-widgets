@@ -23,7 +23,11 @@
 //! frame while its width was computed correctly. [`GroupBox::title_row`] asks a [`FlexLayout`] for
 //! the two boxes instead, so the reserve and the placement are one answer.
 
-use crate::compat::{Rc, RefCell, String, ToString, Vec};
+/// `Vec` is a scratch list the assembled title row builds; a stripped profile derives the two boxes
+/// arithmetically and never allocates one.
+#[cfg(full_widgets)]
+use crate::compat::Vec;
+use crate::compat::{Rc, RefCell, String, ToString};
 use crate::core::{Alignment, Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 #[cfg(full_widgets)]
@@ -194,7 +198,6 @@ impl GroupBox {
     /// Read by the stripped-profile arm of [`Self::assemble_title_row`] (which has no layout to ask)
     /// and by the tests, and it is the quantity the row's indicator column *is* in the assembled
     /// arm — so the reserve and the placement cannot disagree in either profile.
-    #[cfg_attr(full_widgets, allow(dead_code))]
     fn indicator_reserve(&self) -> u32 {
         if !self.checkable {
             return 0;
@@ -272,16 +275,19 @@ impl GroupBox {
         text_width: u32,
         band_height: u32,
     ) -> (Option<Rect>, Rect) {
-        let indicator_width = if self.checkable { dimensions::CHECKBOX_BOX } else { 0 };
-        let gap = if self.checkable { dimensions::INDICATOR_TEXT_SPACING } else { 0 };
         #[cfg(not(full_widgets))]
         {
+            let indicator_width = if self.checkable { dimensions::CHECKBOX_BOX } else { 0 };
             let indicator = if self.checkable {
                 Some(Rect::new(row.x, row.y, indicator_width, band_height))
             } else {
                 None
             };
-            let reserve = indicator_width + gap;
+            // The reserve comes from the accessor rather than from a second summation of the same two
+            // constants. This is the only reader the accessor has — the assembled arm below builds a
+            // column of that width instead of asking for it — so reading it here is what turns a
+            // declared number into a delivered one.
+            let reserve = self.indicator_reserve();
             let title_x = row.x + reserve as i32;
             let title_width = text_width.min(row.width.saturating_sub(reserve));
             (indicator, Rect::new(title_x, row.y, title_width, band_height))
@@ -301,9 +307,19 @@ impl GroupBox {
                 EdgeOffsets::all(0),
                 Size::new(0, 0),
             );
+            let indicator_width = if self.checkable { dimensions::CHECKBOX_BOX } else { 0 };
+            // The gap is the *rest* of the declared reserve: the reserve is "the indicator column
+            // plus the gap to the label", so reading it and subtracting the column is the same
+            // relation the stripped arm expresses by adding the two parts. Taking it from the
+            // accessor is what keeps the accessor a delivered number rather than a declared one.
+            let gap = if self.checkable {
+                self.indicator_reserve().saturating_sub(dimensions::CHECKBOX_BOX)
+            } else {
+                0
+            };
             if self.checkable {
                 // The indicator column is exactly one checkbox wide; the gap to the label rides on
-                // the **title's own leading margin**.
+                // the **title's own leading margin** — see the note below for why that side.
                 //
                 // # Why the gap is on the title and not on the indicator's trailing side
                 //
@@ -747,7 +763,23 @@ mod tests {
         );
     }
 
-    /// The space the title reserves is the space the indicator uses, at any frame width.
+    /// The space the title reserves is the space the indicator's **column** uses, at any frame width.
+    ///
+    /// # Why the reserve accessor is read here
+    ///
+    /// [`GroupBox::indicator_reserve`] is the *declared* reserve. The assembled title row builds an
+    /// indicator column of that width instead of reading it, so without a caller the method sat
+    /// unused in every profile — which is exactly the "declared and not delivered" shape principle
+    /// #22 forbids. Asking it here makes the accessor and the placement one checked relation rather
+    /// than two numbers that happen to agree.
+    ///
+    /// # Why the drawn square is compared to the *column*, not to the reserve
+    ///
+    /// The reserve is the column, and the column is the square plus the gap to the label. The square
+    /// itself is additionally bounded by the band it sits on — a squeezed box gives the indicator less
+    /// room than its nominal size (`checkbox_rect` says so) — so asserting ``size == reserve`` would
+    /// pin the square to the column and fail on a narrow frame for a reason that has nothing to do with
+    /// the relation under test. The gap is asserted to survive instead, which is the part that must.
     #[test]
     fn the_indicator_reserve_and_placement_are_one_derivation() {
         for width in [80u32, 200, 400] {
@@ -763,11 +795,28 @@ mod tests {
                 indicator.x
             );
             assert_eq!(
+                gb.indicator_reserve(),
+                dimensions::CHECKBOX_BOX + dimensions::INDICATOR_TEXT_SPACING,
+                "width {width}: the declared reserve must be the checkbox plus its gap"
+            );
+            assert!(
+                indicator.width <= dimensions::CHECKBOX_BOX,
+                "width {width}: the square may shrink but never grow past its nominal size"
+            );
+            assert_eq!(
                 title.x,
                 indicator.x + indicator.width as i32 + dimensions::INDICATOR_TEXT_SPACING as i32,
                 "width {width}: the reserved column and the used column must agree"
             );
         }
+    }
+
+    /// A box that is not checkable reserves nothing, so the title starts at its own leading inset.
+    #[test]
+    fn an_uncheckable_box_reserves_no_indicator_column() {
+        let gb = GroupBox::new(Rect::new(0, 0, 200, 100));
+        assert_eq!(gb.indicator_reserve(), 0);
+        assert!(gb.checkbox_rect().is_none());
     }
 
     #[test]

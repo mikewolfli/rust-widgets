@@ -3,6 +3,7 @@
 
 use crate::compat::{HashMap, String, Vec};
 use crate::core::ObjectId;
+use crate::widget::capability::types::CapabilityValue;
 use crate::widget::WidgetKind;
 
 // ─── Cross‑platform A11y role enumeration ───────────────────────────────
@@ -124,6 +125,91 @@ impl A11yNode {
     /// Construct a new accessibility node.
     pub fn new(id: ObjectId, state: A11yState) -> Self {
         Self { id, state }
+    }
+}
+
+impl A11yState {
+    /// Derives a node's state from a control, filling every field the control can answer.
+    ///
+    /// # Why this is a constructor here and not a method on each control
+    ///
+    /// `A11yState` had eleven fields and, in production code, **no producer at all**: `grep
+    /// "A11yState {"` found the tree, the provider and the tests, so the struct was
+    /// constructible but nothing ever built one from a live control. That is why `checked` and
+    /// `mixed` were always `None`/`false` even for a check box — not because a control declined to
+    /// report its state, but because **no code ever asked it**.
+    ///
+    /// Putting the derivation next to the state it fills (rather than in the trait, or once per
+    /// control) means the mapping from the property contract to the a11y fields exists exactly once,
+    /// and a control added later is announced correctly without editing anything.
+    ///
+    /// # How checked is resolved
+    ///
+    /// Through the control's own **property contract**, the same source [`crate::widget::Widget::accessible_value`]
+    /// reads, so the two cannot disagree about what the control is showing:
+    ///
+    /// * `checked` (`Bool`) — what a check box, radio button or switch publishes;
+    /// * `state` (`String`, `unchecked`/`partiallychecked`/`checked`) — what the tri-state check box
+    ///   publishes, and the only spelling that can express *mixed*;
+    /// * `current_index`/`selection` — not consulted, because "selected" is a different a11y state
+    ///   with its own field.
+    ///
+    /// A control that publishes none of them gets `checked: None`, which is the statement a screen
+    /// reader needs: "this role has no checked state". Reporting `Some(false)` instead would make an
+    /// unchecked box and a push button announce identically.
+    pub fn from_widget<W: crate::widget::Widget + ?Sized>(widget: &W) -> Self {
+        let kind = widget.kind();
+        let mut state = Self {
+            role: A11yRole::from(kind),
+            label: widget.accessible_name(),
+            description: widget.accessible_description(),
+            enabled: widget.is_enabled(),
+            value: widget.accessible_value(),
+            ..Default::default()
+        };
+        state.fill_checked_from_contract(widget.properties_dyn());
+        state
+    }
+
+    /// Fills `checked`/`mixed` from the control's published properties, if it publishes any.
+    ///
+    /// Split out because it is the one part of [`Self::from_widget`] with real branching, and because a
+    /// test can drive it with a synthetic contract rather than having to build a control of every kind.
+    fn fill_checked_from_contract(
+        &mut self,
+        properties: Option<&dyn crate::widget::capability::WidgetProperties>,
+    ) {
+        let Some(properties) = properties else {
+            return;
+        };
+        // The tri-state spelling wins when present, because it is strictly more informative: a
+        // `state`-carrying control also publishes `checked`, and `checked == true` cannot say "mixed".
+        if let Ok(CapabilityValue::String(token)) = properties.get("state") {
+            match crate::widget::capability::coercion::normalize_key(&token).as_str() {
+                "checked" => {
+                    self.checked = Some(true);
+                    self.mixed = false;
+                }
+                "partiallychecked" => {
+                    self.checked = Some(true);
+                    self.mixed = true;
+                }
+                "unchecked" => {
+                    self.checked = Some(false);
+                    self.mixed = false;
+                }
+                // An unrecognised token is not a state this type can express, so nothing is
+                // claimed — the same "must not invent a value" rule the rest of the struct follows.
+                _ => {}
+            }
+            return;
+        }
+        if let Ok(CapabilityValue::Bool(checked)) = properties.get("checked") {
+            self.checked = Some(checked);
+            // A binary control has no partial state; leaving `mixed` as it was would let a stale true
+            // survive a write back to the binary form.
+            self.mixed = false;
+        }
     }
 }
 
@@ -975,5 +1061,114 @@ mod tests {
         let provider = DefaultA11yProvider::new();
         // Should not panic
         provider.announce("Hello, screen reader!");
+    }
+
+    // ─── `A11yState::from_widget` — the three-state bridge ───
+
+    /// A binary check box reports `checked`, and reports it as `Some(_)` rather than `None`.
+    ///
+    /// # The defect this pins
+    ///
+    /// `checked` and `mixed` were declared on `A11yState` and consumed by the tree, the provider and
+    /// the platform bridges, but **nothing in production code ever filled them**: there was no
+    /// constructor from a live control. Every check box announced `checked: None`, which is the
+    /// statement "this role has no checked state" — indistinguishable from a push button.
+    #[test]
+    fn a_check_box_without_tristate_reports_a_binary_checked_state() {
+        use crate::widget::base_widgets::checkbox::CheckBox;
+
+        let mut box_ = CheckBox::new(crate::core::Rect::new(0, 0, 120, 24));
+        box_.set_text("Agree");
+        let off = A11yState::from_widget(&box_);
+        assert_eq!(off.checked, Some(false), "an unchecked box must say so, not stay silent");
+        assert!(!off.mixed, "a binary box has no partial state");
+
+        box_.set_checked(true);
+        let on = A11yState::from_widget(&box_);
+        assert_eq!(on.checked, Some(true));
+        assert!(!on.mixed);
+        // And the role and label came along, so the node is announceable as a whole.
+        assert_eq!(on.role, A11yRole::CheckBox);
+        assert_eq!(on.label, "Agree");
+    }
+
+    /// A tri-state check box reports *mixed* distinctly from checked.
+    ///
+    /// This is the case the `mixed` field exists for: a parent whose children are partly selected is
+    /// neither on nor off, and a screen reader must be able to say so. Collapsing it to `true` would
+    /// make "all children selected" and "some selected" announce identically.
+    #[test]
+    fn a_tristate_check_box_reports_mixed_separately_from_checked() {
+        use crate::widget::base_widgets::checkbox::{CheckBox, CheckState};
+
+        let mut box_ = CheckBox::new(crate::core::Rect::new(0, 0, 120, 24));
+        box_.set_text("All");
+        box_.set_tristate_enabled(true);
+
+        box_.set_state(CheckState::Checked);
+        let checked = A11yState::from_widget(&box_);
+        assert_eq!(checked.checked, Some(true));
+        assert!(!checked.mixed, "fully checked is not mixed");
+
+        box_.set_state(CheckState::PartiallyChecked);
+        let partial = A11yState::from_widget(&box_);
+        assert_eq!(partial.checked, Some(true));
+        assert!(partial.mixed, "a partly-checked box must announce mixed");
+
+        box_.set_state(CheckState::Unchecked);
+        let off = A11yState::from_widget(&box_);
+        assert_eq!(off.checked, Some(false));
+        assert!(!off.mixed);
+    }
+
+    /// A radio button and a switch report the same way, and a control with no checked concept stays
+    /// silent rather than claiming `false`.
+    ///
+    /// The negative half is the important one: reporting `Some(false)` for a button would make "off"
+    /// and "not checkable" the same announcement, which is exactly what `Option<bool>` is for.
+    #[test]
+    fn checkable_roles_report_and_uncheckable_roles_stay_silent() {
+        use crate::widget::base_widgets::button::Button;
+        use crate::widget::base_widgets::radiobutton::RadioButton;
+        use crate::widget::display_widgets::switch::Switch;
+
+        let mut radio = RadioButton::new(crate::core::Rect::new(0, 0, 120, 24));
+        assert_eq!(A11yState::from_widget(&radio).checked, Some(false));
+        radio.set_checked(true);
+        assert_eq!(A11yState::from_widget(&radio).checked, Some(true));
+
+        let mut switch = Switch::new(crate::core::Rect::new(0, 0, 52, 32));
+        assert_eq!(A11yState::from_widget(&switch).checked, Some(false));
+        switch.set_checked(true);
+        assert_eq!(A11yState::from_widget(&switch).checked, Some(true));
+
+        // `String::from` rather than `"OK".to_string()`: `ToString` is only in scope where the crate
+        // imports it, and the stripped profiles build this test without it — the literal conversion is the
+        // one spelling that works in every profile.
+        let button = Button::new(String::from("OK"), crate::core::Rect::new(0, 0, 80, 32));
+        let state = A11yState::from_widget(&button);
+        assert_eq!(
+            state.checked, None,
+            "a push button must not claim to be unchecked — it is not checkable at all"
+        );
+        assert!(!state.mixed);
+    }
+
+    /// The state a node reports is the state the control is **showing**, read after it changes.
+    ///
+    /// A one-shot derivation would freeze the first frame's answer, so a check box that is toggled
+    /// would keep announcing its old value — the failure mode a screen reader user experiences as "the
+    /// control lies about itself".
+    #[test]
+    fn a_node_rebuilt_after_a_change_reports_the_new_state() {
+        let mut box_ = crate::widget::base_widgets::checkbox::CheckBox::new(
+            crate::core::Rect::new(0, 0, 120, 24),
+        );
+        box_.set_text("Agree");
+        assert_eq!(A11yState::from_widget(&box_).checked, Some(false));
+        box_.set_checked(true);
+        assert_eq!(A11yState::from_widget(&box_).checked, Some(true));
+        box_.set_checked(false);
+        assert_eq!(A11yState::from_widget(&box_).checked, Some(false));
     }
 }

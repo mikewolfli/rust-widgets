@@ -8,7 +8,8 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::capability::coercion::{
-    expect_bool, expect_i64, expect_orientation, orientation_to_str,
+    expect_bool, expect_i64, expect_orientation, expect_text_direction, orientation_to_str,
+    text_direction_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -26,6 +27,21 @@ pub struct ProgressBar {
     text_visible: bool,
     orientation: Orientation,
     inverted_appearance: bool,
+    /// The writing direction the value axis runs in.
+    ///
+    /// # Why this is not `inverted_appearance`
+    ///
+    /// `inverted_appearance` is a *presentational* choice — "anchor the fill to the far end" — and it
+    /// is what an indeterminate or a trailing-edge indicator wants. Direction is a *reading* fact: in
+    /// an Arabic or Hebrew interface the run begins at the right edge because that is where the user
+    /// starts reading, so the fill grows leftward and "a third of the way through" is measured from
+    /// the right. The two coincide for RTL — which is why one bool could stand in for both — but they
+    /// are different statements, and collapsing them would mean a control could not be right-anchored
+    /// in a left-to-right locale. BLUE22 §5.1 rejects a full `LayoutMirroring`; it does not reject
+    /// "a control knows which end its line begins at", which is what `TextDirection` is for.
+    ///
+    /// Defaults to left-to-right, so a bar that never asks behaves exactly as it did.
+    direction: crate::core::TextDirection,
     /// Emitted with the new value after any change to `value` — from
     /// `set_value`, the steppers, or keyboard/wheel input. Not emitted when the
     /// value is set to the value it already had.
@@ -42,6 +58,7 @@ impl ProgressBar {
             text_visible: true,
             orientation: Orientation::Horizontal,
             inverted_appearance: false,
+            direction: crate::core::TextDirection::default(),
             value_changed: Signal1::new(),
         }
     }
@@ -128,6 +145,20 @@ impl ProgressBar {
         self.inverted_appearance = inverted;
         self.base.request_redraw();
     }
+
+    /// Returns the writing direction the value axis runs in.
+    pub fn direction(&self) -> crate::core::TextDirection {
+        self.direction
+    }
+
+    /// Sets the writing direction the value axis runs in, and repaints.
+    ///
+    /// A bar that runs right-to-left fills from the right edge, so its filled run is measured from
+    /// the beginning of the line — the edge the reader starts at — rather than from the left.
+    pub fn set_direction(&mut self, direction: crate::core::TextDirection) {
+        self.direction = direction;
+        self.base.request_redraw();
+    }
     /// Returns progress as percentage (0 to 1).
     pub fn progress(&self) -> f32 {
         if self.maximum == self.minimum {
@@ -181,6 +212,9 @@ impl WidgetProperties for ProgressBar {
                 Ok(CapabilityValue::String(orientation_to_str(self.orientation()).to_string()))
             }
             "inverted_appearance" => Ok(CapabilityValue::Bool(self.is_inverted_appearance())),
+            "direction" => {
+                Ok(CapabilityValue::String(text_direction_to_str(self.direction()).to_string()))
+            }
             "progress" => Ok(CapabilityValue::Float(self.progress() as f64)),
             _ => base_property_get(self, name),
         }
@@ -212,6 +246,10 @@ impl WidgetProperties for ProgressBar {
                 self.set_inverted_appearance(expect_bool(value)?);
                 Ok(())
             }
+            "direction" => {
+                self.set_direction(expect_text_direction(value)?);
+                Ok(())
+            }
             // `progress` has no setter: it is a function of the range. Reporting it
             // as unsupported keeps the read-only contract explicit.
             "progress" => Err(CapabilityAccessError::ReadOnlyProperty),
@@ -228,6 +266,7 @@ impl WidgetProperties for ProgressBar {
             "text_visible",
             "orientation",
             "inverted_appearance",
+            "direction",
             "progress",
             BASE_PROPERTY_NAMES
         ]
@@ -348,7 +387,14 @@ impl Draw for ProgressBar {
         if filled_len > 0 {
             match self.orientation {
                 Orientation::Horizontal => {
-                    let x = if self.inverted_appearance {
+                    // `inverted_appearance` and the direction are two ways to reach the far end, and
+                    // they compose: an inverted bar in an RTL locale anchors to the left, which is
+                    // what XOR expresses and what a naive `||` would get wrong. The vertical arm is
+                    // unaffected — the block axis is not mirrored in either direction, which is the
+                    // same rule `slider` applies (its vertical run is top-to-bottom in every
+                    // direction).
+                    let from_far_end = self.inverted_appearance ^ self.direction.is_right_to_left();
+                    let x = if from_far_end {
                         bar_rect.x + bar_rect.width as i32 - filled_len as i32
                     } else {
                         bar_rect.x
@@ -696,5 +742,91 @@ mod tests {
         let (_, _, width, height) = filled[0];
         assert!(width > 0 && height > 0, "a drawn fill is never degenerate: {svg}");
         assert_eq!(width, 120, "half of a 240-wide census cell is 120px: {svg}");
+    }
+
+    /// A right-to-left bar fills from the **right** edge, by the same length.
+    ///
+    /// # What this pins
+    ///
+    /// BLUE22 · F-4. A progress bar maps a value onto a line, and the line runs from where the reader
+    /// starts to where they finish — so in an Arabic or Hebrew interface a third of the way through a
+    /// task is a third of the way in from the *right*. Before this the control had no way to say so,
+    /// and the only knob was `inverted_appearance`, which is a presentational choice rather than a
+    /// reading fact.
+    ///
+    /// The assertion is deliberately about the **length as well as the origin**: a mirrored bar that
+    /// also changed its length would look like it was at a different value, which is the "two
+    /// directions must share one inset" lesson of BLUE22 §4.3 in its simplest form. The horizontal
+    /// arm is the one that mirrors; the vertical arm must not.
+    #[test]
+    fn a_right_to_left_bar_fills_from_the_right_edge() {
+        let fill = fill_color();
+        let rgba = crate::render::svg::convert::color_to_rgba(&fill);
+
+        let mut ltr = ProgressBar::new(Rect::new(0, 0, 240, 120));
+        ltr.set_value(50);
+        let ltr_svg = crate::widget::svg::render_to_svg(&mut ltr);
+        let (ltr_x, _, ltr_w, _) = rects_with_fill(&ltr_svg, &rgba)[0];
+
+        let mut rtl = ProgressBar::new(Rect::new(0, 0, 240, 120));
+        rtl.set_value(50);
+        rtl.set_direction(crate::core::TextDirection::RightToLeft);
+        let rtl_svg = crate::widget::svg::render_to_svg(&mut rtl);
+        let (rtl_x, _, rtl_w, _) = rects_with_fill(&rtl_svg, &rgba)[0];
+
+        assert_eq!(rtl_w, ltr_w, "the fill's length is a fact about the value, not the direction");
+        assert_eq!(ltr_x, 0, "an LTR bar begins at its leading (left) edge");
+        assert_eq!(
+            rtl_x + rtl_w,
+            240,
+            "an RTL bar's fill ends at its leading (right) edge: x={rtl_x} w={rtl_w}"
+        );
+    }
+
+    /// A vertical bar is **not** mirrored by the direction.
+    ///
+    /// The block axis is not a reading direction: text runs down the page the same way in Arabic and
+    /// in English, so a vertical progress bar fills bottom-to-top in both. `slider` states the same
+    /// rule in its own RTL arm, and the two controls must agree or a form would have one vertical
+    /// indicator that mirrors and one that does not.
+    #[test]
+    fn a_vertical_bar_is_not_mirrored_by_direction() {
+        let fill = fill_color();
+        let rgba = crate::render::svg::convert::color_to_rgba(&fill);
+
+        let mut ltr = ProgressBar::new(Rect::new(0, 0, 120, 240));
+        ltr.set_orientation(Orientation::Vertical);
+        ltr.set_value(50);
+        let ltr_svg = crate::widget::svg::render_to_svg(&mut ltr);
+        let (_, ltr_y, _, ltr_h) = rects_with_fill(&ltr_svg, &rgba)[0];
+
+        let mut rtl = ProgressBar::new(Rect::new(0, 0, 120, 240));
+        rtl.set_orientation(Orientation::Vertical);
+        rtl.set_value(50);
+        rtl.set_direction(crate::core::TextDirection::RightToLeft);
+        let rtl_svg = crate::widget::svg::render_to_svg(&mut rtl);
+        let (_, rtl_y, _, rtl_h) = rects_with_fill(&rtl_svg, &rgba)[0];
+
+        assert_eq!(ltr_y, rtl_y, "the vertical fill starts where it did");
+        assert_eq!(ltr_h, rtl_h, "and is the same length");
+    }
+
+    /// Direction and `inverted_appearance` compose rather than one winning.
+    ///
+    /// They are two ways to reach the far end — one a reading fact, one a presentation choice — so a
+    /// bar that is *both* inverted and RTL must anchor to the **near** edge. Treating them as one flag
+    /// (`||`) would make the second setting undo the first, which is the kind of interaction that is
+    /// invisible until a locale is combined with an indeterminate indicator.
+    #[test]
+    fn direction_and_inverted_appearance_compose() {
+        let fill = fill_color();
+        let rgba = crate::render::svg::convert::color_to_rgba(&fill);
+        let mut both = ProgressBar::new(Rect::new(0, 0, 240, 120));
+        both.set_value(50);
+        both.set_inverted_appearance(true);
+        both.set_direction(crate::core::TextDirection::RightToLeft);
+        let svg = crate::widget::svg::render_to_svg(&mut both);
+        let (x, _, w, _) = rects_with_fill(&svg, &rgba)[0];
+        assert_eq!((x, w), (0, 120), "inverted and RTL cancel, anchoring to the near edge");
     }
 }

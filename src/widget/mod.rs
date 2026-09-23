@@ -71,6 +71,13 @@ pub mod draw;
 pub mod draw_bridge;
 pub mod kind;
 
+/// The five non-value strings a text entry shows, and the boxes they occupy.
+///
+/// **Not** gated on `widgets_unstripped`: `line_edit` and `spin_box` are built in every profile,
+/// including the stripped ones, and they are this module's consumers. Gating it on the unstripped set was
+/// an over-restriction — it needs only `String` and `format` from [`crate::compat`], both of which exist
+/// under `alloc_frugal`.
+pub mod decorations;
 /// Content-driven control metrics — the "implicit size" system.
 ///
 /// Answers "how big should this control draw?", which is a different question
@@ -86,6 +93,18 @@ pub mod metrics;
 pub mod numeric;
 #[cfg(not(alloc_frugal))]
 pub mod runtime;
+/// Hand-written sample data for the data-bearing controls.
+///
+/// `WidgetFactory::create` passes one string, so every control whose doc says "with no rows or
+/// columns" produced a snapshot showing an empty frame. This is where those controls' content lives, so a
+/// reviewer can see the table's columns, the list's rows and the tabs' titles.
+pub mod sample_data;
+/// Applies [`sample_data`] to a constructed control, for the snapshot and census paths.
+///
+/// The production factory stays empty on purpose (a host that asks for an empty table must get one), so the
+/// filling is a step the **verification** paths take rather than something `create` does.
+#[cfg(full_widgets)]
+pub mod sample_fill;
 /// Byte-index helpers shared by the text-editing controls.
 pub mod text_utils;
 pub mod widget_trait;

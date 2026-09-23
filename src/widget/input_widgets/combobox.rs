@@ -897,18 +897,24 @@ mod tests {
         }
     }
 
-    /// A band too narrow for the value floor, the gap and the indicator overhangs.
+    /// A band too narrow for the value floor, the gap and the indicator keeps both inside it.
     ///
-    /// # What this pins
+    /// # What this pins (and what G-1 changed)
     ///
     /// The three requirements together are `TEXT_FIELD_PADDING_H + INDICATOR_LEADING_GAP +
-    /// BUTTON_ICON_SIZE + TEXT_FIELD_PADDING_H` (4 + 2 + 18 + 4 = 28 px). A narrower band cannot
-    /// be tiled, and the layout's answer is the one it gives everywhere — a child is never
-    /// squeezed below its own floor, so the row overhangs (BLUE22 · G-1) rather than producing an
-    /// inverted value box. The field's own `size_hint` floor is wider than this, so the case is not
-    /// reachable from a form.
+    /// BUTTON_ICON_SIZE + TEXT_FIELD_PADDING_H` (4 + 2 + 18 + 4 = 28 px). A narrower band cannot be
+    /// tiled at those sizes — that is arithmetic.
+    ///
+    /// What the layout owes is that the shortfall is contained: before G-1 was resolved the value's
+    /// column kept its floor and the indicator was pushed past the band's trailing edge, which on
+    /// the SVG backend (absolute coordinates, no clip at this layer) means an **absent** drop-down
+    /// arrow rather than an overflowing one. The test asserts containment plus the relation that
+    /// makes a combo box a combo box: the value box is still the room the indicator leaves.
+    ///
+    /// The field's own `size_hint` floor is wider than this, so the case is not reachable from a
+    /// form.
     #[test]
-    fn a_band_too_narrow_for_the_indicator_overhangs() {
+    fn a_band_too_narrow_for_the_indicator_keeps_both_inside_it() {
         let width = 20u32;
         let cb = ComboBox::new(Rect::new(0, 0, width, 120));
         let geometry = cb.indicator_geometry(14);
@@ -918,9 +924,27 @@ mod tests {
             geometry.text_box
         );
         assert!(
-            geometry.box_rect.x + geometry.box_rect.width as i32 > width as i32,
-            "the indicator overhangs rather than squeezing the value below its floor: {:?}",
+            geometry.text_box.x + geometry.text_box.width as i32 <= width as i32,
+            "the value box stays inside the band: {:?}",
+            geometry.text_box
+        );
+        assert!(
+            geometry.box_rect.x >= 0
+                && geometry.box_rect.x + geometry.box_rect.width as i32 <= width as i32,
+            "and so does the indicator, rather than being pushed out of the field: {:?}",
             geometry.box_rect
+        );
+        // The value still yields to the indicator: the gap between them is the field's own, and the
+        // two boxes plus that gap are the band.
+        assert_eq!(
+            geometry.text_box.x + geometry.text_box.width as i32 + INDICATOR_LEADING_GAP as i32,
+            geometry.box_rect.x,
+            "the value must still stop one gap short of the indicator"
+        );
+        assert_eq!(
+            geometry.text_box.width + INDICATOR_LEADING_GAP + geometry.box_rect.width,
+            width,
+            "and the two boxes must account for the band"
         );
     }
 

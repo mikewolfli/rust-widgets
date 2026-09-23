@@ -194,6 +194,43 @@ fn set_and_get_widget_accessibility_name() {
     assert_eq!(backend.get_widget_accessibility_name(id), "Custom Label");
 }
 
+/// A mounted check box reports its three-state through the backend, and an unknown id does not.
+///
+/// # Why this is the end-to-end half of the `A11yState` bridge
+///
+/// `A11yState::from_widget` is unit-tested against live controls, but a derivation nobody can fetch
+/// is still unreachable — the same "declared and not delivered" shape the three-state fix was about.
+/// Going through the backend is what proves the mounted-control lookup, the property contract and the
+/// a11y fields are actually joined up.
+#[test]
+fn a_mounted_check_box_reports_its_checked_state_through_the_backend() {
+    let backend = CustomPaintControlBackend::new();
+    let parent = backend.create_window("Parent", 0, 0, 400, 300);
+    let id = backend.create_checkbox(parent, "Agree", 0, 0, 120, 24);
+
+    let off = backend.widget_a11y_state(id).expect("a mounted control has an a11y state");
+    assert_eq!(off.checked, Some(false), "a check box must report off, not silence");
+    assert!(!off.mixed);
+
+    // The control is live, so a write through the property channel changes what a11y reports.
+    crate::widget::capability::write_widget_property_by_id(
+        id,
+        "checked",
+        crate::widget::capability::CapabilityValue::Bool(true),
+    )
+    .expect("a check box accepts `checked`");
+    let on = backend.widget_a11y_state(id).expect("still mounted");
+    assert_eq!(on.checked, Some(true), "a toggled control must report its new state");
+
+    // A button is not checkable, so it must stay silent rather than claim `Some(false)`.
+    let button = backend.create_button(parent, "OK", 0, 0, 80, 30);
+    let button_state = backend.widget_a11y_state(button).expect("mounted");
+    assert_eq!(button_state.checked, None, "a push button has no checked state");
+
+    // And an id addressing nothing is `None`, not an all-defaults node.
+    assert!(backend.widget_a11y_state(0xDEAD_BEEF).is_none());
+}
+
 #[test]
 fn create_slider_allocates_valid_id() {
     let backend = CustomPaintControlBackend::new();

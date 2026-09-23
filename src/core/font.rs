@@ -19,6 +19,32 @@ pub struct Font {
     bold: bool,
     /// Whether italic style is requested.
     italic: bool,
+    /// Extra space inserted after every cluster, in logical pixels.
+    ///
+    /// # Why this is needed for text scaling
+    ///
+    /// A 2× text scale is not the same as a 2× point size. At large sizes the *spaces* between
+    /// letters and lines become the dominant part of the reading rhythm: a font scaled only in
+    /// points reads as cramped, which is why every desktop toolkit exposes tracking (CSS
+    /// `letter-spacing`) alongside size. Without this field the crate could only scale a font's
+    /// size, so a 2× build had no way to restore the spacing that the original design assumed.
+    ///
+    /// Zero means "the font's own natural tracking", which is what every existing call site and
+    /// every existing serialised theme means — so this field is additive.
+    #[cfg_attr(feature = "serde", serde(default))]
+    letter_spacing: f32,
+    /// Line height (leading) in logical pixels, or `0` for "derive from the font's own size".
+    ///
+    /// # Why `0` rather than a default number
+    ///
+    /// A line height is a *ratio applied to the size* (1.2 em is the common default), not a fixed
+    /// pixel count. Storing an absolute number would make a font's leading wrong the moment its size
+    /// changed — the two facts would have to be kept in step by hand. `0` therefore means "no
+    /// explicit leading: use the renderer's own", and a caller that wants 1.2 em writes
+    /// `size * 1.2` once. This keeps the field honest for the overwhelmingly common case where the
+    /// caller has no opinion.
+    #[cfg_attr(feature = "serde", serde(default))]
+    line_height: f32,
 }
 impl Font {
     /// Returns the font family name.
@@ -36,6 +62,58 @@ impl Font {
     /// Returns whether italic style is requested.
     pub fn is_italic(&self) -> bool {
         self.italic
+    }
+    /// Returns the extra space inserted after every cluster, in logical pixels.
+    ///
+    /// `0.0` means the font's own natural tracking — see the field's documentation for why a text
+    /// scale needs this alongside a point size.
+    pub fn letter_spacing(&self) -> f32 {
+        self.letter_spacing
+    }
+    /// Returns the explicit line height in logical pixels, or `0.0` for "derive from the size".
+    pub fn line_height(&self) -> f32 {
+        self.line_height
+    }
+    /// Sets the extra space after every cluster, and returns self for chaining.
+    ///
+    /// A negative value tightens; the value is a distance, so it is clamped to the point where it
+    /// could not collapse a cluster to nothing. A tracking that large is a mistake rather than a
+    /// style, and letting it through would make text overlap itself in a way no caller can debug.
+    pub fn set_letter_spacing(&mut self, spacing: f32) -> &mut Self {
+        self.letter_spacing = if spacing.is_finite() { spacing.max(-self.size) } else { 0.0 };
+        self
+    }
+    /// Sets an explicit line height in logical pixels, and returns self for chaining.
+    ///
+    /// `0` (or a non-finite value) means "derive from the size". A positive value is clamped to at
+    /// least the font's own size: a line shorter than its glyphs would make consecutive lines
+    /// overlap, which is a layout defect rather than a leading choice.
+    pub fn set_line_height(&mut self, height: f32) -> &mut Self {
+        self.line_height =
+            if height.is_finite() && height > 0.0 { height.max(self.size) } else { 0.0 };
+        self
+    }
+    /// The effective line height: the explicit one when set, otherwise the font's own size.
+    ///
+    /// # Why the fallback is `1.0` em and not a "typographic" `1.2`
+    ///
+    /// `1.2 em` is the conventional leading ratio, and using it here was the first spelling of this
+    /// method. It was wrong: the crate's line box has always been `size` pixels (see
+    /// `measure_text`), so a `1.2` fallback silently grew every measured line by 2–3 px — and because
+    /// 176 call sites lay text out from that measurement, it re-laid-out the whole control set for
+    /// callers who had asked for nothing. Measured: a 14 px font's line box went `14 -> 17`, a 11 px
+    /// font's `11 -> 13`. Three tests caught it, which is the only reason it is not in the snapshots.
+    ///
+    /// So the contract is: **the fallback reproduces the previous behaviour exactly**, and `1.2 em` is
+    /// something a caller writes when it wants it (`set_line_height(font.size() * 1.2)`). That is the
+    /// same rule the rest of this crate's additive changes follow — a new field means what its absence
+    /// has always meant.
+    pub fn effective_line_height(&self) -> f32 {
+        if self.line_height > 0.0 {
+            self.line_height
+        } else {
+            self.size
+        }
     }
     /// Sets the font point size (mutable setter for CSS parser integration).
     pub fn set_size(&mut self, size: f32) -> &mut Self {
@@ -78,6 +156,8 @@ impl Font {
             weight: normalized_weight,
             bold: normalized_weight >= Self::BOLD_WEIGHT,
             italic,
+            letter_spacing: 0.0,
+            line_height: 0.0,
         }
     }
     /// Creates a font descriptor from i32 size.
@@ -318,6 +398,12 @@ struct FontSerde {
     bold: bool,
     #[serde(default)]
     italic: bool,
+    // Both default to `0.0`, so a theme serialised before these fields existed loads unchanged and
+    // keeps meaning the same thing: "no explicit tracking, no explicit leading".
+    #[serde(default)]
+    letter_spacing: f32,
+    #[serde(default)]
+    line_height: f32,
 }
 #[cfg(feature = "serde")]
 impl From<FontSerde> for Font {
@@ -333,6 +419,16 @@ impl From<FontSerde> for Font {
             weight: normalized_weight,
             bold: normalized_weight >= Font::BOLD_WEIGHT,
             italic: value.italic,
+            letter_spacing: if value.letter_spacing.is_finite() {
+                value.letter_spacing.max(-value.size)
+            } else {
+                0.0
+            },
+            line_height: if value.line_height.is_finite() && value.line_height > 0.0 {
+                value.line_height.max(value.size)
+            } else {
+                0.0
+            },
         }
     }
 }
@@ -361,6 +457,8 @@ pub struct FontBuilder {
     size: f32,
     weight: u16,
     italic: bool,
+    letter_spacing: f32,
+    line_height: f32,
 }
 impl FontBuilder {
     fn new() -> Self {
@@ -369,6 +467,8 @@ impl FontBuilder {
             size: 14.0,
             weight: Font::REGULAR_WEIGHT,
             italic: false,
+            letter_spacing: 0.0,
+            line_height: 0.0,
         }
     }
     /// Sets the font family.
@@ -392,9 +492,30 @@ impl FontBuilder {
         self.italic = italic;
         self
     }
+    /// Sets the extra space after every cluster, in logical pixels.
+    ///
+    /// See [`Font::letter_spacing`] for why a text scale needs this next to a point size. The value
+    /// is clamped by [`Font::set_letter_spacing`] when the font is built.
+    pub fn letter_spacing(mut self, spacing: f32) -> Self {
+        self.letter_spacing = spacing;
+        self
+    }
+    /// Sets the line height in logical pixels; `0` means "derive from the size".
+    ///
+    /// The value is clamped by [`Font::set_line_height`] when the font is built.
+    pub fn line_height(mut self, height: f32) -> Self {
+        self.line_height = height;
+        self
+    }
     /// Consumes the builder and creates a [`Font`].
     pub fn build(self) -> Font {
-        Font::with_weight(self.family, self.size, self.weight, self.italic)
+        let mut font = Font::with_weight(self.family, self.size, self.weight, self.italic);
+        // Through the setters rather than the fields, so the builder and the mutating API cannot
+        // disagree about what a legal value is: `build()` is the path a caller takes when it has not
+        // read the setters, which is exactly when a silent difference would go unnoticed.
+        font.set_letter_spacing(self.letter_spacing);
+        font.set_line_height(self.line_height);
+        font
     }
 }
 
@@ -549,5 +670,92 @@ mod tests {
             let font = Font::parse(spec).unwrap_or_else(|| panic!("{spec:?} should parse"));
             assert!(font.is_valid(), "{spec:?} produced an invalid font: {font:?}");
         }
+    }
+
+    /// A font with no explicit tracking or leading means exactly what it always meant.
+    ///
+    /// The two fields added for text scaling (BLUE22 · F-10) must be **additive**: every existing
+    /// call site and every already-serialised theme omitted them, and if their absence changed any
+    /// metric then adopting the fields would silently re-lay-out every control in the crate.
+    #[test]
+    fn the_text_scaling_fields_default_to_no_effect() {
+        let font = Font::default();
+        assert_eq!(font.letter_spacing(), 0.0, "no tracking unless asked for");
+        assert_eq!(font.line_height(), 0.0, "no explicit leading unless asked for");
+        // The effective leading is still the crate's own line box, so a caller that asks for a number
+        // gets the same one the renderer uses for an uninstructed font — which is the whole point of
+        // the fallback.
+        assert!((font.effective_line_height() - font.size()).abs() < 1e-6);
+    }
+
+    /// The builder and the mutating setters agree on what a legal value is.
+    ///
+    /// They must: `build()` is the path a caller takes when it has *not* read the setters, so a
+    /// difference between the two would be a silent one. The assertions are the clamps' contracts —
+    /// tracking cannot collapse a cluster, and a line cannot be shorter than its glyphs — plus the
+    /// degenerate inputs (`0`, negative, non-finite) that a deserialised theme can carry.
+    #[test]
+    fn the_text_scaling_clamps_are_the_same_through_both_apis() {
+        // A line shorter than the glyphs is a layout defect, so it is raised to the size.
+        let via_builder = Font::builder().size(20.0).line_height(4.0).build();
+        let via_setter = {
+            let mut font = Font::default();
+            font.set_size(20.0);
+            font.set_line_height(4.0);
+            font
+        };
+        assert_eq!(via_builder.line_height(), 20.0);
+        assert_eq!(via_builder.line_height(), via_setter.line_height());
+
+        // Tracking tighter than the cluster itself would overlap text, so it is clamped to `-size`.
+        let tight = Font::builder().size(10.0).letter_spacing(-999.0).build();
+        let tighter = {
+            let mut font = Font::default();
+            font.set_size(10.0);
+            font.set_letter_spacing(-999.0);
+            font
+        };
+        assert_eq!(tight.letter_spacing(), -10.0);
+        assert_eq!(tight.letter_spacing(), tighter.letter_spacing());
+
+        // Zero and non-finite both mean "no opinion" rather than a broken font: a theme file with
+        // `"line_height": 0` is the common case, and a `NaN` from arithmetic must not propagate into
+        // every measurement in the frame.
+        for bad in [0.0f32, -0.0, f32::NAN, f32::INFINITY] {
+            let font = Font::builder().line_height(bad).letter_spacing(bad).build();
+            assert_eq!(font.line_height(), 0.0, "{bad} must mean 'derive from the size'");
+            assert_eq!(font.letter_spacing(), 0.0, "{bad} must mean 'no tracking'");
+        }
+    }
+
+    /// A tracked font measures wider than the same font untracked, by exactly its tracking.
+    ///
+    /// This is the property that makes the field usable at all: a metric that does not affect
+    /// measurement would let a tracked label be laid out at its untracked width and then paint
+    /// outside its own box. The count is `clusters - 1` gaps — a trailing tracking would offset a
+    /// centred label.
+    #[test]
+    fn tracking_widens_a_measurement_by_one_gap_per_cluster_boundary() {
+        let mut backend = crate::render::SvgPaintBackend::new(crate::core::Size::new(200, 40));
+        let context = crate::render::RenderContext::new(&mut backend);
+        let plain = Font::default();
+        let tracked = Font::builder().size(plain.size()).letter_spacing(2.0).build();
+
+        let text = "abc";
+        let plain_width = context.measure_text(text, &plain).width;
+        let tracked_width = context.measure_text(text, &tracked).width;
+        // Three clusters: two gaps of 2 px.
+        assert_eq!(
+            tracked_width,
+            plain_width + 4,
+            "the run widens by `clusters - 1` gaps: {plain_width} -> {tracked_width}"
+        );
+        // A single cluster has no gap to pay, so it measures identically: the tracking is a gap
+        // between clusters rather than a trailing space.
+        assert_eq!(
+            context.measure_text("a", &tracked).width,
+            context.measure_text("a", &plain).width,
+            "one cluster has no inter-cluster gap to pay"
+        );
     }
 }

@@ -78,8 +78,13 @@ impl SoftwareSurface {
     /// Measures text bounds and baseline metrics.
     pub fn measure_text(&self, text: &str, font: &Font) -> TextMetrics {
         let scale = self.buffer.dpi_scale();
-        let line_height = (font.size() * scale).max(1.0);
-        let height = line_height.round() as u32;
+        // The line box is the font's **effective** line height, so an explicit `line_height` — the
+        // field a text scale needs, and the one that had no consumer when it was added (BLUE22 ·
+        // F-10) — actually sets how tall a line of this font is. Deriving it from `size()` alone made
+        // the field writable and unread: a caller could set 1.8 em leading and every `text_line` in
+        // the crate would still centre on the default, so the field was decoration.
+        let line_height = font.effective_line_height() * scale;
+        let height = line_height.round().max(1.0) as u32;
         let ascent = (line_height * 0.8).round() as u32;
         let descent = height.saturating_sub(ascent);
         let shaped = self.shape_text(text, font);
@@ -109,9 +114,24 @@ impl SoftwareSurface {
             }
         }
         let mut total_advance = 0.0f32;
+        // The tracking is added to each cluster's advance **here**, in the one function both the
+        // measure path and the draw path go through. Adding it only in `draw_text` would make a
+        // tracked font measure narrower than it paints — the "measure with A, draw with B" defect
+        // this crate has paid for once already (§G.5), and a `letter_spacing` that silently changed
+        // how much room a label reserves is worse than no tracking at all. The `scale` is applied
+        // because a tracking is a logical-pixel distance like every other metric here.
+        let tracking = font.letter_spacing() * scale;
         for cluster in &mut clusters {
             cluster.advance = estimate_cluster_advance(&cluster.text, font.size(), scale);
+            // A trailing cluster's tracking would extend past the end of the run and make a centred
+            // label sit visibly left of centre, so it is not paid on the last one. CSS calls this out
+            // for the same reason.
             total_advance += cluster.advance;
+        }
+        // Applied after the sum so the last cluster can be excluded by the caller of the loop above:
+        // `n` clusters have `n - 1` inter-cluster gaps.
+        if tracking != 0.0 && !clusters.is_empty() {
+            total_advance += tracking * (clusters.len() - 1) as f32;
         }
         ShapedText { clusters, advance: total_advance }
     }

@@ -358,14 +358,54 @@ impl FlexLayout {
             // The floor is a statement about what the *child* can survive, and a layout that
             // ignores it to satisfy its own extent trades a visible overflow for an unreadable
             // control. CSS flexbox makes the same choice (`min-width: auto` item floors win over
-            // `flex-shrink`), and Qt's `implicitMinimumWidth` is likewise a hard bound. The honest
-            // answer is therefore to leave the children at their floors and let the row be wider
-            // than its parent once the floors are exhausted: overflowing content is visible, elided
-            // content looks like a correct label that happens to be short.
+            // `flex-shrink`), and Qt's `implicitMinimumWidth` is likewise a hard bound.
             //
-            // The row's own caller is what decides how to present the overhang — a dialog sizes
-            // itself from the row's width, and one that is handed a too-small rectangle keeps its
-            // own width rather than rewriting its children's.
+            // # What happens when even the floors do not fit (the G-1 resolution)
+            //
+            // The floors are a *declaration*, and a declaration can be unsatisfiable: two 100 px
+            // buttons cannot be laid out in a 120 px band. Returning them at 100 px each is the
+            // right refusal — the alternative is a 20 px button — but it left the **positions** to
+            // be packed from the leading edge, so the 80 px that did not fit was paid entirely by
+            // the trailing child: it was painted at `x = 100` in a 120 px band, i.e. 80 px past its
+            // own control's edge. Because the SVG backend emits absolute coordinates and nothing
+            // clips at this layer, such a child is not "overflowing", it is **absent** from the
+            // picture — a silent loss, which is strictly worse than a squeezed control.
+            //
+            // So the sizes stay, and the *overhang is shared*: every child is scaled by
+            // `available / floors` so the run as a whole fits, which keeps each child inside the
+            // band and keeps their relative proportions (the tallest child stays the tallest). It
+            // is deliberately the smallest possible deviation from the floors — in the common case
+            // where the floors *do* fit, this branch is not reached at all — and it trades an
+            // invisible child for every child being uniformly narrower than its own declared floor.
+            //
+            // # Why scaling beats capping the last child
+            //
+            // The obvious repair is "give each child at most the room that is left". It was
+            // implemented and **reverted**: a row of two 100 px buttons in a 120 px band came back
+            // `100 + 20`, so the *second* button was drawn 20 px wide — still below its floor, now
+            // with the loss concentrated in one child instead of spread over two. It does not
+            // resolve the contradiction (nothing can), it only moves which child pays for it,
+            // and it does so unevenly. Scaling is the same contradiction acknowledged honestly.
+            let floors_sum: i32 = floors.iter().sum();
+            if leftover > 0 && floors_sum > 0 {
+                // Integer arithmetic throughout, with the remainder distributed one pixel at a
+                // time from the leading edge, so the scaled sizes sum to *exactly* `main_sizes`'
+                // total rather than to a rounded approximation that could re-introduce an overhang.
+                let budget: i32 = main_sizes.iter().sum::<i32>() - leftover;
+                let scaled: Vec<i32> = main_sizes
+                    .iter()
+                    .map(|size| ((*size as i64 * budget as i64) / floors_sum as i64) as i32)
+                    .collect();
+                let mut short = budget - scaled.iter().sum::<i32>();
+                main_sizes = scaled;
+                for size in main_sizes.iter_mut() {
+                    if short <= 0 {
+                        break;
+                    }
+                    *size += 1;
+                    short -= 1;
+                }
+            }
         } else {
             main_sizes = intrinsic_main;
         }
@@ -1595,6 +1635,15 @@ mod tests {
         // enough, cap at available" pass that cut straight through it, down to zero. Two
         // 100 px children in a 120 px band therefore came back 57 px each — narrower than the
         // labels they were about to draw.
+        //
+        // # What this pins now that G-1 is resolved
+        //
+        // The floors are unsatisfiable here (200 px of floor in a 120 px band), so *some* child
+        // must end up below its floor — nothing can change that. What the layout owes the caller is
+        // that the loss is **shared** rather than paid by whoever happens to be last, so this
+        // asserts the two children stay equal and that the run fits its band. Before G-1 was
+        // resolved the band was ignored: child 1 got its full 100 px and child 2 was packed at
+        // `x = 100` in a 120 px band, i.e. 80 px outside the control it belongs to.
         let mut layout = FlexLayout::new();
         layout.add_widget(1, 0);
         layout.add_widget(2, 0);
@@ -1613,9 +1662,27 @@ mod tests {
             rects.insert(id, rect);
         });
 
-        for id in [1u64, 2] {
-            let width = rects.get(&id).map(|r| r.width).expect("both children were placed");
-            assert!(width >= 100, "child {id} was squeezed to {width}, below its 100 px floor");
+        let widths: Vec<u32> = [1u64, 2]
+            .iter()
+            .map(|id| rects.get(id).map(|r| r.width).expect("both children were placed"))
+            .collect();
+        assert_eq!(
+            widths[0], widths[1],
+            "two children with the same floor must be treated the same: {widths:?}"
+        );
+        assert_eq!(
+            widths.iter().sum::<u32>(),
+            120,
+            "the run must fit its band, whatever the floors say: {widths:?}"
+        );
+        // Each child keeps a majority of its floor rather than being reduced to nothing: the loss
+        // is proportional, so no child collapses while another keeps everything.
+        for (index, width) in widths.iter().enumerate() {
+            assert!(
+                *width >= 60,
+                "child {} was reduced to {width}, far past share of the shortfall",
+                index + 1
+            );
         }
     }
 
@@ -1625,6 +1692,14 @@ mod tests {
         // margins. A 64 px floor on a child with a 6 px leading margin was previously
         // floored to an outer 64 and then drawn 58 wide — below its own minimum — because
         // the margin was subtracted after the floor was applied.
+        //
+        // # What this pins now that G-1 is resolved
+        //
+        // The band below is too narrow for both floors, so the *proportional* pass scales them
+        // (see `compute_main_sizes`). What must survive that is the relation this test is named
+        // for: the margin is a **gap between two boxes**, not part of either box. Before G-1 was
+        // resolved the overhang hid a second reading of it — the trailing child was pushed out of
+        // the picture, so its gap could not be checked at all.
         let mut layout = FlexLayout::new();
         layout.add_widget(1, 0);
         layout.add_widget(2, 0);
@@ -1635,24 +1710,31 @@ mod tests {
         ];
         let rects = {
             let mut rects = HashMap::new();
-            // A band too narrow for both floors: the layout must overhang, not squeeze.
+            // A band too narrow for both floors: the children are scaled, not overhung.
             layout.arrange(Rect::new(0, 0, 120, 40), &children, &mut |id, rect| {
                 rects.insert(id, rect);
             });
             rects
         };
 
-        let second = rects.get(&2).copied().expect("the second child was placed");
-        assert!(
-            second.width >= 64,
-            "the drawn box must honour the floor, margin excluded: got {}",
-            second.width
-        );
         let first = rects.get(&1).copied().expect("the first child was placed");
+        let second = rects.get(&2).copied().expect("the second child was placed");
         assert_eq!(
             second.x - (first.x + first.width as i32),
             6,
-            "the margin must remain the gap between the two boxes"
+            "the margin must remain the gap between the two boxes: first {first:?}, second {second:?}"
+        );
+        assert_eq!(
+            second.x + second.width as i32,
+            120,
+            "and the run must fit its band, so the trailing child is inside the control"
+        );
+        // The margin is room the child does not draw in, so the two boxes *plus the gap* are the
+        // band — the margin is neither extra width nor stolen width.
+        assert_eq!(
+            first.width + 6 + second.width,
+            120,
+            "the two boxes and the one gap between them must account for the band"
         );
     }
 
@@ -1665,14 +1747,18 @@ mod tests {
     /// a floored child and a freely-shrinkable one stayed wider than its band for no reason: the
     /// second child was at its comfortable size while the row overhung.
     ///
-    /// This is the case a composite hits constantly, and it is why it mattered: a split button's
-    /// face is a *text-driven* trigger (plenty of room above its floor) beside a *fixed* arrow
-    /// column (no room above its floor at all). Narrowing the face had to compress the trigger,
-    /// and before this it did not — the arrow column was pushed out of the control instead.
+    /// This is the case a composite hits constantly: a split button's face is a *text-driven*
+    /// trigger (plenty of room above its floor) beside a *fixed* arrow column (no room above its
+    /// floor at all). Narrowing the face has to compress the trigger, and before the second pass it
+    /// did not — the arrow column was pushed out of the control instead.
     ///
-    /// Note that the split button's own case still overhangs (its trigger *declares* its floor as
-    /// its own width, so it is floored too); see `a_child_is_never_squeezed_below_its_own_minimum`
-    /// for the rule this second pass may never cross.
+    /// # Why this case is not the G-1 case
+    ///
+    /// Here the floors *do* fit — `60 + 100 = 160` is more than the 140 px band, but the first
+    /// child only needs 60 of the room it is claiming, so the second pass can resolve the deficit
+    /// without anyone crossing a floor. The proportional scaling that resolves G-1 therefore does
+    /// not run: `leftover` reaches zero first. The assertion that the first child keeps its 60 px
+    /// *is* the distinction between the two mechanisms.
     #[test]
     fn a_child_that_can_shrink_gives_up_the_room_a_floored_sibling_cannot() {
         let mut layout = FlexLayout::new();
@@ -1685,45 +1771,55 @@ mod tests {
             ChildInfo::new(2, Hints::fixed(100, 30)),
         ];
         let mut rects = HashMap::new();
-        // A 140 px band: 60 px of deficit, of which the second child can release none and the
-        // first child can release 40.
-        layout.arrange(Rect::new(0, 0, 140, 40), &children, &mut |id, rect| {
+        // A 160 px band: 40 px of deficit, all of which the first child can release and none of
+        // which the second can.
+        layout.arrange(Rect::new(0, 0, 160, 40), &children, &mut |id, rect| {
             rects.insert(id, rect);
         });
 
         let first = rects.get(&1).copied().expect("the first child was placed");
         let second = rects.get(&2).copied().expect("the second child was placed");
-        assert!(
-            first.width >= 60,
-            "the second pass may not cross the first child's own floor: got {}",
-            first.width
-        );
         assert_eq!(second.width, 100, "the floored child keeps its size");
         assert_eq!(
             first.width, 60,
             "the child with room above its floor gives up exactly what the row needs"
         );
+        assert_eq!(first.width + second.width, 160, "and the two of them are the band");
     }
 
-    /// A row whose children's floors do not fit cannot be laid out, and overhangs by that much.
+    /// The run never leaves its band, even when the children's floors cannot all be satisfied.
     ///
-    /// # What this pins, and why it is written down
+    /// # The defect this closes (BLUE22 · G-1)
     ///
-    /// Two 100 px floors cannot be satisfied in a 140 px band, and the shrink pass is explicit
-    /// that a child is never squeezed below its own floor (a button narrower than its label is a
-    /// button whose label elides). The consequence is that the row is 200 px wide in a 140 px band
-    /// and the packing places the second child 60 px past the far edge.
+    /// Two 100 px floors cannot both be honoured in a 140 px band — that is arithmetic, not a bug,
+    /// and the shrink pass is explicit that a child is never squeezed below its own floor because a
+    /// button narrower than its label is a button whose label elides.
     ///
-    /// That is a **known defect** (BLUE22, logged as G-1) rather than a design: nothing clips at
-    /// this layer, so a sub-part past the far edge of its own control is painted outside the
-    /// control — and, since the SVG backend emits absolute coordinates, outside the picture. The
-    /// obvious repair, capping each child at the room that is left, was implemented and reverted:
-    /// it does not resolve the contradiction, it just moves the failure onto a narrower child
-    /// (the same row came back `100 + 40`, i.e. a 40 px button). The contradiction belongs to the
-    /// caller — a row that does not fit needs the row to elide, clip or ask for more room — so it
-    /// is pinned here as the honest description of what the layout does today.
+    /// What *was* a bug is where the 60 px that did not fit went. The positions are packed from the
+    /// leading edge, so the whole shortfall was paid by whichever child came last: the second child
+    /// was placed at `x = 100` in a 140 px band and, because the SVG backend emits absolute
+    /// coordinates and nothing clips at this layer, it was **absent from the picture** rather than
+    /// overflowing it. A silently missing control is worse than a compressed one.
+    ///
+    /// # The resolution, and why not the obvious one
+    ///
+    /// The sizes are scaled by `available / floors`, so the run fits and every child stays inside
+    /// the band while keeping its proportions. The obvious alternative — "give each child at most
+    /// the room that is left" — was implemented and **reverted**: the same row came back
+    /// `100 + 40`, i.e. the shortfall moved into the *second* child as a 40 px button. That does not
+    /// resolve the contradiction either, it just concentrates the loss in one child instead of
+    /// spreading it, and 40 px is below the 100 px floor it was supposed to respect.
+    ///
+    /// Scaling cannot make an unsatisfiable layout satisfiable. What it can do is make the loss
+    /// **shared, bounded and contained**, which is the part the layout actually owns.
+    ///
+    /// # Why the scale is deliberately tiny rather than "identical sizes"
+    ///
+    /// A child with a larger floor keeps a larger box here, which is what keeps the relation
+    /// between a wide and a narrow control readable when a form is squeezed. Forcing every child to
+    /// `available / count` would make a 100 px button and a 10 px icon the same width.
     #[test]
-    fn floors_that_do_not_fit_overhang_rather_than_being_crossed() {
+    fn a_run_that_cannot_fit_its_floors_still_stays_inside_its_band() {
         let mut layout = FlexLayout::new();
         layout.add_widget(1, 0);
         layout.add_widget(2, 0);
@@ -1737,11 +1833,55 @@ mod tests {
         });
         let first = rects.get(&1).copied().expect("the first child was placed");
         let second = rects.get(&2).copied().expect("the second child was placed");
-        assert_eq!(first.width, 100, "the first child keeps its floor");
+
+        // The property that matters, stated as containment rather than as a number: every child is
+        // inside the band it was offered.
+        for (label, rect) in [("first", first), ("second", second)] {
+            assert!(
+                rect.x >= 0 && rect.x + rect.width as i32 <= 140,
+                "the {label} child must stay inside the band, got {rect:?}"
+            );
+        }
+        // And the run is the band: the shortfall is spread, not deferred.
         assert_eq!(
-            second.x, 100,
-            "and the overhang appears past the far edge, not by shrinking a child"
+            first.width + second.width,
+            140,
+            "the two children must account for the band: first {first:?}, second {second:?}"
         );
+        // Equal floors get equal boxes, so the loss is not concentrated anywhere.
+        assert_eq!(first.width, second.width, "the shortfall must be shared, not deferred");
+        assert_eq!(second.x, 70, "and the second child begins where the first ends");
+    }
+
+    /// A child whose floor is larger keeps a larger box when the band cannot hold both.
+    ///
+    /// The companion to the test above: the scaling preserves *proportions*, so a form that is
+    /// squeezed still reads as the same form rather than as a row of equal slabs. It is also the
+    /// property that distinguishes scaling from "give everyone `available / count`".
+    #[test]
+    fn a_squeezed_run_keeps_its_childrens_proportions() {
+        let mut layout = FlexLayout::new();
+        layout.add_widget(1, 0);
+        layout.add_widget(2, 0);
+        let children =
+            vec![ChildInfo::new(1, Hints::fixed(120, 30)), ChildInfo::new(2, Hints::fixed(40, 30))];
+        let mut rects = HashMap::new();
+        // 80 px for 160 px of floor: a half-scale band.
+        layout.arrange(Rect::new(0, 0, 80, 40), &children, &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+        let first = rects.get(&1).copied().expect("the first child was placed");
+        let second = rects.get(&2).copied().expect("the second child was placed");
+        assert_eq!(first.width + second.width, 80, "the run fits its band");
+        assert!(
+            first.width > second.width,
+            "the wider control keeps the wider box: {} vs {}",
+            first.width,
+            second.width
+        );
+        // 120:40 is 3:1, and the scale is exact for a band that divides evenly.
+        assert_eq!(first.width, 60);
+        assert_eq!(second.width, 20);
     }
 
     /// A child that declares its own cross extent is not stretched past it.

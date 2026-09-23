@@ -46,6 +46,11 @@ macro_rules! impl_properties_input {
             PropertySchema::new("text_visible", PropertyValueKind::Bool, true, true),
             PropertySchema::enumerated("orientation", true, true, &["horizontal", "vertical"]),
             PropertySchema::new("inverted_appearance", PropertyValueKind::Bool, true, true),
+            // The direction the *line* runs in. Distinct from `inverted_appearance`, which is a
+            // decoration: direction says which end the minimum is at, and the two compose (an RTL
+            // bar draws inverted *without* the property being set). Declared in both tables so a
+            // caller can read it back as well as write it.
+            PropertySchema::enumerated("direction", true, true, &["ltr", "rtl"]),
             PropertySchema::new("progress", PropertyValueKind::Float, true, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
@@ -60,6 +65,9 @@ macro_rules! impl_properties_input {
             PropertySchema::new("single_step", PropertyValueKind::Int, true, true),
             PropertySchema::new("page_step", PropertyValueKind::Int, true, true),
             PropertySchema::enumerated("orientation", true, true, &["horizontal", "vertical"]),
+            // Only the horizontal trough is a line of text direction: the vertical axis is the block
+            // flow, which a right-to-left script does not reverse.
+            PropertySchema::enumerated("direction", true, true, &["ltr", "rtl"]),
             PropertySchema::new("slider_size", PropertyValueKind::Float, true, false),
             PropertySchema::new("slider_position", PropertyValueKind::Float, true, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
@@ -97,6 +105,11 @@ macro_rules! impl_properties_input {
             PropertySchema::new("decimals", PropertyValueKind::UInt, true, true),
             PropertySchema::new("prefix", PropertyValueKind::String, true, true),
             PropertySchema::new("suffix", PropertyValueKind::String, true, true),
+            // The two forms a consumer would otherwise have to rebuild: the announcement string (unit
+            // marks included) and the number alone. `value_text` is exactly what the painter puts in the
+            // value's own box, so a snapshot assertion and the drawn glyphs name the same string.
+            PropertySchema::new("display_text", PropertyValueKind::String, true, false),
+            PropertySchema::new("value_text", PropertyValueKind::String, true, false),
             PropertySchema::new("special_value_text", PropertyValueKind::String, true, true),
             PropertySchema::new("wrapping", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
@@ -162,6 +175,15 @@ macro_rules! impl_properties_input {
             PropertySchema::new("max_length", PropertyValueKind::UInt, true, true),
             PropertySchema::new("read_only", PropertyValueKind::Bool, true, true),
             PropertySchema::new("cursor_position", PropertyValueKind::UInt, true, true),
+            // The five non-value strings a text entry shows. `prefix`/`suffix` are in-field unit marks;
+            // `helper`/`error`/`counter` share the support row below.
+            PropertySchema::new("prefix", PropertyValueKind::String, true, true),
+            PropertySchema::new("suffix", PropertyValueKind::String, true, true),
+            PropertySchema::new("helper", PropertyValueKind::String, true, true),
+            PropertySchema::new("error", PropertyValueKind::String, true, true),
+            // Derived from the value's length and `max_length`, so readable but not writable.
+            PropertySchema::new("counter", PropertyValueKind::String, true, false),
+            PropertySchema::new("over_limit", PropertyValueKind::Bool, true, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -326,7 +348,15 @@ macro_rules! impl_properties_input {
         #[cfg(not(alloc_frugal))]
         pub(crate) const AUTO_COMPLETE_EDIT_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("text", PropertyValueKind::String, true, true),
+            // The count describes the list; these describe the control. A consumer that could only read
+            // the count could not tell whether the dropdown was open or which row was highlighted.
             PropertySchema::new("suggestion_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("selected_suggestion", PropertyValueKind::String, true, false),
+            PropertySchema::new("dropdown_visible", PropertyValueKind::Bool, true, false),
+            PropertySchema::new("max_visible", PropertyValueKind::UInt, true, true),
+            PropertySchema::new("can_undo", PropertyValueKind::Bool, true, false),
+            PropertySchema::new("can_redo", PropertyValueKind::Bool, true, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -349,6 +379,11 @@ macro_rules! impl_properties_input {
             PropertySchema::new("max_value", PropertyValueKind::Float, true, true),
             PropertySchema::new("lower", PropertyValueKind::Float, true, true),
             PropertySchema::new("upper", PropertyValueKind::Float, true, true),
+            PropertySchema::enumerated("orientation", true, true, &["horizontal", "vertical"]),
+            // Which end of the track the minimum sits at. `set_orientation` and `set_direction`
+            // were both absent from this table even though the contract answers them, which is the
+            // "control and schema disagree about which properties exist" defect the gate looks for.
+            PropertySchema::enumerated("direction", true, true, &["ltr", "rtl"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -434,6 +469,15 @@ macro_rules! impl_properties_input {
         #[cfg(not(alloc_frugal))]
         pub(crate) const SHORTCUT_EDITOR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("filter_text", PropertyValueKind::String, true, true),
+            // `filter_text` is what the caller typed; these describe what it did. A consumer could set a
+            // filter and had no way to ask how much of the table survived it.
+            PropertySchema::new("shortcut_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("visible_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("category_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::new("categories", PropertyValueKind::String, true, false),
+            PropertySchema::new("empty", PropertyValueKind::Bool, true, false),
+            PropertySchema::new("can_undo", PropertyValueKind::Bool, true, false),
+            PropertySchema::new("can_redo", PropertyValueKind::Bool, true, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

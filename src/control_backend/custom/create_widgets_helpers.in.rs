@@ -531,5 +531,31 @@ macro_rules! impl_helpers {
                 String::new()
             }
         }
+
+        /// Derives a full accessibility state for a mounted control.
+        ///
+        /// # Why the mounted lookup is the whole implementation
+        ///
+        /// `A11yState::from_widget` asks the control for its own role, name, description, value
+        /// and — the part that was missing — its `checked`/`mixed` state, all through the property
+        /// contract. That means this accessor adds no mapping of its own: it is just the point at
+        /// which a live control becomes announceable. An id that addresses nothing returns `None`
+        /// rather than an all-defaults state, so a stale id cannot be mistaken for a real node.
+        fn widget_a11y_state(
+            &self,
+            widget_id: ObjectId,
+        ) -> Option<crate::platform::accessibility::A11yState> {
+            #[cfg(not(alloc_frugal))]
+            {
+                return crate::widget::runtime::with_widget(widget_id, |widget| {
+                    crate::platform::accessibility::A11yState::from_widget(widget)
+                });
+            }
+            #[cfg(alloc_frugal)]
+            {
+                let _ = widget_id;
+                None
+            }
+        }
     };
 }

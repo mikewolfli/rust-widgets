@@ -2,7 +2,7 @@
 <!-- control: arc | appearance: dark -->
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
-  <circle cx="120" cy="60" r="59" fill="rgba(18,18,18,1.00)" />
-  <circle cx="120" cy="60" r="49" fill="rgba(18,18,18,1.00)" />
+  <circle cx="120" cy="60" r="59" fill="rgba(30,30,33,1.00)" />
+  <circle cx="120" cy="60" r="49" fill="rgba(30,30,33,1.00)" />
   <path d="M113 53h1v1h-1zM114 53h1v1h-1zM115 53h1v1h-1zM116 53h1v1h-1zM117 53h1v1h-1zM112 54h1v2h-1zM113 54h1v2h-1zM117 54h1v2h-1zM118 54h1v2h-1zM112 56h1v2h-1zM113 56h1v2h-1zM116 56h1v2h-1zM117 56h1v2h-1zM118 56h1v2h-1zM112 58h1v2h-1zM113 58h1v2h-1zM115 58h1v2h-1zM116 58h1v2h-1zM117 58h1v2h-1zM118 58h1v2h-1zM112 60h1v1h-1zM113 60h1v1h-1zM114 60h1v1h-1zM115 60h1v1h-1zM117 60h1v1h-1zM118 60h1v1h-1zM112 61h1v2h-1zM113 61h1v2h-1zM114 61h1v2h-1zM117 61h1v2h-1zM118 61h1v2h-1zM113 63h1v2h-1zM114 63h1v2h-1zM115 63h1v2h-1zM116 63h1v2h-1zM117 63h1v2h-1zM120 54h1v2h-1zM121 54h1v2h-1zM125 54h1v2h-1zM126 54h1v2h-1zM120 56h1v2h-1zM121 56h1v2h-1zM124 56h1v2h-1zM125 56h1v2h-1zM123 58h1v2h-1zM124 58h1v2h-1zM122 60h1v1h-1zM123 60h1v1h-1zM121 61h1v2h-1zM122 61h1v2h-1zM125 61h1v2h-1zM126 61h1v2h-1zM120 63h1v2h-1zM121 63h1v2h-1zM125 63h1v2h-1zM126 63h1v2h-1z" fill="rgba(225,225,225,1.00)" />
 </svg>

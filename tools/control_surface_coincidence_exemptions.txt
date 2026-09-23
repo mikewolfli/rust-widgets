@@ -35,5 +35,17 @@
 # inconvenient to fix. Rejected reasons: "skip for now", "fix later", "hard to
 # theme". The list is asserted in both directions — an entry that stops being needed
 # is a test failure, so it can only shrink by correcting the control.
-
-window client-area true A window's client area is defined to be the surface its controls sit on; the title bar and border are painted by the window manager, not by the control (round 58 removed the control's own fake chrome). Filling with the theme background IS the contract.
+#
+# # Empty, and why that is the correct state
+#
+# The one entry this file ever held was `window client-area`, on the argument that a
+# window's client area *is* the surface its controls sit on. That argument was sound
+# while the `Surface` role resolved to `theme.colors.background` — the window fill —
+# but it was also the reason every card, panel and container classified as `Surface`
+# was invisible: the role was answering with the window's own paint.
+#
+# Giving `WidgetRole::Surface` its own `surface_container` colour (see the F-9 entry in
+# `docs/log/log-20260923-1.md`) made a window's client area a visible step away from the
+# fill behind it, so the exemption stopped being needed and the gate now reports it as
+# stale until it is removed. That is the file's own rule working: an entry can only
+# shrink by correcting the control.
