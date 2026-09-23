@@ -66,7 +66,7 @@
 - 不改 C ABI 函数名与签名语义（`rw_create_*` 保持，属向前兼容 #21）。
 - 不重写渲染引擎（`render` / 软件后端保持）。
 - 不引入新 UI 框架依赖。
-- **不做规范级完整**：CSS 不加 `@media`/`var()`/`calc()`，JSON 不做 QML 级表达式/绑定/状态机（见 §六 判例）。
+- **不做规范级完整**：CSS 不加 `@media`/`var()`/`calc()`，JSON 不做 参考工具包的标记语言 级表达式/绑定/状态机（见 §六 判例）。
 
 ---
 
@@ -78,8 +78,8 @@
 
 ```bash
 $ grep -rn "apply_active_theme" src/ | grep -v "fn apply_active_theme" | grep -v test
-src/lib.rs:656                                    ← C ABI + 窗口 API 漏斗
-src/control_backend/custom/mod.rs:140             ← app API 漏斗
+src/lib.rs:656 ← C ABI + 窗口 API 漏斗
+src/control_backend/custom/mod.rs:140 ← app API 漏斗
 ```
 **结论：Theme 已闭环（两条主漏斗均接上）。** ✅ 已复跑
 
@@ -92,7 +92,7 @@ src/json/loader.rs:1037
 
 ```bash
 $ grep -rn "crate::json" src/ --include=*.rs | grep -v "^src/json/" | grep -v test
-src/lib.rs:104                                    ← 仅文档注释
+src/lib.rs:104 ← 仅文档注释
 ```
 **结论：JSON 零生产调用者。** ✅ 已复跑
 
@@ -112,15 +112,15 @@ src/json/element.rs:23
 
 ```bash
 $ grep -o "rw_create_[a-z_0-9]*" src/bindings/binding_impl.rs | sort -u | wc -l
-23                                                ← 167 个 kind 中可创建 23 个
+23 ← 167 个 kind 中可创建 23 个
 $ grep -c "read_widget_property_by_id\|write_widget_property_by_id" src/bindings/binding_impl.rs
-0                                                 ← 通用属性层完全未暴露
+0 ← 通用属性层完全未暴露
 $ grep -c "add_widget\|set_layout" src/bindings/binding_impl.rs
-0                                                 ← 无布局管理
+0 ← 无布局管理
 $ grep -c "set_scroll\|scroll_to" src/bindings/binding_impl.rs
-0                                                 ← 无滚动控制
+0 ← 无滚动控制
 $ grep -in "tooltip" src/bindings/binding_impl.rs
-(空)                                              ← 连 base 属性都不可达
+(空) ← 连 base 属性都不可达
 ```
 ✅ 全部已复跑
 
@@ -138,7 +138,7 @@ $ grep -c "rw_destroy_widget" include/rw_generated.h
 $ grep -c "rw_destroy_widget" examples/rust_widgets.generated.h
 1
 $ grep -n "rw_generated.h" README.md README.zh-CN.md
-README.md:337:      ... the C ABI (`include/rw_generated.h`, 100 `rw_*` functions) ...
+README.md:337: ... the C ABI (`include/rw_generated.h`, 100 `rw_*` functions) ...
 README.zh-CN.md:324: ... C ABI（`include/rw_generated.h`，100 个 `rw_*` 函数）...
 ```
 ✅ 已复跑
@@ -158,21 +158,21 @@ README.zh-CN.md:324: ... C ABI（`include/rw_generated.h`，100 个 `rw_*` 函�
 ```bash
 $ # 正确口径：包含 examples/ tests/ benches/ demo/*/src/ 与 src/
 $ for m in json app web pdf audio video print data_binding menu_config performance asset embedded index; do
-    grep -rl "rust_widgets::$m\b\|crate::$m\b" examples/ tests/ benches/ demo/*/src/ src/ | grep -v "^src/$m/" | wc -l
-  done
-app           13   ← ✅ **有真实消费者**（examples × 3、tests × 4、demo）
-json           4   ← 仅 tests/ + benches/（**无 examples/demo**）
-web            2   ← 待逐符号确认（去重后可能为 0）
-index          2   ← 经 tests/integration_test.rs
-performance    1   ← 待确认是否仅文档
-asset          1   ← 待确认是否仅文档
-pdf            0
-audio          0
-video          0
-print          0
-data_binding   0
-menu_config    0
-embedded       0
+ grep -rl "rust_widgets::$m\b\|crate::$m\b" examples/ tests/ benches/ demo/*/src/ src/ | grep -v "^src/$m/" | wc -l
+ done
+app 13 ← ✅ **有真实消费者**（examples × 3、tests × 4、demo）
+json 4 ← 仅 tests/ + benches/（**无 examples/demo**）
+web 2 ← 待逐符号确认（去重后可能为 0）
+index 2 ← 经 tests/integration_test.rs
+performance 1 ← 待确认是否仅文档
+asset 1 ← 待确认是否仅文档
+pdf 0
+audio 0
+video 0
+print 0
+data_binding 0
+menu_config 0
+embedded 0
 ```
 
 **关键区分（决定处置方式）：**
@@ -228,11 +228,11 @@ init_embedded / init_desktop
 
 $ # 每个符号的外部调用者（排除自身、platform/profile、及 config.rs 的文档注释）
 $ for fn in recommended_buffer_size max_texture_size font_cache_size event_queue_size max_widgets; do ...
-recommended_buffer_size   1   ← 仅 src/embedded/config.rs:14 的**文档注释**
-max_texture_size          0
-font_cache_size           0
-event_queue_size          0
-max_widgets               0
+recommended_buffer_size 1 ← 仅 src/embedded/config.rs:14 的**文档注释**
+max_texture_size 0
+font_cache_size 0
+event_queue_size 0
+max_widgets 0
 ```
 
 **关键区别（影响处置方式）：**
@@ -256,22 +256,22 @@ max_widgets               0
 ### 3.1 三条线的目标形态
 
 ```text
-                     ┌─────────────────────────────────────────┐
-  外部消费者          │  C ABI（发布物 = 生成物，门禁校验）        │
-  (C/C++/Py/Java)    │   create_by_kind · get/set_property      │
-                     │   add_item · set_layout · scroll · style │
-                     └────────────────┬────────────────────────┘
-                                      │ 全部经同一漏斗
-                     ┌────────────────▼────────────────────────┐
-  内部上层            │  widget::runtime（唯一注册点）            │
-                     │    ↑ apply_active_theme（主题）           │
-                     │    ↑ apply_declared_styles（CSS）         │
-                     └────────────────┬────────────────────────┘
-                                      │
-                     ┌────────────────▼────────────────────────┐
-  中间层              │  WidgetFactory（167 kind 构造器）          │
-                     │  WidgetProperties（253 属性名，逐控件自述） │
-                     └─────────────────────────────────────────┘
+ ┌─────────────────────────────────────────┐
+ 外部消费者 │ C ABI（发布物 = 生成物，门禁校验） │
+ (C/C++/Py/Java) │ create_by_kind · get/set_property │
+ │ add_item · set_layout · scroll · style │
+ └────────────────┬────────────────────────┘
+ │ 全部经同一漏斗
+ ┌────────────────▼────────────────────────┐
+ 内部上层 │ widget::runtime（唯一注册点） │
+ │ ↑ apply_active_theme（主题） │
+ │ ↑ apply_declared_styles（CSS） │
+ └────────────────┬────────────────────────┘
+ │
+ ┌────────────────▼────────────────────────┐
+ 中间层 │ WidgetFactory（167 kind 构造器） │
+ │ WidgetProperties（253 属性名，逐控件自述） │
+ └─────────────────────────────────────────┘
 ```
 
 **关键性质**：C ABI 不再为每个 kind 手写构造器，而是**转发到已存在的通用层**（`create_widget_of_kind` + 属性契约）。这样 167 个 kind 与 253 个属性名**一次接通**，且未来新增 kind 自动可达（原则 #71）。
@@ -310,7 +310,7 @@ max_widgets               0
 
 ```bash
 $ python3 tools/generate_c_header.py --output include/rw_generated.h
-$ diff include/rw_generated.h examples/rust_widgets.generated.h   # 期望：无输出
+$ diff include/rw_generated.h examples/rust_widgets.generated.h # 期望：无输出
 ```
 
 **A-2 `check_abi.sh` 扩展为「双头文件 + 发布路径」校验**
@@ -340,8 +340,8 @@ Python / Node.js / C++ 三个绑定各缺此函数（经 §2.1 复跑确认为�
 /// Creates a control of any registered kind. `kind_name` is the canonical
 /// factory name (`"button"`, `"tree_view"`, …); see `rw_widget_kind_names`.
 uint64_t rw_create_widget_of_kind(uint64_t parent, const char* kind_name,
-                                  const char* text, int x, int y,
-                                  unsigned int w, unsigned int h);
+ const char* text, int x, int y,
+ unsigned int w, unsigned int h);
 
 /// Writes every registered kind name into `out`, space-separated. Returns the
 /// number of bytes written, or the required size when `out` is NULL.
@@ -351,7 +351,7 @@ unsigned int rw_widget_kind_names(char* out, unsigned int cap);
 - 转发到 `crate::create_widget_of_kind`（`src/lib.rs:702`，已存在）；
 - `kind_name` 经 `WidgetFactory` 解析（`normalize_key` 已容忍大小写与分隔符）；
 - **不暴露 `WidgetKind` 的整数判别值**：`WidgetKind` 无 `#[repr]` 保证（§2.2 子审计），
-  暴露枚举编号会把内部布局固化成 ABI。字符串名字是稳定契约。
+ 暴露枚举编号会把内部布局固化成 ABI。字符串名字是稳定契约。
 - 保留现有 23 个 `rw_create_*`（原则 #21 向前兼容），实现改为转发到同一入口。
 
 **B-2 通用属性层（一次接通 253 个属性名）**
@@ -359,30 +359,30 @@ unsigned int rw_widget_kind_names(char* out, unsigned int cap);
 ```c
 /// Value kinds for the property ABI.
 typedef enum {
-    RW_VALUE_NULL = 0, RW_VALUE_BOOL = 1, RW_VALUE_INT = 2,
-    RW_VALUE_UINT = 3, RW_VALUE_FLOAT = 4, RW_VALUE_STRING = 5,
+ RW_VALUE_NULL = 0, RW_VALUE_BOOL = 1, RW_VALUE_INT = 2,
+ RW_VALUE_UINT = 3, RW_VALUE_FLOAT = 4, RW_VALUE_STRING = 5,
 } rw_value_kind;
 
 /// Reads a property by name. On success writes the kind and (for STRING) a
 /// heap string the caller frees with `rw_free_string`.
 bool rw_get_widget_property(uint64_t widget_id, const char* name,
-                            int* out_kind, int64_t* out_num, char** out_str);
+ int* out_kind, int64_t* out_num, char** out_str);
 
 /// Writes a property by name. `kind` selects which of `num`/`str` is read.
 bool rw_set_widget_property(uint64_t widget_id, const char* name,
-                            int kind, int64_t num, const char* str);
+ int kind, int64_t num, const char* str);
 
 /// Lists the property names `widget_id` publishes, space-separated.
 unsigned int rw_widget_property_names(uint64_t widget_id, char* out, unsigned int cap);
 ```
 
 - 转发到 `read_widget_property_by_id` / `write_widget_property_by_id`
-  （`src/widget/capability/access.rs:61,76`，已存在）；
+ （`src/widget/capability/access.rs:61,76`，已存在）；
 - 失败经既有 `rw_error_code` / `rw_error_message` 报告（`access.rs` 的错误枚举
-  已能区分 `UnknownWidget`/`UnknownProperty`/`ReadOnlyProperty`/`TypeMismatch`/
-  `UnsupportedOnWidget`）；
+ 已能区分 `UnknownWidget`/`UnknownProperty`/`ReadOnlyProperty`/`TypeMismatch`/
+ `UnsupportedOnWidget`）；
 - **这使 `tooltip`、`checked`、`value`、`min`/`max`、`items` 计数、选择模式等一并可达**，
-  无需为每个属性加一个函数。
+ 无需为每个属性加一个函数。
 
 **B-3 集合与布局（补三类真实缺口）**
 
@@ -415,19 +415,19 @@ void rw_set_high_contrast(int mode);
 ```
 
 - `rw_widget_set_style` 复用 B-2 的编码；作用于 `WidgetStyle` 字段
-  （`background-color`/`border-radius`/`font-size`/`opacity`/`shadow` 等已由 `CssParser::apply_one` 覆盖，
-  直接调用 `CssParser::apply_declarations` 即可复用同一套解析，避免第二份实现，原则 #54）；
+ （`background-color`/`border-radius`/`font-size`/`opacity`/`shadow` 等已由 `CssParser::apply_one` 覆盖，
+ 直接调用 `CssParser::apply_declarations` 即可复用同一套解析，避免第二份实现，原则 #54）；
 - `rw_set_theme` / `rw_theme_names` / `rw_set_high_contrast` 转发既有
-  `global_theme_manager()`（已闭环）；
+ `global_theme_manager()`（已闭环）；
 - **不暴露 `rw_register_stylesheet`（CSS 文本）**：理由见 §六.2 —— 跨 FFI 传 CSS 需要
-  同时暴露 `class`/`id` 概念，收益低而抽象负担重。样式表仍是 Rust 侧能力，逐属性是 FFI 侧路径。
+ 同时暴露 `class`/`id` 概念，收益低而抽象负担重。样式表仍是 Rust 侧能力，逐属性是 FFI 侧路径。
 
 **验收（规则 #73：断言产物）**：
 - `rw_create_widget_of_kind("tree_view")` 返回非 0，且 `rw_widget_property_names` 含 `item_count`；
 - `rw_set_widget_property(id, "tooltip", ...)` 后 `rw_get_widget_property` 回读到同一值；
 - `rw_set_widget_style(id, "background-color", "#FF0000")` 后经属性层回读为 `#FF0000FF`；
 - `rw_widget_set_layout` + `rw_widget_layout_add` 后子控件几何**真的被布局**（断言 `Rect`，
-  不是断言返回 `true`）。
+ 不是断言返回 `true`）。
 
 ---
 
@@ -487,7 +487,7 @@ void rw_set_high_contrast(int mode);
 
 **D-2 能力矩阵同步**
 - `docs/plans/platform_capability_matrix.md` 与 `tools/generate_platform_capability_matrix.py`：
-  新增「C ABI 覆盖」列，由 `binding_impl.rs` 派生（禁止手维，规则 #18/#64）。
+ 新增「C ABI 覆盖」列，由 `binding_impl.rs` 派生（禁止手维，规则 #18/#64）。
 
 **D-3 版本与发布物**
 - 版本 `2.1.0` → `2.2.0`（新增 C ABI 函数属向后兼容的 minor）；
@@ -524,7 +524,7 @@ void rw_set_high_contrast(int mode);
 | **② 保留但登记为实验** | 零成本，仅写 `# Reachability` 段落 | 短期内无消费者，但不想删 |
 | **③ 删除** | 删 4,026 行；需同时删其测试与基准（并**登记删除的测试数**） | 定位为「命令式 widget 库」，且不打算做声明式 |
 
-**本轮建议 ②**，理由：JSON 已完整（167/167 kind 可构造、10 种布局、属性走契约、CSS 集成），删除是**不可逆的产品收窄**；而 ① 需要设计事件/绑定/复用（等于做轻量 QML），代价远超本轮。② 的成本只是两段文档，且条件成熟时可转 ① 或 ③。
+**本轮建议 ②**，理由：JSON 已完整（167/167 kind 可构造、10 种布局、属性走契约、CSS 集成），删除是**不可逆的产品收窄**；而 ① 需要设计事件/绑定/复用（等于做轻量 参考工具包的标记语言），代价远超本轮。② 的成本只是两段文档，且条件成熟时可转 ① 或 ③。
 
 **触发条件（转 ① 的判据）**：出现第一个真实的 JSON 布局消费者，或明确决定支持「UI 与逻辑分离」的产品形态。
 
@@ -540,15 +540,15 @@ void rw_set_high_contrast(int mode);
 判据：① `WebEngineView` 是否要求系统 WebKit 的**真实网页兼容性**（vs `BoaJsEngine` 的受限能力）；
 ② 是否接受捆绑/依赖系统 WebKit。二者都是产品输入，非技术约束。本轮只登记，等产品决定。
 
-### 6.4 不做规范级完整（对齐 Qt 判例，延续第 19–21 轮结论）
+### 6.4 不做规范级完整（对齐 参考工具包 判例，延续第 19–21 轮结论）
 
 | 不做 | 判例依据 |
 |---|---|
-| `@media` / `@supports` / `@keyframes` | Qt 的 QSS 刻意无此；widget 树无 viewport 概念 |
-| `var()` / `calc()` | 需表达式求值器；Qt 让 C++ 侧用 `QPalette` 表达 |
-| `!important` | Qt 明确反对（破坏可预测性） |
+| `@media` / `@supports` / `@keyframes` | 参考工具包 的 QSS 刻意无此；widget 树无 viewport 概念 |
+| `var()` / `calc()` | 需表达式求值器；参考工具包 让 C++ 侧用 `QPalette` 表达 |
+| `!important` | 参考工具包 明确反对（破坏可预测性） |
 | 文档流（`display`/float/inline） | 本库是 widget 树 + 自绘，**无文档流** |
-| QML 级表达式/绑定/Repeater/状态机 | Qt 为此**另建运行时**（JS 引擎 + 场景图 + 新语言 + 工具链），是定位变更而非功能补全 |
+| 参考工具包的标记语言 级表达式/绑定/Repeater/状态机 | 参考工具包 为此**另建运行时**（JS 引擎 + 场景图 + 新语言 + 工具链），是定位变更而非功能补全 |
 
 ### 6.5 不做：图标数据表重构、图标字体
 
@@ -639,17 +639,17 @@ void rw_set_high_contrast(int mode);
 ### 8.3 建议的落地顺序（每步独立可验收）
 
 ```
-Step 1  Phase A               发布物一致性（阻断外部消费者，改动最小）
-Step 2  Phase E-1             接通 6 个已有控件（零新逻辑，立即扩大 JSON/CSS 可达面）
-Step 3  Phase B-1/B-2         通用构造 + 通用属性（一次接通 167 kind / 253 属性）
-Step 4  Phase B-3/B-4         集合/布局/滚动 + 样式/主题入口
-Step 5  Phase C-1             可达性三态分类（只加文档，不删代码）
-Step 6  §6.1 决策             用户确认 JSON/app 去留
-Step 7  Phase C-2/C-3         按决策执行删除 + 近义模块关系
-Step 8  Phase E-2             新建 4 个控件（§12.2 判定为“做”的四项）
-Step 9  Phase E-3/E-4         注册保真门禁 + 双向断言
-Step 10 Phase D               文档/发布物/版本
-Step 11 日志回写              完成率 + 证据 + 反例注入记录
+Step 1 Phase A 发布物一致性（阻断外部消费者，改动最小）
+Step 2 Phase E-1 接通 6 个已有控件（零新逻辑，立即扩大 JSON/CSS 可达面）
+Step 3 Phase B-1/B-2 通用构造 + 通用属性（一次接通 167 kind / 253 属性）
+Step 4 Phase B-3/B-4 集合/布局/滚动 + 样式/主题入口
+Step 5 Phase C-1 可达性三态分类（只加文档，不删代码）
+Step 6 §6.1 决策 用户确认 JSON/app 去留
+Step 7 Phase C-2/C-3 按决策执行删除 + 近义模块关系
+Step 8 Phase E-2 新建 4 个控件（§12.2 判定为“做”的四项）
+Step 9 Phase E-3/E-4 注册保真门禁 + 双向断言
+Step 10 Phase D 文档/发布物/版本
+Step 11 日志回写 完成率 + 证据 + 反例注入记录
 ```
 
 > Step 4 必须先于 Step 7：先强制每个模块表态，再删 —— 否则「该表态而未表态」的模块会被误删。
@@ -674,7 +674,7 @@ Step 11 日志回写              完成率 + 证据 + 反例注入记录
 ④ 对全仓每个 `pub` 模块强制可达性表态，把约 **30,800 行零消费者代码**按三态收敛 ——
 其中 JSON 的去留是**产品决策**，必须先由用户拍板（§6.1），否则删除风险不可控。
 
-**判例不变**：不做规范级完整（Qt 的 QSS 裁剪与 QML 另建运行时都是依据）。
+**判例不变**：不做规范级完整（参考工具包 的 QSS 裁剪与 参考工具包的标记语言 另建运行时都是依据）。
 本轮补的是**可达性与一致性**，不是功能面。
 
 ---
@@ -768,10 +768,10 @@ Step 11 日志回写              完成率 + 证据 + 反例注入记录
 
 ```bash
 $ grep -rn "TouchBegin" src/platform/ --include=*.rs | wc -l
-0                                    ← 没有任何后端产生触摸事件
+0 ← 没有任何后端产生触摸事件
 
 $ grep -rn "Event::TouchBegin {" src/ | grep -v "=>" | grep -v "^src/gesture/" | head
-src/event/translator.rs:37   ← 仅文档注释
+src/event/translator.rs:37 ← 仅文档注释
 （其余均为测试夹具）
 ```
 
@@ -779,8 +779,8 @@ src/event/translator.rs:37   ← 仅文档注释
 
 ```rust
 // src/event/loop.rs:196, 227, 269
-if event.is_touch() {           // ← is_touch() 只认 Touch*/手势变体，**排除鼠标**
-    gesture_engine.process(event, now_ms());
+if event.is_touch() { // ← is_touch() 只认 Touch*/手势变体，**排除鼠标**
+ gesture_engine.process(event, now_ms());
 }
 ```
 
@@ -914,7 +914,7 @@ Pinch/Rotate 的识别器**逻辑是对的**（正确维护两个 `PinchTouch`�
 ### ✅ 复跑确认做得对的部分（不应改）
 
 - `emit` 的 take/restore 舞蹈真正保证了：自断开、断开后续槽、在回调中 `connect`、重入 `emit` 均安全；
-  有 **8 条专门测试**（`core_signal.rs:419-750`）。
+ 有 **8 条专门测试**（`core_signal.rs:419-750`）。
 - 回调在**无锁**状态下执行，因此重入不会死锁。
 - `CustomSignalHub::emit` 先克隆再发，避免了自死锁（`hub.rs:48-56`，有测试）。
 - 速度单位 px/s 一致，且有回归测试（`engine.rs:163`）—— 上轮记录的缺陷**已修**。
@@ -950,7 +950,7 @@ Pinch/Rotate 的识别器**逻辑是对的**（正确维护两个 `PinchTouch`�
 保留仍成立的部分：**纯粹为“凑数量”而新建控件，本轮不做。** 依据：
 
 1. 集合状态不可达（§11.3 #3），60+ 控件只发布个位数属性。**现有控件的可达性远未穷尽**：
-   新增控件只会加大分母（违反 #71）。
+ 新增控件只会加大分母（违反 #71）。
 2. **零消费者模块已约 30,800 行**（§2.4）。在此之上加控件是错序。
 3. 与第 19–21 轮判例一致：先让已有的“能被用”，再谈更多。
 
@@ -1005,16 +1005,16 @@ Pinch/Rotate 的识别器**逻辑是对的**（正确维护两个 `PinchTouch`�
 
 ```bash
 $ for n in timeline_widget command_palette notification_center diff_viewer markdown_editor toast_stack; do
-    printf "%-20s register=%s ctor=%s\n" "$n" \
-      "$(grep -rcE "register\($n" src/widget/capability/registration.rs)" \
-      "$(grep -rc "fn create_$n" src/widget/capability/constructors.rs)";
-  done
-timeline_widget      register=0 ctor=0
-command_palette      register=0 ctor=0
-notification_center  register=0 ctor=0
-diff_viewer          register=0 ctor=0
-markdown_editor      register=0 ctor=0
-toast_stack          register=0 ctor=0
+ printf "%-20s register=%s ctor=%s\n" "$n" \
+ "$(grep -rcE "register\($n" src/widget/capability/registration.rs)" \
+ "$(grep -rc "fn create_$n" src/widget/capability/constructors.rs)";
+ done
+timeline_widget register=0 ctor=0
+command_palette register=0 ctor=0
+notification_center register=0 ctor=0
+diff_viewer register=0 ctor=0
+markdown_editor register=0 ctor=0
+toast_stack register=0 ctor=0
 ```
 ✅ 已复跑
 
@@ -1022,7 +1022,7 @@ toast_stack          register=0 ctor=0
 
 ```bash
 $ for n in TimelineWidget CommandPalette NotificationCenter DiffViewer MarkdownEditor ToastStack; do
-    grep -rl "pub struct $n" src/widget/ --include=*.rs | head -1; done
+ grep -rl "pub struct $n" src/widget/ --include=*.rs | head -1; done
 src/widget/special_widgets/timeline_widget.rs
 src/widget/special_widgets/command_palette.rs
 src/widget/special_widgets/notification_center.rs
@@ -1030,8 +1030,8 @@ src/widget/special_widgets/diff_viewer.rs
 src/widget/special_widgets/markdown_editor.rs
 src/widget/special_widgets/toast.rs
 $ grep -n "TimelineWidget\|CommandPalette\|DiffViewer" src/widget/mod.rs
-399:    CommandEntry, CommandPalette, DiagnosticMarker, DiffKind, DiffLine, DiffViewer,
-403:    TimelineWidget, ToastItem, ToastLevel, ToastStack,
+399: CommandEntry, CommandPalette, DiagnosticMarker, DiffKind, DiffLine, DiffViewer,
+403: TimelineWidget, ToastItem, ToastLevel, ToastStack,
 ```
 ✅ 已复跑
 
@@ -1056,28 +1056,28 @@ $ grep -n "TimelineWidget\|CommandPalette\|DiffViewer" src/widget/mod.rs
 
 ### 12.2 真缺口 B 类：**连实现都没有**（对照三框架后仅 4 个该做）
 
-判定方法：对照 Qt Widgets + Flutter Material 3 + GTK4 的常用控件清单，逐个 `grep` 本项目。
+判定方法：对照 参考工具包 Widgets + 主流 material 实现 Material 规范 + GTK4 的常用控件清单，逐个 `grep` 本项目。
 
 ```bash
 $ for n in NumberPicker OtpInput Pagination Banner Toast PopupButton ZoomControl; do
-    printf "%-14s struct=%s\n" "$n" "$(grep -rl "pub struct $n" src/ --include=*.rs 2>/dev/null | head -1)"; done
-NumberPicker   struct=
-OtpInput       struct=
-Pagination     struct=
-Banner         struct=
-Toast          struct=src/widget/special_widgets/toast.rs   ← 只有 ToastStack，无 Toast 本体
-PopupButton    struct=
-ZoomControl    struct=
+ printf "%-14s struct=%s\n" "$n" "$(grep -rl "pub struct $n" src/ --include=*.rs 2>/dev/null | head -1)"; done
+NumberPicker struct=
+OtpInput struct=
+Pagination struct=
+Banner struct=
+Toast struct=src/widget/special_widgets/toast.rs ← 只有 ToastStack，无 Toast 本体
+PopupButton struct=
+ZoomControl struct=
 ```
 ✅ 已复跑
 
 | # | 控件 | 对标 | 为什么算常用 | 本项目现状 | 判定 |
 |---|---|---|---|---|---|
 | 1 | **`NumberPicker`** | iOS `UIPickerView` / Android `NumberPicker` | 移动端数字滚轮；`SpinBox` 是桌面步进，**交互不同** | 无 | ✅ **做**（P1）|
-| 2 | **`OtpInput`** | Flutter OTP / 各家验证码 | 登录流程高频；`MaskedEdit` 是整体掩码，**不覆盖分格** | 无 | ✅ **做**（P1）|
+| 2 | **`OtpInput`** | 主流 material 实现 OTP / 各家验证码 | 登录流程高频；`MaskedEdit` 是整体掩码，**不覆盖分格** | 无 | ✅ **做**（P1）|
 | 3 | **`Pagination`** | Ant Design / Bootstrap | 表格分页高频；`PagerPageView` 是**页面滑动**，非页码跳转 | 无 | ✅ **做**（P1）|
-| 4 | **`Banner`** | Material 3 `Banner` | 需用户**显式关闭**的持久提示；`Snackbar` 会自动消失 | 无 | ✅ **做**（P2）|
-| 5 | `PopupButton` | Qt `QPushButton` + menu | 有 `MenuButton`（点击弹菜单），缺“带默认值的分段弹出” | 无 | ❌ **不做**（`MenuButton` 覆盖 ~90% 场景）|
+| 4 | **`Banner`** | Material 规范 `Banner` | 需用户**显式关闭**的持久提示；`Snackbar` 会自动消失 | 无 | ✅ **做**（P2）|
+| 5 | `PopupButton` | 参考工具包 `QPushButton` + menu | 有 `MenuButton`（点击弹菜单），缺“带默认值的分段弹出” | 无 | ❌ **不做**（`MenuButton` 覆盖 ~90% 场景）|
 | 6 | `ZoomControl` | 图像/文档查看器 | `ImageView` 无缩放 UI | 无 | ❌ **不做**（可由 `Slider` + `ImageView` 组合）|
 | 7 | `Toast`（非 Material）| Android `Toast` | 已有 `MaterialSnackbar` + `ToastStack` | 无独立 kind | ❌ **不做**（`ToastStack` 已覆盖）|
 | 8 | `Magnifier` / `Ruler` | Windows Magnifier / 设计工具 | **长尾专业工具** | 无 | ❌ **不做**（登记为范围外）|
@@ -1144,10 +1144,10 @@ ZoomControl    struct=
 
 **判据**：
 1. 枚举 `src/widget/**/*.rs` 中所有 `pub struct <Name>`，`Name` 以 `Widget`/`View`/`Editor`/
-   `Picker`/`Palette`/`Center`/`Input`/`Stack` 等控件后缀结尾（**白名单显式排除**内部类型：
-   `*Item`、`*Level`、`*Entry`、`*Kind`、`*Config`、`*Builder`、`*State`、`*Marker`）；
+ `Picker`/`Palette`/`Center`/`Input`/`Stack` 等控件后缀结尾（**白名单显式排除**内部类型：
+ `*Item`、`*Level`、`*Entry`、`*Kind`、`*Config`、`*Builder`、`*State`、`*Marker`）；
 2. 对每个候选，检查 `src/widget/capability/registration.rs` 是否存在对应的
-   `register\(<snake_case_name>` 调用；
+ `register\(<snake_case_name>` 调用；
 3. 未命中则失败，并打印缺失清单。
 
 **必须反向注入验证**（原则 #19）：
@@ -1226,10 +1226,10 @@ $ grep -n "^pub type Panel \|^pub type DockPanel \|^pub type CheckListBox " src/
 **项目已在源码里写明了这个设计**：
 
 ```
-src/widget/mod.rs:412:  pub type CheckListBox = ListBox;
+src/widget/mod.rs:412: pub type CheckListBox = ListBox;
 src/widget/capability/properties.rs:607:
-    // `CheckListBox` — which is a *type alias for `ListBox`* — so the lookup for
-    // `Chip` found nothing and the lookup for `CheckListBox` was ambiguous
+ // `CheckListBox` — which is a *type alias for `ListBox`* — so the lookup for
+ // `Chip` found nothing and the lookup for `CheckListBox` was ambiguous
 ```
 ✅ 已复跑
 

@@ -1,8 +1,8 @@
 # BLUE5 — 布局检查器与推荐重布局系统设计
 
-> 基于 PUA 质量标准的第五轮设计：布局诊断引擎 + 智能修复推荐  
-> 规划日期: 2026-04-27  
-> 当前基线: `cargo check --all: Finished dev [unoptimized]` (0 errors, 0 warnings)  
+> 基于 PUA 质量标准的第五轮设计：布局诊断引擎 + 智能修复推荐 
+> 规划日期: 2026-04-27 
+> 当前基线: `cargo check --all: Finished dev [unoptimized]` (0 errors, 0 warnings) 
 > 当前测试: **357/357 passed (298 unit + 47 integration + 12 doc) — ✅ ALL PASSING**
 
 ---
@@ -42,47 +42,47 @@
 ### 2.1 核心模块
 
 ```
-src/layout/inspector.rs          ← 检查器主体（新建）
-src/layout/mod.rs                ← 添加 pub mod inspector;
-src/json/layout.rs               ← 添加 collect_layout_snapshots()（修改）
+src/layout/inspector.rs ← 检查器主体（新建）
+src/layout/mod.rs ← 添加 pub mod inspector;
+src/json/layout.rs ← 添加 collect_layout_snapshots()（修改）
 ```
 
 ### 2.2 数据流
 
 ```
-┌──────────────┐     ┌──────────────────────┐     ┌──────────────────┐
-│  JsonLoader   │────→│  LAYOUT_MAP (JSON)    │     │  WidgetRegistry   │
-└──────────────┘     └──────────┬───────────┘     └────────┬─────────┘
-                                │                          │
-                                ▼                          ▼
-                    ┌──────────────────────────────────────────┐
-                    │         LayoutInspector                   │
-                    │                                          │
-                    │  ┌──────────────────────────────────┐    │
-                    │  │  1. check_orphans()              │    │
-                    │  │  2. check_empty_layouts()        │    │
-                    │  │  3. check_zero_size()            │    │
-                    │  │  4. check_overlaps()             │    │
-                    │  │  5. check_layout_mismatch()      │    │
-                    │  └──────────────────────────────────┘    │
-                    │                                          │
-                    │  ┌──────────────────────────────────┐    │
-                    │  │  Recommendation Engine            │    │
-                    │  │  → recalculate()                  │    │
-                    │  │  → add_min_size()                 │    │
-                    │  │  → fix_json_nesting()             │    │
-                    │  │  → adjust_stretch()               │    │
-                    │  └──────────────────────────────────┘    │
-                    └──────────────────────────────────────────┘
-                                │
-                                ▼
-                    ┌──────────────────────┐
-                    │  DiagnosticReport     │
-                    │  → Display (终端)    │
-                    │  → has_issues()       │
-                    │  → has_errors()       │
-                    │  → recommendations    │
-                    └──────────────────────┘
+┌──────────────┐ ┌──────────────────────┐ ┌──────────────────┐
+│ JsonLoader │────→│ LAYOUT_MAP (JSON) │ │ WidgetRegistry │
+└──────────────┘ └──────────┬───────────┘ └────────┬─────────┘
+ │ │
+ ▼ ▼
+ ┌──────────────────────────────────────────┐
+ │ LayoutInspector │
+ │ │
+ │ ┌──────────────────────────────────┐ │
+ │ │ 1. check_orphans() │ │
+ │ │ 2. check_empty_layouts() │ │
+ │ │ 3. check_zero_size() │ │
+ │ │ 4. check_overlaps() │ │
+ │ │ 5. check_layout_mismatch() │ │
+ │ └──────────────────────────────────┘ │
+ │ │
+ │ ┌──────────────────────────────────┐ │
+ │ │ Recommendation Engine │ │
+ │ │ → recalculate() │ │
+ │ │ → add_min_size() │ │
+ │ │ → fix_json_nesting() │ │
+ │ │ → adjust_stretch() │ │
+ │ └──────────────────────────────────┘ │
+ └──────────────────────────────────────────┘
+ │
+ ▼
+ ┌──────────────────────┐
+ │ DiagnosticReport │
+ │ → Display (终端) │
+ │ → has_issues() │
+ │ → has_errors() │
+ │ → recommendations │
+ └──────────────────────┘
 ```
 
 ### 2.3 延迟模式设计
@@ -93,19 +93,19 @@ src/json/layout.rs               ← 添加 collect_layout_snapshots()（修改�
 static ENABLED: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
-    static GEOMETRY_SNAPSHOT: RefCell<Vec<(ObjectId, Rect)>> = ...;
-    static NATIVE_LAYOUTS: RefCell<Vec<NativeLayoutInfo>> = ...;
+ static GEOMETRY_SNAPSHOT: RefCell<Vec<(ObjectId, Rect)>> = ...;
+ static NATIVE_LAYOUTS: RefCell<Vec<NativeLayoutInfo>> = ...;
 }
 
 impl LayoutInspector {
-    pub fn enable() { ENABLED.store(true, Ordering::Release); }
-    pub fn disable() { ENABLED.store(false, Ordering::Release); }
-    pub fn is_enabled() -> bool { ENABLED.load(Ordering::Acquire); }
+ pub fn enable() { ENABLED.store(true, Ordering::Release); }
+ pub fn disable() { ENABLED.store(false, Ordering::Release); }
+ pub fn is_enabled() -> bool { ENABLED.load(Ordering::Acquire); }
 
-    pub fn run_once(registry: &WidgetRegistry) -> DiagnosticReport {
-        if !Self::is_enabled() { return DiagnosticReport::empty(); }
-        // ... 收集快照 → 检测 → 生成推荐 → 清理快照
-    }
+ pub fn run_once(registry: &WidgetRegistry) -> DiagnosticReport {
+ if !Self::is_enabled() { return DiagnosticReport::empty(); }
+ // ... 收集快照 → 检测 → 生成推荐 → 清理快照
+ }
 }
 ```
 
@@ -129,12 +129,12 @@ impl LayoutInspector {
 **典型场景**：
 ```json
 {
-    "window": {
-        "children": [
-            { "button": { "text": "OK" } }   // ✅ 有 parent
-        ]
-    },
-    "button": { "text": "Cancel" }             // ❌ 孤儿 — 不在任何 children 中
+ "window": {
+ "children": [
+ { "button": { "text": "OK" } } // ✅ 有 parent
+ ]
+ },
+ "button": { "text": "Cancel" } // ❌ 孤儿 — 不在任何 children 中
 }
 ```
 
@@ -176,12 +176,12 @@ store_layout(win_id, Box::new(hbox));
 **典型场景**：
 ```json
 {
-    "window": {
-        "layout": { "type": "hbox" },
-        "children": [
-            { "button": { "text": "OK", "min_width": 0, "min_height": 0 } }
-        ]
-    }
+ "window": {
+ "layout": { "type": "hbox" },
+ "children": [
+ { "button": { "text": "OK", "min_width": 0, "min_height": 0 } }
+ ]
+ }
 }
 // ❌ 按钮尺寸为 0×0 — 不可见
 ```
@@ -208,13 +208,13 @@ store_layout(win_id, Box::new(hbox));
 **典型场景**：
 ```json
 {
-    "window": {
-        "layout": { "type": "hbox" },
-        "children": [
-            { "button": { "stretch": 1 } },
-            { "button": { "stretch": 3 } }
-        ]
-    }
+ "window": {
+ "layout": { "type": "hbox" },
+ "children": [
+ { "button": { "stretch": 1 } },
+ { "button": { "stretch": 3 } }
+ ]
+ }
 }
 // 如果父容器宽度 = 200, spacing = 4, margin = 2
 // 两个按钮可能因为整数除法 + 剩余分配异常导致重叠
@@ -240,13 +240,13 @@ store_layout(win_id, Box::new(hbox));
 **典型场景**：
 ```json
 {
-    "window": {
-        "layout": { "type": "vbox" },
-        "children": [
-            { "button": { "text": "Top" } },
-            { "button": { "text": "Bottom" } }
-        ]
-    }
+ "window": {
+ "layout": { "type": "vbox" },
+ "children": [
+ { "button": { "text": "Top" } },
+ { "button": { "text": "Bottom" } }
+ ]
+ }
 }
 // 如果 loader 错误地创建了 HBoxLayout 而非 VBoxLayout
 ```
@@ -294,23 +294,23 @@ store_layout(win_id, Box::new(hbox));
 
 ```rust
 fn generate_recommendations(issues: &[Issue]) -> Vec<Recommendation> {
-    let mut recs = Vec::new();
+ let mut recs = Vec::new();
 
-    if has_errors_or_warnings(issues) {
-        recs.push(Recommendation::new(
-            "🔄 建议执行重布局 (Recalculate)",
-            "调用 recalculate() 或重新触发 layout.update() 以使布局重新计算",
-            "LayoutInspector 检测到 {n} 个问题，请修复后调用 recalculate() 重新布局",
-        ));
-    }
-    if has_zero_size(issues) {
-        recs.push(Recommendation::new(
-            "📏 设置最小尺寸约束",
-            "零尺寸控件需要显式设置 min_width/min_height",
-            "在 JSON 中添加 min_width/min_height，或使用 SizePolicy::Expanding",
-        ));
-    }
-    // ...
+ if has_errors_or_warnings(issues) {
+ recs.push(Recommendation::new(
+ "🔄 建议执行重布局 (Recalculate)",
+ "调用 recalculate() 或重新触发 layout.update() 以使布局重新计算",
+ "LayoutInspector 检测到 {n} 个问题，请修复后调用 recalculate() 重新布局",
+ ));
+ }
+ if has_zero_size(issues) {
+ recs.push(Recommendation::new(
+ "📏 设置最小尺寸约束",
+ "零尺寸控件需要显式设置 min_width/min_height",
+ "在 JSON 中添加 min_width/min_height，或使用 SizePolicy::Expanding",
+ ));
+ }
+ // ...
 }
 ```
 
@@ -318,11 +318,11 @@ fn generate_recommendations(issues: &[Issue]) -> Vec<Recommendation> {
 
 ```
 diagnose() 完成后:
-  if has_errors()  → 优先推荐 R1 (重布局是唯一能验证修复是否有效的方式)
-  if has_orphans() → 推荐 R3 (必须先修复嵌套结构)
-  if has_zero()    → 推荐 R2 (需要设置尺寸约束)
-  if has_overlap() → 推荐 R4 (需要调整 stretch)
-  else             → 推荐 R6 (通用建议)
+ if has_errors() → 优先推荐 R1 (重布局是唯一能验证修复是否有效的方式)
+ if has_orphans() → 推荐 R3 (必须先修复嵌套结构)
+ if has_zero() → 推荐 R2 (需要设置尺寸约束)
+ if has_overlap() → 推荐 R4 (需要调整 stretch)
+ else → 推荐 R6 (通用建议)
 ```
 
 ---
@@ -342,20 +342,20 @@ let layout = JsonLoader::load(json_str)?;
 LayoutInspector::enable();
 
 // 3. 触发布局计算（通常由渲染循环或窗口 resize 触发）
-//    layout.update() 会在回调中自动调用 LayoutInspector::record_geometry()
+// layout.update() 会在回调中自动调用 LayoutInspector::record_geometry()
 
 // 4. 运行诊断
 let report = LayoutInspector::run_once(&registry);
 
 // 5. 处理结果
 if report.has_issues() {
-    println!("{}", report);  // 打印问题 + 推荐方案
+ println!("{}", report); // 打印问题 + 推荐方案
 
-    if report.has_errors() {
-        // 严重问题 — 建议修复后重新触发布局
-        // fix_layout_issues(&report);
-        // request_layout_recalculation();
-    }
+ if report.has_errors() {
+ // 严重问题 — 建议修复后重新触发布局
+ // fix_layout_issues(&report);
+ // request_layout_recalculation();
+ }
 }
 
 // 6. 关闭
@@ -368,22 +368,22 @@ LayoutInspector::disable();
 
 ```rust
 pub fn load(json_str: &str) -> Result<BoundJsonLayout, String> {
-    let result = Self::load_internal(json_str)?;
+ let result = Self::load_internal(json_str)?;
 
-    // 集成点：如果检查器已启用，自动收集 JSON 布局快照
-    if LayoutInspector::is_enabled() {
-        // 遍历 LAYOUT_MAP 为每个 layout 注册检查信息
-        for (parent_id, _layout) in LAYOUT_MAP 中 {
-            LayoutInspector::register_native_layout(
-                parent_id,
-                &format!("json_layout_{}", parent_id),
-                layout.item_count(),
-                get_layout_type_name(&*layout),
-            );
-        }
-    }
+ // 集成点：如果检查器已启用，自动收集 JSON 布局快照
+ if LayoutInspector::is_enabled() {
+ // 遍历 LAYOUT_MAP 为每个 layout 注册检查信息
+ for (parent_id, _layout) in LAYOUT_MAP 中 {
+ LayoutInspector::register_native_layout(
+ parent_id,
+ &format!("json_layout_{}", parent_id),
+ layout.item_count(),
+ get_layout_type_name(&*layout),
+ );
+ }
+ }
 
-    result
+ result
 }
 ```
 
@@ -394,13 +394,13 @@ pub fn load(json_str: &str) -> Result<BoundJsonLayout, String> {
 ```rust
 // Before:
 layout.update(rect, &mut |id, child_rect| {
-    callback(id, child_rect);
+ callback(id, child_rect);
 });
 
 // After (if inspector enabled):
 layout.update(rect, &mut |id, child_rect| {
-    LayoutInspector::record_geometry(id, child_rect);  // ← 新增
-    callback(id, child_rect);
+ LayoutInspector::record_geometry(id, child_rect); // ← 新增
+ callback(id, child_rect);
 });
 ```
 
@@ -414,17 +414,17 @@ layout.update(rect, &mut |id, child_rect| {
 
 ```rust
 pub struct DiagnosticReport {
-    pub issues: Vec<Issue>,
-    pub recommendations: Vec<Recommendation>,
-    pub widgets_inspected: usize,
-    pub layouts_inspected: usize,
+ pub issues: Vec<Issue>,
+ pub recommendations: Vec<Recommendation>,
+ pub widgets_inspected: usize,
+ pub layouts_inspected: usize,
 }
 
 impl DiagnosticReport {
-    pub fn has_issues(&self) -> bool { !self.issues.is_empty() }
-    pub fn has_errors(&self) -> bool {
-        self.issues.iter().any(|i| i.severity == Severity::Error)
-    }
+ pub fn has_issues(&self) -> bool { !self.issues.is_empty() }
+ pub fn has_errors(&self) -> bool {
+ self.issues.iter().any(|i| i.severity == Severity::Error)
+ }
 }
 ```
 
@@ -432,10 +432,10 @@ impl DiagnosticReport {
 
 ```rust
 pub struct Issue {
-    pub severity: Severity,       // Info | Warning | Error
-    pub description: String,      // 人类可读描述
-    pub widget_id: Option<ObjectId>,
-    pub category: &'static str,   // "结构" | "几何" | "布局"
+ pub severity: Severity, // Info | Warning | Error
+ pub description: String, // 人类可读描述
+ pub widget_id: Option<ObjectId>,
+ pub category: &'static str, // "结构" | "几何" | "布局"
 }
 ```
 
@@ -443,9 +443,9 @@ pub struct Issue {
 
 ```rust
 pub struct Recommendation {
-    pub title: String,    // "🔄 建议执行重布局 (Recalculate)"
-    pub summary: String,  // 一句话摘要
-    pub detail: String,   // 展开的详细说明或代码示例
+ pub title: String, // "🔄 建议执行重布局 (Recalculate)"
+ pub summary: String, // 一句话摘要
+ pub detail: String, // 展开的详细说明或代码示例
 }
 ```
 
@@ -527,35 +527,35 @@ pub enum Severity { Info, Warning, Error }
 
 #[test]
 fn json_load_then_diagnose() {
-    LayoutInspector::enable();
-    let json = r#"{
-        "window": {
-            "title": "Test",
-            "layout": { "type": "hbox" },
-            "children": [
-                { "button": { "text": "A" } },
-                { "button": { "text": "B" } }
-            ]
-        }
-    }"#;
-    let layout = JsonLoader::load(json).unwrap();
-    // 触发布局计算...
-    let report = LayoutInspector::run_once(&registry);
-    assert!(!report.has_issues());  // ✅ 正常布局无问题
-    LayoutInspector::disable();
+ LayoutInspector::enable();
+ let json = r#"{
+ "window": {
+ "title": "Test",
+ "layout": { "type": "hbox" },
+ "children": [
+ { "button": { "text": "A" } },
+ { "button": { "text": "B" } }
+ ]
+ }
+ }"#;
+ let layout = JsonLoader::load(json).unwrap();
+ // 触发布局计算...
+ let report = LayoutInspector::run_once(&registry);
+ assert!(!report.has_issues()); // ✅ 正常布局无问题
+ LayoutInspector::disable();
 }
 
 #[test]
 fn detect_orphan_in_json() {
-    LayoutInspector::enable();
-    let json = r#"{
-        "window": { "title": "Win" },
-        "button": { "text": "Lost" }
-    }"#;
-    let layout = JsonLoader::load(json).unwrap();
-    let report = LayoutInspector::run_once(&registry);
-    assert!(report.has_issues());  // ❌ 孤儿 button
-    LayoutInspector::disable();
+ LayoutInspector::enable();
+ let json = r#"{
+ "window": { "title": "Win" },
+ "button": { "text": "Lost" }
+ }"#;
+ let layout = JsonLoader::load(json).unwrap();
+ let report = LayoutInspector::run_once(&registry);
+ assert!(report.has_issues()); // ❌ 孤儿 button
+ LayoutInspector::disable();
 }
 ```
 
@@ -577,13 +577,13 @@ fn detect_orphan_in_json() {
 ```rust
 #[cfg(debug_assertions)]
 {
-    LayoutInspector::enable();
-    // ... 加载布局、运行 ...
-    let report = LayoutInspector::run_once(&registry);
-    if report.has_issues() {
-        log::warn!("{}", report);
-    }
-    LayoutInspector::disable();
+ LayoutInspector::enable();
+ // ... 加载布局、运行 ...
+ let report = LayoutInspector::run_once(&registry);
+ if report.has_issues() {
+ log::warn!("{}", report);
+ }
+ LayoutInspector::disable();
 }
 ```
 

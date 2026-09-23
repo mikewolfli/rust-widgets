@@ -458,7 +458,7 @@ Rust 测试**多线程并行**，这是真实数据竞争（且 `static mut` 在
 **清理深度（非表面清理）**：
 
 - objc2：释放 `Menu` 的**派生 submenu id**（否则 `NSMenu` 泄漏）；`Menu` 销毁**级联**其子项；
-  清理 `attached_menu_bar` / `menu_children` / `menu_item_shortcuts` / 待处理事件队列
+ 清理 `attached_menu_bar` / `menu_children` / `menu_item_shortcuts` / 待处理事件队列
 - cocoa：额外调用既有的 `a11y_bridge.unregister_handle`（**此前从未被调用**，每 widget 泄漏一个 a11y 条目）
 - iOS：按钮额外释放保留的 `ButtonTarget`
 - Windows：`control_command_to_widget` 按**值**扫描（键是命令 id 而非 widget id）
@@ -472,10 +472,10 @@ Rust 测试**多线程并行**，这是真实数据竞争（且 `static mut` 在
 初稿曾以「创建 8000 控件 RSS +49MB」为由声称内存泄漏。**该结论错误**，用三个独立方法推翻：
 
 1. **macOS 官方 `leaks`**：`0 leaks for 0 total leaked bytes`；两次运行的 malloc 节点数
-   748391 / 748382，**不随 churn 增长**。
+ 748391 / 748382，**不随 churn 增长**。
 2. **ObjC 视图树直测**：销毁前 `contentView subviews = 1`，销毁后 `= 0`（对象确实释放）。
 3. **纯 AppKit 对照**（不含本库任何代码）：RSS 曲线与本库探针**几乎重合**
-   （第 6 轮：纯 AppKit 108704 KB vs 本库 109376 KB）。
+ （第 6 轮：纯 AppKit 108704 KB vs 本库 109376 KB）。
 
 ⇒ RSS 增长 100% 来自 **AppKit 自身**（`NSButton` 创建触发类/图形缓存与内存池）。
 
@@ -638,10 +638,10 @@ M/N 两轮的验证用的是 `cargo check --features desktop` 与 `cargo clippy 
 
 ```
 error[E0432]: unresolved import `rust_widgets::platform::get_platform`
-   --> examples/apple_appkit_probe.rs:46:34
+ --> examples/apple_appkit_probe.rs:46:34
 error[E0432]: unresolved import `rust_widgets::platform::get_platform`
-   --> examples/apple_appkit_probe_objc2.rs:36:34
-note: found an item that was configured out  --> src/platform/mod.rs:108
+ --> examples/apple_appkit_probe_objc2.rs:36:34
+note: found an item that was configured out --> src/platform/mod.rs:108
 ```
 
 **根因**：`Cargo.toml` 中 `full = ["desktop", …, "mini", …]` —— **`full` 同时启用 `desktop` 与 `mini`**，
@@ -734,8 +734,8 @@ desktop / full 的计数（3854 / 3946）与文档**逐字相符**，说明偏�
 `unsafe impl Sync` 的语义是「**允许 `&T` 跨线程共享**」：
 
 - `EventHandlerContext::user_data<T>() -> Option<&T>` 与 `user_data_mut<T>() -> Option<&mut T>`
-  从**同一无主指针**返回 `&T` / `&mut T`。若 `&EventHandlerContext` 可跨线程共享，
-  两线程即可分别拿到指向同一对象的 `&T` 与 `&mut T` ⇒ **数据竞争（UB）**。
+ 从**同一无主指针**返回 `&T` / `&mut T`。若 `&EventHandlerContext` 可跨线程共享，
+ 两线程即可分别拿到指向同一对象的 `&T` 与 `&mut T` ⇒ **数据竞争（UB）**。
 - `LinuxPlatform` 内含 `gtk::*`（`!Sync`），GTK 要求所有调用发生在调用 `gtk::init` 的线程上。
 - `TsfThreadMgr` 持有 TSF COM 对象，COM 是**单元线程**模型。
 
@@ -783,21 +783,21 @@ desktop / full 的计数（3854 / 3946）与文档**逐字相符**，说明偏�
 - 本机 `/usr/lib` 只有 dav1d **运行时**库、无开发包，且无免密 sudo。
 - 本轮用 `pip install --user meson ninja` + 从源码构建 dav1d 1.5.0 安装到 `~/.local`，解除了 `image` / `desktop` 的构建阻断。
 - **新 shell 中构建含 `image` 的配置需要**：
-  ```bash
-  export PATH="$HOME/.local/bin:$PATH"
-  export PKG_CONFIG_PATH="$HOME/.local/lib/x86_64-linux-gnu/pkgconfig"
-  ```
+ ```bash
+ export PATH="$HOME/.local/bin:$PATH"
+ export PKG_CONFIG_PATH="$HOME/.local/lib/x86_64-linux-gnu/pkgconfig"
+ ```
 - 构建命令（`-Denable_asm=false`，因本机无 `nasm`）：
-  ```bash
-  meson setup build --prefix="$HOME/.local" --buildtype=release \
-    -Denable_tools=false -Denable_tests=false -Denable_examples=false -Denable_asm=false
-  ninja -C build && meson install -C build
-  ```
+ ```bash
+ meson setup build --prefix="$HOME/.local" --buildtype=release \
+ -Denable_tools=false -Denable_tests=false -Denable_examples=false -Denable_asm=false
+ ninja -C build && meson install -C build
+ ```
 - **更干净的长期方案**：系统级安装 `libdav1d-dev`。
 - **Wayland 合成器（2026-09-11 新增）**：本机无合成器二进制且无免密 sudo，但 `apt-get download` 不需要 root。复现脚本 `tools/run_wayland_compositor_tests.sh` 自包含完成：下载 weston 13.0.0 + libweston → 解包到 `~/.local/opt/weston-extract` → 将 libweston 中编译期硬编码的模块目录（`/usr/lib/x86_64-linux-gnu/libweston-13`、`/usr/lib/x86_64-linux-gnu/weston`）**原位补丁**为 `~/.local/lib/wlmods`（后者严格更短，故不改动二进制布局与任何偏移）→ 以 `headless-backend.so + kiosk-shell.so` 启真实合成器。
-  - **依赖**：`apt-get` 可达镜像、`python3`、`cargo`；无需 root、无需图形会话、无需 `libweston-13-0` 系统包。
-  - **一次性运行**：`bash tools/run_wayland_compositor_tests.sh`（构建含 `image` 的配置时需先设 dav1d 的 `PATH`/`PKG_CONFIG_PATH`）。
-  - **更干净的长期方案**：系统级安装 `weston`（有 sudo 时）。
+ - **依赖**：`apt-get` 可达镜像、`python3`、`cargo`；无需 root、无需图形会话、无需 `libweston-13-0` 系统包。
+ - **一次性运行**：`bash tools/run_wayland_compositor_tests.sh`（构建含 `image` 的配置时需先设 dav1d 的 `PATH`/`PKG_CONFIG_PATH`）。
+ - **更干净的长期方案**：系统级安装 `weston`（有 sudo 时）。
 
 ---
 
@@ -860,18 +860,18 @@ Linux、Android、Wayland **与 Apple** 在本机能力范围内**已全部闭�
 - **原 A 类 #3（Windows 三控件原生化）已于 2026-09-11 完成代码 + 编译验证**（真实 `msctls_updown32` / `SysListView32` / 滚动子窗口），并纳入 CI 交叉检查；**运行验证待 Windows 机器**。
 - **第 7 轮审计更正：原「本机可做项已全部归零」结论不完整。** 全项目审计后发现 **5 个本机可做的真实缺口**（D-1~D-6，见 §三之二）——包括 **26 个被 `#[cfg(target_os)]` 挡在构建之外、从未执行的测试**，一个**已接线但从不被调用**的原生实现（Date/Time/DateTimePicker），以及一条 **GTK 剪贴板的真实 panic 路径**。**均已在本轮闭环**，`--features desktop` 由 3793 → **3819 passed / 0 failed**。
 - **第 8 轮审计更正：`FUTURE.md` ITEM 7「仍开放」的 7 项已缩至 1 项。** 本轮将 `ime_macos`(19)、`android`(8)、`ios`(6)、`macos_objc2`(17) 共 **50 个纯逻辑测试**由「不在构建中」变为**主机真实执行**（§三之三 E 类），`--features desktop` 由 3819 → **3853 passed / 0 failed**。过程中额外暴露并修复 2 个既有缺陷：
-  - **`AndroidHandleKind` 缺 `Debug`** —— 使 `android/types.rs` 自身的 3 个 `assert_eq!` 测试**从未能编译**（从未进入构建，故无人发现）；
-  - **`--all-features` 实际编译失败（E0277）** —— `serialize_state` 的门控宽于 `BackendState` 的 `Serialize` derive 条件；该命令是 **CI 实际执行的命令**，说明此前的「全 0 failed」记录未能覆盖真实 CI 命令。
+ - **`AndroidHandleKind` 缺 `Debug`** —— 使 `android/types.rs` 自身的 3 个 `assert_eq!` 测试**从未能编译**（从未进入构建，故无人发现）；
+ - **`--all-features` 实际编译失败（E0277）** —— `serialize_state` 的门控宽于 `BackendState` 的 `Serialize` derive 条件；该命令是 **CI 实际执行的命令**，说明此前的「全 0 failed」记录未能覆盖真实 CI 命令。
 - **第 9 轮前提更正：验证主机本身就是 macOS 主机（macOS 15.7.3 / arm64 / Xcode 26.2）。**
-  因此 **原 A 类 #4（iOS 模拟器视图行为）与 #5（macOS AppKit 交互）已于 2026-09-11 在本机真机闭环**，
-  不再是「外部环境依赖」：
-  - #5：新增 `examples/apple_appkit_probe.rs`（主线程 AppKit 探针），cocoa-legacy 与 objc2 **两个后端均 `RESULT: PASS`**（真实 `NSWindow`/`NSMenu`/`NSPasteboard`/`NSAlert`…）。
-  - #4：新增 `tools/build_ios_testapp.sh` + `tools/run_ios_testapp.sh`，在 **iOS 26.2 模拟器**上装/跑真实 `.app`，8/8 断言通过（真实 `UIWindow`/`UIButton`/`UILabel`/`UITextField`/文本与几何往返）。
-  - 过程中暴露并修复 **4 个主机可见的真实缺陷**（F-1~F-4，见 §三之四），其中 F-1 是 **cocoa-legacy 后端使 `desktop` 测试进程整个 SIGABRT**，F-2 是 **`--features macos` 静默退化**，F-3 是 **objc2 文本设置必然中止**，F-4 是 **`full` profile 在 macOS 上编译失败**。
-  - 新增 CI 作业 `apple-native`（macos runner）与门禁 `tools/check_apple_native.sh` 持续验证。
+ 因此 **原 A 类 #4（iOS 模拟器视图行为）与 #5（macOS AppKit 交互）已于 2026-09-11 在本机真机闭环**，
+ 不再是「外部环境依赖」：
+ - #5：新增 `examples/apple_appkit_probe.rs`（主线程 AppKit 探针），cocoa-legacy 与 objc2 **两个后端均 `RESULT: PASS`**（真实 `NSWindow`/`NSMenu`/`NSPasteboard`/`NSAlert`…）。
+ - #4：新增 `tools/build_ios_testapp.sh` + `tools/run_ios_testapp.sh`，在 **iOS 26.2 模拟器**上装/跑真实 `.app`，8/8 断言通过（真实 `UIWindow`/`UIButton`/`UILabel`/`UITextField`/文本与几何往返）。
+ - 过程中暴露并修复 **4 个主机可见的真实缺陷**（F-1~F-4，见 §三之四），其中 F-1 是 **cocoa-legacy 后端使 `desktop` 测试进程整个 SIGABRT**，F-2 是 **`--features macos` 静默退化**，F-3 是 **objc2 文本设置必然中止**，F-4 是 **`full` profile 在 macOS 上编译失败**。
+ - 新增 CI 作业 `apple-native`（macos runner）与门禁 `tools/check_apple_native.sh` 持续验证。
 - 剩余未完成项：**2 类**（Windows OLE/IME + Windows 运行验证 / Harmony SDK），**均未伪装为已闭环**。
 - 所有外部环境依赖项**均未伪装为已闭环**，均在 `FUTURE.md` 与各平台 `status.md` 中如实登记（遵守规则 #18）。
 - **诚实边界**：D-1~D-3、E-1~E-4 的意义是「覆盖变为可见」；第 9 轮的 Apple 验证虽是**真实 AppKit/UIKit 对象**层面的断言，但：
-  - iOS 侧跑在**模拟器**而非物理设备（签名/描述文件不在本门禁范围）；
-  - objc2 后端的 `run()` 仍是轮询循环，**真实 `NSApplication` 事件循环桥接尚未实现**（ITEM 5 剩余部分），故 `backend_name()` 仍为 `macos-objc2-preview`；
-  - Windows 运行验证仍待 Windows 机器（本机无 Windows / Wine / MSVC·mingw C 工具链）。
+ - iOS 侧跑在**模拟器**而非物理设备（签名/描述文件不在本门禁范围）；
+ - objc2 后端的 `run()` 仍是轮询循环，**真实 `NSApplication` 事件循环桥接尚未实现**（ITEM 5 剩余部分），故 `backend_name()` 仍为 `macos-objc2-preview`；
+ - Windows 运行验证仍待 Windows 机器（本机无 Windows / Wine / MSVC·mingw C 工具链）。

@@ -16,7 +16,7 @@ use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::{DragPayload, DragSession, Event, EventHandler};
 #[cfg(full_widgets)]
 use crate::layout::{
-    AlignItems, FlexDirection, FlexLayout, FlexWrap, JustifyContent, LayoutParams,
+    AlignItems, AxisHints, FlexDirection, FlexLayout, FlexWrap, Hints, JustifyContent, LayoutParams,
 };
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -29,6 +29,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 #[cfg(full_widgets)]
 use crate::widget::composite::CompositeBuilder;
+use crate::widget::metrics::estimate_text_width;
 #[cfg(feature = "image")]
 use crate::widget::Image;
 #[cfg(full_widgets)]
@@ -459,7 +460,29 @@ impl TabWidget {
     /// longer fit the strip, every tab gets `width / count` so they all stay visible, rather
     /// than the later ones being drawn past the control's own right edge (the SVG backend emits
     /// absolute coordinates, so those tabs simply left the picture).
-    fn tab_widths(&self) -> crate::compat::Vec<i32> {
+    /// The declared width of each tab as a **hint triple**, not a single number.
+    ///
+    /// # Why three numbers rather than one (BLUE22 · G-1)
+    ///
+    /// This used to return one width per tab, and `tab_run` handed each to `add_sized`, which
+    /// writes the value into `min`, `pref` **and** `max` alike. For a strip that fits that is
+    /// exactly right. For one that does not, it made the control lie: it had already decided the
+    /// tabs must share the strip (the overflow rule below), computed each share, and then told the
+    /// layout "this tab is never allowed to be narrower than its share" — while handing the layout
+    /// a band smaller than the sum of those shares. `FlexLayout` could only believe the declaration
+    /// and scale the run down to fit, so the strip's own overflow arithmetic and the layout's
+    /// answer were each applied once and the two rounding steps compounded. Two 72 px tabs plus a
+    /// 2 px gap in a 300 px strip came out 71 and 63 instead of a clean share of 149 each.
+    ///
+    /// The fix is not in the layout: it is that the **declaration has to say what the control
+    /// means**. A tab's `min` is the narrowest it can be drawn, and that is
+    /// [`MIN_TAB_WIDTH`]'s floor, not the share — the share is what the tab *wants* given that the
+    /// strip is crowded, which is precisely `pref`/`max`. With the ceiling stated, the layout
+    /// reaches the answer in one step and the 1 px compounding disappears, because it is no longer
+    /// squeezing a child past a floor the child never had.
+    ///
+    /// Returns `(min, pref, max)` per tab, in strip order.
+    fn tab_width_hints(&self) -> crate::compat::Vec<(i32, i32, i32)> {
         let rect = self.geometry();
         let count = self.tabs.len();
         if count == 0 {
@@ -469,7 +492,11 @@ impl TabWidget {
             .tabs
             .iter()
             .map(|tab| {
-                (tab.title.chars().count() as i32 * TAB_CHAR_WIDTH + TAB_TEXT_PADDING)
+                // The shared estimate, not `chars().count() * TAB_CHAR_WIDTH`: one derivation of a
+                // label's advance for the whole crate, matching what `TabView::tab_widths` uses and
+                // what the renderer draws with. The hand-rolled form also mis-measured any
+                // non-Latin caption, since it charged a fixed 8 px per cluster.
+                (estimate_text_width(&tab.title, &Font::default(), 1.0) as i32 + TAB_TEXT_PADDING)
                     .clamp(MIN_TAB_WIDTH, MAX_TAB_WIDTH)
             })
             .collect();
@@ -479,12 +506,21 @@ impl TabWidget {
             TabPosition::West | TabPosition::East => rect.height as i32,
         };
         if total <= available {
-            return measured;
+            // The strip fits: the measurement is both the wish and the bound, so the three numbers
+            // agree and the drawn run is exactly what it always was.
+            return measured.into_iter().map(|w| (w, w, w)).collect();
         }
-        // Overflow: share the strip equally so every tab remains inside it.
-        let share =
-            ((available - TAB_SPACING * (count as i32 - 1)) / count as i32).max(MIN_TAB_WIDTH / 2);
-        crate::compat::vec![share; count]
+        // Overflow: share the strip equally so every tab remains inside it. The gap must come out of
+        // the band *before* the division, otherwise the last tab's trailing gap is charged to the
+        // tabs themselves and the run overshoots the strip by `TAB_SPACING` — which is what made the
+        // layout scale a second time even after this rule had run.
+        let gaps = TAB_SPACING * (count as i32 - 1);
+        let share = ((available - gaps) / count as i32).max(MIN_TAB_WIDTH / 2);
+        // `pref == max == share` with `min` at the floor: the tab *wants* no more than its share, and
+        // can survive down to the floor. A layout given this reaches the share itself rather than
+        // having to squeeze past a floor that claimed to be the share.
+        let floor = MIN_TAB_WIDTH / 2;
+        crate::compat::vec![(floor.min(share), share, share); count]
     }
 
     /// The tab strip as a run, assembled by a layout rather than by an accumulator.
@@ -505,10 +541,11 @@ impl TabWidget {
     /// lets one function serve all four `TabPosition`s, whose tab boxes differ only by that
     /// translation.
     fn tab_run(&self) -> crate::compat::Vec<Rect> {
-        let widths = self.tab_widths();
-        if widths.is_empty() {
+        let hints = self.tab_width_hints();
+        if hints.is_empty() {
             return crate::compat::Vec::new();
         }
+        let widths: crate::compat::Vec<i32> = hints.iter().map(|(_, pref, _)| *pref).collect();
         let horizontal = matches!(self.tab_position, TabPosition::North | TabPosition::South);
         // # Why the stripped profiles take the direct route
         //
@@ -533,10 +570,24 @@ impl TabWidget {
         }
         #[cfg(full_widgets)]
         {
+            // The strip must be wide enough for the tabs **and the gaps between them**: the layout
+            // charges `TAB_SPACING` once per adjacent pair, so a strip sized at `sum(widths)` alone
+            // is short by exactly that total. `remaining` then goes negative and the proportional
+            // shrink pass — correctly, by its own rules — takes the shortfall off the tabs, which is
+            // where the strip's 64s became 63s. The gaps are part of what the run occupies, so they
+            // are part of the band the run is given.
+            //
+            // The count is the **tab** count, not `self.count()`: this function is building the run
+            // it is about to hand to the layout, so it must count what it will place. The two agree
+            // today, and reading `self.tabs` here is what keeps them agreeing if the accessor ever
+            // grows a different meaning.
+            let count = self.tabs.len() as i32;
+            let gaps = TAB_SPACING * (count.saturating_sub(1));
+            let extent = widths.iter().sum::<i32>() + gaps;
             let strip = if horizontal {
-                Rect::new(0, 0, widths.iter().sum::<i32>() as u32, TAB_HEIGHT as u32)
+                Rect::new(0, 0, extent.max(0) as u32, TAB_HEIGHT as u32)
             } else {
-                Rect::new(0, 0, TAB_HEIGHT as u32, widths.iter().sum::<i32>() as u32)
+                Rect::new(0, 0, TAB_HEIGHT as u32, extent.max(0) as u32)
             };
             let factory = WidgetFactory::new_with_defaults();
             let mut row = CompositeBuilder::new(
@@ -552,17 +603,40 @@ impl TabWidget {
                 Size::new(0, 0),
             );
             for (index, tab) in self.tabs.iter().enumerate() {
-                // The tab's own box: its measured width on the run's axis, the strip's height across
-                // it. A tab is `TAB_HEIGHT` tall whatever the control was given, which is the whole
+                // The tab's declaration: its measured width **on the run's axis** as a real
+                // `min`/`pref`/`max` triple, and `TAB_HEIGHT` across it.
+                //
+                // The three widths come from `tab_width_hints`, so a crowded strip declares the
+                // share it means instead of claiming that share as its own floor (BLUE22 · G-1).
+                // A tab is `TAB_HEIGHT` tall whatever the control was given, which is the whole
                 // point of taking the height from the constant rather than from `geometry()`.
-                let along = widths.get(index).copied().unwrap_or(MIN_TAB_WIDTH) as u32;
-                let size = if horizontal {
-                    Size::new(along, TAB_HEIGHT as u32)
-                } else {
-                    Size::new(TAB_HEIGHT as u32, along)
+                let (min_width, pref_width, max_width) = hints.get(index).copied().unwrap_or((
+                    MIN_TAB_WIDTH,
+                    MIN_TAB_WIDTH,
+                    MIN_TAB_WIDTH,
+                ));
+                let declared = Hints {
+                    width: AxisHints::new(
+                        min_width.max(0) as u32,
+                        pref_width.max(0) as u32,
+                        max_width.max(0) as u32,
+                    ),
+                    height: AxisHints::fixed(TAB_HEIGHT as u32),
                 };
-                let created =
-                    row.add_sized(&factory, "label", &tab.title, size, LayoutParams::new());
+                // A vertical strip is the same declaration with the axes exchanged, which is the
+                // only difference between the four `TabPosition`s' boxes.
+                let declared = if horizontal {
+                    declared
+                } else {
+                    Hints { width: declared.height, height: declared.width }
+                };
+                let created = row.add_with_hints(
+                    &factory,
+                    "label",
+                    &tab.title,
+                    declared,
+                    LayoutParams::new(),
+                );
                 debug_assert!(created.is_some(), "a tab is a core control");
             }
             let mut placed: crate::compat::Vec<Rect> = crate::compat::Vec::new();
@@ -662,14 +736,6 @@ const MAX_TAB_WIDTH: i32 = 200;
 
 /// Padding added to a measured title before it is clamped.
 const TAB_TEXT_PADDING: i32 = 24;
-
-/// Width charged per character when measuring a tab title.
-///
-/// The renderer's advance model, not a `len()` estimate: this crate's shaper gives one
-/// cluster per `char` at 0.6 em for Latin text, and a tab title is a label the user reads.
-/// `len()` on a UTF-8 `String` counts bytes, so a CJK title measured by it would reserve
-/// four times the width it draws.
-const TAB_CHAR_WIDTH: i32 = 8;
 
 /// Side of a tab's close button, in logical pixels.
 const CLOSE_SIZE: i32 = 12;
@@ -1054,7 +1120,70 @@ mod tests {
         1002
     }
 
-    // ── 1. Creation defaults ──────────────────────────────────────────────────
+    // ── 1. Creation defaults ──────────────────────────────────────────────
+
+    /// A crowded strip's tabs get **exactly** their declared share, with nothing shaved off.
+    ///
+    /// # The defect this pins (BLUE22 · G-1)
+    ///
+    /// The strip was sized at `sum(tab widths)` while the layout also charges `TAB_SPACING` for
+    /// every adjacent pair, so the band the run was given was short by that total. `remaining` went
+    /// negative and the proportional shrink pass took the difference off the tabs — one pixel each,
+    /// which is why a 64 px share was drawn as 63. Nothing was *wrong* in either half; the band and
+    /// the run simply disagreed about whether the gaps were part of the run's extent.
+    ///
+    /// The assertion is the whole share, per tab, because "the shortfall is distributed" is exactly
+    /// what a 1 px loss looks like and exactly what must not happen here.
+    #[test]
+    fn tabwidget_a_crowded_strip_gives_every_tab_its_full_share() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 100, 120));
+        tw.add_tab("Tab 1".to_string(), None);
+        tw.add_tab("Tab 2".to_string(), None);
+
+        let hints = tw.tab_width_hints();
+        assert_eq!(hints.len(), 2, "two tabs, two declarations");
+        // Crowded: the shares must be equal and come from the overflow rule.
+        let (min, share, max) = hints[0];
+        assert_eq!(hints[1], (min, share, max), "an overflowing strip shares equally");
+        assert!(min < share, "a crowded tab may be squeezed below its share: {hints:?}");
+
+        for index in 0..2 {
+            let rect = tw.tab_rect(index).expect("the tab has a band");
+            assert_eq!(
+                rect.width as i32, share,
+                "tab {index} must be drawn at its declared share, not one pixel narrower"
+            );
+        }
+        // And the two boxes plus the gap are the strip exactly, so nothing was deferred either.
+        let first = tw.tab_rect(0).expect("tab 0");
+        let second = tw.tab_rect(1).expect("tab 1");
+        assert_eq!(
+            second.x,
+            first.x + first.width as i32 + TAB_SPACING,
+            "the second tab begins one gap after the first"
+        );
+        assert!(
+            second.x + second.width as i32 <= tw.geometry().width as i32,
+            "the run fits inside the control"
+        );
+    }
+
+    /// A strip that fits is untouched by the overflow rule: the three numbers agree and the run is
+    /// exactly the measurement.
+    ///
+    /// The companion to the test above — the G-1 fix must not make a comfortable strip behave as a
+    /// crowded one, which is why the fitted case returns `min == pref == max`.
+    #[test]
+    fn tabwidget_a_strip_that_fits_declares_each_tab_as_fixed() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 600, 120));
+        tw.add_tab("A".to_string(), None);
+        tw.add_tab("B".to_string(), None);
+        for (index, (min, pref, max)) in tw.tab_width_hints().into_iter().enumerate() {
+            assert_eq!((min, max), (pref, pref), "tab {index} must be fixed when the strip fits");
+            let rect = tw.tab_rect(index).expect("the tab has a band");
+            assert_eq!(rect.width as i32, pref, "tab {index} draws at its measured width");
+        }
+    }
 
     #[test]
     fn tabwidget_creation_defaults() {

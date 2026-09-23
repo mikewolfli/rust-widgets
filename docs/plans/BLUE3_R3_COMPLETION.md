@@ -1,8 +1,8 @@
 # BLUE3 Round 3 — 完整闭合报告
 
-> 基于 PUA 质量标准，一次完整完成闭合 (Complete Closure in One Go)  
-> 完成日期: 2026-04-26  
-> 构建状态: `cargo check --all: Finished dev [unoptimized]` (0 errors, 0 warnings)  
+> 基于 PUA 质量标准，一次完整完成闭合 (Complete Closure in One Go) 
+> 完成日期: 2026-04-26 
+> 构建状态: `cargo check --all: Finished dev [unoptimized]` (0 errors, 0 warnings) 
 > 测试状态: **297 unit + 22 integration + 11 doc = 330 tests, 0 failures — ✅ ALL PASSING**
 
 ---
@@ -193,7 +193,7 @@ fn init_i18n_runtime() {}
 
 ```rust
 // Before: "Discrete GPU (独立显卡)"
-// After:  "Discrete GPU"  // i18n via I18nManager lookup table if needed
+// After: "Discrete GPU" // i18n via I18nManager lookup table if needed
 ```
 
 **设计决策**: Rust Widgets 已有完整的 `I18nManager` 系统 (位于 `src/i18n/`)。UI 显示字符串应通过 `t!()` 宏或 `I18nManager::translate()` 进行本地化。`description()` 作为程序化 API 返回英文，便于调试和日志一致性。

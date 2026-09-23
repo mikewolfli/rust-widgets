@@ -27,7 +27,7 @@ CENSUS_RECT = 240x120        // a roomy cell, so a multi-part control has room f
 switch.svg   = rect 0,0,240,120 rx=60      // the control IS the cell
 ```
 
-Qt Quick answers the second question with one formula, and the load-bearing term is the `max`:
+A common toolkit answers the second question with one formula, and the load-bearing term is the `max`:
 
 ```text
 implicitWidth = max(implicitBackgroundWidth + leftInset + rightInset,
@@ -83,17 +83,17 @@ pub struct ChildInfo { pub id: ObjectId, pub hints: Hints, pub params: LayoutPar
 
 Three decisions worth naming:
 
-- **Three values per axis, not four opposite-axis functions.** Flutter's `getMinIntrinsicWidth(height)`
-  is parameterised on the other axis and its own docs describe `IntrinsicWidth` as "a speculative
-  layout pass" that is "O(N²) in the depth of the tree". `min`/`pref`/`max` are computed once by the
-  control from its own content; a layout reads them directly. What this gives up is width-for-height
-  coupling, which no control here needs.
+- **Three values per axis, not four opposite-axis functions.** A parameterised
+  `getMinIntrinsicWidth(height)` makes the answer depend on the other axis, and the toolkit that
+  ships it describes its own wrapper as "a speculative layout pass" that is "O(N²) in the depth of
+  the tree". `min`/`pref`/`max` are computed once by the control from its own content; a layout
+  reads them directly. What this gives up is width-for-height coupling, which no control here needs.
 - **`min` is the value this crate was missing.** A floor ("you may squeeze me to 64x40 but no
-  further") is what makes a control stay tappable, and neither a single `size_hint` nor Flutter's
-  four functions can express it without a wrapper.
+  further") is what makes a control stay tappable, and a single `size_hint` cannot express it without
+  a wrapper.
 - **`fill` is declared separately from size.** A slider's `pref` and a button's `pref` can be the
   same number, yet the slider should be stretched across a form and the button should not. Size
-  cannot distinguish them, so the flag is its own bit — Qt's `Layout.fillWidth`.
+  cannot distinguish them, so the flag is its own bit — a layout's `fillWidth`.
 
 `Layout::arrange(rect, &[ChildInfo], out)` is the read-write entry point, and its **default
 implementation forwards to `update`**, so the fifteen existing layouts keep working untouched and can
@@ -114,7 +114,7 @@ context menu. There was no `canceled` signal, so a caller routing a destructive 
 a completed activation from an abandoned one, and `MouseLeave` cleared only the hover flag while
 leaving the press latch armed for an unrelated later release.
 
-The four-segment contract (Qt Quick's `handlePress`/`handleMove`/`handleRelease`/`handleUngrab`):
+The four-segment contract (`handlePress`/`handleMove`/`handleRelease`/`handleUngrab`):
 
 | event | result |
 |---|---|
@@ -142,7 +142,7 @@ Three things this required that a naive version gets wrong:
 ### 4. A focus ring that appears when the user is on the keyboard, and not when they are not
 
 "This widget has focus" and "the user is navigating with the keyboard" are different facts, and only
-the second should draw a ring. Qt Quick encodes it as
+the second should draw a ring. The rule is
 `visualFocus = activeFocus && (reason == Tab | Backtab | Shortcut)`.
 
 `Event::FocusGained` gained a `reason: FocusReason` payload (`Pointer` / `Tab` / `BackTab` /
@@ -160,9 +160,10 @@ focused control used to look identical to a merely bordered one.
 
 ### 5. A theme palette that can grow
 
-`Colors` had eleven roles against Material 3's forty-odd and QML's twenty-one. Adding one was
-expensive for a mechanical reason: there was no `Default for Colors`, so every `Colors { .. }`
-literal in the crate had to be found and extended. Seven roles are added, all with serde defaults so
+`Colors` had eleven roles against the forty-odd a full Material-derived palette carries and the
+twenty-one a stock control set uses. Adding one was expensive for a mechanical reason: there was no
+`Default for Colors`, so every `Colors { .. }` literal in the crate had to be found and extended.
+Seven roles are added, all with serde defaults so
 an older theme file still loads, and `impl Default for Colors` makes the next one a local change:
 
 | role | the defect it removes |
@@ -231,8 +232,8 @@ rather than a scaling of the 240x120 cell:
 
 ### 8. Gates
 
-Two new source gates, each proven failable by injection and each carrying an exemption table whose
-entries name a mechanism and a reason (a bare path is not an entry):
+**Five** new source gates, each proven failable by injection and each carrying an exemption table
+whose entries name a mechanism and a reason (a bare path is not an entry):
 
 - `tools/check_click_requires_release_inside.sh` — a control that emits `clicked` and handles
   `MouseRelease` must test containment on the release, abandon the press on `MouseLeave`, or be
@@ -240,6 +241,32 @@ entries name a mechanism and a reason (a bare path is not an entry):
   `radar_chart` and `property_grid`.
 - `tools/check_transition_durations_are_tokens.sh` — an interaction transition must be priced from
   `theme.motion`, not a literal. It found `floating_label`.
+- `tools/check_implicit_size_uses_metrics.sh` — a `size_hint` must come from the metric system.
+  Writing it found four controls that had made a private copy of "how big am I?": `checkbox` and
+  `radiobutton` both wrote `text.len() * 8 + 24` (with a comment naming `INDICATOR_SIZE`, a constant
+  living elsewhere, as a literal), `label` wrote `text.len() * 8 + 4`, and `button` wrote
+  `self.text().len() as u32 * 8` with the words "the crate's usual `len * 8`" beside it. All four
+  now read `ControlMetrics`, through two new pure primitives:
+
+  ```rust
+  // one cluster's advance under the renderer's own model -- 0.6 em narrow, 1.0 em wide,
+  // 0.33 em blank, tracking paid on the n-1 gaps -- spelled as a pure function so a control
+  // with no RenderContext can measure honestly.
+  pub fn estimate_text_width(text: &str, font: &Font, scale: f32) -> u32
+  pub fn estimate_line_height(font: &Font, scale: f32) -> u32
+  ```
+
+  Its exemption table is a **158-entry debt list**, and says so in its header: unlike the other two
+  tables (one or two permanent entries each), this one records a backlog and shrinks as controls
+  are converted. Keyed on `path:line`, so an entry cannot outlive the code it records.
+- `tools/check_spacing_is_not_sibling_layout.sh` — `Style::spacing` means one thing (the gap from a
+  control's **own** indicator to its **own** text); the gap between two siblings belongs to the
+  layout. A control that reads the field without a `label_gap` accessor has put one number into two
+  roles, and a theme can no longer change either.
+- `tools/check_focus_ring_respects_reason.sh` — a ring painted from a `focused: bool` appears under
+  the cursor on a click, because the pointer is the one reason that must not draw one. The gate
+  requires the shared predicate (or the file's own classification of the reason) **and asserts it
+  found at least one construction**, so it cannot pass vacuously.
 
 All 376 snapshots were regenerated. **No snapshot contains a zero-width/zero-height element or an
 empty text element** — both classes are now at zero, down from three and six.
@@ -282,8 +309,8 @@ invisible on paper and affect every layout that uses the channel:
 A fourth, narrower one: a child's floor is expressed in its own box while the solver works in outer
 sizes, so a 64 px floor with a 6 px margin was laid out at an outer 64 and drawn 58 wide. The floor
 now carries the margins, and the floor is honoured by **overhanging** rather than by shrinking —
-CSS flexbox's `min-width: auto` and Qt's `implicitMinimumWidth` make the same choice, because a
-button narrower than its label is a button whose label elides.
+CSS flexbox's `min-width: auto` and a control class's `implicitMinimumWidth` make the same choice,
+because a button narrower than its label is a button whose label elides.
 
 `min` and `fill` are separate declarations and both now survive the hand-off: `fill` is a
 zero-weight request to absorb the leftover, so it is translated into a grow weight rather than
@@ -457,8 +484,8 @@ focus-or-content.
   paint outside the control; the page now has a floor and the strip has a scroll offset.
 - **`dial`**'s `notches_visible` / `notch_target` were fully declared and read by nothing. The tick ring
   is implemented, sharing the dial's own angle mapping so it cannot drift out of phase with the needle,
-  and the `notch_target` unit is now stated (pixels of arc, Qt's own semantic) instead of documented as
-  degrees while doing nothing.
+  and the `notch_target` unit is now stated (pixels of arc, the unit a dial's tick ring is defined
+  in) instead of documented as degrees while doing nothing.
 - **`badge`**'s dot was `min(w, h) / 2` — a 12 px dot in a 24 px cell and a 60 px disc in a 240×120 one.
   It is a fixed-size marker now, like the checkbox's indicator and the switch's track.
 - **`bottom_sheet`**'s modal scrim **brightened** a dark backdrop (it blended toward the foreground, so
@@ -554,8 +581,8 @@ rejecting a lightness that would render it invisible.
 Three defects, all from a light-theme assumption written as arithmetic:
 
 * the weekday header blended the fill **halfway toward a literal white**, so on the dark appearance
-  `rgb(18,18,18)` became `rgb(137,137,137)` — a heavy band no mainstream calendar has (Flutter's
-  `onSurfaceVariant`, Qt's `QCalendarWidget` and SwiftUI's graphical picker all keep the header
+  `rgb(18,18,18)` became `rgb(137,137,137)` — a heavy band no mainstream calendar has (a standard
+  calendar's `onSurfaceVariant` — whether from a palette or a native date picker — keeps the header
   within a few percent of the body). It is now a small step toward the calendar's own ink.
 * the weekend columns carried a literal `rgb(180,60,60)` which measured **1.64:1** on that band. The
   weekend indicator is *semantic* (it says "not a working day"), so it now reads
@@ -566,8 +593,8 @@ Three defects, all from a light-theme assumption written as arithmetic:
 
 ### 5. Grouping containers that rendered as nothing
 
-An audit of every container control against Qt/Flutter/SwiftUI found three that failed "an empty
-container must still show its structure":
+An audit of every container control against three established widget toolkits found three that failed
+"an empty container must still show its structure":
 
 * **`splitter`** guarded its divider with `pane_count() > 1`, and `Splitter::new` builds **zero**
   panes — so the default-rendered control had no handle at all, `detail = 0` in the census. The
@@ -590,8 +617,8 @@ makes the strip and the text agree by construction instead of by a tuned pair of
 ### 7. The declarative layer gains its completeness conditions
 
 `Node` could express a *list* (`children_of`) but not a *condition*. Conditional rendering is the
-completeness condition of a declarative tree — Flutter's `if` inside a children list, React's
-`cond && <X/>`, SwiftUI's `if`/`else` in a `ViewBuilder` — and without it a caller had to interrupt
+completeness condition of a declarative tree — an `if` inside a children list in any of the major
+declarative UI frameworks — and without it a caller had to interrupt
 the builder chain with an imperative `if`.
 
 Four methods added, each with tests that assert the *diff* behaves correctly and not merely that the

@@ -9,12 +9,18 @@
 
 use crate::core::{Color, Font, HorizontalAlignment, Rect};
 use crate::event::{Event, EventHandler};
+#[cfg(full_widgets)]
+use crate::layout::{
+    AlignItems, FlexDirection, FlexLayout, FlexWrap, JustifyContent, LayoutParams,
+};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::style::EdgeOffsets;
 use crate::widget::capability::coercion::expect_usize;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::estimate_text_width;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -148,7 +154,121 @@ impl TabView {
         let top = strip.y + strip.height as i32;
         Rect::new(rect.x, top, rect.width, (rect.y + rect.height as i32 - top).max(0) as u32)
     }
+
+    /// Each tab's own width, derived from its own label.
+    ///
+    /// # The defect this replaces
+    ///
+    /// The strip used to be divided **equally**: `tab_width = rect.width / tab_count`. That
+    /// makes a tab's width a fact about its *neighbours' count* rather than about its own
+    /// label, with two visible consequences. A short title got a cell far wider than it needed,
+    /// and a long one got the same cell as every other — so it was elided by
+    /// `draw_text_fitted` even when the strip had room to spare. Adding a fourth tab also
+    /// silently narrowed the first three.
+    ///
+    /// A tab's width is `label_width + TAB_TEXT_PADDING`, clamped into
+    /// `TAB_MIN_WIDTH..TAB_MAX_WIDTH` so a one-character tab is still tappable and a long one
+    /// does not crowd out its siblings. This is the same derivation `TabWidget::tab_widths`
+    /// uses, with the same constants, so the two tab strips in this crate cannot disagree.
+    fn tab_widths(&self) -> crate::compat::Vec<i32> {
+        let font = Font::default();
+        self.tabs
+            .iter()
+            .map(|tab| {
+                // The label's width comes from the shared estimate -- the same model the renderer
+                // draws with -- rather than from `chars().count() * TAB_CHAR_WIDTH`. The hand-rolled
+                // form was a second copy of the advance arithmetic and one that counts *clusters*
+                // at a fixed 8 px: a CJK caption measured half its drawn width, so a Chinese tab
+                // label overflowed the strip its own width had reserved.
+                (estimate_text_width(&tab.title, &font, 1.0) as i32 + TAB_TEXT_PADDING)
+                    .clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH)
+            })
+            .collect()
+    }
+
+    /// The tab boxes, in strip order, positioned by a layout rather than by an accumulator.
+    ///
+    /// # Why the run is assembled and not summed
+    ///
+    /// The draw path used to compute each tab's x as `rect.x + i * tab_width`, and the hit test
+    /// re-derived the same expression from a separate bookkeeping run — two accumulators of one
+    /// fact. Handing the measured widths to a [`FlexLayout`] through
+    /// [`CompositeBuilder`](crate::widget::composite::CompositeBuilder) makes the run the
+    /// *layout's* answer, so the paint, the hit test and any future caller read one result. It
+    /// also means the strip picks up the layout's device scaling for free.
+    ///
+    /// The returned boxes are in **strip coordinates** (origin at the strip's own top-left), so
+    /// the caller has one translation to apply and the geometry is independent of where the
+    /// control was placed.
+    fn tab_run(&self, strip: Rect) -> crate::compat::Vec<Rect> {
+        let widths = self.tab_widths();
+        if widths.is_empty() {
+            return crate::compat::Vec::new();
+        }
+        let height = strip.height;
+        let total: i32 = widths.iter().sum();
+        // # Why the stripped profiles take the direct route
+        //
+        // `full_widgets` is "a device profile *and* an unstripped widget set" (principle #47),
+        // and a `mobile-api` build has no `WidgetFactory` here. Both arms read the same widths,
+        // so the fallback is the same run written the only way that profile can express it.
+        #[cfg(not(full_widgets))]
+        {
+            let mut placed: crate::compat::Vec<Rect> = crate::compat::Vec::new();
+            let mut cursor = 0i32;
+            for width in widths.iter() {
+                placed.push(Rect::new(cursor, 0, *width as u32, height));
+                cursor += *width + TAB_SPACING;
+            }
+            return placed;
+        }
+        #[cfg(full_widgets)]
+        {
+            use crate::compat::Box as _Box;
+            let run =
+                Rect::new(0, 0, (total + TAB_SPACING * widths.len() as i32).max(0) as u32, height);
+            let factory = crate::widget::WidgetFactory::new_with_defaults();
+            let mut row = crate::widget::composite::CompositeBuilder::new(
+                _Box::new(FlexLayout::with_params(
+                    FlexDirection::Row,
+                    FlexWrap::NoWrap,
+                    JustifyContent::FlexStart,
+                    AlignItems::Stretch,
+                    TAB_SPACING,
+                    0,
+                )),
+                EdgeOffsets::all(0),
+                crate::core::Size::new(0, 0),
+            );
+            for (index, tab) in self.tabs.iter().enumerate() {
+                let along = widths.get(index).copied().unwrap_or(TAB_MIN_WIDTH) as u32;
+                let created = row.add_sized(
+                    &factory,
+                    "label",
+                    &tab.title,
+                    crate::core::Size::new(along, height),
+                    LayoutParams::new(),
+                );
+                debug_assert!(created.is_some(), "a tab is a core control");
+            }
+            let mut placed: crate::compat::Vec<Rect> = crate::compat::Vec::new();
+            row.arrange(run, &mut |_, rect| placed.push(rect));
+            while placed.len() < self.tabs.len() {
+                placed.push(Rect::new(0, 0, 0, 0));
+            }
+            placed
+        }
+    }
 }
+
+/// Padding added to a tab's measured label width.
+pub(crate) const TAB_TEXT_PADDING: i32 = 24;
+/// Narrowest a tab may be drawn, so a one-character caption is still a tap target.
+pub(crate) const TAB_MIN_WIDTH: i32 = 40;
+/// Widest a tab may be drawn, so one long caption cannot crowd out its siblings.
+pub(crate) const TAB_MAX_WIDTH: i32 = 200;
+/// Gap between adjacent tabs.
+pub(crate) const TAB_SPACING: i32 = 2;
 
 impl Widget for TabView {
     fn base(&self) -> &BaseWidget {
@@ -249,13 +369,18 @@ impl Draw for TabView {
         }
 
         // Draw each tab header
-        let tab_count = self.tabs.len() as u32;
-        let tab_width = rect.width / tab_count.max(1);
+        //
+        // The boxes come from `tab_run`, the *same* derivation the hit test reads, so the tab a
+        // press selects is the tab that was painted. They are in strip coordinates, so one
+        // translation places them.
         let font = Font::simple("sans-serif", 12.0);
-
-        for i in 0..self.tabs.len() {
-            let tab_x = rect.x + (i as u32 * tab_width) as i32;
-            let tab_rect = Rect::new(tab_x, rect.y, tab_width, tab_bar_height);
+        for (i, local) in self.tab_run(tab_bar_rect).into_iter().enumerate() {
+            let tab_rect = Rect::new(
+                tab_bar_rect.x + local.x,
+                tab_bar_rect.y + local.y,
+                local.width,
+                local.height,
+            );
             let is_selected = i == self.selected_index;
 
             // Background
@@ -264,8 +389,12 @@ impl Draw for TabView {
 
             // Selected tab indicator line
             if is_selected {
-                let indicator_rect =
-                    Rect::new(tab_x, rect.y + tab_bar_height as i32 - 3, tab_width, 3);
+                let indicator_rect = Rect::new(
+                    tab_rect.x,
+                    tab_rect.y + tab_rect.height as i32 - 3,
+                    tab_rect.width,
+                    3,
+                );
                 context.fill_rect(indicator_rect, indicator);
             }
 
@@ -312,18 +441,24 @@ impl EventHandler for TabView {
         match event {
             Event::MousePress { pos, button } => {
                 if *button == 1 && !self.tabs.is_empty() {
-                    // Check if click is in the tab bar area. The band comes from the control's
-                    // own derivation, so the region that accepts a press is by construction the
-                    // region the renderer drew.
+                    // The band comes from the control's own derivation, so the region that accepts
+                    // a press is by construction the region the renderer drew.
                     let strip = self.tab_bar_rect();
-                    let rect = self.geometry();
                     if pos.y >= strip.y && pos.y < strip.y + strip.height as i32 {
-                        let tab_count = self.tabs.len() as u32;
-                        let tab_width = rect.width / tab_count.max(1);
-                        let relative_x = (pos.x - rect.x) as u32;
-                        let clicked_index = (relative_x / tab_width) as usize;
-                        if clicked_index < self.tabs.len() {
-                            self.set_current_index(clicked_index);
+                        // The tab boxes are the layout's answer, the *same* boxes the draw pass
+                        // painted. Deriving the index from `relative_x / tab_width` (the old
+                        // form) meant the hit test divided the strip equally while the paint
+                        // path used each tab's own width — so once tabs stopped being equal, a
+                        // press on a tab selected its neighbour. Reading the boxes removes the
+                        // second derivation rather than trying to keep the two in step.
+                        let local_x = pos.x - strip.x;
+                        let clicked = self.tab_run(strip).into_iter().position(|box_rect| {
+                            let left = box_rect.x;
+                            let right = left + box_rect.width as i32;
+                            local_x >= left && local_x < right
+                        });
+                        if let Some(index) = clicked {
+                            self.set_current_index(index);
                         }
                     }
                 }
@@ -438,17 +573,26 @@ mod tests {
         let line_h = context.measure_text("M", &font).height as i32;
         let expected_y = strip.y + (strip.height as i32 - line_h) / 2;
 
-        let tab_width = tv.geometry().width / 2;
+        // The boxes come from the control's own derivation, so the test asserts against the
+        // *same* geometry the control painted rather than re-deriving a second expectation.
+        // `tv.geometry().width / 2` used to stand here, and it pinned the equal division the
+        // control has since stopped doing — a test that restated the implementation could not
+        // notice the implementation was wrong.
+        let strip = tv.tab_bar_rect();
+        let boxes = tv.tab_run(strip);
         let runs = text_run_boxes(&svg);
         let caption_of = |index: usize| -> (i32, i32, i32, i32) {
-            let left = tv.geometry().x + (index as u32 * tab_width) as i32;
+            let local =
+                boxes.get(index).copied().unwrap_or_else(|| panic!("tab {index} has no box"));
+            let left = strip.x + local.x;
+            let right = left + local.width as i32;
             runs.iter()
                 .find(|(l, _, r, _)| {
                     let centre = (l + r) / 2;
-                    centre >= left && centre < left + tab_width as i32
+                    centre >= left && centre < right
                 })
                 .copied()
-                .unwrap_or_else(|| panic!("tab {index} painted no caption in {left}.."))
+                .unwrap_or_else(|| panic!("tab {index} painted no caption in {left}..{right}"))
         };
         let alpha = caption_of(0);
         let beta = caption_of(1);
@@ -457,11 +601,12 @@ mod tests {
         // The caption is bounded by its own tab, which the attribute assertion could not see: a
         // run centred on the strip but not on its tab would still have had the right `y`.
         for (index, run) in [alpha, beta].into_iter().enumerate() {
-            let left = tv.geometry().x + (index as u32 * tab_width) as i32;
+            let local = boxes[index];
+            let left = strip.x + local.x;
+            let right = left + local.width as i32;
             assert!(
-                run.0 >= left && run.2 <= left + tab_width as i32,
-                "tab {index}: caption {run:?} must stay inside {left}..{}",
-                left + tab_width as i32
+                run.0 >= left && run.2 <= right,
+                "tab {index}: caption {run:?} must stay inside {left}..{right}"
             );
             assert!(run.2 > run.0, "tab {index}: the caption laid down ink: {run:?}");
         }
@@ -534,9 +679,74 @@ mod tests {
         tv.add_tab("Foo", None, None::<&str>);
         tv.add_tab("Bar", None, None::<&str>);
 
-        // Click on second tab header (x=150..299, y=0..40)
-        tv.handle_event(&Event::MousePress { pos: Point::new(160, 20), button: 1 });
-        assert_eq!(tv.current_index(), 1);
+        // The click point is derived from the second tab's *own* box rather than from the
+        // old equal division (`x=150..299`). Tabs are sized by their captions now, so a
+        // hardcoded coordinate would be asserting the geometry was divided equally — the
+        // thing this control stopped doing — instead of asserting that a press on a tab
+        // selects it.
+        let strip = tv.tab_bar_rect();
+        let boxes = tv.tab_run(strip);
+        let second = boxes.get(1).copied().expect("two tabs were added");
+        let centre = Point::new(
+            strip.x + second.x + second.width as i32 / 2,
+            strip.y + second.height as i32 / 2,
+        );
+        tv.handle_event(&Event::MousePress { pos: centre, button: 1 });
+        assert_eq!(tv.current_index(), 1, "a press on the second tab selects it");
+
+        // And the first tab's own box still selects the first, so the mapping is not merely
+        // "anything selects index 1".
+        let first = boxes.first().copied().expect("two tabs were added");
+        let centre = Point::new(
+            strip.x + first.x + first.width as i32 / 2,
+            strip.y + first.height as i32 / 2,
+        );
+        tv.handle_event(&Event::MousePress { pos: centre, button: 1 });
+        assert_eq!(tv.current_index(), 0, "a press on the first tab selects it");
+    }
+
+    #[test]
+    fn a_tab_is_as_wide_as_its_own_caption_needs() {
+        // The defect this pins: the strip used to be divided equally by the tab count, so a
+        // short caption got a cell far wider than it needed and its neighbour's width changed
+        // when a tab was added. A tab's width is now a fact about its own label.
+        let mut tv = make_tab_view();
+        tv.add_tab("I", None, None::<&str>);
+        tv.add_tab("A much longer caption", None, None::<&str>);
+        let boxes = tv.tab_run(tv.tab_bar_rect());
+
+        let short = boxes[0].width;
+        let long = boxes[1].width;
+        assert!(long > short, "a longer caption must ask for a wider tab: {short} vs {long}");
+        assert_eq!(short, TAB_MIN_WIDTH as u32, "a one-character tab floors at the minimum");
+        // The expected width is read from the same estimate the control uses, over a caption long
+        // enough to stay under the 200 px ceiling -- so this asserts the *measured* width, and the
+        // ceiling is asserted separately below with a caption long enough to reach it.
+        //
+        // The literal this replaced (`21 * TAB_CHAR_WIDTH + TAB_TEXT_PADDING`) was the old
+        // `chars().count() * 8` arithmetic restated in the test. That is a second copy of the
+        // measurement, and it is exactly what went stale when the shared estimate took over: the
+        // real advance for 21 Latin clusters at the default 14 px font is 21 x 8.4, not 21 x 8.
+        let caption = "A much longer caption";
+        assert_eq!(caption.chars().count(), 21, "the arithmetic below is stated for 21 clusters");
+        let measured = estimate_text_width(caption, &Font::default(), 1.0);
+        assert!(
+            measured + TAB_TEXT_PADDING as u32 <= TAB_MAX_WIDTH as u32,
+            "this caption must stay under the ceiling for the assertion to be about measurement"
+        );
+        assert_eq!(long, measured + TAB_TEXT_PADDING as u32);
+
+        tv.add_tab("A caption far longer than any tab could ever need to be", None, None::<&str>);
+        let boxes = tv.tab_run(tv.tab_bar_rect());
+        assert_eq!(
+            boxes[2].width, TAB_MAX_WIDTH as u32,
+            "an over-long caption ceilings at the maximum so it cannot crowd out its siblings"
+        );
+
+        // Adding a third tab must not narrow the first two: under equal division this was
+        // exactly the silent regression that made a long caption elide.
+        assert_eq!(boxes[0].width, short, "an added sibling must not resize tab 0");
+        assert_eq!(boxes[1].width, long, "nor tab 1");
     }
 
     #[test]

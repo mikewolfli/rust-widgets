@@ -1,8 +1,8 @@
 # BLUE3 — Rust Widgets v0.6.1 深度扫描改进报告
 
-> 基于 PUA 质量标准的第三轮完整扫描  
-> 扫描日期: 2026-04-26  
-> 构建状态: `cargo check --all: Finished dev [unoptimized]` (0 errors, 0 warnings)  
+> 基于 PUA 质量标准的第三轮完整扫描 
+> 扫描日期: 2026-04-26 
+> 构建状态: `cargo check --all: Finished dev [unoptimized]` (0 errors, 0 warnings) 
 > 测试状态: **330/330 passed (297 unit + 22 integration + 11 doc) — ✅ ALL PASSING**
 
 ---
@@ -145,10 +145,10 @@
 fn init_i18n_runtime() {}
 // 建议实现:
 fn init_i18n_runtime() {
-    // 使用默认配置初始化 i18n 系统
-    let mut manager = crate::i18n::I18nManager::new();
-    manager.set_language("en");
-    // 或者保持为空但添加文档说明
+ // 使用默认配置初始化 i18n 系统
+ let mut manager = crate::i18n::I18nManager::new();
+ manager.set_language("en");
+ // 或者保持为空但添加文档说明
 }
 ```
 
@@ -200,29 +200,29 @@ pub use window::Window;
 
 ```
 Phase 1: 修复 9 个测试失败 (P0)
-  ├── P0-1: Color::LIGHT_GRAY 值同步
-  ├── P0-2: GREEN is_dark 测试断言修复
-  ├── P0-3: Chart SVG 快照更新
-  ├── P0-4: i18n JSON 测试数据修复
-  ├── P0-5: Test Harness 事件调试
-  ├── P0-6: Snapshot 比较非确定性修复
-  ├── P0-7: JS Engine evaluate 实现
-  └── P0-8: Quality 降级逻辑/测试修复
+ ├── P0-1: Color::LIGHT_GRAY 值同步
+ ├── P0-2: GREEN is_dark 测试断言修复
+ ├── P0-3: Chart SVG 快照更新
+ ├── P0-4: i18n JSON 测试数据修复
+ ├── P0-5: Test Harness 事件调试
+ ├── P0-6: Snapshot 比较非确定性修复
+ ├── P0-7: JS Engine evaluate 实现
+ └── P0-8: Quality 降级逻辑/测试修复
 
 Phase 2: 清理 (P1)
-  ├── 删除 4 个 .bak 文件
-  ├── 评估 windows platform_impl TODO → 标记或实现
-  └── 添加 dead_code 文档说明
+ ├── 删除 4 个 .bak 文件
+ ├── 评估 windows platform_impl TODO → 标记或实现
+ └── 添加 dead_code 文档说明
 
 Phase 3: 基础设施改进 (P2)
-  ├── 添加 log crate，替换 eprintln!
-  ├── 移除或替代 winit 依赖
-  └── 完成空函数体实现
+ ├── 添加 log crate，替换 eprintln!
+ ├── 移除或替代 winit 依赖
+ └── 完成空函数体实现
 
 Phase 4: API 可用性 (P3)
-  ├── 添加 Window 明确 re-export
-  ├── 添加可执行 doc examples
-  └── 建立快照文件存储机制
+ ├── 添加 Window 明确 re-export
+ ├── 添加可执行 doc examples
+ └── 建立快照文件存储机制
 ```
 
 ---
@@ -265,12 +265,12 @@ Phase 4: API 可用性 (P3)
 ### 2.2 `init_i18n_runtime()` 确认
 - **位置**: `src/lib.rs:149-151`
 - **实际代码**:
-  ```rust
-  #[cfg(not(feature = "embedded"))]
-  fn init_i18n_runtime() { i18n::init(); }
-  #[cfg(feature = "embedded")]
-  fn init_i18n_runtime() {}  // 嵌入式无文件系统，正确为空
-  ```
+ ```rust
+ #[cfg(not(feature = "embedded"))]
+ fn init_i18n_runtime() { i18n::init(); }
+ #[cfg(feature = "embedded")]
+ fn init_i18n_runtime() {} // 嵌入式无文件系统，正确为空
+ ```
 - **结论**: ✅ **不是空函数体** — 两个 cfg 分支，非 embedded 时调用 `i18n::init()`。P2-17 是假警报，已移除。
 
 ### 2.3 `eprintln!` 完整分布图
@@ -329,9 +329,9 @@ Phase 4: API 可用性 (P3)
 ```
 src/render/controls/
 ├── mod.rs
-├── basic/    (5 文件 — 按钮、标签、复选框等基本控件渲染)
-├── input/    (6 文件 — 文本框、滑块、旋转框等输入控件渲染)
-└── special/  (3 文件 — 进度条、滚动条等特殊控件渲染)
+├── basic/ (5 文件 — 按钮、标签、复选框等基本控件渲染)
+├── input/ (6 文件 — 文本框、滑块、旋转框等输入控件渲染)
+└── special/ (3 文件 — 进度条、滚动条等特殊控件渲染)
 ```
 **共 14 文件 + mod.rs**，全部 `#[allow(dead_code)]`，等待 pipeline 集成。
 

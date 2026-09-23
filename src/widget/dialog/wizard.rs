@@ -6,6 +6,14 @@
 //! Displays a step indicator at the top (numbered circles), a content area with the
 //! current step title, and navigation buttons (Back, Next/Finish, Cancel) at the bottom.
 //! Emits `finished`, `cancelled`, and `step_changed` signals.
+//!
+//! # This is the control Flutter calls `Stepper` (BLUE22 · F-8)
+//!
+//! Flutter's `Stepper` is a multi-step flow; this crate's
+//! [`Stepper`](crate::widget::container_widgets::Stepper) is a **numeric** spinner. Both names
+//! exist here and mean different things, so the mapping is stated in both files rather than left
+//! to a build error: a caller looking for the wizard reaches this module, and a caller looking for
+//! the numeric spinner reaches `container_widgets/stepper.rs`. No control is missing.
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};

@@ -112,28 +112,35 @@ FEATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...], str], ...] = (
     ),
     (
         "tab_widget",
-        # Two tabs, so two title runs on the 24px band, and the second tab's own `x="73"` rect.
+        # Two tabs, so two title runs on the 24px band, and the second tab's own `x="74"` rect.
         # The content area starting at y=24 is the remaining proof a 24px band sits above. The two
         # runs are required to be **distinct** (different glyph-box left edges), which is what a
         # second tab means and what a one-tab regression removes.
         #
-        # # Why the second tab's numbers are 86/73-63 and not the 87/74-64 they were
+        # # Why the second tab's numbers are now 88/76-62 (BLUE22 · §B.9)
         #
-        # Both shifted by **one pixel** when `FlexLayout` gained its overflow rule (the change logged as
-        # G-1 in `docs/log/log-20260923-1.md`): when every child's floor sums past the band, the run is now
-        # scaled by `available / floors` so every child stays inside its control, where it previously
-        # overflowed the last one. 300 px of tab strip holding two 72 px tabs plus a gap leaves 71 and 63
-        # rather than 72 and 64.
+        # These were 87/74-64. The cause is **not** the layout and not the band: `tab_width_hints`
+        # and `TabView::tab_widths` were still measuring a caption as `chars().count() * 8` -- a
+        # fixed 8 px per cluster -- while every other label in the crate had moved to the shared
+        # estimate (`metrics::estimate_text_width`, which is the renderer's own advance model: one
+        # cluster at 0.6 em of the font size). `Tab 1` is five clusters, so the hand-rolled form said
+        # 40+24 while the shared one says 42+24, and the two strips that exist in this crate were
+        # each measuring their own captions differently from the text they draw.
         #
-        # This is a *legitimate* drawing change, which is the case the gate's own usage note calls a marker
-        # to update rather than a defect: verified by re-exporting and reading the file, and by checking the
-        # feature is still present — two distinct title runs on a 24 px band with the content area below it.
-        # A one-tab regression still removes the second run and the second rect, which is what the marker
-        # exists to catch.
+        # A hand-rolled byte-per-character estimate also mis-measures every non-Latin caption -- it
+        # charges a fixed 8 px for a CJK cluster the renderer draws a full em wide -- which is the
+        # defect class `check_implicit_size_uses_metrics` guards and the reason both tab controls now
+        # read the shared estimate.
+        #
+        # This is a *legitimate* drawing change (a caption measured correctly), which is the case the
+        # gate's own usage note calls a marker to update rather than a defect: verified by
+        # re-exporting and reading the file, and by checking the feature is still present -- two
+        # distinct title runs on a 24 px band with the content area below it. A one-tab regression
+        # still removes the second run and the second rect, which is what the marker exists to catch.
         (
-            '<path d="M12 5h',
-            '<path d="M86 5h',
-            'x="73" y="0" width="63" height="24"',
+            '<path d="M13 5h',
+            '<path d="M88 5h',
+            'x="76" y="0" width="62" height="24"',
             'x="0" y="24" width="240" height="96"',
         ),
         # The defect is again *absence* rather than a wrong spelling: verified by removing the

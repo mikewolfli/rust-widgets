@@ -1,19 +1,19 @@
-# BLUE23 — 从「度量正确」到「手感丝滑」：状态层、动效总线与 SwiftUI / Flutter / Qt Quick 三方配色对标
+# BLUE23 — 从「度量正确」到「手感丝滑」：状态层、动效总线与 主流声明式实现 / 外部对标 / 参考工具包 三方配色对标
 
 > 依据：[`principle.md`](principle.md)（继承 BLUE1–BLUE22，含 #1–#111）
 > 前置：[`blue22.md`](blue22.md)（附录 F 执行进度、附录 G 文本层）、[`blue21.md`](blue21.md)（缺陷登记表 + 附录 A）
 > 参考实现（**只读，不引入依赖**）：
-> - Flutter：`/home/mikeli/workspace/flutter`（`packages/flutter/lib/src/material/*.dart`）
-> - Qt Quick Controls 2：`/home/mikeli/workspace/qtdeclarative`（`src/quickcontrols/basic/*.qml`、`src/quicktemplates/*.cpp`）
-> - SwiftUI：**无可读源码**（Apple 闭源）。本文对 SwiftUI 的引用一律标注为
->   **「人机界面指南 / 公开 API 语义」**，不伪造文件行号——凡无出处的数值一律不写。
+> - 主流 material 实现：`<reference-tree>/material`（`<reference-tree>/material/*.dart`）
+> - 参考工具包（控件与模板两层源码）：`<reference-tree>/`（`controls/`、`templates/`）
+> - 主流声明式实现：**无可读源码**（Apple 闭源）。本文对 主流声明式实现 的引用一律标注为
+> **「人机界面指南 / 公开 API 语义」**，不伪造文件行号——凡无出处的数值一律不写。
 > 目标版本：**2.6.1 → 2.7.0**
 >
 > **一句话结论（先读这条）**：
 > BLUE21 修的是「画错了」，BLUE22 修的是「没有度量体系」。
 > **两者都已完成**——188 个控件的绘制盒已由 `ControlMetrics` 推导，尺寸通道（`Hints`/`arrange`）
 > 与组合装配（`CompositeBuilder`）已接通。快照逐一核对后可以确认：
-> **本仓现在「静止的一帧」已经接近 Flutter M3 的几何。**
+> **本仓现在「静止的一帧」已经接近 主流 material 实现 M3 的几何。**
 >
 > **但「丝滑顺畅」不在几何里，在几何与几何之间。**
 > 本仓现在缺的是**三件事**，且三件都是「机制已建、通道已通、控件未接」：
@@ -22,7 +22,169 @@
 > |---|---|---|---|
 > | 1 | **共享状态层** | `WidgetState` 12 变体 + `resolve_style_for_state` + `apply_active_theme(widget.widget_state())` **全链已通**，但 `fn widget_state` 只有 **1** 个实现（trait 默认值） | 主题作者写 `"button:hover"` **照样无效**——因为按钮从不上报自己 hovered |
 > | 2 | **动效驾驶总线** | 11 个控件各有 `pub fn tick(delta_ms) -> bool`，**没有任何生产代码调用它们** | 动画引擎（1582 行）与控件里的动画状态机**永不前进** |
-> | 3 | **层级 / 状态色 token 的消费者** | `Colors` 17 角色已齐，`scrim`/`surface_container*`/`inverse_*` 只有焦点环消费了 `outline` | 卡片、面板、模态遮罩、吐司**没有层级感**——这正是「不像 SwiftUI」的最大单一原因 |
+> | 3 | **层级 / 状态色 token 的消费者** | `Colors` 17 角色已齐，`scrim`/`surface_container*`/`inverse_*` 只有焦点环消费了 `outline` | 卡片、面板、模态遮罩、吐司**没有层级感**——这正是「不像 主流声明式实现」的最大单一原因 |
+
+---
+
+## 0A. **本计划继承的全部未实现项**（先读本节，它决定施工顺序）
+
+> **本节是 `blue22.md` 附录 F/G 与 `FUTURE.md` 的未实现项的唯一下家。**
+> `blue22.md` 自己的 F.2 已逐项关闭；从本轮起，**凡「计划了但未实现」的条目只在本节维护**，
+> 不再散落在多份文件中（两份计划各写一半是 §4 已经指出的失败形态）。
+>
+> **施工顺序：本节排在 §2/§3/§5 之前。** 理由是本节里 **§0A.2（账实相符声明）**
+> 是**全仓唯一一处「现在写就是错的」**——文档承诺面大于实际能力，
+> 而它是零依赖、一次改动即可消除的。其余各项按依赖顺序接在它后面。
+
+### 0A.0 本节的性质：**继承清单，不是新欠债**
+
+| 来源 | 迁入的条目 |
+|---|---|
+| `blue22.md` 附录 G（文本层 5 期） | §0A.4 —— **塑形 / bidi / 字体覆盖，三样一样都没有** |
+| `blue22.md` §F-15 / §F-16 | §0A.5 —— 两条**宿主限制**（非缺陷，但需在能跑它们的宿主上验证） |
+| `blue22.md` §F-11（原「另立计划」） | 已在本计划 **§5A**（不必重复） |
+| `docs/plans/FUTURE.md`（8 项） | §0A.6 —— 环境受限项，逐条带实测状态 |
+
+> **为什么合到一起**：这四份来源互不知道对方存在，导致同一件事在两处各写一半。
+> 合并后**本节是唯一入口**，每条都附实测取证（不是引用）。
+
+### 0A.1 迁入时的逐条复核（实跑，非引用）
+
+| 条目 | 复核方式 | 结论 |
+|---|---|---|
+| 附录 G-1 塑形层 | `ls src/text/`；`grep rustybuzz Cargo.toml` | **均无** ⇒ 未开工 |
+| 附录 G-3 bidi | `grep unicode-bidi Cargo.toml` | **无** ⇒ 未开工 |
+| 附录 G-4 字体数据 | `grep fonts- Cargo.toml` | **无任何 `fonts-*` feature** ⇒ 未开工 |
+| 附录 G.8 的 6 个专属门禁 | `ls tools/` | **全部不存在** ⇒ 未开工 |
+| 附录 G.8 判据 15 | `grep -i "latin\|ascii" README.md src/lib.rs` | 只命中无关行 ⇒ **声明缺失**（见 §0A.2） |
+| FUTURE ITEM 0 | `bash tools/check_control_route_matrix.sh` | **PASS**（167 变体 / 0 缺失）；缺的只是**编译期**强制 ⇒ 见 §0A.6 |
+| FUTURE ITEM 7 | 逐文件 `grep -c "#\[test\]"` | `ime_macos` **21** / `macos_objc2` **10** / `ios` **9** / `android` **7** 个测试仍在 `#[cfg(target_os)]` 之后 |
+| THEME_BLIND 待修清单 | `grep KNOWN_THEME_BLIND tests/...` | **`&[]` 空表** ⇒ **不在本节**（已关闭，避免误列） |
+| `TODO.md` | 自报计数 | `[x]` 127 / `[ ]` **0** / `[~]` **0** ⇒ **不在本节** |
+
+### 0A.2 **P0 —— 账实相符声明：默认构建只支持拉丁/ASCII**
+
+**这是本节排最前的一项，也是唯一「不改代码就写错」的一项。**
+
+**现状（实测）**：
+
+```
+src/render/pipeline/pixel_ops.rs:8 use font8x8::{UnicodeFonts, BASIC_FONTS}; // 仅 U+0000–U+007F
+src/render/pipeline/pixel_ops.rs:133 [0b11111111, 0b10000001, ...] // 未覆盖字符的豆腐块
+src/render/pipeline/pixel_ops.rs:358 let factor = if has_wide { 1.0 } else { 0.6 }; // 固定 0.6 em
+src/render/text_shaper.rs:66 let total = char_count as f32 * font_size * 0.6; // 逐字符推进
+```
+
+即：**本仓当前只支持 LTR 拉丁/ASCII**，且这一点**从未被声明**——README 与 `lib.rs`
+都没有说。用户的指令是「多语言完美支持」，而**承诺面大于实际能力**本身就是一个缺陷：
+一个把中文写进标签的宿主会得到豆腐块，且没有任何文档告诉它为什么。
+
+**修法**（零依赖、零快照影响）：
+
+1. `src/lib.rs` 的 crate 级文档加一节「Text coverage」，用 §0A.1 的四行实测说明现状，
+ 并写明「完美支持需显式开启字体 feature（见 §0A.4）」；
+2. `README.md` 同名小节 + capability 表里注明；
+3. **不谎报**：不写「支持 Unicode」，不写「多语言」，只写实测范围与豆腐块行为。
+
+**判据**：
+
+```text
+1. grep -i "latin\|ascii" README.md src/lib.rs → 命中，且上下文是「默认范围」而非无关词
+2. lib.rs 的文档测试或单测断言：默认构建下 `BASIC_FONTS.get('中')` 为 None（即豆腐块路径）
+3. 不出现「Unicode 支持」「多语言」等超范围表述（人工/词表检查）
+```
+
+### 0A.3 施工顺序（本节的推荐接续）
+
+| 顺序 | 条目 | 投入 | 可见收益 | 依赖 |
+|---|---|---|---|---|
+| **1** | §0A.2 账实相符声明 | 极小 | 消除「承诺 > 实际」 | — |
+| **2** | §2 状态层（P0-1）+ §3 动效总线（P0-2） | 中 | **最大**：`hover`/动画同时生效 | — |
+| **3** | §5 层级层（P0-3） | 中 | 观感层级 | §2 的状态色 |
+| **4** | §0A.4 文本层（附录 G-1 → G-2b → G-4b） | **大** | 多语言 | **必须三样一起**（G.0 已论证） |
+| **5** | §0A.6 环境受限项 | 视宿主 | 平台对等 | 需对应宿主 |
+
+> **为什么文本层（4）排在状态/动效（2/3）之后**：G.0 的结论是**错字比豆腐块更危险**
+> （阿拉伯不连写看起来「对」），所以它一旦开工就不能半途；
+> 而状态/动效是本仓**引擎已建、只差接通**的一条，风险与投入都小得多。
+
+### 0A.4 附录 G 正文（文本层，5 期 + 23 条判据）
+
+> **原文已迁入 `blue22.md` 附录 G 不再保留**——本节继承其全部内容与判据，
+> 并保留其分期编号（G-1 … G-6）以免与既有引用冲突。
+
+| 期 | 内容 | 前置 | 现状 |
+|---|---|---|---|
+| **G-1** | `Shaper` trait + `RustybuzzShaper` + 通道门禁 | — | ⬜ 未开工 |
+| **G-2** | `FontStack` 装载与回退链 | G-1 | ⬜ |
+| **G-2b** | `GlyphSource` 抽象（点阵/矢量两种实现） | G-1 | ⬜ |
+| **G-3** | `unicode-bidi` 接入 + `TextDirection` 统一 | G-1 | ⬜ |
+| **G-4a** | 子集生成器 + 许可门禁 + `NOTICE` | G-2 | ⬜ |
+| **G-4b** | 点阵 CJK（`fonts-cjk-bitmap`，~85 KB，**不需塑形**） | G-2b | ⬜ |
+| **G-4c** | 矢量子集打包（`fonts-latin` / `fonts-cjk` / `fonts-complex`） | G-4a | ⬜ |
+| **G-5** | 矢量光栅化（抗锯齿 + 真实 advance + kerning） | G-1, G-4c | ⬜ |
+| **G-6** | 彩色 emoji | G-5 | ⬜ |
+
+**推荐顺序**：`G-1 → G-2b → G-4b`（先把 `mini`/`embedded` 的中文拿下，代价最小且不依赖塑形）
+`→ G-3 → G-2 → G-4a → G-4c → G-5 → G-6`。
+
+**依赖选型**：`rustybuzz`（纯 Rust 的 HarfBuzz，**不用** `harfbuzz-sys`，后者需 C 工具链与
+交叉 sysroot，会让 Android/iOS/wasm 三个门禁变红）/ `ttf-parser` / `unicode-bidi`。
+
+**23 条验收判据**（原文照录，逐条可跑）：塑形与方向 6 条（含「阿拉伯文塑形后字形数 > 字符数」）、
+字形来源 5 条（含「Font8x8Source 下现有 376 快照逐字节不变」）、
+字体数据与声明边界 6 条（含判据 15 = §0A.2、判据 16/17 = **实测**体积）、
+光栅化与回归 6 条。
+
+**三条不可让的约束**：
+1. **默认不带任何字体数据**（用户指令）⇒ 默认 = 拉丁/ASCII，完美是**可选完美**；
+2. **塑形能力与字体数据是两个正交的轴**（中文只需数据、不需塑形）；
+3. **`GlyphSource` 必须按需读取**（原文 G.3.4.4：字形**从未**能常驻 RAM，
+ 6763 个 CJK 字形常驻在 `mini` 上不可行）。
+
+### 0A.5 附录 F 的两条宿主限制（非缺陷）
+
+| 条目 | 实测状态 | 为什么不能在本机解 |
+|---|---|---|
+| **`check_android_cross.sh`** | 自我声明 `unsupported host`；`run_all_gates.sh` 归为 **SKIP** | 需 4 个 Android target（NDK/SDK） |
+| **`mounted_control_follows_window_test`** | 已从「假红」改为**诚实 skip**（`RejectedByBackend` ⇒ 记 note 并返回，与 `control_backend_routing_test.rs:159` 同一处理） | 需一个**主线程窗口会话**的宿主；CI 上跑 macOS 目标时自然覆盖 |
+
+> 两条都**不是代码缺陷**。它们列入本节是为了不静默（原则：留者不静默），
+> 而不是为了「做完」——能做完的地方在宿主，不在本仓。
+
+### 0A.6 `FUTURE.md` 的 8 项（逐条带实测状态）
+
+| ITEM | 内容 | 实测状态 | 能否在本仓推进 |
+|---|---|---|---|
+| 0 | Hybrid 策略的**编译期**路由闭合 | 运行时矩阵门禁 **PASS**（`check_control_route_matrix.sh`，167 变体 / 0 缺失） | ✅ 可（差类型系统强制那一半） |
+| 1 | Linux 无 `gtk-native` 的原生对等 | 现为 preview/state loop | ⚠️ 需定后端策略 |
+| 2 | Harmony 桌面原生窗口/渲染/事件循环 | 未做 | ⚠️ 需 Harmony 宿主 |
+| 2b | Windows 原生 SpinBox/ListView/ScrollArea | **已落地，运行时未验证** | ⚠️ 需 Windows 宿主 |
+| 5 | macOS objc2 preview backend 转正 | 未做 | ⚠️ 需 macOS 宿主 |
+| 5b | cocoa-legacy off-main-thread 崩溃 | 未修 | ⚠️ 需 macOS 宿主 |
+| 6 | 跨平台控件对等矩阵闭合 | 未做 | ⚠️ 需多宿主 |
+| 7 | **宿主不可见测试** | Round 7 已救回 26 个；**剩余 47 个**（`ime_macos` 21 / `macos_objc2` 10 / `ios` 9 / `android` 7） | ✅ **可**（逐模块把纯逻辑与 OS 部分拆开） |
+
+> **ITEM 7 是本表里最值得先做的一条**：它是**纯重构**，不需要任何新宿主，
+> 而它救回的是**当前完全不在任何机器上执行**的 47 条断言 —— 与「测试绿了但其实没跑」
+> 是同一类风险（本仓已为此立过规矩）。
+>
+> **ITEM 0 的剩余半条同理**：矩阵门禁已在，缺的只是把它接进类型系统。
+
+### 0A.7 本节验收判据
+
+```text
+--- 声明边界（§0A.2）---
+1. README + lib.rs 写明「默认构建仅支持拉丁/ASCII」及豆腐块行为
+2. 单测/文档测试断言默认构建下 CJK 走豆腐块路径
+3. 不出现超范围表述（「Unicode 支持」「多语言」）
+
+--- 迁入完整性（本节自身）---
+4. blue22.md 不再含任何未实现项（附录 G 已迁出，F.2 已关闭）
+5. 本节是「计划了但未实现」的唯一入口：FUTURE.md 8 项 + 附录 G 5 期 + 两条宿主限制
+ 都在本表内且带实测状态
+6. 每条迁入项都有「复核方式 + 结论」，不是引用（原则 #56）
+```
 
 ---
 
@@ -57,17 +219,17 @@
 
 **三家的共性（本计划必须遵守的三条）**：
 
-1. **状态是控件自己的事实，不是主题推导出来的**——`qquickabstractbutton.cpp:179`
-   在 `handleMove` 里 `setPressed(keepPressed || q->contains(point))`；
-   `qquickcontrol.cpp:2043-2056` 的 `hoverEnter/hoverMove/hoverLeave` 各写一行。
-   Qt 是**控件自己维护 `pressed`/`hovered`**，主题只是**读取方**。本仓的机制方向是对的
-   （`widget_state()` 放在 `Widget` trait 上），**缺的只是每个控件把它报出来**。
+1. **状态是控件自己的事实，不是主题推导出来的**——`reference-toolkit abstractbutton.cpp:179`
+ 在 `handleMove` 里 `setPressed(keepPressed || q->contains(point))`；
+ `reference-toolkit control.cpp:2043-2056` 的 `hoverEnter/hoverMove/hoverLeave` 各写一行。
+ 参考工具包 是**控件自己维护 `pressed`/`hovered`**，主题只是**读取方**。本仓的机制方向是对的
+ （`widget_state()` 放在 `Widget` trait 上），**缺的只是每个控件把它报出来**。
 2. **动画由帧时钟驱动，不由「状态变化时启动一个定时器」驱动**。
-   Flutter 的 `AnimationController` 绑 `Ticker`；Qt 的 `Behavior` 由渲染线程的
-   `QQuickWindow::update()` 循环推进。本仓已有 11 个 `tick(delta_ms)` 却**无驱动者**，
-   这正是「引擎建了、没人开开关」。
+ 主流 material 实现 的 `AnimationController` 绑 `Ticker`；参考工具包 的 `Behavior` 由渲染线程的
+ `QQuickWindow::update()` 循环推进。本仓已有 11 个 `tick(delta_ms)` 却**无驱动者**，
+ 这正是「引擎建了、没人开开关」。
 3. **层级必须由 token 表达，不能各控件现拼**。Material 有 6 级 `surfaceContainer*` +
-   `scrim`；本仓**已有这 7 个 token 且已写入 `themes/*.json`**，但没有消费者（§5）。
+ `scrim`；本仓**已有这 7 个 token 且已写入 `themes/*.json`**，但没有消费者（§5）。
 
 ### 0.3 本计划的判据形态（**区别于 BLUE21 / BLUE22**）
 
@@ -90,19 +252,19 @@
 $ head -6 snapshots/svg/switch.svg
 <rect x="94" y="44" width="52" height="32" rx="16" ry="16" fill="rgba(69,69,69,1.00)" />
 <rect x="96" y="46" width="28" height="28" rx="14" ry="14" fill="rgba(251,251,251,1.00)" />
-   ↑ 52×32 轨道 + 28px 拇指，居中于 240×120 画布 —— Flutter M3 的形状
+ ↑ 52×32 轨道 + 28px 拇指，居中于 240×120 画布 —— 主流 material 实现 M3 的形状
 
 $ head -5 snapshots/svg/radio_button.svg
 <circle cx="9" cy="60" r="8" fill="none" stroke="rgba(225,225,225,1.00)" stroke-width="2" />
-   ↑ r8 前置对齐（曾是 r30 居中）
+ ↑ r8 前置对齐（曾是 r30 居中）
 
 $ head -5 snapshots/svg/progress_bar.svg
 <rect x="0" y="58" width="240" height="4" rx="2" ry="2" fill="rgba(15,15,15,1.00)" />
-   ↑ 高 4 / 圆角 2（曾是一块 240×120 实心板）
+ ↑ 高 4 / 圆角 2（曾是一块 240×120 实心板）
 
 $ head -5 snapshots/svg/check_box.svg
 <rect x="2" y="51" width="18" height="18" fill="rgba(69,69,69,1.00)" />
-   ↑ 18×18（Flutter checkbox.dart:405）
+ ↑ 18×18（主流 material 实现 checkbox.dart:405）
 ```
 
 **结论：`src/widget/metrics.rs:394` 起的 `dimensions` 表已被 65 个控件消费，
@@ -113,10 +275,10 @@ BLUE22 §2 的对照表**（按钮 `64×40` / 开关 `52×32` / 进度高 4 / ch
 
 ```text
 $ grep -rn "fn widget_state" src/widget/ --include=*.rs
-src/widget/widget_trait.rs:392:    fn widget_state(&self) -> crate::style::WidgetState {
+src/widget/widget_trait.rs:392: fn widget_state(&self) -> crate::style::WidgetState {
 
 $ grep -rln "fn widget_state" src/widget/ | wc -l
-1                       ← 只有 trait 的默认实现，零个控件覆写
+1 ← 只有 trait 的默认实现，零个控件覆写
 ```
 
 而**驱动侧是完整的**：
@@ -125,15 +287,15 @@ $ grep -rln "fn widget_state" src/widget/ | wc -l
 // src/theme/apply.rs:85-87 —— 已接线
 let state = widget.widget_state();
 let Some(theme_style) = crate::theme::resolved_theme_style_for_state(kind_name, state) else {
-    return;
+ return;
 };
 ```
 
 ```rust
 // src/widget/widget_trait.rs:392-398 —— 默认实现只报 disabled/normal
 fn widget_state(&self) -> crate::style::WidgetState {
-    if self.is_enabled() { crate::style::WidgetState::Normal }
-    else { crate::style::WidgetState::Disabled }
+ if self.is_enabled() { crate::style::WidgetState::Normal }
+ else { crate::style::WidgetState::Disabled }
 }
 ```
 
@@ -149,29 +311,29 @@ fn widget_state(&self) -> crate::style::WidgetState {
 
 ```text
 $ grep -rn "pub fn tick" src/ --include=*.rs
-src/style/animation.rs:1542:  pub fn tick(&mut self, delta_ms: u32) -> bool      ← Transition
-src/style/animation.rs:1673:  pub fn tick(&mut self, target, delta_ms) -> bool   ← 带目标的过渡
-src/widget/base_widgets/button.rs:228:      pub fn tick(&mut self, delta_ms: u32) -> bool
-src/widget/display_widgets/switch.rs:178:  pub fn tick(&mut self, delta_ms: u32) -> bool
+src/style/animation.rs:1542: pub fn tick(&mut self, delta_ms: u32) -> bool ← Transition
+src/style/animation.rs:1673: pub fn tick(&mut self, target, delta_ms) -> bool ← 带目标的过渡
+src/widget/base_widgets/button.rs:228: pub fn tick(&mut self, delta_ms: u32) -> bool
+src/widget/display_widgets/switch.rs:178: pub fn tick(&mut self, delta_ms: u32) -> bool
 src/widget/display_widgets/spinner.rs:115: pub fn tick(&mut self, delta_ms: u32)
 src/widget/display_widgets/floating_label.rs:251: pub fn tick(..) -> bool
-src/widget/input_widgets/lineedit.rs:127:  pub fn tick(..) -> bool                ← 光标闪烁
+src/widget/input_widgets/lineedit.rs:127: pub fn tick(..) -> bool ← 光标闪烁
 src/widget/input_widgets/tag_input.rs:213: pub fn tick(..) -> bool
 src/widget/input_widgets/inplace_editor.rs:109: pub fn tick(..) -> bool
 src/widget/special_widgets/code_editor/editor.rs:302: pub fn tick(..) -> bool
 src/widget/media_widgets/{video_player,lottie,drive,animated_image,hero_animation}: tick
 
-$ grep -rn "\.tick(" src/app/ src/render/ src/platform/ --include=*.rs    → 0 命中
-$ grep -rn "tick" demo/control/src/ --include=*.rs                        → 0 命中
+$ grep -rn "\.tick(" src/app/ src/render/ src/platform/ --include=*.rs → 0 命中
+$ grep -rn "tick" demo/control/src/ --include=*.rs → 0 命中
 ```
 
 **「引擎已存在、缺的只是 token 与接线」**（BLUE21 AR7 的原话）**至今成立**：
 - `Button` 有 `interaction_progress: Transition`（`button.rs:87`）与
-  `interaction_target_progress()`（`button.rs:242`）——**状态机是完整的**，
-  `tick` 也实现并测试过（`button.rs:1630` 起 4 条单测）；
+ `interaction_target_progress()`（`button.rs:242`）——**状态机是完整的**，
+ `tick` 也实现并测试过（`button.rs:1630` 起 4 条单测）；
 - 但 `tick` 的调用者**一个都没有**。于是运行时 hover 一次：
-  `interaction_progress` 从 0 到 1 的插值**永不发生**，hover 反馈其实是**硬切**
-  （或更准确地说：**`draw` 里读到的 progress 恒为初始值**）。
+ `interaction_progress` 从 0 到 1 的插值**永不发生**，hover 反馈其实是**硬切**
+ （或更准确地说：**`draw` 里读到的 progress 恒为初始值**）。
 
 **这就是「不丝滑」的机械定义：库里有动画，屏幕上没有。**
 
@@ -181,7 +343,7 @@ $ grep -rn "tick" demo/control/src/ --include=*.rs                        → 0 
 $ python3 -c "import json;print(list(json.load(open('themes/dark.json'))['colors'].keys()))"
 background foreground primary secondary accent error warning success disabled info
 outline outline_variant scrim surface_container surface_container_high
-inverse_surface on_inverse_surface          ← 17 个角色全部已写入预设
+inverse_surface on_inverse_surface ← 17 个角色全部已写入预设
 ```
 
 | token | 谁在读 | 状态 |
@@ -193,23 +355,23 @@ inverse_surface on_inverse_surface          ← 17 个角色全部已写入预�
 | `surface_container_high` | — | ❌ |
 | `inverse_surface` / `on_inverse_surface` | — | ❌（`tooltip`/`toast`/`snackbar` 无从相对页面反转） |
 
-**这是「不像 SwiftUI」的最大单一原因。** SwiftUI 的观感来自 `Material` 的
+**这是「不像 主流声明式实现」的最大单一原因。** 主流声明式实现 的观感来自 `Material` 的
 `.regularMaterial` / `.thinMaterial` 分层——**同一块面上叠出 5 个亮度台阶**；
 Material M3 用 `surfaceContainerLowest…Highest` 表达同一条轴；
-Qt Quick 用 `palette.window`/`button`/`base`/`alternateBase` 四档。
+参考工具包 用 `palette.window`/`button`/`base`/`alternateBase` 四档。
 **本仓有这 6 档，但没有一个控件踩在上面。**
 
 ### 1.5 缺口四：单一状态（而非集合）的**具体后果**（可复现）
 
 `Widget` trait 的文档自己记录了取舍（`widget_trait.rs:384-391`）：
 
-> Flutter models `WidgetState` as a `Set` because several states genuinely hold at once
+> 主流 material 实现 models `WidgetState` as a `Set` because several states genuinely hold at once
 > (`focused | hovered`). Encoding that here would change this type's public shape …
 > A control that has several states true at once reports the one with the strongest
 > visual claim, in this order: disabled > pressed > checked > hovered > resting.
 
 **单值的后果**：一个「聚焦中且被 hover」的按钮，主题只能给其中一个上色。
-Flutter 的 `button_style_button.dart` 是**按优先级列表取第一个命中**
+主流 material 实现 的 `button_style_button.dart` 是**按优先级列表取第一个命中**
 （`resolve()` 遍历 `WidgetStateProperty` 的 `Set<WidgetState>`），
 所以 `{focused, hovered}` 能同时命中 `focused` 的描边与 `hovered` 的填充。
 
@@ -235,7 +397,7 @@ BLUE21 的教训（#51：修复量应随**层**下降）：
 **现状**：`hovered` 只有 18 个文件提及（且多为图表数据态），`pressed` 是每个控件的私有字段：
 
 ```text
-$ grep -rln "hovered: bool\|is_hovered" src/widget/ | wc -l    → 18（其中多数是图表）
+$ grep -rln "hovered: bool\|is_hovered" src/widget/ | wc -l → 18（其中多数是图表）
 $ grep -rn "impl Widget for" src/widget/ --include=*.rs | wc -l → 195
 ```
 
@@ -253,7 +415,7 @@ $ grep -rn "impl Widget for" src/widget/ --include=*.rs | wc -l → 195
 /// 就**不需要**各自索引指针位置——那是 `Button` 现在做的事（`button.rs:204`），
 /// 而 `CheckBox`/`ToggleButton`/`Switch` 都没做，于是它们永远拿不到 hover 态。
 ///
-/// Qt 的位置在这里：`QQuickControl` 的 `hoverEnter/Move/Leave`（`qquickcontrol.cpp:2043-2056`）
+/// 参考工具包 的位置在这里：`QQuickControl` 的 `hoverEnter/Move/Leave`（`reference-toolkit control.cpp:2043-2056`）
 /// 由**基类**维护 `hovered`，`QQuickAbstractButton` 只额外维护 `pressed`。
 /// 本仓的 `Button` 已经把两件事都做了，只是做在**子类**——把它上提，188 个控件
 /// 一起获得，而不是 188 次抄写。
@@ -263,12 +425,12 @@ $ grep -rn "impl Widget for" src/widget/ --include=*.rs | wc -l → 195
 
 | 字段 | 谁写 | 语义 |
 |---|---|---|
-| `hovered: bool` | `MouseEnter` ⇒ true，`MouseLeave` ⇒ false | 「指针在我身上」（Qt `Control::hovered`） |
-| `pressed: bool` | `MousePress` ⇒ `contains_point_with_touch_expansion(pos)`，`MouseRelease`/`Ungrab` ⇒ false | 「该画凹陷」（Qt `AbstractButton::pressed`） |
-| `grabbed: bool` | `MousePress` ⇒ true，`MouseRelease`/`Ungrab` ⇒ false | 「手势归我」（Qt `explicitDown`，BLUE22 P0-7 已在此仓建立同名概念） |
+| `hovered: bool` | `MouseEnter` ⇒ true，`MouseLeave` ⇒ false | 「指针在我身上」（参考工具包 `Control::hovered`） |
+| `pressed: bool` | `MousePress` ⇒ `contains_point_with_touch_expansion(pos)`，`MouseRelease`/`Ungrab` ⇒ false | 「该画凹陷」（参考工具包 `AbstractButton::pressed`） |
+| `grabbed: bool` | `MousePress` ⇒ true，`MouseRelease`/`Ungrab` ⇒ false | 「手势归我」（参考工具包 `explicitDown`，BLUE22 P0-7 已在此仓建立同名概念） |
 | `focus_reason: FocusReason` | `FocusGained { reason }` / `FocusLost` | 「焦点在不在，以及为何而来」（决定**画不画焦点环**） |
 
-> **`pressed` 与 `grabbed` 必须分开**——这正是 BLUE22 P0-7 与 Qt
+> **`pressed` 与 `grabbed` 必须分开**——这正是 BLUE22 P0-7 与 参考工具包
 > `qquickabstractbutton_p.h:31-32` 的双字段设计。`Button` 已有这两个字段；
 > 上提时**直接搬**，不改语义。
 
@@ -276,12 +438,12 @@ $ grep -rn "impl Widget for" src/widget/ --include=*.rs | wc -l → 195
 
 ```rust
 fn widget_state(&self) -> WidgetState {
-    let base = self.base();
-    if !self.is_enabled() { WidgetState::Disabled }
-    else if base.is_pressed() { WidgetState::Pressed }
-    else if base.is_hovered() { WidgetState::Hover }
-    else if base.focus_reason().draws_focus_ring() { WidgetState::Focused }
-    else { WidgetState::Normal }
+ let base = self.base();
+ if !self.is_enabled() { WidgetState::Disabled }
+ else if base.is_pressed() { WidgetState::Pressed }
+ else if base.is_hovered() { WidgetState::Hover }
+ else if base.focus_reason().draws_focus_ring() { WidgetState::Focused }
+ else { WidgetState::Normal }
 }
 ```
 
@@ -295,12 +457,12 @@ fn widget_state(&self) -> WidgetState {
 
 ```text
 1. 单测：`CheckBox`（未覆写 widget_state）在收到 MouseEnter 后
-   `widget_state() == WidgetState::Hover`  —— 当前**不可能**通过
+ `widget_state() == WidgetState::Hover` —— 当前**不可能**通过
 2. 单测：`MouseLeave` 后回到 Normal
 3. 单测：disabled 优先于 hovered（顺序与 widget_trait.rs:390 的文档一致）
 4. 门禁：`check_state_source_is_the_base` —— 除 `BaseWidget` 外，
-   不得有第二个 `hovered: bool` 字段（现有 18 处需逐一裁定：
-   图表的数据态 hover 不算，改造为 `hovered_item` 之类明确名字）
+ 不得有第二个 `hovered: bool` 字段（现有 18 处需逐一裁定：
+ 图表的数据态 hover 不算，改造为 `hovered_item` 之类明确名字）
 5. 反向注入：删掉 `MouseEnter` 分支 ⇒ 判据 1 变红
 ```
 
@@ -311,7 +473,7 @@ fn widget_state(&self) -> WidgetState {
 **为什么不改成 `Set<WidgetState>`**：`WidgetState` 是 `pub`、`Eq + Hash`、被
 `StatefulTheme` 当 `HashMap` 键、被 `set_transition((from, to), ms)` 当**二元组**用
 （`theme_state.rs:148,183`）。改成集合会让「过渡」变成「集合到集合」，
-即 CSS transition 的组合爆炸——**这正是 Flutter 不提供「状态集合间过渡」的原因**。
+即 CSS transition 的组合爆炸——**这正是 主流 material 实现 不提供「状态集合间过渡」的原因**。
 
 **修法**：单值决定**填充基色**，另立一条**独立的、可叠加的**绘制层：
 
@@ -323,25 +485,25 @@ fn widget_state(&self) -> WidgetState {
 /// `widget_state()` 回答「用哪一套颜色」（单值，可过渡，是主题的查找键）。
 /// 本结构回答「还要叠什么」（可多项同时成立，**不过渡**，是绘制指令）。
 ///
-/// 这条分界来自 Qt：`QQuickControl::hovered` 与 `AbstractButton::pressed` 是
-/// **两个独立的 bool**，可同时为真，且 `Control.qml` 的 `background` 对二者的
-/// 处理是**两个独立的 blend**（`Button.qml:41-43` 用 `down ? 0.5 : 0.0`
+/// 这条分界来自 参考工具包：`QQuickControl::hovered` 与 `AbstractButton::pressed` 是
+/// **两个独立的 bool**，可同时为真，且 `reference: the base control's background/padding contract` 的 `background` 对二者的
+/// 处理是**两个独立的 blend**（`reference: the button's implicit-size formula and padding cascade` 用 `down ? 0.5 : 0.0`
 /// 而 `visualFocus` 走**描边**，互不覆盖）。
 ///
 /// 而 Material 的 `WidgetStateProperty` 是**首次匹配的集合**，它用
 /// 优先级列表回避了「同时成立」的颜色冲突——代价是样式作者**必须**为
 /// `{hovered, focused}` 单独写一条，否则 hover 会盖掉 focus 的描边。
-/// 本仓取 Qt 的形态：**填充与描边是两条独立的通道**，就不需要笛卡尔积。
+/// 本仓取 参考工具包 的形态：**填充与描边是两条独立的通道**，就不需要笛卡尔积。
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct StateOverlay {
-    /// 指针悬停：填充向 ink 混 8%（Flutter M3 `hovered` 的 0.08，`slider.dart:2360-2372`）。
-    pub hovered: bool,
-    /// 按下：填充向 ink 混 10%（Flutter M3 `dragged` 0.1）。
-    pub pressed: bool,
-    /// 键盘焦点：画焦点环（走 `FocusRing`，**不是**填充）。
-    pub focused: bool,
-    /// 展开/勾选等持续事实，由控件自行决定叠加。
-    pub checked: bool,
+ /// 指针悬停：填充向 ink 混 8%（主流 material 实现 M3 `hovered` 的 0.08，`slider.dart:2360-2372`）。
+ pub hovered: bool,
+ /// 按下：填充向 ink 混 10%（主流 material 实现 M3 `dragged` 0.1）。
+ pub pressed: bool,
+ /// 键盘焦点：画焦点环（走 `FocusRing`，**不是**填充）。
+ pub focused: bool,
+ /// 展开/勾选等持续事实，由控件自行决定叠加。
+ pub checked: bool,
 }
 ```
 
@@ -359,17 +521,17 @@ pub struct StateOverlay {
 **修法**：在 `tools/generate.sh` 里为**高频交互控件**生成状态覆盖，
 数值来源**必须是三家的公开规范之一**，不得自创：
 
-| 状态键 | 目标控件 | Flutter 依据 | Qt 依据 | 建议 blend |
+| 状态键 | 目标控件 | 主流 material 实现 依据 | 参考工具包 依据 | 建议 blend |
 |---|---|---|---|---|
-| `button:hover` | button, toggle_button, tool_button, split_button | M3 hover **0.08** 向 onSurface | `Color.blend(button, mid, …)`（`Button.qml:42`） | fill 向 `contrast_color()` 混 **0.08** |
-| `button:pressed` | 同上 | M3 pressed **0.10** | `down ? 0.5 : 0.0` 向 mid（`Button.qml:42`） | 混 **0.12** |
+| `button:hover` | button, toggle_button, tool_button, split_button | M3 hover **0.08** 向 onSurface | `Color.blend(button, mid, …)`（`reference: the button's implicit-size formula and padding cascade`） | fill 向 `contrast_color()` 混 **0.08** |
+| `button:pressed` | 同上 | M3 pressed **0.10** | `down ? 0.5 : 0.0` 向 mid（`reference: the button's implicit-size formula and padding cascade`） | 混 **0.12** |
 | `button:disabled` | 全部交互控件 | `onSurface.withOpacity(0.38)` | `palette.disabled` 组 | 现有 `Colors::disabled` + alpha 150（`button.rs:739` 已有先例） |
 | `check_box:checked` / `switch:checked` / `radio_button:checked` | 三态控件 | `colorScheme.primary` | `palette.highlight` | 现有 `accent`/`Success` token（`switch.rs:312` 已如此） |
 | `*:error` | line_edit, combo_box, date_edit… | `colors.error` 描边（`checkbox.dart:943-945`） | `palette` 无对应 | `Colors::error` |
 
 > **`*:error` 是本仓已有的一个「零消费者」token**（BLUE21 AR6 已记）：
 > 「本仓**有** `colors.error`，但零个控件路由到它」。输入框的**行内校验提示**
-> 是 Flutter/SwiftUI 最显眼的日常状态，本仓完全缺失。
+> 是 外部对标 / 主流声明式实现 最显眼的日常状态，本仓完全缺失。
 
 **判据**：
 
@@ -377,7 +539,7 @@ pub struct StateOverlay {
 1. `themes/dark.json` 的 `overrides.styles` 非空，且**含至少 6 个 "kind:state" 键**
 2. 单测：装上预设主题后，一个 hovered 的 Button 的**绘制填充** ≠ 静止态填充
 3. 门禁：`check_declared_tokens_have_consumers` —— 每个 `Colors` 字段
-   至少 1 个生产读取点（现 17 个角色中 9 个不满足）
+ 至少 1 个生产读取点（现 17 个角色中 9 个不满足）
 4. 反向注入：把 `overrides.styles` 清空 ⇒ 判据 2 变红
 ```
 
@@ -412,7 +574,7 @@ pub struct StateOverlay {
 /// `floating_label.rs:133-139` 的文档已经定义了正确的经济学：
 /// **只在还在动时调度下一帧**。`false` 的语义是「我不欠任何帧」，
 /// 宿主据此停止为它排帧——一个静止的按钮**每帧成本为零**。
-/// 这与 Flutter 的 `Ticker` 由 `AnimationController` 自动 `stop()` 是同一件事。
+/// 这与 主流 material 实现 的 `Ticker` 由 `AnimationController` 自动 `stop()` 是同一件事。
 fn tick(&mut self, delta_ms: u32) -> bool { false }
 /// 本控件当前是否**正在**动画（用于宿主决定是否进入连续帧模式）。
 fn is_animating(&self) -> bool { false }
@@ -424,7 +586,7 @@ fn is_animating(&self) -> bool { false }
 ### 3.3 P0-5 帧驱动**一处**：`runtime` 的帧末钩子
 
 ```text
-$ grep -rn "\.tick(" src/app/ src/render/ src/platform/ --include=*.rs    → 0 命中
+$ grep -rn "\.tick(" src/app/ src/render/ src/platform/ --include=*.rs → 0 命中
 ```
 
 **修法**（`src/widget/runtime.rs`，与 §2 的 `for_each_mounted_widget` 同族）：
@@ -438,7 +600,7 @@ $ grep -rn "\.tick(" src/app/ src/render/ src/platform/ --include=*.rs    → 0 
 /// 缺的只是**一个调用者**。而「谁来调」有两个错误答案：
 ///
 /// - **每个控件自建定时器** ⇒ 100 个控件 100 个定时器，且与帧率不同步
-///   （Qt 专门提供 `QQuickWindow::update()` 作为唯一推进点，正是为了避免这个）。
+/// （参考工具包 专门提供 `QQuickWindow::update()` 作为唯一推进点，正是为了避免这个）。
 /// - **宿主/后端各调一次** ⇒ 同一个按钮在一帧里被推进两次，动画速度随调用点数翻倍。
 ///
 /// 所以推进点是**运行时唯一的一个**，由宿主的帧循环在**绘制之前**调用一次。
@@ -450,7 +612,7 @@ pub fn tick_animations(delta_ms: u32) -> bool;
 
 **接入顺序**（每一档单独可交付）：
 
-| 档 | 控件 | 用户可见的收益 | Flutter 时长依据 |
+| 档 | 控件 | 用户可见的收益 | 主流 material 实现 时长依据 |
 |---|---|---|---|
 | **A** | `button` / `toggle_button` / `tool_button` | hover/按下**渐变**而非硬切 | `kThemeChangeDuration` **200**（`constants.dart:39`） |
 | **B** | `switch` | 拇指**滑动**（`travel` 已实现，只差驱动） | `_kSwitchToggleDuration` M3 **300**（`switch.dart:2370-2396`） |
@@ -463,15 +625,15 @@ pub fn tick_animations(delta_ms: u32) -> bool;
 
 ```text
 1. 单测：Button 收到 MouseEnter 后 `is_animating() == true`；
-   连续 `tick_animations(100)` × 2 后 `is_animating() == false`（200ms 走完）
+ 连续 `tick_animations(100)` × 2 后 `is_animating() == false`（200ms 走完）
 2. 单测：静止控件 `is_animating() == false`，且 `tick_animations` 返回 false
-   —— 即**静止时零成本**（这条比动画本身更重要：它决定「丝滑」是否以耗电换来的）
+ —— 即**静止时零成本**（这条比动画本身更重要：它决定「丝滑」是否以耗电换来的）
 3. 几何判据：同一 Switch 在 t=0 / t=150ms / t=300ms 三个快照的
-   拇指 `x` **必须互不相同**，且 t=150 的 x 严格落在两者之间
+ 拇指 `x` **必须互不相同**，且 t=150 的 x 严格落在两者之间
 4. 门禁：`check_animation_has_a_driver` —— 每个实现了 `tick` 的控件
-   必须能被 `tick_animations` 推进（用计数型测试替身断言）
+ 必须能被 `tick_animations` 推进（用计数型测试替身断言）
 5. 门禁：`check_transition_durations_are_tokens`（已存在）扩展到
-   控件自驱动动画的时长必须来自 `theme.motion`
+ 控件自驱动动画的时长必须来自 `theme.motion`
 6. 反向注入：让 `tick_animations` 直接返回 false ⇒ 判据 3 变红
 ```
 
@@ -480,13 +642,13 @@ pub fn tick_animations(delta_ms: u32) -> bool;
 `EasingFunction` 已存在（`src/style/animation.rs`），`Motion.easing` 预设为 `EaseOut`。
 **新增的唯一曲线是「进入用 easeOut、退出用 easeIn」**：
 
-- Flutter：`toggleable.dart:159-163` **前向/反向各自一条曲线**；
-- Qt：`Switch.qml:54-57` 的 `Behavior` 是 `SmoothedAnimation { velocity: 200 }`
-  ——**速度驱动**而非时长驱动，但**进入/退出共用同一条**；
+- 主流 material 实现：`toggleable.dart:159-163` **前向/反向各自一条曲线**；
+- 参考工具包：`reference: the switch's track, thumb and transition` 的 `Behavior` 是 `SmoothedAnimation { velocity: 200 }`
+ ——**速度驱动**而非时长驱动，但**进入/退出共用同一条**；
 - 本仓：`Transition::tick(target, delta_ms)` 已能按目标方向走。
 
-**本计划只采纳 Flutter 的一条**（前向 `easeOut`、反向 `easeIn`），
-因为 Qt 的 `SmoothedAnimation` 是「恒定速度」语义，**与时长 token 体系冲突**
+**本计划只采纳 主流 material 实现 的一条**（前向 `easeOut`、反向 `easeIn`），
+因为 参考工具包 的 `SmoothedAnimation` 是「恒定速度」语义，**与时长 token 体系冲突**
 （本仓的 `Motion` 是时长制）。这是**明确的取舍**，不两边都抄。
 
 ---
@@ -497,9 +659,9 @@ pub fn tick_animations(delta_ms: u32) -> bool;
 >
 > **不属本节但在本计划内**的：
 > * **F-11 声明式原语**（portal / 生命周期 / 上下文 / 错误边界 / `SyntaxPalette`）
->   ⇒ **§5A**（它是「能不能表达」，不是「好不好看」）；
+> ⇒ **§5A**（它是「能不能表达」，不是「好不好看」）；
 > * **F-6 契约加厚 / F-5 a11y / F-4 RTL 剩余** ⇒ 已由 BLUE22 第 71 轮完成，
->   状态见 `blue22.md` 附录 F.8；
+> 状态见 `blue22.md` 附录 F.8；
 > * **F-13 三条门禁** ⇒ 仍属 BLUE22，**本计划不接**（避免两份计划各写一半）。
 > * **F-12 输入装饰槽** ⇒ 已由 BLUE22 第 71 轮完成（`src/widget/decorations.rs`）。
 
@@ -526,7 +688,7 @@ BLUE22 已建 `ActionRow`（`composite.rs`），但 8 个对话框**刻意未合
 ### 4.3 P1-3 `scroll_area` 的滚动条（BLUE21 B13，8 处字面量）
 
 同一文件 `draw_sticky_band`（`scrollarea.rs:453-468`）**已做对**，滚动条未抄。
-**修法**：抄自己的 `draw_sticky_band`。同时按 Qt `ScrollBar.qml:19-25`
+**修法**：抄自己的 `draw_sticky_band`。同时按 参考工具包 `reference: the scroll bar's minimum-length and hide-delay rules`
 补「最小长度是**分数**而非常量」的语义（防细条拇指消失），
 本仓已有 `dimensions::SCROLLBAR_MIN_LENGTH = 48`——**两者应一致**：
 `max(SCROLLBAR_MIN_LENGTH, track * content_ratio)`。
@@ -535,7 +697,7 @@ BLUE22 已建 `ActionRow`（`composite.rs`），但 8 个对话框**刻意未合
 
 `tabwidget.rs:519-560` 的三种形状是**真画**的；`tab_bar.rs:584-610` 三臂相同，
 且注释描述了没做的活。**同一枚举值在两个 tab 控件里含义必须一致**。
-溢出：Qt 出滚动箭头、Flutter `isScrollable`、`tab_view.rs:227` 已有
+溢出：参考工具包 出滚动箭头、主流 material 实现 `isScrollable`、`tab_view.rs:227` 已有
 `rect.width / tab_count` 的解法——**三选一，不留悬空**。
 
 ### 4.5 P1-5 `meter` 刻度与弧相差 90°（BLUE21 D16）
@@ -546,8 +708,8 @@ BLUE22 已建 `ActionRow`（`composite.rs`），但 8 个对话框**刻意未合
 ### 4.6 P1-6 `chart` 没有值轴（BLUE21 D6）+ 金融四图空态无轴（D5）
 
 `chart.rs:475-489` 的 `PlotArea` 无左槽；`candlestick/volume/depth` 在
-`bars.is_empty()` 时直接 `return`。**Flutter `fl_chart` 默认开 `leftTitles`；
-Qt `QChart` 必有 `QValueAxis`；SwiftUI `Chart` 默认 `AxisMarks`**——三家一致。
+`bars.is_empty()` 时直接 `return`。**主流 material 实现 `fl_chart` 默认开 `leftTitles`；
+参考工具包 `QChart` 必有 `QValueAxis`；主流声明式实现 `Chart` 默认 `AxisMarks`**——三家一致。
 
 > 这里的对外一致性判据（BLUE21 A.6 已列）：`chart.svg` 的最高柱**贴顶零余量**
 > 正是「没有值轴」的直接后果（有轴就要给轴和标签留位）。
@@ -566,7 +728,7 @@ Qt `QChart` 必有 `QValueAxis`；SwiftUI `Chart` 默认 `AxisMarks`**——三�
 
 ### 5.2 P1-8 `surface_container*`：卡片与面板的层级
 
-> **注意**：本仓**没有 `card` 控件**——`dimensions::CARD_RADIUS = 12` 是从 Flutter
+> **注意**：本仓**没有 `card` 控件**——`dimensions::CARD_RADIUS = 12` 是从 主流 material 实现
 > 抄来的常量，但 `grep -rn CARD_RADIUS src/ | grep -v metrics.rs` **零命中**，
 > 它现在是个无人读的常量（§5.5 的门禁会把它抓出来）。**承载层级的面是 `panel`**
 > （`WidgetKind::Panel`，`kind.rs:80-86` 说明它是 `GroupBox` 的 `pub type`），
@@ -574,7 +736,7 @@ Qt `QChart` 必有 `QValueAxis`；SwiftUI `Chart` 默认 `AxisMarks`**——三�
 
 **修法**：上述五类控件（及 `GroupBox` 的框内面）的行**面**从 `background`
 改为 `surface_container`（低阶）/`surface_container_high`（浮起层）。
-**这正是 SwiftUI `Material` 的观感来源**：`Material.regularMaterial` 相对
+**这正是 主流声明式实现 `Material` 的观感来源**：`Material.regularMaterial` 相对
 页面底色有固定的亮度偏移，于是「浮起来的卡片」在视觉上**真的浮着**。
 
 **判据**：`diff panel.svg panel.light.svg` 的行数 **> 4**（BLUE21 P0-6 的统一判据，
@@ -633,17 +795,17 @@ BLUE21 那轮的性质是修既有控件的错，混进加能力会让「修了�
 
 ```text
 $ grep -rn "children_if" src/ --include=*.rs
-  src/view/node.rs:147    pub fn children_if(...)          ← 定义
-  src/view/node.rs:349    fn children_if_does_not_evaluate...  ← 只它自己的单测
+ src/view/node.rs:147 pub fn children_if(...) ← 定义
+ src/view/node.rs:349 fn children_if_does_not_evaluate... ← 只它自己的单测
 
 $ grep -rn "portal\|Portal" src/view/
-  （零命中）
+ （零命中）
 
 $ grep -rn "on_mount\|on_unmount" src/view/
-  （零命中；engine.rs 只有 `fn build(&self) -> Node`）
+ （零命中；engine.rs 只有 `fn build(&self) -> Node`）
 
 $ grep -n "pub struct Node" -A 12 src/view/node.rs
-  widget / key / props / children                          ← 只有这四个字段
+ widget / key / props / children ← 只有这四个字段
 ```
 
 **五项全部确认未做**，且 `children_if` 的「零消费者」在 `blue21.md:175` 记录之后**至今未变**。
@@ -658,29 +820,29 @@ $ grep -n "pub struct Node" -A 12 src/view/node.rs
 
 | 参考 | 机制 | 出处 |
 |---|---|---|
-| React | `createPortal(children, container)` —— 在**树里**留在原位，在 **DOM 里**挂到别处 | `react-dom` |
-| Flutter | `Overlay` + `OverlayEntry`（`Overlay.of(context).insert(entry)`） | `overlay.dart` |
-| SwiftUI | `.overlay` / `.sheet` / `.popover` —— 修饰符携带，渲染由系统另开层 | `View.overlay(...)` |
-| Qt Quick | `Popup` 自带 `parent` 与 `Overlay.overlay`；`QQuickPopup` 用 `parentItem` 定位而 `z` 另算 | `qquickpopup.cpp` |
+| 声明式 Web 框架 | `createPortal(children, container)` —— 在**树里**留在原位，在 **DOM 里**挂到别处 | `react-dom` |
+| 主流 material 实现 | `Overlay` + `OverlayEntry`（`Overlay.of(context).insert(entry)`） | `overlay.dart` |
+| 主流声明式实现 | `.overlay` / `.sheet` / `.popover` —— 修饰符携带，渲染由系统另开层 | `View.overlay(...)` |
+| 参考工具包 | `Popup` 自带 `parent` 与 `Overlay.overlay`；`QQuickPopup` 用 `parentItem` 定位而 `z` 另算 | `qquickpopup.cpp` |
 
 **四家一致**：**身份在树里、渲染在另一处**。这正是本仓缺的那一维。
 
 **修法（最小可分步形态，不引入新树）**：
 
 1. `Node` 加一个可选的**挂载域**字段（名字待定：`layer` 或 `host`），语义是
-   「我属于这棵树的这一支（身份/上下文），但请把我创建到指定的**宿主层**」。
+ 「我属于这棵树的这一支（身份/上下文），但请把我创建到指定的**宿主层**」。
 2. `Patch::Insert` 的 `parent` 因此可以是**宿主层节点**而不是祖先——
-   `diff.rs` 现有注释说的「根不可插入」保持不变，因为宿主层**不是根**，它是一个
-   由引擎拥有的、位于根之上的兄弟层。
+ `diff.rs` 现有注释说的「根不可插入」保持不变，因为宿主层**不是根**，它是一个
+ 由引擎拥有的、位于根之上的兄弟层。
 3. 与已有的 3 个层（`dialog`/`tooltip`/`popover` 现在各自怎么画）**共存**：
-   本项只加**声明路径**，不改已有命令式路径。
+ 本项只加**声明路径**，不改已有命令式路径。
 
 **判据**：
 
 ```text
 1. 单测：一个 portal 声明的子节点，其 WidgetId 出现在宿主层，其 parent 指向声明处
 2. 快照：portal 节点的 ink **不被**其声明父的裁剪矩形截断
-   （做法：声明父故意设成 40x20，portal 内容 120x60，断言内容满幅出现）
+ （做法：声明父故意设成 40x20，portal 内容 120x60，断言内容满幅出现）
 3. 生命周期：portal 节点随声明父卸载而卸载（不泄漏）
 ```
 
@@ -693,9 +855,9 @@ $ grep -n "pub struct Node" -A 12 src/view/node.rs
 
 * 「挂载时启动一个轮询」「卸载时取消订阅」这类事**无处可写**；
 * `barcode_scanner` 的相机生命周期（`blue23.md` §A.8 记它缺「暂停/恢复」）
-  在声明式层里正是缺这个钩子。
+ 在声明式层里正是缺这个钩子。
 
-**三家怎么解**：React `useEffect(cleanup)`；Flutter `initState`/`dispose`；SwiftUI `.task`/`.onDisappear`。
+**三家怎么解**：a web UI framework `useEffect(cleanup)`；主流 material 实现 `initState`/`dispose`；主流声明式实现 `.task`/`.onDisappear`。
 
 **为什么不是给 `View` 加 `&mut self` 方法**：那些钩子写的是**副作用**（订阅、定时器、句柄），
 而 `build` 的纯函数性质是 `diff` 能工作（同一输入同一输出）的**前提**。
@@ -706,8 +868,8 @@ $ grep -n "pub struct Node" -A 12 src/view/node.rs
 **应用完 patch 之后**调用：
 
 ```text
-Node::on_mount(f)     // f 在节点首次进入已应用树后调用一次
-Node::on_unmount(f)   // f 在节点被移除后调用一次；与 on_mount 配对，必调
+Node::on_mount(f) // f 在节点首次进入已应用树后调用一次
+Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对，必调
 ```
 
 **判据**：
@@ -724,11 +886,11 @@ Node::on_unmount(f)   // f 在节点被移除后调用一次；与 on_mount 配�
 ### 5A.4 P1-14 上下文传播：`Node` 的第五个维度
 
 **问题**：`Node` 只有 `widget/key/props/children`。要么把配置逐层显式往下穿
-（在**每一层**每个节点上重复写同一个值——这正是 React 在 `createContext` 之前的状态），
+（在**每一层**每个节点上重复写同一个值——这正是 a web UI framework 在 `createContext` 之前的状态），
 要么无法表达「整棵子树共享一个值」。
 
-**三家**：React `createContext`/`useContext`；Flutter `InheritedWidget.of(context)`
-（它明确是「沿树向上找最近的 provider」）；SwiftUI `@Environment`。
+**三家**：a web UI framework `createContext`/`useContext`；主流 material 实现 `InheritedWidget.of(context)`
+（它明确是「沿树向上找最近的 provider」）；主流声明式实现 `@Environment`。
 
 **修法（只加读取，不加写入）**：
 
@@ -752,22 +914,22 @@ Node::on_unmount(f)   // f 在节点被移除后调用一次；与 on_mount 配�
 **问题**：`engine.rs:186-191` 在 `build`/应用失败时**整份丢弃**，`ViewError` 是扁平类型。
 即「第 137 个控件写错了名字」与「整个窗口渲染不出来」**完全同一后果**。
 
-**三家**：React `ErrorBoundary`（`componentDidCatch`）；Flutter `ErrorWidget.builder`
-（单个 widget 画成红框而页面仍在）；SwiftUI 无对等物（这本身是一个数据点：
-**React/Flutter 两家都要，说明这是真需求**）。
+**三家**：a web UI framework `ErrorBoundary`（`componentDidCatch`）；主流 material 实现 `ErrorWidget.builder`
+（单个 widget 画成红框而页面仍在）；主流声明式实现 无对等物（这本身是一个数据点：
+**a web UI framework/主流 material 实现 两家都要，说明这是真需求**）。
 
 **修法**：
 
 1. `ViewError` 携带**失败节点的路径**（`widget` 名 + key + 父链），而不只是一个消息；
-2. 应用子树失败时，**只标记该节点为失败**并把失败渲染成一个占位（沿用 Flutter 的做法：
-   一个醒目的框 + 控件名），其余兄弟继续应用；
+2. 应用子树失败时，**只标记该节点为失败**并把失败渲染成一个占位（沿用 主流 material 实现 的做法：
+ 一个醒目的框 + 控件名），其余兄弟继续应用；
 3. 失败集合可查询（类似 `diff` 的 `positional_matches` 计数——**代价可见，而非静默**）。
 
 **判据**：
 
 ```text
 11. 单测：一棵有 3 个子节点的树，中间那个用非法 widget 名 ⇒
-    另两个**仍然出现在渲染树里**
+ 另两个**仍然出现在渲染树里**
 12. 单测：ViewError 含失败节点的 `widget` 名与 key（可定位）
 13. 单测：失败节点渲染成占位元素（非零 ink），而不是零尺寸
 14. 门禁 check_view_failures_are_local：注入一个坏节点，断言好兄弟仍在树中
@@ -796,7 +958,7 @@ Node::on_unmount(f)   // f 在节点被移除后调用一次；与 on_mount 配�
 
 ```text
 15. 选 A：`grep -rn "children_if" src/ | grep -v node.rs` **必须非空**，
-    且该调用点有单测证明条件为 false 时子节点不出现
+ 且该调用点有单测证明条件为 false 时子节点不出现
 16. 选 B：`grep -rn "children_if" src/` **恰好为零**
 17. 无论 A/B：本节的这条不能留成「已知零消费者但保留」（那正是它现在的问题）
 ```
@@ -817,7 +979,7 @@ Node::on_unmount(f)   // f 在节点被移除后调用一次；与 on_mount 配�
 
 ```text
 批 7 = P1-12 portal + P1-13 生命周期 + P1-15 错误边界
-       （三者都改 Node/engine，一次改完；顺序：先 15（最独立）→ 12 → 13）
+ （三者都改 Node/engine，一次改完；顺序：先 15（最独立）→ 12 → 13）
 批 8 = P1-14 上下文 + P1-16 children_if 裁定
 ```
 
@@ -869,20 +1031,20 @@ Node::on_unmount(f)   // f 在节点被移除后调用一次；与 on_mount 配�
 
 ---
 
-## 6. QML / Flutter 三方对标：**本计划要抄的机制**（按性价比）
+## 6. 参考工具包的标记语言 / 主流 material 实现 三方对标：**本计划要抄的机制**（按性价比）
 
 | # | 机制 | 出处 | 为什么值得抄 | 落点 |
 |---|---|---|---|---|
-| 1 | `hovered` 由**基类**维护，`pressed` 由按钮类维护 | `qquickcontrol.cpp:2043-2056` + `qquickabstractbutton.cpp:179` | 一处接通，195 个控件同时获得 hover | **P0-1** |
-| 2 | `hoverMoveEvent` 用 `contains(point)` 复核 | `qquickcontrol.cpp:2050` | 指针**移出但仍收到事件**（如拖拽中）时 hover 必须清除 | P0-1 |
-| 3 | `hoverLeave` 无条件清 hover | `qquickcontrol.cpp:2056` | 与上一条**两条都要有**：只做 move 复核，快速移出会漏 | P0-1 |
-| 4 | `setPressed` 幂等（同值直接 return） | `qquickabstractbutton.cpp:726-727` | 移动时每帧都调 `setPressed`，不幂等会每帧发信号 | P0-1 |
-| 5 | `pressXChanged`/`pressYChanged` 仅在**模糊比较**不同时发 | `qquickabstractbutton.cpp:140-147` | `qFuzzyCompare` 防浮点抖动导致的重绘风暴 | P0-1 |
+| 1 | `hovered` 由**基类**维护，`pressed` 由按钮类维护 | `reference-toolkit control.cpp:2043-2056` + `reference-toolkit abstractbutton.cpp:179` | 一处接通，195 个控件同时获得 hover | **P0-1** |
+| 2 | `hoverMoveEvent` 用 `contains(point)` 复核 | `reference-toolkit control.cpp:2050` | 指针**移出但仍收到事件**（如拖拽中）时 hover 必须清除 | P0-1 |
+| 3 | `hoverLeave` 无条件清 hover | `reference-toolkit control.cpp:2056` | 与上一条**两条都要有**：只做 move 复核，快速移出会漏 | P0-1 |
+| 4 | `setPressed` 幂等（同值直接 return） | `reference-toolkit abstractbutton.cpp:726-727` | 移动时每帧都调 `setPressed`，不幂等会每帧发信号 | P0-1 |
+| 5 | `pressXChanged`/`pressYChanged` 仅在**模糊比较**不同时发 | `reference-toolkit abstractbutton.cpp:140-147` | `qFuzzyCompare` 防浮点抖动导致的重绘风暴 | P0-1 |
 | 6 | 前向/反向**各自一条曲线** | `toggleable.dart:159-163` | `easeIn` 进 `easeOut` 出，是「自然」的来源 | P0-6 |
 | 7 | 动画控制器以**当前值**初始化 | `toggleable.dart:156,171,180` | 中断不重启——**这是「丝滑」与「卡顿」的分界** | P0-4/6 |
 | 8 | 停用器件时**主动清除**瞬时态 | `button_style_button.dart:359-362` | 禁用后不残留 pressed（本仓 `Button::state()` 已如此，需推广） | P0-1 |
 | 9 | 时长阶梯（short/medium/long × 4） | `motion.dart:28-148` | 本仓 `Motion` 只有 fast/normal/slow 三档，**够用则不扩**（见 §7.1） | P0-4 |
-| 10 | `Material` 分层（同一面上叠亮度台阶） | SwiftUI 公开语义 | 本仓 `surface_container*` 已备；**这是「不像 SwiftUI」的最大单一原因** | **P1-8** |
+| 10 | `Material` 分层（同一面上叠亮度台阶） | 主流声明式实现 公开语义 | 本仓 `surface_container*` 已备；**这是「不像 主流声明式实现」的最大单一原因** | **P1-8** |
 | 11 | 模态遮罩是**固定的暗色**，不随前景色走 | Material `Colors.black54` / UIKit | 三家都朝暗走，本仓朝 ink 走（B23） | **P1-7** |
 | 12 | 层的**投影片**由阴影承担，而非描边 | `Card`/`Dialog` elevation | 本仓 `Shadow` 已在 `role_base_style`（`manager.rs:325-329`）里给**每个**控件发**同一个**阴影 —— 于是 elevation 不能区分层级 | P1-8 |
 
@@ -890,11 +1052,11 @@ Node::on_unmount(f)   // f 在节点被移除后调用一次；与 on_mount 配�
 
 | 项 | 为什么不抄 |
 |---|---|
-| `WidgetState` 改成 `Set` | 会动公开形状（#21），且让「状态间过渡」组合爆炸（§2.3）。**取 Qt 的「填充/描边两条独立通道」形态** |
+| `WidgetState` 改成 `Set` | 会动公开形状（#21），且让「状态间过渡」组合爆炸（§2.3）。**取 参考工具包 的「填充/描边两条独立通道」形态** |
 | Material tonal palette / `fromSeed` | 需 HCT 色彩空间与 9 变体生成器；本仓 `Colors` 是名字驱动的（BLUE22 §5.1 已裁定） |
-| `InkWell` 水波纹 | 需独立墨迹层与裁剪；本仓是立即模式绘制。**悬停/按下用 `Color.blend` 即可**（QML Basic 就是这么做的） |
-| Qt 的 `SmoothedAnimation { velocity }` | 速度制与时长 token 体系冲突；本仓已选时长制（§3.4） |
-| Qt 全套 `-1`/`+inf`/`NaN` 未设惯例 | 那是 `Option<T>` 被实现八遍（BLUE22 §B.6.1 已裁定一次） |
+| `InkWell` 水波纹 | 需独立墨迹层与裁剪；本仓是立即模式绘制。**悬停/按下用 `Color.blend` 即可**（参考工具包的标记语言 Basic 就是这么做的） |
+| 参考工具包 的 `SmoothedAnimation { velocity }` | 速度制与时长 token 体系冲突；本仓已选时长制（§3.4） |
+| 参考工具包 全套 `-1`/`+inf`/`NaN` 未设惯例 | 那是 `Option<T>` 被实现八遍（BLUE22 §B.6.1 已裁定一次） |
 | 把 `motion` 扩成 12 档 | 三档用得上；加档但没有语义区分就是「数字摆设」（#104） |
 
 ---
@@ -929,7 +1091,7 @@ Node::on_unmount(f)   // f 在节点被移除后调用一次；与 on_mount 配�
 | # | 风险 | 缓解 |
 |---|---|---|
 | 1 | **`tick_animations` 变成每帧推进 195 个控件** ⇒ 静止窗口也在烧 CPU | `is_animating()` 是**每个控件自己的答案**，默认 `false`；判据 §3.3-2 **专门断言静止时零成本**。这条比动画本身更需要判据 |
-| 2 | **hover 状态变更导致重绘风暴**（鼠标移动每像素一次） | 逐帧**只在状态真变时**置脏（Qt `setPressed` 幂等 + `qFuzzyCompare`，§6 表 #4/#5）；门禁：统计一次鼠标横扫的重绘次数 |
+| 2 | **hover 状态变更导致重绘风暴**（鼠标移动每像素一次） | 逐帧**只在状态真变时**置脏（参考工具包 `setPressed` 幂等 + `qFuzzyCompare`，§6 表 #4/#5）；门禁：统计一次鼠标横扫的重绘次数 |
 | 3 | **快照大面积变化** | 批 2 与批 5 **预期**快照变化（这是产物）；但**每批只改一类**，diff 才可评审（BLUE22 §9.2 同一克制） |
 | 4 | `BaseWidget` 加重载字段影响 `mini`/`embedded` 体积 | 三个 `bool` = 3 字节；`mini` 无动画模块，`is_animating()` 恒 false。**判据：五个 profile 全部编译 + 实测体积增量入交付物** |
 | 5 | **`hovered` 与图表的「数据项 hover」同名冲突**（现有 18 处提及） | 批 1 的判据 4 逐处裁定：图表的 `hovered` 是**数据选择**，改名 `hovered_item`/`hovered_level`（语义不同，**不得共用**） |
@@ -943,14 +1105,14 @@ Node::on_unmount(f)   // f 在节点被移除后调用一次；与 on_mount 配�
 
 ```text
 --- 状态层（§2）---
-1. grep -rn "fn widget_state" src/widget/ | wc -l  →  > 1（控件的覆写），
-   且默认实现能回答 Hover/Pressed
+1. grep -rn "fn widget_state" src/widget/ | wc -l → > 1（控件的覆写），
+ 且默认实现能回答 Hover/Pressed
 2. 单测：CheckBox（零覆写）在 MouseEnter 后报告 Hover
-3. grep -rn "hovered: bool" src/widget/  →  仅 BaseWidget 一处（图表项已改名）
+3. grep -rn "hovered: bool" src/widget/ → 仅 BaseWidget 一处（图表项已改名）
 4. themes/{dark,default}.json 的 overrides.styles 含 ≥ 6 个 "kind:state" 键
 5. 单测：hovered Button 的填充 ≠ 静止态填充
 6. 门禁 check_declared_tokens_have_consumers：17 个颜色角色各有生产读取点
-   （未消费者在 allowlist 中附理由）
+ （未消费者在 allowlist 中附理由）
 
 --- 动效层（§3）---
 7. 单测：Button hover 后 is_animating()==true，200ms 后 false
@@ -980,10 +1142,10 @@ Node::on_unmount(f)   // f 在节点被移除后调用一次；与 on_mount 配�
 31. 门禁 check_view_failures_are_local 反向注入变红
 
 --- 回归（全计划）---
-20. cargo test --no-default-features --features desktop            → 0 failed
+20. cargo test --no-default-features --features desktop → 0 failed
 21. cargo clippy --no-default-features --features desktop --all-targets -- -D warnings → 0 warning
 22. desktop/tablet/mobile/mini/embedded 五个 profile 全部 Finished
-23. bash tools/run_all_gates.sh     → FAIL=0（每条新门禁均已反向注入）
+23. bash tools/run_all_gates.sh → FAIL=0（每条新门禁均已反向注入）
 24. 静止态快照（不含状态键的 .svg）逐字节不变 —— 证明批 2 没有改静止外观
 25. mini + 三个 bool 字段的二进制体积增量实测入交付物（≤ 64 B）
 ```
@@ -1012,14 +1174,14 @@ Node::on_unmount(f)   // f 在节点被移除后调用一次；与 on_mount 配�
 > === total colour literals in Draw files: 684 ===
 > === Draw files reading no style colour, only literals: 66 (36%) ===
 >
-> $ python3 tools/audit_text_y.py          → suspicious placements: 0     ← BLUE21 A 组已闭合
-> $ python3 tools/audit_text_contrast.py   → every glyph meets the 4.5:1 AA floor  ← BLUE21 B 组已闭合
+> $ python3 tools/audit_text_y.py → suspicious placements: 0 ← BLUE21 A 组已闭合
+> $ python3 tools/audit_text_contrast.py → every glyph meets the 4.5:1 AA floor ← BLUE21 B 组已闭合
 > $ python3 tools/check_control_has_tests.py → 186 / 186 每个控件都有测试
-> $ python3 tools/audit_kind_sharing.py    → 13 个 kind 被多个控件共用
-> $ python3 tools/audit_control_gaps.py    → candidate gaps: 25（见 §A.9）
+> $ python3 tools/audit_kind_sharing.py → 13 个 kind 被多个控件共用
+> $ python3 tools/audit_control_gaps.py → candidate gaps: 25（见 §A.9）
 > $ python3 tools/check_mechanism_has_a_consumer.py
->     AnimationDriver: unconnected, acknowledged — BLUE21 P0-4 (AR7) — drive it from the widget tick
->     AnimationGroup:  unconnected, acknowledged
+> AnimationDriver: unconnected, acknowledged — BLUE21 P0-4 (AR7) — drive it from the widget tick
+> AnimationGroup: unconnected, acknowledged
 > ```
 >
 > **本附录与 §2–§5 的关系**：§2–§5 是**机制层**的修法（一处接通 N 个控件）；
@@ -1052,12 +1214,12 @@ Node::on_unmount(f)   // f 在节点被移除后调用一次；与 on_mount 配�
 **三条从这张表直接读出的结论**：
 
 1. **`special_widgets` 一个组占 140 个字面量（全仓 21%）**——32 个控件里 6 个完全不读主题。
-   这与 `audit_appearance.py` 的「66 个 Draw 文件只读字面量」是同一事实的两种视角。
+ 这与 `audit_appearance.py` 的「66 个 Draw 文件只读字面量」是同一事实的两种视角。
 2. **`tick` 只有 11 个**，而其中 **5 个集中在 `media_widgets`**（视频/动图/Lottie/Rive/Hero）——
-   即**媒体组的动画最完整，交互控件的动画最少**。这个分布本身就是缺陷的形状：
-   一个按钮的 hover 反馈比一个 Lottie 播放器更常被用户看到。
+ 即**媒体组的动画最完整，交互控件的动画最少**。这个分布本身就是缺陷的形状：
+ 一个按钮的 hover 反馈比一个 Lottie 播放器更常被用户看到。
 3. **`handle_event` 188/188 齐全、`size_hint` 182/188**（缺的 6 个在 `special_widgets`）——
-   说明 BLUE22 的度量体系覆盖已近完整，**本计划不缺「静态正确性」的地基**。
+ 说明 BLUE22 的度量体系覆盖已近完整，**本计划不缺「静态正确性」的地基**。
 
 ## A.1 通用修法代号（每组直接引用，不再重复长文）
 
@@ -1092,7 +1254,7 @@ Node::on_unmount(f)   // f 在节点被移除后调用一次；与 on_mount 配�
 |---|---|---:|---|---|---|---|
 | `button` | `button.rs` | 4 | ✅ 唯一已有完整交互过渡的控件（`interaction_progress` + `tick`，4 条单测） | ① 私有 `pressed`/`hovered`/`focus_reason` 上提（§2.2 的**原型**）② 硬编码 `Color::rgb(240,240,240)` 三态回落改 `theme` ③ `visual_focus` 上提 | **M1**（原型）**M2** **M4** **M11** | **P0** |
 | `toggle_button` | `toggle_button.rs` | 8 | 有 `pressed` 字段但 **`draw` 不读**（BLUE21 AR6 原样）；`ToggleButtonState` 只有 3 态（Normal/Checked/Disabled），**枚举本身缺 Hover/Pressed/Focused** ⇒ draw 无法表达 | ① 状态枚举补 3 态 ② 接 M1/M2 ③ 加 `tick`（M3） | **M1** **M2** **M3** **M4** | **P0** |
-| `check_box` | `checkbox.rs` | 0 | `MousePress` 臂**完全不看 `pos`**（控件矩形内任意点都切换）；无 hover/focus/error 态（Flutter 有 9+ 组合） | ① 补 `:checked`/`:error` 覆盖（`colors.error` 至今**零消费者**）② 命中改 `contains_point_with_touch_expansion` ③ 勾色取**框填充的对比色** | **M1** **M2** **M9**（三态 `checked`/`mixed`） | **P0** |
+| `check_box` | `checkbox.rs` | 0 | `MousePress` 臂**完全不看 `pos`**（控件矩形内任意点都切换）；无 hover/focus/error 态（主流 material 实现 有 9+ 组合） | ① 补 `:checked`/`:error` 覆盖（`colors.error` 至今**零消费者**）② 命中改 `contains_point_with_touch_expansion` ③ 勾色取**框填充的对比色** | **M1** **M2** **M9**（三态 `checked`/`mixed`） | **P0** |
 | `radio_button` | `radiobutton.rs` | 0 | ✅ 几何已修（`r8` + `r5` 点，快照已证）；有 `visual_focus` | ① 接 M1/M2 ② a11y 补 `checked` ③ 组内互斥语义已有则保持 | **M1** **M2** **M9** | P1 |
 | `label` | `label.rs` | 12 | 12 个字面量（纯文本控件却有色彩常量）；`swipe_to_dismiss` 曾被解析到此文件（分组工具的边界） | ① 文字色改读 `style.text_color`（12 → 0）② 与 `swipe_to_dismiss` 拆清 | **M4** | P1 |
 | `frame` | `frame.rs` | 29 | **本组字面量最多（29）**；虽有七种形状（含 `WinPanel`，BLUE21 A.7 记为优势）但两色斜角是字面量 | ① 斜角色走 `border_color` 的**派生**（`frame.rs:196-208` 已有范式，扩展到 29 处）② 保留七形状（**优势不动**） | **M4** | P1 |
@@ -1113,11 +1275,11 @@ Node::on_unmount(f)   // f 在节点被移除后调用一次；与 on_mount 配�
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
 | `line_edit` | `lineedit.rs` | 3 | 有 `tick`（光标闪烁）**无驱动者**；缺整个**装饰槽模型**（`prefix`/`suffix`/`helper`/`error`/`counter`，BLUE21 A.4.1） | ① 接 M3（一行）② 补 `:error` 覆盖 + `error_text` ③ `caret_x` 用 `cursor_position` 的字节前缀（BLUE21 A.4.2 的**功能**缺陷） | **M3** **M2** **M10** | **P0** |
-| `spin_box` | `spinbox.rs` | 5 | ✅ 已由 `CompositeBuilder` 组装（BLUE22 第 70 轮，快照几何逐字节不变） | ① 接 M1（步进按钮 hover）② RTL padded 镜像（Qt `SpinBox.qml:20-21`） | **M1** **M8** | P1 |
+| `spin_box` | `spinbox.rs` | 5 | ✅ 已由 `CompositeBuilder` 组装（BLUE22 第 70 轮，快照几何逐字节不变） | ① 接 M1（步进按钮 hover）② RTL padded 镜像（参考工具包 `reference: padding derived from the sibling's own width`） | **M1** **M8** | P1 |
 | `number_picker` | `number_picker.rs` | 1 | 同 `spin_box` 但未接组装 | 接 **M1** + **M7** | **M1** **M7** | P2 |
 | `combo_box` | `combobox.rs` | 3 | ✅ 指示器已由组装推导（BLUE22）；无 hover 态 | **M1** **M2** **M8**（镜像时指示器 padding 交换） | P1 |
-| `editable_combo_box` | `editable_combo_box.rs` | 0 | 本仓**优势**（Flutter `DropdownButton` 不可编辑） | **M1** **M9** | P2 |
-| `multi_select_combo_box` | `multi_select_combo_box.rs` | 0 | 本仓**优势**（Flutter **多选完全没有**） | **M1** **M10**（枚举候选/读高亮） | P2 |
+| `editable_combo_box` | `editable_combo_box.rs` | 0 | 本仓**优势**（主流 material 实现 `DropdownButton` 不可编辑） | **M1** **M9** | P2 |
+| `multi_select_combo_box` | `multi_select_combo_box.rs` | 0 | 本仓**优势**（主流 material 实现 **多选完全没有**） | **M1** **M10**（枚举候选/读高亮） | P2 |
 | `font_combo_box` | `font_combo_box.rs` | 3 | 3 个字面量；无状态 | **M1** **M4** | P2 |
 | `search_box` | `search_box.rs` | 8 | 8 个字面量；无状态 | **M1** **M2** **M4** | P1 |
 | `search_bar` | `search_bar.rs` | 4 | 同族，与 `search_box` 字面量不同步 | **M1** **M4**（与 `search_box` 抽共享） | P2 |
@@ -1125,10 +1287,10 @@ Node::on_unmount(f)   // f 在节点被移除后调用一次；与 on_mount 配�
 | `text_edit` | `textedit.rs` | 1 | 1 个字面量 | **M1** **M4** | P2 |
 | `rich_edit` | `rich_edit.rs` | 1 | BLUE21 A.6：光标几何用**等宽捷径** `cell_width`，变宽跨度下必然错位 | ① 接 M3（光标闪烁）② caret/range 几何改为**跨度感知**（勿继承等宽） | **M3** **M10** | P1 |
 | `masked_edit` | `masked_edit.rs` | 4 | BLUE21 B15：正文字面量 `rgb(33,33,33)` 在暗色字段上对比 **1.35:1**（注：`audit_text_contrast` 现已全绿——**该条已修**，此处仅存 4 个字面量待清） | **M4** **M1** | P2 |
-| `otp_input` | `otp_input.rs` | 0 | BLUE21 B19：6 格里 5 格不可见（已修）；本仓**优势** | ① 接 M1/M2 ② `obscuringCharacter = '•'`（Flutter `text_field.dart:273`） | **M1** **M2** **M10** | P1 |
+| `otp_input` | `otp_input.rs` | 0 | BLUE21 B19：6 格里 5 格不可见（已修）；本仓**优势** | ① 接 M1/M2 ② `obscuringCharacter = '•'`（主流 material 实现 `text_field.dart:273`） | **M1** **M2** **M10** | P1 |
 | `tag_input` | `tag_input.rs` | 7 | 有 `tick` 无驱动者；7 个字面量 | **M3** **M4** **M2** | P1 |
 | `keyboard` | `keyboard.rs` | 6 | BLUE21 D20：键帽文字贴顶（**已修**）；仍 6 字面量 + 无按键反馈 | ① 键帽按下**变色 + 动效**（M1/M2/M3）② 字面量 → token | **M1** **M2** **M3** **M4** | P1 |
-| `range_slider` | `range_slider.rs` | 4 | ✅ 双向手柄映射正确（BLUE22 §4.3 的参照）；无 hover/drag 发光 | **M1** **M3**（手柄按下放大，Flutter `slider_parts.dart:678`） | P1 |
+| `range_slider` | `range_slider.rs` | 4 | ✅ 双向手柄映射正确（BLUE22 §4.3 的参照）；无 hover/drag 发光 | **M1** **M3**（手柄按下放大，主流 material 实现 `slider_parts.dart:678`） | P1 |
 | `list_box` | `listbox.rs` | 6 | 6 个字面量；行选中无统一来源 | **M1** **M6**（行线）**M4** | P1 |
 | `dropdown` | `dropdown.rs` | 8 | **完全不读 style（`style=N`）** ⇒ 展开面板主题盲 | **M4** **M5**（面板读 `surface_container`） | **P0** |
 | `cascader` | `cascader.rs` | 8 | BLUE21 C7：`visible_options_at` 算了 filter 又丢弃（`let _ = needle;`）；本仓**优势**控件 | ① 真过滤或删 `needle`（二选一，**不留悬空**）② 面板读 `surface_container` | **M5** **M10** | P1 |
@@ -1153,30 +1315,30 @@ Node::on_unmount(f)   // f 在节点被移除后调用一次；与 on_mount 配�
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
 | `switch` | `switch.rs` | 5 | ✅ 几何已修（`52×32`/`r14`）；**有 `travel` 与 `tick` 但无驱动者** ⇒ 开关**硬切**；`off_track` 已正确读 `theme_derived` | ① **M3（最高价值：一行让开关滑动）** ② 5 字面量清理 | **M3** **M4** | **P0** |
-| `slider` | `slider.rs` | 10 | `Slider::mouse_pressed` **存了 `draw` 不读**（BLUE21 AR6）；Flutter 有 5 态（hover/focus/drag 光晕），本仓只有 enable/disable | ① **M1** ② 加 hover/drag 光晕（Flutter 透明度 drag 0.1 / hover 0.08）③ 10 字面量清理 | **M1** **M2** **M4** | **P0** |
-| `progress_bar` | `progressbar.rs` | 4 | ✅ 几何已修（`h4 r2`）；**不确定态无动画**（Flutter 1800 ms）；轨道色已改派生态（BLUE21 B8 已修） | ① 不确定态加 `tick`（1800 ms）② `range_slider.rs:405` 的承载面派生已做对，保持 | **M3** **M2** | P1 |
-| `progress_circle` | `progress_circle.rs` | 3 | BLUE21 A.3.6：无 `trackGap`（值 0 时弧与轨道**无法区分**） | ① 补 `trackGap = 4`（Flutter `progress_indicator.dart:1636`）② 不确定态旋转（M3） | **M10** **M3** | P1 |
+| `slider` | `slider.rs` | 10 | `Slider::mouse_pressed` **存了 `draw` 不读**（BLUE21 AR6）；主流 material 实现 有 5 态（hover/focus/drag 光晕），本仓只有 enable/disable | ① **M1** ② 加 hover/drag 光晕（主流 material 实现 透明度 drag 0.1 / hover 0.08）③ 10 字面量清理 | **M1** **M2** **M4** | **P0** |
+| `progress_bar` | `progressbar.rs` | 4 | ✅ 几何已修（`h4 r2`）；**不确定态无动画**（主流 material 实现 1800 ms）；轨道色已改派生态（BLUE21 B8 已修） | ① 不确定态加 `tick`（1800 ms）② `range_slider.rs:405` 的承载面派生已做对，保持 | **M3** **M2** | P1 |
+| `progress_circle` | `progress_circle.rs` | 3 | BLUE21 A.3.6：无 `trackGap`（值 0 时弧与轨道**无法区分**） | ① 补 `trackGap = 4`（主流 material 实现 `progress_indicator.dart:1636`）② 不确定态旋转（M3） | **M10** **M3** | P1 |
 | `spinner` | `spinner.rs` | 3 | 有 `tick` **无驱动者** ⇒ **转圈不转** | **M3**（一行） | **P0** |
 | `rating` | `rating.rs` | 0 | BLUE21 A.4.5d：`Float` 属性**静默取整**（写 3.7 得 4）；半星不可表达 | ① 半星表示 ② `:hover` 预览（M1/M2）③ M9（`value` 朗读） | **M10** **M1** **M9** | P1 |
 | `badge` | `badge.rs` | 0 | ✅ 药丸可见性已修（BLUE21 B1）；`badge` 点 r 已固定 | **M4**（确认零字面量） | P2 |
 | `avatar` | `avatar.rs` | 1 | ✅ 已由 `AVATAR_SIZE` 固定（曾画半裁圆） | **M4** **M5** | P2 |
 | `chip` | `chip.rs` | 0 | BLUE21 A.3.5：曾是方角且不可见（**已修**）；`selected`/`checked` 互斥（BLUE21 F-4 提示） | ① 接 M2（selected 态）② 语义 flag 互斥断言 | **M2** **M10** | P2 |
-| `scroll_bar` | `scrollbar.rs` | 4 | BLUE21 B2/B3：滑块曾 = 槽色（已修）、箭头尺寸取长（已修）；Flutter 有**闲置 600 ms 后 300 ms 淡出** | ① 加淡出（`tick` + `Motion`）② 保持 `thumb_metrics` 纯函数（BLUE21 A.7 #10 的**优势**） | **M3** | P1 |
+| `scroll_bar` | `scrollbar.rs` | 4 | BLUE21 B2/B3：滑块曾 = 槽色（已修）、箭头尺寸取长（已修）；主流 material 实现 有**闲置 600 ms 后 300 ms 淡出** | ① 加淡出（`tick` + `Motion`）② 保持 `thumb_metrics` 纯函数（BLUE21 A.7 #10 的**优势**） | **M3** | P1 |
 | `meter` | `meter.rs` | 18 | BLUE21 D16：**刻度与自己的弧相差 90°**（漏 `+ offset`）；两端取整不同 ⇒ 45° 刻度 5 px、90° 刻度 6 px | ① 刻度角走**与弧顶点相同**的 `snap_to_grid` ② 18 个字面量 → 共享派生 | **M4** **M10** | **P0** |
 | `icon` | `icon.rs` | 3 | **不读 style** ⇒ 图标不随前景色 | **M4**（墨取 `style.text_color`） | P1 |
 | `image_view` | `image_view.rs` | 3 | **不读 style** | **M4** **M5**（占位面） | P2 |
 | `font_preview` | `font_preview.rs` | 3 | **不读 style** | **M4** | P2 |
 | `arc` | `arc.rs` | 3 | **不读 style** | **M4** | P2 |
 | `line` | `line.rs` | 1 | 不读 style（1 处） | **M4** **M6** | P2 |
-| `divider` | `divider.rs` | 1 | ✅ `DIVIDER_SPACING 16`/th 1 已对齐 Flutter | **M6**（`outline_variant`）**M4** | P1 |
+| `divider` | `divider.rs` | 1 | ✅ `DIVIDER_SPACING 16`/th 1 已对齐 主流 material 实现 | **M6**（`outline_variant`）**M4** | P1 |
 | `mini_chart` | `mini_chart.rs` | 2 | BLUE21 B14：网格字面量 `rgb(220,220,220)` ⇒ 暗态**最亮的东西是最不重要的网格** | **M4**（用 `charts.rs::axis_chrome()` 一处推导） | **P0** |
 | `lcd_number` | `lcd_number.rs` | 1 | BLUE21 C6：`num_digits` 只当**宽度除数**，不右对齐补位（画 1 位却按 6 位布局） | **M10**（按 `num_digits` 补位；`get_segments` 补 `'.'`） | P1 |
-| `skeleton_loader` | `skeleton_loader.rs` | 2 | 加载态**无闪烁动画**（Flutter/SwiftUI 都有 pulse） | **M3**（pulse，用 `Motion`）**M5** | P1 |
+| `skeleton_loader` | `skeleton_loader.rs` | 2 | 加载态**无闪烁动画**（外部对标 / 主流声明式实现 都有 pulse） | **M3**（pulse，用 `Motion`）**M5** | P1 |
 | `empty_state` | `empty_state.rs` | 1 | ✅ 重叠 28 px 已修（BLUE22 R-5） | **M4** | P2 |
 | `roller` | `roller.rs` | 3 | `roller.rs:331` 是 BLUE21 的**正确写法参照**（文本居中） | **M3**（滚轮惯性/对齐动画）**M4** | P2 |
 | `floating_label` | `floating_label.rs` | 5 | 有 `tick` 无驱动者（BLUE21 记为**正确范式**）；BLUE21 A.3.9：演示浮动标签的控件**没有**浮动标签（已部分） | **M3**（一行）**M4** | P1 |
 | `emoji_picker` | `emoji_picker.rs` | 2 | BLUE21 B20：面板 = 窗口底色 | **M5** **M4** | P2 |
-| `color_well` | `color_well.rs` | 0 | 本仓**优势**（Flutter/Cupertino **都没有**取色器） | **M1**（hover 描边）**M5** | P2 |
+| `color_well` | `color_well.rs` | 0 | 本仓**优势**（外部对标 / Cupertino **都没有**取色器） | **M1**（hover 描边）**M5** | P2 |
 | `color_history` | `color_history.rs` | 9 | 9 个字面量；有 hover 记录 | **M4** **M1** | P2 |
 | `mini_canvas` | `mini_canvas.rs` | 6 | 6 个字面量；无交互反馈 | **M4** **M1** | P2 |
 
@@ -1190,16 +1352,16 @@ Node::on_unmount(f)   // f 在节点被移除后调用一次；与 on_mount 配�
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
 | `panel` | `groupbox.rs` | 6 | **`Panel` 是 `GroupBox` 的 `pub type`**（`kind.rs:80-86`）；其「面」= 窗口底色 ⇒ **无层级** | **M5**（面读 `surface_container`）**M4** | **P1** |
-| `group_box` | `groupbox.rs` | 6 | BLUE21 B22：可勾选态**纯黑勾**（暗态最不可读的一笔）；且 `create_group_box` 从不 `set_checkable` ⇒ **快照覆盖不到该状态** | ① 勾取**框填充的对比色** ② 标题占位走 `top_padding = padding + label_h + spacing`（Qt `GroupBox.qml:20`）③ **产出 `group_box_checked` 快照** | **M4** **M7** **§4.1** | **P0** |
+| `group_box` | `groupbox.rs` | 6 | BLUE21 B22：可勾选态**纯黑勾**（暗态最不可读的一笔）；且 `create_group_box` 从不 `set_checkable` ⇒ **快照覆盖不到该状态** | ① 勾取**框填充的对比色** ② 标题占位走 `top_padding = padding + label_h + spacing`（参考工具包 `reference: the title-band reserve: padding + label height + spacing`）③ **产出 `group_box_checked` 快照** | **M4** **M7** **§4.1** | **P0** |
 | `tab_widget` | `tabwidget.rs` | 3 | BLUE21 D8：**构造后零 tab**（标题落不下去）；三种 `TabShape` 在 `tab_bar` 里画得一样 | ① 抄 `create_tab_bar` 加两个 tab ② `set` 补 `text`/`title` 分支 | **M7** **M10** | **P0** |
 | `scroll_area` | `scrollarea.rs` | 7 | BLUE21 B13：滚动条 **8 处字面量**（同文件 `draw_sticky_band` 已做对） | **M4**（抄自己的 `draw_sticky_band`）**M3**（淡出） | **P0** |
 | `splitter` | `splitter.rs` | 2 | `HANDLE_WIDTH` 曾在**两处**各写一遍（已由 `dimensions` 统一）；拖拽**无实时反馈** | **M3**（拖拽中高亮/光标）**M5** | P1 |
 | `dock_widget` | `dockwidget.rs` | 0 | BLUE21 D13：24 px 标题栏曾在**两个函数**各写一遍（已提常量）；**无拖出/吸附动画** | **M3**（吸附预览 + 拖动浮影）**M5** | P1 |
 | `mdi_area` | `mdiarea.rs` | 3 | BLUE21 A13：子窗口标题曾越过下边框（已修）；窗口**无最小化/还原动画** | **M3** **M5** | P2 |
 | `tool_box` | `toolbox.rs` | 11 | BLUE21 D7：竖排 120 px 下 **4 项归零**（`item_rect` 不钳制，越界项画到控件外） | ① 给页面保底宽/高 ② 条带做**溢出出口**（滚动或 more 钮）③ RTL. | **M7** **M10** **M8** | P1 |
-| `collapsible_pane` | `collapsible_pane.rs` | 4 | 展开/收起是**瞬时**（无高度动画）；头部高 24 < Flutter 44/48 | **M3**（高度动画）**M10**（头部高） | P1 |
+| `collapsible_pane` | `collapsible_pane.rs` | 4 | 展开/收起是**瞬时**（无高度动画）；头部高 24 < 主流 material 实现 44/48 | **M3**（高度动画）**M10**（头部高） | P1 |
 | `stacked_widget` | `stackedwidget.rs` | 0 | ✅ BLUE21 A.7 #4：禁用时**抑制信号并给出原因**（优势） | **M3**（切页过渡，可选） | P2 |
-| `stepper` | `stepper.rs` | 0 | BLUE21 P2-11：本仓 `stepper` = **数值微调器**，Flutter `Stepper` = **分步向导** ⇒ **缺一整个控件** | 二选一：**改名** 或 **补真正的向导控件**（`StepState` 5 态 + 连接线），**不留悬空** | **M10** | P1 |
+| `stepper` | `stepper.rs` | 0 | BLUE21 P2-11：本仓 `stepper` = **数值微调器**，主流 material 实现 `Stepper` = **分步向导** ⇒ **缺一整个控件** | 二选一：**改名** 或 **补真正的向导控件**（`StepState` 5 态 + 连接线），**不留悬空** | **M10** | P1 |
 | `safe_area` | `safe_area.rs` | 0 | ✅ 四边物理 inset（BLUE21 AR5 记为方向性问题） | **M8**（`start`/`end`） | P2 |
 | `masonry_layout` | `masonry_layout.rs` | 6 | BLUE21 D12：**整个 Draw 无 `push_clip`**（不裁剪）；标签用 `draw_text` 非 `draw_text_fitted`，`y = item_y + h/2 - 6` 只对 12 px 字号成立 | ① 加 `push_clip`/`pop_clip` + 丢弃 `y ≥ rect.bottom` ② 标签走 `text_line` + `draw_text_fitted` ③ BLUE21 记 `corner_radius` 死绑定（`4` vs 真画 `6`） | **M10** **M4** | P1 |
 | `carousel` | `carousel.rs` | 9 | ✅ BLUE21 A.7 #2：手势释放**距离 ∨ 速度** + 显式防抖下限（优势） | **M3**（吸附动画）**M4** | P2 |
@@ -1214,11 +1376,11 @@ Node::on_unmount(f)   // f 在节点被移除后调用一次；与 on_mount 配�
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
 | `app_bar` | `app_bar.rs` | 1 | BLUE21 AR2：字号 `h*0.38` **clamp 上限 22** ⇒ 2× 文本缩放**静默封顶**；back/title/action 全按**物理边** | ① 解 clamp ② `leading`/`trailing` 按 `TextDirection` 交换 | **M8** **M9** | **P0** |
-| `navigation_drawer` | `navigation_drawer.rs` | 3 | BLUE21 AR2：`panel_width.min(rect.width)` 在 240 px 下 = **整幅**；Flutter 是固定 304 | ① 固定宽 ② 开合**滑动动画**（M3） | **M3** **M10** | P1 |
+| `navigation_drawer` | `navigation_drawer.rs` | 3 | BLUE21 AR2：`panel_width.min(rect.width)` 在 240 px 下 = **整幅**；主流 material 实现 是固定 304 | ① 固定宽 ② 开合**滑动动画**（M3） | **M3** **M10** | P1 |
 | `bottom_navigation_bar` | `bottom_navigation_bar.rs` | 0 | BLUE21 AR2：指标是 **3 px 下划线**，M3 是 **64×32 药丸**；图标/字号用 `h*0.32`/`h*0.18` clamp | ① 药丸指标 ② 图标 24 / 标签 14·12 固定 ③ 切换动画（M3） | **M10** **M3** | P1 |
 | `tab_view` | `nav_widgets/tab_view.rs` | 1 | ✅ `tab_width = w/count` 是对的（BLUE22 第 70 轮已由组装推导） | **M3**（切页过渡）**M8** | P2 |
 | `navigation_stack` | `navigation_stack.rs` | 0 | BLUE21 A19：`nav_rect.y + 14` 是字面量，被 **13 px 与 15 px 两种字号共用** | ① 逐标签 `measure_text(text,&font).height` ② 推入/推出**转场**（M3） | **M10** **M3** | P1 |
-| `pagination` | `pagination.rs` | 2 | 本仓**优势**（Flutter 无独立分页控件）；页切换无反馈 | **M1**（页码 hover）**M2** | P2 |
+| `pagination` | `pagination.rs` | 2 | 本仓**优势**（主流 material 实现 无独立分页控件）；页切换无反馈 | **M1**（页码 hover）**M2** | P2 |
 | `adaptive_scaffold` | `adaptive_scaffold.rs` | 1 | ✅ 字号按比例 + clamp（BLUE21 记 ✅） | **M8** | P2 |
 | `menu` | `menu.rs` | 3 | ✅ 项带已由 `FlexLayout` 推导（BLUE22 第 70 轮）；**展开/收起瞬时** | ① 展开动画（M3）② 菜单项 hover（M1/M2）③ 方向键 `isMirrored` | **M3** **M1** **M8** | P1 |
 | `menu_item` | `menu.rs` | 3 | 同 `menu`；BLUE21 A.16：`menu_bar` 条目曾**重叠 9.6 px**（已修） | **M1** **M2** | P1 |
@@ -1253,7 +1415,7 @@ Node::on_unmount(f)   // f 在节点被移除后调用一次；与 on_mount 配�
 | `find_replace_dialog` | `find_replace_dialog.rs` | 0 | ✅ `text_line` 的**正确写法参照**（BLUE21 R1 的范式来源） | **M1** **M5** | P2 |
 | `wizard_dialog` | `wizard.rs` | 2 | 步骤切换无动画；BLUE21 P2-11 指出本仓缺**真正的向导** | **M3** **M10** | P1 |
 | `popover` | `dialog/popover.rs` | 2 | BLUE21 A22：占位符曾贴卡片顶 8 px（已修）；BLUE21 A.7 #11：阴影溢出时**宁可不画**（**优势，保留**） | **M5**（`surface_container_high`）**M3**（淡入） | P1 |
-| `tooltip` | `dialog/tooltip.rs` | 1 | 浅色态与背景**无从区分**（需 `inverse_surface`） | **M5**（`inverse_surface`/`on_inverse_surface`）**M3**（延迟 450 ms 淡出，Qt `ScrollBar.qml:35-47` 的范式） | **P0** |
+| `tooltip` | `dialog/tooltip.rs` | 1 | 浅色态与背景**无从区分**（需 `inverse_surface`） | **M5**（`inverse_surface`/`on_inverse_surface`）**M3**（延迟 450 ms 淡出，参考工具包 `reference: the scroll bar's minimum-length and hide-delay rules` 的范式） | **P0** |
 | `popup_window` | `popup_window.rs` | 1 | ✅ 24 px 常量已提取（BLUE21 D13 的范式） | **M5** | P2 |
 | `bottom_sheet` | `bottom_sheet.rs` | 1 | BLUE21 B23（**至今未修**）：遮罩 `ink.blend(sheet, 0.55)` ⇒ 暗态把背板**照亮**（121 亮于 18） | ① 朝**绝对暗色**混或读 `scrim`（**M5**）② 上滑动画（M3） | **M5** **M3** | **P0** |
 | `modal_bottom_sheet` | `modal_bottom_sheet.rs` | 1 | 同 `bottom_sheet`（同根因） | **M5** **M3** | **P0** |
@@ -1305,7 +1467,7 @@ Node::on_unmount(f)   // f 在节点被移除后调用一次；与 on_mount 配�
 > 实测：**4 个控件只有 1 个字面量、全部不读 style、0 个 `tick`**。
 > 这组看似「干净」，实则是**反面**：`charts.rs` 被 `bar_chart`/`line_chart`/`pie_chart` **三个控件共用**，
 > 颜色可能来自参数而非 `style`——`audit_appearance.py` 因此**测不到**它。
-> BLUE21 P4-3 已明确：本组**无外部基准**（Flutter/Cupertino 都无图表），**正确性全靠自查清单**。
+> BLUE21 P4-3 已明确：本组**无外部基准**（外部对标 / Cupertino 都无图表），**正确性全靠自查清单**。
 
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
@@ -1321,7 +1483,7 @@ Node::on_unmount(f)   // f 在节点被移除后调用一次；与 on_mount 配�
 > 本组承载本仓**最领先的能力**（图表族 14+ / 代码编辑器 / 终端 / 签名板 / 富文本 / 取色工作流），
 > 也正因如此，**它们的外观必须配得上它们的功能**。
 
-#### (a) 图表与金融族（**本仓优势，Flutter 无对应**；BLUE21 P4-3 的自查清单适用）
+#### (a) 图表与金融族（**本仓优势，主流 material 实现 无对应**；BLUE21 P4-3 的自查清单适用）
 
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
@@ -1341,7 +1503,7 @@ Node::on_unmount(f)   // f 在节点被移除后调用一次；与 on_mount 配�
 | `kanban_board` | `kanban_board.rs` | 0 | 0 字面量；卡片拖动**无落点指示** | **M3**（拖影 + 插入线）**M5**（列背景层级） | P1 |
 | `freeform_shape` | `freeform_shape/shape.rs` | 2 | 2 字面量 | **M1** **M4** | P2 |
 
-#### (b) 文本与编辑器族（**本仓优势，Flutter 无对应**）
+#### (b) 文本与编辑器族（**本仓优势，主流 material 实现 无对应**）
 
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
@@ -1353,14 +1515,14 @@ Node::on_unmount(f)   // f 在节点被移除后调用一次；与 on_mount 配�
 | `signature_pad` | `signature_pad.rs` | 1 | BLUE21 B18：画布 = 窗口底色（已修）；A.6：笔画捕获**按帧采样** ⇒ 快速输入多边形化（需**时间戳**） | ① 收带时间戳的指针增量流 + 相邻 delta 间**插值**② 平滑作为**独立可测步骤** | **M10** | P1 |
 | `command_palette` | `special_widgets/command_palette.rs` | 0 | 与 `list_view` 同 kind；分类/高亮无动效 | **M1**（行 hover）**M3**（过滤动画） | P2 |
 
-#### (c) 取色与图形族（**本仓优势**：Flutter 与 Cupertino **都没有**取色器）
+#### (c) 取色与图形族（**本仓优势**：主流 material 实现 与 Cupertino **都没有**取色器）
 
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
 | `color_picker` | `color_picker.rs` | 10 | 10 字面量；BLUE21 A.4.3f：选色应能表达为 `ColorScheme` role 赋值而非裸值 | ① **M4** ② 色相条/饱和度面读 token ③ 拖动**实时反馈**（M3） | **M4** **M3** | P1 |
 | `map_view` | `map_view.rs` | 5 | 5 字面量；与 `canvas` **共用 `Canvas` kind**；无平移/缩放动画 | **M5**（地图面层级）**M3**（惯性平移） | P2 |
 | `breadcrumb` | `breadcrumb.rs` | 0 | 0 字面量；分隔符与悬停无统一来源 | **M1** **M6**（分隔符） | P2 |
-| `segmented_control` | `segmented_control.rs` | 3 | BLUE21 AR2：`seg_w = rect.width/count` ⇒ 长标签 `text_x` 走负、越界重叠 | ① 按 Flutter 每段内边距 **16** / 最小高 **28** ② 选中段**滑动指示器**（M3） | **M10** **M3** | P1 |
+| `segmented_control` | `segmented_control.rs` | 3 | BLUE21 AR2：`seg_w = rect.width/count` ⇒ 长标签 `text_x` 走负、越界重叠 | ① 按 主流 material 实现 每段内边距 **16** / 最小高 **28** ② 选中段**滑动指示器**（M3） | **M10** **M3** | P1 |
 | `split_button` | `split_button.rs` | 3 | ✅ 已由组装推导并 tile（BLUE22 第 70 轮）；仍 3 字面量 | **M1**（主体/箭头分别 hover）**M4** | P1 |
 
 #### (d) 通知与吐司族
@@ -1381,12 +1543,12 @@ Node::on_unmount(f)   // f 在节点被移除后调用一次；与 on_mount 配�
 
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
-| `calendar` | `calendar.rs` | 14 | ✅ BLUE21 R-3/R-4 已修（日号居中 + 表头同列）；BLUE21 A.3.7：行高 `grid.height/6` ⇒ 11 px（Flutter 42/48） | ① 行高按 Flutter **42**（M10）② 月份切换**横滑动画**（M3）③ 14 字面量清理 | **M10** **M3** **M4** | **P0** |
-| `dial` | `dial.rs` | 3 | BLUE21 C1（**至今未修**）：`notches_visible`/`notch_target` **完全空转**（`Draw` 不引用） | ① **实现刻度环** ② 先裁定 `notch_target` 单位（Qt 是像素间距，本仓注释写「度」）③ 指针拖拽带动效 | **M10** **M3** | **P0** |
+| `calendar` | `calendar.rs` | 14 | ✅ BLUE21 R-3/R-4 已修（日号居中 + 表头同列）；BLUE21 A.3.7：行高 `grid.height/6` ⇒ 11 px（主流 material 实现 42/48） | ① 行高按 主流 material 实现 **42**（M10）② 月份切换**横滑动画**（M3）③ 14 字面量清理 | **M10** **M3** **M4** | **P0** |
+| `dial` | `dial.rs` | 3 | BLUE21 C1（**至今未修**）：`notches_visible`/`notch_target` **完全空转**（`Draw` 不引用） | ① **实现刻度环** ② 先裁定 `notch_target` 单位（参考工具包 是像素间距，本仓注释写「度」）③ 指针拖拽带动效 | **M10** **M3** | **P0** |
 | `tab_bar` | `tab_bar.rs` | 3 | BLUE21 D9：三种 `TabShape` **画得一样**（注释描述了没做的活）；D10：tab **永不换行/裁剪/溢出** | ① 抄 `tabwidget.rs:519-560`（那里三种形状是**真画**的）② 溢出出口 ③ 激活 tab 滑动指示器（M3） | **M10** **M3** | **P0** |
 | `pie_menu` | `pie_menu.rs` | 24 | **本组字面量最多（24）**；有 hover 记录 | ① **M4（24 处）** ② 展开/收起**扇形动画**（M3） | **M4** **M3** | P1 |
 | `ribbon_bar` | `ribbon_bar.rs` | 3 | 有 hover 记录 | **M1** **M2** | P1 |
-| `date_edit` | `date_edit.rs` | 1 | BLUE21 A.4.5f：是**纯文本框**，**选择器不可达**（Flutter 是对话框触发器） | ① 接日历弹出（`calendar_popup`）② 焦点态（M1/M2） | **M10** **M1** | P1 |
+| `date_edit` | `date_edit.rs` | 1 | BLUE21 A.4.5f：是**纯文本框**，**选择器不可达**（主流 material 实现 是对话框触发器） | ① 接日历弹出（`calendar_popup`）② 焦点态（M1/M2） | **M10** **M1** | P1 |
 | `time_edit` | `time_edit.rs` | 1 | 同 `date_edit`，且 `access.rs:497-503` **缺 `calendar_popup`**（契约不一致） | **M10** **M1** | P1 |
 | `date_time_edit` | `date_time_edit.rs` | 1 | 同族 | **M10** **M1** | P2 |
 
@@ -1413,7 +1575,7 @@ Node::on_unmount(f)   // f 在节点被移除后调用一次；与 on_mount 配�
 | `qr_code` | `qr_code.rs` | 0 | BLUE21 C5：`quiet_zone` 有字段**无访问器无 schema**；纠错级**不可设** | ① 发布 `quiet_zone` + setter ② 纠错级属性（QR「差不多对」就扫不出来） | **M10** | P1 |
 | `barcode_scanner` | `barcode_scanner.rs` | 0 | BLUE21 D11：四角括号**一半画到遮罩上**；A.6 缺相机权限/生命周期 | ① 四角统一锚到 viewfinder **内侧**角 ② 生命周期暂停/恢复 | **M10** | P1 |
 | `date_range_picker` | `date_range_picker.rs` | 0 | BLUE21 D4：表头/星期行/网格三者错位（11 px 死区） | **M10**（`grid_top` 从**已画出的范围**推） | P1 |
-| `mobile_date_picker` | `mobile_date_picker.rs` | 4 | BLUE21 A.3.8：行距 24 vs Flutter **32**；10 px 字装 24 px 行 | ① 行高 32 ② 选中带圆角 8 ③ 滚轮对齐动画（M3） | **M10** **M3** | P1 |
+| `mobile_date_picker` | `mobile_date_picker.rs` | 4 | BLUE21 A.3.8：行距 24 vs 主流 material 实现 **32**；10 px 字装 24 px 行 | ① 行高 32 ② 选中带圆角 8 ③ 滚轮对齐动画（M3） | **M10** **M3** | P1 |
 | `segmented_button` | `segmented_button.rs` | 3 | 与 `segmented_control`/`cupertino_segmented_control` **共用 `ToggleButton` kind**；32 高已统一 | ① 选中段**滑动指示器**（M3）② M1 | **M3** **M1** | P1 |
 | `avatar` | `avatar.rs` | 1 | ✅ 已固定 `AVATAR_SIZE 40` | **M4** | P2 |
 | `bezier_curve_editor` | `bezier_curve_editor.rs` | 0 | 有 hover 记录；控制点拖拽无反馈 | **M3**（手柄跟随）**M1** | P2 |
@@ -1422,13 +1584,13 @@ Node::on_unmount(f)   // f 在节点被移除后调用一次；与 on_mount 配�
 
 > 实测：**79 个字面量**（集中于 `core.rs`），**4 个控件共用 `core.rs`**。
 > 关键发现：**`CupertinoSwitch` 是 `Switch` 的纯类型别名**（`core.rs:34`，
-> BLUE21 A.3.10 已记）⇒ 它**没有 iOS 几何**（Flutter 是独立控件 59×39/51×31/拇指 r14）。
+> BLUE21 A.3.10 已记）⇒ 它**没有 iOS 几何**（主流 material 实现 是独立控件 59×39/51×31/拇指 r14）。
 > 且实测 `core.rs:615-618` 已有 `Color::rgb(0,122,255)`（iOS 蓝）等**现成的 iOS 色**——
 > **色有、几何与状态没有**。
 
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
-| `cupertino_switch` | `cupertino/core.rs` | 14 | **是 `Switch` 的别名**（无 iOS 几何 59×39/51×31）；BLEU21 A.3.10：未选中轨道曾 **= 窗口底色（不可见）** | ① 给 iOS 自有几何 ② **按压横向拉伸 7.0**（Flutter）③ ON/OFF 标签 ④ iOS 绿（`52,199,89`，**色已在文件里**） | **M4** **M3** **M10** | **P0** |
+| `cupertino_switch` | `cupertino/core.rs` | 14 | **是 `Switch` 的别名**（无 iOS 几何 59×39/51×31）；BLEU21 A.3.10：未选中轨道曾 **= 窗口底色（不可见）** | ① 给 iOS 自有几何 ② **按压横向拉伸 7.0**（主流 material 实现）③ ON/OFF 标签 ④ iOS 绿（`52,199,89`，**色已在文件里**） | **M4** **M3** **M10** | **P0** |
 | `cupertino_slider` | `cupertino/core.rs` | 14 | iOS 拇指**不是圆盘**（应有更细的轨道与更大拇指视觉） | ① iOS 几何 ② M3 | **M4** **M3** | P1 |
 | `cupertino_alert_dialog` | `cupertino/core.rs` | 14 | 无 iOS 圆角（**12** 而非 Material 28）；无遮罩层级 | ① iOS 圆角 ② **M5** ③ M3 | **M10** **M5** **M3** | P1 |
 | `material_snackbar` | `cupertino/core.rs` | 14 | `material_snackbar.rs:368` 是 BLUE21 A23 的**正确写法参照** | **M5**（`inverse_surface`）**M3**（滑入 + 自动消失计时） | **M5** **M3** | P1 |
@@ -1454,7 +1616,7 @@ $ python3 tools/audit_control_gaps.py
 candidate gaps: 25
 ```
 
-**这 25 条不是缺陷登记**（BLUE21 §A.4.3 已确立：本仓在桌面/图表方向**领先** Flutter），
+**这 25 条不是缺陷登记**（BLUE21 §A.4.3 已确立：本仓在桌面/图表方向**领先** 主流 material 实现），
 而是**外部基准的差集**。逐条裁定（**P4 新功能，不混入外形修复**，BLUE21 §6.5 同一处理）：
 
 | 缺口 | 裁定 | 理由 |
@@ -1465,7 +1627,7 @@ candidate gaps: 25
 | `alert_dialog`/`confirm_dialog`/`about_dialog` | ❌ 不补 | `message_box` 用 `MessageBoxLevel` 表达（语义化更清晰） |
 | `time_picker`/`clock` | ⚠️ 部分 | `time_edit` 已存在但**选择器不可达**（§A.8.2）⇒ 补**弹出时钟**而非新 kind |
 | `tag` | ❌ 不补 | `chip` 已覆盖 |
-| `flex`/`flow_layout`/`wrap_layout`/`split_layout`/`aspect_ratio`/`spacer`/`center`/`align`/`sized_box`/`padding`/`expanded`/`flexible`/`intrinsic_width` | ✅ **本仓优势，勿动** | 这 13 个是 **Flutter 的布局 widget**；本仓把它们做成了 `src/layout/` 的 15 种 `Layout` 实现（更少类型、更可测）。补成 180 个 kind 才是**退步** |
+| `flex`/`flow_layout`/`wrap_layout`/`split_layout`/`aspect_ratio`/`spacer`/`center`/`align`/`sized_box`/`padding`/`expanded`/`flexible`/`intrinsic_width` | ✅ **本仓优势，勿动** | 这 13 个是 **主流 material 实现 的布局 widget**；本仓把它们做成了 `src/layout/` 的 15 种 `Layout` 实现（更少类型、更可测）。补成 180 个 kind 才是**退步** |
 | `gauge` | ⚠️ 部分 | `meter` 已覆盖（§A.4，**需修刻度错相**） |
 | `phone_input`/`email_input` | ❌ 不补 | 属**校验规则**而非控件；应做成 `masked_edit` 的 preset |
 
@@ -1484,7 +1646,7 @@ candidate gaps: 25
 | **M2** 状态覆盖 | 188（全部） | 1 处 `generate.sh` + 6 个键 | 主题作者写的状态**永远不生效** |
 | **M3** 动效接线 | **11 已有 + 约 40 应新增** | 1 处 `tick_animations` + 每控件 1 行 | 11 个动画**静默死亡** |
 | **M4** 字面量 → token | **66 个 Draw 文件** | 每文件逐处（但**同字形可抽共享函数**） | 684 处字面量继续复制 |
-| **M5** 层级上妆 | **约 20**（对话框/面板/遮罩/反转面） | 7 个 token 的消费者 | 「不像 SwiftUI」 |
+| **M5** 层级上妆 | **约 20**（对话框/面板/遮罩/反转面） | 7 个 token 的消费者 | 「不像 主流声明式实现」 |
 | **M6** 分隔线上妆 | **约 15**（列表/表格/树/分隔） | 1 处 `outline_variant` | 行线与焦点环同色 |
 | **M7** 组合改组装 | **4 剩余**（`group_box`/`tool_box`/`number_picker`/`dialog` 按钮行） | BLUE22 已建 `CompositeBuilder` | 手算几何继续漂 |
 | **M8** RTL 接线 | **6**（`progress_bar`/`range_slider`/`tab_bar`/`app_bar`/`scroll_bar`/`menu`） | `TextDirection` 已存在 | 镜像后取值反向 |
@@ -1552,8 +1714,8 @@ M7/M8/M9/M10 是 4/6/8/25 个控件的逐条。
 
 **最后一条应当记住的判断**：本仓在**桌面/设计器/工控**方向
 （dock / MDI / 分割条 / 多级列联 / 取色工作流 / 14 种图表 / 富文本 / 终端 /
-虚拟化表格 + 冻结列 / 数值步进 / 分页）**明显强于 Flutter**（BLUE21 §A.7 的 12 项）。
-因此本计划的目标不是「变得像 Flutter」，而是
-**借 Flutter / Qt 的状态与动效机制、借 Material / SwiftUI 的层级语言，
+虚拟化表格 + 冻结列 / 数值步进 / 分页）**明显强于 主流 material 实现**（BLUE21 §A.7 的 12 项）。
+因此本计划的目标不是「变得像 主流 material 实现」，而是
+**借 外部对标 / 参考工具包 的状态与动效机制、借 Material / 主流声明式实现 的层级语言，
 把本仓已经领先的桌面能力做得同样「顺手」**——
 因为一个 dock 面板能不能被顺畅地拖出与吸附，**取决于状态与动效，而不取决于它的几何有多准。**

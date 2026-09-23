@@ -43,8 +43,9 @@ and rebuilding it each frame.
 
 **The retained model is unchanged.** Controls are still long-lived objects with an
 `ObjectId`, `add_child` still works, and the two styles can be mixed in one app. This layer
-adds a *description* of structure; it replaces nothing. (React, Flutter and SwiftUI are all
-declarative *and* retained for the same reason: the two are orthogonal.)
+adds a *description* of structure; it replaces nothing. Declarative and retained are
+orthogonal axes: a declarative layer describes structure, a retained tree owns the live
+controls, and an application can use both.
 
 ### When it pays off
 

@@ -7,6 +7,21 @@
 //! buttons on either side for incrementing or decrementing the value.
 //! It supports configurable minimum, maximum, step size, and emits a
 //! `value_changed` signal whenever the value changes.
+//!
+//! # Not Flutter's `Stepper` (BLUE22 · F-8)
+//!
+//! The name collides across toolkits, so the distinction is stated here rather than left for a
+//! reader to infer from a build error:
+//!
+//! | this crate | Flutter | what it is |
+//! |---|---|---|
+//! | `Stepper` (this file) | `SpinBox` / `NumberPicker` | a **numeric** spinner: a value plus −/+ buttons |
+//! | [`WizardDialog`](crate::widget::dialog::WizardDialog) | `Stepper` | a **multi-step flow**: numbered step indicator, Back/Next/Finish |
+//!
+//! The multi-step control therefore exists — it is `WizardDialog`, in `dialog/wizard.rs` — so
+//! there is no missing control and no rename to make. Renaming either one would only trade a
+//! collision with Flutter's vocabulary for one with this crate's own history; naming both here
+//! removes the ambiguity at the point of search instead.
 
 use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};

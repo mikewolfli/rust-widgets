@@ -48,70 +48,70 @@
 #### 1.2 文件命名规范
 ```
 src/widget/
-├── mod.rs                    # 主模块文件，导出所有控件
-├── base.rs                   # 基础Widget trait和BaseWidget
-├── button.rs                 # 按钮控件
-├── label.rs                  # 标签控件
-├── checkbox.rs               # 复选框控件
-├── radiobutton.rs            # 单选按钮控件
-├── lineedit.rs               # 单行文本输入框
-├── textedit.rs               # 多行文本编辑器
-├── combobox.rs               # 组合框
-├── spinbox.rs                # 数字微调框
-├── listbox.rs                # 列表框
-├── listview.rs               # 列表视图
-├── treeview.rs               # 树形视图
-├── progressbar.rs            # 进度条
-├── slider.rs                 # 滑块
-├── scrollbar.rs              # 滚动条
-├── scrollarea.rs             # 滚动区域
-├── panel.rs                  # 面板容器
-├── groupbox.rs               # 分组框
-├── tabwidget.rs              # 标签页控件
-├── splitter.rs               # 分割器
-├── mdiarea.rs                # MDI区域
-├── menubar.rs                # 菜单栏
-├── menu.rs                   # 菜单
-├── contextmenu.rs            # 上下文菜单
-├── toolbar.rs                # 工具栏
-├── statusbar.rs              # 状态栏
-├── canvas.rs                 # 画布
-├── table.rs                  # 表格
-├── grid.rs                   # 网格
-├── chart.rs                  # 图表
-├── togglebutton.rs           # 切换按钮
-├── checklistbox.rs           # 复选框列表
-├── doublespinbox.rs          # 双精度微调框
-├── dial.rs                   # 旋钮
-├── wizard.rs                 # 向导
-├── datepicker.rs             # 日期选择器
-├── timepicker.rs             # 时间选择器
-├── datetimepicker.rs         # 日期时间选择器
-├── directorydialog.rs        # 目录对话框
-├── dataview.rs               # 数据视图
-├── propertygrid.rs           # 属性网格
-├── toolbox.rs                # 工具箱
-├── stackedwidget.rs          # 堆叠控件
-├── collapsiblepane.rs        # 可折叠面板
-├── dockwidget.rs             # 停靠控件
-├── activityindicator.rs      # 活动指示器
-├── calendar.rs               # 日历
-├── columnview.rs             # 列视图
-├── undoview.rs               # 撤销视图
-├── command_link.rs           # 已存在
-├── font_combo_box.rs         # 已存在
-├── lcd_number.rs             # 已存在
-├── web_engine.rs             # 已存在
-├── web_view.rs               # 已存在
-├── window.rs                 # 已存在
-└── dialog/                   # 对话框相关
-    ├── dialog.rs
-    ├── messagebox.rs
-    ├── filedialog.rs
-    ├── colordialog.rs
-    ├── fontdialog.rs
-    ├── popupwindow.rs
-    └── mod.rs
+├── mod.rs # 主模块文件，导出所有控件
+├── base.rs # 基础Widget trait和BaseWidget
+├── button.rs # 按钮控件
+├── label.rs # 标签控件
+├── checkbox.rs # 复选框控件
+├── radiobutton.rs # 单选按钮控件
+├── lineedit.rs # 单行文本输入框
+├── textedit.rs # 多行文本编辑器
+├── combobox.rs # 组合框
+├── spinbox.rs # 数字微调框
+├── listbox.rs # 列表框
+├── listview.rs # 列表视图
+├── treeview.rs # 树形视图
+├── progressbar.rs # 进度条
+├── slider.rs # 滑块
+├── scrollbar.rs # 滚动条
+├── scrollarea.rs # 滚动区域
+├── panel.rs # 面板容器
+├── groupbox.rs # 分组框
+├── tabwidget.rs # 标签页控件
+├── splitter.rs # 分割器
+├── mdiarea.rs # MDI区域
+├── menubar.rs # 菜单栏
+├── menu.rs # 菜单
+├── contextmenu.rs # 上下文菜单
+├── toolbar.rs # 工具栏
+├── statusbar.rs # 状态栏
+├── canvas.rs # 画布
+├── table.rs # 表格
+├── grid.rs # 网格
+├── chart.rs # 图表
+├── togglebutton.rs # 切换按钮
+├── checklistbox.rs # 复选框列表
+├── doublespinbox.rs # 双精度微调框
+├── dial.rs # 旋钮
+├── wizard.rs # 向导
+├── datepicker.rs # 日期选择器
+├── timepicker.rs # 时间选择器
+├── datetimepicker.rs # 日期时间选择器
+├── directorydialog.rs # 目录对话框
+├── dataview.rs # 数据视图
+├── propertygrid.rs # 属性网格
+├── toolbox.rs # 工具箱
+├── stackedwidget.rs # 堆叠控件
+├── collapsiblepane.rs # 可折叠面板
+├── dockwidget.rs # 停靠控件
+├── activityindicator.rs # 活动指示器
+├── calendar.rs # 日历
+├── columnview.rs # 列视图
+├── undoview.rs # 撤销视图
+├── command_link.rs # 已存在
+├── font_combo_box.rs # 已存在
+├── lcd_number.rs # 已存在
+├── web_engine.rs # 已存在
+├── web_view.rs # 已存在
+├── window.rs # 已存在
+└── dialog/ # 对话框相关
+ ├── dialog.rs
+ ├── messagebox.rs
+ ├── filedialog.rs
+ ├── colordialog.rs
+ ├── fontdialog.rs
+ ├── popupwindow.rs
+ └── mod.rs
 ```
 
 #### 1.3 控件文件模板
@@ -128,38 +128,38 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 
 /// 按钮控件
 pub struct Button {
-    base: BaseWidget,
-    text: String,
-    enabled: bool,
-    /// 点击信号
-    pub clicked: GenericSignal,
-    /// 悬停信号
-    pub hovered: Signal1<bool>,
+ base: BaseWidget,
+ text: String,
+ enabled: bool,
+ /// 点击信号
+ pub clicked: GenericSignal,
+ /// 悬停信号
+ pub hovered: Signal1<bool>,
 }
 
 impl Button {
-    pub fn new(geometry: Rect, text: &str) -> Self {
-        Self {
-            base: BaseWidget::new(WidgetKind::Button, geometry, "Button"),
-            text: text.to_string(),
-            enabled: true,
-            clicked: GenericSignal::new(),
-            hovered: Signal1::new(),
-        }
-    }
-    
-    // 控件特有方法...
+ pub fn new(geometry: Rect, text: &str) -> Self {
+ Self {
+ base: BaseWidget::new(WidgetKind::Button, geometry, "Button"),
+ text: text.to_string(),
+ enabled: true,
+ clicked: GenericSignal::new(),
+ hovered: Signal1::new(),
+ }
+ }
+ 
+ // 控件特有方法...
 }
 
 impl Widget for Button {
-    // Widget trait实现...
+ // Widget trait实现...
 }
 
 impl Draw for Button {
-    fn draw(&mut self, context: &mut RenderContext) {
-        // 调用专门的渲染器
-        ButtonRenderer::draw(context, self);
-    }
+ fn draw(&mut self, context: &mut RenderContext) {
+ // 调用专门的渲染器
+ ButtonRenderer::draw(context, self);
+ }
 }
 ```
 
@@ -168,43 +168,43 @@ impl Draw for Button {
 #### 2.1 渲染器组织
 ```
 src/render/
-├── mod.rs                    # 渲染上下文和主API
-├── base.rs                   # 基础渲染器
-├── button.rs                 # 按钮渲染器
-├── label.rs                  # 标签渲染器
-├── checkbox.rs               # 复选框渲染器
-├── radiobutton.rs            # 单选按钮渲染器
-├── lineedit.rs               # 单行文本输入框渲染器
-├── textedit.rs               # 多行文本编辑器渲染器
-├── combobox.rs               # 组合框渲染器
-├── progressbar.rs            # 进度条渲染器
-├── slider.rs                 # 滑块渲染器
-├── scrollbar.rs              # 滚动条渲染器
-├── tabwidget.rs              # 标签页控件渲染器
-├── treeview.rs               # 树形视图渲染器
-├── listview.rs               # 列表视图渲染器
-├── chart.rs                  # 图表渲染器
-├── canvas.rs                 # 画布渲染器
-├── table.rs                  # 表格渲染器
-├── grid.rs                   # 网格渲染器
-├── menu.rs                   # 菜单渲染器
-├── toolbar.rs                # 工具栏渲染器
-├── statusbar.rs              # 状态栏渲染器
-├── dialog/                   # 对话框渲染器
-│   ├── dialog.rs
-│   ├── messagebox.rs
-│   └── mod.rs
-├── batch.rs                  # 批处理渲染优化
-├── text_cache.rs             # 文本缓存
-├── scene.rs                  # 场景管理
-├── quality/                  # 质量优化
-│   ├── adaptive.rs           # 自适应渲染
-│   ├── gpu_optimizer.rs      # GPU优化器
-│   └── mod.rs
-└── gpu/                      # GPU渲染
-    ├── wgpu_backend.rs       # WGPU后端
-    ├── shaders/              # 着色器文件
-    └── mod.rs
+├── mod.rs # 渲染上下文和主API
+├── base.rs # 基础渲染器
+├── button.rs # 按钮渲染器
+├── label.rs # 标签渲染器
+├── checkbox.rs # 复选框渲染器
+├── radiobutton.rs # 单选按钮渲染器
+├── lineedit.rs # 单行文本输入框渲染器
+├── textedit.rs # 多行文本编辑器渲染器
+├── combobox.rs # 组合框渲染器
+├── progressbar.rs # 进度条渲染器
+├── slider.rs # 滑块渲染器
+├── scrollbar.rs # 滚动条渲染器
+├── tabwidget.rs # 标签页控件渲染器
+├── treeview.rs # 树形视图渲染器
+├── listview.rs # 列表视图渲染器
+├── chart.rs # 图表渲染器
+├── canvas.rs # 画布渲染器
+├── table.rs # 表格渲染器
+├── grid.rs # 网格渲染器
+├── menu.rs # 菜单渲染器
+├── toolbar.rs # 工具栏渲染器
+├── statusbar.rs # 状态栏渲染器
+├── dialog/ # 对话框渲染器
+│ ├── dialog.rs
+│ ├── messagebox.rs
+│ └── mod.rs
+├── batch.rs # 批处理渲染优化
+├── text_cache.rs # 文本缓存
+├── scene.rs # 场景管理
+├── quality/ # 质量优化
+│ ├── adaptive.rs # 自适应渲染
+│ ├── gpu_optimizer.rs # GPU优化器
+│ └── mod.rs
+└── gpu/ # GPU渲染
+ ├── wgpu_backend.rs # WGPU后端
+ ├── shaders/ # 着色器文件
+ └── mod.rs
 ```
 
 #### 2.2 渲染器模板
@@ -218,46 +218,46 @@ use crate::widget::Button;
 pub struct ButtonRenderer;
 
 impl ButtonRenderer {
-    /// 渲染按钮
-    pub fn draw(context: &mut RenderContext, button: &Button) {
-        let rect = button.geometry();
-        
-        // 根据质量级别选择渲染策略
-        match context.quality_level() {
-            QualityLevel::High => Self::draw_high_quality(context, rect, button),
-            QualityLevel::Medium => Self::draw_medium_quality(context, rect, button),
-            QualityLevel::Low => Self::draw_low_quality(context, rect, button),
-        }
-    }
-    
-    /// 高质量渲染
-    fn draw_high_quality(context: &mut RenderContext, rect: Rect, button: &Button) {
-        // 渐变背景
-        context.fill_gradient_rect(rect, /* ... */);
-        // 阴影效果
-        context.draw_shadow(rect, /* ... */);
-        // 抗锯齿文本
-        context.draw_antialiased_text(rect, &button.text(), /* ... */);
-    }
-    
-    /// 中等质量渲染
-    fn draw_medium_quality(context: &mut RenderContext, rect: Rect, button: &Button) {
-        // 纯色背景
-        context.fill_rect(rect, /* ... */);
-        // 无阴影
-        // 普通文本
-        context.draw_text(rect, &button.text(), /* ... */);
-    }
-    
-    /// 低质量渲染
-    fn draw_low_quality(context: &mut RenderContext, rect: Rect, button: &Button) {
-        // 简单矩形
-        context.fill_rect(rect, /* ... */);
-        // 仅必要文本
-        if button.text().len() > 0 {
-            context.draw_simple_text(rect, &button.text(), /* ... */);
-        }
-    }
+ /// 渲染按钮
+ pub fn draw(context: &mut RenderContext, button: &Button) {
+ let rect = button.geometry();
+ 
+ // 根据质量级别选择渲染策略
+ match context.quality_level() {
+ QualityLevel::High => Self::draw_high_quality(context, rect, button),
+ QualityLevel::Medium => Self::draw_medium_quality(context, rect, button),
+ QualityLevel::Low => Self::draw_low_quality(context, rect, button),
+ }
+ }
+ 
+ /// 高质量渲染
+ fn draw_high_quality(context: &mut RenderContext, rect: Rect, button: &Button) {
+ // 渐变背景
+ context.fill_gradient_rect(rect, /* ... */);
+ // 阴影效果
+ context.draw_shadow(rect, /* ... */);
+ // 抗锯齿文本
+ context.draw_antialiased_text(rect, &button.text(), /* ... */);
+ }
+ 
+ /// 中等质量渲染
+ fn draw_medium_quality(context: &mut RenderContext, rect: Rect, button: &Button) {
+ // 纯色背景
+ context.fill_rect(rect, /* ... */);
+ // 无阴影
+ // 普通文本
+ context.draw_text(rect, &button.text(), /* ... */);
+ }
+ 
+ /// 低质量渲染
+ fn draw_low_quality(context: &mut RenderContext, rect: Rect, button: &Button) {
+ // 简单矩形
+ context.fill_rect(rect, /* ... */);
+ // 仅必要文本
+ if button.text().len() > 0 {
+ context.draw_simple_text(rect, &button.text(), /* ... */);
+ }
+ }
 }
 ```
 
@@ -268,45 +268,45 @@ use crate::quality::QualityLevel;
 
 /// 自适应渲染优化器
 pub struct AdaptiveRenderer {
-    current_quality: QualityLevel,
-    frame_times: Vec<f32>,
-    target_fps: f32,
+ current_quality: QualityLevel,
+ frame_times: Vec<f32>,
+ target_fps: f32,
 }
 
 impl AdaptiveRenderer {
-    pub fn new(target_fps: f32) -> Self {
-        Self {
-            current_quality: QualityLevel::High,
-            frame_times: Vec::with_capacity(60),
-            target_fps,
-        }
-    }
-    
-    /// 根据帧时间调整质量级别
-    pub fn adjust_quality(&mut self, frame_time: f32) -> QualityLevel {
-        self.frame_times.push(frame_time);
-        if self.frame_times.len() > 60 {
-            self.frame_times.remove(0);
-        }
-        
-        let avg_frame_time = self.frame_times.iter().sum::<f32>() / self.frame_times.len() as f32;
-        let target_frame_time = 1.0 / self.target_fps;
-        
-        // 自适应逻辑
-        if avg_frame_time > target_frame_time * 1.5 {
-            // 帧时间过长，降低质量
-            if let Some(lower) = self.current_quality.lower() {
-                self.current_quality = lower;
-            }
-        } else if avg_frame_time < target_frame_time * 0.7 {
-            // 帧时间充足，提高质量
-            if let Some(higher) = self.current_quality.higher() {
-                self.current_quality = higher;
-            }
-        }
-        
-        self.current_quality
-    }
+ pub fn new(target_fps: f32) -> Self {
+ Self {
+ current_quality: QualityLevel::High,
+ frame_times: Vec::with_capacity(60),
+ target_fps,
+ }
+ }
+ 
+ /// 根据帧时间调整质量级别
+ pub fn adjust_quality(&mut self, frame_time: f32) -> QualityLevel {
+ self.frame_times.push(frame_time);
+ if self.frame_times.len() > 60 {
+ self.frame_times.remove(0);
+ }
+ 
+ let avg_frame_time = self.frame_times.iter().sum::<f32>() / self.frame_times.len() as f32;
+ let target_frame_time = 1.0 / self.target_fps;
+ 
+ // 自适应逻辑
+ if avg_frame_time > target_frame_time * 1.5 {
+ // 帧时间过长，降低质量
+ if let Some(lower) = self.current_quality.lower() {
+ self.current_quality = lower;
+ }
+ } else if avg_frame_time < target_frame_time * 0.7 {
+ // 帧时间充足，提高质量
+ if let Some(higher) = self.current_quality.higher() {
+ self.current_quality = higher;
+ }
+ }
+ 
+ self.current_quality
+ }
 }
 ```
 
@@ -320,50 +320,50 @@ use crate::render::RenderContext;
 
 /// 渲染批处理器
 pub struct RenderBatcher {
-    fill_rects: Vec<(Rect, Color)>,
-    text_commands: Vec<(Rect, String, Color)>,
-    line_commands: Vec<(Point, Point, Color, u32)>,
+ fill_rects: Vec<(Rect, Color)>,
+ text_commands: Vec<(Rect, String, Color)>,
+ line_commands: Vec<(Point, Point, Color, u32)>,
 }
 
 impl RenderBatcher {
-    pub fn new() -> Self {
-        Self {
-            fill_rects: Vec::new(),
-            text_commands: Vec::new(),
-            line_commands: Vec::new(),
-        }
-    }
-    
-    /// 添加矩形填充命令
-    pub fn add_fill_rect(&mut self, rect: Rect, color: Color) {
-        self.fill_rects.push((rect, color));
-    }
-    
-    /// 添加文本绘制命令
-    pub fn add_text(&mut self, rect: Rect, text: &str, color: Color) {
-        self.text_commands.push((rect, text.to_string(), color));
-    }
-    
-    /// 执行批处理渲染
-    pub fn flush(&mut self, context: &mut RenderContext) {
-        // 批量渲染矩形
-        if !self.fill_rects.is_empty() {
-            Self::batch_fill_rects(context, &self.fill_rects);
-            self.fill_rects.clear();
-        }
-        
-        // 批量渲染文本
-        if !self.text_commands.is_empty() {
-            Self::batch_draw_text(context, &self.text_commands);
-            self.text_commands.clear();
-        }
-        
-        // 批量渲染线条
-        if !self.line_commands.is_empty() {
-            Self::batch_draw_lines(context, &self.line_commands);
-            self.line_commands.clear();
-        }
-    }
+ pub fn new() -> Self {
+ Self {
+ fill_rects: Vec::new(),
+ text_commands: Vec::new(),
+ line_commands: Vec::new(),
+ }
+ }
+ 
+ /// 添加矩形填充命令
+ pub fn add_fill_rect(&mut self, rect: Rect, color: Color) {
+ self.fill_rects.push((rect, color));
+ }
+ 
+ /// 添加文本绘制命令
+ pub fn add_text(&mut self, rect: Rect, text: &str, color: Color) {
+ self.text_commands.push((rect, text.to_string(), color));
+ }
+ 
+ /// 执行批处理渲染
+ pub fn flush(&mut self, context: &mut RenderContext) {
+ // 批量渲染矩形
+ if !self.fill_rects.is_empty() {
+ Self::batch_fill_rects(context, &self.fill_rects);
+ self.fill_rects.clear();
+ }
+ 
+ // 批量渲染文本
+ if !self.text_commands.is_empty() {
+ Self::batch_draw_text(context, &self.text_commands);
+ self.text_commands.clear();
+ }
+ 
+ // 批量渲染线条
+ if !self.line_commands.is_empty() {
+ Self::batch_draw_lines(context, &self.line_commands);
+ self.line_commands.clear();
+ }
+ }
 }
 ```
 
@@ -374,43 +374,43 @@ use wgpu::{Device, Queue, RenderPipeline};
 
 /// GPU渲染优化器
 pub struct GpuOptimizer {
-    device: Device,
-    queue: Queue,
-    pipelines: HashMap<String, RenderPipeline>,
-    buffer_pool: BufferPool,
+ device: Device,
+ queue: Queue,
+ pipelines: HashMap<String, RenderPipeline>,
+ buffer_pool: BufferPool,
 }
 
 impl GpuOptimizer {
-    /// 创建GPU优化实例
-    pub async fn new() -> Result<Self, String> {
-        // 初始化WGPU设备
-        let instance = wgpu::Instance::default();
-        let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions::default())
-            .await
-            .ok_or("No GPU adapter found")?;
-        
-        let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor::default(), None)
-            .await
-            .map_err(|e| format!("Failed to request device: {}", e))?;
-        
-        Ok(Self {
-            device,
-            queue,
-            pipelines: HashMap::new(),
-            buffer_pool: BufferPool::new(),
-        })
-    }
-    
-    /// 批量渲染矩形
-    pub fn batch_render_rects(&mut self, rects: &[(Rect, Color)]) {
-        // GPU批处理逻辑
-        let vertex_data = Self::prepare_rect_vertices(rects);
-        self.buffer_pool.upload_vertices(&self.device, &self.queue, &vertex_data);
-        
-        // 使用矩形渲染管线
-        let pipeline = self.get_or_create_pipeline("rect");
-        // 执行渲染...
-    }
+ /// 创建GPU优化实例
+ pub async fn new() -> Result<Self, String> {
+ // 初始化WGPU设备
+ let instance = wgpu::Instance::default();
+ let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions::default())
+ .await
+ .ok_or("No GPU adapter found")?;
+ 
+ let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor::default(), None)
+ .await
+ .map_err(|e| format!("Failed to request device: {}", e))?;
+ 
+ Ok(Self {
+ device,
+ queue,
+ pipelines: HashMap::new(),
+ buffer_pool: BufferPool::new(),
+ })
+ }
+ 
+ /// 批量渲染矩形
+ pub fn batch_render_rects(&mut self, rects: &[(Rect, Color)]) {
+ // GPU批处理逻辑
+ let vertex_data = Self::prepare_rect_vertices(rects);
+ self.buffer_pool.upload_vertices(&self.device, &self.queue, &vertex_data);
+ 
+ // 使用矩形渲染管线
+ let pipeline = self.get_or_create_pipeline("rect");
+ // 执行渲染...
+ }
 }
 ```
 
@@ -439,43 +439,43 @@ impl GpuOptimizer {
 
 #### 4.2 实施步骤
 1. **创建文件结构**
-   ```bash
-   # 创建基础控件文件
-   mkdir -p src/widget/dialog
-   touch src/widget/button.rs
-   touch src/widget/label.rs
-   # ... 其他控件文件
-   ```
+ ```bash
+ # 创建基础控件文件
+ mkdir -p src/widget/dialog
+ touch src/widget/button.rs
+ touch src/widget/label.rs
+ # ... 其他控件文件
+ ```
 
 2. **迁移代码逻辑**
-   - 从mod.rs中提取每个控件的结构定义
-   - 实现Widget trait
-   - 实现Draw trait（如需要）
+ - 从mod.rs中提取每个控件的结构定义
+ - 实现Widget trait
+ - 实现Draw trait（如需要）
 
 3. **创建渲染器**
-   - 为每个控件创建对应的渲染器
-   - 实现质量分级渲染
-   - 集成批处理优化
+ - 为每个控件创建对应的渲染器
+ - 实现质量分级渲染
+ - 集成批处理优化
 
 4. **更新模块导出**
-   ```rust
-   // src/widget/mod.rs
-   pub mod button;
-   pub mod label;
-   pub mod checkbox;
-   // ... 其他模块
-   
-   pub use button::Button;
-   pub use label::Label;
-   pub use checkbox::CheckBox;
-   // ... 其他导出
-   ```
+ ```rust
+ // src/widget/mod.rs
+ pub mod button;
+ pub mod label;
+ pub mod checkbox;
+ // ... 其他模块
+ 
+ pub use button::Button;
+ pub use label::Label;
+ pub use checkbox::CheckBox;
+ // ... 其他导出
+ ```
 
 5. **测试验证**
-   - 编译测试
-   - 单元测试
-   - 示例程序测试
-   - 性能基准测试
+ - 编译测试
+ - 单元测试
+ - 示例程序测试
+ - 性能基准测试
 
 #### 4.3 风险控制
 1. **兼容性风险**: 保持现有API不变，只改变内部实现
@@ -490,25 +490,25 @@ impl GpuOptimizer {
 // tests/widget_tests.rs
 #[cfg(test)]
 mod button_tests {
-    use crate::widget::Button;
-    use crate::core::Rect;
-    
-    #[test]
-    fn test_button_creation() {
-        let button = Button::new(Rect::new(0, 0, 100, 50), "Test");
-        assert_eq!(button.text(), "Test");
-        assert!(button.is_enabled());
-    }
-    
-    #[test]
-    fn test_button_click() {
-        let mut button = Button::new(Rect::new(0, 0, 100, 50), "Click me");
-        let mut clicked = false;
-        button.clicked.connect(|| clicked = true);
-        
-        button.click();
-        assert!(clicked);
-    }
+ use crate::widget::Button;
+ use crate::core::Rect;
+ 
+ #[test]
+ fn test_button_creation() {
+ let button = Button::new(Rect::new(0, 0, 100, 50), "Test");
+ assert_eq!(button.text(), "Test");
+ assert!(button.is_enabled());
+ }
+ 
+ #[test]
+ fn test_button_click() {
+ let mut button = Button::new(Rect::new(0, 0, 100, 50), "Click me");
+ let mut clicked = false;
+ button.clicked.connect(|| clicked = true);
+ 
+ button.click();
+ assert!(clicked);
+ }
 }
 ```
 
@@ -520,13 +520,13 @@ use rust_widgets::widget::Button;
 use rust_widgets::core::Rect;
 
 fn bench_button_rendering(c: &mut Criterion) {
-    let button = Button::new(Rect::new(0, 0, 100, 50), "Benchmark");
-    
-    c.bench_function("button_render", |b| {
-        b.iter(|| {
-            // 渲染性能测试
-        });
-    });
+ let button = Button::new(Rect::new(0, 0, 100, 50), "Benchmark");
+ 
+ c.bench_function("button_render", |b| {
+ b.iter(|| {
+ // 渲染性能测试
+ });
+ });
 }
 
 criterion_group!(benches, bench_button_rendering);
@@ -547,13 +547,13 @@ use rust_widgets::widget::Button;
 use rust_widgets::core::Rect;
 
 fn main() {
-    let mut button = Button::new(Rect::new(50, 50, 200, 60), "Click Me!");
-    
-    button.clicked.connect(|| {
-        println!("Button clicked!");
-    });
-    
-    // 渲染按钮...
+ let mut button = Button::new(Rect::new(50, 50, 200, 60), "Click Me!");
+ 
+ button.clicked.connect(|| {
+ println!("Button clicked!");
+ });
+ 
+ // 渲染按钮...
 }
 ```
 

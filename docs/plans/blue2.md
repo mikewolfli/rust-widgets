@@ -44,33 +44,33 @@
 **ToggleButton 实现示例**:
 ```rust
 impl Draw for ToggleButton {
-    fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.base.geometry();
-        let bg = if !self.base.is_enabled() {
-            Color::from_rgb(200, 200, 200)
-        } else if self.checked {
-            Color::from_rgb(100, 150, 255)
-        } else {
-            Color::from_rgb(220, 220, 220)
-        };
-        context.fill_rect(rect, bg);
-        context.draw_rect(rect, Color::from_rgb(100, 100, 100));
-        context.draw_text(
-            crate::core::Point::new(rect.x + 5, rect.y + rect.height as i32 / 2),
-            &self.text,
-            &crate::core::Font::default(),
-            Color::from_rgb(0, 0, 0),
-        );
-    }
+ fn draw(&mut self, context: &mut RenderContext) {
+ let rect = self.base.geometry();
+ let bg = if !self.base.is_enabled() {
+ Color::from_rgb(200, 200, 200)
+ } else if self.checked {
+ Color::from_rgb(100, 150, 255)
+ } else {
+ Color::from_rgb(220, 220, 220)
+ };
+ context.fill_rect(rect, bg);
+ context.draw_rect(rect, Color::from_rgb(100, 100, 100));
+ context.draw_text(
+ crate::core::Point::new(rect.x + 5, rect.y + rect.height as i32 / 2),
+ &self.text,
+ &crate::core::Font::default(),
+ Color::from_rgb(0, 0, 0),
+ );
+ }
 }
 impl EventHandler for ToggleButton {
-    fn handle_event(&mut self, event: &Event) {
-        match event {
-            Event::MousePress { .. } => self.base.set_mouse_pressed(true),
-            Event::MouseRelease { .. } => { self.toggle(); self.base.set_mouse_pressed(false); }
-            _ => {}
-        }
-    }
+ fn handle_event(&mut self, event: &Event) {
+ match event {
+ Event::MousePress { .. } => self.base.set_mouse_pressed(true),
+ Event::MouseRelease { .. } => { self.toggle(); self.base.set_mouse_pressed(false); }
+ _ => {}
+ }
+ }
 }
 ```
 
@@ -87,21 +87,21 @@ impl EventHandler for ToggleButton {
 **Canvas 实现示例**:
 ```rust
 impl Draw for Canvas {
-    fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.base.geometry();
-        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
-        context.draw_rect(rect, Color::from_rgb(200, 200, 200));
-    }
+ fn draw(&mut self, context: &mut RenderContext) {
+ let rect = self.base.geometry();
+ context.fill_rect(rect, Color::from_rgb(255, 255, 255));
+ context.draw_rect(rect, Color::from_rgb(200, 200, 200));
+ }
 }
 impl EventHandler for Canvas {
-    fn handle_event(&mut self, event: &Event) {
-        match event {
-            Event::MousePress { pos: _, button } if *button == 1 => {
-                self.base.set_mouse_pressed(true);
-            }
-            _ => {}
-        }
-    }
+ fn handle_event(&mut self, event: &Event) {
+ match event {
+ Event::MousePress { pos: _, button } if *button == 1 => {
+ self.base.set_mouse_pressed(true);
+ }
+ _ => {}
+ }
+ }
 }
 ```
 
@@ -116,36 +116,36 @@ impl EventHandler for Canvas {
 **ListView 实现示例**:
 ```rust
 impl Draw for ListView {
-    fn draw(&mut self, context: &mut RenderContext) {
-        let rect = self.base.geometry();
-        context.fill_rect(rect, Color::from_rgb(255, 255, 255));
-        context.draw_rect(rect, Color::from_rgb(200, 200, 200));
-        if let Some(ref model) = self.model {
-            let item_h = 20;
-            for i in 0..model.len() {
-                let y = rect.y + (item_h as i32) * i as i32;
-                if y + item_h > rect.y + rect.height as i32 { break; }
-                if Some(i) == self.focused_row {
-                    context.fill_rect(Rect::new(rect.x, y, rect.width, item_h), Color::from_rgb(200, 220, 255));
-                }
-                context.draw_text(Point::new(rect.x + 5, y + item_h/2), &model.text(i), &Font::default(), Color::from_rgb(0, 0, 0));
-            }
-        }
-    }
+ fn draw(&mut self, context: &mut RenderContext) {
+ let rect = self.base.geometry();
+ context.fill_rect(rect, Color::from_rgb(255, 255, 255));
+ context.draw_rect(rect, Color::from_rgb(200, 200, 200));
+ if let Some(ref model) = self.model {
+ let item_h = 20;
+ for i in 0..model.len() {
+ let y = rect.y + (item_h as i32) * i as i32;
+ if y + item_h > rect.y + rect.height as i32 { break; }
+ if Some(i) == self.focused_row {
+ context.fill_rect(Rect::new(rect.x, y, rect.width, item_h), Color::from_rgb(200, 220, 255));
+ }
+ context.draw_text(Point::new(rect.x + 5, y + item_h/2), &model.text(i), &Font::default(), Color::from_rgb(0, 0, 0));
+ }
+ }
+ }
 }
 impl EventHandler for ListView {
-    fn handle_event(&mut self, event: &Event) {
-        match event {
-            Event::MousePress { pos, button } if *button == 1 => {
-                let rect = self.base.geometry();
-                let index = ((pos.y - rect.y) / 20) as usize;
-                if index < self.model.as_ref().map_or(0, |m| m.len()) {
-                    self.select_row(index);
-                }
-            }
-            _ => {}
-        }
-    }
+ fn handle_event(&mut self, event: &Event) {
+ match event {
+ Event::MousePress { pos, button } if *button == 1 => {
+ let rect = self.base.geometry();
+ let index = ((pos.y - rect.y) / 20) as usize;
+ if index < self.model.as_ref().map_or(0, |m| m.len()) {
+ self.select_row(index);
+ }
+ }
+ _ => {}
+ }
+ }
 }
 ```
 
@@ -178,24 +178,24 @@ ObjectId → [无 Widget Registry] → &mut dyn Draw/EventHandler
 ```rust
 /// 建议：引入 WidgetRegistry，使容器可按 ObjectId 查找子控件
 pub trait WidgetRegistry {
-    fn find_draw(&self, id: ObjectId) -> Option<&mut dyn Draw>;
-    fn find_event_handler(&self, id: ObjectId) -> Option<&mut dyn EventHandler>;
+ fn find_draw(&self, id: ObjectId) -> Option<&mut dyn Draw>;
+ fn find_event_handler(&self, id: ObjectId) -> Option<&mut dyn EventHandler>;
 }
 ```
 
 将 WidgetRegistry 引用注入容器控件，使 Frame::draw() 可以：
 ```rust
 fn draw(&mut self, context: &mut RenderContext) {
-    // 绘制自身边框和背景
-    let rect = self.base.geometry();
-    context.fill_rect(rect, Color::from_rgb(240, 240, 240));
-    context.draw_rect(rect, Color::from_rgb(180, 180, 180));
-    // 转发绘制到子控件
-    if let Some(ref child_id) = self.child_widget {
-        if let Some(drawable) = self.widget_registry.find_draw(*child_id) {
-            drawable.draw(context);
-        }
-    }
+ // 绘制自身边框和背景
+ let rect = self.base.geometry();
+ context.fill_rect(rect, Color::from_rgb(240, 240, 240));
+ context.draw_rect(rect, Color::from_rgb(180, 180, 180));
+ // 转发绘制到子控件
+ if let Some(ref child_id) = self.child_widget {
+ if let Some(drawable) = self.widget_registry.find_draw(*child_id) {
+ drawable.draw(context);
+ }
+ }
 }
 ```
 
@@ -260,8 +260,8 @@ fn inject_drop_event(&self, _event: DropEvent) -> bool { false }
 
 ```rust
 fn set_clipboard_text(&self, _text: &str) -> bool {
-    // 需要 winapi: OpenClipboard → EmptyClipboard → GlobalAlloc → SetClipboardData → CloseClipboard
-    // 当前: eprintln!("not implemented"); false
+ // 需要 winapi: OpenClipboard → EmptyClipboard → GlobalAlloc → SetClipboardData → CloseClipboard
+ // 当前: eprintln!("not implemented"); false
 }
 ```
 
@@ -286,22 +286,22 @@ cargo check --lib 2>&1 | grep "generated" | grep -oP '\d+ warnings'
 ```rust
 #[cfg(test)]
 mod widget_tests {
-    use crate::widget::*;
-    use crate::core::Rect;
+ use crate::widget::*;
+ use crate::core::Rect;
 
-    #[test]
-    fn test_toggle_button_draw() {
-        let mut btn = ToggleButton::new(Rect::new(0, 0, 100, 30), "Test");
-        assert!(!btn.is_checked());
-        btn.toggle();
-        assert!(btn.is_checked());
-    }
+ #[test]
+ fn test_toggle_button_draw() {
+ let mut btn = ToggleButton::new(Rect::new(0, 0, 100, 30), "Test");
+ assert!(!btn.is_checked());
+ btn.toggle();
+ assert!(btn.is_checked());
+ }
 
-    #[test]
-    fn test_list_view_selection() {
-        let mut lv = ListView::new(Rect::new(0, 0, 200, 300));
-        assert_eq!(lv.selected_row(), None);
-    }
+ #[test]
+ fn test_list_view_selection() {
+ let mut lv = ListView::new(Rect::new(0, 0, 200, 300));
+ assert_eq!(lv.selected_row(), None);
+ }
 }
 ```
 
@@ -340,35 +340,35 @@ mod widget_tests {
 #### 6.2 实施步骤
 
 1. **修复空 Draw/EventHandler** (已完成)
-   ```bash
-   - src/widget/base_widgets/toggle_button.rs  ✅
-   - src/widget/container_widgets/splitter.rs   ✅
-   - src/widget/special_widgets/canvas.rs       ✅
-   - src/widget/special_widgets/chart.rs        ✅
-   - src/widget/special_widgets/grid.rs         ✅
-   - src/widget/input_widgets/rich_edit.rs      ✅
-   - src/widget/dialog/popup_window.rs          ✅
-   - src/widget/view_widgets/list_view.rs       ✅
-   - src/widget/view_widgets/table_widget.rs    ✅
-   - src/widget/view_widgets/tree_view.rs       ✅
-   ```
+ ```bash
+ - src/widget/base_widgets/toggle_button.rs ✅
+ - src/widget/container_widgets/splitter.rs ✅
+ - src/widget/special_widgets/canvas.rs ✅
+ - src/widget/special_widgets/chart.rs ✅
+ - src/widget/special_widgets/grid.rs ✅
+ - src/widget/input_widgets/rich_edit.rs ✅
+ - src/widget/dialog/popup_window.rs ✅
+ - src/widget/view_widgets/list_view.rs ✅
+ - src/widget/view_widgets/table_widget.rs ✅
+ - src/widget/view_widgets/tree_view.rs ✅
+ ```
 
 2. **修复 ScrollArea AsNeeded**
-   ```bash
-   - src/widget/container_widgets/scrollarea.rs  ✅
-   ```
+ ```bash
+ - src/widget/container_widgets/scrollarea.rs ✅
+ ```
 
 3. **修复 Platform stub**
-   ```bash
-   - src/platform/stub.rs  ✅ (添加日志输出)
-   - src/platform/windows/platform_impl.rs ✅ (fix variable naming)
-   ```
+ ```bash
+ - src/platform/stub.rs ✅ (添加日志输出)
+ - src/platform/windows/platform_impl.rs ✅ (fix variable naming)
+ ```
 
 4. **编译验证**
-   ```bash
-   cargo check --lib 2>&1 | tail -3
-   # ✅ Finished dev profile [unoptimized + debuginfo]
-   ```
+ ```bash
+ cargo check --lib 2>&1 | tail -3
+ # ✅ Finished dev profile [unoptimized + debuginfo]
+ ```
 
 #### 6.3 风险控制
 
@@ -468,30 +468,30 @@ mod widget_tests {
 ```c
 // rust_widgets_errors.h — Auto-generated error codes
 typedef enum {
-    RW_ERR_SUCCESS              = 0,
-    // General errors (1-99)
-    RW_ERR_NOT_IMPLEMENTED      = 1,
-    RW_ERR_UNSUPPORTED_OPERATION = 2,
-    RW_ERR_INVALID_ARGUMENT     = 3,
-    RW_ERR_NULL_POINTER         = 4,
-    RW_ERR_OUT_OF_MEMORY        = 5,
-    RW_ERR_LOCK_POISONED        = 6,
-    // Widget errors (100-199)
-    RW_ERR_WIDGET_BASE_NOT_IMPL = 100,
-    RW_ERR_WIDGET_NOT_FOUND     = 101,
-    RW_ERR_WIDGET_INVALID_STATE = 102,
-    RW_ERR_WIDGET_DEPRECATED    = 103,
-    // Platform errors (200-299)
-    RW_ERR_PLATFORM_UNSUPPORTED = 200,
-    RW_ERR_PLATFORM_INIT_FAILED = 201,
-    RW_ERR_CLIPBOARD_FAILED     = 202,
-    RW_ERR_DRAG_DROP_FAILED     = 203,
-    // Render errors (300-399)
-    RW_ERR_RENDER_CONTEXT_INVALID = 300,
-    RW_ERR_RENDER_PIPELINE_FAILED = 301,
-    // I/O errors (400-499)
-    RW_ERR_I18N_LOAD_FAILED     = 400,
-    RW_ERR_FILE_NOT_FOUND       = 401,
+ RW_ERR_SUCCESS = 0,
+ // General errors (1-99)
+ RW_ERR_NOT_IMPLEMENTED = 1,
+ RW_ERR_UNSUPPORTED_OPERATION = 2,
+ RW_ERR_INVALID_ARGUMENT = 3,
+ RW_ERR_NULL_POINTER = 4,
+ RW_ERR_OUT_OF_MEMORY = 5,
+ RW_ERR_LOCK_POISONED = 6,
+ // Widget errors (100-199)
+ RW_ERR_WIDGET_BASE_NOT_IMPL = 100,
+ RW_ERR_WIDGET_NOT_FOUND = 101,
+ RW_ERR_WIDGET_INVALID_STATE = 102,
+ RW_ERR_WIDGET_DEPRECATED = 103,
+ // Platform errors (200-299)
+ RW_ERR_PLATFORM_UNSUPPORTED = 200,
+ RW_ERR_PLATFORM_INIT_FAILED = 201,
+ RW_ERR_CLIPBOARD_FAILED = 202,
+ RW_ERR_DRAG_DROP_FAILED = 203,
+ // Render errors (300-399)
+ RW_ERR_RENDER_CONTEXT_INVALID = 300,
+ RW_ERR_RENDER_PIPELINE_FAILED = 301,
+ // I/O errors (400-499)
+ RW_ERR_I18N_LOAD_FAILED = 400,
+ RW_ERR_FILE_NOT_FOUND = 401,
 } RwErrorCode;
 ```
 
@@ -506,57 +506,57 @@ use std::fmt;
 pub struct ErrorId(pub i32);
 
 impl ErrorId {
-    pub const SUCCESS: Self = Self(0);
-    pub const NOT_IMPLEMENTED: Self = Self(1);
-    pub const UNSUPPORTED_OPERATION: Self = Self(2);
-    pub const INVALID_ARGUMENT: Self = Self(3);
-    pub const NULL_POINTER: Self = Self(4);
-    pub const OUT_OF_MEMORY: Self = Self(5);
-    pub const LOCK_POISONED: Self = Self(6);
-    pub const WIDGET_BASE_NOT_IMPL: Self = Self(100);
-    pub const WIDGET_NOT_FOUND: Self = Self(101);
-    pub const WIDGET_INVALID_STATE: Self = Self(102);
-    pub const WIDGET_DEPRECATED: Self = Self(103);
-    pub const PLATFORM_UNSUPPORTED: Self = Self(200);
-    pub const PLATFORM_INIT_FAILED: Self = Self(201);
-    pub const CLIPBOARD_FAILED: Self = Self(202);
-    pub const DRAG_DROP_FAILED: Self = Self(203);
-    pub const RENDER_CONTEXT_INVALID: Self = Self(300);
-    pub const RENDER_PIPELINE_FAILED: Self = Self(301);
-    pub const I18N_LOAD_FAILED: Self = Self(400);
-    pub const FILE_NOT_FOUND: Self = Self(401);
+ pub const SUCCESS: Self = Self(0);
+ pub const NOT_IMPLEMENTED: Self = Self(1);
+ pub const UNSUPPORTED_OPERATION: Self = Self(2);
+ pub const INVALID_ARGUMENT: Self = Self(3);
+ pub const NULL_POINTER: Self = Self(4);
+ pub const OUT_OF_MEMORY: Self = Self(5);
+ pub const LOCK_POISONED: Self = Self(6);
+ pub const WIDGET_BASE_NOT_IMPL: Self = Self(100);
+ pub const WIDGET_NOT_FOUND: Self = Self(101);
+ pub const WIDGET_INVALID_STATE: Self = Self(102);
+ pub const WIDGET_DEPRECATED: Self = Self(103);
+ pub const PLATFORM_UNSUPPORTED: Self = Self(200);
+ pub const PLATFORM_INIT_FAILED: Self = Self(201);
+ pub const CLIPBOARD_FAILED: Self = Self(202);
+ pub const DRAG_DROP_FAILED: Self = Self(203);
+ pub const RENDER_CONTEXT_INVALID: Self = Self(300);
+ pub const RENDER_PIPELINE_FAILED: Self = Self(301);
+ pub const I18N_LOAD_FAILED: Self = Self(400);
+ pub const FILE_NOT_FOUND: Self = Self(401);
 }
 
 /// Rich error type with error ID + message + source location.
 #[derive(Debug, Clone)]
 pub struct RwError {
-    pub id: ErrorId,
-    pub message: String,
+ pub id: ErrorId,
+ pub message: String,
 }
 
 impl RwError {
-    pub fn new(id: ErrorId, message: impl Into<String>) -> Self {
-        Self { id, message: message.into() }
-    }
-    /// Create a "not implemented" error.
-    pub fn not_implemented(feature: &str) -> Self {
-        Self::new(ErrorId::NOT_IMPLEMENTED, format!("not implemented: {feature}"))
-    }
-    /// Convert panic info to an RwError (for catch_unwind boundary).
-    pub fn from_panic(panic_info: &dyn std::any::Any) -> Self {
-        let msg = panic_info
-            .downcast_ref::<&str>()
-            .map(|s| s.to_string())
-            .or_else(|| panic_info.downcast_ref::<String>().cloned())
-            .unwrap_or_default();
-        Self::new(ErrorId::NOT_IMPLEMENTED, msg)
-    }
+ pub fn new(id: ErrorId, message: impl Into<String>) -> Self {
+ Self { id, message: message.into() }
+ }
+ /// Create a "not implemented" error.
+ pub fn not_implemented(feature: &str) -> Self {
+ Self::new(ErrorId::NOT_IMPLEMENTED, format!("not implemented: {feature}"))
+ }
+ /// Convert panic info to an RwError (for catch_unwind boundary).
+ pub fn from_panic(panic_info: &dyn std::any::Any) -> Self {
+ let msg = panic_info
+ .downcast_ref::<&str>()
+ .map(|s| s.to_string())
+ .or_else(|| panic_info.downcast_ref::<String>().cloned())
+ .unwrap_or_default();
+ Self::new(ErrorId::NOT_IMPLEMENTED, msg)
+ }
 }
 
 impl fmt::Display for RwError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[RW-{:03}] {}", self.id.0, self.message)
-    }
+ fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+ write!(f, "[RW-{:03}] {}", self.id.0, self.message)
+ }
 }
 
 impl std::error::Error for RwError {}
@@ -572,12 +572,12 @@ pub type RwResult<T> = Result<T, RwError>;
 /// CRITICAL: Must be used at C FFI boundaries.
 pub fn catch_panic<F, T>(f: F) -> RwResult<T>
 where
-    F: FnOnce() -> T + std::panic::UnwindSafe,
+ F: FnOnce() -> T + std::panic::UnwindSafe,
 {
-    match std::panic::catch_unwind(f) {
-        Ok(v) => Ok(v),
-        Err(e) => Err(RwError::from_panic(&*e)),
-    }
+ match std::panic::catch_unwind(f) {
+ Ok(v) => Ok(v),
+ Err(e) => Err(RwError::from_panic(&*e)),
+ }
 }
 ```
 
@@ -593,27 +593,27 @@ where
 /// ```ignore
 /// #[no_mangle]
 /// pub extern "C" fn rust_widgets_do_something() -> i32 {
-///     c_try!({
-///         // fallible logic here
-///         Ok(0)
-///     })
+/// c_try!({
+/// // fallible logic here
+/// Ok(0)
+/// })
 /// }
 /// ```
 #[macro_export]
 macro_rules! c_try {
-    ($body:expr) => {{
-        use std::panic::{catch_unwind, UnwindSafe};
-        let result: $crate::error::RwResult<_> = catch_unwind(|| $body);
-        match result {
-            Ok(val) => val,
-            Err(e) => {
-                // Log the error
-                let _ = e;
-                eprintln!("[rust_widgets] C ABI error: {e}");
-                e.id.0  // return error code to C caller
-            }
-        }
-    }};
+ ($body:expr) => {{
+ use std::panic::{catch_unwind, UnwindSafe};
+ let result: $crate::error::RwResult<_> = catch_unwind(|| $body);
+ match result {
+ Ok(val) => val,
+ Err(e) => {
+ // Log the error
+ let _ = e;
+ eprintln!("[rust_widgets] C ABI error: {e}");
+ e.id.0 // return error code to C caller
+ }
+ }
+ }};
 }
 ```
 
@@ -653,15 +653,15 @@ macro_rules! c_try {
 // Before
 #[no_mangle]
 pub extern "C" fn rust_widgets_create_button(...) -> u64 {
-    get_control_backend().create_button(...)
+ get_control_backend().create_button(...)
 }
 
 // After
 #[no_mangle]
 pub extern "C" fn rust_widgets_create_button(...) -> u64 {
-    c_try!({
-        get_control_backend().create_button(...)
-    })
+ c_try!({
+ get_control_backend().create_button(...)
+ })
 }
 ```
 
@@ -685,7 +685,7 @@ import re
 import sys
 
 def generate(rust_source: str) -> str:
-    header = """// Auto-generated from src/error/mod.rs — DO NOT EDIT MANUALLY
+ header = """// Auto-generated from src/error/mod.rs — DO NOT EDIT MANUALLY
 #ifndef RUST_WIDGETS_ERRORS_H
 #define RUST_WIDGETS_ERRORS_H
 
@@ -698,19 +698,19 @@ extern "C" {
 typedef int32_t RwErrorCode;
 
 """
-    for match in re.finditer(r'pub const (\w+): Self = Self\((\d+)\);', rust_source):
-        name = match.group(1)
-        code = match.group(2)
-        header += f"#define RW_ERROR_{name} {code}\n"
+ for match in re.finditer(r'pub const (\w+): Self = Self\((\d+)\);', rust_source):
+ name = match.group(1)
+ code = match.group(2)
+ header += f"#define RW_ERROR_{name} {code}\n"
 
-    header += """
+ header += """
 #ifdef __cplusplus
 }
 #endif
 
 #endif /* RUST_WIDGETS_ERRORS_H */
 """
-    return header
+ return header
 PYEOF
 ```
 

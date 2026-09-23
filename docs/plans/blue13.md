@@ -77,7 +77,7 @@
 ```rust
 // C 风格的函数指针表
 struct LvStyle {
-    setter: Vec<Box<dyn Fn(&mut WidgetStyle)>>,  // 运行时分发开销
+ setter: Vec<Box<dyn Fn(&mut WidgetStyle)>>, // 运行时分发开销
 }
 ```
 
@@ -85,27 +85,27 @@ struct LvStyle {
 ```rust
 // Rust Builder 模式 + 编译期验证
 let style = WidgetStyle::default()
-    .with_background(Color::RED)
-    .with_border(Color::BLACK, 2, 4)
-    .with_padding(Padding::all(8));
+ .with_background(Color::RED)
+ .with_border(Color::BLACK, 2, 4)
+ .with_padding(Padding::all(8));
 ```
 
 ❌ 错误方式（C 风格回调）：
 ```rust
 struct LvWidget {
-    click_cb: Option<Box<dyn Fn()>>,  // 动态分发
+ click_cb: Option<Box<dyn Fn()>>, // 动态分发
 }
 ```
 
 ✅ Rust 方式：
 ```rust
 impl EventHandler for Button {
-    fn handle_event(&mut self, event: &Event) {
-        match event {
-            Event::MouseClick { .. } => { /* 直接处理，零开销 */ }
-            _ => {}
-        }
-    }
+ fn handle_event(&mut self, event: &Event) {
+ match event {
+ Event::MouseClick { .. } => { /* 直接处理，零开销 */ }
+ _ => {}
+ }
+ }
 }
 ```
 
@@ -154,9 +154,9 @@ impl EventHandler for Button {
 
 ```
 CssParser.parse(css_text)
-  → Vec<CssRule> { selector, declarations }
-    → CssSelector::matches(kind, class, id, state) → bool
-      → apply_declarations(decls, &mut WidgetStyle)
+ → Vec<CssRule> { selector, declarations }
+ → CssSelector::matches(kind, class, id, state) → bool
+ → apply_declarations(decls, &mut WidgetStyle)
 ```
 
 **问题**：没有任何 `Draw::draw()` 调用上述路径。
@@ -167,30 +167,30 @@ CssParser.parse(css_text)
 // ─── 编译期安全的 Builder ───
 
 let button_style = WidgetStyle::default()
-    .with_background(Color::rgba(0, 102, 204, 255))
-    .with_text_color(Color::WHITE)
-    .with_border(Color::rgba(0, 80, 180, 255), 1, 4)
-    .with_padding(Padding::symmetric(8, 16));
+ .with_background(Color::rgba(0, 102, 204, 255))
+ .with_text_color(Color::WHITE)
+ .with_border(Color::rgba(0, 80, 180, 255), 1, 4)
+ .with_padding(Padding::symmetric(8, 16));
 
 // ─── 运行时 CSS 覆盖 ───
 
 let css = r#".primary { background: #0066cc; color: white; }"#;
 let mut button = Button::new(rect, "Click");
-button.apply_css(css, ".primary");  // 内部调用 CssParser + apply_declarations
+button.apply_css(css, ".primary"); // 内部调用 CssParser + apply_declarations
 
 // ─── Draw trait 自动消费 style ───
 
 impl Draw for Button {
-    fn draw(&self, ctx: &mut RenderContext) {
-        // 全部取 style 字段，有则用，无则走默认
-        let bg = self.style().background_color.unwrap_or(Color::LIGHT_GRAY);
-        let fg = self.style().text_color.unwrap_or(Color::BLACK);
-        let br = self.style().border_radius;
-        let pd = self.style().padding;
+ fn draw(&self, ctx: &mut RenderContext) {
+ // 全部取 style 字段，有则用，无则走默认
+ let bg = self.style().background_color.unwrap_or(Color::LIGHT_GRAY);
+ let fg = self.style().text_color.unwrap_or(Color::BLACK);
+ let br = self.style().border_radius;
+ let pd = self.style().padding;
 
-        ctx.fill_rounded_rect(self.content_rect(), br, bg);
-        ctx.draw_text(self.text_rect(pd), &self.text, fg);
-    }
+ ctx.fill_rounded_rect(self.content_rect(), br, bg);
+ ctx.draw_text(self.text_rect(pd), &self.text, fg);
+ }
 }
 ```
 
@@ -198,12 +198,12 @@ impl Draw for Button {
 
 LVGL 的样式设置是运行时字符串查询：
 ```c
-lv_style_set_bg_color(&style, LV_COLOR_RED);  // 运行时写字段
+lv_style_set_bg_color(&style, LV_COLOR_RED); // 运行时写字段
 ```
 
 Rust 的 Builder 是编译期链式调用：
 ```rust
-WidgetStyle::default().with_background(Color::RED)  // 编译器内联
+WidgetStyle::default().with_background(Color::RED) // 编译器内联
 ```
 编译后等同于直接字段赋值，零开销。
 
@@ -315,8 +315,8 @@ LVGL 用 C 无泛型 → 二进制小而可控。Rust 泛型 monomorphization �
 ### Phase 1: CSS 渲染管线 + 控件补齐（P0）— 预计 3-4 轮
 
 ```
-R1.1-R1.3    BaseWidget style 字段 + Widget::apply_css + Button 集成 Draw
-R2.1-R2.6    Arc, Spinner, Roller, Dropdown, TextArea, Keyboard — 6 个控件
+R1.1-R1.3 BaseWidget style 字段 + Widget::apply_css + Button 集成 Draw
+R2.1-R2.6 Arc, Spinner, Roller, Dropdown, TextArea, Keyboard — 6 个控件
 验证: cargo test --lib ✅, 二进制 < 600KB
 ```
 
@@ -325,10 +325,10 @@ R2.1-R2.6    Arc, Spinner, Roller, Dropdown, TextArea, Keyboard — 6 个控件
 ### Phase 2: 全部控件 + 局部刷新 + 依赖瘦身（P0/P1）— 预计 4-5 轮
 
 ```
-R1.4-R1.6    Label + 其余控件集成 + 全局样式表
-R2.7-R2.15   TabView, TileView, Calendar, MiniChart, Canvas, Image, Line, Meter, AnimImg
-R3.1-R3.4    局部刷新（DirtyRect 合并 + 裁剪 + 按需）
-R4.1-R4.7    依赖瘦身（8 个依赖变为 optional）
+R1.4-R1.6 Label + 其余控件集成 + 全局样式表
+R2.7-R2.15 TabView, TileView, Calendar, MiniChart, Canvas, Image, Line, Meter, AnimImg
+R3.1-R3.4 局部刷新（DirtyRect 合并 + 裁剪 + 按需）
+R4.1-R4.7 依赖瘦身（8 个依赖变为 optional）
 验证: cargo test --lib ✅, 二进制 < 200KB ✅
 ```
 
@@ -337,9 +337,9 @@ R4.1-R4.7    依赖瘦身（8 个依赖变为 optional）
 ### Phase 3: no_std + heapless（P2/P3）— 预计 3-4 轮
 
 ```
-R5.1-R5.2    #![no_std] + alloc 过渡
-R5.3-R5.4    Vec/String → heapless::Vec/heapless::String
-R5.5-R5.7    Arena + Cell/RefCell + 单线程
+R5.1-R5.2 #![no_std] + alloc 过渡
+R5.3-R5.4 Vec/String → heapless::Vec/heapless::String
+R5.5-R5.7 Arena + Cell/RefCell + 单线程
 验证: cargo build --target thumbv7m-none-eabi --features mini ✅
 ```
 
@@ -376,8 +376,8 @@ R5.5-R5.7    Arena + Cell/RefCell + 单线程
 ### 构建状态
 
 ```
-cargo build --no-default-features --features mini --profile release-mini:  ✅ 0 errors
-cargo test --lib:  ✅ 3258 passed, 0 failed
+cargo build --no-default-features --features mini --profile release-mini: ✅ 0 errors
+cargo test --lib: ✅ 3258 passed, 0 failed
 ```
 
 ### Mini 当前关键指标

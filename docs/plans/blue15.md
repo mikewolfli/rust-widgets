@@ -77,12 +77,12 @@
 67. **🧾 属性契约必须在控件自身表达** — 控件属性不得集中在 `match kind()` 的集中式分支里；每个控件通过 trait 实现自己的 `get` / `set` / `property_names`，共性属性由默认实现提供。新增一个控件只能需要改**一处**（该控件文件）。判定：新增控件时 `properties.rs` / `access_*.in.rs` 无需修改。
 
 68. **🌍 OS 编译门禁只能在 `src/platform/` 内** — `#[cfg(target_os = ...)]` / `#[cfg(target_family = ...)]` / `#[cfg(windows)]` / `#[cfg(unix)]` / 任何 `feature = "<os>"` 只能出现在 `src/platform/**` 内。例外：`cfg(target_arch = "wasm32")` 按原则 #42 豁免；`src/bindings/` 按原则 #40 豁免。中间层需要平台事实时，**必须**通过 `Platform` trait 的运行时方法询问。判定：
-    ```
-    grep -rn 'cfg(target_os\|cfg(target_family\|cfg(unix)\|cfg(windows)\|cfg!(target_os' src/ \
-      --include=*.rs | grep -v '^src/platform/' | grep -v 'target_arch' \
-      | grep -v '/// ' | grep -v '// '
-    ```
-    目标：**输出为空**（含测试）。
+ ```
+ grep -rn 'cfg(target_os\|cfg(target_family\|cfg(unix)\|cfg(windows)\|cfg!(target_os' src/ \
+ --include=*.rs | grep -v '^src/platform/' | grep -v 'target_arch' \
+ | grep -v '/// ' | grep -v '// '
+ ```
+ 目标：**输出为空**（含测试）。
 
 69. **🌍 平台事实的「编译期默认值」也只能在 platform 里算** — 中间层需要「按编译目标推出的默认值」（快捷键风格、换行符习惯、默认字体族…）时，正确做法是在 `src/platform/types.rs` 写一个 `pub const fn compile_target_*()`（已有先例：`compile_target_shortcut_style()`，`platform/types.rs:43`），由中间层调用；或直接做成 `Platform` trait 方法。禁止在中间层写 `cfg!(target_os = ...)`。
 
@@ -132,13 +132,13 @@
 
 ```
 $ cargo check --no-default-features --features desktop
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.37s
+ Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.37s
 
 $ cargo check --no-default-features --features embedded
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.52s
+ Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.52s
 
 $ cargo check --no-default-features --features mini
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.49s
+ Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.49s
 
 $ cargo test --no-default-features --features desktop --lib -q
 test result: ok. 4006 passed; 0 failed; 0 ignored
@@ -175,7 +175,7 @@ test result: ok. 4006 passed; 0 failed; 0 ignored
  1224 src/platform/ios/platform_impl.rs
  1185 src/platform/macos_objc2/platform_impl.rs
  1120 src/platform/wasm/platform_impl.rs
-  ...
+ ...
 ```
 
 ### 2.3 `mini` / `embedded` 门控散落现状（引用计数基线）
@@ -227,16 +227,16 @@ test result: ok. 4006 passed; 0 failed; 0 ignored
 
 ```
 WidgetKind 变体总数 ........... 167
-路由表覆盖 .................... 167   ← 穷尽，无孤儿、无重复
+路由表覆盖 .................... 167 ← 穷尽，无孤儿、无重复
 （23 + 20 + 34 + 90 = 167）
 
-有效返回 CustomRequired ....... 147   (= 23 + 34 + 90)
+有效返回 CustomRequired ....... 147 (= 23 + 34 + 90)
 有效返回 NativePreferred ...... 20
 
 NativePreferred 的 20 个 .......
-  Button, CheckBox, RadioButton, Label, LineEdit, ComboBox, SpinBox,
-  ListBox, ProgressBar, Slider, Panel, Window, MenuBar, Menu, ToolBar,
-  StatusBar
+ Button, CheckBox, RadioButton, Label, LineEdit, ComboBox, SpinBox,
+ ListBox, ProgressBar, Slider, Panel, Window, MenuBar, Menu, ToolBar,
+ StatusBar
 
 额外事实：`MessageBox` / `FileDialog` / `ColorDialog` / `FontDialog` 由 match
 **之前**的早退分支（`if matches!(...) { return CustomRequired; }`）处理，之后
@@ -245,7 +245,7 @@ NativePreferred 的 20 个 .......
 Phase B-4 托缩时一并清理。
 
 另有 3 个由 Windows 后端 `native_widget_kinds()` 运行时提升：
-  SpinBox, ListView, ScrollArea
+ SpinBox, ListView, ScrollArea
 ```
 
 > ✅ **更正记录（原则 #64）**：本节初稿曾声称「有 23 个变体不在路由表中，存在两条创建路径」。经重新取证，**该结论错误**，成因是首次解析脚本未处理 `|` 续行（如 `WidgetKind::Calendar` 位于 `| WidgetKind::Calendar` 行首管道之后），把这些续行误判为「不在表中」。实测：**路由表穷尽 167/167，无孤儿、无重复**。
@@ -266,7 +266,7 @@ Phase B-4 托缩时一并清理。
 这意味着：**把 `route_preference_for_widget_kind` 改为常量只影响路径 A**；只要路径 B 存在，「机制唯一」就不能成立。**Phase B/C 必须把路径 B 合并进路径 A**，验收为：
 
 ```
-grep -rn "backend_for_kind" src/lib.rs | wc -l        # 目标：1（仅 create_widget_of_kind 内部）
+grep -rn "backend_for_kind" src/lib.rs | wc -l # 目标：1（仅 create_widget_of_kind 内部）
 ```
 
 ### 2.6 `native` 路径的实际调用点
@@ -344,51 +344,51 @@ grep -rn "backend_for_kind" src/lib.rs | wc -l        # 目标：1（仅 create_
 
 ```mermaid
 flowchart TD
-  subgraph UPPER["上层 API（零机制词汇，原则 #52）"]
-    APP["app::WindowHandle"]
-    ABI["bindings::rw_create_*  (26)"]
-    DEMO["demo / examples"]
-  end
+ subgraph UPPER["上层 API（零机制词汇，原则 #52）"]
+ APP["app::WindowHandle"]
+ ABI["bindings::rw_create_* (26)"]
+ DEMO["demo / examples"]
+ end
 
-  subgraph WIDGETS["src/widget/"]
-    WK["WidgetKind (167)"]
-    W["Box dyn Widget + Draw"]
-    REG["widget::runtime 注册表"]
-  end
+ subgraph WIDGETS["src/widget/"]
+ WK["WidgetKind (167)"]
+ W["Box dyn Widget + Draw"]
+ REG["widget::runtime 注册表"]
+ end
 
-  subgraph ROUTING["src/control_backend/"]
-    CB["ControlBackend（仅一档）"]
-    RT["routing: 恒为 CustomRequired"]
-  end
+ subgraph ROUTING["src/control_backend/"]
+ CB["ControlBackend（仅一档）"]
+ RT["routing: 恒为 CustomRequired"]
+ end
 
-  subgraph HOST["src/platform/（只剩宿主能力）"]
-    PT["Platform: create_window + mount_surface"]
-    INFRA["IME / Clipboard / Font / DPI / Input / EventLoop / Print / A11y"]
-    BE["macos / windows / linux / android / ios / harmony / wasm / wayland / portable"]
-  end
+ subgraph HOST["src/platform/（只剩宿主能力）"]
+ PT["Platform: create_window + mount_surface"]
+ INFRA["IME / Clipboard / Font / DPI / Input / EventLoop / Print / A11y"]
+ BE["macos / windows / linux / android / ios / harmony / wasm / wayland / portable"]
+ end
 
-  APP --> CB
-  ABI --> CB
-  DEMO --> APP
-  CB --> WK
-  CB --> REG
-  REG --> W
-  RT -.-> CB
-  CB -->|mount_surface| PT
-  PT --> BE
-  INFRA --> BE
-  BE -->|dispatch_event| REG
-  BE -->|render_frame| REG
+ APP --> CB
+ ABI --> CB
+ DEMO --> APP
+ CB --> WK
+ CB --> REG
+ REG --> W
+ RT -.-> CB
+ CB -->|mount_surface| PT
+ PT --> BE
+ INFRA --> BE
+ BE -->|dispatch_event| REG
+ BE -->|render_frame| REG
 ```
 
 ### 3.2 目标依赖方向（单向）
 
 ```mermaid
 flowchart LR
-  W["widget"] --> CB["control_backend"]
-  CB --> P["platform"]
-  P --> B["platform backends"]
-  B -.->|仅经由 runtime 注册表回调| W
+ W["widget"] --> CB["control_backend"]
+ CB --> P["platform"]
+ P --> B["platform backends"]
+ B -.->|仅经由 runtime 注册表回调| W
 ```
 
 关键约束：**backend 只能通过 `widget::runtime` 的公开函数回调控件**，不允许 `use crate::widget::xxx::ConcreteWidget`（否则 platform 依赖 widget 具体类型，层次倒置）。
@@ -424,21 +424,21 @@ flowchart LR
 
 ```rust
 fn declare_cfg_aliases() {
-    println!("cargo:rustc-check-cfg=cfg(full_widgets)");
-    println!("cargo:rustc-check-cfg=cfg(stripped_widgets)");
+ println!("cargo:rustc-check-cfg=cfg(full_widgets)");
+ println!("cargo:rustc-check-cfg=cfg(stripped_widgets)");
 
-    let has_profile = ["desktop", "tablet", "mobile"].iter().any(|f| feature_enabled(f));
-    let is_stripped = ["mini", "embedded"].iter().any(|f| feature_enabled(f));
+ let has_profile = ["desktop", "tablet", "mobile"].iter().any(|f| feature_enabled(f));
+ let is_stripped = ["mini", "embedded"].iter().any(|f| feature_enabled(f));
 
-    if has_profile && !is_stripped {
-        println!("cargo:rustc-cfg=full_widgets");
-    }
-    if is_stripped {
-        println!("cargo:rustc-cfg=stripped_widgets");
-    }
-    for feature in ["desktop", "tablet", "mobile", "mini", "embedded", "portable"] {
-        println!("cargo:rerun-if-env-changed=CARGO_FEATURE_{}", feature.to_uppercase());
-    }
+ if has_profile && !is_stripped {
+ println!("cargo:rustc-cfg=full_widgets");
+ }
+ if is_stripped {
+ println!("cargo:rustc-cfg=stripped_widgets");
+ }
+ for feature in ["desktop", "tablet", "mobile", "mini", "embedded", "portable"] {
+ println!("cargo:rerun-if-env-changed=CARGO_FEATURE_{}", feature.to_uppercase());
+ }
 }
 ```
 
@@ -454,20 +454,20 @@ fn declare_cfg_aliases() {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceClass {
-    /// desktop / tablet / mobile: an OS runtime exists.
-    Device,
-    /// embedded / no device profile: a bare render surface, no OS runtime.
-    Surface,
-    /// mini: no OS runtime and an alloc-frugal memory budget.
-    Minimal,
+ /// desktop / tablet / mobile: an OS runtime exists.
+ Device,
+ /// embedded / no device profile: a bare render surface, no OS runtime.
+ Surface,
+ /// mini: no OS runtime and an alloc-frugal memory budget.
+ Minimal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineClass {
-    /// The OS owns the window and pumps the event loop.
-    OsHosted(DeviceClass),
-    /// The library owns the loop over its own surface.
-    SelfHosted(DeviceClass),
+ /// The OS owns the window and pumps the event loop.
+ OsHosted(DeviceClass),
+ /// The library owns the loop over its own surface.
+ SelfHosted(DeviceClass),
 }
 ```
 
@@ -492,9 +492,9 @@ pub const fn profile_name() -> &'static str;
 
 ```rust
 pub fn init() {
-    trace_runtime_route("init");
-    platform::profile::runtime_backend().init();
-    platform::profile::init_optional_subsystems();
+ trace_runtime_route("init");
+ platform::profile::runtime_backend().init();
+ platform::profile::init_optional_subsystems();
 }
 pub fn run() { platform::profile::runtime_backend().run(); }
 pub fn quit() { platform::profile::runtime_backend().quit(); }
@@ -519,18 +519,18 @@ pub fn quit() { platform::profile::runtime_backend().quit(); }
 ```
 # (1) profile 门控收敛
 grep -rn 'feature = "mini"\|feature = "embedded"' src/ --include=*.rs \
-  | grep -v '^src/platform/profile.rs' | wc -l   # 必须为 0
+ | grep -v '^src/platform/profile.rs' | wc -l # 必须为 0
 
 # (2) OS 编译门禁只在 platform 内（原则 #68）
 grep -rn 'cfg(target_os\|cfg(target_family\|cfg(unix)\|cfg(windows)\|cfg!(target_os' src/ \
-  --include=*.rs | grep -v '^src/platform/' | grep -v 'target_arch' \
-  | grep -v '///' | grep -v '//' | wc -l          # 必须为 0
+ --include=*.rs | grep -v '^src/platform/' | grep -v 'target_arch' \
+ | grep -v '///' | grep -v '//' | wc -l # 必须为 0
 
 # (3) OS 后端 feature 门禁（已满足，作为回归基线）
 grep -rn 'feature = "macos"\|feature = "windows"\|feature = "ios"\|feature = "harmony"\|feature = "android"\|feature = "wasm"\|feature = "linux-gtk"\|feature = "linux-wayland"' src/ \
-  --include=*.rs | grep -v '^src/platform/' | wc -l   # 基线 0，保持 0
+ --include=*.rs | grep -v '^src/platform/' | wc -l # 基线 0，保持 0
 
-cargo check --no-default-features --features desktop|embedded|mini   # 全部通过
+cargo check --no-default-features --features desktop|embedded|mini # 全部通过
 ```
 
 ---
@@ -560,7 +560,7 @@ cargo check --no-default-features --features desktop|embedded|mini   # 全部通
 
 **B-2 关键判断：这些控件属性去哪？**
 
-`set_widget_text` / `widget_value` / `set_widget_range` / `is_widget_checked` … 共 **37** 个（`grep -c "    fn set_widget_\|    fn is_widget_\|    fn widget_"`），其真实语义是「**控件属性读写**」，本来就属于控件层。现状它们在 `Platform` trait 上，只因为「原生控件持有这些状态」。全自绘后：
+`set_widget_text` / `widget_value` / `set_widget_range` / `is_widget_checked` … 共 **37** 个（`grep -c " fn set_widget_\| fn is_widget_\| fn widget_"`），其真实语义是「**控件属性读写**」，本来就属于控件层。现状它们在 `Platform` trait 上，只因为「原生控件持有这些状态」。全自绘后：
 
 - 状态归 `Box<dyn Widget>` 自身（`widget/base_widgets/*` 已有 `set_text` / `set_value` 等）。
 - 反射入口归 `src/widget/capability/`（`read_widget_property_value` / `write_widget_property_value` 已存在，见 `widget/capability/access.rs:252,316`）。
@@ -569,13 +569,13 @@ cargo check --no-default-features --features desktop|embedded|mini   # 全部通
 ```rust
 // src/lib.rs — 签名不变，实现改为走控件层
 pub fn set_widget_text(id: ObjectId, text: &str) {
-    if let Some(widget) = widget::runtime::with_widget_mut(id, |w| {
-        widget::capability::write_widget_property_value(
-            w, "text", CapabilityValue::String(text.to_string()))
-    }).flatten() {
-        if widget.is_ok() { widget::runtime::request_repaint(id); return; }
-    }
-    log::warn!("set_widget_text: widget {id} has no writable text property");
+ if let Some(widget) = widget::runtime::with_widget_mut(id, |w| {
+ widget::capability::write_widget_property_value(
+ w, "text", CapabilityValue::String(text.to_string()))
+ }).flatten() {
+ if widget.is_ok() { widget::runtime::request_repaint(id); return; }
+ }
+ log::warn!("set_widget_text: widget {id} has no writable text property");
 }
 ```
 
@@ -605,7 +605,7 @@ pub fn set_widget_text(id: ObjectId, text: &str) {
 /// `ControlBackend` selection still reads it, and because the day a backend
 /// gains a real primitive it must be a *deliberate* change to this table.
 pub fn route_preference_for_widget_kind(_kind: WidgetKind) -> ControlRoutePreference {
-    ControlRoutePreference::CustomRequired
+ ControlRoutePreference::CustomRequired
 }
 ```
 
@@ -617,13 +617,13 @@ pub fn route_preference_for_widget_kind(_kind: WidgetKind) -> ControlRoutePrefer
 /// would happily accept a regression back to the native path.
 #[test]
 fn every_widget_kind_is_self_drawn() {
-    for kind in ALL_WIDGET_KINDS {
-        assert_eq!(
-            route_preference_for_widget_kind(kind),
-            ControlRoutePreference::CustomRequired,
-            "{kind:?} must be self-drawn"
-        );
-    }
+ for kind in ALL_WIDGET_KINDS {
+ assert_eq!(
+ route_preference_for_widget_kind(kind),
+ ControlRoutePreference::CustomRequired,
+ "{kind:?} must be self-drawn"
+ );
+ }
 }
 ```
 
@@ -632,8 +632,8 @@ fn every_widget_kind_is_self_drawn() {
 **B-5 验收**
 
 ```
-cargo check --no-default-features --features desktop   # 通过
-cargo test  --no-default-features --features desktop --lib -q   # 全绿
+cargo check --no-default-features --features desktop # 通过
+cargo test --no-default-features --features desktop --lib -q # 全绿
 ```
 
 ---
@@ -647,7 +647,7 @@ cargo test  --no-default-features --features desktop --lib -q   # 全绿
 ```
 实现 Draw 的控件 ................ 168
 实现 as_draw_mut 的控件 ......... 6
-   chip / snackbar / terminal_view / gantt_widget / color_picker / code_editor
+ chip / snackbar / terminal_view / gantt_widget / color_picker / code_editor
 缺失 ............................ 162
 ```
 
@@ -668,11 +668,11 @@ cargo test  --no-default-features --features desktop --lib -q   # 全绿
 /// no frame — so mounting one painted nothing. This trait moves the answer to
 /// where it belongs: if the type is `Draw`, it is paintable, full stop.
 pub trait Paintable {
-    fn draw_mut(&mut self) -> &mut dyn Draw;
+ fn draw_mut(&mut self) -> &mut dyn Draw;
 }
 
 impl<T: Draw> Paintable for T {
-    fn draw_mut(&mut self) -> &mut dyn Draw { self }
+ fn draw_mut(&mut self) -> &mut dyn Draw { self }
 }
 ```
 
@@ -684,16 +684,16 @@ impl<T: Draw> Paintable for T {
 /// Generates the one-line bridge for each self-painting control.
 /// Used instead of hand-writing it 162 times, which is how it drifted to 6.
 macro_rules! impl_draw_bridge {
-    ($($t:ty),* $(,)?) => { $( impl_self_paint_bridge!($t); )* };
+ ($($t:ty),* $(,)?) => { $( impl_self_paint_bridge!($t); )* };
 }
 ```
 
 **C-0-3 验收（必须实跑，原则 #16）**
 
 ```
-[1] 实现 Draw 的类型数 == as_draw_mut 返回 Some 的类型数   → 168 == 168
-[2] 对每个控件：mount_surface → render_frame != None        → 168/168
-[3] 且帧内含至少一个非透明像素（防止「有帧但全空」）        → 168/168
+[1] 实现 Draw 的类型数 == as_draw_mut 返回 Some 的类型数 → 168 == 168
+[2] 对每个控件：mount_surface → render_frame != None → 168/168
+[3] 且帧内含至少一个非透明像素（防止「有帧但全空」） → 168/168
 ```
 
 测试必须用**宏遍历**全部控件，而不是手写列表（手写列表正是它漂到 6 的原因）：
@@ -703,10 +703,10 @@ macro_rules! impl_draw_bridge {
 /// The list is generated from the widget factory, not typed by hand.
 #[test]
 fn every_factory_widget_can_be_painted() {
-    for name in WidgetFactory::new_with_defaults().widget_names() {
-        let mut w = factory.create(name, Rect::new(0, 0, 64, 48), "x").expect(name);
-        assert!(w.as_draw_mut().is_some(), "{name} implements Draw but claims it does not");
-    }
+ for name in WidgetFactory::new_with_defaults().widget_names() {
+ let mut w = factory.create(name, Rect::new(0, 0, 64, 48), "x").expect(name);
+ assert!(w.as_draw_mut().is_some(), "{name} implements Draw but claims it does not");
+ }
 }
 ```
 
@@ -742,10 +742,10 @@ fn every_factory_widget_can_be_painted() {
 /// missed. Common properties come from the blanket impl below; a control
 /// implements only what is its own.
 pub trait WidgetProperties {
-    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError>;
-    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError>;
-    /// Names this control exposes — the single source for schema, docs, tests.
-    fn property_names(&self) -> &'static [&'static str];
+ fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError>;
+ fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError>;
+ /// Names this control exposes — the single source for schema, docs, tests.
+ fn property_names(&self) -> &'static [&'static str];
 }
 ```
 
@@ -759,35 +759,35 @@ pub trait WidgetProperties {
 /// These live here, not in the `Platform` trait and not duplicated per control.
 /// A control's `WidgetProperties::get` forwards its unmatched names here.
 pub fn base_property_get(
-    w: &dyn Widget, name: &str,
+ w: &dyn Widget, name: &str,
 ) -> Result<CapabilityValue, CapabilityAccessError> {
-    match name {
-        "enabled"  => Ok(CapabilityValue::Bool(w.is_enabled())),
-        "visible"  => Ok(CapabilityValue::Bool(w.is_visible())),
-        "tooltip"  => Ok(CapabilityValue::String(w.tooltip().to_string())),
-        "geometry" => Ok(rect_to_value(w.geometry())),
-        _ => Err(CapabilityAccessError::UnknownProperty),
-    }
+ match name {
+ "enabled" => Ok(CapabilityValue::Bool(w.is_enabled())),
+ "visible" => Ok(CapabilityValue::Bool(w.is_visible())),
+ "tooltip" => Ok(CapabilityValue::String(w.tooltip().to_string())),
+ "geometry" => Ok(rect_to_value(w.geometry())),
+ _ => Err(CapabilityAccessError::UnknownProperty),
+ }
 }
 
 pub const BASE_PROPERTY_NAMES: &[&str] =
-    &["enabled", "visible", "tooltip", "geometry"];
+ &["enabled", "visible", "tooltip", "geometry"];
 ```
 
 控件只写**差异**，并在未命中时回退到共性（一行，无重复）：
 
 ```rust
 impl WidgetProperties for Button {
-    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
-        match name {
-            "text"    => Ok(CapabilityValue::String(self.text().to_string())),
-            "pressed" => Ok(CapabilityValue::Bool(self.is_pressed())),
-            "default" => Ok(CapabilityValue::Bool(self.is_default())),
-            _         => base_property_get(self, name),   // ← 共性回退
-        }
-    }
-    fn property_names(&self) -> &'static [&'static str] { BUTTON_PROPERTY_NAMES }
-    // set 同理
+ fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+ match name {
+ "text" => Ok(CapabilityValue::String(self.text().to_string())),
+ "pressed" => Ok(CapabilityValue::Bool(self.is_pressed())),
+ "default" => Ok(CapabilityValue::Bool(self.is_default())),
+ _ => base_property_get(self, name), // ← 共性回退
+ }
+ }
+ fn property_names(&self) -> &'static [&'static str] { BUTTON_PROPERTY_NAMES }
+ // set 同理
 }
 ```
 
@@ -806,12 +806,12 @@ impl WidgetProperties for Button {
 **C-1-4 验收**
 
 ```
-[1] 有直接 capability 的 kind 数 == 167                    → 167
-[2] 每个可写属性满足 read→write→read 回环                  → 全部 pass
+[1] 有直接 capability 的 kind 数 == 167 → 167
+[2] 每个可写属性满足 read→write→read 回环 → 全部 pass
 [3] 「新增控件只改 1 处」：构造一个新控件并测属性，
-    检查 properties.rs / access_*.in.rs 的 git diff         → 0 行
-[4] 属性读取派发步数                                        → 1 次查表
-[5] 既有 23 个 capability 测试全部保持 pass                  → 23 passed
+ 检查 properties.rs / access_*.in.rs 的 git diff → 0 行
+[4] 属性读取派发步数 → 1 次查表
+[5] 既有 23 个 capability 测试全部保持 pass → 23 passed
 ```
 
 > **兼容性（原则 #21）**：`read_widget_property_value` / `write_widget_property_value` 保留为转发函数，签名不变；`WidgetFactory::read_property` / `write_property` 的公开行为不变。因此本阶段对上层**完全透明**，可独立提交、独立验证。
@@ -831,7 +831,7 @@ impl WidgetProperties for Button {
 /// second mechanism: a kind either has a widget object (all 167 do) or the
 /// factory reports `None` and this returns 0.
 fn create(&self, kind: WidgetKind, parent: ObjectId, text: &str, x: i32, y: i32,
-          w: u32, h: u32) -> ObjectId;
+ w: u32, h: u32) -> ObjectId;
 ```
 
 **C-2** 现状 `custom/create_widgets*.in.rs` 有 **195** 处 `feature = "mini" | "embedded"`（例如 `#[cfg(any(feature = "mini", feature = "embedded"))] widget_kind: WidgetKind::Button`）。全自绘后 `embedded` 与 `desktop` 的控件集**不再需要不同**——差异只剩「编译进哪些控件」。因此：
@@ -843,16 +843,16 @@ fn create(&self, kind: WidgetKind, parent: ObjectId, text: &str, x: i32, y: i32,
 
 ```rust
 pub fn create_widget_of_kind(
-    kind: widget::WidgetKind, parent: ObjectId, text: &str,
-    x: i32, y: i32, w: u32, h: u32, widget: Option<Box<dyn Widget>>,
+ kind: widget::WidgetKind, parent: ObjectId, text: &str,
+ x: i32, y: i32, w: u32, h: u32, widget: Option<Box<dyn Widget>>,
 ) -> ObjectId {
-    // Build from the factory when the caller did not supply an object; the
-    // factory is the single place that knows every kind's constructor.
-    let widget = widget.or_else(|| factory().create(&kind_name(kind), rect, text));
-    match widget {
-        Some(widget) => mount_widget_object(parent, widget, rect).unwrap_or(0),
-        None => { log::warn!("create_widget_of_kind: no constructor for {kind:?}"); 0 }
-    }
+ // Build from the factory when the caller did not supply an object; the
+ // factory is the single place that knows every kind's constructor.
+ let widget = widget.or_else(|| factory().create(&kind_name(kind), rect, text));
+ match widget {
+ Some(widget) => mount_widget_object(parent, widget, rect).unwrap_or(0),
+ None => { log::warn!("create_widget_of_kind: no constructor for {kind:?}"); 0 }
+ }
 }
 ```
 
@@ -900,10 +900,10 @@ pub fn create_widget_of_kind(
 
 - `android`：删除 `AndroidPlatform` 的 `create_*` 与 `android_jni.rs` 里的 View 构造；保留 JNI attach、输入事件、IME。
 - `ios`：❌ 删除 `native.rs` 的 UIKit 控件构造（`560` 行 → **`73`** 行）；保留窗口 + 输入 + IME。
-  **已完成**（见 `docs/log/log-20260914-1.md` §9）：14/15 个 `create_ui_*` 删除（仅留
-  `create_ui_window`），视图注册表 / `ButtonTarget` / 事件队列一并删除；
-  `platform_impl.rs` 1220 → **1025**，`types.rs` 250 → **237**。
-  ⚠️ **编译未验证**：本机无 iOS SDK，`ios-uikit-ffi` 未跑。
+ **已完成**（见 `docs/log/log-20260914-1.md` §9）：14/15 个 `create_ui_*` 删除（仅留
+ `create_ui_window`），视图注册表 / `ButtonTarget` / 事件队列一并删除；
+ `platform_impl.rs` 1220 → **1025**，`types.rs` 250 → **237**。
+ ⚠️ **编译未验证**：本机无 iOS SDK，`ios-uikit-ffi` 未跑。
 - `harmony`：删除 ArkUI 控件构造；保留窗口 + 输入。
 - `wasm`：删除 DOM 控件构造；保留 `<canvas>` 托管 + 浏览器输入 + `web-sys` 字体查询。
 - `wayland`：删除 `zwp`/`xdg` 控件面构造；保留 `wl_surface` 窗口与输入。
@@ -914,9 +914,9 @@ pub fn create_widget_of_kind(
 
 ```
 src/platform/portable/
-├── mod.rs        # PortablePlatform: 纯绘制面宿主
-├── surface.rs    # 内存帧缓冲绘制面（SoftwarePaintBackend 之上）
-└── event.rs      # 无 OS 事件源：由宿主投递 inject_* 事件
+├── mod.rs # PortablePlatform: 纯绘制面宿主
+├── surface.rs # 内存帧缓冲绘制面（SoftwarePaintBackend 之上）
+└── event.rs # 无 OS 事件源：由宿主投递 inject_* 事件
 ```
 
 `PortablePlatform` 同时服务：
@@ -948,15 +948,15 @@ src/platform/portable/
 
 ```
 # 引用计数必须归零
-grep -rn "fn create_button\|fn create_slider\|fn create_combo_box" src/platform/ | wc -l   # 0
-grep -rn "gtk::Button\|NSButton\|commctrl::BST_\|BUTTON_CLASS" src/ | wc -l                # 0
+grep -rn "fn create_button\|fn create_slider\|fn create_combo_box" src/platform/ | wc -l # 0
+grep -rn "gtk::Button\|NSButton\|commctrl::BST_\|BUTTON_CLASS" src/ | wc -l # 0
 
 # 构建与测试
-cargo check --no-default-features --features desktop  --all-targets
+cargo check --no-default-features --features desktop --all-targets
 cargo check --no-default-features --features embedded
 cargo check --no-default-features --features mini
 cargo clippy --no-default-features --features desktop --all-targets -- -D warnings
-cargo test  --no-default-features --features desktop --lib -q
+cargo test --no-default-features --features desktop --lib -q
 ```
 
 ---
@@ -984,11 +984,11 @@ cargo test  --no-default-features --features desktop --lib -q
 /// exists, and whether the alloc-frugal caps apply. Encoding them as one table
 /// keeps the 800+ scattered feature tests from coming back.
 pub struct SurfacePolicy {
-    pub os_window: bool,
-    pub max_widgets: usize,
-    pub max_texture: u32,
-    pub font_cache_bytes: usize,
-    pub event_queue: usize,
+ pub os_window: bool,
+ pub max_widgets: usize,
+ pub max_texture: u32,
+ pub font_cache_bytes: usize,
+ pub event_queue: usize,
 }
 
 pub const fn surface_policy() -> SurfacePolicy { /* 由 profile 决定 */ }
@@ -999,9 +999,9 @@ pub const fn surface_policy() -> SurfacePolicy { /* 由 profile 决定 */ }
 **E-3 验收**
 
 ```
-grep -rn 'feature = "mini"\|feature = "embedded"' src/ --include=*.rs | grep -v profile.rs | wc -l  # 0
+grep -rn 'feature = "mini"\|feature = "embedded"' src/ --include=*.rs | grep -v profile.rs | wc -l # 0
 cargo test --no-default-features --features embedded -q
-cargo test --no-default-features --features mini -q      # 若无 lib 测试，需证明原因
+cargo test --no-default-features --features mini -q # 若无 lib 测试，需证明原因
 ```
 
 ---
@@ -1012,7 +1012,7 @@ cargo test --no-default-features --features mini -q      # 若无 lib 测试，�
 
 ```
 grep -rn "self_drawn\|native\|canvas\|NSView\|HWND\|GTK" src/lib.rs src/app/ src/widget/ \
-  | grep -v "// " | grep -v "///"
+ | grep -v "// " | grep -v "///"
 ```
 
 **F-2** 必改文件清单：
@@ -1111,18 +1111,18 @@ grep -rn "self_drawn\|native\|canvas\|NSView\|HWND\|GTK" src/lib.rs src/app/ src
 ### 6.3 建议的落地顺序（每步独立可验收）
 
 ```
-Step 1  Phase A            门控收敛（不改行为，纯结构）        ← 先做，收益/风险比最高
-Step 2  Phase C-0          【阻断】as_draw_mut 桥接补齐（168/168）
-Step 2b Phase C-1          【阻断】属性层重建（WidgetProperties）
-Step 3  Phase B-3/B-4      命名 + 路由常量 + 合并两条创建路径
-Step 3b QA 门禁重写        check_control_route_matrix / platform_impl_matrix（§2.8）
-Step 4  Phase C            控件语义落地 + 帧缓冲复用（desktop 全自绘验证）
-Step 5  Phase D-3          Linux GTK 控件删除（本机可验证）
-Step 6  Phase D-6          Linux 依赖清理
-Step 7  Phase B-1/B-2      trait 去控件化（大爆炸，但此时已无原生实现者）
-Step 8  Phase D-1/D-2/D-4  其它平台删除（交叉编译验证）
-Step 9  Phase D-5/E        portable 后端 + mini/embedded 整合
-Step 10 Phase F            上层与文档同步（含视觉基线重生）
+Step 1 Phase A 门控收敛（不改行为，纯结构） ← 先做，收益/风险比最高
+Step 2 Phase C-0 【阻断】as_draw_mut 桥接补齐（168/168）
+Step 2b Phase C-1 【阻断】属性层重建（WidgetProperties）
+Step 3 Phase B-3/B-4 命名 + 路由常量 + 合并两条创建路径
+Step 3b QA 门禁重写 check_control_route_matrix / platform_impl_matrix（§2.8）
+Step 4 Phase C 控件语义落地 + 帧缓冲复用（desktop 全自绘验证）
+Step 5 Phase D-3 Linux GTK 控件删除（本机可验证）
+Step 6 Phase D-6 Linux 依赖清理
+Step 7 Phase B-1/B-2 trait 去控件化（大爆炸，但此时已无原生实现者）
+Step 8 Phase D-1/D-2/D-4 其它平台删除（交叉编译验证）
+Step 9 Phase D-5/E portable 后端 + mini/embedded 整合
+Step 10 Phase F 上层与文档同步（含视觉基线重生）
 ```
 
 > Step 7 必须排在 Step 5/6 之后：只有当**没有原生实现者**时，删除 trait 方法才不需要同时改 9 个后端。
@@ -1176,9 +1176,9 @@ Step 10 Phase F            上层与文档同步（含视觉基线重生）
 ```text
 $ rustc --target aarch64-unknown-linux-ohos --print cfg
 target_abi=""
-target_env="ohos"        ← 唯一的判别字段
+target_env="ohos" ← 唯一的判别字段
 target_family="unix"
-target_os="linux"        ← 名字叫 ohos，OS 字段却是 linux
+target_os="linux" ← 名字叫 ohos，OS 字段却是 linux
 ```
 
 而全库 6 处后端选择全用 `cfg(target_os = "ohos")`，**永不匹配**。后果不是「选错后端」，
@@ -1219,11 +1219,11 @@ provider 会同时命中（`E0428` 重定义）。
 | `WasmPlatform::kind_of` 无生产调用者 | 交叉编译报 `never used` | 删除；测试改用公开属性 API |
 
 ```text
-$ cargo check --target aarch64-apple-ios-sim   --features "ios,ios-uikit-ffi"   Finished（0 warning）
-$ cargo check --target aarch64-apple-ios       --features "ios,ios-uikit-ffi"   Finished（0 warning）
-$ cargo check --target wasm32-unknown-unknown  --features wasm                  Finished（0 warning）
-$ cargo check --target x86_64-pc-windows-gnu   --features windows               Finished（10 warning，均先前存在）
-$ cargo check --target x86_64-unknown-linux-gnu --features linux-gtk            需 cross sysroot，**未验证**
+$ cargo check --target aarch64-apple-ios-sim --features "ios,ios-uikit-ffi" Finished（0 warning）
+$ cargo check --target aarch64-apple-ios --features "ios,ios-uikit-ffi" Finished（0 warning）
+$ cargo check --target wasm32-unknown-unknown --features wasm Finished（0 warning）
+$ cargo check --target x86_64-pc-windows-gnu --features windows Finished（10 warning，均先前存在）
+$ cargo check --target x86_64-unknown-linux-gnu --features linux-gtk 需 cross sysroot，**未验证**
 ```
 
 ### 本轮修掉的真缺陷汇总（原则 #2 冰山法则）
@@ -1289,7 +1289,7 @@ $ cargo check --target x86_64-unknown-linux-gnu --features linux-gtk            
 
 1. **精炼必须用工具度量**，不能靠目测——上一轮正是目测评出 ✅ 而实测还有 296 行逐字节重复。
 2. **文档示例必须编译**。把 README／CHANGELOG／迁移指南的每段代码转成测试后，
-   立刻抓出 4 处错误（含一个不存在的 `From` 实现方向），并把 OS 矩阵钉在源码上。
+ 立刻抓出 4 处错误（含一个不存在的 `From` 实现方向），并把 OS 矩阵钉在源码上。
 
 **登记一个取舍**：删死代码模块同时删掉其自带的 **28 个测试**。这些测试测的是
 零引用代码，价值等于代码本身；但若这些模块本属「有意保留的公开 API」则删除即错。
@@ -1308,29 +1308,29 @@ $ cargo check --target x86_64-unknown-linux-gnu --features linux-gtk            
 ### C' QA 门禁本轮实跑结果（15/15 PASS）
 
 ```text
-check_profiles.sh                             PASS
-check_abi.sh                                  PASS
-check_widget_kind_count.sh                    PASS
-check_event_model_signal_first.sh             PASS
-check_control_route_matrix.sh                 PASS   ← 重写解析器（原报 “Parsed 0 routed preferences”）
-check_platform_impl_matrix.sh                 PASS
-check_platform_capability_matrix.sh           PASS
-check_capability_matrix_truthfulness.sh       PASS   ← 146 矛盾 → 0
-check_feature_completeness_matrix.sh          PASS
-check_behavior_matrix.sh                      PASS   ← 3 个引用已删测试的 case 已重写
-check_embedded_demo_schema.sh                 PASS
-check_visual_regression.sh                    PASS
+check_profiles.sh PASS
+check_abi.sh PASS
+check_widget_kind_count.sh PASS
+check_event_model_signal_first.sh PASS
+check_control_route_matrix.sh PASS ← 重写解析器（原报 “Parsed 0 routed preferences”）
+check_platform_impl_matrix.sh PASS
+check_platform_capability_matrix.sh PASS
+check_capability_matrix_truthfulness.sh PASS ← 146 矛盾 → 0
+check_feature_completeness_matrix.sh PASS
+check_behavior_matrix.sh PASS ← 3 个引用已删测试的 case 已重写
+check_embedded_demo_schema.sh PASS
+check_visual_regression.sh PASS
 ```
 
 > 三个门禁本身是**真缺陷**，不是“改成永远通过”：
 > - `check_control_route_matrix` 的解析器只会读双层 `match` 的臂，路由殫缩为单值后
->   抛 `ValueError`。已改为读函数返回的常量；若将来真有后端恢复 `match`，
->   解析器会再次报错而不是静默报告“全部自绘”。
+> 抛 `ValueError`。已改为读函数返回的常量；若将来真有后端恢复 `match`，
+> 解析器会再次报错而不是静默报告“全部自绘”。
 > - `check_capability_matrix_truthfulness` 报 **146 个矛盾**（文档声称各平台有原生控件）。
->   根因是生成器里 **167 行 × 7 平台 = 1169 个手维网格** 已经过时；已改为由
->   `CELLS = [CUSTOM] * len(PLATFORMS)` 派生一个事实，行集仍枚举以便与 `kind.rs` 交叉校验。
+> 根因是生成器里 **167 行 × 7 平台 = 1169 个手维网格** 已经过时；已改为由
+> `CELLS = [CUSTOM] * len(PLATFORMS)` 派生一个事实，行集仍枚举以便与 `kind.rs` 交叉校验。
 > - `check_behavior_matrix` 有 3 个 case 引用了已删测试，导致 “ran zero tests”。已改为引用
->   语义等价的现存测试（控件注册 / 能力契约 / 选择态回环）。
+> 语义等价的现存测试（控件注册 / 能力契约 / 选择态回环）。
 
 ### D 删除面最终验收（引用计数，原则 #61）
 
@@ -1352,10 +1352,10 @@ check_visual_regression.sh                    PASS
 
 1. `create_window` — 宿主唯一原语（窗口）。
 2. `create_menu_bar` / `create_menu` — **不是控件构造**。Android/iOS/Linux/移动端
-   均无独立“菜单 View”，宿主 Activity 通过 `onCreateOptionsMenu` 自己物化菜单；
-   这里是内存菜单树 + 可注入触发队列（与 `native_menu: false` 一致）。
+ 均无独立“菜单 View”，宿主 Activity 通过 `onCreateOptionsMenu` 自己物化菜单；
+ 这里是内存菜单树 + 可注入触发队列（与 `native_menu: false` 一致）。
 3. `Platform` trait 上的控件方法**声明** — 保留诚实默认体（返回 `0`/`false`/`None`），
-   使一个真正拥有原生图元的后端能**一处、显式地**声明该能力（原则 #53）。
+ 使一个真正拥有原生图元的后端能**一处、显式地**声明该能力（原则 #53）。
 
 ### 本轮顺带修掉的真缺陷（原则 #2 冰山法则）
 
@@ -1456,9 +1456,9 @@ check_visual_regression.sh                    PASS
 
 ```
 实现 Draw 的控件 ................ 168
-实现 as_draw_mut 的控件 ......... **6**   ← 仅这 6 个！
-   chip.rs / snackbar.rs / terminal_view.rs /
-   gantt_widget.rs / color_picker.rs / code_editor/editor.rs
+实现 as_draw_mut 的控件 ......... **6** ← 仅这 6 个！
+ chip.rs / snackbar.rs / terminal_view.rs /
+ gantt_widget.rs / color_picker.rs / code_editor/editor.rs
 ```
 
 而 `widget::runtime::render_frame` 的**唯一**取绘画通道就是它：
@@ -1466,7 +1466,7 @@ check_visual_regression.sh                    PASS
 ```rust
 // src/widget/runtime.rs:198
 let Some(drawable) = widget.as_draw_mut() else {
-    return false;   // → render_frame 返回 None → 宿主无帧可贴 → 空白面
+ return false; // → render_frame 返回 None → 宿主无帧可贴 → 空白面
 };
 ```
 
@@ -1479,7 +1479,7 @@ let Some(drawable) = widget.as_draw_mut() else {
 ```rust
 // 每个实现了 Draw 的控件，其 Widget impl 必须补上这个桥：
 fn as_draw_mut(&mut self) -> Option<&mut dyn crate::widget::Draw> {
-    Some(self)
+ Some(self)
 }
 ```
 
@@ -1508,9 +1508,9 @@ impl<T: Draw + Widget> WidgetExt for T { ... }
 /// This is the guard for the failure mode that made 162 controls render blank.
 #[test]
 fn every_draw_implementor_is_paintable_through_dyn_widget() {
-    let mut btn = Button::new("ok".into(), Rect::new(0, 0, 80, 30));
-    assert!(btn.as_draw_mut().is_some(), "Button implements Draw but is not paintable");
-    // …每个 built-in 控件一条；用宏遍历，漏掉即编译/测试失败
+ let mut btn = Button::new("ok".into(), Rect::new(0, 0, 80, 30));
+ assert!(btn.as_draw_mut().is_some(), "Button implements Draw but is not paintable");
+ // …每个 built-in 控件一条；用宏遍历，漏掉即编译/测试失败
 }
 ```
 
@@ -1533,22 +1533,22 @@ capability 函数数 ................ 155（覆盖 144 个不同 kind）
 WidgetKind 变体数 ................ 167
 
 9 个因 type alias 而「名义覆盖」（实际走目标类型的 capability）：
-  ActivityIndicator→ProgressBar   ColumnView→TreeView    ContextMenu→Menu
-  Dialog→PopupWindow    DirectoryDialog→FileDialog   DockPanel→DockWidget
-  DoubleSpinBox→SpinBox   UndoView→ListView      Wizard→WizardDialog
+ ActivityIndicator→ProgressBar ColumnView→TreeView ContextMenu→Menu
+ Dialog→PopupWindow DirectoryDialog→FileDialog DockPanel→DockWidget
+ DoubleSpinBox→SpinBox UndoView→ListView Wizard→WizardDialog
 
 14 个真实缺口（无 capability，也不是 alias）：
-  Chip, CupertinoSwitch, Frame, GridTable, MenuItem,
-  WebEngineContextMenuRequest, WebEngineCookieStore, WebEngineDownloadItem,
-  WebEngineFindTextResult, WebEngineNotification, WebEnginePage,
-  WebEngineScriptDialog, WebEngineSettings, WebEngineWebChannel
+ Chip, CupertinoSwitch, Frame, GridTable, MenuItem,
+ WebEngineContextMenuRequest, WebEngineCookieStore, WebEngineDownloadItem,
+ WebEngineFindTextResult, WebEngineNotification, WebEnginePage,
+ WebEngineScriptDialog, WebEngineSettings, WebEngineWebChannel
 
-  其中 11 个是 WebEngine 家族（无属性语义，可显式声明为空集而非缺失）
-  剩下 3 个是真控件：Chip / CupertinoSwitch / Frame（+ GridTable / MenuItem）
+ 其中 11 个是 WebEngine 家族（无属性语义，可显式声明为空集而非缺失）
+ 剩下 3 个是真控件：Chip / CupertinoSwitch / Frame（+ GridTable / MenuItem）
 
 属性读取派发（access.rs:252）→ read_base_props → read_input_props → read_view_props
-  → read_container_props → read_dialog_props → read_menu_props
-  → read_advanced_props → read_media_props → read_other_props
+ → read_container_props → read_dialog_props → read_menu_props
+ → read_advanced_props → read_media_props → read_other_props
 共 9 个「先试一个类别，非 Unsupported 则返回」的串行步骤。
 ```
 
@@ -1564,34 +1564,34 @@ WidgetKind 变体数 ................ 167
 
 ```
 [1] OS 后端 feature 门禁（macos/windows/ios/harmony/android/wasm/linux-gtk/linux-wayland）
-    总数 ............................ 87
-    src/platform 之外 ................ 0    ← 已完全满足你的要求
+ 总数 ............................ 87
+ src/platform 之外 ................ 0 ← 已完全满足你的要求
 
 [2] cfg(target_os / target_family / unix / windows / target_arch)
-    总数 ............................ 212
-    src/platform 之外 ................ 11
-    其中：注释/文档注释 .............. 8    ← 非实际门禁（grep 排除 // 后自然消失）
-    其中：target_arch = "wasm32" ..... 2    ← 原则 #42 明确豁免（架构固有，非 OS）
-    其中：真正的 OS 分支残留 ......... **2 个文件 3 处**  ← 需修，见下
+ 总数 ............................ 212
+ src/platform 之外 ................ 11
+ 其中：注释/文档注释 .............. 8 ← 非实际门禁（grep 排除 // 后自然消失）
+ 其中：target_arch = "wasm32" ..... 2 ← 原则 #42 明确豁免（架构固有，非 OS）
+ 其中：真正的 OS 分支残留 ......... **2 个文件 3 处** ← 需修，见下
 
-        可复现命令（真门禁口径）：
-        grep -rn 'cfg(target_os\|cfg(target_family\|cfg(unix)\|cfg(windows)\|cfg!(target_os' src/ \
-          --include=*.rs | grep -v '^src/platform/' | grep -v 'target_arch' \
-          | grep -v '/// ' | grep -v '// '
-        实测输出：
-          src/menu_config/tests.rs:35:    #[cfg(target_os = "macos")]
-          src/shortcut/manager.rs:120 / :139  ← （在 manager.rs 内，下面单独展开）
+ 可复现命令（真门禁口径）：
+ grep -rn 'cfg(target_os\|cfg(target_family\|cfg(unix)\|cfg(windows)\|cfg!(target_os' src/ \
+ --include=*.rs | grep -v '^src/platform/' | grep -v 'target_arch' \
+ | grep -v '/// ' | grep -v '// '
+ 实测输出：
+ src/menu_config/tests.rs:35: #[cfg(target_os = "macos")]
+ src/shortcut/manager.rs:120 / :139 ← （在 manager.rs 内，下面单独展开）
 ```
 
 **唯一的架构级泄漏：`src/shortcut/manager.rs`（2 处 `cfg!`）**
 
 ```rust
-// src/shortcut/manager.rs:120  —— 中间层直接嗅探 OS，违反原则 #35/#36
+// src/shortcut/manager.rs:120 —— 中间层直接嗅探 OS，违反原则 #35/#36
 if cfg!(not(any(target_os = "macos", target_os = "ios")))
-    && normalized.contains(Modifiers::CTRL) ... {
+ && normalized.contains(Modifiers::CTRL) ... {
 // src/shortcut/manager.rs:139
 if cfg!(any(target_os = "macos", target_os = "ios"))
-    && modifiers.contains(Modifiers::PRIMARY) ... {
+ && modifiers.contains(Modifiers::PRIMARY) ... {
 ```
 
 **为何这是真缺陷（不是洁癖）**：这两个 `cfg!` 决定的是「快捷键归一化规则」——一个**行为**，而非编译产物。后果：
@@ -1605,8 +1605,8 @@ if cfg!(any(target_os = "macos", target_os = "ios"))
 ```rust
 // src/shortcut/manager.rs —— 不再有 cfg!
 fn lookup(&self, key: Key, modifiers: Modifiers) -> Option<String> {
-    let style = crate::platform::platform_facts().shortcut_style();
-    // …根据 style 而非 target_os 决定归一化
+ let style = crate::platform::platform_facts().shortcut_style();
+ // …根据 style 而非 target_os 决定归一化
 }
 ```
 
@@ -1615,7 +1615,7 @@ fn lookup(&self, key: Key, modifiers: Modifiers) -> Option<String> {
 **验收**：
 
 ```
-grep -rn 'cfg!(target_os\|cfg!(any(target_os' src/ --include=*.rs | grep -v '^src/platform/'   # 目标：0
+grep -rn 'cfg!(target_os\|cfg!(any(target_os' src/ --include=*.rs | grep -v '^src/platform/' # 目标：0
 ```
 
 **同样需修正的测试级残留（共 2 处文件）**
@@ -1631,15 +1631,15 @@ grep -rn 'cfg!(target_os\|cfg!(any(target_os' src/ --include=*.rs | grep -v '^sr
 // 不再分平台写两个测试；用一个测试断言「路由与后端声明一致」
 #[test]
 fn routing_matches_backend_declaration() {
-    let declared = crate::platform::platform_facts().native_widget_kinds();
-    for kind in ALL_WIDGET_KINDS {
-        assert_eq!(
-            route_preference_for_widget_kind(kind),
-            ControlRoutePreference::CustomRequired,
-            "{kind:?} must be self-drawn (declared native: {:?})",
-            declared.contains(&kind)
-        );
-    }
+ let declared = crate::platform::platform_facts().native_widget_kinds();
+ for kind in ALL_WIDGET_KINDS {
+ assert_eq!(
+ route_preference_for_widget_kind(kind),
+ ControlRoutePreference::CustomRequired,
+ "{kind:?} must be self-drawn (declared native: {:?})",
+ declared.contains(&kind)
+ );
+ }
 }
 ```
 
@@ -1661,11 +1661,11 @@ fn routing_matches_backend_declaration() {
 /// missed. A control now answers for itself, and the only way to be a control
 /// is to answer — the compiler enforces completeness.
 pub trait WidgetProperties {
-    /// Stable, lower-case, underscore-separated name ("text", "value", "checked").
-    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError>;
-    fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError>;
-    /// Names this control exposes — the single source for schema, docs and tests.
-    fn property_names(&self) -> &'static [&'static str];
+ /// Stable, lower-case, underscore-separated name ("text", "value", "checked").
+ fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError>;
+ fn set(&mut self, name: &str, value: CapabilityValue) -> Result<(), CapabilityAccessError>;
+ /// Names this control exposes — the single source for schema, docs and tests.
+ fn property_names(&self) -> &'static [&'static str];
 }
 ```
 
@@ -1676,17 +1676,17 @@ pub trait WidgetProperties {
 /// they all live in `BaseWidget`, so re-declaring them per control was pure
 /// duplication (principle #54).
 impl<T: Widget> WidgetProperties for T {
-    fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
-        match name {
-            "enabled"   => Ok(CapabilityValue::Bool(self.is_enabled())),
-            "visible"   => Ok(CapabilityValue::Bool(self.is_visible())),
-            "tooltip"   => Ok(CapabilityValue::String(self.tooltip().to_string())),
-            "geometry"  => Ok(rect_to_value(self.geometry())),
-            _ => Err(CapabilityAccessError::UnknownProperty),
-        }
-    }
-    // …set 同理
-    fn property_names(&self) -> &'static [&'static str] { BASE_PROPERTY_NAMES }
+ fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
+ match name {
+ "enabled" => Ok(CapabilityValue::Bool(self.is_enabled())),
+ "visible" => Ok(CapabilityValue::Bool(self.is_visible())),
+ "tooltip" => Ok(CapabilityValue::String(self.tooltip().to_string())),
+ "geometry" => Ok(rect_to_value(self.geometry())),
+ _ => Err(CapabilityAccessError::UnknownProperty),
+ }
+ }
+ // …set 同理
+ fn property_names(&self) -> &'static [&'static str] { BASE_PROPERTY_NAMES }
 }
 ```
 
@@ -1694,7 +1694,7 @@ impl<T: Widget> WidgetProperties for T {
 
 ```rust
 impl WidgetPropertiesExt for Button {
-    // 只写 Button 特有的
+ // 只写 Button 特有的
 }
 ```
 
@@ -1726,9 +1726,9 @@ impl WidgetPropertiesExt for Button {
 let mut backend = SoftwarePaintBackend::new(size, 1.0);
 
 // → src/render/backend/paint.rs:38 → SoftwareSurface::new(size, dpi_scale)
-//   → src/render/backend/surface.rs:20-23
-//       let bytes = pixel_bytes_len(size);
-//       Self { front: vec![0; bytes], back: vec![0; bytes] }   // ← 两份！
+// → src/render/backend/surface.rs:20-23
+// let bytes = pixel_bytes_len(size);
+// Self { front: vec![0; bytes], back: vec![0; bytes] } // ← 两份！
 ```
 
 对 1000×1000 的绘制面，每帧分配 **2 × 4 MB = 8 MB**（front + back），并全部填零。原计划未涉及此事。
@@ -1739,13 +1739,13 @@ let mut backend = SoftwarePaintBackend::new(size, 1.0);
 
 ```rust
 thread_local! {
-    /// Reused per-thread paint surface, keyed by size.
-    ///
-    /// `render_frame` allocated a fresh double buffer (`front` + `back`) on every
-    /// call — 8 MB per frame at 1000x1000, which at 60 Hz is ~480 MB/s of pure
-    /// zeroing. Surfaces are recycled because widgets are `!Send` and every
-    /// backend paints on one thread anyway (see `widget::runtime` threading note).
-    static SURFACE_POOL: RefCell<HashMap<Size, SoftwareSurface>> = RefCell::new(HashMap::new());
+ /// Reused per-thread paint surface, keyed by size.
+ ///
+ /// `render_frame` allocated a fresh double buffer (`front` + `back`) on every
+ /// call — 8 MB per frame at 1000x1000, which at 60 Hz is ~480 MB/s of pure
+ /// zeroing. Surfaces are recycled because widgets are `!Send` and every
+ /// backend paints on one thread anyway (see `widget::runtime` threading note).
+ static SURFACE_POOL: RefCell<HashMap<Size, SoftwareSurface>> = RefCell::new(HashMap::new());
 }
 ```
 
@@ -1786,20 +1786,20 @@ src/lib.rs .................................. 26 个 pub fn create_*(parent, tex
 ### 10.7 修正后的 Phase 结构
 
 ```
-Phase C-0  【阻断】as_draw_mut 桥接补齐（168/168）        ← 新增，必须最先
-Phase C-1  【阻断】属性层重建（WidgetProperties trait）   ← 新增，与 C-0 并列
-Phase C    【核心】控件语义落地 + 两条创建路径合并 + 帧缓冲复用
+Phase C-0 【阻断】as_draw_mut 桥接补齐（168/168） ← 新增，必须最先
+Phase C-1 【阻断】属性层重建（WidgetProperties trait） ← 新增，与 C-0 并列
+Phase C 【核心】控件语义落地 + 两条创建路径合并 + 帧缓冲复用
 ```
 
 **为何 C-0/C-1 必须排在 Phase D（删除原生）之前**：
 
 ```
 若先删原生控件：
-  删 Button 的原生实现 → 依赖自绘 → 但 as_draw_mut 缺失 → 空白面
-  → 无法用「窗口里画出来了」验证任何东西 → 后面所有阶段失去判据
+ 删 Button 的原生实现 → 依赖自绘 → 但 as_draw_mut 缺失 → 空白面
+ → 无法用「窗口里画出来了」验证任何东西 → 后面所有阶段失去判据
 
 若先做 C-0/C-1：
-  原生仍在（可对照）→ 补齐自绘 → 逐个控件对比原生行为 → 有判据地迁移
+ 原生仍在（可对照）→ 补齐自绘 → 逐个控件对比原生行为 → 有判据地迁移
 ```
 
 这与原则 #60（先加新路径 → 切调用方 → 再删旧路径）完全一致。

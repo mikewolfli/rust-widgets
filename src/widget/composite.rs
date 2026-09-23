@@ -107,6 +107,23 @@ pub struct CompositeBuilder {
     /// `implicitBackgroundWidth`. A composite made of 5 px labels is still at least
     /// as large as the control it presents itself as.
     floor: Size,
+    /// Set when a child's hints or parameters changed, cleared by [`Self::take_dirty`].
+    ///
+    /// # Why a flag rather than a callback per child
+    ///
+    /// BLUE22 §B.6 rule 10 requires that a hint change **trigger** a relayout rather than
+    /// being polled for. The obvious implementation — subscribe to each child and relayout
+    /// from the handler — is what Qt deliberately avoids: it re-runs the whole layout for
+    /// every property write, so a caller setting four properties on one sub-control lays
+    /// the row out four times, and an intermediate call can observe a half-updated tree.
+    ///
+    /// Qt instead marks the layout dirty and lets the frame loop consume it
+    /// (`invalidate()` plus a deferred `updatePolish()`, `qquicklayout.cpp:857`). This
+    /// flag is that mechanism in its smallest honest form: `invalidate` records the fact, and
+    /// the **host consumes it once per frame** through `take_dirty`. Coalescing is therefore
+    /// automatic — N writes before the next frame cost one relayout — and no observer can
+    /// see a partially applied change, because nothing runs between the writes.
+    dirty: core::cell::Cell<bool>,
 }
 
 impl CompositeBuilder {
@@ -117,7 +134,104 @@ impl CompositeBuilder {
     /// composite's own rectangle before the layout sees it, so a layout's idea of
     /// "the available room" and the composite's border cannot disagree.
     pub fn new(layout: Box<dyn Layout>, padding: EdgeOffsets, floor: Size) -> Self {
-        Self { layout, children: Vec::new(), padding, floor }
+        Self {
+            layout,
+            children: Vec::new(),
+            padding,
+            floor,
+            // A fresh composite has never been laid out, so its first `arrange` must happen:
+            // starting clean would let a host that consumes the flag *before* the first frame
+            // skip that layout entirely.
+            dirty: core::cell::Cell::new(true),
+        }
+    }
+
+    /// Records that a child's wish or parameters changed, so the next frame relayouts.
+    ///
+    /// The producer half of §B.6 rule 10. Called by the accessors that change a registered
+    /// child's [`Hints`] or [`LayoutParams`]; a composite's own size setters call it once
+    /// rather than laying out per write (see [`Self::take_dirty`]).
+    pub fn invalidate(&self) {
+        self.dirty.set(true);
+    }
+
+    /// Whether a relayout is owed.
+    pub fn is_dirty(&self) -> bool {
+        self.dirty.get()
+    }
+
+    /// Consumes the dirty flag, reporting whether a relayout was owed.
+    ///
+    /// The consumer half of §B.6 rule 10, and deliberately a *take* rather than a read: a
+    /// host that read the flag and then relaid out would relayout again on every subsequent
+    /// frame for the same change. Taking it means exactly one relayout per change, which is
+    /// the property that makes "notify, do not poll" true rather than aspirational.
+    pub fn take_dirty(&self) -> bool {
+        self.dirty.replace(false)
+    }
+
+    /// Updates a registered child's hints and marks the composite for relayout.
+    ///
+    /// The one entry point that keeps "the child's wish changed" and "the layout must be
+    /// re-asked" from drifting apart: a setter that wrote `children[i].hints` directly would
+    /// leave the flag clear, and the change would not reach the screen until something else
+    /// happened to dirty the composite.
+    ///
+    /// Returns whether a child with that id was registered.
+    pub fn set_child_hints(&mut self, id: ObjectId, hints: Hints) -> bool {
+        match self.children.iter_mut().find(|child| child.id == id) {
+            Some(child) => {
+                if child.hints != hints {
+                    child.hints = hints;
+                    self.dirty.set(true);
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Updates a registered child's layout parameters and marks the composite for relayout.
+    ///
+    /// Same contract as [`Self::set_child_hints`], for the [`LayoutParams`] half of a child's
+    /// registration. The layout's own record is rebuilt too, because the stretch weight is the
+    /// layout's `add_widget` argument rather than part of [`ChildInfo`] — leaving the two out of
+    /// step would make a changed `fill` or weight take effect only after the child was removed
+    /// and re-added.
+    pub fn set_child_params(&mut self, id: ObjectId, params: LayoutParams) -> bool {
+        match self.children.iter_mut().find(|child| child.id == id) {
+            Some(child) => {
+                if child.params == params {
+                    return true;
+                }
+                child.params = params;
+                self.dirty.set(true);
+                self.sync_layout_weights();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Rewrites the layout's stretch weights from `children`.
+    ///
+    /// # Why the weights are rebuilt rather than patched
+    ///
+    /// A [`Layout`] has no `set_stretch(id, n)`: the weight is the argument to `add_widget`, and
+    /// in every implementation that appends. Patching one child's weight would therefore mean
+    /// removing and re-adding it, which moves it to the **end** of the row — a re-weighted child
+    /// would visibly jump past its siblings. Rebuilding the whole registry from `children` keeps
+    /// the item order defined by one place (the child list) instead of by whichever setter ran
+    /// last, and it is a handful of operations over a list that is a form row, not a document.
+    fn sync_layout_weights(&mut self) {
+        for child in self.children.iter() {
+            self.layout.remove_widget(child.id);
+        }
+        for child in self.children.iter() {
+            let weight =
+                if child.params.fill { child.params.stretch.max(1) } else { child.params.stretch };
+            self.layout.add_widget(child.id, weight);
+        }
     }
 
     /// Creates a child from the registry and registers it.
@@ -216,6 +330,30 @@ impl CompositeBuilder {
         Some(widget)
     }
 
+    /// Creates a child and registers it at a **caller-stated** `Hints` triple.
+    ///
+    /// [`Self::add_sized`] writes one value into `min`, `pref` and `max` alike, which is right for
+    /// a column of chrome that is exactly as big as the composite says. It is wrong whenever the
+    /// composite knows the child has *room to give*: a crowded tab strip wants to tell the layout
+    /// "this tab would like its share, and may be squeezed down to the floor" — one number cannot
+    /// say that, and passing the share as all three turns the share into a floor the layout is then
+    /// obliged to honour even though the band cannot pay for it (BLUE22 · G-1).
+    pub fn add_with_hints(
+        &mut self,
+        factory: &WidgetFactory,
+        kind_or_name: &str,
+        text: &str,
+        hints: Hints,
+        params: LayoutParams,
+    ) -> Option<Box<dyn Widget>> {
+        let pref = hints.preferred();
+        let widget =
+            factory.create(kind_or_name, Rect::new(0, 0, pref.width, pref.height), text)?;
+        let id = widget.id();
+        self.register(id, hints, params);
+        Some(widget)
+    }
+
     /// Files a created child and its hints with the layout.
     ///
     /// A `fill` child that declared no stretch still needs a weight, so a caller that says
@@ -235,6 +373,8 @@ impl CompositeBuilder {
         let grow = if params.fill { params.stretch.max(1) } else { params.stretch };
         self.layout.add_widget(id, grow);
         self.children.push(Child { id, hints, params });
+        // A new child changes what the composite needs, so it owes a relayout (§B.6 rule 10).
+        self.dirty.set(true);
     }
 
     /// Creates a child and registers it at its own `hints()`, derived from the child itself.
@@ -516,7 +656,9 @@ impl ActionRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::Font;
     use crate::layout::{AlignItems, FlexDirection, FlexLayout, FlexWrap, JustifyContent};
+    use crate::widget::metrics::{dimensions, estimate_text_width};
     use crate::widget::WidgetFactory;
 
     /// The layout the samples are assembled with.
@@ -630,6 +772,98 @@ mod tests {
         }
     }
 
+    /// A consumer takes the flag; a second consume reports nothing, so one change costs one
+    /// relayout.
+    ///
+    /// §B.6 rule 10 — "a hint change must be able to trigger a relayout, not be polled". The
+    /// distinction that matters is *take* versus *read*: a host that read the flag and then
+    /// laid out would lay out again on every later frame for the same change. Taking it makes
+    /// "one change, one relayout" true, and the assertion below is what tells the two apart.
+    #[test]
+    fn a_dirty_flag_is_taken_not_read() {
+        let factory = WidgetFactory::new_with_defaults();
+        let mut builder = CompositeBuilder::new(row(0), EdgeOffsets::all(0), Size::new(0, 0));
+        // Never laid out: the first frame must not be skipped.
+        assert!(builder.is_dirty(), "a fresh composite has never been arranged");
+        assert!(builder.take_dirty(), "the first consume reports the owed layout");
+        assert!(!builder.is_dirty());
+        assert!(
+            !builder.take_dirty(),
+            "a second consume must report nothing, or the host would relayout every frame"
+        );
+
+        builder
+            .add(&factory, "label", "A", Rect::new(0, 0, 40, 20), LayoutParams::new())
+            .expect("label is published");
+        assert!(builder.is_dirty(), "adding a child changes what the composite needs");
+        assert!(builder.take_dirty());
+        assert!(!builder.take_dirty());
+    }
+
+    /// Changing a child's wish dirties the composite, and one write costs one relayout even
+    /// when four properties are set before the next frame.
+    #[test]
+    fn a_changed_child_wish_notifies_the_composite_once() {
+        let factory = WidgetFactory::new_with_defaults();
+        let mut builder = CompositeBuilder::new(row(0), EdgeOffsets::all(0), Size::new(0, 0));
+        let child = builder
+            .add(&factory, "label", "A", Rect::new(0, 0, 40, 20), LayoutParams::new())
+            .expect("label is published");
+        let id = child.id();
+        let _ = builder.take_dirty();
+
+        // Four writes before the host consumes: the flag coalesces them.
+        assert!(builder.set_child_hints(id, Hints::fixed(80, 20)));
+        assert!(builder.set_child_hints(id, Hints::fixed(90, 20)));
+        assert!(builder.set_child_params(id, LayoutParams::filled()));
+        assert!(builder.set_child_params(id, LayoutParams::stretched(2)));
+        assert!(builder.take_dirty(), "the batched writes owe exactly one relayout");
+        assert!(!builder.take_dirty(), "and only one");
+
+        // A write that changes nothing must not dirty: otherwise every redundant setter call
+        // would cost a full layout pass.
+        assert!(builder.set_child_hints(id, Hints::fixed(90, 20)));
+        assert!(!builder.is_dirty(), "an idempotent write owes no work");
+
+        // An unknown id is refused rather than silently ignored, so a caller that lost track
+        // of its children finds out.
+        assert!(!builder.set_child_hints(999_999, Hints::fixed(1, 1)));
+        assert!(!builder.set_child_params(999_999, LayoutParams::new()));
+    }
+
+    /// A re-weighted child keeps its position instead of jumping to the end of the row.
+    ///
+    /// The reason [`CompositeBuilder::set_child_params`] rebuilds the layout's registry rather
+    /// than patching one entry: every `Layout` takes its weight as the `add_widget` argument and
+    /// appends, so a remove-and-re-add would move the child past its siblings.
+    #[test]
+    fn reweighting_a_child_does_not_move_it() {
+        let factory = WidgetFactory::new_with_defaults();
+        let mut builder = CompositeBuilder::new(row(0), EdgeOffsets::all(0), Size::new(0, 0));
+        let first = builder
+            .add(&factory, "label", "A", Rect::new(0, 0, 10, 20), LayoutParams::new())
+            .expect("label is published");
+        let second = builder
+            .add(&factory, "label", "B", Rect::new(0, 0, 10, 20), LayoutParams::new())
+            .expect("label is published");
+        let third = builder
+            .add(&factory, "label", "C", Rect::new(0, 0, 10, 20), LayoutParams::new())
+            .expect("label is published");
+        let ids = [first.id(), second.id(), third.id()];
+
+        assert!(builder.set_child_params(ids[0], LayoutParams::filled()));
+        let mut order: Vec<ObjectId> = Vec::new();
+        builder.arrange(Rect::new(0, 0, 300, 40), &mut |id, _| order.push(id));
+        assert_eq!(order, ids, "the row order is the child list's, not the setters'");
+
+        // And the re-weighted child really did take the leftover room.
+        let mut widths: Vec<(ObjectId, u32)> = Vec::new();
+        builder.arrange(Rect::new(0, 0, 300, 40), &mut |id, rect| widths.push((id, rect.width)));
+        let filling = widths.iter().find(|(id, _)| *id == ids[0]).expect("first is placed").1;
+        let fixed = widths.iter().find(|(id, _)| *id == ids[1]).expect("second is placed").1;
+        assert!(filling > fixed, "the filling child absorbs the room: {widths:?}");
+    }
+
     /// A `fill` child absorbs the leftover room while its neighbour does not.
     ///
     /// §B.6 rule 9 — `min` and `fill` are separate declarations — expressed where it
@@ -686,11 +920,24 @@ mod tests {
             row.add(&factory, label, Size::new(72, 36)).expect("button is published");
         }
         assert_eq!(row.len(), 3);
-        // Each button wants its own size — `max(64, label*8 + 24)` — so the row is the three
-        // *different* widths plus the two gaps, not three uniform buttons. The row reports a
-        // width derived from the children rather than from a per-dialog constant, which is
-        // what makes it correct for a label of any length.
-        assert_eq!(row.preferred_width(), (72 + 64 + 72) + 2 * 6);
+        // Each button wants its own size -- `max(64, measured(label) + 24)` -- so the row is the
+        // three *different* widths plus the two gaps, not three uniform buttons. The row reports a
+        // width derived from the children rather than from a per-dialog constant, which is what
+        // makes it correct for a label of any length.
+        //
+        // The expected numbers are read from the same estimate the buttons themselves use rather
+        // than written as `72` / `64` / `72`: the old literals were the hand-rolled `label * 8`
+        // arithmetic copied into the test, so they would have gone stale (and did) the moment the
+        // measurement became shared. A test that restates an implementation's arithmetic is a
+        // second copy of it, which is the defect this round is closing.
+        let expected: u32 = ["Cancel", "Back", "Finish"]
+            .iter()
+            .map(|label| {
+                (estimate_text_width(label, &Font::default(), 1.0) + 24)
+                    .max(dimensions::BUTTON_MIN.width)
+            })
+            .sum();
+        assert_eq!(row.preferred_width(), expected + 2 * 6);
 
         let band = Rect::new(0, 0, 240, 40);
         let (span, buttons) = row.arrange(band);

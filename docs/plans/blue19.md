@@ -38,24 +38,24 @@
 ### 0.1.1 已裁定的架构前提（不要重新讨论）
 
 - **D7 = 两套模式共存**（用户已同意，见 §5.1）：
-  - **开发期**：JSON + CSS 热改，**不重编译**（反馈回路毫秒级，AI 友好）
-  - **交付期**：**可选**生成 Rust 代码（去运行时开销，得编译期检查）
-  - 技术依据：`ViewEngine::mount/update` 的 `create` 回调是两模式**公共接口**
-  - **`mini`/`embedded` 例外（D7-c，§5.2）**：那两个 profile 下**只能用模式 2**
-    （模式 1 的 `json`/`view` 不编译，内存预算也装不下）——
-    且生成物不得引用被门控的 `create_*`（`mini` 下有 118 处 `not(alloc_frugal)`）
+ - **开发期**：JSON + CSS 热改，**不重编译**（反馈回路毫秒级，AI 友好）
+ - **交付期**：**可选**生成 Rust 代码（去运行时开销，得编译期检查）
+ - 技术依据：`ViewEngine::mount/update` 的 `create` 回调是两模式**公共接口**
+ - **`mini`/`embedded` 例外（D7-c，§5.2）**：那两个 profile 下**只能用模式 2**
+ （模式 1 的 `json`/`view` 不编译，内存预算也装不下）——
+ 且生成物不得引用被门控的 `create_*`（`mini` 下有 118 处 `not(alloc_frugal)`）
 - **CSS 走外观（`src/style/css.rs`），JSON 走结构（`src/json/`）**——库已定，不重叠。
 
 ### 0.2 开工前必须做的三件事
 
 1. **确认 D1–D4 是否已裁定**（§五）。**未裁定则不得动实现代码**。
 2. **跑一遍基线取证**，确认本计划的数字仍成立（防止工作树已漂移）：
-   ```bash
-   python3 tools/list_event_payload_shapes.py          # 应为 335 声明 / 60 种载荷
-   bash tools/check_capability_events_are_emitted.sh   # 应为 326 pairs / 186 名字
-   bash tools/run_all_gates.sh                         # 应为 PASS=33 FAIL=0
-   ```
-   不一致则先查清差异原因再继续（数字漂移说明前提变了）。
+ ```bash
+ python3 tools/list_event_payload_shapes.py # 应为 335 声明 / 60 种载荷
+ bash tools/check_capability_events_are_emitted.sh # 应为 326 pairs / 186 名字
+ bash tools/run_all_gates.sh # 应为 PASS=33 FAIL=0
+ ```
+ 不一致则先查清差异原因再继续（数字漂移说明前提变了）。
 3. **读 §2 的取证**，特别是 §2.4（JSON 层已有另一条事件路径）。
 
 ### 0.3 本计划的约束（不得违反）
@@ -79,56 +79,56 @@
 ### BLUE19 新增规则
 
 95. **🧭 事件与属性必须类型对称** — `WidgetCapability` 中，属性侧有
-    `PropertySchema { name, value_kind, readable, writable }` + `PropertyValueKind` 枚举 +
-    `CapabilityValue` 运行时值；**事件侧不得只是一个 `&'static str` 名字数组**。
-    每个已发布事件必须声明其**载荷种类**（无载荷 / Int / Float / String / …）。
-    判定：事件侧存在与 `PropertySchema` 对位的结构体，且门禁能逐条核对
-    「声明的载荷种类 == 信号的真实 Rust 类型」。
-    理由：名字里没有类型信息，面板无法显示「值：数字」，连线无法做类型校验，
-    JSON 无法表达映射——这三件事都是设计器的**第一步**需求，不是最后一步。
+ `PropertySchema { name, value_kind, readable, writable }` + `PropertyValueKind` 枚举 +
+ `CapabilityValue` 运行时值；**事件侧不得只是一个 `&'static str` 名字数组**。
+ 每个已发布事件必须声明其**载荷种类**（无载荷 / Int / Float / String / …）。
+ 判定：事件侧存在与 `PropertySchema` 对位的结构体，且门禁能逐条核对
+ 「声明的载荷种类 == 信号的真实 Rust 类型」。
+ 理由：名字里没有类型信息，面板无法显示「值：数字」，连线无法做类型校验，
+ JSON 无法表达映射——这三件事都是设计器的**第一步**需求，不是最后一步。
 
 96. **🖋️ 设计器消费的数据必须能完整往返（JSON 层）** — 设计器要读的清单（控件、
-    属性、事件、命令）必须能**导出为可序列化结构**并**重新载入**，且往返后
-    语义等价。判定：存在一个 JSON 往返测试，覆盖全部已发布事件名，
-    断言「导出→载入→再导出」两次输出**逐字节相同**。
-    理由：设计器保存的是 JSON 文件；不能往返的清单等于每次打开都丢失信息。
+ 属性、事件、命令）必须能**导出为可序列化结构**并**重新载入**，且往返后
+ 语义等价。判定：存在一个 JSON 往返测试，覆盖全部已发布事件名，
+ 断言「导出→载入→再导出」两次输出**逐字节相同**。
+ 理由：设计器保存的是 JSON 文件；不能往返的清单等于每次打开都丢失信息。
 
 97. **🚫 「已发布」不等于「会响」，此差异必须可查询** — `connect_event(name, event)`
-    返回 `Ok` 只证明**名字合法**，不证明**有人接线**。这个差异今天**无法查询**，
-    因此「订阅成功但永不触发」是不可检测的静默失效。
-    必须提供运行时查询入口（如 `event_is_wired(control, event)`），
-    或让订阅返回值携带该事实。判定：存在一个测试，明确断言
-    「未接线时查询返回『未接线』而非静默成功」。
-    理由：原则禁止「reported success for something that did not happen」；
-    当前形态正是该缺陷，只是尚无消费者踩到。
+ 返回 `Ok` 只证明**名字合法**，不证明**有人接线**。这个差异今天**无法查询**，
+ 因此「订阅成功但永不触发」是不可检测的静默失效。
+ 必须提供运行时查询入口（如 `event_is_wired(control, event)`），
+ 或让订阅返回值携带该事实。判定：存在一个测试，明确断言
+ 「未接线时查询返回『未接线』而非静默成功」。
+ 理由：原则禁止「reported success for something that did not happen」；
+ 当前形态正是该缺陷，只是尚无消费者踩到。
 
 98. **🔌 接线必须由库完成，不得要求宿主手写** — 设计器生成的连线在**运行时**才确定
-    （用户在这个面板上连了什么，编译期不知道），因此「宿主为每个控件手写
-    `forward_*`」的模型与设计器**不兼容**。库必须提供单次调用完成某控件全部
-    已发布事件接线的入口。判定：存在测试，对若干控件用**一次调用**接完，
-    并逐个断言其已发布事件都能送达。
-    理由：设计器无法预生成它还不知道的连线；这是第 12 轮「收益小」结论反转的直接原因。
+ （用户在这个面板上连了什么，编译期不知道），因此「宿主为每个控件手写
+ `forward_*`」的模型与设计器**不兼容**。库必须提供单次调用完成某控件全部
+ 已发布事件接线的入口。判定：存在测试，对若干控件用**一次调用**接完，
+ 并逐个断言其已发布事件都能送达。
+ 理由：设计器无法预生成它还不知道的连线；这是第 12 轮「收益小」结论反转的直接原因。
 
 99. **🪞 镜像字段必须逐个判定「回退」或「删除」，不得悬空** — `WindowState` 的每个
-    字段必须属于且仅属于两类之一：① **回退值**（平台读取返回 `None` 时使用，
-    且该回退被**生产代码实际读取**）；② **已删除**（无人读取且平台权威）。
-    「写入后无人读」是**悬空镜像**，必须删除或补读取点。
-    判定：每个字段存在一条测试，证明其「被读取」或「已删除」，二者必居其一。
-    理由：悬空镜像会漂移成错误事实——平台是权威，镜像只能作为**有据可依**的回退。
+ 字段必须属于且仅属于两类之一：① **回退值**（平台读取返回 `None` 时使用，
+ 且该回退被**生产代码实际读取**）；② **已删除**（无人读取且平台权威）。
+ 「写入后无人读」是**悬空镜像**，必须删除或补读取点。
+ 判定：每个字段存在一条测试，证明其「被读取」或「已删除」，二者必居其一。
+ 理由：悬空镜像会漂移成错误事实——平台是权威，镜像只能作为**有据可依**的回退。
 
 100. **📋 设计器就绪度必须可量化** — 不得用「大概齐了」描述设计器可用程度。
-     必须有门禁输出**具体计数**：多少控件、多少属性、多少事件已带类型、
-     多少事件可接线、多少无法表达。判定：门禁打印计数表，
-     且「无法表达」的条目**逐条列出**并附原因。
-     理由：原则 #64 取证纪律在「就绪度」这种整体判断上尤其容易退化成印象。
+ 必须有门禁输出**具体计数**：多少控件、多少属性、多少事件已带类型、
+ 多少事件可接线、多少无法表达。判定：门禁打印计数表，
+ 且「无法表达」的条目**逐条列出**并附原因。
+ 理由：原则 #64 取证纪律在「就绪度」这种整体判断上尤其容易退化成印象。
 
 101. **🔍 同一概念只能有一条实现路径** — 当发现两套并行机制做同一件事
-     （如 JSON 的 `on_click` 专用键 vs capability 的 326 个已发布事件名），
-     必须**取证重复的真实程度**（原则 #51），然后**合并或明确分工**，
-     不得让两套长期并存。判定：两套机制的职责边界写入文档，
-     且门禁能验证「一条路径新增的事件，另一条不会静默落后」。
-     理由：并行机制必然漂移；本轮即发现 JSON 事件路径与 capability 事件表
-     **完全不相交**（§2.4）。
+ （如 JSON 的 `on_click` 专用键 vs capability 的 326 个已发布事件名），
+ 必须**取证重复的真实程度**（原则 #51），然后**合并或明确分工**，
+ 不得让两套长期并存。判定：两套机制的职责边界写入文档，
+ 且门禁能验证「一条路径新增的事件，另一条不会静默落后」。
+ 理由：并行机制必然漂移；本轮即发现 JSON 事件路径与 capability 事件表
+ **完全不相交**（§2.4）。
 
 ---
 
@@ -199,14 +199,14 @@
 
 ```rust
 pub struct WidgetCapability {
-    pub kind: WidgetKind,
-    pub canonical_name: &'static str,
-    pub aliases: &'static [&'static str],
-    /// Every property this kind publishes, for discovery and for validating a name.
-    pub properties: &'static [PropertySchema],   // ← 有类型
-    /// Names of the events the kind can emit, for wiring handlers by name.
-    pub events: &'static [&'static str],          // ← 只有名字，无类型
-    pub commands: &'static [&'static str],
+ pub kind: WidgetKind,
+ pub canonical_name: &'static str,
+ pub aliases: &'static [&'static str],
+ /// Every property this kind publishes, for discovery and for validating a name.
+ pub properties: &'static [PropertySchema], // ← 有类型
+ /// Names of the events the kind can emit, for wiring handlers by name.
+ pub events: &'static [&'static str], // ← 只有名字，无类型
+ pub commands: &'static [&'static str],
 }
 ```
 
@@ -226,7 +226,7 @@ pub struct WidgetCapability {
 实跑（脚本扫 `pub <name>: SignalN<T> / GenericSignal`，解析真实泛型参数）：
 
 ```
-distinct payload types: 60   total signal declarations: 335
+distinct payload types: 60 total signal declarations: 335
 ```
 
 抽样（出现次数降序前 20）：
@@ -258,8 +258,8 @@ distinct payload types: 60   total signal declarations: 335
 ### 2.3 已发布名 vs 信号总数（不相等，必须解释）
 
 ```
-已发布事件名出现次数（当前）: 326 pairs / 186 distinct names   [check_capability_events_are_emitted]
-全仓信号声明总数:            335
+已发布事件名出现次数（当前）: 326 pairs / 186 distinct names [check_capability_events_are_emitted]
+全仓信号声明总数: 335
 ```
 
 **335 ≠ 326**，差值来自框架信号（`BaseWidget` 的 `hover`/`mouse_down`/`focus_gained`/
@@ -283,23 +283,23 @@ distinct payload types: 60   total signal declarations: 335
 // ── Event binding: on_click / on_change / extended ──
 let (on_click_name, on_change_name) = extract_event_handlers(obj);
 if let Some(ref name) = on_click_name {
-    let handle: ButtonHandle = ButtonHandle::from_raw(widget_id);
-    handle.on_click(move || { /* invoke_global_handler(name, ctx) */ });
+ let handle: ButtonHandle = ButtonHandle::from_raw(widget_id);
+ handle.on_click(move || { /* invoke_global_handler(name, ctx) */ });
 }
 ```
 
 **问题（三条，都是设计器的直接障碍）**：
 
 1. **是硬编码键名清单**，不是遍历 capability 的 `events`：目前只认
-   `on_click`、`on_change`、`on_close`、`on_double_click`、`on_focus`、`on_blur`、
-   `on_selection_changed`、`on_value_changed` **8 个**，而事件表有 **186** 个名字。
-   **新增一个已发布事件，JSON 侧不会自动支持**——违反新规则 #101。
+ `on_click`、`on_change`、`on_close`、`on_double_click`、`on_focus`、`on_blur`、
+ `on_selection_changed`、`on_value_changed` **8 个**，而事件表有 **186** 个名字。
+ **新增一个已发布事件，JSON 侧不会自动支持**——违反新规则 #101。
 2. **强转成 `ButtonHandle`**（`ButtonHandle::from_raw(widget_id)`），即这条路径
-   只对按钮形态成立；对 `slider`/`chart`/`code_editor` 等并不通用。
-   `on_value_changed` 走的是 `WidgetHandle` trait 的 `ValueChanged` 触发种类，
-   **不是**控件自己的 `value_changed` 强类型信号。
+ 只对按钮形态成立；对 `slider`/`chart`/`code_editor` 等并不通用。
+ `on_value_changed` 走的是 `WidgetHandle` trait 的 `ValueChanged` 触发种类，
+ **不是**控件自己的 `value_changed` 强类型信号。
 3. **没有任何门禁覆盖**：实跑 `grep -rn "on_click|EventHandlerMap" tools/` → **0 命中**。
-   即这条路径可以静默漂移，无人察觉。
+ 即这条路径可以静默漂移，无人察觉。
 
 > **这说明设计器所需能力的「半个」已经存在，但是以另一套机制实现的。**
 > 本计划的价值之一就是把它与事件表**合并**（新规则 #101），
@@ -353,29 +353,29 @@ if let Some(ref name) = on_click_name {
 /// 一个已发布事件的元数据。与 `PropertySchema` 对位。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EventSchema {
-    /// 事件名，与 `connect_event` 接受的名字逐字一致。
-    pub name: &'static str,
-    /// 载荷种类。`None` = 无载荷事件（`clicked`）；
-    /// `Some(kind)` = 载荷按 `PropertyValueKind` 描述。
-    ///
-    /// 复用 `PropertyValueKind` 而非新造枚举：payload 与属性值走同一个
-    /// JSON/类型转换管道，两套枚举必然漂移（原则 #54）。
-    pub payload: Option<PropertyValueKind>,
+ /// 事件名，与 `connect_event` 接受的名字逐字一致。
+ pub name: &'static str,
+ /// 载荷种类。`None` = 无载荷事件（`clicked`）；
+ /// `Some(kind)` = 载荷按 `PropertyValueKind` 描述。
+ ///
+ /// 复用 `PropertyValueKind` 而非新造枚举：payload 与属性值走同一个
+ /// JSON/类型转换管道，两套枚举必然漂移（原则 #54）。
+ pub payload: Option<PropertyValueKind>,
 }
 ```
 
 `WidgetCapability` 相应变为：
 
 ```rust
-pub events: &'static [EventSchema],   // was: &'static [&'static str]
+pub events: &'static [EventSchema], // was: &'static [&'static str]
 ```
 
 **必须保留的兼容面**：
 
 - `connect_event` 的校验从「名字在数组里」变为「按 `name` 查找 schema」——
-  **外部行为不变**（同名仍接受、异名仍 `UnknownCommand`）。
+ **外部行为不变**（同名仍接受、异名仍 `UnknownCommand`）。
 - `WidgetCapabilityManifest.events` 从 `Vec<&'static str>` 变为带类型的结构
-  （步骤 2 一并处理）。
+ （步骤 2 一并处理）。
 
 **60 种载荷类型如何落进 `PropertyValueKind`**（这是步骤 1 的**真正难点**）：
 
@@ -415,11 +415,11 @@ const fn unit_events(names: &[&'static str]) -> &'static [EventSchema] { .. }
 **但 `const fn` 无法做「名字 → 类型」推导**，所以更现实的两步走：
 
 1. **先机械迁移**：写一个一次性脚本，把
-   `events: &["a", "b"]` → `events: &[unit("a"), unit("b")]`，
-   **全部标为无载荷**。此时门禁必须**暂时**允许（有注释说明阶段）。
+ `events: &["a", "b"]` → `events: &[unit("a"), unit("b")]`，
+ **全部标为无载荷**。此时门禁必须**暂时**允许（有注释说明阶段）。
 2. **再逐条填载荷类型**：从源码信号声明反推真实类型（`tools/list_event_payload_shapes.py`
-   已提供全量清单），**逐条**改为 `payload("value_changed", PropertyValueKind::Int)`。
-   此步门禁**强制**：声明类型必须 == 信号真实类型。
+ 已提供全量清单），**逐条**改为 `payload("value_changed", PropertyValueKind::Int)`。
+ 此步门禁**强制**：声明类型必须 == 信号真实类型。
 
 > **为什么必须分两步**：一步到位会同时改 187 处 + 引入类型，
 > 一旦编译错就分不清是迁移错还是类型错。分两步则每步都可单独验证。
@@ -430,20 +430,20 @@ const fn unit_events(names: &[&'static str]) -> &'static [EventSchema] { .. }
 - `WidgetCapabilityManifest.events` → `Vec<EventManifest { name, payload }>`；
 - 新增设计器入口（形如 `capability_manifest_json(name) -> String`），输出稳定排序；
 - 新门禁 `check_designer_manifest_roundtrip.py`：导出 → 载入 → 再导出，
-  断言两次输出**逐字节相同**（新规则 #96）；
+ 断言两次输出**逐字节相同**（新规则 #96）；
 - 覆盖**全部 186 个已发布名字**。
 
 **已知障碍（实现前必须确认）**：
 
 - `WidgetCapabilityManifest` 当前**未实现 `Serialize`**（实跑：`grep -rn "derive(Serialize"
-  src/widget/capability/` → **0 命中**）。所以「导出为 JSON」意味着**先加 serde 派生**，
-  或手写一份 JSON 序列化（后者避免给 capability 层引入 serde 依赖，但需自己保证稳定性）。
+ src/widget/capability/` → **0 命中**）。所以「导出为 JSON」意味着**先加 serde 派生**，
+ 或手写一份 JSON 序列化（后者避免给 capability 层引入 serde 依赖，但需自己保证稳定性）。
 - 仓库已有 `serde_json`（`src/json/loader.rs:26` 在用），但**仅在 device profile 下**：
-  实跑 `Cargo.toml` —— `serde`/`serde_json` 出现在 `desktop`/`tablet`/`mobile` 的
-  feature 列表中，**不在 `mini`/`embedded`**。
-  ⇒ JSON 导出入口必须门控在 `full_widgets`（与 §四 一致）；
-  若希望 capability 层**不依赖 serde**（使 `manifest → 结构` 在任何 profile 可用），
-  则手写序列化是更稳的选择（值集合有限，就那几个标量种类）。
+ 实跑 `Cargo.toml` —— `serde`/`serde_json` 出现在 `desktop`/`tablet`/`mobile` 的
+ feature 列表中，**不在 `mini`/`embedded`**。
+ ⇒ JSON 导出入口必须门控在 `full_widgets`（与 §四 一致）；
+ 若希望 capability 层**不依赖 serde**（使 `manifest → 结构` 在任何 profile 可用），
+ 则手写序列化是更稳的选择（值集合有限，就那几个标量种类）。
 
 ### 3.2.1 往返测试的**具体断言形式**（避免写成同义反复）
 
@@ -454,33 +454,33 @@ const fn unit_events(names: &[&'static str]) -> &'static [EventSchema] { .. }
 3. 从该结构**重建** manifest → 再导出为 `s2`；
 4. 断言 `s1 == s2`（逐字节）；
 5. 并断言 `s1` 中**确实包含**预埋的哨兵（如 `slider` 的
-   `slider_pressed` 与 `value_changed`，且后者带类型）——否则「两个空字符串相等」也会通过。
+ `slider_pressed` 与 `value_changed`，且后者带类型）——否则「两个空字符串相等」也会通过。
 
 > 第 5 条是关键：只断言「两次相同」会被「导出器什么都不写」满足。
 
 ### 3.3 步骤 3：CSS/JSON 绑定模型
 
 - 统一 JSON 键：**不再用 `on_click` 专用键**，改为
-  `"events": { "<published_name>": "<handler>" }`，与事件表**同名**（新规则 #101）；
+ `"events": { "<published_name>": "<handler>" }`，与事件表**同名**（新规则 #101）；
 - **类型兼容规则**（事件载荷 → 目标属性）：
-  - 同类型直通；
-  - `Int`/`UInt` → `String` 允许（格式化）；
-  - `String` → `Int` **拒绝**（除非显式转换节点），因为「解析失败」是运行时错误；
-  - 无载荷事件只能接到不接收值的动作。
+ - 同类型直通；
+ - `Int`/`UInt` → `String` 允许（格式化）；
+ - `String` → `Int` **拒绝**（除非显式转换节点），因为「解析失败」是运行时错误；
+ - 无载荷事件只能接到不接收值的动作。
 - 该规则表必须**数据化**（可被设计器读取），不得硬编码在 match 里；
 - 现有 `src/json/events.rs` 的 `EventHandlerMap` **保留**（它是运行时的 handler 注册表），
-  但**键的来源**改为遍历 capability 的 `events`。
+ 但**键的来源**改为遍历 capability 的 `events`。
 
 ### 3.4 步骤 4：自动接线
 
 **前置**：步骤 1 完成（载荷类型已知）。
 
 - `Widget` trait 增加按名取信号的入口，例如
-  `fn event_signal_dyn(&self, name: &str) -> Option<EventSignalRef>`；
+ `fn event_signal_dyn(&self, name: &str) -> Option<EventSignalRef>`；
 - `EventSignalRef` 需能承载「无载荷」与「有载荷」两种（`Signal1<CapabilityValue>` 或
-  一个把强类型擦成 `CapabilityValue` 的适配层）；
+ 一个把强类型擦成 `CapabilityValue` 的适配层）；
 - 库提供**单次调用**接完某控件全部已发布事件（新规则 #98），
-  例如 `EventSignalBinder::forward_all(widget)`；
+ 例如 `EventSignalBinder::forward_all(widget)`；
 - 同时提供**可查询**「是否已接线」（新规则 #97）。
 
 > **明确不做的**：不把 hub 变成「必须存在」的全局状态。`EventSignalBinder::detached()`
@@ -491,10 +491,10 @@ const fn unit_events(names: &[&'static str]) -> &'static [EventSchema] { .. }
 对 `WindowState` 每个字段产出一张表（§2.6 是**阅读结论**，本任务把它**测试化**）：
 
 - 每个字段一条测试，断言其**被读取**（构造「平台返回 `None`」的场景，验回退值）
-  或**已删除**；
+ 或**已删除**；
 - 把 §2.6 的判定表写入代码注释，使后来者不必重新推导；
 - 加门禁（或测试）防止**新增悬空字段**：`WindowState` 的每个字段名必须在
-  测试中被引用。
+ 测试中被引用。
 
 ---
 
@@ -504,12 +504,12 @@ const fn unit_events(names: &[&'static str]) -> &'static [EventSchema] { .. }
 
 - `EventSchema` 定义在 `src/widget/capability/types.rs` → 该模块已受 `full_widgets` 门控；
 - 步骤 4 的自动接线依赖 capability 表 → **`mini`/`embedded` 下不存在**，
-  必须 `cfg` 分叉或整体不编译，**不得**自造第五个别名（规则 #92/#47）；
+ 必须 `cfg` 分叉或整体不编译，**不得**自造第五个别名（规则 #92/#47）；
 - 步骤 2 的 JSON 导出依赖 `serde` → 检查 `mini` 下 `serde` 是否可用
-  （`mini` feature 列表：`software`/`controls-custom`/`heapless`/`hashbrown`/`spin`/`bumpalo`
-  —— **不含 `serde`**），因此导出入口必须门控在 `full_widgets`；
+ （`mini` feature 列表：`software`/`controls-custom`/`heapless`/`hashbrown`/`spin`/`bumpalo`
+ —— **不含 `serde`**），因此导出入口必须门控在 `full_widgets`；
 - **门控放底层**（用户一贯要求）：`EventSchema` 本身的类型定义与门控开关放在
-  capability 层，调用点不写 `cfg`。
+ capability 层，调用点不写 `cfg`。
 
 ### 4.1 设计器两条路径的 profile 可用性矩阵（D7-c 的汇总）
 
@@ -528,7 +528,7 @@ const fn unit_events(names: &[&'static str]) -> &'static [EventSchema] { .. }
 **依据（全部实跑）**：
 - `src/lib.rs`：`#[cfg(full_widgets)] pub mod json;`、`#[cfg(declarative_view)] pub mod view;`
 - `build.rs`：`is_stripped = is_mini || is_embedded`；`full_widgets = has_profile && !is_stripped`；
-  `declarative_view = full_widgets && !view_opted_out`
+ `declarative_view = full_widgets && !view_opted_out`
 - `tools/check_view_platform_gate.sh` **双向断言**这两个模块的在场/缺席（本地实跑 EXIT=0）
 
 ---
@@ -579,13 +579,13 @@ const fn unit_events(names: &[&'static str]) -> &'static [EventSchema] { .. }
 >
 > ⚠️ **实跑还揭示了两件比计数更要紧的事**（D1/D2 的难度来源）：
 > 1. **元组会嵌套**：存在 `((f32, f32), (f32, f32))`、`Option<(usize, usize)>`、
->    `(String, Vec<String>)`、`(String, PropertyValue)`。
->    ⇒ 任何「扁平元组」方案（如只加 `Tuple2`/`Tuple3`）**不成立**，需要递归结构。
+> `(String, Vec<String>)`、`(String, PropertyValue)`。
+> ⇒ 任何「扁平元组」方案（如只加 `Tuple2`/`Tuple3`）**不成立**，需要递归结构。
 > 2. **载荷里有一批领域类型，不是标量**：`BarcodeResult`、`DragPayload`、`NavigationEvent`、
->    `FilterExpr`、`SignatureStroke`、`DateRange`、`CardPosition`、`PropertyValue`、
->    `StandardButton`、`Orientation`。
->    ⇒ D4 不是「几个日期类型怎么序列化」，而是**一批领域对象要不要跨 JSON 边界**。
->    这一项很可能需要**逐类型裁定**（哪些进设计器、哪些不进），是本计划最大的不确定度。
+> `FilterExpr`、`SignatureStroke`、`DateRange`、`CardPosition`、`PropertyValue`、
+> `StandardButton`、`Orientation`。
+> ⇒ D4 不是「几个日期类型怎么序列化」，而是**一批领域对象要不要跨 JSON 边界**。
+> 这一项很可能需要**逐类型裁定**（哪些进设计器、哪些不进），是本计划最大的不确定度。
 
 > D1–D4 是**步骤 1 的阻塞项**；D5/D6 影响步骤 3，可稍后定。
 
@@ -599,9 +599,9 @@ const fn unit_events(names: &[&'static str]) -> &'static [EventSchema] { .. }
 
 | | 不重编译（数据即真相） | 转代码重编译（源码即真相） |
 |---|---|---|
-| 代表 | Flutter（热重载）、Qt QML、Web（HTML/CSS） | SwiftUI、Jetpack Compose、React |
+| 代表 | 主流 material 实现（热重载）、参考工具包 参考工具包的标记语言、Web（HTML/CSS） | 主流声明式实现、Jetpack Compose、a web UI framework |
 
-**反例必须说清**：React 是**转代码的**（JSX→JS，要重新构建），却是最主流的「现代」方案；
+**反例必须说清**：a web UI framework 是**转代码的**（JSX→JS，要重新构建），却是最主流的「现代」方案；
 Web 的 HTML/CSS 是**不重编译**的，却是最「传统」的。
 
 #### 5.1.2 真正的三条判据（且它们指向不同答案）
@@ -612,7 +612,7 @@ Web 的 HTML/CSS 是**不重编译**的，却是最「传统」的。
 | **② 产物干净度 / 运行时开销** | **模式 2** | 模式 1 必须打包 `src/json/`（实测：162 个 kind 名、10 种 layout、属性路由、CSS 集成）+ CSS 解析器 |
 | **③ 类型安全 / 可验证性** | **模式 2** | 模式 2 编译期暴露错误；模式 1 全靠运行时校验 |
 
-> **Rust 的编译速度是决策的关键权重**。SwiftUI 能用模式 2，很大程度因为 Swift 增量编译
+> **Rust 的编译速度是决策的关键权重**。主流声明式实现 能用模式 2，很大程度因为 Swift 增量编译
 > 比 Rust 快得多。在 Rust 上，「每次改 UI 都重编译」的代价明显更高。
 
 #### 5.1.3 AI 时代把判据①的权重放大了（但要说两面）
@@ -629,16 +629,16 @@ AI 的核心瓶颈是**试错次数**：AI 写代码 → 看结果 → 改。回
 **但必须同时承认模式 1 在 AI 时代的两个真实劣势：**
 
 1. **AI 容易生成「看起来对、跑起来错」的 JSON**——没有编译器兜底。
-   *这正是本计划要补 `EventSchema` 与渲染期校验的**根本理由***。
+ *这正是本计划要补 `EventSchema` 与渲染期校验的**根本理由***。
 2. **AI 改 JSON 时缺结构性约束**——模式 2 的生成器可以把约束写进代码模板，
-   模式 1 只能靠 schema 校验。
+ 模式 1 只能靠 schema 校验。
 
 #### 5.1.4 裁定：**分层，两套共存**（用户已同意）
 
 ```
-设计器开发期  → 模式 1（JSON + CSS 热改，不重编译）   ← 反馈回路，AI 友好
-预览 / 调试   → 模式 1
-交付产物      → 模式 2 可选（生成 Rust 代码）        ← 去运行时开销，得编译期检查
+设计器开发期 → 模式 1（JSON + CSS 热改，不重编译） ← 反馈回路，AI 友好
+预览 / 调试 → 模式 1
+交付产物 → 模式 2 可选（生成 Rust 代码） ← 去运行时开销，得编译期检查
 ```
 
 **本库已经同时具备两条路的零件**（实跑取证）：
@@ -662,19 +662,19 @@ AI 的核心瓶颈是**试错次数**：AI 写代码 → 看结果 → 改。回
 >
 > **两种模式不需要两套架构，只需要两个 `create`。** 这是本裁定成立的技术依据。
 
-**先例**：Flutter（开发热重载 + 产物编译）、Qt/QML 同构。这不是折中，是成熟形态。
+**先例**：主流 material 实现（开发热重载 + 产物编译）、参考工具包 同构。这不是折中，是成熟形态。
 
 #### 5.1.5 D7 对后续步骤的影响
 
 - **D7-a（开发期模式 1）**：**确定采用**，且零件已备（`css_watcher` 已存在）。
-  → **T-3 的绑定模型必须有运行时形态**（handler 注册表 + 名字→信号解析）。
+ → **T-3 的绑定模型必须有运行时形态**（handler 注册表 + 名字→信号解析）。
 - **D7-b（交付期模式 2）**：**可选**，但一旦要做，它需要一个**代码生成器**（新任务，见 T-23）。
-  → 生成器的输出模板**重用 T-3 的类型兼容规则**（同一套规则，两个消费者）。
+ → 生成器的输出模板**重用 T-3 的类型兼容规则**（同一套规则，两个消费者）。
 - **对本计划四个步骤的净影响**：
-  - 步骤 1（`EventSchema`）**两模式都需要** → 不变
-  - 步骤 2（JSON 往返）**两模式都需要** → 不变
-  - 步骤 3（绑定模型）**需同时产出「运行时规则表」与「生成器模板」两份消费者** → 范围微增
-  - 步骤 4（自动接线）**只有模式 1 需要**（模式 2 的接线已在生成的代码里） → 范围略降
+ - 步骤 1（`EventSchema`）**两模式都需要** → 不变
+ - 步骤 2（JSON 往返）**两模式都需要** → 不变
+ - 步骤 3（绑定模型）**需同时产出「运行时规则表」与「生成器模板」两份消费者** → 范围微增
+ - 步骤 4（自动接线）**只有模式 1 需要**（模式 2 的接线已在生成的代码里） → 范围略降
 
 > **结论**：共存不显著增加前期成本，因为公共接口（`create`）已存在、
 > 类型兼容规则可复用。真正的增量是两个新任务（T-23 代码生成器、T-24 模式一致性门禁）。
@@ -708,15 +708,15 @@ AI 的核心瓶颈是**试错次数**：AI 写代码 → 看结果 → 改。回
 **门控实现**（`src/lib.rs` 实跑）：
 
 ```rust
-#[cfg(full_widgets)]      pub mod json;   // mini/embedded 下不编译
-#[cfg(declarative_view)]  pub mod view;   // mini/embedded 下不编译
+#[cfg(full_widgets)] pub mod json; // mini/embedded 下不编译
+#[cfg(declarative_view)] pub mod view; // mini/embedded 下不编译
 ```
 
 其中（`build.rs` 实跑）：
 
 ```
-full_widgets      = has_profile && !is_stripped        // is_stripped = mini || embedded
-declarative_view  = full_widgets && !no-declarative-view  // 比 full_widgets 更窄
+full_widgets = has_profile && !is_stripped // is_stripped = mini || embedded
+declarative_view = full_widgets && !no-declarative-view // 比 full_widgets 更窄
 widgets_unstripped= !is_stripped
 ```
 
@@ -731,10 +731,10 @@ widgets_unstripped= !is_stripped
 #### 5.2.3 为什么必须这样（文档给的两条硬理由）
 
 1. **内存预算装不下**：`mini` 是 `alloc_frugal`（定容 `heapless`），`embedded` 是
-   `embedded_surface`；声明式层要 `String`/`Vec`/`HashMap` 的动态分配。
+ `embedded_surface`；声明式层要 `String`/`Vec`/`HashMap` 的动态分配。
 2. **没有消费者**：embedded/mini 的 UI 是**静态/手工构造**的，
-   **没有「每帧重新求值 state」的调用方**，所以 `diff` 在那里**无消费者**
-   （原则 #28 反过度抽象 / #93）。
+ **没有「每帧重新求值 state」的调用方**，所以 `diff` 在那里**无消费者**
+ （原则 #28 反过度抽象 / #93）。
 
 #### 5.2.4 ⚠️ 取证新发现：`mini` 下**连 `create_*` 大多也不存在**
 
@@ -839,20 +839,20 @@ fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect));
 
 ```
 ┌───────────────────────────────────────────────┐
-│ 设计器（**永远跑在 desktop 宿主上**）            │
-│  ┌─────────────────────────────────────────┐  │
-│  │ 画布 / 属性面板 / 事件连线                │  │
-│  │  ↑ 用 JSON+CSS 预览（模式 1，热改）        │  │
-│  └─────────────────────────────────────────┘  │
-│                    ↓                          │
-│  ┌─────────────────────────────────────────┐  │
-│  │ 生成器（目标 profile 可选）               │  │
-│  │  ① 查目标 profile 可用控件集  (d-1)       │  │
-│  │  ② 解 CSS → 内联属性          (d-2)       │  │
-│  │  ③ 跑 layout::Layout → 常量坐标 (d-3)      │  │
-│  │  ④ 检查容量约束              (d-4)       │  │
-│  │  ⑤ 输出：Node 代码 或 add_child 代码      │  │
-│  └─────────────────────────────────────────┘  │
+│ 设计器（**永远跑在 desktop 宿主上**） │
+│ ┌─────────────────────────────────────────┐ │
+│ │ 画布 / 属性面板 / 事件连线 │ │
+│ │ ↑ 用 JSON+CSS 预览（模式 1，热改） │ │
+│ └─────────────────────────────────────────┘ │
+│ ↓ │
+│ ┌─────────────────────────────────────────┐ │
+│ │ 生成器（目标 profile 可选） │ │
+│ │ ① 查目标 profile 可用控件集 (d-1) │ │
+│ │ ② 解 CSS → 内联属性 (d-2) │ │
+│ │ ③ 跑 layout::Layout → 常量坐标 (d-3) │ │
+│ │ ④ 检查容量约束 (d-4) │ │
+│ │ ⑤ 输出：Node 代码 或 add_child 代码 │ │
+│ └─────────────────────────────────────────┘ │
 └───────────────────────────────────────────────┘
 ```
 
@@ -864,19 +864,19 @@ fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect));
 
 - T-23 的输出**必须参数化目标 profile**，且四条约束各有验据（见 5.3.3 表）；
 - T-24 需新增一条：**同一份 JSON 对三个目标（desktop / mini / embedded）生成，
-  每个生成物都在真实 feature 下编译通过**；
+ 每个生成物都在真实 feature 下编译通过**；
 - 若目标 profile 不支持某控件（d-1），设计器必须在**画布上**就标示出来，
-  而不是等到生成时才报错（否则用户白拖了）。
+ 而不是等到生成时才报错（否则用户白拖了）。
 
 ---
 
 ## 六、明确**不做**的（附理由）
 
 1. **不改 `Widget` trait 的既有方法签名**（规则 #86）：步骤 4 是**新增**方法，
-   不是改写 `clicked_signal()` 等。
+ 不是改写 `clicked_signal()` 等。
 2. **不把 hub 变成全局单例**：`detached()` 语义保留。
 3. **不移除 `src/json/events.rs` 的 `EventHandlerMap`**：它是运行时的 handler 注册表，
-   与「已发布事件名」是**不同层**的东西；要做的是让它的**键**来自事件表。
+ 与「已发布事件名」是**不同层**的东西；要做的是让它的**键**来自事件表。
 4. **不为了「看起来完整」而发明载荷语义**：D1–D4 未定之前，不写死任何一种映射。
 5. **不为 `mini`/`embedded` 实现设计器能力**：设计器是桌面工具（规则 #92）。
 
@@ -903,7 +903,7 @@ fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect));
 
 1. **D1–D4 必须最先定**——它们决定步骤 1 的数据形状，做错了要返工。
 2. **步骤 1 是地基**，且**独立价值最高**：即使设计器推迟，类型化的事件契约本身
-   就让「326 个名字」从字符串变成可用元数据。
+ 就让「326 个名字」从字符串变成可用元数据。
 3. **任务 A 与步骤 1 无依赖**，可并行，且它是**独立的缺陷类**（镜像悬空）。
 4. **步骤 2 依赖 1**，实现直接。
 5. **步骤 4 在步骤 1 之后**才可能（载荷类型已知）。
@@ -1006,7 +1006,7 @@ fn __android_log_write(prio: i32, tag: *const i8, text: *const i8) -> i32;
 
 ```
 error[E0308]: mismatched types
-  expected `*const i8`, found `*const u8`
+ expected `*const i8`, found `*const u8`
 ```
 
 **为什么一直没人发现**：没有任何门禁编译 Android target。
@@ -1053,14 +1053,14 @@ error[E0308]: mismatched types
 
 ```
 D1–D4 裁定（⛔ 阻塞）
-   │
-   ├──> T-1 事件 EventSchema ──┬──> T-2 JSON 往返 ──┐
-   │                           │                    ├──> T-3 绑定模型（需 D5/D6）
-   │                           └──> T-4 自动接线 ────┘
-   │                                      │
-   │                                      └──（D7：两模式共存）
-   │                                             │
-   │                              T-23 代码生成器 ──> T-24 模式一致性门禁
+ │
+ ├──> T-1 事件 EventSchema ──┬──> T-2 JSON 往返 ──┐
+ │ │ ├──> T-3 绑定模型（需 D5/D6）
+ │ └──> T-4 自动接线 ────┘
+ │ │
+ │ └──（D7：两模式共存）
+ │ │
+ │ T-23 代码生成器 ──> T-24 模式一致性门禁
 T-A 镜像判定（独立，可并行）
 T-8 / T-9 / T-10（JSON 路径合并 + 可查询 + 门禁；T-9 依赖 T-1，T-8/T-10 可提前）
 T-5 / T-6 / T-7（已基本完成，T-7 的测试化并入 T-A）
@@ -1086,14 +1086,14 @@ T-16 ~ T-18（版本/文档/日志，随各步落地同步）
 ## DoD-T-A（镜像逐字段判定）
 
 - [x] `WindowState` 的 **13 个字段**每个都有一条测试，且测试**真的能区分**两种情况：
-  - 「回退」类：构造**平台读取返回 `None`** 的场景，断言回退值被返回
-    （`is_maximized`/`is_minimized`/`is_fullscreen`/`icon`/`min_size`）。
-  - 「有读取」类：断言写入后能被读回（`x`/`y` **经 `center_on_screen`**；
-    `w`/`h` 经 `apply_window_layout`；`close_callback` 经 `close()`）。
+ - 「回退」类：构造**平台读取返回 `None`** 的场景，断言回退值被返回
+ （`is_maximized`/`is_minimized`/`is_fullscreen`/`icon`/`min_size`）。
+ - 「有读取」类：断言写入后能被读回（`x`/`y` **经 `center_on_screen`**；
+ `w`/`h` 经 `apply_window_layout`；`close_callback` 经 `close()`）。
 - [x] **反向注入**：删掉任一字段的读取点 → 对应测试必须 FAIL。
-      （实测 2 处：`center_on_screen` 的 `x`/`y` 镜像更新、`close()` 的回调读取，均 FAIL）
+ （实测 2 处：`center_on_screen` 的 `x`/`y` 镜像更新、`close()` 的回调读取，均 FAIL）
 - [x] 有一条防新增悬空字段的检查（门禁或测试），且**已知**它当前是 PASS。
-      （`every_window_state_field_is_classified_and_backed_by_a_test` **解析结构体**逐字段比对）
+ （`every_window_state_field_is_classified_and_backed_by_a_test` **解析结构体**逐字段比对）
 - [x] §2.6 的判定表已写入代码注释，**并纠正了其中两条读取点归属**（见下）。
 
 > ⚠️ **§2.6 判定表的纠错**（第 55 轮实测）：`x`/`y` 的读者**不是** `apply_window_layout`
@@ -1106,9 +1106,9 @@ T-16 ~ T-18（版本/文档/日志，随各步落地同步）
 - [x] `EventSchema` 结构体存在，且 `WidgetCapability.events` 类型已变为 `&[EventSchema]`。
 - [x] **187 处** `events:` 构造点全部迁移编译通过（实跑 `grep -c "events:" properties.rs` = 187）。
 - [x] 载荷类型**逐条**从信号声明反推并填入；`tools/list_event_payload_shapes.py`
-      的输出与表内声明**逐条一致**。
+ 的输出与表内声明**逐条一致**。
 - [x] 新门禁：对每个已发布事件，核对「`EventSchema.payload` == 该名字对应信号的
-      真实 Rust 类型」。**反向注入**：把某条改成错的类型 → 门禁必须 FAIL。
+ 真实 Rust 类型」。**反向注入**：把某条改成错的类型 → 门禁必须 FAIL。
 - [x] `connect_event` 外部行为**不变**（既有 `capability_event_surface_test` 7 个测试全绿）。
 - [x] `mini`/`embedded` 下不引入新编译错误（`check_profiles.sh` PASS）。
 
@@ -1116,48 +1116,48 @@ T-16 ~ T-18（版本/文档/日志，随各步落地同步）
 
 - [x] 能导出某控件的 capability manifest 为 JSON 字符串（`capability_manifest_json`）。
 - [x] 往返测试存在，且**用独立解析器**（`DesignerManifest::from_json`，非同一函数），
-      断言 `s1 == s2` **且** `s1` 含预埋哨兵（见 §3.2.1）。
+ 断言 `s1 == s2` **且** `s1` 含预埋哨兵（见 §3.2.1）。
 - [x] **反向注入**：让导出器漏掉一个事件 → 测试必须 FAIL（实测 187 控件逐个报出）。
 - [x] 覆盖**全部 186 个已发布名字**（不是抽样）。
 
 ## DoD-T-3（绑定模型）
 
 - [x] 类型兼容规则**数据化**（可被设计器读取），不是硬编码在 `match` 里。
-      （`WIRE_RULES: &[WireRule]` 公开常量；`check_wire_rules_are_data.sh` 断言
-      `compatibility` **真的迭代整张表**并比较 `source`/`target` 两个字段）
+ （`WIRE_RULES: &[WireRule]` 公开常量；`check_wire_rules_are_data.sh` 断言
+ `compatibility` **真的迭代整张表**并比较 `source`/`target` 两个字段）
 - [x] 每条规则**至少一个测试**，含**拒绝**分支（`String → Int` 必须被拒）。
-      （8 条测试，含 `text_into_a_number_is_rejected_with_that_reason`、
-      `an_unlisted_pair_is_rejected_not_assumed_compatible`、规则表自检两条）
+ （8 条测试，含 `text_into_a_number_is_rejected_with_that_reason`、
+ `an_unlisted_pair_is_rejected_not_assumed_compatible`、规则表自检两条）
 - [x] JSON 键从 `on_*` 专用键迁移到 `events: { "<published_name>": ... }`，
-      且**既有 JSON 测试全绿**（行为不回退）。
+ 且**既有 JSON 测试全绿**（行为不回退）。
 - [x] `EventHandlerMap` 保留但键来源改为遍历 capability `events`（规则 #101）。
-      （`on_*` 退居**兼容路由**，其键表 `MARKER_KEYS` 为单一来源；
-      `bind_declared_events` 对 `events` 名**按 capability 表校验**）
+ （`on_*` 退居**兼容路由**，其键表 `MARKER_KEYS` 为单一来源；
+ `bind_declared_events` 对 `events` 名**按 capability 表校验**）
 - [x] **D5 / D6 已裁定**（第 55 轮，理由写入 `wire_rules.rs` 模块文档）。
 
 ## DoD-T-4（自动接线）
 
 - [x] 存在**单次调用**接完某控件全部已发布事件（规则 #98）——`EventSignalBinder::forward_all`。
 - [x] 测试：对**若干**控件（至少覆盖 unit + payload 两种）一次调用接完，
-      逐个断言其已发布事件**都能送达**（订阅 → 驱动控件 → 槽被调用）。
-      （`tests/event_wiring_test.rs`：`button` = unit，`slider` = payload；7 条测试）
+ 逐个断言其已发布事件**都能送达**（订阅 → 驱动控件 → 槽被调用）。
+ （`tests/event_wiring_test.rs`：`button` = unit，`slider` = payload；7 条测试）
 - [x] 「是否已接线」**可查询**（规则 #97），且有测试断言未接线时返回未接线。
-      （`event_is_wired`；`an_unwired_event_reports_unwired_rather_than_succeeding`）
+ （`event_is_wired`；`an_unwired_event_reports_unwired_rather_than_succeeding`）
 - [x] **反向注入**：去掉自动接线 → 送达断言必须 FAIL。
 - [x] `detached()` 语义保留；`mini`/`embedded` 下整体不编译。
-      （`a_detached_binder_reports_nothing_wired`；capability 层整体受 `full_widgets` 门控）
+ （`a_detached_binder_reports_nothing_wired`；capability 层整体受 `full_widgets` 门控）
 
 ## DoD-T-8 / T-10（JSON 路径合并 + 门禁）
 
 - [x] 两套机制的**职责边界写入文档**（哪个名字走哪个键）。
-      （`src/json/event_route.rs` 模块文档的表格：`events` = 已发布路由，`on_*` = 兼容路由）
+ （`src/json/event_route.rs` 模块文档的表格：`events` = 已发布路由，`on_*` = 兼容路由）
 - [x] 门禁能抓「加了 `on_*` 键但无实现」（反向注入验证）。
-      （`check_json_event_route.sh` 步 2：清空 `MARKER_KEYS` → 必须 FAIL，实测 PASS）
+ （`check_json_event_route.sh` 步 2：清空 `MARKER_KEYS` → 必须 FAIL，实测 PASS）
 - [x] 门禁能验证「capability 新增事件 → JSON 侧不静默落后」（规则 #101）。
-      （步 1a 要求已发布路由经 `control_publishes` 查表；步 1e 要求文档举的
-      `clicked`/`value_changed` 确实在 326 条表里）
+ （步 1a 要求已发布路由经 `control_publishes` 查表；步 1e 要求文档举的
+ `clicked`/`value_changed` 确实在 326 条表里）
 - [x] 顺带修掉两个真实缺陷：**位置解构**（6 元组，中间插键即接错触发器）
-      与**两份键清单**（loader 手写第二遍）。
+ 与**两份键清单**（loader 手写第二遍）。
 
 ## DoD-T-23 / T-24（两模式共存，D7 衍生）
 
@@ -1166,27 +1166,27 @@ T-16 ~ T-18（版本/文档/日志，随各步落地同步）
 
 - [x] 代码生成器能把一份 JSON 转为**可编译的 Rust 源码**（`designer::generate`）。
 - [x] 生成物中**不含** JSON/CSS 运行时依赖（D7-b-1 = (b)）。
-      （stripped 模板**实跑编译**证明：`crate::view`/`crate::json`/`widget::runtime` 均不在场；
-      `mode_consistency_test` 另做文本断言，因为文本会**点名**越界符号，
-      而编译器只说它在哪里停下）
+ （stripped 模板**实跑编译**证明：`crate::view`/`crate::json`/`widget::runtime` 均不在场；
+ `mode_consistency_test` 另做文本断言，因为文本会**点名**越界符号，
+ 而编译器只说它在哪里停下）
 - [x] 生成器复用 T-3 的类型兼容规则（**不是**另写一套）。
-      （`wire_verdict_for` 直接转调 `capability::compatibility`；
-      `check_generator_reuses_wire_rules.sh` 断言生产代码**不自行构造 verdict**）
+ （`wire_verdict_for` 直接转调 `capability::compatibility`；
+ `check_generator_reuses_wire_rules.sh` 断言生产代码**不自行构造 verdict**）
 - [x] **双模板**（D7-c）：
-  - [x] desktop/tablet/mobile 模板可生成 `Node` 构建代码（复用 `crate::view`）；
-  - [x] **`mini`/`embedded` 模板生成 `add_child` 命令式代码**，且
-        **不引用** `crate::view`/`crate::json`/受 `cfg(not(alloc_frugal))` 门控的 `create_*`；
-  - [x] stripped 模板的产物**实跑编译通过**：
-        `--no-default-features --features mini` 与 `--features embedded`（**不是**「应该没问题」）。
-        **实测**：该步骤逐条抓出 4 个在 desktop 上完全正常的缺陷（见 `log-20260921-2.md` §3）；
-  - [x] `mini` 下若控件数超定容上限，生成器会报告这一点
-        （`GenerationReport::capacity_overflow` + `TargetProfile::child_capacity`；
-        生成物内另有 `debug_assert_eq!(child_overflow_count(), before, ..)` 把静默丢弃变可见）；
+ - [x] desktop/tablet/mobile 模板可生成 `Node` 构建代码（复用 `crate::view`）；
+ - [x] **`mini`/`embedded` 模板生成 `add_child` 命令式代码**，且
+ **不引用** `crate::view`/`crate::json`/受 `cfg(not(alloc_frugal))` 门控的 `create_*`；
+ - [x] stripped 模板的产物**实跑编译通过**：
+ `--no-default-features --features mini` 与 `--features embedded`（**不是**「应该没问题」）。
+ **实测**：该步骤逐条抓出 4 个在 desktop 上完全正常的缺陷（见 `log-20260921-2.md` §3）；
+ - [x] `mini` 下若控件数超定容上限，生成器会报告这一点
+ （`GenerationReport::capacity_overflow` + `TargetProfile::child_capacity`；
+ 生成物内另有 `debug_assert_eq!(child_overflow_count(), before, ..)` 把静默丢弃变可见）；
 - [x] **模式一致性门禁（T-24）**：同一份 JSON 分别经模式 1 与模式 2，
-      产出**行为等价**——断言控件树结构、已发布事件、属性值一致。
-      **反向注入**：让生成器丢一个控件 → 门禁必须 FAIL（实测 FAIL，且**两个模板各自**验了一次）。
+ 产出**行为等价**——断言控件树结构、已发布事件、属性值一致。
+ **反向注入**：让生成器丢一个控件 → 门禁必须 FAIL（实测 FAIL，且**两个模板各自**验了一次）。
 - [x] **T-24 的 profile 串味断言**：生成物用到的 API 集合必须与目标 profile 一致
-      （如不得在 mini 产物里出现 `create_button` 调用）；**反向注入**验证。
+ （如不得在 mini 产物里出现 `create_button` 调用）；**反向注入**验证。
 
 ### D7-b-3 已裁定（2026-09-21，第 56 轮）：**生成物入库，设计器通过 API 调用**
 
@@ -1212,12 +1212,12 @@ T-16 ~ T-18（版本/文档/日志，随各步落地同步）
 ## 全局 DoD（已达成）
 
 - [x] `bash tools/run_all_gates.sh` → **PASS=40 FAIL=1 TIMEOUT=0 SKIP=1**。
-      基线 33 + 第 55 轮 4 + 第 56 轮 3。唯一 FAIL 为 `check_profiles.sh`，
-      **已用 `git stash` 反向取证证明与本轮无关**（本机缺 MSVC `lib.exe`，见两轮日志）。
+ 基线 33 + 第 55 轮 4 + 第 56 轮 3。唯一 FAIL 为 `check_profiles.sh`，
+ **已用 `git stash` 反向取证证明与本轮无关**（本机缺 MSVC `lib.exe`，见两轮日志）。
 - [x] 5 个 profile 全测试通过：`desktop` / `tablet` / `mobile` / `mini` / `embedded`。
-      `desktop` 全量 `5463 passed / 0 failed`；其余四个 `--all-targets` 均 0 error / 0 warning。
+ `desktop` 全量 `5463 passed / 0 failed`；其余四个 `--all-targets` 均 0 error / 0 warning。
 - [x] `cargo clippy --no-default-features --features desktop --all-targets -- -D warnings` → 0 警告。
-      跨目标 clippy（`aarch64-unknown-linux-ohos`，`-D warnings`）亦 PASS。
+ 跨目标 clippy（`aarch64-unknown-linux-ohos`，`-D warnings`）亦 PASS。
 - [x] 每个已修项在 `docs/log/` 的日志中**逐条标识**（`log-20260921-1.md` / `log-20260921-2.md`）。
 - [x] 版本号与文档同步（`check_changelog_sync.sh` PASS；**2.5.0**）。
 

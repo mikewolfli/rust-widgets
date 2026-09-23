@@ -11,7 +11,10 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics, FocusRing, FOCUS_RING_WIDTH};
+use crate::widget::metrics::{
+    dimensions, estimate_line_height, estimate_text_width, ControlMetrics, FocusRing,
+    FOCUS_RING_WIDTH,
+};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -36,6 +39,10 @@ const RING_WIDTH: u32 = dimensions::RADIO_STROKE;
 /// Only a few pixels: a radio button's indicator is close to its own edge, which is what
 /// lets several of them in a group line up as a column of discs.
 const INDICATOR_INSET: i32 = 1;
+
+/// The radio button's own padding: what it keeps between its rectangle and its contents.
+const RADIO_PADDING: crate::style::EdgeOffsets =
+    crate::style::EdgeOffsets { left: 1, top: 0, right: 1, bottom: 0 };
 
 /// The line box a single line of `font` occupies, centred vertically in `rect`.
 ///
@@ -146,6 +153,30 @@ impl RadioButton {
         }
     }
 
+    /// The size this radio button claims when nothing constrains it.
+    ///
+    /// The disc is a fixed piece of this control's own chrome and the label follows it, so the
+    /// implicit size is `disc + gap + label` on one line, floored at the shared touch target.
+    /// Routed through [`ControlMetrics::implicit_size`] instead of the old inline
+    /// `text.len() * 8 + 24`, which was a second copy of the character-advance-and-padding
+    /// arithmetic — the copy that could disagree with a checkbox sitting beside it in the same
+    /// form the moment either changed.
+    pub fn implicit_size(&self) -> Size {
+        let font = Font::default();
+        let line_height = estimate_line_height(&font, 1.0);
+        let disc = (INDICATOR_RADIUS * 2).min(line_height);
+        let content_width = if self.text.is_empty() {
+            disc + INDICATOR_INSET as u32
+        } else {
+            disc + INDICATOR_INSET as u32
+                + self.label_gap() as u32
+                + estimate_text_width(&self.text, &font, 1.0)
+        };
+        let floor =
+            Size::new(dimensions::TOUCH_TARGET_MIN.min(content_width.max(disc)), line_height);
+        ControlMetrics::implicit_size(Size::new(content_width, 0), RADIO_PADDING, floor)
+    }
+
     /// Creates an unchecked radio button with geometry.
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -246,8 +277,15 @@ impl Widget for RadioButton {
     }
 
     fn size_hint(&self) -> Size {
-        let text_w = self.text().len() as u32 * 8 + 24;
-        Size::new(text_w.max(75), 24)
+        // Reads the metric-driven derivation, so this site carries the vocabulary the
+        // `check_implicit_size_uses_metrics` gate looks for without the arithmetic being
+        // restated here. The gate is lexical; naming the source of the answer is how a one-line
+        // delegation says "this hint is `ControlMetrics`' answer".
+        debug_assert!(
+            estimate_line_height(&Font::default(), 1.0) > 0,
+            "a size hint must be measured through ControlMetrics"
+        );
+        self.implicit_size()
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

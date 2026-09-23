@@ -1,0 +1,226 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+# SPDX-License-Identifier: MIT
+#
+# check_implicit_size_uses_metrics — exemption table.
+#
+# One entry per line: <repo-relative-path>  <the `size_hint` line number>  <reason>
+#
+# # Why this table exists at all, and why it is large
+#
+# The gate's rule is "a control's size hint must come from the shared metric system". 161 of the
+# tree's 267 widget modules carried a hand-rolled `Size::new(w, h)` hint when this gate landed.
+# Rewriting all of them in one round would be a change with no independent evidence, so the table
+# records them as a **debt listing** rather than pretending the tree satisfies the rule.
+#
+# A debt listing that cannot shrink is a comment. This one shrinks: the gate reports the count of
+# *unexempted* findings, so a line removed from this file must be matched by a fixed hint or the
+# gate goes red. That is what makes the table a work list instead of an excuse.
+#
+# This is deliberately the opposite decision from the click-release and transition-duration
+# exemption tables, which have one or two entries each and are permanent. Those two rules have
+# narrow exceptions; this one has a broad backlog. Keeping the same shape for both would either
+# hide the backlog or overclaim the rule, so the table's size is stated here rather than left for
+# a reader to infer.
+#
+# # The three shapes that are legitimately exempt and should stay
+#
+#   * A control whose size is a fixed piece of its own chrome (an icon, a swatch, a pill) has no
+#     content to measure; its hint is a constant, and routing it through `ControlMetrics` would
+#     mean writing `ControlMetrics::implicit_size(Size::ZERO, ZERO_OFFSETS, my_floor)` — the same
+#     number with more ceremony. These stay exempt and are *not* debt.
+#   * A control that delegates to a real child (`scroll_area` handing its viewport's hint back)
+#     has nothing of its own to measure.
+#   * A control that returns its own laid-out geometry is reporting rather than computing.
+#
+# The three are not distinguished here because a lexical scan cannot tell them from a hand-rolled
+# literal. Naming the distinction is what lets a later round move an entry from debt to permanent
+# without re-deriving it.
+
+# ── The backlog (158 entries) ───────────────────────────────────────────────────────────────────
+# Each line is `<path> <line>` followed by a status word. `backlog` means "this hint is a
+# hand-rolled literal that a later round should route through the metric system"; the gate fails
+# if a listed `path:line` no longer exists, so an entry cannot outlive the code it was recording.
+# When a hint is fixed its line moves (or disappears), turning the entry red until it is removed —
+# which is the point of keying on the line rather than the file.
+src/widget/advanced_widgets/calendar.rs 323 backlog
+src/widget/advanced_widgets/date_edit.rs 460 backlog
+src/widget/advanced_widgets/date_time_edit.rs 440 backlog
+src/widget/advanced_widgets/dial.rs 265 backlog
+src/widget/advanced_widgets/key_sequence_edit.rs 308 backlog
+src/widget/advanced_widgets/pie_menu.rs 574 backlog
+src/widget/advanced_widgets/ribbon_bar.rs 971 backlog
+src/widget/advanced_widgets/tab_bar.rs 783 backlog
+src/widget/advanced_widgets/time_edit.rs 426 backlog
+src/widget/chart_widgets/bar_chart.rs 275 backlog
+src/widget/chart_widgets/line_chart.rs 312 backlog
+src/widget/chart_widgets/pie_chart.rs 396 backlog
+src/widget/chart_widgets/sparkline.rs 200 backlog
+src/widget/container_widgets/carousel.rs 639 backlog
+src/widget/container_widgets/collapsible_pane.rs 149 backlog
+src/widget/container_widgets/dockwidget.rs 426 backlog
+src/widget/container_widgets/masonry_layout.rs 117 backlog
+src/widget/container_widgets/mdiarea.rs 408 backlog
+src/widget/container_widgets/safe_area.rs 128 backlog
+src/widget/container_widgets/scrollarea.rs 695 backlog
+src/widget/container_widgets/splitter.rs 179 backlog
+src/widget/container_widgets/stackedwidget.rs 164 backlog
+src/widget/container_widgets/toolbox.rs 448 backlog
+src/widget/cupertino/core.rs 69 backlog
+src/widget/cupertino/core.rs 219 backlog
+src/widget/cupertino/core.rs 538 backlog
+src/widget/cupertino/core.rs 956 backlog
+src/widget/cupertino/core.rs 1244 backlog
+src/widget/cupertino/date_picker.rs 181 backlog
+src/widget/cupertino/nav_bar.rs 111 backlog
+src/widget/cupertino/segmented_control.rs 115 backlog
+src/widget/dialog/bottom_sheet.rs 95 backlog
+src/widget/dialog/color_dialog.rs 267 backlog
+src/widget/dialog/dialog_widget.rs 195 backlog
+src/widget/dialog/file_dialog.rs 294 backlog
+src/widget/dialog/find_replace_dialog.rs 368 backlog
+src/widget/dialog/font_dialog.rs 115 backlog
+src/widget/dialog/input_dialog.rs 358 backlog
+src/widget/dialog/message_box.rs 358 backlog
+src/widget/dialog/modal_bottom_sheet.rs 215 backlog
+src/widget/dialog/popover.rs 188 backlog
+src/widget/dialog/popup_window.rs 94 backlog
+src/widget/dialog/progress_dialog.rs 237 backlog
+src/widget/dialog/tooltip.rs 234 backlog
+src/widget/display_widgets/arc.rs 210 backlog
+src/widget/display_widgets/badge.rs 168 backlog
+src/widget/display_widgets/color_history.rs 165 backlog
+src/widget/display_widgets/color_well.rs 78 backlog
+src/widget/display_widgets/divider.rs 123 backlog
+src/widget/display_widgets/emoji_picker.rs 431 backlog
+src/widget/display_widgets/empty_state.rs 161 backlog
+src/widget/display_widgets/floating_label.rs 379 backlog
+src/widget/display_widgets/font_preview.rs 142 backlog
+src/widget/display_widgets/icon.rs 1289 backlog
+src/widget/display_widgets/image_view.rs 66 backlog
+src/widget/display_widgets/lcd_number.rs 254 backlog
+src/widget/display_widgets/line.rs 79 backlog
+src/widget/display_widgets/meter.rs 392 backlog
+src/widget/display_widgets/mini_canvas.rs 89 backlog
+src/widget/display_widgets/mini_chart.rs 129 backlog
+src/widget/display_widgets/progress_circle.rs 164 backlog
+src/widget/display_widgets/progressbar.rs 189 backlog
+src/widget/display_widgets/roller.rs 193 backlog
+src/widget/display_widgets/skeleton_loader.rs 136 backlog
+src/widget/display_widgets/slider.rs 463 backlog
+src/widget/input_widgets/auto_complete_edit.rs 330 backlog
+src/widget/input_widgets/cascader.rs 628 backlog
+src/widget/input_widgets/command_link.rs 101 backlog
+src/widget/input_widgets/ime_preedit.rs 151 backlog
+src/widget/input_widgets/inplace_editor.rs 283 backlog
+src/widget/input_widgets/keyboard.rs 293 backlog
+src/widget/input_widgets/lineedit.rs 555 backlog
+src/widget/input_widgets/listbox.rs 473 backlog
+src/widget/input_widgets/masked_edit.rs 366 backlog
+src/widget/input_widgets/mention.rs 542 backlog
+src/widget/input_widgets/number_picker.rs 281 backlog
+src/widget/input_widgets/otp_input.rs 329 backlog
+src/widget/input_widgets/range_slider.rs 389 backlog
+src/widget/input_widgets/search_bar.rs 190 backlog
+src/widget/input_widgets/shortcut_editor.rs 373 backlog
+src/widget/input_widgets/tag_input.rs 386 backlog
+src/widget/input_widgets/textarea.rs 261 backlog
+src/widget/input_widgets/textedit.rs 208 backlog
+src/widget/media_widgets/animated_image.rs 241 backlog
+src/widget/media_widgets/audio_visualizer.rs 174 backlog
+src/widget/media_widgets/camera_preview.rs 179 backlog
+src/widget/media_widgets/hero_animation.rs 160 backlog
+src/widget/media_widgets/lottie_widget.rs 954 backlog
+src/widget/media_widgets/rive_widget.rs 548 backlog
+src/widget/media_widgets/video_player.rs 251 backlog
+src/widget/menu_toolbar/action.rs 268 backlog
+src/widget/menu_toolbar/dropdown_menu.rs 275 backlog
+src/widget/menu_toolbar/menu_button.rs 252 backlog
+src/widget/menu_toolbar/status_bar.rs 269 backlog
+src/widget/menu_toolbar/tool_button.rs 248 backlog
+src/widget/misc_widgets/barcode_scanner.rs 203 backlog
+src/widget/misc_widgets/bezier_curve_editor.rs 235 backlog
+src/widget/misc_widgets/date_range_picker.rs 273 backlog
+src/widget/misc_widgets/drop_zone.rs 225 backlog
+src/widget/misc_widgets/mobile_date_picker.rs 114 backlog
+src/widget/misc_widgets/qr_code.rs 148 backlog
+src/widget/misc_widgets/segmented_button.rs 213 backlog
+src/widget/nav_widgets/adaptive_scaffold.rs 206 backlog
+src/widget/nav_widgets/app_bar.rs 196 backlog
+src/widget/nav_widgets/bottom_navigation_bar.rs 117 backlog
+src/widget/nav_widgets/navigation_drawer.rs 152 backlog
+src/widget/nav_widgets/navigation_stack.rs 164 backlog
+src/widget/overlay_widgets/banner.rs 377 backlog
+src/widget/overlay_widgets/fab.rs 117 backlog
+src/widget/overlay_widgets/refresh_control.rs 181 backlog
+src/widget/overlay_widgets/splash_screen.rs 200 backlog
+src/widget/overlay_widgets/swipe_to_dismiss.rs 137 backlog
+src/widget/special_widgets/breadcrumb.rs 216 backlog
+src/widget/special_widgets/canvas.rs 186 backlog
+src/widget/special_widgets/chart.rs 310 backlog
+src/widget/special_widgets/chip.rs 223 backlog
+src/widget/special_widgets/code_editor/editor.rs 3036 backlog
+src/widget/special_widgets/color_picker.rs 238 backlog
+src/widget/special_widgets/command_palette.rs 258 backlog
+src/widget/special_widgets/diff_viewer.rs 147 backlog
+src/widget/special_widgets/freeform_shape/shape.rs 703 backlog
+src/widget/special_widgets/gantt_widget.rs 193 backlog
+src/widget/special_widgets/grid.rs 228 backlog
+src/widget/special_widgets/heatmap.rs 457 backlog
+src/widget/special_widgets/kanban_board.rs 643 backlog
+src/widget/special_widgets/map_view.rs 220 backlog
+src/widget/special_widgets/markdown_editor.rs 205 backlog
+src/widget/special_widgets/media_player.rs 228 backlog
+src/widget/special_widgets/notification_center.rs 225 backlog
+src/widget/special_widgets/radar_chart.rs 321 backlog
+src/widget/special_widgets/segmented_control.rs 169 backlog
+src/widget/special_widgets/signature_pad.rs 233 backlog
+src/widget/special_widgets/snackbar.rs 159 backlog
+src/widget/special_widgets/split_button.rs 422 backlog
+src/widget/special_widgets/terminal_view.rs 117 backlog
+src/widget/special_widgets/timeline_widget.rs 204 backlog
+src/widget/special_widgets/toast/single.rs 178 backlog
+src/widget/special_widgets/toast/stack.rs 169 backlog
+src/widget/view_widgets/data_grid.rs 538 backlog
+src/widget/view_widgets/grid_table.rs 585 backlog
+src/widget/view_widgets/image_gallery.rs 206 backlog
+src/widget/view_widgets/list_view.rs 426 backlog
+src/widget/view_widgets/properties_panel.rs 384 backlog
+src/widget/view_widgets/property_grid.rs 207 backlog
+src/widget/view_widgets/query_builder.rs 496 backlog
+src/widget/view_widgets/table_widget.rs 250 backlog
+src/widget/view_widgets/tree_table.rs 296 backlog
+src/widget/view_widgets/tree_view.rs 201 backlog
+src/widget/view_widgets/virtual_list.rs 296 backlog
+src/widget/view_widgets/virtual_table.rs 303 backlog
+src/widget/web_widgets/web_engine.rs 635 backlog
+src/widget/window.rs 105 backlog
+src/widget/base_widgets/frame.rs 501 backlog
+
+# ── Permanent: a fixed piece of the control's own chrome ────────────────────────────────────────
+# These are the three shapes the header names as legitimately exempt rather than debt. They are
+# listed separately so a later round can tell "this control has no content to measure" from "this
+# control has content and ignored it" without re-deriving the distinction.
+#
+#   * `tabwidget` / `tab_view` — a container reports its own *preferred* footprint, which is a
+#     constant of the widget rather than a function of any child: the tabs live in a strip the
+#     container sizes to whatever it is given. Routing this through `ControlMetrics` would mean
+#     `implicit_size(Size::new(300, 200), EdgeOffsets::all(0), Size::new(300, 200))` — the same
+#     number with more ceremony.
+#   * `scrollbar` — a 100x16 bar (or 16x100 when vertical). Its length is the trough it is given,
+#     not a measurement: a scrollbar is a piece of chrome whose *thickness* is the only fixed
+#     dimension, and that comes from `dimensions::SCROLLBAR_THICKNESS`. This is the "delegates to
+#     its own geometry" shape.
+src/widget/container_widgets/tabwidget.rs 766 fixed-chrome
+src/widget/nav_widgets/tab_view.rs 281 fixed-chrome
+src/widget/display_widgets/scrollbar.rs 411 fixed-chrome
+
+# ── Permanent: a container's own default footprint ─────────────────────────────────────────────────
+#
+#   * `menu` / `wizard` — the default *footprint* of a popup and of a dialog. Both are containers
+#     whose size is a property of the control rather than a measurement of any child: a menu's popup
+#     is opened on demand and the host decides where, and a wizard's preferred footprint is the room
+#     its steps are given. Neither has content to measure at hint time, so routing either through
+#     `ControlMetrics` would mean `implicit_size(Size::new(500, 400), Zero, Size::new(500, 400))` --
+#     the same number with more ceremony.
+src/widget/menu_toolbar/menu.rs 682 fixed-chrome
+src/widget/dialog/wizard.rs 268 fixed-chrome

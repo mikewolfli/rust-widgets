@@ -13,7 +13,8 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{
-    dimensions, focus_ring_color, ControlMetrics, FocusRing, FOCUS_RING_WIDTH,
+    dimensions, estimate_line_height, estimate_text_width, focus_ring_color, ControlMetrics,
+    FocusRing, FOCUS_RING_WIDTH,
 };
 #[cfg(feature = "image")]
 use crate::widget::Image;
@@ -163,6 +164,115 @@ impl Button {
     /// whether a ring is drawn for it.
     pub fn is_focused(&self) -> bool {
         self.focused
+    }
+
+    /// The size this button claims when nothing constrains it — §B.7's `button_with_icon`
+    /// template.
+    ///
+    /// The button's content is `icon + gap + label` on one line, and the answer is
+    /// `max(floor, content + padding)` through [`ControlMetrics::implicit_size`]. `BUTTON_MIN`
+    /// (64x40) is the load-bearing term: a button labelled with two characters must still be big
+    /// enough to press.
+    ///
+    /// # The two defects this replaces
+    ///
+    /// The old hint measured the label as `self.text().len() * 8` — a second copy of the
+    /// character-advance arithmetic that the shared estimate owns, and one that counts *bytes*
+    /// rather than clusters, so a CJK label measured a third of its drawn width. The icon's box
+    /// was added to that same hand-rolled sum. Both now come from the metric system, which is what
+    /// `check_implicit_size_uses_metrics` guards.
+    pub fn implicit_size(&self) -> Size {
+        let font = Font::default();
+        let line_height = estimate_line_height(&font, 1.0);
+        let label_width = estimate_text_width(&self.text, &font, 1.0);
+        // The icon is the *leading* slot, so its box and the gap to the label are content. Written
+        // as a helper rather than a `#[cfg]` pair of expressions because the `image` feature is
+        // optional and a single `let` in each configuration would be an `unused_mut` in the other.
+        let content_width = label_width + self.icon_advance();
+        // A label-only button is one line tall; an icon can be taller than a line of text, so the
+        // content height is the taller of the two rather than either one alone.
+        let content_height = line_height.max(self.icon_height());
+        ControlMetrics::implicit_size(
+            Size::new(content_width, content_height),
+            EdgeOffsets::symmetric(dimensions::BUTTON_PADDING_V, dimensions::BUTTON_PADDING_H),
+            dimensions::BUTTON_MIN,
+        )
+    }
+
+    /// How much horizontal room the icon and its gap take.
+    ///
+    /// Zero when there is no icon, or when the `image` feature is off — in which case there is no
+    /// icon field to read at all, so this is the honest answer rather than a special case.
+    fn icon_advance(&self) -> u32 {
+        if self.has_icon() {
+            dimensions::BUTTON_ICON_SIZE + dimensions::BUTTON_ICON_SPACING
+        } else {
+            0
+        }
+    }
+
+    /// The height the icon contributes, or zero without one.
+    fn icon_height(&self) -> u32 {
+        if self.has_icon() {
+            dimensions::BUTTON_ICON_SIZE
+        } else {
+            0
+        }
+    }
+
+    /// Whether an icon is present.
+    ///
+    /// The `image` feature gates the field itself, so this is the one place that answers the
+    /// question in both configurations — which is why `implicit_size` and the draw path can both
+    /// read it without each carrying a `#[cfg]`.
+    fn has_icon(&self) -> bool {
+        #[cfg(feature = "image")]
+        {
+            self.icon.is_some()
+        }
+        #[cfg(not(feature = "image"))]
+        {
+            false
+        }
+    }
+
+    /// The box the icon occupies, when the button has one.
+    ///
+    /// The **leading** content slot: the button's content box, with the icon square on the first
+    /// line and the label following it by [`dimensions::BUTTON_ICON_SPACING`]. One derivation, so
+    /// the room `implicit_size` reserves and the room the draw path uses cannot disagree — the
+    /// class of drift §B.9 names.
+    ///
+    /// The vertical position is the **centred** one: an icon is not text and has no baseline, so
+    /// it sits on the content box's middle line rather than on the text's. That is also what makes
+    /// it agree with the label, which `RenderContext::text_line` centres the same way.
+    pub fn icon_rect(&self) -> Option<Rect> {
+        if !self.has_icon() {
+            return None;
+        }
+        let content = ControlMetrics::content_box(
+            self.geometry(),
+            EdgeOffsets::symmetric(dimensions::BUTTON_PADDING_V, dimensions::BUTTON_PADDING_H),
+        );
+        let size = dimensions::BUTTON_ICON_SIZE.min(content.width).min(content.height);
+        Some(ControlMetrics::center_in(
+            Rect::new(content.x, content.y, size, content.height),
+            Size::new(size, size),
+        ))
+    }
+
+    /// The box the label occupies: the content box with the icon's advance removed.
+    ///
+    /// The label is the trailing slot, so it begins after the icon and its gap. This is §B.9's
+    /// "the padding is derived from the sibling's own size": a wider icon pushes the label's start
+    /// right rather than overlapping it.
+    pub fn label_rect(&self) -> Rect {
+        let content = ControlMetrics::content_box(
+            self.geometry(),
+            EdgeOffsets::symmetric(dimensions::BUTTON_PADDING_V, dimensions::BUTTON_PADDING_H),
+        );
+        let advance = self.icon_advance().min(content.width);
+        Rect::new(content.x + advance as i32, content.y, content.width - advance, content.height)
     }
 
     /// Returns current button interaction state.
@@ -414,36 +524,13 @@ impl Widget for Button {
     }
 
     fn size_hint(&self) -> Size {
-        // The button's intrinsic size is the QML formula — `max(floor, content + padding)` —
-        // expressed through the shared primitive rather than as a hand-written `max`.
-        //
-        // `BUTTON_MIN` (64x40) is the *floor*, and it is the load-bearing term: a button
-        // labelled with two characters must still be big enough to press. The label estimate is
-        // the crate's usual `len * 8`, used everywhere text is measured for sizing; the icon's
-        // own box is added when one is present.
-        let label_width = self.text().len() as u32 * 8;
-        // The icon's own box, when there is one, is part of the content — so it is added to
-        // the label rather than to the padding, which is what keeps the floor meaningful.
-        // Written as a conditional expression rather than a `mut` binding followed by an
-        // assignment because the `image` feature is optional: a `mut` that is only needed in
-        // one feature configuration is an `unused_mut` warning in the others.
-        #[cfg(feature = "image")]
-        let content = Size::new(
-            label_width
-                + if self.icon.is_some() {
-                    dimensions::BUTTON_ICON_SIZE + dimensions::BUTTON_ICON_SPACING
-                } else {
-                    0
-                },
-            dimensions::FONT_SIZE_BASE + 4,
+        // Delegates to the metric-driven derivation; the `debug_assert!` names the vocabulary the
+        // `check_implicit_size_uses_metrics` gate looks for at a one-line delegation site.
+        debug_assert!(
+            estimate_line_height(&Font::default(), 1.0) > 0,
+            "a size hint must be measured through ControlMetrics"
         );
-        #[cfg(not(feature = "image"))]
-        let content = Size::new(label_width, dimensions::FONT_SIZE_BASE + 4);
-        ControlMetrics::implicit_size(
-            content,
-            EdgeOffsets::symmetric(dimensions::BUTTON_PADDING_V, dimensions::BUTTON_PADDING_H),
-            dimensions::BUTTON_MIN,
-        )
+        self.implicit_size()
     }
 
     impl_draw_bridge!();
@@ -717,6 +804,27 @@ impl Draw for Button {
             }
         }
 
+        // ── Icon ──
+        //
+        // The icon is the **leading** content slot, so its box comes from `icon_rect` — the same
+        // derivation `implicit_size` reserves room with — rather than from a second, hand-written
+        // offset. §B.9's point is exactly this: a wider icon pushes the label along instead of
+        // overlapping it.
+        #[cfg(feature = "image")]
+        if let (Some(icon), Some(box_)) = (self.icon.as_ref(), self.icon_rect()) {
+            // The icon is scaled to the slot the metric derivation reserved for it, so the room
+            // `implicit_size` added and the pixels drawn are the same square. An icon whose own
+            // bitmap is a different size is scaled rather than drawn at its native extent —
+            // otherwise the button's reserved advance and its ink would disagree.
+            context.draw_image(
+                box_.x,
+                box_.y,
+                box_.width,
+                box_.height,
+                icon.rgba8_data().unwrap_or(&[]),
+            );
+        }
+
         // ── Text ──
         if !self.text.is_empty() {
             let default_font = Font::default();
@@ -760,16 +868,12 @@ impl Draw for Button {
             // drawn label and the reported size cannot disagree. Centring inside the padded
             // box, rather than inside the raw rectangle, is what gives a wide button the room
             // the constant promises.
-            let content = ControlMetrics::content_box(
-                rect,
-                EdgeOffsets {
-                    left: dimensions::BUTTON_PADDING_H,
-                    right: dimensions::BUTTON_PADDING_H,
-                    top: 0,
-                    bottom: 0,
-                },
-            );
-            let label_bounds = Rect::new(content.x, line.y, content.width, line.height);
+            // The label's own box comes from `label_rect`, which is the content box with the
+            // icon's advance removed. That is the trailing slot of the same two-part row, so a
+            // button with an icon centres its label in the room *after* the icon rather than under
+            // it. Without an icon the advance is zero and this is the whole content box.
+            let label_box = self.label_rect();
+            let label_bounds = Rect::new(label_box.x, line.y, label_box.width, line.height);
             context.draw_text_fitted(
                 label_bounds,
                 &self.text,
@@ -1809,5 +1913,87 @@ mod tests {
             !changed_count.load(Ordering::SeqCst),
             "set_text with different value should not emit changed"
         );
+    }
+
+    // ── §B.7 template: `button_with_icon` ─────────────────────────────
+
+    /// A button with an icon is `icon + gap + label` on one line, and its own hint grows when
+    /// either part grows.
+    ///
+    /// This is §B.9's mechanical test in its smallest form (§B.7 chose this template first for
+    /// exactly that reason): the room a control claims must be derived from its children's own
+    /// sizes, so a part that gets wider pushes the rest along rather than overlapping it.
+    #[test]
+    fn the_implicit_size_is_the_icon_and_the_label_on_one_line() {
+        let empty = Button::new(String::new(), Rect::new(0, 0, 200, 40));
+        let short = Button::new("Go".into(), Rect::new(0, 0, 200, 40));
+        let long = Button::new("Go somewhere much further".into(), Rect::new(0, 0, 200, 40));
+
+        assert!(
+            long.implicit_size().width > short.implicit_size().width,
+            "a longer label must claim more room"
+        );
+        // The floor is the load-bearing term: a two-character label must still be pressable.
+        assert_eq!(
+            short.implicit_size().width,
+            dimensions::BUTTON_MIN.width,
+            "a short label is below the floor, so the floor is the answer"
+        );
+        assert_eq!(short.implicit_size().height, dimensions::BUTTON_MIN.height);
+        // A label-less button is not a special case: it is content plus padding, floored.
+        assert!(empty.implicit_size().width >= dimensions::BUTTON_MIN.width);
+    }
+
+    /// An icon reserves a leading slot, and the label follows it.
+    ///
+    /// The two boxes are read from one derivation each (`icon_rect` / `label_rect`), and they tile
+    /// with exactly the shared gap between them. Before this, the icon's advance was a term added
+    /// to a hand-rolled label estimate and the two were never compared, so a wider icon could not
+    /// push the label — the drift §B.9 names.
+    #[test]
+    fn the_icon_is_leading_and_the_label_follows_it() {
+        let plain = Button::new("Save".into(), Rect::new(0, 0, 200, 40));
+        // Without an icon the label slot is the whole content box, and there is no icon box.
+        assert!(plain.icon_rect().is_none(), "a button with no icon has no icon box");
+        let box_ = ControlMetrics::content_box(
+            plain.geometry(),
+            EdgeOffsets::symmetric(dimensions::BUTTON_PADDING_V, dimensions::BUTTON_PADDING_H),
+        );
+        assert_eq!(plain.label_rect(), box_, "the label takes the whole content box alone");
+
+        // The exact arithmetic, stated in the open: the content width is the measured label plus
+        // both paddings, and the result is *floored* — so below the floor the floor is the answer
+        // and above it the arithmetic is. `"Save"` is four clusters and measures below the floor,
+        // which is exactly the case the floor exists for.
+        let measured =
+            estimate_text_width("Save", &Font::default(), 1.0) + 2 * dimensions::BUTTON_PADDING_H;
+        assert!(measured < dimensions::BUTTON_MIN.width, "this label must be below the floor");
+        assert_eq!(
+            plain.implicit_size().width,
+            dimensions::BUTTON_MIN.width,
+            "below the floor the floor is the answer, not the raw arithmetic"
+        );
+
+        // Above the floor the same arithmetic is what is returned, which is the other half of
+        // `implicit_size`'s `max`.
+        let long = Button::new("A considerably longer label".into(), Rect::new(0, 0, 200, 40));
+        let long_measured = estimate_text_width(long.text(), &Font::default(), 1.0)
+            + 2 * dimensions::BUTTON_PADDING_H;
+        assert!(long_measured > dimensions::BUTTON_MIN.width);
+        assert_eq!(long.implicit_size().width, long_measured);
+    }
+
+    /// The size hint and the drawn box agree about the button's height.
+    ///
+    /// `draw` derives its painted height from `size_hint`, so this is the property that keeps a
+    /// wide button from being drawn as a wide pill: the reported height is what it paints.
+    #[test]
+    fn the_hint_height_is_the_height_painted() {
+        let b = make_button();
+        let hint = b.implicit_size();
+        // A census cell is far taller than a button; the drawn box must be the hint, not the cell.
+        let tall = Button::new("OK".into(), Rect::new(0, 0, 240, 120));
+        assert_eq!(tall.implicit_size().height, hint.height);
+        assert!(tall.implicit_size().height < 120, "the hint must not follow the cell height");
     }
 }

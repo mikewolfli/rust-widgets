@@ -51,12 +51,12 @@
 ### 0.3 开工前必须做的三件事
 
 1. **跑一遍基线取证**（§一），确认数字仍成立（防止工作树漂移）：
-   `python3 tools/audit_kind_sharing.py`、`python3 tools/audit_appearance.py`、
-   `python3 tools/audit_platform_create_coverage.py`。
+ `python3 tools/audit_kind_sharing.py`、`python3 tools/audit_appearance.py`、
+ `python3 tools/audit_platform_create_coverage.py`。
 2. **确认第 1 层要先冻结现状**（§2.4 的取舍）——不要一上来就断言「全部必须通过」，
-   那会让 136 个存量文件同时红，失去收敛能力。
+ 那会让 136 个存量文件同时红，失去收敛能力。
 3. **读 §二 的约束**（特别是 §2.1：**必须按名字遍历，不能按 kind**；
-   §2.1.1：**判据分类，不齐一**）。
+ §2.1.1：**判据分类，不齐一**）。
 
 > **所有待裁定项已清空**：D-WEB 已裁定 **W1**（§3.5.3）；
 > `heatmap`/`spin_box` 浮点/不加控件清单均已裁定（§1.10）。
@@ -77,80 +77,80 @@
 ### BLUE20 新增规则
 
 102. **🎨 外形必须可验证，不能只可声明** — 一个控件「有 `impl Draw`」只证明**接口存在**，
-     不证明**画出了东西**。判据：对每个控件，存在一条断言，说明它渲染后的像素
-     **至少有一个可区分于背景的颜色**。理由：第 58 轮 4 个缺陷全部满足「接口存在」，
-     ComboBox 的 `Draw` 被调用、几何正确、样式已设置，而屏幕上什么都没有。
+ 不证明**画出了东西**。判据：对每个控件，存在一条断言，说明它渲染后的像素
+ **至少有一个可区分于背景的颜色**。理由：第 58 轮 4 个缺陷全部满足「接口存在」，
+ ComboBox 的 `Draw` 被调用、几何正确、样式已设置，而屏幕上什么都没有。
 
 103. **🧾 渲染结果必须相对背景断言，不得断言字面量** — 「这个控件是蓝色」是主题的实现细节；
-     「这个控件的填充**不等于**它所在的背景」是用户看得见的事实。判据：外形断言写成
-     **相对**判据（≠背景 / 与背景对比度 ≥ N），字面量只出现在基线表里。
-     理由：字面量会随主题改而失效，相对判据不会；且第 58 轮的缺陷恰恰是
-     「主题给的色与窗口同色」，绝对断言在两种主题下都会漏。
+ 「这个控件的填充**不等于**它所在的背景」是用户看得见的事实。判据：外形断言写成
+ **相对**判据（≠背景 / 与背景对比度 ≥ N），字面量只出现在基线表里。
+ 理由：字面量会随主题改而失效，相对判据不会；且第 58 轮的缺陷恰恰是
+ 「主题给的色与窗口同色」，绝对断言在两种主题下都会漏。
 
 104. **🌗 每个控件必须在两种外观下渲染，且结果必须不同** — 主题机制的意义是「换主题控件跟着变」。
-     一个控件若在 light 与 dark 下渲染**逐像素相同**，则它要么硬编码了颜色，
-     要么没读主题。判据：存在门禁，对每个控件渲染两次并断言其**主色不同**。
-     理由：这一条断言**一条顶 1457 条**——第 58 轮实测 `impl Draw` 中硬编码颜色字面量
-     **1457 处**，分布于 **136/181（75%）** 个文件（§1.3）。逐个改是体力活，
-     而「两种外观必须不同」能在 179 个控件的规模上**自动**找到全部漏网点。
+ 一个控件若在 light 与 dark 下渲染**逐像素相同**，则它要么硬编码了颜色，
+ 要么没读主题。判据：存在门禁，对每个控件渲染两次并断言其**主色不同**。
+ 理由：这一条断言**一条顶 1457 条**——第 58 轮实测 `impl Draw` 中硬编码颜色字面量
+ **1457 处**，分布于 **136/181（75%）** 个文件（§1.3）。逐个改是体力活，
+ 而「两种外观必须不同」能在 179 个控件的规模上**自动**找到全部漏网点。
 
 105. **🔁 遍历单位是「控件名」不是「WidgetKind」** — `WidgetKind` 有 **179** 个变体，
-     而 capability 表有 **187** 条记录：**13 个 kind 被 2–5 个控件共用**
-     （如 `ToolButton` 由 `split_button`/`tool_button` 共用）。判据：任何普查/门禁
-     必须按 `canonical_name` 遍历。理由：按 kind 遍历会**静默漏掉 19 个控件**，
-     而漏掉的部分不会报错——正是本计划要消灭的失效模式。
+ 而 capability 表有 **187** 条记录：**13 个 kind 被 2–5 个控件共用**
+ （如 `ToolButton` 由 `split_button`/`tool_button` 共用）。判据：任何普查/门禁
+ 必须按 `canonical_name` 遍历。理由：按 kind 遍历会**静默漏掉 19 个控件**，
+ 而漏掉的部分不会报错——正是本计划要消灭的失效模式。
 
 106. **📸 快照必须入库且带再生门禁** — SVG 快照的价值在于「改动会显示为 diff」。
-     判据：快照提交入库，且存在门禁能**重新生成并逐字节对比**（与
-     `check_generated_sources.sh`、`check_abi.sh` 第 [2] 步同构）。
-     理由：不入库的快照是「跑一次看一眼」，无法发现**两天后**的退化。
+ 判据：快照提交入库，且存在门禁能**重新生成并逐字节对比**（与
+ `check_generated_sources.sh`、`check_abi.sh` 第 [2] 步同构）。
+ 理由：不入库的快照是「跑一次看一眼」，无法发现**两天后**的退化。
 
 107. **🧽 门禁不得把「跳过」报成「通过」** — 控件需要 surface 支持、
-     需要主题注册、需要 feature gate；条件不满足时必须**明确报 SKIP 并计入计数**，
-     不得静默 return 而计入 PASS。判据：门禁输出 `checked / skipped / failed` 三个数，
-     且 `skipped` 非零时逐条列出原因。理由：第 58 轮实测一条门禁**假通过**——
-     窗口建在 `(0,0)` 使偏移为 0，缺陷不可观测，还原后测试仍 PASS
-     （见 `log-20260921-1.md` §3.2.1）。
+ 需要主题注册、需要 feature gate；条件不满足时必须**明确报 SKIP 并计入计数**，
+ 不得静默 return 而计入 PASS。判据：门禁输出 `checked / skipped / failed` 三个数，
+ 且 `skipped` 非零时逐条列出原因。理由：第 58 轮实测一条门禁**假通过**——
+ 窗口建在 `(0,0)` 使偏移为 0，缺陷不可观测，还原后测试仍 PASS
+ （见 `log-20260921-1.md` §3.2.1）。
 
 108. **🎯 「必须主题化」是分类判断，不是一句口号** — 控件里的颜色必须逐处归入三类之一，
-     且**每类有不同的判据**：① **外观色**（背景/文字/边框/圆角）**必须**读 `style.*`；
-     ② **语义色**（error/warning/success/info）**必须**读 `theme.colors.*` 的对应 token；
-     ③ **数据色**（图表系列、色板光谱、K 线涨跌、计量阈值）**必须不读** `style.*`，
-     由数据/常量驱动。判定：存在门禁能逐条输出「这个控件的这个颜色属于哪一类」，
-     且 ③ 类必须**登记在豁免白名单**里并附「为什么它是数据而非外观」的理由。
-     理由：笼统要求「全部主题化」会把涨跌红绿改成主题色，**抹掉信息本身**；
-     而笼统允许「硬编码」会让 136 个文件里那 1457 处漏读长期合法化。
-     两者都是错的，且错的代价不对称——前者丢信息，后者丢一致。
+ 且**每类有不同的判据**：① **外观色**（背景/文字/边框/圆角）**必须**读 `style.*`；
+ ② **语义色**（error/warning/success/info）**必须**读 `theme.colors.*` 的对应 token；
+ ③ **数据色**（图表系列、色板光谱、K 线涨跌、计量阈值）**必须不读** `style.*`，
+ 由数据/常量驱动。判定：存在门禁能逐条输出「这个控件的这个颜色属于哪一类」，
+ 且 ③ 类必须**登记在豁免白名单**里并附「为什么它是数据而非外观」的理由。
+ 理由：笼统要求「全部主题化」会把涨跌红绿改成主题色，**抹掉信息本身**；
+ 而笼统允许「硬编码」会让 136 个文件里那 1457 处漏读长期合法化。
+ 两者都是错的，且错的代价不对称——前者丢信息，后者丢一致。
 
 109. **🩺 主题声明了语义 token，就必须有人读它** — `Theme::colors` 声明了
-     `error`/`warning`/`success`/`info` 四个语义 token。若控件层对其引用为 **0**，
-     则「主题支持语义色」是一句**空声明**：主题作者改了 `error`，屏幕上没有任何东西变化。
-     判据：每个语义 token 至少被一个控件的 `Draw` 读取，且该控件在 dark 下的
-     语义色 ≠ light 下的语义色。理由：这与「已发布事件无人发射」（BLUE19 规则 #97）
-     是同一类缺陷——**声明与实际消费者脱节**，且都不可查询、不可检测。
+ `error`/`warning`/`success`/`info` 四个语义 token。若控件层对其引用为 **0**，
+ 则「主题支持语义色」是一句**空声明**：主题作者改了 `error`，屏幕上没有任何东西变化。
+ 判据：每个语义 token 至少被一个控件的 `Draw` 读取，且该控件在 dark 下的
+ 语义色 ≠ light 下的语义色。理由：这与「已发布事件无人发射」（BLUE19 规则 #97）
+ 是同一类缺陷——**声明与实际消费者脱节**，且都不可查询、不可检测。
 
 110. **🔗 「名字存在」不等于「它是个控件」** — 跨层核对时，**必须先判定那个名字是什么东西**，
-     再判定它缺不缺。平台层的 `create_*` 不全是控件工厂：
-     `create_web_engine(&self) -> Option<Box<dyn NativeWebEngine>>` 返回的是**原生引擎句柄**
-     （给 `src/web/` 用），不是控件；把它报成「缺了对应 capability」是**假阳性**。
-     判据：一个平台 `create_*` 只有「接受 `width`/`height` **且** 返回 `ObjectId`」
-     才是控件工厂（用 `width`/`height` 而非 `parent` 作为标志，因为窗口是根、没有父）。
-     理由：本计划里同一个错误犯了**两次**——`context_menu`（是 `Menu` 的类型别名）
-     与 `create_web_engine`（不是工厂），两次都只因为 `grep` 到的名字不在表里。
+ 再判定它缺不缺。平台层的 `create_*` 不全是控件工厂：
+ `create_web_engine(&self) -> Option<Box<dyn NativeWebEngine>>` 返回的是**原生引擎句柄**
+ （给 `src/web/` 用），不是控件；把它报成「缺了对应 capability」是**假阳性**。
+ 判据：一个平台 `create_*` 只有「接受 `width`/`height` **且** 返回 `ObjectId`」
+ 才是控件工厂（用 `width`/`height` 而非 `parent` 作为标志，因为窗口是根、没有父）。
+ 理由：本计划里同一个错误犯了**两次**——`context_menu`（是 `Menu` 的类型别名）
+ 与 `create_web_engine`（不是工厂），两次都只因为 `grep` 到的名字不在表里。
 
 111. **🧵 跨层缺口先判「补」还是「删」，不得默认删** — 发现名字链路不完整时，
-     必须逐条判定属于哪一类，**不得一律删除**：
+ 必须逐条判定属于哪一类，**不得一律删除**：
 
-     | 情形 | 处置 | 理由 |
-     |---|---|---|
-     | 控件本身完整，只是某个**拼写不可达** | ✅ **补别名** | 删除会破坏已发布 API（规则 #21）；补别名是纯加法 |
-     | 名字背后**无 capability、无别名、无实现**（纯悬空） | ✅ **删** | 悬空名字比缺失更坏：它看起来能用 |
-     | 名字**不是控件**（如 `create_web_engine`） | ❌ **不改代码**，改**判据** | 报它是假阳性 |
+ | 情形 | 处置 | 理由 |
+ |---|---|---|
+ | 控件本身完整，只是某个**拼写不可达** | ✅ **补别名** | 删除会破坏已发布 API（规则 #21）；补别名是纯加法 |
+ | 名字背后**无 capability、无别名、无实现**（纯悬空） | ✅ **删** | 悬空名字比缺失更坏：它看起来能用 |
+ | 名字**不是控件**（如 `create_web_engine`） | ❌ **不改代码**，改**判据** | 报它是假阳性 |
 
-     判定判据：先问「删了它，现有调用方会不会静默失败？」
-     会 → 不能删（应补）；不会且无人引用 → 可删。
-     理由：删除是不可逆且破坏性的，而跨层缺口的**默认正确做法**往往是把链路接上
-     （用户 2026-09-21 裁定：「有必要改成完整接线，而不是删除」）。
+ 判定判据：先问「删了它，现有调用方会不会静默失败？」
+ 会 → 不能删（应补）；不会且无人引用 → 可删。
+ 理由：删除是不可逆且破坏性的，而跨层缺口的**默认正确做法**往往是把链路接上
+ （用户 2026-09-21 裁定：「有必要改成完整接线，而不是删除」）。
 
 ---
 
@@ -191,19 +191,19 @@ $ grep -c "events:" src/widget/capability/properties.rs
 ```bash
 $ python3 tools/audit_kind_sharing.py
 kinds shared by more than one control: 13
-  Canvas:        ['map_view', 'canvas']
-  Chart:         ['gantt_widget', 'timeline_widget', 'chart']
-  DataView:      ['virtual_list', 'data_view']
-  GroupBox:      ['group_box', 'panel']
-  ListView:      ['list_view', 'command_palette', 'notification_center']
-  PopupWindow:   ['toast_stack', 'popup_window']
-  RichEdit:      ['code_editor', 'markdown_editor', 'rich_edit']
-  StatusBar:     ['snackbar', 'status_bar']
-  Table:         ['table_widget', 'table', 'data_grid', 'virtual_table', 'diff_viewer']
-  TextEdit:      ['terminal_view', 'text_edit']
-  ToggleButton:  ['segmented_control', 'toggle_button']
-  ToolButton:    ['split_button', 'tool_button']
-  WebEngineView: ['media_player', 'web_engine_view']
+ Canvas: ['map_view', 'canvas']
+ Chart: ['gantt_widget', 'timeline_widget', 'chart']
+ DataView: ['virtual_list', 'data_view']
+ GroupBox: ['group_box', 'panel']
+ ListView: ['list_view', 'command_palette', 'notification_center']
+ PopupWindow: ['toast_stack', 'popup_window']
+ RichEdit: ['code_editor', 'markdown_editor', 'rich_edit']
+ StatusBar: ['snackbar', 'status_bar']
+ Table: ['table_widget', 'table', 'data_grid', 'virtual_table', 'diff_viewer']
+ TextEdit: ['terminal_view', 'text_edit']
+ ToggleButton: ['segmented_control', 'toggle_button']
+ ToolButton: ['split_button', 'tool_button']
+ WebEngineView: ['media_player', 'web_engine_view']
 
 controls that a kind-only sweep would miss: 19
 ```
@@ -215,12 +215,12 @@ $ python3 tools/audit_appearance.py
 === files with a Draw impl: 181 ===
 === total colour literals in Draw files: 1457 ===
 === Draw files reading no style colour, only literals: 136 (75%) ===
-   52 literals  src/widget/special_widgets/code_editor/render.rs
-   28 literals  src/widget/advanced_widgets/pie_menu.rs
-   26 literals  src/widget/advanced_widgets/ribbon_bar.rs
-   24 literals  src/widget/dialog/wizard.rs
-   22 literals  src/widget/cupertino/core.rs
-   ...
+ 52 literals src/widget/special_widgets/code_editor/render.rs
+ 28 literals src/widget/advanced_widgets/pie_menu.rs
+ 26 literals src/widget/advanced_widgets/ribbon_bar.rs
+ 24 literals src/widget/dialog/wizard.rs
+ 22 literals src/widget/cupertino/core.rs
+ ...
 
 === Draw files a test renders as pixels: 17 / 181 ===
 ```
@@ -246,11 +246,11 @@ $ python3 tools/audit_appearance.py
 
 ```bash
 $ for t in error warning success info; do \
-    echo "colors.$t : $(grep -rn "colors\.$t\b" src/widget/ --include=*.rs | wc -l) 次"; done
-colors.error   : 0 次
+ echo "colors.$t : $(grep -rn "colors\.$t\b" src/widget/ --include=*.rs | wc -l) 次"; done
+colors.error : 0 次
 colors.warning : 0 次
 colors.success : 0 次
-colors.info    : 0 次
+colors.info : 0 次
 ```
 
 **在全部 181 个控件的 `Draw` 实现里，这 4 个 token 被引用 0 次。**
@@ -270,12 +270,12 @@ colors.info    : 0 次
 ```rust
 // src/widget/overlay_widgets/banner.rs:91
 fn background(self) -> Color {
-    match self {
-        BannerSeverity::Info    => Color::rgb(219, 229, 249),
-        BannerSeverity::Success => Color::rgb(214, 239, 221),
-        BannerSeverity::Warning => ... ,
-        BannerSeverity::Error   => ... ,
-    }
+ match self {
+ BannerSeverity::Info => Color::rgb(219, 229, 249),
+ BannerSeverity::Success => Color::rgb(214, 239, 221),
+ BannerSeverity::Warning => ... ,
+ BannerSeverity::Error => ... ,
+ }
 }
 ```
 
@@ -344,8 +344,8 @@ $ ls tools/check_*.sh tools/check_*.py | wc -l
 $ python3 tools/audit_platform_create_coverage.py
 platform control factories: 41
 non-factory create_* skipped: 1 ['web_engine']
-capability records:        187
-alias names:               191
+capability records: 187
+alias names: 191
 
 UNRESOLVED (1): ['checkbox']
 ```
@@ -393,7 +393,7 @@ $ wc -l src/platform/linux/webkit_engine.rs
 76 src/platform/linux/webkit_engine.rs
 
 $ grep -rn "fn create_web_engine" src/platform/*/platform_impl.rs
-src/platform/linux/platform_impl.rs:98:    fn create_web_engine(...)
+src/platform/linux/platform_impl.rs:98: fn create_web_engine(...)
 
 $ grep -rn "WebView\b" src/platform/linux/canvas.rs src/platform/linux/platform_impl.rs
 （空 —— 从未挂进窗口）
@@ -413,7 +413,7 @@ $ grep -rn "WebView\b" src/platform/linux/canvas.rs src/platform/linux/platform_
 
 ```bash
 $ grep -n "backend\." src/web/web_engine.rs
-184: backend.load_url(url)      # 导航
+184: backend.load_url(url) # 导航
 204: backend.load_url(&url)
 221: backend.load_html(...)
 247: backend.go_back()
@@ -549,11 +549,11 @@ $ grep -n "backend\." src/web/web_engine.rs
 **处理方式**：
 
 1. **先冻结现状**——门禁先产出基线表并**记录现状**（哪些控件当前「两种外观渲染相同」），
-   基线表提交入库。
+ 基线表提交入库。
 2. **再逐格收敛**——每修一个控件，基线表 diff 减少一行；门禁从「记录」转为「断言」，
-   条件是**该控件的基线项已被清零**。
+ 条件是**该控件的基线项已被清零**。
 3. **禁止**一次性断言全部通过——那会让收敛进度不可见，也无法区分
-   「新引入的退化」与「未处理的存量」。
+ 「新引入的退化」与「未处理的存量」。
 
 ---
 
@@ -571,9 +571,9 @@ $ grep -n "backend\." src/web/web_engine.rs
 4. 产出基线行：
 
 ```
-name            非背景像素  light主色     dark主色      light≠dark  边框  文字像素
-button          4509       100,181,246   33,150,243    yes          yes   271
-combo_box       4680       69,69,69      180,180,180   yes          yes   155
+name 非背景像素 light主色 dark主色 light≠dark 边框 文字像素
+button 4509 100,181,246 33,150,243 yes yes 271
+combo_box 4680 69,69,69 180,180,180 yes yes 155
 ```
 
 #### 3.1.2 四条判据（对的、可失败的）
@@ -765,16 +765,16 @@ SVG 快照把这 187 个控件变成**可逐个人眼复核的工件**，
 #### 3.4.3 约束（本层特有）
 
 - **4c 先于 4d**：改已有控件的 API 比新增控件风险高（规则 #21 向前兼容），
-  先把风险高的做完并验证，再做新东西。
+ 先把风险高的做完并验证，再做新东西。
 - **4d 必须全链完整**：新增一个控件不是「写一个 `impl Draw`」，而是
-  capability 记录 + `WidgetKind`（若有新 kind）+ 构造函数 + 属性表 + 事件表 +
-  平台层 `create_*` + 三端构建。**半接线的控件比没有更坏**（§1.7 的 `create_checkbox`
-  就是个例子：控件完全可用，但一个拼写就找不到它）。
+ capability 记录 + `WidgetKind`（若有新 kind）+ 构造函数 + 属性表 + 事件表 +
+ 平台层 `create_*` + 三端构建。**半接线的控件比没有更坏**（§1.7 的 `create_checkbox`
+ 就是个例子：控件完全可用，但一个拼写就找不到它）。
 - **删 vs 补的判据**（规则 #111）：名字背后若无 capability / 无别名 / 无实现，才是**纯悬空**，
-  应当删；若控件本身完整、只是某个拼写不可达，应当**补别名**
-  （删除会破坏已发布 API，违反规则 #21）。
-  若名字**不是控件**（如 `create_web_engine`），则**不改代码、改判据**（规则 #110）。
-  本轮未发现纯悬空的例子。
+ 应当删；若控件本身完整、只是某个拼写不可达，应当**补别名**
+ （删除会破坏已发布 API，违反规则 #21）。
+ 若名字**不是控件**（如 `create_web_engine`），则**不改代码、改判据**（规则 #110）。
+ 本轮未发现纯悬空的例子。
 - **4e 不得用「大概齐了」**：新控件的 4 项（外形/属性/事件/构建）必须逐项有测试。
 
 ### 3.5 第 5 层：WebEngine 诚实降级
@@ -832,11 +832,11 @@ SVG 快照把这 187 个控件变成**可逐个人眼复核的工件**，
 **验收（必须贴输出）**：
 
 ```bash
-cargo check --features desktop                             # 0 error
+cargo check --features desktop # 0 error
 cargo check --no-default-features --features "desktop,full" # 含 full 的构建也要过
-cargo check --no-default-features --features mini           # 不受影响
-cargo test --features desktop --lib web                      # 模拟路径测试全绿
-bash tools/check_profiles.sh                                 # exit=0
+cargo check --no-default-features --features mini # 不受影响
+cargo test --features desktop --lib web # 模拟路径测试全绿
+bash tools/check_profiles.sh # exit=0
 ```
 
 **反向验证（规则 #19）**：删除后应能用 `grep` 证明**零残留**：
@@ -876,7 +876,7 @@ grep -rn "NativeWebEngine\|webkit_engine\|webkit2gtk\|webkit-engine" src/ Cargo.
 1. **现状不可用**（§1.8.1：76 行、不显示、单平台）——在未验证的地基上加码是错的顺序。
 2. **JS 不需要 Servo**（§1.8.2）：JS 求值已走 boa（纯 Rust），Servo 只影响**渲染**。
 3. **W3/W4 与项目定位冲突**：系统库依赖会破坏 `mini`/`embedded`；
-   Servo 是**浏览器**不是可嵌入库（上游长期声明不提供稳定嵌入 API）。
+ Servo 是**浏览器**不是可嵌入库（上游长期声明不提供稳定嵌入 API）。
 
 ---
 
@@ -925,9 +925,9 @@ desktop / tablet / mobile / mini / embedded
 - 第 1、2 层：`mini`/`embedded` 无控件工厂 ⇒ **明确 SKIP 并计入 skipped 计数**（规则 #107）。
 - 第 3 层：SVG 生成器需 `full_widgets`；`mini`/`embedded` 下如实报告不可用。
 - 第 4 层：新增控件必须按规则 #20 在 **desktop/tablet/mobile** 三端均可构建；
-  `mini`/`embedded` 下若被门控掉，必须**在 capability 表里如实反映**（而非只在一端存在）。
+ `mini`/`embedded` 下若被门控掉，必须**在 capability 表里如实反映**（而非只在一端存在）。
 - 第 5 层：`supports_web_engine()` 在**每个** profile 都要能回答
-  （`mini`/`embedded` 报 `false` 是正确答案，不是 SKIP）。
+ （`mini`/`embedded` 报 `false` 是正确答案，不是 SKIP）。
 
 ---
 
@@ -951,37 +951,37 @@ desktop / tablet / mobile / mini / embedded
 
 ```
 第 1 层（渲染黄金表）
-   P1 非背景像素 > 0     ← 最先做：判据最硬、存量违规最少、能立刻抓「不可见」
-   豁免表（数据色）        ← 紧接 P1：没有白名单，P3 就无法区分「漏读」与「故意」
-   P3 light ≠ dark       ← 其次：一条断言覆盖 1457 处字面量
-   P4 语义色有消费者       ← 再其次：4 个 token 当前 0 消费者（§1.4）
-   P2 主色 ≠ 背景         ← 最后：与 P3 部分重叠，可复用同一份渲染数据
-        │
-        ▼
+ P1 非背景像素 > 0 ← 最先做：判据最硬、存量违规最少、能立刻抓「不可见」
+ 豁免表（数据色） ← 紧接 P1：没有白名单，P3 就无法区分「漏读」与「故意」
+ P3 light ≠ dark ← 其次：一条断言覆盖 1457 处字面量
+ P4 语义色有消费者 ← 再其次：4 个 token 当前 0 消费者（§1.4）
+ P2 主色 ≠ 背景 ← 最后：与 P3 部分重叠，可复用同一份渲染数据
+ │
+ ▼
 第 2 层（声明与实现三向对齐）
-   Q2 draw() 非空        ← 先做：最接近第 1 层，机械可判
-   Q1 属性分支齐全        ← 其次
-   Q3 事件字段存在        ← 最后：与既有 check_event_payload_types 有重叠，需明确分工
-        │
-        ▼
+ Q2 draw() 非空 ← 先做：最接近第 1 层，机械可判
+ Q1 属性分支齐全 ← 其次
+ Q3 事件字段存在 ← 最后：与既有 check_event_payload_types 有重叠，需明确分工
+ │
+ ▼
 第 3 层（SVG 全量快照）
-   3a 生成 187 个 → 3b 非空断言 → 3c 再生门禁 → 3d 索引与标记
-        │
-        ▼
+ 3a 生成 187 个 → 3b 非空断言 → 3c 再生门禁 → 3d 索引与标记
+ │
+ ▼
 第 4 层（跨层一致性与缺口收敛）
-   4a 补 1 条别名        ← 最先：最小改动、有现成脚本能证伪
-   4b 别名脚本进门禁      ← 其次：把一次性修复变成防复发
-   4c spin_box 浮点      ← 再次：改已有 API（风险高，先做）
-   4d 新增 heatmap       ← 最后：新增控件，必须全链完整（§3.4.3）
-   4e 新控件就绪检查
-        │
-        ▼
+ 4a 补 1 条别名 ← 最先：最小改动、有现成脚本能证伪
+ 4b 别名脚本进门禁 ← 其次：把一次性修复变成防复发
+ 4c spin_box 浮点 ← 再次：改已有 API（风险高，先做）
+ 4d 新增 heatmap ← 最后：新增控件，必须全链完整（§3.4.3）
+ 4e 新控件就绪检查
+ │
+ ▼
 第 5 层（WebEngine 诚实降级 — W1）
-   5a supports_web_engine()   ← 最先：纯加法，风险最低
-   5b “真引擎/模拟”可查询     ← 其次：消除静默降级
-   5c 修正文档               ← 成本极低
-   5d 删 WebKit 包装（10 项） ← 按 §3.5.4；删除后必须零残留
-   5e 全链构建验证           ← desktop / full / mini
+ 5a supports_web_engine() ← 最先：纯加法，风险最低
+ 5b “真引擎/模拟”可查询 ← 其次：消除静默降级
+ 5c 修正文档 ← 成本极低
+ 5d 删 WebKit 包装（10 项） ← 按 §3.5.4；删除后必须零残留
+ 5e 全链构建验证 ← desktop / full / mini
 ```
 
 **分层理由**：前三层是「修正已有的」（可能大量改动），
@@ -1092,21 +1092,21 @@ desktop / tablet / mobile / mini / embedded
 ### DoD-R-1（渲染黄金表）
 
 - [x] 普查覆盖**每一个已发布控件名**（按名字遍历，非按 kind）。
-      计划写「187」时 `heatmap` 尚未存在；`heatmap` 在第 4 层追加后为 **188**（实跑
-      `checked=188`，见 §3.4 / DoD-R-4）。计划里的数字会过期，**以实跑为准**（原则 #64）。
+ 计划写「187」时 `heatmap` 尚未存在；`heatmap` 在第 4 层追加后为 **188**（实跑
+ `checked=188`，见 §3.4 / DoD-R-4）。计划里的数字会过期，**以实跑为准**（原则 #64）。
 - [x] 基线表入库，**每个控件一行**（实跑 **188** 行），每行含：非背景像素、light 主色、dark 主色、
-      appearance 是否不同、文字像素。（计划写「187 行」同理已过期）
+ appearance 是否不同、文字像素。（计划写「187 行」同理已过期）
 - [x] **五条**判据（P1/P2/P3/P4/**P5**）各自是一条**断言**，且各自有一条**反向注入 FAIL** 的实测记录。
 - [x] **数据色豁免表**入库，每条附「为什么是数据而非外观」的理由；
-      且 `banner` / `calendar` / `progress_dialog` / `message_box` **不在豁免表内**。
+ 且 `banner` / `calendar` / `progress_dialog` / `message_box` **不在豁免表内**。
 - [x] **语义色普查**：`error` / `warning` / `success` / `info` 每个 token 至少被一个控件的
-      `Draw` 读取，且 dark ≠ light（规则 #109）。
+ `Draw` 读取，且 dark ≠ light（规则 #109）。
 - [x] **第 58 轮的假通过场景被专门覆盖**：门禁在窗口位于非零坐标时仍能抓到
-      「控件不可见」（即不依赖 `(0,0)` 这个偶然条件）。
+ 「控件不可见」（即不依赖 `(0,0)` 这个偶然条件）。
 - [x] 第 1 层抓到的控件外形缺陷**全部修复**，基线表逐项清零，`failed=0`。
 - [x] `skipped` 非零时逐条列出**原因**（哪个 profile / 缺什么能力）。
 - [x] **（R-1k，第 61 轮追加）P5**：每个控件发出的每个图元都落在自己的矩形内；
-      反向注入实测 FAIL；豁免表 `tools/control_overflow_exemptions.txt` 存在且**双向断言**。
+ 反向注入实测 FAIL；豁免表 `tools/control_overflow_exemptions.txt` 存在且**双向断言**。
 - [x] **（R-1l）P5 抓到的 68 个控件缺陷全部修复**，`failed=0`。
 - [x] **（R-1m）P5 判据自身经反向审核**，25 项误报已修正（偏严与偏松同类，见规则 #18/#107）。
 
@@ -1120,7 +1120,7 @@ desktop / tablet / mobile / mini / embedded
 ### DoD-R-3（SVG 全量快照）
 
 - [x] `ls snapshots/svg/*.svg \| wc -l` = 控件数 × 2 = **376**（实跑；计划写「187」时 `heatmap` 尚未存在，
-      188 × 2 = 376）—— 判据是「每个控件两种外观各一份」，不是某个字面量。
+ 188 × 2 = 376）—— 判据是「每个控件两种外观各一份」，不是某个字面量。
 - [x] 每个文件含 ≥1 绘制元素（非空骨架）。
 - [x] 文件名 = `canonical_name`（含下划线，如 `combo_box.svg`）。
 - [x] 再生门禁存在，且**注入一字节改动后实测 FAIL**。
@@ -1133,11 +1133,11 @@ desktop / tablet / mobile / mini / embedded
 - [x] 门禁 `tools/check_platform_create_coverage.sh` 存在，且**反向注入（删一条别名）实测 FAIL**。
 - [x] 该门禁已登记进 `tools/run_all_gates.sh`（否则等于没接）。
 - [x] `spin_box` 浮点：`set_decimals(2)` 后 `set_value(1.5)` 往返正确；
-      既有整数测试 **0 回退**（规则 #21 向前兼容）。
+ 既有整数测试 **0 回退**（规则 #21 向前兼容）。
 - [x] `heatmap` 在 capability 表中（`checked=188`），且：
-      - 第 1 层普查能渲染它（非背景像素 > 0）；
-      - 第 3 层为它生成 `snapshots/svg/heatmap.svg`；
-      - **desktop / tablet / mobile** 三端构建通过（规则 #20）。
+ - 第 1 层普查能渲染它（非背景像素 > 0）；
+ - 第 3 层为它生成 `snapshots/svg/heatmap.svg`；
+ - **desktop / tablet / mobile** 三端构建通过（规则 #20）。
 - [x] 新控件的属性/事件逐项有测试，**不得**是只有 `impl Draw` 的空壳（规则 #5）。
 
 ### DoD-R-5（WebEngine 诚实降级 — **W1 已裁定**）
@@ -1146,12 +1146,12 @@ desktop / tablet / mobile / mini / embedded
 - [x] 调用方能**查询**到当前是「模拟」而非真引擎（不再是「不暴露给调用方」）。
 - [x] 反向注入：把该查询改成恒报「真引擎」 → 测试必须 FAIL。
 - [x] **W1 删除完成且零残留**：
-      `grep -rn "NativeWebEngine\|webkit_engine\|webkit2gtk\|webkit-engine" src/ Cargo.toml`
-      → **无输出**。
+ `grep -rn "NativeWebEngine\|webkit_engine\|webkit2gtk\|webkit-engine" src/ Cargo.toml`
+ → **无输出**。
 - [x] §3.5.4 的 10 项清单**逐项完成**（含 `full` 列表移除与注释修正）。
 - [x] 删除后构建全过：`desktop` / `full` / `mini` 均 **0 error**；`check_profiles.sh` **exit=0**。
 - [x] **保留项未被误删**：`WebEngineViewEnhanced` 本体、boa 的 `evaluate_javascript`、
-      `web_engine_view` 的 capability 记录、`src/web/` 其余模块。
+ `web_engine_view` 的 capability 记录、`src/web/` 其余模块。
 - [x] 文档不再声称本库支持原生网页渲染（§1.8 / README / cookbook）。
 - [x] 模拟路径**行为不变**：`cargo test --features desktop --lib web` 全绿。
 

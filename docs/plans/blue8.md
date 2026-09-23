@@ -23,11 +23,11 @@
 BLUE6/BLUE7 已闭合全部 181 项 P0-P4，当前无未修复的 P0 级别问题。以下为**已知架构限制**，存在于当前代码中但不属于"bug"：
 
 1. **Platform trait 全量实现，但 4 个后端为状态模拟**：
-   - Wayland：零 Wayland 协议调用，事件循环 `thread::sleep(16ms)` 轮询
-   - Harmony：零 HarmonyOS API 调用，同上轮询
-   - Mobile (Android)：14 个 combo/list 方法返回硬编码值
-   - macOS objc2：零 Cocoa/AppKit 原生调用
-   - 所有后端 IME、无障碍、拖放功能均使用 trait 默认实现（返回 false/None）
+ - Wayland：零 Wayland 协议调用，事件循环 `thread::sleep(16ms)` 轮询
+ - Harmony：零 HarmonyOS API 调用，同上轮询
+ - Mobile (Android)：14 个 combo/list 方法返回硬编码值
+ - macOS objc2：零 Cocoa/AppKit 原生调用
+ - 所有后端 IME、无障碍、拖放功能均使用 trait 默认实现（返回 false/None）
 
 2. **Widget 单元测试覆盖严重不足**：多个核心模块零单元测试（详见 P3-1）。
 

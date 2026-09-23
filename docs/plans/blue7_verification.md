@@ -1,7 +1,7 @@
 # BLUE7 Implementation Verification Report
 
-**Date:** 2025-07-16  
-**Scope:** All 32 original BLUE7 items  
+**Date:** 2025-07-16 
+**Scope:** All 32 original BLUE7 items 
 **Methodology:** Direct source file inspection (no assumptions)
 
 ---
@@ -15,10 +15,10 @@
 **Evidence:** `impl RenderContext` at line ~241-249 contains a `draw_image()` method:
 ```rust
 pub fn draw_image(&mut self, x: i32, y: i32, width: u32, height: u32, data: &[u8]) {
-    self.backend.execute_command(&RenderCommand::DrawImage {
-        x, y, width, height,
-        data: data.to_vec(),
-    });
+ self.backend.execute_command(&RenderCommand::DrawImage {
+ x, y, width, height,
+ data: data.to_vec(),
+ });
 }
 ```
 The `draw_image()` method exists and is properly implemented — it delegates to `RenderCommand::DrawImage`.
@@ -90,10 +90,10 @@ All three items are present.
 **Evidence:** `set_items(Vec<String>)` is implemented at line ~56-60:
 ```rust
 pub fn set_items(&mut self, items: Vec<String>) {
-    self.items = items;
-    self.current_index = None;
-    self.current_index_changed.emit(None);
-    self.current_text_changed.emit(String::new());
+ self.items = items;
+ self.current_index = None;
+ self.current_index_changed.emit(None);
+ self.current_text_changed.emit(String::new());
 }
 ```
 It replaces all items, clears the current selection, and emits signals.
@@ -248,11 +248,11 @@ Also has `triggered: Signal1<String>` for text-based triggering. Both signals ar
 **Evidence:** `Action::new()` calls `self.wire_signals()` as the last statement in the constructor (line ~64):
 ```rust
 impl Action {
-    pub fn new(text: impl Into<String>, geometry: Rect) -> Self {
-        // ... field initialization ...
-        action.wire_signals();
-        action
-    }
+ pub fn new(text: impl Into<String>, geometry: Rect) -> Self {
+ // ... field initialization ...
+ action.wire_signals();
+ action
+ }
 }
 ```
 The `wire_signals()` method (lines ~132-141) connects the inner `CmdAction`'s `toggled` and `enabled_changed` signals to the widget's own signals.
@@ -313,17 +313,17 @@ Each has `new()`, `inner()`, and `inner_mut()` methods.
 **Evidence:** Separate `WidgetKind` variants exist for all dialog types:
 ```rust
 pub enum WidgetKind {
-    // ...
-    Dialog,
-    MessageBox,
-    FileDialog,
-    ColorDialog,
-    FontDialog,
-    InputDialog,
-    ProgressDialog,
-    // ...
-    DirectoryDialog,
-    // ...
+ // ...
+ Dialog,
+ MessageBox,
+ FileDialog,
+ ColorDialog,
+ FontDialog,
+ InputDialog,
+ ProgressDialog,
+ // ...
+ DirectoryDialog,
+ // ...
 }
 ```
 The generic `Dialog` variant exists alongside `MessageBox`, `FileDialog`, `ColorDialog`, `FontDialog`, `InputDialog`, `ProgressDialog` — all separate variants.
@@ -384,13 +384,13 @@ All `append_*` functions (11 of 12) are marked `#[deprecated]`. `append_window_v
 **Evidence:** `impl BatchRenderer for SoftwarePaintBackend` is implemented at line ~184-218:
 ```rust
 impl BatchRenderer for SoftwarePaintBackend {
-    fn begin_batch(&mut self) -> BatchId { ... }
-    fn end_batch(&mut self) { ... }
-    fn record(&mut self, cmd: BatchCommand) { ... }
-    fn replay(&mut self, id: BatchId) { ... }
-    fn destroy_batch(&mut self, id: BatchId) { ... }
-    fn contains_batch(&self, id: BatchId) -> bool { ... }
-    fn batch_count(&self) -> usize { ... }
+ fn begin_batch(&mut self) -> BatchId { ... }
+ fn end_batch(&mut self) { ... }
+ fn record(&mut self, cmd: BatchCommand) { ... }
+ fn replay(&mut self, id: BatchId) { ... }
+ fn destroy_batch(&mut self, id: BatchId) { ... }
+ fn contains_batch(&self, id: BatchId) -> bool { ... }
+ fn batch_count(&self) -> usize { ... }
 }
 ```
 All 7 trait methods are implemented.
@@ -453,21 +453,21 @@ pub type DateTimePicker = DateTimeEdit;
 **Evidence:**
 
 - **`src/widget/mod.rs`**: Type alias uses capital B:
-  ```rust
-  pub type Toolbox = ToolBox;
-  ```
-  Note: `Toolbox` (alias) → `ToolBox` (the capital-B canonical form).
+ ```rust
+ pub type Toolbox = ToolBox;
+ ```
+ Note: `Toolbox` (alias) → `ToolBox` (the capital-B canonical form).
 
 - **`src/control_backend/custom.rs`**: Both `create_toolbox` and `create_tool_box` exist:
 
-  - `create_toolbox()` uses `WidgetKind::Toolbox` (line ~1788)
-  - `create_tool_box()` uses `WidgetKind::ToolBox` (line ~2538)
+ - `create_toolbox()` uses `WidgetKind::Toolbox` (line ~1788)
+ - `create_tool_box()` uses `WidgetKind::ToolBox` (line ~2538)
 
 - **`src/widget/kind.rs`**: Both variants exist:
-  ```rust
-  Toolbox,    // lowercase b (legacy)
-  ToolBox,    // capital B (canonical)
-  ```
+ ```rust
+ Toolbox, // lowercase b (legacy)
+ ToolBox, // capital B (canonical)
+ ```
 
 The fix is consistent: there are separate `WidgetKind` variants for both `Toolbox` (lowercase b) and `ToolBox` (capital B), and the control backend creates each with the correct variant.
 

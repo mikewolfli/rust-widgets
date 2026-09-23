@@ -55,24 +55,24 @@
 ### BLUE17 新增规则
 
 78. **🧭 控件缺口必须以「能力」而非「名字」判定** — 判定「本项目没有 X 控件」时，必须先排除
-    ① **别名/同义**（`Panel = GroupBox`、`CheckListBox = ListBox`）；② **数据项误判**（`TimelineItem`
-    是数据，`TimelineWidget` 才是控件）；③ **能力已由兄弟控件覆盖**。
-    判定：候选必须有**该能力确实不存在**的证据（`grep` 命中数 + 命名变体清单），
-    而不是「我没搜到这个名字」。
+ ① **别名/同义**（`Panel = GroupBox`、`CheckListBox = ListBox`）；② **数据项误判**（`TimelineItem`
+ 是数据，`TimelineWidget` 才是控件）；③ **能力已由兄弟控件覆盖**。
+ 判定：候选必须有**该能力确实不存在**的证据（`grep` 命中数 + 命名变体清单），
+ 而不是「我没搜到这个名字」。
 79. **🎯 新增控件必须先回答「谁会调用」** — 一个控件即使实现完整，若无生产调用者、无 JSON/CSS 可达、
-    无 C ABI 入口，则按 #72 属死重。判定：提案必须写明**至少一个**真实消费路径
-    （JSON 声明 / CSS 选择器 / C ABI / 本仓 demo）。答不出即降级为「登记，不做」。
+ 无 C ABI 入口，则按 #72 属死重。判定：提案必须写明**至少一个**真实消费路径
+ （JSON 声明 / CSS 选择器 / C ABI / 本仓 demo）。答不出即降级为「登记，不做」。
 80. **📊 图表类优先「扩展，而非新建」** — 当新图表与既有控件共享**同一数据模型**与**同一交互**
-    （hover、选中、tooltip），差异只在绘制几何时，必须扩展既有控件的枚举，不得新建独立控件。
-    判定：提案需说明新图与既有控件的**数据模型是否相同**。共享则扩展，不共享才新建。
+ （hover、选中、tooltip），差异只在绘制几何时，必须扩展既有控件的枚举，不得新建独立控件。
+ 判定：提案需说明新图与既有控件的**数据模型是否相同**。共享则扩展，不共享才新建。
 81. **🧪 新控件与 `WidgetKind` 的同步是强约束** — 每新增一个控件必须同时更新
-    ① `WidgetKind` 变体、② 工厂注册（`check_widget_registration_fidelity.sh`）、
-    ③ 一条**构建**它的测试（`check_control_has_tests.sh`）、④ 属性契约的双向断言。
-    判定：四者缺一，门禁即 FAIL——这四条门禁已存在，新增控件会自动被追责。
+ ① `WidgetKind` 变体、② 工厂注册（`check_widget_registration_fidelity.sh`）、
+ ③ 一条**构建**它的测试（`check_control_has_tests.sh`）、④ 属性契约的双向断言。
+ 判定：四者缺一，门禁即 FAIL——这四条门禁已存在，新增控件会自动被追责。
 82. **🔁 扩展既有控件时，同步成本低于新控件，但不是零** — 扩展枚举变体同样要更新
-    ① `accepted_tokens` 与 `set` 解析器**成对**（`published_enum_tokens_are_accepted_by_their_control`
-    会逐 token 回写并断言被接受）、② 该控件的绘制分支、③ 一条断言新变体可被 `set` 的测试。
-    判定：只加枚举不接解析器，该测试必 FAIL。
+ ① `accepted_tokens` 与 `set` 解析器**成对**（`published_enum_tokens_are_accepted_by_their_control`
+ 会逐 token 回写并断言被接受）、② 该控件的绘制分支、③ 一条断言新变体可被 `set` 的测试。
+ 判定：只加枚举不接解析器，该测试必 FAIL。
 
 ---
 
@@ -100,7 +100,7 @@
 ### 2.0 基线数字
 
 ```bash
-$ grep -c "^    [A-Z][A-Za-z0-9]*," src/widget/kind.rs
+$ grep -c "^ [A-Z][A-Za-z0-9]*," src/widget/kind.rs
 174
 $ bash tools/check_control_has_tests.sh | tail -2
 controls with a test that names them: 172 / 172
@@ -142,7 +142,7 @@ VideoPlayer ImageGallery AudioVisualizer CameraPreview BarcodeScanner GridTable
 NumberPicker OtpInput Banner Pagination ColorPicker Toast SplashScreen
 ```
 
-✅ 已复跑（来源：`grep -oE "^    [A-Z][A-Za-z0-9]*," src/widget/kind.rs`）
+✅ 已复跑（来源：`grep -oE "^ [A-Z][A-Za-z0-9]*," src/widget/kind.rs`）
 
 ### 2.2 ✅ 已存在、**不应**被当作缺口的（避免误报，规则 #78）
 
@@ -293,7 +293,7 @@ new page_count set_page_count current_page set_current_page next_page(priv) prev
 
 - ❌ 不新建第 4 个轮播类控件。
 - ❌ 不在 `Carousel` 里做「图片轮播」专用逻辑——`ImageGallery` 已覆盖图片场景（缩略图条 + 左右箭头）；
-  要做的是**通用内容槽**，图片只是其中一种内容。
+ 要做的是**通用内容槽**，图片只是其中一种内容。
 
 ### B2 图表：扩展 `ChartWidget` 而非新建（规则 #80）
 
@@ -301,7 +301,7 @@ new page_count set_page_count current_page set_current_page next_page(priv) prev
 
 ```bash
 $ sed -n '28,39p' src/widget/special_widgets/chart.rs
-pub enum ChartType { Bar, Line, Pie, Scatter }   # 4 种
+pub enum ChartType { Bar, Line, Pie, Scatter } # 4 种
 $ grep -rn "const CHART_PROPERTIES" -A 6 src/widget/capability/properties_other.in.rs
 PropertySchema::enumerated("chart_type", true, true, &["bar", "line", "pie", "scatter"])
 $ sed -n '182,193p' src/widget/special_widgets/chart.rs
@@ -333,19 +333,19 @@ K 线需要每点 4 个值。开工前的判定：
 **`SankeyChart`（桑基图）与 `FunnelChart`（漏斗图）**：
 
 - `SankeyChart`：需要「节点 + 有向边」的图结构，与 `Vec<f64>` **不同构** → 若要做，属**新控件**
-  （本计划登记为「暂不做」，见 §六）。
+ （本计划登记为「暂不做」，见 §六）。
 - `FunnelChart`：**可以**并入 `ChartWidget`（逐级递减的一维序列 + labels，同构），
-  建议作为 B2-5 补入。
+ 建议作为 B2-5 补入。
 
 ### B3 `Gauge`/`ProgressCircle`：扩展 `Meter`，不新建（规则 #78）
 
 实跑取证（**旧版本计划在此处判断有误，本版更正**）：
 
 ```bash
-$ grep -n "kind:\|canonical_name:\|aliases:" src/widget/capability/properties.rs  # Meter
+$ grep -n "kind:\|canonical_name:\|aliases:" src/widget/capability/properties.rs # Meter
 kind: WidgetKind::Meter, canonical_name: "meter", aliases: &["meter_widget", "gauge"]
 $ grep -n "tick_count\|fn set_minimum\|fn set_maximum" src/widget/display_widgets/meter.rs
-30: tick_count: u32,  43: tick_count: 5,  91: set_minimum,  101: set_maximum,  106: set_tick_count
+30: tick_count: u32, 43: tick_count: 5, 91: set_minimum, 101: set_maximum, 106: set_tick_count
 ```
 
 | 判定项 | 实跑结论 |
@@ -493,10 +493,10 @@ pub struct ColumnFilter { pub column: usize, pub query: String }
 
 ```bash
 # 每新增一个控件必须让这四条同时通过：
-cargo test --no-default-features --features desktop --lib -q          # 行为测试
-bash tools/check_widget_registration_fidelity.sh                       # 工厂注册 + kind 归类
-bash tools/check_control_has_tests.sh                                  # 每个控件有构建测试
-bash tools/check_widget_kind_count.sh                                  # 计数与文档一致
+cargo test --no-default-features --features desktop --lib -q # 行为测试
+bash tools/check_widget_registration_fidelity.sh # 工厂注册 + kind 归类
+bash tools/check_control_has_tests.sh # 每个控件有构建测试
+bash tools/check_widget_kind_count.sh # 计数与文档一致
 ```
 
 ### Phase F — 文档与发布物
@@ -529,7 +529,7 @@ bash tools/check_widget_kind_count.sh                                  # 计数�
 **第一件事：`Carousel` 能力补齐（Phase B）。** 理由：
 
 1. 它是**已登记却只有骨架**的控件——`WidgetKind::Carousel` 与工厂注册都已存在，
-   缺口是「不能装内容、不能滑动、不能自动播放」，**投入产出比最高**；
+ 缺口是「不能装内容、不能滑动、不能自动播放」，**投入产出比最高**；
 2. 它不需要任何前置（拖放基础设施还没做完也能先做，翻页只需鼠标三件套）。
 
 **第二件事：拖放基础设施（Phase A）。** 理由：它是 `KanbanBoard` 与所有「重排/移动」交互的
@@ -551,11 +551,11 @@ bash tools/check_widget_kind_count.sh                                  # 计数�
 真正的工作分两类：
 
 1. **既有控件的能力补齐**（优先）——
-   `Carousel`（内容槽 + 滑动 + 自动播放，**最该先做**）、`Meter`（区间色带 + 刻度标签，
-   **不新建 `Gauge`**）、`ChartWidget`（`Area` 变体 + 数据模型判定）、`ScrollArea`（吸顶）；
+ `Carousel`（内容槽 + 滑动 + 自动播放，**最该先做**）、`Meter`（区间色带 + 刻度标签，
+ **不新建 `Gauge`**）、`ChartWidget`（`Area` 变体 + 数据模型判定）、`ScrollArea`（吸顶）；
 2. **可新增的控件**——
-   `KanbanBoard`（依赖拖放基础设施）、`Mention`、`RadarChart`（数据模型与 `ChartWidget` 不同构）、
-   `EmojiPicker` 外壳（字形由调用方注入）。
+ `KanbanBoard`（依赖拖放基础设施）、`Mention`、`RadarChart`（数据模型与 `ChartWidget` 不同构）、
+ `EmojiPicker` 外壳（字形由调用方注入）。
 
 **必须先拍板的两项**：
 - `Carousel` 与 `PagerPageView` 的**归属判定**（扩展谁 / 谁是别名）；

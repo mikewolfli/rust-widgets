@@ -13,7 +13,7 @@
 ```bash
 # 1. 当前 theme-blind 全集（按 canonical name）
 cargo run --no-default-features --features desktop --example control_rendering_census \
-  | awk 'NF>0 && $1!="name" && $1!="checked" {p3=$(NF-1); if (p3=="NO") print $1}' | sort
+ | awk 'NF>0 && $1!="name" && $1!="checked" {p3=$(NF-1); if (p3=="NO") print $1}' | sort
 
 # 2. 与豁免表求交/求差
 comm -12 theme_blind.txt <(awk '!/^#/ && NF>0 {print $1}' tools/control_color_exemptions.txt | sort)
@@ -109,8 +109,8 @@ comm -23 theme_blind.txt <(awk '!/^#/ && NF>0 {print $1}' tools/control_color_ex
 // 2) 主题为本控件解析出的样式
 // 3) 原字面量作为最后回退（保留原外观，不引入回归）
 let bg = style.background_color
-    .or_else(|| crate::style::resolved_theme_style("<name>").and_then(|t| t.background_color))
-    .unwrap_or(Color::rgba(230, 230, 230, 200));
+ .or_else(|| crate::style::resolved_theme_style("<name>").and_then(|t| t.background_color))
+ .unwrap_or(Color::rgba(230, 230, 230, 200));
 ```
 
 **为什么保留字面量作回退**（而不是删掉）：

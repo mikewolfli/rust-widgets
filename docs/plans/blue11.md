@@ -26,10 +26,10 @@
 ### BLUE11 新增规则
 
 9. **🚫 绝对禁止假修复** — 修复必须产生可观测、可验证的行为变化。禁止以下反模式：
-    - 函数实现返回 Ok(()) 但内部无任何操作（perpetual no-op）
-    - stub 绕过：创建完整实现但在调用点用 if false 或 feature flag 绕过
-    - 仅在 #[cfg(test)] 中创建类型以消除 dead_code 警告（integration_gate 反模式）
-    - 添加 #[allow(dead_code)] 替代真正的接线或删除
+ - 函数实现返回 Ok(()) 但内部无任何操作（perpetual no-op）
+ - stub 绕过：创建完整实现但在调用点用 if false 或 feature flag 绕过
+ - 仅在 #[cfg(test)] 中创建类型以消除 dead_code 警告（integration_gate 反模式）
+ - 添加 #[allow(dead_code)] 替代真正的接线或删除
 10. **🚫 绝对禁止不完整修复** — 每条修复必须完整闭环
 11. **🚫 绝对禁止空修复** — 禁止占位行为
 12. **🚫 绝对禁止跳过测试** — 测试修复的硬性要求
@@ -47,11 +47,11 @@
 ### A. 控件与类型盘点
 
 - 扫描结果:
-  - `src/widget` 下 Rust 文件: **101**（含子目录）
-  - `impl Widget for` 的具体控件结构体: **~80**
-  - 类型别名（alias）控件: **17**（如 `ActivityIndicator = ProgressBar`、`DoubleSpinBox = SpinBox` 等）
-  - `WidgetKind` 枚举变体: **107**（含 WebEngine 系列 10 个、Action、ToolButton 等）
-  - 80 个结构体中 ~94% 实现了完整的 `Widget + Draw + EventHandler + Signals + Docs`
+ - `src/widget` 下 Rust 文件: **101**（含子目录）
+ - `impl Widget for` 的具体控件结构体: **~80**
+ - 类型别名（alias）控件: **17**（如 `ActivityIndicator = ProgressBar`、`DoubleSpinBox = SpinBox` 等）
+ - `WidgetKind` 枚举变体: **107**（含 WebEngine 系列 10 个、Action、ToolButton 等）
+ - 80 个结构体中 ~94% 实现了完整的 `Widget + Draw + EventHandler + Signals + Docs`
 
 ### B. BLUE10 R1 遗留缺口（EventHandler 补齐状态）
 
@@ -144,7 +144,7 @@
 ### B. ⚠️ 关键平台缺口（BLUE11 新发现）
 
 1. **Web/WASM 平台完全缺失** — 项目号称 cross-platform，但没有 WASM target。`wasm-bindgen` + `web-sys` 可以让 rust_widgets 运行在浏览器中。
-2. **iOS 仅有 state backend** — 没有 UIKit/SwiftUI 绑定，无法创建真实 UIView。
+2. **iOS 仅有 state backend** — 没有 UIKit/主流声明式实现 绑定，无法创建真实 UIView。
 3. **Android 仅有 JNI 桩** — `android_jni.rs` 有 native method 声明但没有被实际 Java/Kotlin 侧调用验证。
 4. **HarmonyOS 仅有 state backend** — NAPI bridge 示例存在但未集成到 Platform trait。
 5. **Wayland 原生集成未完成** — `wayland-native` feature 有 TODO: "query wl_output scaling"，WaylandSession 的 conn 字段标记 `allow(dead_code)`。
@@ -286,8 +286,8 @@
 **当前 features**:
 ```
 default = ["desktop"]
-desktop, tablet, mobile, embedded  (device profiles — 互斥)
-touch, holographic, projection     (interaction add-ons)
+desktop, tablet, mobile, embedded (device profiles — 互斥)
+touch, holographic, projection (interaction add-ons)
 desktop-runtime, gpu-wgpu, quality-management, mobile-api
 gtk-native, wayland-native, controls-native, objc2-macos, controls-custom
 android-jni
@@ -354,32 +354,32 @@ full
 
 ```
 RenderCommand enum (core/command.rs)
-  ├── FillRect / DrawRect / DrawRectStroke
-  ├── FillRoundedRect / DrawRoundedRectStroke / AA variants
-  ├── DrawLine / DrawLineAA / DrawLineStroke / DrawLineStrokeAA
-  ├── FillCircle / FillCircleAA / DrawCircle / DrawCircleStroke
-  ├── DrawText
-  ├── DrawImage
-  ├── DrawArc (可能存在于 BLUE10 新增)
-  ├── DrawPath (可能存在于 BLUE10 新增)
-  ├── FillGradient / FillLinearGradient / FillRadialGradient (BLUE10 新增)
-  └── (无更多图元)
-     ↓
+ ├── FillRect / DrawRect / DrawRectStroke
+ ├── FillRoundedRect / DrawRoundedRectStroke / AA variants
+ ├── DrawLine / DrawLineAA / DrawLineStroke / DrawLineStrokeAA
+ ├── FillCircle / FillCircleAA / DrawCircle / DrawCircleStroke
+ ├── DrawText
+ ├── DrawImage
+ ├── DrawArc (可能存在于 BLUE10 新增)
+ ├── DrawPath (可能存在于 BLUE10 新增)
+ ├── FillGradient / FillLinearGradient / FillRadialGradient (BLUE10 新增)
+ └── (无更多图元)
+ ↓
 PaintBackend trait (backend/paint.rs)
-  ├── SoftwarePaintBackend (CPU raster)
-  ├── SvgPaintBackend (SVG output)
-  └── GpuRenderer trait → WgpuRenderer (GPU via wgpu)
-     ↓
+ ├── SoftwarePaintBackend (CPU raster)
+ ├── SvgPaintBackend (SVG output)
+ └── GpuRenderer trait → WgpuRenderer (GPU via wgpu)
+ ↓
 RenderScene (backend/scene.rs)
-  └── SceneLayer[] → compose_with_backend()
+ └── SceneLayer[] → compose_with_backend()
 ```
 
 ### B. ⚠️ GPU 渲染缺口（BLUE11 新增发现）
 
 1. **RenderCommand 与 WgpuDrawCommand 是两个独立枚举** — `render/backend/paint.rs` 的 `execute_command` 匹配 `RenderCommand`，但 `wgpu_backend/commands.rs` 定义了自己的 `WgpuDrawCommand`。**两个命令集不同步**：
-   - `RenderCommand` 有 `FillLinearGradient`、`FillRadialGradient`、`DrawArc`、`DrawPath` 等
-   - `WgpuDrawCommand` 仅有 `Clear`、`DrawText`、`DrawImage`、`DrawRect`、`DrawLine` 等基础图元
-   - **GPU 路径缺少渐变、圆弧、路径渲染**
+ - `RenderCommand` 有 `FillLinearGradient`、`FillRadialGradient`、`DrawArc`、`DrawPath` 等
+ - `WgpuDrawCommand` 仅有 `Clear`、`DrawText`、`DrawImage`、`DrawRect`、`DrawLine` 等基础图元
+ - **GPU 路径缺少渐变、圆弧、路径渲染**
 
 2. **wgpu_backend 只有软件 raster 实现** — `raster.rs` 用纯 CPU 循环实现 `rasterize_draw_commands_rgba8()`，`renderer.rs` 的 `WgpuRenderer` 并未实际使用 GPU 着色器渲染。真正的 WSGL 着色器存在于 `shaders.rs` 但未与 RenderScene 集成。
 
@@ -445,7 +445,7 @@ RenderScene (backend/scene.rs)
 4. **WrapLayout** — 自动换行布局
 5. **AspectRatio** — 保持宽高比的布局约束
 6. **Center** — 居中布局容器
-7. **Padding/Expanded** — Flutter 风格的空间布局
+7. **Padding/Expanded** — 主流 material 实现 风格的空间布局
 
 ### B. 主题/样式系统
 
@@ -627,7 +627,7 @@ RenderScene (backend/scene.rs)
 | 9 | **CupertinoNavigationBar** | iOS | iOS 风格导航栏 | P1 |
 | 10 | **CupertinoSegmentedControl** | iOS | iOS 风格分段控件 | P1 |
 | 11 | **CupertinoDatePicker** | iOS | iOS 风格日期选择器 | P1 |
-| 12 | **MaterialSnackbar** | Android | Material Design 风格 Snackbar | P1 |
+| 12 | **Snackbar** | Android / Material | Material-spec 风格的 Snackbar | P1 |
 | 13 | **MaterialNavigationRail** | Android | Material 侧边导航栏(平板) | P1 |
 | 14 | **MaterialTimePicker** | Android | Material 时间选择器 | P1 |
 | 15 | **AdaptiveScaffold** | 跨平台 | 自适应平台风格的页面支架 | P1 |
@@ -881,7 +881,7 @@ $ cargo check --all
 - **RenderCommand vs WgpuDrawCommand 对比**: 枚举变体 diff
 - **Cargo.toml features 分析**: 19 features, 4 device profiles
 - **CI workflow 分析**: 5 jobs, 缺失项清单
-- **外部生态对标**: Flutter/Material Design 3 / Apple HIG / Qt 控件全集
+- **外部生态对标**: 主流 material 工具包 / Material 规范 / Apple HIG / 参考工具包控件全集
 
 ### 文件覆盖率
 
@@ -1021,22 +1021,22 @@ $ cargo check --all
 
 | # | 控件名称 | 说明 | 对标框架 | 优先级 |
 |---|---------|------|---------|-------|
-| 1 | **SegmentedButton** | 分段按钮（单选按钮组现代替代） | Flutter/Material 3 | P1 |
-| 2 | **NavigationStack** | 导航栈（页面 push/pop） | SwiftUI NavigationStack | P1 |
-| 3 | **MenuButton** | 下拉菜单按钮（点击弹出菜单） | SwiftUI Menu | P1 |
-| 4 | **PopupButton** | 弹出选择按钮 | Qt QPushButton+menu | P1 |
-| 5 | **ComboBox (Editable)** | 可编辑的下拉框 | Qt QComboBox editable | P1 |
+| 1 | **SegmentedButton** | 分段按钮（单选按钮组现代替代） | 外部对标 | P1 |
+| 2 | **NavigationStack** | 导航栈（页面 push/pop） | 主流声明式实现 NavigationStack | P1 |
+| 3 | **MenuButton** | 下拉菜单按钮（点击弹出菜单） | 主流声明式实现 Menu | P1 |
+| 4 | **PopupButton** | 弹出选择按钮 | 参考工具包 QPushButton+menu | P1 |
+| 5 | **ComboBox (Editable)** | 可编辑的下拉框 | 参考工具包 QComboBox editable | P1 |
 | 6 | **ColorPicker (HLS wheel)** | HSL 色环取色器 | macOS ColorPicker | P2 |
 | 7 | **DateRangePicker** | 日期范围选择器 | Material DateRangePicker | P2 |
 | 8 | **TimeLine (交互式)** | 可拖拽时间轴 | 视频编辑/DAW | P2 |
 | 9 | **NumberPicker** | 滚轮数字选择器 | iOS UIPickerView | P2 |
-| 10 | **OtpInput** | 验证码输入框（每位独立） | Flutter OTP | P2 |
-| 11 | **Icon** | 图标组件（SVG/字体图标） | Flutter Icon | P1 |
+| 10 | **OtpInput** | 验证码输入框（每位独立） | 主流 material 实现 OTP | P2 |
+| 11 | **Icon** | 图标组件（SVG/字体图标） | 主流 material 实现 Icon | P1 |
 | 12 | **ProgressCircle** | 圆形进度指示器 | Material CircularProgress | P1 |
-| 13 | **InlineSpinner** | 内联加载旋转器 | Qt QMovie/animation | P1 |
+| 13 | **InlineSpinner** | 内联加载旋转器 | 参考工具包 QMovie/animation | P1 |
 | 14 | **Tooltip** | 工具提示/悬浮提示 | 所有 UI 框架 | P0 |
-| 15 | **Popover** | 弹出气泡卡片 | SwiftUI Popover | P1 |
-| 16 | **DropdownMenu** | 下拉菜单（联动式） | Flutter DropdownMenu | P1 |
+| 15 | **Popover** | 弹出气泡卡片 | 主流声明式实现 Popover | P1 |
+| 16 | **DropdownMenu** | 下拉菜单（联动式） | 主流 material 实现 DropdownMenu | P1 |
 
 ### 移动端专有控件（续）
 
@@ -1051,7 +1051,7 @@ $ cargo check --all
 | 7 | **Snackbar (Material)** | Android | Material 底部提示条 | P1 |
 | 8 | **ModalBottomSheet** | Material | Material 模态底部面板 | P1 |
 | 9 | **NavigationView** | iOS | iOS 导航视图 | P1 |
-| 10 | **Slidable** | Flutter | 可滑动操作项（左滑删除等） | P2 |
+| 10 | **Slidable** | 主流 material 实现 | 可滑动操作项（左滑删除等） | P2 |
 | 11 | **FloatingLabel** | Material | 浮动标签输入框 | P1 |
 | 12 | **MotionToast** | 跨平台 | 带动画的 Toast 通知 | P2 |
 
@@ -1134,7 +1134,7 @@ widget rendering"* —— 实测 `grep -rn "WebEngine\|WebView" src/render/pipel
 
 - 没有任何重复代码可消除 —— 包装层本身就是重复，删除即消除；
 - 反向"合并"（让 `crate::web` 依赖 `render`）会引入**无收益的间接层**，且违反分层方向
-  （`web` 是控件/引擎层，`render` 是绘制层）；
+ （`web` 是控件/引擎层，`render` 是绘制层）；
 - 保留则违反原则 #49（零消费者的同名模块不得以"看起来是另一个实现"的形式长期存在）。
 
 **影响**：`render::WebEngine` 与 `render::WebView` 是 `pub` 导出，故这是**主版本级 API 变更**。

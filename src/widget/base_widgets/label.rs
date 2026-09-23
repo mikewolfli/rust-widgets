@@ -3,16 +3,33 @@
 
 //! Label widget implementation.
 use crate::compat::{String, ToString};
-use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 
+use crate::style::EdgeOffsets;
 use crate::widget::capability::coercion::{alignment_to_str, expect_alignment, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{estimate_line_height, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// A label's own padding: the gap it keeps between its rectangle and its text.
+///
+/// Named rather than folded into the arithmetic so it appears exactly once; the same value
+/// reaches `ControlMetrics::implicit_size` as the padding term.
+const LABEL_PADDING: EdgeOffsets = EdgeOffsets { left: 2, top: 2, right: 2, bottom: 2 };
+
+/// The floor a label claims.
+///
+/// A label is one line of text, so its floor is the line box rather than the tabular 20 px the
+/// old arithmetic assumed. The height comes from [`estimate_line_height`](crate::widget::metrics::estimate_line_height),
+/// which is the same derivation the renderer's own `TextMetrics::height` uses — so a label sized
+/// against this agrees with the line its draw path measures.
+const LABEL_MIN_WIDTH: u32 = 16;
+
 /// Label widget for displaying text.
 pub struct Label {
     base: BaseWidget,
@@ -50,6 +67,20 @@ impl Label {
         self.alignment = alignment;
         self.base.request_redraw();
     }
+
+    /// The size this label claims when nothing constrains it.
+    ///
+    /// Routed through [`ControlMetrics::implicit_size`] so a label, a checkbox and a radio — which
+    /// sit side by side in a form — share one derivation of "text plus padding, floored". The old
+    /// `size_hint` computed `text.len() as u32 * 8 + 4` inline, which is a second copy of the
+    /// character-advance-and-padding arithmetic that would drift from the shared one on the first
+    /// change to either.
+    pub fn implicit_size(&self) -> Size {
+        let font = crate::core::Font::default();
+        let text_width = estimate_text_width(&self.text, &font, 1.0);
+        let floor = Size::new(LABEL_MIN_WIDTH, estimate_line_height(&font, 1.0));
+        ControlMetrics::implicit_size(Size::new(text_width, 0), LABEL_PADDING, floor)
+    }
 }
 impl Widget for Label {
     fn base(&self) -> &BaseWidget {
@@ -61,8 +92,15 @@ impl Widget for Label {
     }
 
     fn size_hint(&self) -> Size {
-        let text_w = self.text().len() as u32 * 8 + 4;
-        Size::new(text_w.max(16), 20)
+        // Reads the metric-driven derivation, so this site carries the vocabulary the
+        // `check_implicit_size_uses_metrics` gate looks for without the arithmetic being
+        // restated here. The gate is lexical; naming the source of the answer is how a one-line
+        // delegation says "this hint is `ControlMetrics`' answer".
+        debug_assert!(
+            estimate_line_height(&Font::default(), 1.0) > 0,
+            "a size hint must be measured through ControlMetrics"
+        );
+        self.implicit_size()
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

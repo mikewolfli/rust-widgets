@@ -304,13 +304,36 @@ jobs:
       # exactly this and `Button::tick` already reads it; the gate flags the literals elsewhere.
       # Token definition sites (`src/style/animation.rs`, `src/theme/`) and hover dwell timings are
       # excluded, each with its reason recorded in the script header and the exemption table.
+      #
+      # `check_implicit_size_uses_metrics` — a `size_hint` that computes `Size::new(w, h)` from its
+      # own numbers has made a second copy of "how big is this control?", with no link to the
+      # shared answer. The tree carried three such copies (`checkbox`'s was literally
+      # `text.len() * 8 + 24` with "16px checkbox" in the comment, naming a constant that lives
+      # elsewhere). 158 more are on the debt list in `tools/implicit_size_exemptions.txt`, which the
+      # gate makes shrinkable rather than permanent.
+      #
+      # `check_spacing_is_not_sibling_layout` — `Style::spacing` means one thing (a control's own
+      # indicator-to-text gap). Reading it as the gap to the *next* control makes a theme unable to
+      # change either. The gate requires the one accessor that names the legitimate role.
+      #
+      # `check_focus_ring_respects_reason` — a ring painted whenever the control holds a `focused`
+      # bool appears under the cursor on a click, because the pointer is the one reason that must
+      # not draw one. Every test that focuses programmatically still passes, which is why this is a
+      # gate. The gate requires the shared predicate (or the file's own classification of the
+      # reason), and asserts that it found at least one construction so it cannot pass vacuously.
       - name: BLUE22 interaction-contract gates
         shell: bash
         run: |
           chmod +x tools/check_click_requires_release_inside.sh
           chmod +x tools/check_transition_durations_are_tokens.sh
+          chmod +x tools/check_implicit_size_uses_metrics.sh
+          chmod +x tools/check_spacing_is_not_sibling_layout.sh
+          chmod +x tools/check_focus_ring_respects_reason.sh
           ./tools/check_click_requires_release_inside.sh
           ./tools/check_transition_durations_are_tokens.sh
+          ./tools/check_implicit_size_uses_metrics.sh
+          ./tools/check_spacing_is_not_sibling_layout.sh
+          ./tools/check_focus_ring_respects_reason.sh
 
       - name: Cargo fmt check
         run: cargo fmt --all -- --check

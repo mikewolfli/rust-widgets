@@ -1,8 +1,8 @@
 # BLUE4 — 声明式 JSON 窗口引擎设计与实现规划
 
-> 基于 PUA 质量标准的第四轮扫描：完整化 JSON 描述窗口引擎  
-> 规划日期: 2026-04-24  
-> 当前基线: `cargo check --all: Finished dev [unoptimized]` (0 errors, 0 warnings)  
+> 基于 PUA 质量标准的第四轮扫描：完整化 JSON 描述窗口引擎 
+> 规划日期: 2026-04-24 
+> 当前基线: `cargo check --all: Finished dev [unoptimized]` (0 errors, 0 warnings) 
 > 当前测试: **344/344 passed (297 unit + 35 integration + 12 doc) — ✅ ALL PASSING**
 
 ---
@@ -34,16 +34,16 @@ app.run();
 
 ```json
 {
-    "class": "window",
-    "id": "main",
-    "properties": {
-        "title": "Hello",
-        "x": 100, "y": 100, "width": 400, "height": 300
-    },
-    "children": [
-        { "class": "button", "id": "btn", "properties": { "text": "Click", "x": 10, "y": 10, "width": 120, "height": 32 } },
-        { "class": "label", "id": "result", "properties": { "text": "Result", "x": 10, "y": 50, "width": 200, "height": 24 } }
-    ]
+ "class": "window",
+ "id": "main",
+ "properties": {
+ "title": "Hello",
+ "x": 100, "y": 100, "width": 400, "height": 300
+ },
+ "children": [
+ { "class": "button", "id": "btn", "properties": { "text": "Click", "x": 10, "y": 10, "width": 120, "height": 32 } },
+ { "class": "label", "id": "result", "properties": { "text": "Result", "x": 10, "y": 50, "width": 200, "height": 24 } }
+ ]
 }
 ```
 
@@ -108,57 +108,57 @@ app.run();
 
 ```
 src/
-└── layout/                       # 扩展现有 layout/ 模块
-    ├── mod.rs                    # 现有 — Layout trait
-    ├── box_layout.rs             # 现有
-    ├── grid.rs                   # 现有
-    ├── stack.rs                  # 现有
-    ├── splitter.rs               # 现有
-    ├── form.rs                   # 现有
-    └── declarative/              # [新增] 声明式 JSON 窗口引擎
-        ├── mod.rs                # 模块入口，重新导出
-        ├── element.rs            # JsonElement + JsonLayout 定义
-        ├── loader.rs             # JSON 文件加载、缓存、热重载
-        ├── binder.rs             # id → WidgetHandle 绑定生成
-        ├── expression.rs         # {binding} 表达式解析器
-        ├── template.rs           # template/include 组件化系统
-        ├── layout.rs             # 声明式布局包装 (Box/Grid/Stack/Form)
-        └── events.rs             # on_click 事件映射
+└── layout/ # 扩展现有 layout/ 模块
+ ├── mod.rs # 现有 — Layout trait
+ ├── box_layout.rs # 现有
+ ├── grid.rs # 现有
+ ├── stack.rs # 现有
+ ├── splitter.rs # 现有
+ ├── form.rs # 现有
+ └── declarative/ # [新增] 声明式 JSON 窗口引擎
+ ├── mod.rs # 模块入口，重新导出
+ ├── element.rs # JsonElement + JsonLayout 定义
+ ├── loader.rs # JSON 文件加载、缓存、热重载
+ ├── binder.rs # id → WidgetHandle 绑定生成
+ ├── expression.rs # {binding} 表达式解析器
+ ├── template.rs # template/include 组件化系统
+ ├── layout.rs # 声明式布局包装 (Box/Grid/Stack/Form)
+ └── events.rs # on_click 事件映射
 ```
 
 ### 3.2 分层处理管线
 
 ```
-                          ┌──────────────────────┐
-                          │   JSON 源文件 / 字符串  │
-                          └──────────┬───────────┘
-                                     ▼
-                          ┌──────────────────────┐
-            loader.rs    │  1. 解析层 (Parsing)   │
-                          │  serde_json → JsonElement│
-                          └──────────┬───────────┘
-                                     ▼
-                          ┌──────────────────────┐
-            layout.rs    │  2. 布局层 (Layout)    │
-           binder.rs     │  布局管理器注入         │
-                          │  id 索引构建           │
-                          └──────────┬───────────┘
-                                     ▼
-                          ┌──────────────────────┐
-          element.rs     │  3. 实例化层 (Create)  │
-                          │  JsonElement → Widget  │
-                          └──────────┬───────────┘
-                                     ▼
-                          ┌──────────────────────┐
-            events.rs    │  4. 绑定层 (Bind)      │
-                          │  on_click → callback   │
-                          │  {binding} → runtime   │
-                          └──────────┬───────────┘
-                                     ▼
-                          ┌──────────────────────┐
-                          │  5. 运行层 (Run)      │
-                          │  BoundLayout + App    │
-                          └──────────────────────┘
+ ┌──────────────────────┐
+ │ JSON 源文件 / 字符串 │
+ └──────────┬───────────┘
+ ▼
+ ┌──────────────────────┐
+ loader.rs │ 1. 解析层 (Parsing) │
+ │ serde_json → JsonElement│
+ └──────────┬───────────┘
+ ▼
+ ┌──────────────────────┐
+ layout.rs │ 2. 布局层 (Layout) │
+ binder.rs │ 布局管理器注入 │
+ │ id 索引构建 │
+ └──────────┬───────────┘
+ ▼
+ ┌──────────────────────┐
+ element.rs │ 3. 实例化层 (Create) │
+ │ JsonElement → Widget │
+ └──────────┬───────────┘
+ ▼
+ ┌──────────────────────┐
+ events.rs │ 4. 绑定层 (Bind) │
+ │ on_click → callback │
+ │ {binding} → runtime │
+ └──────────┬───────────┘
+ ▼
+ ┌──────────────────────┐
+ │ 5. 运行层 (Run) │
+ │ BoundLayout + App │
+ └──────────────────────┘
 ```
 
 ---
@@ -171,17 +171,17 @@ JSON 布局文件的顶层是包含 `class` 和 `children` 的节点树。不需
 
 ```json
 {
-    "class": "window",
-    "id": "main",
-    "properties": {
-        "title": "Main Window",
-        "x": 0, "y": 0, "width": 800, "height": 600,
-        "min_width": 400, "min_height": 300,
-        "icon": "app_icon.png"
-    },
-    "children": [
-        { "class": "button", "id": "btn", "properties": { "text": "Click", "x": 10, "y": 10, "width": 120, "height": 32 } }
-    ]
+ "class": "window",
+ "id": "main",
+ "properties": {
+ "title": "Main Window",
+ "x": 0, "y": 0, "width": 800, "height": 600,
+ "min_width": 400, "min_height": 300,
+ "icon": "app_icon.png"
+ },
+ "children": [
+ { "class": "button", "id": "btn", "properties": { "text": "Click", "x": 10, "y": 10, "width": 120, "height": 32 } }
+ ]
 }
 ```
 
@@ -283,15 +283,15 @@ JSON 通过 `layout` 属性指定布局管理器。当使用布局时，子 widg
 
 ```json
 {
-    "class": "window",
-    "id": "main",
-    "properties": { "title": "Layout Demo", "x": 100, "y": 100, "width": 400, "height": 300 },
-    "layout": { "type": "hbox", "spacing": 8, "margin": 4 },
-    "children": [
-        { "class": "button", "id": "btn_ok", "properties": { "text": "OK", "stretch": 1 } },
-        { "class": "button", "id": "btn_cancel", "properties": { "text": "Cancel", "stretch": 1 } },
-        { "class": "spacer", "properties": { "stretch": 2 } }
-    ]
+ "class": "window",
+ "id": "main",
+ "properties": { "title": "Layout Demo", "x": 100, "y": 100, "width": 400, "height": 300 },
+ "layout": { "type": "hbox", "spacing": 8, "margin": 4 },
+ "children": [
+ { "class": "button", "id": "btn_ok", "properties": { "text": "OK", "stretch": 1 } },
+ { "class": "button", "id": "btn_cancel", "properties": { "text": "Cancel", "stretch": 1 } },
+ { "class": "spacer", "properties": { "stretch": 2 } }
+ ]
 }
 ```
 
@@ -330,17 +330,17 @@ JSON `properties` 中的 `on_click`/`on_change` 值是**处理器名**。在 Rus
 
 ```json
 {
-    "class": "button",
-    "id": "login_btn",
-    "properties": { "text": "Login", "on_click": "handle_login" }
+ "class": "button",
+ "id": "login_btn",
+ "properties": { "text": "Login", "on_click": "handle_login" }
 }
 ```
 
 ```rust
 // Rust 端 — 方式一：App 级注册
 app.on_event("handle_login", |ui: &BoundLayout| {
-    let username = ui.widget_by_name::<LineEditHandle>("username")?.text()?;
-    // ...
+ let username = ui.widget_by_name::<LineEditHandle>("username")?.text()?;
+ // ...
 });
 
 // Rust 端 — 方式二：内联注册
@@ -356,26 +356,26 @@ use std::collections::HashMap;
 
 /// Registry mapping JSON event handler names to Rust closures.
 pub struct EventHandlerMap {
-    handlers: HashMap<String, Box<dyn Fn(&EventHandlerContext)>>,
+ handlers: HashMap<String, Box<dyn Fn(&EventHandlerContext)>>,
 }
 
 impl EventHandlerMap {
-    pub fn new() -> Self { /* ... */ }
+ pub fn new() -> Self { /* ... */ }
 
-    /// Register a named handler.
-    pub fn register<F>(&mut self, name: &str, f: F)
-    where F: Fn(&EventHandlerContext) + 'static { /* ... */ }
+ /// Register a named handler.
+ pub fn register<F>(&mut self, name: &str, f: F)
+ where F: Fn(&EventHandlerContext) + 'static { /* ... */ }
 
-    /// Invoke a handler by name.
-    pub fn invoke(&self, name: &str, ctx: &EventHandlerContext) -> bool { /* ... */ }
+ /// Invoke a handler by name.
+ pub fn invoke(&self, name: &str, ctx: &EventHandlerContext) -> bool { /* ... */ }
 }
 
 /// Context passed to every event handler invocation.
 pub struct EventHandlerContext {
-    /// The BoundLayout for widget access.
-    pub ui: BoundLayout,
-    /// The raw WidgetTriggerEvent that triggered this handler.
-    pub trigger: WidgetTriggerEvent,
+ /// The BoundLayout for widget access.
+ pub ui: BoundLayout,
+ /// The raw WidgetTriggerEvent that triggered this handler.
+ pub trigger: WidgetTriggerEvent,
 }
 ```
 
@@ -383,23 +383,23 @@ pub struct EventHandlerContext {
 
 ```
 用户点击按钮
-    │
-    ▼
+ │
+ ▼
 Platform 生成 WidgetTriggerEvent { widget_id, kind: Clicked }
-    │
-    ▼
+ │
+ ▼
 App::poll_event() / 事件循环
-    │
-    ▼
+ │
+ ▼
 dispatch_trigger(widget_id, kind)
-    │
-    ▼
+ │
+ ▼
 layout/declarative/events.rs: lookup widget_id → on_click handler name
-    │
-    ▼
+ │
+ ▼
 EventHandlerMap::invoke(name, ctx)
-    │
-    ▼
+ │
+ ▼
 用户注册的 Rust 闭包
 ```
 
@@ -417,7 +417,7 @@ EventHandlerMap::invoke(name, ctx)
 let ui = app.load_layout("login.json").expect("load ui");
 
 // 类型安全的访问 — 生成的结构体
-ui.btn_ok.set_text("Confirm");  // 编译时检查 id 存在
+ui.btn_ok.set_text("Confirm"); // 编译时检查 id 存在
 ui.username.value();
 ui.password.set_visible(false);
 
@@ -434,12 +434,12 @@ json_to_ui!("ui/main.json");
 
 // 展开为:
 pub struct MainUi {
-    pub window: WindowHandle,
-    pub btn_ok: ButtonHandle,
-    pub btn_cancel: ButtonHandle,
-    pub username: LineEditHandle,
-    pub password: LineEditHandle,
-    pub login_btn: ButtonHandle,
+ pub window: WindowHandle,
+ pub btn_ok: ButtonHandle,
+ pub btn_cancel: ButtonHandle,
+ pub username: LineEditHandle,
+ pub password: LineEditHandle,
+ pub login_btn: ButtonHandle,
 }
 ```
 
@@ -456,12 +456,12 @@ ui.widget_by_name::<LineEditHandle>("username")?.set_text("admin");
 
 ```rust
 impl BoundLayout {
-    /// Get a typed widget handle by its JSON id.
-    pub fn widget_by_name<T>(&self, name: &str) -> Result<T, String>
-    where T: WidgetHandle {
-        let id = self.id(name).ok_or_else(|| format!("widget '{name}' not found"))?;
-        Ok(T::from_raw(id))
-    }
+ /// Get a typed widget handle by its JSON id.
+ pub fn widget_by_name<T>(&self, name: &str) -> Result<T, String>
+ where T: WidgetHandle {
+ let id = self.id(name).ok_or_else(|| format!("widget '{name}' not found"))?;
+ Ok(T::from_raw(id))
+ }
 }
 ```
 
@@ -475,16 +475,16 @@ impl BoundLayout {
 // layout/declarative/loader.rs
 
 pub struct HotReloadConfig {
-    /// Watch JSON files for changes and auto-reload.
-    pub enabled: bool,
-    /// Debounce interval in milliseconds.
-    pub debounce_ms: u64,
+ /// Watch JSON files for changes and auto-reload.
+ pub enabled: bool,
+ /// Debounce interval in milliseconds.
+ pub debounce_ms: u64,
 }
 
 impl JsonEngine {
-    /// Enable hot reload on the specified layout.
-    pub fn watch_layout(&self, name: &str, path: &str, 
-                        on_reload: Box<dyn Fn(&BoundLayout)>) { /* ... */ }
+ /// Enable hot reload on the specified layout.
+ pub fn watch_layout(&self, name: &str, path: &str, 
+ on_reload: Box<dyn Fn(&BoundLayout)>) { /* ... */ }
 }
 ```
 
@@ -530,20 +530,20 @@ impl JsonEngine {
 // layout/declarative/expression.rs
 
 pub enum BindingSource {
-    WidgetProperty { widget_id: String, property: String },
-    AppState { key: String },
-    Model { model_name: String, property: String },
+ WidgetProperty { widget_id: String, property: String },
+ AppState { key: String },
+ Model { model_name: String, property: String },
 }
 
 pub struct BindingEngine {
-    bindings: HashMap<String, Vec<(ObjectId, String, BindingSource)>>,
+ bindings: HashMap<String, Vec<(ObjectId, String, BindingSource)>>,
 }
 
 impl BindingEngine {
-    /// Resolve all bindings to concrete values.
-    pub fn resolve(&self, state: &AppState, ui: &BoundLayout) -> HashMap<ObjectId, HashMap<String, String>> {
-        // 遍历所有绑定的 (widget, property, source) → 求值
-    }
+ /// Resolve all bindings to concrete values.
+ pub fn resolve(&self, state: &AppState, ui: &BoundLayout) -> HashMap<ObjectId, HashMap<String, String>> {
+ // 遍历所有绑定的 (widget, property, source) → 求值
+ }
 }
 ```
 
@@ -559,15 +559,15 @@ impl BindingEngine {
 
 ```json
 <application>
-    <style>
-        .primary { background: #0078D4; text: #FFFFFF; border_radius: 4; }
-        .danger  { background: #D32F2F; text: #FFFFFF; }
-        .field   { background: #FFFFFF; border: #CCCCCC; border_width: 1; padding: 4; }
-    </style>
+ <style>
+ .primary { background: #0078D4; text: #FFFFFF; border_radius: 4; }
+ .danger { background: #D32F2F; text: #FFFFFF; }
+ .field { background: #FFFFFF; border: #CCCCCC; border_width: 1; padding: 4; }
+ </style>
 
-    <button class="primary" text="Save" on_click="save" />
-    <button class="danger" text="Delete" on_click="delete" />
-    <lineedit class="field" id="email" />
+ <button class="primary" text="Save" on_click="save" />
+ <button class="danger" text="Delete" on_click="delete" />
+ <lineedit class="field" id="email" />
 </application>
 ```
 
@@ -578,15 +578,15 @@ impl BindingEngine {
 
 #[derive(Default)]
 pub struct StyleSheet {
-    classes: HashMap<String, WidgetStyle>,
+ classes: HashMap<String, WidgetStyle>,
 }
 
 impl StyleSheet {
-    /// Parse <style> block from JSON.
-    pub fn parse(json_style: fn parse(xml_style: &str)str) -> Result<Self, String> { /* ... */ }
+ /// Parse <style> block from JSON.
+ pub fn parse(json_style: fn parse(xml_style: &str)str) -> Result<Self, String> { /* ... */ }
 
-    /// Resolve a class name to WidgetStyle.
-    pub fn class(&self, name: &str) -> Option<&WidgetStyle> { /* ... */ }
+ /// Resolve a class name to WidgetStyle.
+ pub fn class(&self, name: &str) -> Option<&WidgetStyle> { /* ... */ }
 }
 ```
 

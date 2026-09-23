@@ -671,6 +671,36 @@ mod tests {
     /// Derived rather than hardcoded because the value is theme-dependent (the fill is chrome and
     /// follows the resolved theme style). Asserting a literal here would make the test fail on a
     /// theme change for a reason unrelated to what it pins.
+    /// The guard a theme-reading test must hold.
+    ///
+    /// # Why this exists rather than each test calling the manager directly
+    ///
+    /// `fill_color` below reads the **process-wide** theme manager, and libtest runs tests in
+    /// parallel: another test installing a theme between that read and the `render_to_svg` that
+    /// follows would make the resolved colour differ from the one the assertions search for, so
+    /// `rects_with_fill` would find nothing and the test would fail for a reason unrelated to the
+    /// bar. That is not hypothetical — it was observed as an intermittent red on
+    /// `a_vertical_bar_is_not_mirrored_by_direction` and `direction_and_inverted_appearance_compose`
+    /// while both passed in isolation.
+    ///
+    /// # Why the guard is optional
+    ///
+    /// The theme module exists only under `device_profile`, which is the same condition that makes
+    /// a theme manager exist to contend for. A `mini`/`embedded` build has neither, so there is
+    /// nothing to serialise against and the guard is `None` — the same shape `meter`'s test uses.
+    /// This is why the return is an `Option` rather than the guard itself: the caller holds it the
+    /// same way either way (`let _guard = theme_guard();`), so no test needs a `#[cfg]` of its own.
+    fn theme_guard() -> Option<crate::compat::MutexGuard<'static, ()>> {
+        #[cfg(device_profile)]
+        {
+            Some(crate::theme::theme_test_guard())
+        }
+        #[cfg(not(device_profile))]
+        {
+            None
+        }
+    }
+
     fn fill_color() -> Color {
         crate::style::resolved_theme_style("progress_bar")
             .and_then(|resolved| resolved.background_color)
@@ -687,6 +717,7 @@ mod tests {
     /// "no drawing at all" is not.
     #[test]
     fn progressbar_at_zero_emits_no_fill_but_keeps_its_groove() {
+        let _guard = theme_guard();
         let fill = fill_color();
         for orientation in [Orientation::Horizontal, Orientation::Vertical] {
             for inverted in [false, true] {
@@ -732,6 +763,7 @@ mod tests {
     /// emit a fill, and the emitted extent is the filled length, never zero.
     #[test]
     fn progressbar_above_zero_emits_a_non_degenerate_fill() {
+        let _guard = theme_guard();
         let fill = fill_color();
         let mut pb = ProgressBar::new(Rect::new(0, 0, 240, 120));
         pb.set_value(50);
@@ -760,6 +792,7 @@ mod tests {
     /// arm is the one that mirrors; the vertical arm must not.
     #[test]
     fn a_right_to_left_bar_fills_from_the_right_edge() {
+        let _guard = theme_guard();
         let fill = fill_color();
         let rgba = crate::render::svg::convert::color_to_rgba(&fill);
 
@@ -791,6 +824,7 @@ mod tests {
     /// indicator that mirrors and one that does not.
     #[test]
     fn a_vertical_bar_is_not_mirrored_by_direction() {
+        let _guard = theme_guard();
         let fill = fill_color();
         let rgba = crate::render::svg::convert::color_to_rgba(&fill);
 
@@ -819,6 +853,7 @@ mod tests {
     /// invisible until a locale is combined with an indeterminate indicator.
     #[test]
     fn direction_and_inverted_appearance_compose() {
+        let _guard = theme_guard();
         let fill = fill_color();
         let rgba = crate::render::svg::convert::color_to_rgba(&fill);
         let mut both = ProgressBar::new(Rect::new(0, 0, 240, 120));

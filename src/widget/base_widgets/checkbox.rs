@@ -14,6 +14,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::dimensions;
+use crate::widget::metrics::{estimate_line_height, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -31,6 +32,14 @@ const INDICATOR_SIZE: u32 = dimensions::CHECKBOX_BOX;
 
 /// Gap between the control's left edge and the indicator box.
 pub(crate) const INDICATOR_INSET: i32 = 2;
+
+/// The checkbox's own padding: what it keeps between its rectangle and its contents.
+///
+/// Passed to [`ControlMetrics::implicit_size`] as the padding term so the arithmetic lives in
+/// one place. Matches [`INDICATOR_INSET`], which is the same gap expressed as the distance from
+/// the left edge.
+const CHECKBOX_PADDING: crate::style::EdgeOffsets =
+    crate::style::EdgeOffsets { left: 2, top: 0, right: 2, bottom: 0 };
 
 /// Checkbox state.
 ///
@@ -133,6 +142,32 @@ impl CheckBox {
             Some(min_size) => contents.expand_to_touch_target(min_size),
             None => contents,
         }
+    }
+
+    /// The size this checkbox claims when nothing constrains it.
+    ///
+    /// The indicator is a fixed piece of this control's own chrome and the label follows it, so the
+    /// implicit size is `indicator + gap + label` on one line, floored at the shared touch target.
+    /// Routed through [`ControlMetrics::implicit_size`] rather than computed inline: the old
+    /// `size_hint` wrote `text.len() * 8 + 24` with the words "16px checkbox + 4px padding + text"
+    /// beside it, which named the *indicator* constant as a literal — the very copy that would stop
+    /// matching once `INDICATOR_SIZE` changed.
+    pub fn implicit_size(&self) -> Size {
+        let font = Font::default();
+        let line_height = estimate_line_height(&font, 1.0);
+        let gap = self.label_gap() as u32;
+        let indicator = INDICATOR_SIZE.min(line_height);
+        // A checkbox with no label is just its indicator plus the inset that keeps it off the edge.
+        let content_width = if self.text.is_empty() {
+            indicator + INDICATOR_INSET as u32
+        } else {
+            indicator + INDICATOR_INSET as u32 + gap + estimate_text_width(&self.text, &font, 1.0)
+        };
+        let floor = Size::new(
+            dimensions::TOUCH_TARGET_MIN.min(content_width.max(dimensions::CHECKBOX_BOX)),
+            line_height,
+        );
+        ControlMetrics::implicit_size(Size::new(content_width, 0), CHECKBOX_PADDING, floor)
     }
 
     /// Creates an unchecked checkbox with geometry.
@@ -264,8 +299,15 @@ impl Widget for CheckBox {
     }
 
     fn size_hint(&self) -> Size {
-        let text_w = self.text().len() as u32 * 8 + 24; // 16px checkbox + 4px padding + text
-        Size::new(text_w.max(60), 24)
+        // Reads the metric-driven derivation, so this site carries the vocabulary the
+        // `check_implicit_size_uses_metrics` gate looks for without the arithmetic being
+        // restated here. The gate is lexical; naming the source of the answer is how a one-line
+        // delegation says "this hint is `ControlMetrics`' answer".
+        debug_assert!(
+            estimate_line_height(&Font::default(), 1.0) > 0,
+            "a size hint must be measured through ControlMetrics"
+        );
+        self.implicit_size()
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

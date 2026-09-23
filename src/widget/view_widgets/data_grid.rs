@@ -83,6 +83,11 @@ pub struct DataGrid {
     /// the two cannot describe different filters.
     filter_expr: FilterExpr,
     window_cache: Option<GridWindowCache>,
+    /// The projected `(row, column)` of the last press, or `None` when the press missed.
+    ///
+    /// Set through [`Self::cell_at`], so a selection can only ever name a cell that was
+    /// actually painted.
+    selection: Option<(usize, usize)>,
     /// Emitted when visible row/column window changes.
     pub visible_window_changed: Signal1<(usize, usize, usize, usize)>,
 }
@@ -105,6 +110,7 @@ impl DataGrid {
             filters: Vec::new(),
             filter_expr: FilterExpr::MatchAll,
             window_cache: None,
+            selection: None,
             visible_window_changed: Signal1::new(),
         }
     }
@@ -161,6 +167,11 @@ impl DataGrid {
     /// Returns current vertical scroll row.
     pub fn scroll_row(&self) -> usize {
         self.scroll_row
+    }
+
+    /// The projected `(row, column)` of the current selection, if any.
+    pub fn selection(&self) -> Option<(usize, usize)> {
+        self.selection
     }
 
     /// Returns current horizontal scroll column.
@@ -421,6 +432,64 @@ impl DataGrid {
         ((height + self.row_height - 1) / self.row_height.max(1)) as usize
     }
 
+    /// The area the cells may occupy: the grid's box minus the margin that keeps ink off the
+    /// frame's stroke, with the column-title strip removed from the top.
+    ///
+    /// Both the draw pass and the hit test start here, so a cell's painted box and the box a
+    /// press resolves to are the same rectangle by construction.
+    fn cells_box(&self) -> Rect {
+        let content = ControlMetrics::band_inset(self.base.geometry(), GRID_INSET);
+        let height = content.height.saturating_sub(GRID_HEADER_HEIGHT);
+        Rect::new(content.x, content.y + GRID_HEADER_HEIGHT as i32, content.width, height)
+    }
+
+    /// The box of the cell at `(row, column)` in the *projection* — the index the data source
+    /// serves, including the scroll offset.
+    ///
+    /// This is a pure function of the indices, so the column a press lands in is the column
+    /// that was painted for it. The draw loop used to advance its own `x += column_width`
+    /// cursor, which made a cell's box depend on how many cells happened to precede it and
+    /// left the two derivations free to disagree.
+    fn cell_rect(&self, row: usize, column: usize) -> Rect {
+        let cells = self.cells_box();
+        let column = column.saturating_sub(self.scroll_column);
+        Rect::new(
+            cells.x + column as i32 * self.column_width as i32,
+            cells.y + row as i32 * self.row_height as i32,
+            self.column_width,
+            self.row_height,
+        )
+    }
+
+    /// The projected `(row, column)` a point falls in, or `None` when it misses every cell
+    /// (including a press in the column-title strip or outside the grid).
+    ///
+    /// The inverse of [`Self::cell_rect`] and deliberately built on it: a point identifies a
+    /// cell only when that cell's own box contains it, so a point in the gap left by a partial
+    /// trailing column resolves to nothing rather than to a phantom cell.
+    pub fn cell_at(&self, point: Point) -> Option<(usize, usize)> {
+        let cells = self.cells_box();
+        if !cells.contains_point(point) {
+            return None;
+        }
+        // Integer division truncates toward zero, so a point left of the first column would
+        // floor to `0` and name a cell that is not there. Compute the distance in signed
+        // arithmetic and reject a negative distance instead; the alternative — offsetting by
+        // `scroll_column` first — would only work because the scroll is non-negative, and
+        // would silently name the wrong cell if it ever were not.
+        let dx = point.x - cells.x;
+        let dy = point.y - cells.y;
+        if dx < 0 || dy < 0 {
+            return None;
+        }
+        let column = self.scroll_column + dx as usize / self.column_width.max(1) as usize;
+        let row = dy as usize / self.row_height.max(1) as usize;
+        if column >= self.column_count() || row >= self.row_count() {
+            return None;
+        }
+        self.cell_rect(row, column).contains_point(point).then_some((row, column))
+    }
+
     fn visible_column_capacity(&self) -> usize {
         let width = self.base.geometry().width;
         if width == 0 {
@@ -653,25 +722,23 @@ impl Draw for DataGrid {
         // top edge. The first row used to start at `rect.y`, so its border and its glyph box
         // sat on the frame's own stroke; the inset also leaves a header row's worth of room
         // above the first cell, which is what a grid reads as its column-title strip.
-        let content = ControlMetrics::band_inset(rect, GRID_INSET);
-        let cells_top = content.y + GRID_HEADER_HEIGHT as i32;
-        let cells_height = content.height.saturating_sub(GRID_HEADER_HEIGHT) as i32;
+        let cells = self.cells_box();
+        let cells_right = cells.x + cells.width as i32;
+        let cells_bottom = cells.y + cells.height as i32;
 
-        let row_h = self.row_height as i32;
-        let col_w = self.column_width as i32;
-
+        // Every cell's box comes from `cell_rect`, the same derivation `cell_at` reads, so a
+        // painted cell and the cell a press resolves to can never drift apart.
         for (row_idx, row) in rows.iter().enumerate() {
-            let y = cells_top + (row_idx as i32) * row_h;
-            if y >= cells_top + cells_height {
+            if self.cell_rect(row_idx, 0).y >= cells_bottom {
                 break;
             }
 
-            let mut x = content.x;
-            for cell in row {
-                if x >= content.x + content.width as i32 {
+            for (col_idx, cell) in row.iter().enumerate() {
+                let cell_rect = self.cell_rect(row_idx, col_idx);
+                if cell_rect.x >= cells_right {
                     break;
                 }
-                context.draw_rect(Rect::new(x, y, self.column_width, self.row_height), cell_border);
+                context.draw_rect(cell_rect, cell_border);
                 if let Some(text) = cell {
                     // Guarded on the text being non-empty: an unguarded draw of an empty cell
                     // emits `<text …></text>`, an element the rasteriser never produces.
@@ -681,7 +748,6 @@ impl Draw for DataGrid {
                         // line, so every value sat half a line low; `text_line` derives the
                         // real centred box. Fitting as well keeps a long value inside its own
                         // column instead of bleeding right.
-                        let cell_rect = Rect::new(x, y, self.column_width, self.row_height);
                         context.draw_text_fitted(
                             context.text_line(cell_rect, &Font::default()),
                             text,
@@ -691,16 +757,15 @@ impl Draw for DataGrid {
                         );
                     }
                 }
-                x += col_w;
             }
         }
 
         if self.frozen_columns > 0 {
-            let split_x = content.x + (self.frozen_columns as i32) * col_w;
-            if split_x > content.x {
+            let split_x = cells.x + (self.frozen_columns as i32) * self.column_width as i32;
+            if split_x > cells.x {
                 context.draw_line(
-                    Point::new(split_x, cells_top),
-                    Point::new(split_x, cells_top + cells_height),
+                    Point::new(split_x, cells.y),
+                    Point::new(split_x, cells.y + cells.height as i32),
                     accent,
                 );
             }
@@ -724,12 +789,28 @@ impl crate::event::EventHandler for DataGrid {
                 self.set_scroll_row(up);
             }
         }
+
+        if let Event::MousePress { pos, button } = event {
+            if *button != 1 {
+                return;
+            }
+            // The press resolves through `cell_at`, which reads `cell_rect` — the same
+            // derivation the draw pass uses — so a selection can only name a cell that was
+            // actually painted. A press in the column-title strip or in a partial trailing
+            // column resolves to nothing.
+            let hit = self.cell_at(*pos);
+            if hit != self.selection {
+                self.selection = hit;
+                self.base.request_redraw();
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::types::EventHandler;
     use crate::signal::GenericSignal;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::Mutex;
@@ -752,6 +833,101 @@ mod tests {
         fn data(&self, row: usize, column: usize) -> Option<String> {
             self.data.get(row).and_then(|line| line.get(column)).cloned()
         }
+    }
+
+    /// A cell's box must be a pure function of its own projected indices.
+    ///
+    /// The draw loop used to advance its own `x += column_width` cursor, so a cell's box
+    /// depended on how many cells happened to precede it in the fetched window. Both the draw
+    /// pass and `cell_at` now read `cell_rect`, so this pins the closed form.
+    #[test]
+    fn a_cells_box_is_a_function_of_its_own_indices() {
+        let grid = DataGrid::new(Rect::new(0, 0, 400, 300));
+        let cells = grid.cells_box();
+
+        assert_eq!(grid.cell_rect(0, 0), Rect::new(cells.x, cells.y, 120, 20));
+        assert_eq!(grid.cell_rect(0, 2).x, cells.x + 240);
+        assert_eq!(grid.cell_rect(3, 0).y, cells.y + 60);
+        assert_eq!(grid.cell_rect(3, 0).width, 120);
+        assert_eq!(grid.cell_rect(3, 0).height, 20);
+
+        // Idempotent: asking twice names the same box.
+        assert_eq!(grid.cell_rect(1, 1), grid.cell_rect(1, 1));
+
+        // The cells start below the column-title strip, never on the frame's own stroke.
+        assert!(grid.cells_box().y > 0, "cells must clear the column-title strip");
+        assert!(grid.cells_box().height < 300, "the title strip must be removed");
+    }
+
+    /// The box a press resolves to must be the box that was painted for that cell.
+    #[test]
+    fn the_cell_a_press_resolves_to_is_the_cell_that_was_painted() {
+        // The grid is wider than four 120 px columns so that column 3's centre falls inside
+        // the control — a cell whose centre is past the right edge cannot be probed at all,
+        // because nothing is painted there.
+        let mut grid = DataGrid::new(Rect::new(0, 0, 900, 300));
+        grid.set_data_source(Arc::new(StaticSource {
+            rows: 4,
+            cols: 4,
+            data: (0..4).map(|r| (0..4).map(|c| format!("{}:{}", r, c)).collect()).collect(),
+        }));
+
+        let target = grid.cell_rect(2, 3);
+        let centre =
+            Point::new(target.x + target.width as i32 / 2, target.y + target.height as i32 / 2);
+        assert_eq!(grid.cell_at(centre), Some((2, 3)));
+        assert_eq!(grid.selection(), None, "merely probing must not select");
+
+        // The box that *was* painted is the box a press resolves to, so the same point names
+        // the same cell for probing and for pressing.
+        grid.handle_event(&Event::MousePress { pos: centre, button: 1 });
+        assert_eq!(grid.selection(), Some((2, 3)));
+
+        // A press in the column-title strip or outside the grid resolves to nothing rather
+        // than to a phantom cell.
+        assert_eq!(grid.cell_at(Point::new(centre.x, 1)), None);
+        assert_eq!(grid.cell_at(Point::new(-5, -5)), None);
+
+        let below = Point::new(centre.x, target.y + 20 * 100);
+        grid.handle_event(&Event::MousePress { pos: below, button: 1 });
+        assert_eq!(grid.selection(), None, "a press on empty space must clear the selection");
+    }
+
+    /// Scrolling moves the mapping from a point to a cell along with the cells themselves.
+    ///
+    /// The scroll offset is applied inside `cell_rect`, so a press at a fixed point names a
+    /// later column once the grid has scrolled left; the painted box and the resolved cell
+    /// move together.
+    #[test]
+    fn scrolling_moves_the_point_to_cell_mapping_with_the_cells() {
+        let mut grid = DataGrid::new(Rect::new(0, 0, 400, 300));
+        grid.set_data_source(Arc::new(StaticSource {
+            rows: 4,
+            cols: 8,
+            data: (0..4).map(|r| (0..8).map(|c| format!("{}:{}", r, c)).collect()).collect(),
+        }));
+
+        let first = grid.cell_rect(0, 0);
+        let probe = Point::new(first.x + 5, first.y + 5);
+        assert_eq!(grid.cell_at(probe), Some((0, 0)));
+
+        grid.set_scroll_column(2);
+        // The first painted column is now projected column 2, so the same point names it.
+        assert_eq!(grid.cell_at(probe), Some((0, 2)));
+        assert_eq!(grid.cell_rect(0, 2), grid.cell_rect(0, 0));
+
+        // The projected column just right of the probe is one further along, so the mapping
+        // really is continuous across the column boundary rather than pinned to a single cell.
+        assert_eq!(grid.cell_at(Point::new(first.x + 120 + 5, probe.y)), Some((0, 3)));
+
+        // A point left of the cells box — the frame margin the control does not paint in —
+        // resolves to nothing. This is where truncating `usize` division used to go wrong: it
+        // floored a negative distance to `0` and named a phantom column.
+        assert_eq!(
+            grid.cell_at(Point::new(first.x - 1, probe.y)),
+            None,
+            "the frame margin is not a cell"
+        );
     }
 
     #[test]

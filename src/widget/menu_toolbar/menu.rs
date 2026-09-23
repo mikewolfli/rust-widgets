@@ -210,6 +210,21 @@ pub struct Menu {
     pub triggered_index: Signal1<usize>,
     /// Emitted just before the menu is shown, from [`Self::open_at`].
     pub about_to_show: GenericSignal,
+    /// Emitted with the label of an entry whose **submenu** the user asked to open.
+    ///
+    /// # Why this is separate from `triggered` (BLUE22 · G-3)
+    ///
+    /// An entry drawn with a submenu indicator is a **branch**: choosing it means "show me the
+    /// next level", not "run this command". This crate has no nested `Menu` model, so the menu
+    /// cannot open the child itself — but it must still not *misreport* the gesture. Before this
+    /// signal existed, both pointer paths emitted `triggered` and hid the popup for a submenu
+    /// parent, so a click on `Cut >` fired a `Cut` action and closed the popup. A host that wants
+    /// submenus connects this signal and opens its own child menu; a host that ignores it gets
+    /// nothing it could mistake for a committed choice, which is the honest failure.
+    ///
+    /// The pointer paths use this exactly as the arrow-key path will: it is the one way this
+    /// control says "a branch was opened".
+    pub submenu_requested: Signal1<String>,
     /// Emitted just before the menu is hidden, from [`Self::hide`].
     pub about_to_hide: GenericSignal,
     /// The writing direction the menu's *horizontal* arrow keys follow.
@@ -246,6 +261,7 @@ impl Menu {
             triggered: Signal1::new(),
             triggered_index: Signal1::new(),
             about_to_show: GenericSignal::new(),
+            submenu_requested: Signal1::new(),
             about_to_hide: GenericSignal::new(),
             direction: crate::core::TextDirection::default(),
         };
@@ -403,6 +419,22 @@ impl Menu {
         };
         if item.is_separator() || !item.is_enabled() {
             return false;
+        }
+        // An entry that owns a submenu is a **branch, not a leaf**: activating it means "open the
+        // next level", never "choose this". The old code emitted `triggered` and hid the menu, so
+        // a click on `Cut >` fired the `Cut` action and closed the popup — the submenu was
+        // unreachable by pointer at all, and the user got a command they did not ask for. This is
+        // the more severe half of BLUE22 · G-3, which was registered only as "the arrow keys have
+        // no exit from a submenu".
+        //
+        // The branch is reported the same way the arrow keys report it — through the same signal —
+        // so a host has one thing to listen for and still receives nothing it could mistake for a
+        // committed choice. The menu stays open, because the branch was opened rather than taken.
+        if item.has_submenu() {
+            let text = item.text().to_string();
+            self.submenu_requested.emit(text);
+            self.base.request_redraw();
+            return true;
         }
         let text = item.text().to_string();
         self.triggered.emit(text);
@@ -769,6 +801,16 @@ impl EventHandler for Menu {
                         && pos.y >= y as i32
                         && pos.y < (y + h) as i32
                     {
+                        // A submenu parent is a branch, not a leaf: report it as one and leave the
+                        // popup open rather than firing a command the user did not choose (G-3).
+                        // A click is the *first* way a user meets this defect -- they click `Cut >`
+                        // and the `Cut` action runs -- so this arm matters more than the key one.
+                        if item.has_submenu() {
+                            let text = item.text().to_string();
+                            self.submenu_requested.emit(text);
+                            self.base.request_redraw();
+                            break;
+                        }
                         let text = item.text().to_string();
                         self.triggered.emit(text);
                         self.triggered_index.emit(index);
@@ -804,6 +846,14 @@ impl EventHandler for Menu {
                         && pos.y >= y as i32
                         && pos.y < (y + h) as i32
                     {
+                        // A submenu parent is a branch, not a leaf: report it as one and leave the
+                        // popup open rather than firing a command the user did not choose (G-3).
+                        if item.has_submenu() {
+                            let text = item.text().to_string();
+                            self.submenu_requested.emit(text);
+                            self.base.request_redraw();
+                            break;
+                        }
                         let text = item.text().to_string();
                         self.triggered.emit(text);
                         self.triggered_index.emit(index);
@@ -1057,6 +1107,7 @@ impl Draw for Menu {
 mod tests {
     use super::*;
     use crate::widget::svg::render_to_svg;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     /// One ink box per text `<path>` in document order, as `(left, top, right, bottom)`.
@@ -1550,5 +1601,100 @@ mod tests {
         menu.set("direction", CapabilityValue::String("rtl".to_string())).unwrap();
         assert_eq!(menu.direction(), crate::core::TextDirection::RightToLeft);
         assert_eq!(menu.get("direction").unwrap().as_str(), Some("rtl"));
+    }
+
+    // ── G-3: a submenu parent is a branch, not a leaf ──────────────────
+
+    /// Choosing an entry that owns a submenu must ask for the submenu, never run the entry.
+    ///
+    /// # The defect this closes (BLUE22 · G-3)
+    ///
+    /// `MenuEntry::has_submenu` had exactly one consumer: the draw path, which paints the arrow.
+    /// Both activation paths ignored it, so a click or an Enter on `Cut >` emitted `triggered`
+    /// with `"Cut"` and hid the popup — the user got a command they had not chosen and the
+    /// submenu was unreachable by pointer at all. Every test that drove a *leaf* entry passed
+    /// either way, which is why this needs a test written specifically for the branch.
+    #[test]
+    fn a_submenu_parent_is_a_branch_and_not_a_leaf() {
+        // A menu built for this test: `context_menu()` already carries four entries, so adding to
+        // it would put the branch on row 4 and the press below would land on a leaf.
+        let mut menu = Menu::new("Edit", Rect::new(0, 0, 160, 100));
+        let mut parent = MenuEntry::new("Cut");
+        parent.set_has_submenu(true);
+        menu.add_item(parent);
+        menu.add_item(MenuEntry::new("Copy"));
+        menu.open_at(Point::new(0, 0), Rect::new(0, 0, 400, 400));
+
+        let opened = Arc::new(AtomicUsize::new(0));
+        let chosen = Arc::new(AtomicUsize::new(0));
+        let opened_clone = Arc::clone(&opened);
+        let chosen_clone = Arc::clone(&chosen);
+        menu.submenu_requested.connect(move |_: Arc<String>| {
+            opened_clone.fetch_add(1, Ordering::SeqCst);
+        });
+        menu.triggered.connect(move |_: Arc<String>| {
+            chosen_clone.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // A press on the first row, which is the branch. `open_at(0, 0)` puts the popup at the
+        // origin, and the rows begin just below its own top padding — the same coordinate the
+        // existing leaf test uses.
+        menu.handle_event(&Event::MousePress { pos: Point::new(20, 14), button: 1 });
+
+        assert_eq!(opened.load(Ordering::SeqCst), 1, "the branch must be reported as opened");
+        assert_eq!(
+            chosen.load(Ordering::SeqCst),
+            0,
+            "a branch must never report a committed choice -- that is the defect"
+        );
+        assert!(menu.is_visible(), "a branch that opened must leave the popup up, not hide it");
+    }
+
+    /// A leaf entry still commits exactly as before, so the branch rule did not swallow it.
+    ///
+    /// The dual of the test above, and the reason the rule is stated as "submenu parent" rather
+    /// than "any entry": without this, guarding both paths could have made *every* click a
+    /// branch and the menu would never choose anything.
+    #[test]
+    fn a_leaf_entry_commits_and_hides_the_menu() {
+        let mut menu = Menu::new("Edit", Rect::new(0, 0, 160, 100));
+        menu.add_item(MenuEntry::new("Copy"));
+        menu.open_at(Point::new(0, 0), Rect::new(0, 0, 400, 400));
+
+        let opened = Arc::new(AtomicUsize::new(0));
+        let chosen = Arc::new(AtomicUsize::new(0));
+        let opened_clone = Arc::clone(&opened);
+        let chosen_clone = Arc::clone(&chosen);
+        menu.submenu_requested.connect(move |_: Arc<String>| {
+            opened_clone.fetch_add(1, Ordering::SeqCst);
+        });
+        menu.triggered.connect(move |_: Arc<String>| {
+            chosen_clone.fetch_add(1, Ordering::SeqCst);
+        });
+
+        menu.handle_event(&Event::MousePress { pos: Point::new(20, 14), button: 1 });
+
+        assert_eq!(chosen.load(Ordering::SeqCst), 1, "a leaf must commit");
+        assert_eq!(opened.load(Ordering::SeqCst), 0, "a leaf must not ask for a submenu");
+        assert!(!menu.is_visible(), "committing a leaf must dismiss the popup");
+    }
+
+    /// The submenu request is published, so a `forward_all` subscriber can reach it.
+    ///
+    /// An event that fires but is absent from the capability's list is unreachable through
+    /// `connect_event` — the designer would offer no way to subscribe to it. This reads the
+    /// capability the way a host does, through the factory, rather than from the string table:
+    /// that is the same answer the event panel and `forward_all` get.
+    #[test]
+    fn the_submenu_event_is_published_by_the_capability() {
+        let factory = crate::widget::WidgetFactory::new_with_defaults();
+        let menu = Menu::new("File", Rect::new(0, 0, 200, 200));
+        let capability =
+            factory.capability_for_kind_instance(&menu).expect("a menu resolves a capability");
+        assert!(
+            capability.events.iter().any(|event| event.name == "submenu_requested"),
+            "an emitted event must be published: {:?}",
+            capability.events.iter().map(|e| e.name).collect::<Vec<_>>()
+        );
     }
 }

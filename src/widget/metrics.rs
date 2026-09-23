@@ -47,6 +47,139 @@
 use crate::core::{Rect, Size};
 use crate::style::EdgeOffsets;
 
+/// The advance model's per-cluster factor for a cluster that contains a wide scalar.
+///
+/// This is the number the *renderer* uses: `estimate_cluster_advance` in
+/// `src/render/pipeline/pixel_ops.rs` returns `font_size * 1.0` for a wide cluster and
+/// `font_size * 0.6` otherwise. It is repeated here rather than imported because
+/// `pixel_ops` is `pub(crate)` to the render tree and a widget must not reach into the
+/// rasteriser's internals; the two must move together, which is why this constant's
+/// comment names its counterpart.
+const WIDE_CLUSTER_FACTOR: f32 = 1.0;
+
+/// The advance model's per-cluster factor for a cluster without a wide scalar.
+///
+/// See [`WIDE_CLUSTER_FACTOR`].
+const NARROW_CLUSTER_FACTOR: f32 = 0.6;
+
+/// The factor applied to a cluster made entirely of whitespace.
+///
+/// Whitespace advances even though it paints nothing; the renderer's model gives it a
+/// third of an em rather than a full one.
+const BLANK_CLUSTER_FACTOR: f32 = 0.33;
+
+/// Whether a scalar occupies a full em rather than a fraction of one.
+///
+/// Mirrors `is_wide_scalar` in `src/render/pipeline/pixel_ops.rs`. The ranges that matter
+/// here are CJK ideographs, Hangul syllables, full-width forms and the CJK punctuation
+/// block — a table a control cannot consult without asking a render context, which is
+/// exactly what an *implicit size* must not need.
+fn is_wide_scalar(scalar: char) -> bool {
+    matches!(scalar as u32,
+        0x1100..=0x115F        // Hangul Jamo initial consonants
+        | 0x2E80..=0x303E      // CJK radicals, Kangxi, CJK symbols and punctuation
+        | 0x3041..=0x33FF      // Hiragana, Katakana, Bopomofo, CJK compatibility
+        | 0x3400..=0x4DBF      // CJK unified ideographs extension A
+        | 0x4E00..=0x9FFF      // CJK unified ideographs
+        | 0xA000..=0xA4CF      // Yi syllables
+        | 0xAC00..=0xD7A3      // Hangul syllables
+        | 0xF900..=0xFAFF      // CJK compatibility ideographs
+        | 0xFE30..=0xFE6F      // CJK compatibility forms
+        | 0xFF00..=0xFF60      // Full-width forms
+        | 0xFFE0..=0xFFE6      // Full-width signs
+        | 0x1F300..=0x1F64F    // Emoji
+        | 0x1F900..=0x1F9FF    // Supplemental symbols and pictographs
+        | 0x20000..=0x3FFFD    // CJK extensions B and beyond
+    )
+}
+
+/// One cluster's advance under the backend's model: `font_size` times a factor that
+/// depends only on whether the cluster is blank and whether it contains a wide scalar.
+///
+/// `scale` is the DPI scale, applied because an advance is a device-space distance — the
+/// same reason the renderer multiplies by it.
+fn cluster_advance(cluster: &str, font_size: f32, scale: f32) -> f32 {
+    if cluster.trim().is_empty() {
+        return (font_size * BLANK_CLUSTER_FACTOR * scale).max(1.0);
+    }
+    let factor = if cluster.chars().any(is_wide_scalar) {
+        WIDE_CLUSTER_FACTOR
+    } else {
+        NARROW_CLUSTER_FACTOR
+    };
+    (font_size * factor * scale).max(1.0)
+}
+
+/// The width `text` occupies in `font` at `scale`, without a render context.
+///
+/// # Why a widget needs this
+///
+/// A control's `size_hint` answers "how wide am I?" and is called by layouts that hold no
+/// [`RenderContext`](crate::render::RenderContext) — a `Layout::arrange` asks a child its
+/// size before anything is painted. The renderer's own measurement needs a backend, so a
+/// control that wants the honest answer there had to write its own arithmetic instead, and
+/// that is how `text.len() * 8 + 4` kept appearing: a private copy of a public fact.
+///
+/// This is the *same model* the renderer measures and draws with — one cluster per
+/// grapheme, `font_size` scaled by a width factor, whitespace advancing a third of an em —
+/// spelled as a pure function so the two can be compared in a test rather than by eye.
+///
+/// # What it does not do
+///
+/// It is an *estimate*: it does not consult a glyph table, so a proportional font's real
+/// advance will differ. That is deliberate and matches the renderer, which uses the same
+/// estimate. A control that reserved space from a font's real metrics while the renderer
+/// painted from this model would be measuring with one ruler and drawing with another —
+/// the defect `surface.rs` records as having been paid for once already.
+pub fn estimate_text_width(text: &str, font: &crate::core::Font, scale: f32) -> u32 {
+    let size = font.size().max(0.0);
+    if text.is_empty() || size == 0.0 {
+        return 0;
+    }
+    let mut advance = 0.0f32;
+    let mut clusters = 0usize;
+    for scalar in text.chars() {
+        // Combining marks and variation selectors merge into the preceding cluster rather
+        // than starting one, so a base-plus-diacritic pair advances once. The renderer's
+        // `shape_text` decides this the same way; treating each scalar as its own cluster
+        // would over-measure any accented Latin text.
+        if is_combining_or_modifier(scalar) && clusters > 0 {
+            continue;
+        }
+        let mut buffer = [0u8; 4];
+        advance += cluster_advance(scalar.encode_utf8(&mut buffer), size, scale);
+        clusters += 1;
+    }
+    // `letter_spacing` is the gap *between* clusters, so `n` clusters pay `n - 1` gaps. The
+    // renderer counts them the same way and for the same reason: counting them after the
+    // last cluster would make a centred label sit left of centre.
+    if scale != 0.0 && clusters > 1 {
+        advance += font.letter_spacing() * scale * (clusters - 1) as f32;
+    }
+    advance.round().max(0.0) as u32
+}
+
+/// The line box height `font` occupies at `scale`.
+///
+/// The font's **effective** line height — an explicit [`Font::line_height`] when one is set,
+/// otherwise the point size — which is what the surface and the SVG backend both derive
+/// their `TextMetrics::height` from. A control that sized itself from `size()` alone would
+/// disagree with every `text_line` it draws.
+pub fn estimate_line_height(font: &crate::core::Font, scale: f32) -> u32 {
+    (font.effective_line_height().max(1.0) * scale).round().max(1.0) as u32
+}
+
+/// Whether `scalar` continues the preceding cluster rather than starting a new one.
+///
+/// Mirrors `is_combining_mark` / `is_variation_selector` in
+/// `src/render/pipeline/pixel_ops.rs`; the ZWJ cases `shape_text` also merges are folded in
+/// because they are the same decision from the measurement's point of view.
+fn is_combining_or_modifier(scalar: char) -> bool {
+    let value = scalar as u32;
+    matches!(value, 0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF
+        | 0x20D0..=0x20FF | 0xFE00..=0xFE0F | 0xFE20..=0xFE2F | 0x200D)
+}
+
 /// Content-driven sizing for a single control.
 ///
 /// Both functions are pure and allocation-free, so calling them from a hot
@@ -1306,5 +1439,78 @@ mod tests {
         let rect = Rect::new(10, 20, 100, 10);
         assert_eq!(ControlMetrics::content_below_top_band(rect, 40).height, 0);
         assert_eq!(ControlMetrics::content_above_bottom_band(rect, 40).height, 0);
+    }
+
+    /// The estimate must reproduce the renderer's own model, cluster for cluster.
+    ///
+    /// This is the whole reason the function exists rather than each control writing its own
+    /// arithmetic: a widget's `size_hint` reserves space with this, and the renderer paints with
+    /// `estimate_cluster_advance`. If the two disagreed, a control would measure with one ruler
+    /// and draw with another — the defect `surface.rs` records as having been paid for once.
+    ///
+    /// The expected numbers are the model written out longhand (0.6 em per narrow cluster, 1.0
+    /// em per wide cluster, 0.33 em per blank cluster, one em of line height at size 14), so this
+    /// fails if either side changes without the other.
+    #[test]
+    fn the_text_estimate_reproduces_the_renderers_advance_model() {
+        let font = crate::core::Font::simple("sans-serif", 14.0);
+
+        // Four narrow ASCII clusters: 4 x 0.6 em x 14 = 33.6 -> 34.
+        assert_eq!(estimate_text_width("abcd", &font, 1.0), 34);
+        // Two wide CJK clusters: 2 x 1.0 em x 14 = 28.
+        assert_eq!(estimate_text_width("\u{4e2d}\u{6587}", &font, 1.0), 28);
+        // Two blanks: 2 x 0.33 em x 14 = 9.24 -> 9.
+        assert_eq!(estimate_text_width("  ", &font, 1.0), 9);
+        // Empty text advances nothing at all, rather than a floor of one cluster.
+        assert_eq!(estimate_text_width("", &font, 1.0), 0);
+
+        // A CJK cluster is wider than a Latin one of the same count, which is what makes a
+        // label sized this way stay wide enough for its own text.
+        assert!(
+            estimate_text_width("\u{4e2d}", &font, 1.0) > estimate_text_width("a", &font, 1.0),
+            "a wide scalar must advance more than a narrow one"
+        );
+
+        // The line box is the font's effective line height, one em at size 14.
+        assert_eq!(estimate_line_height(&font, 1.0), 14);
+    }
+
+    /// Tracking is paid on the *gaps* between clusters, never after the last one.
+    ///
+    /// The renderer counts `clusters - 1` gaps for exactly this reason — a trailing gap would
+    /// make a centred label sit left of centre — so the measurement must count them the same way
+    /// or a tracked label would reserve more room than it paints.
+    #[test]
+    fn letter_spacing_is_paid_between_clusters_and_not_after_the_last() {
+        let plain = crate::core::Font::simple("sans-serif", 14.0);
+        let mut tracked = crate::core::Font::simple("sans-serif", 14.0);
+        tracked.set_letter_spacing(4.0);
+
+        let one = estimate_text_width("a", &tracked, 1.0);
+        assert_eq!(
+            one,
+            estimate_text_width("a", &plain, 1.0),
+            "a single cluster has no gap to pay tracking on"
+        );
+
+        // Three clusters pay two gaps: the plain advance plus 2 x 4 px.
+        assert_eq!(
+            estimate_text_width("abc", &tracked, 1.0),
+            estimate_text_width("abc", &plain, 1.0) + 8
+        );
+    }
+
+    /// The line height follows an explicit `line_height` rather than the point size.
+    ///
+    /// The renderer derives `TextMetrics::height` from `effective_line_height`, so a control
+    /// sizing itself from `size()` alone would disagree with every `text_line` it draws — the
+    /// "set 1.8 em leading and every line still centres on the default" defect.
+    #[test]
+    fn the_line_box_follows_an_explicit_line_height() {
+        let font = crate::core::Font::simple("sans-serif", 10.0);
+        assert_eq!(estimate_line_height(&font, 1.0), 10);
+        let mut taller = font.clone();
+        taller.set_line_height(20.0);
+        assert_eq!(estimate_line_height(&taller, 1.0), 20);
     }
 }

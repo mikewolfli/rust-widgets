@@ -26,10 +26,10 @@
 ### BLUE11 新增规则（全部继承）
 
 9. **🚫 绝对禁止假修复** — 修复必须产生可观测、可验证的行为变化。禁止以下反模式：
-    - 函数实现返回 Ok(()) 但内部无任何操作（perpetual no-op）
-    - stub 绕过：创建完整实现但在调用点用 if false 或 feature flag 绕过
-    - 仅在 #[cfg(test)] 中创建类型以消除 dead_code 警告（integration_gate 反模式）
-    - 添加 #[allow(dead_code)] 替代真正的接线或删除
+ - 函数实现返回 Ok(()) 但内部无任何操作（perpetual no-op）
+ - stub 绕过：创建完整实现但在调用点用 if false 或 feature flag 绕过
+ - 仅在 #[cfg(test)] 中创建类型以消除 dead_code 警告（integration_gate 反模式）
+ - 添加 #[allow(dead_code)] 替代真正的接线或删除
 10. **🚫 绝对禁止不完整修复** — 每条修复必须完整闭环
 11. **🚫 绝对禁止空修复** — 禁止占位行为
 12. **🚫 绝对禁止跳过测试** — 测试修复的硬性要求
@@ -118,7 +118,7 @@
 
 ### A. 现有布局 vs 现代 UI 框架对标
 
-| 布局 | 本项目 | Flutter | Qt | 缺口 |
+| 布局 | 本项目 | 主流 material 实现 | 参考工具包 | 缺口 |
 |------|--------|---------|-----|------|
 | AbsoluteLayout | ✅ | ✅ (Stack+Positioned) | ✅ (QGridLayout 0-spacing) | — |
 | BoxLayout (H/V) | ✅ | ✅ (Row/Column) | ✅ (QHBoxLayout/QVBoxLayout) | — |
@@ -143,7 +143,7 @@
 3. **ConstraintLayout (P1)** — 基于 Cassowary 算法的约束布局。对标 iOS AutoLayout / Android ConstraintLayout / Gtk.ConstraintLayout。
 4. **Center (P2)** — 单子居中布局容器。高频使用的简单布局。
 5. **AspectRatio (P2)** — 保持宽高比的布局约束。图片/视频控件必备。
-6. **Padding/Expanded (P2)** — Flutter 风格的空间布局容器。简化 padding/margin 表达。
+6. **Padding/Expanded (P2)** — 主流 material 实现 风格的空间布局容器。简化 padding/margin 表达。
 
 ---
 
@@ -200,14 +200,14 @@ Cargo.toml 有 `wasm` feature（含 `wasm-bindgen` + `web-sys` 依赖），但 `
 
 | # | 基础设施 | 说明 | 对标 | 优先级 |
 |---|---------|------|------|-------|
-| 1 | **i18n / l10n** | 国际化/本地化系统。Cargo.toml 描述声称支持 i18n，但全项目零 i18n 代码 | Flutter intl / Qt tr() | **P0** |
-| 2 | **样式表引擎** | CSS/QSS-like 样式表解析器，支持选择器 + 属性声明 | Qt QSS / GTK CSS | **P0** |
-| 3 | **数据绑定 (MVVM)** | 响应式数据绑定，Model→View 自动同步 | SwiftUI @State / Flutter ChangeNotifier | **P1** |
+| 1 | **i18n / l10n** | 国际化/本地化系统。Cargo.toml 描述声称支持 i18n，但全项目零 i18n 代码 | 主流 material 实现 intl / 参考工具包 tr() | **P0** |
+| 2 | **样式表引擎** | CSS/QSS-like 样式表解析器，支持选择器 + 属性声明 | 参考工具包 QSS / GTK CSS | **P0** |
+| 3 | **数据绑定 (MVVM)** | 响应式数据绑定，Model→View 自动同步 | 主流声明式实现 @State / 主流 material 实现 ChangeNotifier | **P1** |
 | 4 | **App Lifecycle** | 应用前后台状态管理、状态保存/恢复 | Android Activity lifecycle / iOS UIApplicationDelegate | **P1** |
-| 5 | **Undo/Redo 框架** | 通用 undo stack，跨控件 undo/redo 命令 | Qt QUndoStack / NSDocument | **P1** |
+| 5 | **Undo/Redo 框架** | 通用 undo stack，跨控件 undo/redo 命令 | 参考工具包 QUndoStack / NSDocument | **P1** |
 | 6 | **多窗口管理** | 多 Window 生命周期管理、窗口间通信 | macOS NSApplication / Windows MDI | **P2** |
-| 7 | **打印框架** | `print` feature 存在但无实际实现。打印预览 + 平台打印对话框 | Qt QPrinter / Windows PrintDlg | **P2** |
-| 8 | **PDF 导出** | `pdf` feature 存在但无实际实现。Widget 树 → PDF 渲染 | Qt QPdfWriter | **P2** |
+| 7 | **打印框架** | `print` feature 存在但无实际实现。打印预览 + 平台打印对话框 | 参考工具包 QPrinter / Windows PrintDlg | **P2** |
+| 8 | **PDF 导出** | `pdf` feature 存在但无实际实现。Widget 树 → PDF 渲染 | 参考工具包 QPdfWriter | **P2** |
 | 9 | **虚拟键盘集成** | 移动端软键盘弹出/关闭协同。`virtual_keyboard.rs` 存在但深度未知 | Android InputMethodManager / iOS UIKeyInput | **P1** |
 
 ### B. 样式/主题系统深度缺失
@@ -324,23 +324,23 @@ Cargo.toml 有 `wasm` feature（含 `wasm-bindgen` + `web-sys` 依赖），但 `
 
 | # | 控件名称 | 说明 | 对标 | 优先级 |
 |---|---------|------|------|-------|
-| 1 | **SegmentedButton** | 分段按钮（单选按钮组现代替代） | Flutter SegmentedButton / Material 3 | P1 |
-| 2 | **NavigationStack** | 导航栈（页面 push/pop） | SwiftUI NavigationStack | P1 |
-| 3 | **MenuButton** | 下拉菜单按钮（点击弹出菜单） | SwiftUI Menu | P1 |
-| 4 | **PopupButton** | 弹出选择按钮 | Qt QPushButton+menu | P1 |
-| 5 | **EditableComboBox** | 可编辑的下拉框 | Qt QComboBox editable | P1 |
+| 1 | **SegmentedButton** | 分段按钮（单选按钮组现代替代） | 主流 material 实现 SegmentedButton / Material 规范 | P1 |
+| 2 | **NavigationStack** | 导航栈（页面 push/pop） | 主流声明式实现 NavigationStack | P1 |
+| 3 | **MenuButton** | 下拉菜单按钮（点击弹出菜单） | 主流声明式实现 Menu | P1 |
+| 4 | **PopupButton** | 弹出选择按钮 | 参考工具包 QPushButton+menu | P1 |
+| 5 | **EditableComboBox** | 可编辑的下拉框 | 参考工具包 QComboBox editable | P1 |
 | 6 | **ColorPickerHLS** | HSL 色环取色器 | macOS NSColorPicker | P2 |
 | 7 | **DateRangePicker** | 日期范围选择器 | Material DateRangePicker | P2 |
 | 8 | **InteractiveTimeLine** | 可拖拽时间轴 | 视频编辑/DAW | P2 |
 | 9 | **NumberPicker** | 滚轮数字选择器 | iOS UIPickerView | P2 |
-| 10 | **OTPInput** | 验证码输入框（每位独立） | Flutter PinCodeTextField | P2 |
-| 11 | **Icon** | 图标组件（SVG/字体图标渲染） | Flutter Icon / Qt QIcon | P1 |
+| 10 | **OTPInput** | 验证码输入框（每位独立） | 主流 material 实现 PinCodeTextField | P2 |
+| 11 | **Icon** | 图标组件（SVG/字体图标渲染） | 主流 material 实现 Icon / 参考工具包 QIcon | P1 |
 | 12 | **ProgressCircle** | 圆形进度指示器 | Material CircularProgressIndicator | P1 |
-| 13 | **InlineSpinner** | 内联加载旋转器 | Qt QMovie/animation | P1 |
+| 13 | **InlineSpinner** | 内联加载旋转器 | 参考工具包 QMovie/animation | P1 |
 | 14 | **Tooltip** | 工具提示/悬浮提示 | 所有 UI 框架 | P0 |
-| 15 | **Popover** | 弹出气泡卡片 | SwiftUI Popover | P1 |
-| 16 | **DropdownMenu** | 下拉菜单（联动式） | Flutter DropdownMenu | P1 |
-| 17 | **InlineNotification** | 内联通知横幅 | Flutter Banner | P2 |
+| 15 | **Popover** | 弹出气泡卡片 | 主流声明式实现 Popover | P1 |
+| 16 | **DropdownMenu** | 下拉菜单（联动式） | 主流 material 实现 DropdownMenu | P1 |
+| 17 | **InlineNotification** | 内联通知横幅 | 主流 material 实现 Banner | P2 |
 | 18 | **ShimmerEffect** | 闪光加载效果 | Facebook Shimmer | P2 |
 
 ### B. 移动端专有控件（未实现部分）
@@ -356,7 +356,7 @@ Cargo.toml 有 `wasm` feature（含 `wasm-bindgen` + `web-sys` 依赖），但 `
 | 7 | **Snackbar (Material)** | Android | Material 底部提示条（独立控件，非 Toast） | P1 |
 | 8 | **ModalBottomSheet** | Material | Material 模态底部面板 | P1 |
 | 9 | **NavigationView (iOS)** | iOS | iOS 导航视图（UINavigationController） | P1 |
-| 10 | **Slidable** | Flutter/跨平台 | 可滑动操作项（左滑删除等） | P2 |
+| 10 | **Slidable** | 外部对标 / 跨平台 | 可滑动操作项（左滑删除等） | P2 |
 | 11 | **FloatingLabel** | Material | 浮动标签输入框（TextInputLayout） | P1 |
 | 12 | **MotionToast** | 跨平台 | 带动画的 Toast 通知 | P2 |
 | 13 | **CupertinoNavigationBar** | iOS | iOS 风格大标题导航栏 | P1 |
@@ -372,9 +372,9 @@ Cargo.toml 有 `wasm` feature（含 `wasm-bindgen` + `web-sys` 依赖），但 `
 
 | # | 控件名称 | 说明 | 对标 | 优先级 |
 |---|---------|------|------|-------|
-| 1 | **DockPanel (Avalon)** | VS 风格可停靠面板系统 | AvalonDock / Qt QDockWidget area | P2 |
+| 1 | **DockPanel (Avalon)** | VS 风格可停靠面板系统 | AvalonDock / 参考工具包 QDockWidget area | P2 |
 | 2 | **OutputWindow** | 输出窗口（日志/构建输出） | VS Output | P2 |
-| 3 | **PropertiesPanel** | 属性面板（可编辑属性网格） | VS Properties / Qt QTreeView+delegate | P1 |
+| 3 | **PropertiesPanel** | 属性面板（可编辑属性网格） | VS Properties / 参考工具包 QTreeView+delegate | P1 |
 | 4 | **FindReplaceDialog** | 查找替换对话框 | VS/Code 查找替换 | P1 |
 | 5 | **ZoomControl** | 缩放滑块控件 | Photoshop/Zoom 控件 | P2 |
 | 6 | **Magnifier** | 屏幕放大镜控件 | Windows Magnifier | P3 |
@@ -385,8 +385,8 @@ Cargo.toml 有 `wasm` feature（含 `wasm-bindgen` + `web-sys` 依赖），但 `
 | 11 | **ShortcutEditor** | 快捷键编辑控件 | VS Code Keyboard Shortcuts | P2 |
 | 12 | **MacroRecorder** | 宏录制控件 | Excel/AutoCAD 宏 | P3 |
 | 13 | **BreadcrumbBar (Explorer)** | 文件系统面包屑导航 | Windows Explorer | P2 |
-| 14 | **TaskPanel** | 任务面板（XP 风格） | Qt QWizard 侧面 | P3 |
-| 15 | **InplaceEditor** | 就地编辑控件（Table/Cell 内编辑） | Qt QStyledItemDelegate | P1 |
+| 14 | **TaskPanel** | 任务面板（XP 风格） | 参考工具包 QWizard 侧面 | P3 |
+| 15 | **InplaceEditor** | 就地编辑控件（Table/Cell 内编辑） | 参考工具包 QStyledItemDelegate | P1 |
 
 ### D. 数据可视化控件
 
@@ -598,13 +598,13 @@ Cargo.toml 有 `wasm` feature（含 `wasm-bindgen` + `web-sys` 依赖），但 `
 ### Phase 1: 阻断项清除（P0）— 预计 3-4 轮执行
 
 ```
-R1.1-R1.7    (WidgetKind 孤儿 + 重复清理 — 6 orphans + 1 dup)
-R2.1-R2.2    (macOS objc2 + iOS UIKit native FFI 接线)
-R4.1-R4.2    (i18n 系统 + 样式表引擎新建)
-R5.1-R5.2    (FlexLayout + WrapLayout)
-R5.6         (KeyboardAwareLayout)
-R10.1-R10.4  (Tooltip / FlexLayout / WrapLayout / KeyboardAwareLayout)
-R9.1-R9.2    (新控件 + Layout 测试)
+R1.1-R1.7 (WidgetKind 孤儿 + 重复清理 — 6 orphans + 1 dup)
+R2.1-R2.2 (macOS objc2 + iOS UIKit native FFI 接线)
+R4.1-R4.2 (i18n 系统 + 样式表引擎新建)
+R5.1-R5.2 (FlexLayout + WrapLayout)
+R5.6 (KeyboardAwareLayout)
+R10.1-R10.4 (Tooltip / FlexLayout / WrapLayout / KeyboardAwareLayout)
+R9.1-R9.2 (新控件 + Layout 测试)
 ```
 
 **【完成率：100% ✅】** — 全部 P0 阻断项已清除，7 项全部回写确认。
@@ -612,12 +612,12 @@ R9.1-R9.2    (新控件 + Layout 测试)
 ### Phase 2: 质量基建（P0/P1）— 预计 4-5 轮执行
 
 ```
-R2.3-R2.5    (Android Platform trait + WASM 模块 + macOS cocoa→objc2)
-R3.1-R3.2    (macOS + Windows IME 真实实现)
-R4.3-R4.5    (App Lifecycle + Undo/Redo + 数据绑定)
+R2.3-R2.5 (Android Platform trait + WASM 模块 + macOS cocoa→objc2)
+R3.1-R3.2 (macOS + Windows IME 真实实现)
+R4.3-R4.5 (App Lifecycle + Undo/Redo + 数据绑定)
 R10.5-R10.28 (P1 新控件 — 约 24 个)
-R9.3-R9.4    (i18n 测试 + benchmark 实际运行)
-R11.1-R11.2  (Android/WASM 平台模块代码化)
+R9.3-R9.4 (i18n 测试 + benchmark 实际运行)
+R11.1-R11.2 (Android/WASM 平台模块代码化)
 ```
 
 **【完成率：100% ✅】** — Android Platform trait ✅, WASM 模块 ✅, macOS IME ✅, Windows IME ✅, App Lifecycle ✅, Undo/Redo ✅, 数据绑定 ✅, 30+ P1 控件 ✅ (超额完成), i18n 测试 ✅, macOS cocoa→objc2 迁移 ✅ (objc2 已设为默认后端), Benchmark CI ✅。
@@ -625,11 +625,11 @@ R11.1-R11.2  (Android/WASM 平台模块代码化)
 ### Phase 3: 平台补齐 + 数据可视化（P1）— 预计 4-5 轮执行
 
 ```
-R3.3         (Linux IME IBus/Fcitx)
-R4.6-R4.7    (打印框架 + PDF 导出)
+R3.3 (Linux IME IBus/Fcitx)
+R4.6-R4.7 (打印框架 + PDF 导出)
 R10.29-R10.32 (LineChart / BarChart / PieChart / Sparkline)
-R5.3         (ConstraintLayout)
-R11.3-R11.7  (架构清理)
+R5.3 (ConstraintLayout)
+R11.3-R11.7 (架构清理)
 ```
 
 **【完成率：100% ✅】** — Linux IME ✅, 打印框架 ✅, PDF 导出 ✅, LineChart/BarChart/PieChart/Sparkline ✅, ConstraintLayout ✅, macOS platform_impl 已拆分 ✅, Linux platform_impl 已拆分 ✅, pipeline/containers.rs 已拆分 ✅, render/web dead_code 已清理 ✅, FFI 错误处理已改进 ✅。
@@ -637,12 +637,12 @@ R11.3-R11.7  (架构清理)
 ### Phase 4: 增强体验（P1/P2）— 预计 3-4 轮执行
 
 ```
-R5.4-R5.5    (Center + AspectRatio)
-R6.1-R6.3    (文本排版/富文本/溢出)
-R7.4-R7.5    (GIF/APNG 动画 + 共享元素过渡)
-R8.1-R8.4    (A11y 增强)
-R9.5-R9.6    (MIRI + missing_docs)
-R12.1-R12.7  (文档 + CI 增强)
+R5.4-R5.5 (Center + AspectRatio)
+R6.1-R6.3 (文本排版/富文本/溢出)
+R7.4-R7.5 (GIF/APNG 动画 + 共享元素过渡)
+R8.1-R8.4 (A11y 增强)
+R9.5-R9.6 (MIRI + missing_docs)
+R12.1-R12.7 (文档 + CI 增强)
 ```
 
 **【完成率：100% ✅】** — Center/AspectRatio ✅, TextShaper/RichText/TextOverflow ✅, A11y 增强 ✅, missing_docs ✅, CHANGELOG ✅, 动画系列全部完成 ✅, Widget Gallery ✅, MIRI 审计已完成 ✅ (154 unsafe 块全部审计, 6 SAFETY 注释补充, 审计报告已交付)。R7.4/R7.5 由 AnimatedImage/HeroAnimation 覆盖。
@@ -708,7 +708,7 @@ cargo test --lib: ✅ 3195 passed, 0 failed
 - **Widget 文件交叉对比**: 108 widget .rs 文件 × WidgetKind 变体
 - **Platform trait 接线审计**: 10 后端 × macOS objc2/iOS/Android native FFI 调用链
 - **IME 代码审查**: 3 个平台 IME stub 逐行阅读
-- **布局对标**: 本项目 × Flutter × Qt 布局系统对比
+- **布局对标**: 本项目 × 主流 material 实现 × 参考工具包 布局系统对比
 - **基础设施 grep**: i18n, stylesheet, data binding, lifecycle, undo 关键词全项目搜索
 - **Cargo.toml 描述 vs 代码**: description "i18n" 声明 vs 零实现代码
 - **依赖审计**: wasm feature 有依赖无代码
@@ -720,7 +720,7 @@ cargo test --lib: ✅ 3195 passed, 0 failed
 | `src/widget/` | 108 | ✅ 全部 | 逐文件 WidgetKind 映射 |
 | `src/widget/kind.rs` | 1 | ✅ 全文 | 169 变体逐行追踪 |
 | `src/platform/` | ~50 | ✅ 全部 | FFI 接线调用链审计 |
-| `src/layout/` | 10 | ✅ 全部 | 对标 Flutter/Qt |
+| `src/layout/` | 10 | ✅ 全部 | 对标 外部对标 / 参考工具包 |
 | `src/style/` | 7 | ✅ 全部 | 主题/动画/样式审计 |
 | `src/render/` | ~20 | ✅ 全部 | 命令枚举 + 后端实现 |
 | `src/event/` | 9 | ✅ 全部 | 事件类型枚举审计 |

@@ -32,58 +32,58 @@
 ### BLUE18 新增规则
 
 85. **🧱 「声明式」与「保留式」是正交两轴，不得对立陈述** — 判定一个 UI 架构时，
-    必须分别回答两个独立问题：① **谁拥有状态**（保留式：控件对象长期存活；
-    即时式：每帧重建）；② **谁描述结构**（声明式：UI 是状态的函数，框架 diff；
-    命令式：调用方逐步 `add_child`）。**禁止**说「本项目是保留式所以不能声明式」——
-    React / Flutter / SwiftUI 全部是**声明式 + 保留式**。判定：提案必须写明它改变的是
-    哪一个轴，另一个轴保持不变。
+ 必须分别回答两个独立问题：① **谁拥有状态**（保留式：控件对象长期存活；
+ 即时式：每帧重建）；② **谁描述结构**（声明式：UI 是状态的函数，框架 diff；
+ 命令式：调用方逐步 `add_child`）。**禁止**说「本项目是保留式所以不能声明式」——
+ a web UI framework / 外部对标 / 主流声明式实现 全部是**声明式 + 保留式**。判定：提案必须写明它改变的是
+ 哪一个轴，另一个轴保持不变。
 86. **🪜 混合架构必须是「加法」** — 引入声明式层时，**不得**要求改写既有控件、
-    不得改变 `WidgetKind`/工厂/属性契约的语义、不得让现有 `add_child` 调用方失效。
-    判定：若某一步需要修改既有控件的 trait 签名或语义，该步必须拆成独立提案并说明必要性。
-    理由：本库 171 个控件 + 3 套后端 + C ABI 已稳定；声明式层是**视图层**，
-    它应当**消费**既有契约，而不是重构它们。
+ 不得改变 `WidgetKind`/工厂/属性契约的语义、不得让现有 `add_child` 调用方失效。
+ 判定：若某一步需要修改既有控件的 trait 签名或语义，该步必须拆成独立提案并说明必要性。
+ 理由：本库 171 个控件 + 3 套后端 + C ABI 已稳定；声明式层是**视图层**，
+ 它应当**消费**既有契约，而不是重构它们。
 87. **🔑 diff 的身份必须来自显式 key，不得来自位置或类型** — 当 diff 用「位置」或
-    「类型」判断两个节点是否是同一个控件时，一次插入会使其后所有节点的身份漂移，
-    导致焦点/滚动/动画状态被错误地转移到一个不相关的控件上。
-    必须提供**显式 `key`**（规则 #88），且当两棵树都未提供 key 时，
-    diff **必须报告降级**而不是假装成功。判定：测试必须构造「在头部插入一项」的场景，
-    断言其后节点的**身份不变**。
+ 「类型」判断两个节点是否是同一个控件时，一次插入会使其后所有节点的身份漂移，
+ 导致焦点/滚动/动画状态被错误地转移到一个不相关的控件上。
+ 必须提供**显式 `key`**（规则 #88），且当两棵树都未提供 key 时，
+ diff **必须报告降级**而不是假装成功。判定：测试必须构造「在头部插入一项」的场景，
+ 断言其后节点的**身份不变**。
 88. **🧾 声明树必须携带 `key`，且 key 在兄弟间唯一** — 一个无 key 的可重排列表
-    在 diff 下只能按位置匹配，等于放弃保留式的核心收益（身份稳定）。
-    判定：`check_view_keys_are_unique.py` 类门禁逐节点断言兄弟间 key 唯一；
-    无 key 的列表项由类型系统迫使调用方显式选择（`Node::new(..).key(..)`），
-    而非默认无 key。
+ 在 diff 下只能按位置匹配，等于放弃保留式的核心收益（身份稳定）。
+ 判定：`check_view_keys_are_unique.py` 类门禁逐节点断言兄弟间 key 唯一；
+ 无 key 的列表项由类型系统迫使调用方显式选择（`Node::new(..).key(..)`），
+ 而非默认无 key。
 89. **🔬 patch 必须可观测且可逆验证** — 断言「结构变了」不算验收。
-    每条 patch 必须能断言**具体属性值/子节点序列**的变化，且必须做**反向注入**：
-    不施加 patch 时该断言必须 FAIL。判定：参照 BLUE17 §8.2 的反向注入纪律。
+ 每条 patch 必须能断言**具体属性值/子节点序列**的变化，且必须做**反向注入**：
+ 不施加 patch 时该断言必须 FAIL。判定：参照 BLUE17 §8.2 的反向注入纪律。
 90. **♻️ 保留式的收益必须被断言，不得只声称** — 声明式保留架构的全部价值在于
-    **身份、焦点、滚动位置、控件内部状态在结构更新后存活**。
-    若只断言「JSON 变了」，那用整树重建也能通过，等于没实现混合架构。
-    判定：必须有测试证明「结构 patch 后，焦点仍指向同一个 `ObjectId`，
-    且该控件的未在 patch 中提及的字段保持不变」。这是区分混合架构与重建的关键。
+ **身份、焦点、滚动位置、控件内部状态在结构更新后存活**。
+ 若只断言「JSON 变了」，那用整树重建也能通过，等于没实现混合架构。
+ 判定：必须有测试证明「结构 patch 后，焦点仍指向同一个 `ObjectId`，
+ 且该控件的未在 patch 中提及的字段保持不变」。这是区分混合架构与重建的关键。
 91. **📜 文档不得声称未实现的能力** — 发现描述与实现不符时，
-    **修文档或补实现，二选一**，禁止留旧描述。判定：`check_docs_claims.sh` 类门禁
-    对「hot-reload」「实时」等强承诺词逐条核对实现入口是否存在。
+ **修文档或补实现，二选一**，禁止留旧描述。判定：`check_docs_claims.sh` 类门禁
+ 对「hot-reload」「实时」等强承诺词逐条核对实现入口是否存在。
 92. **🪶 声明式层是「重量级可选件」，不得进入 stripped profile** —
-    `Node` / `diff` / `Patch` / `View` / `ViewEngine` 依赖 `alloc`（`String`、`Vec`、
-    `HashMap`）与运行时控件树，而 `mini` 是 `alloc_frugal`、`embedded` 是
-    `embedded_surface`。**判定**：`--no-default-features --features embedded` 与
-    `--features mini` 下 `cfg(full_widgets)` 必须为假，因而 `crate::view` 与
-    `crate::json` **整体不参与编译**；门禁须实跑验证 `src/view/` 的**任何符号**都不
-    出现在这两个 profile 的编译单元里。理由：BLUE15 的 profile 体系里
-    `full_widgets = (desktop|tablet|mobile) && !(mini|embedded)`，
-    声明式层必须挂在这个既有别名上，**不得**自造第五个别名。
+ `Node` / `diff` / `Patch` / `View` / `ViewEngine` 依赖 `alloc`（`String`、`Vec`、
+ `HashMap`）与运行时控件树，而 `mini` 是 `alloc_frugal`、`embedded` 是
+ `embedded_surface`。**判定**：`--no-default-features --features embedded` 与
+ `--features mini` 下 `cfg(full_widgets)` 必须为假，因而 `crate::view` 与
+ `crate::json` **整体不参与编译**；门禁须实跑验证 `src/view/` 的**任何符号**都不
+ 出现在这两个 profile 的编译单元里。理由：BLUE15 的 profile 体系里
+ `full_widgets = (desktop|tablet|mobile) && !(mini|embedded)`，
+ 声明式层必须挂在这个既有别名上，**不得**自造第五个别名。
 93. **🧩 「可分离的纯函数」不等于「必须一起门控」** — `Node` 与 `diff`
-    只依赖 `alloc` + `compat::HashMap` + `CapabilityValue`，理论上可在
-    `alloc` 可用的 stripped profile 上单独编译。**但这不构成把它加进 mini/embedded 的理由**
-    （规则 #28 反过度抽象）：嵌入式与 mini 的 UI 是**静态/手工构造**的，
-    没有一个「每帧重新求值 state」的调用方，因此 `diff` 在那里没有任何消费者。
-    判定：若未来出现真实的嵌入式消费者，才拆出 `view-core`（`Node`+`diff`）
-    作为独立 feature，并附上该消费者的用例；在此之前保持整体门控。
+ 只依赖 `alloc` + `compat::HashMap` + `CapabilityValue`，理论上可在
+ `alloc` 可用的 stripped profile 上单独编译。**但这不构成把它加进 mini/embedded 的理由**
+ （规则 #28 反过度抽象）：嵌入式与 mini 的 UI 是**静态/手工构造**的，
+ 没有一个「每帧重新求值 state」的调用方，因此 `diff` 在那里没有任何消费者。
+ 判定：若未来出现真实的嵌入式消费者，才拆出 `view-core`（`Node`+`diff`）
+ 作为独立 feature，并附上该消费者的用例；在此之前保持整体门控。
 94. **📐 多平台门控必须用「矩阵」表达，不得散落 `cfg`** — 引入任何一个视图层入口
-    （`View` impl、demo、示例）时，必须在 §七 的**平台门控矩阵**里登记它属于哪一档，
-    且门禁脚本（`check_profiles.sh`）逐档实跑 `cargo check`/`cargo test`。
-    判定：矩阵里每一行都有对应的实跑命令与 F 编号；没有 F 编号的档位视为未验证。
+ （`View` impl、demo、示例）时，必须在 §七 的**平台门控矩阵**里登记它属于哪一档，
+ 且门禁脚本（`check_profiles.sh`）逐档实跑 `cargo check`/`cargo test`。
+ 判定：矩阵里每一行都有对应的实跑命令与 F 编号；没有 F 编号的档位视为未验证。
 
 ---
 
@@ -94,7 +94,7 @@
 1. 「本项目是即时式 UI 还是保留式 UI？」→ 已在 BLUE17 回答（**保留式**，取证见 §2.1）。
 2. 「能否改进成声明式保留混合架构？有优势吗？」→ 已实施，见 §三。
 3. 🆕 「本项目需要桌面 / 平板 / 手机 / 嵌入式 / mini 多平台支持，
-   **嵌入式和 mini 不要编译声明式**，要使用保留式架构。请据此改进本计划。」
+ **嵌入式和 mini 不要编译声明式**，要使用保留式架构。请据此改进本计划。」
 
 **本轮的边界**：以第 3 问为主，把**已落地**的声明式层收敛成一张
 **经实跑验证的多平台门控矩阵**（§七），并补上规则 #92/#94 要求的门禁；
@@ -115,12 +115,12 @@
 ### 2.0 基线数字（实跑 @ 本工作树）
 
 ```bash
-$ grep -c "^    [A-Z][A-Za-z0-9]*," src/widget/kind.rs
+$ grep -c "^ [A-Z][A-Za-z0-9]*," src/widget/kind.rs
 171
 $ cargo test --lib -q | tail -1
 test result: ok. 4758 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 $ cargo check --all-targets | tail -1
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.24s
+ Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.24s
 $ ls tools/*.sh | wc -l
 35
 $ cargo test --lib -q --no-default-features --features mini | tail -1
@@ -198,14 +198,14 @@ test result: ok. 1486 passed; 0 failed
 
 ```mermaid
 graph TD
-    A["应用状态 state"] --> B["View::build 纯函数"]
-    B --> C["Node 树（声明，带 key）"]
-    C --> D["diff(old, new) 纯函数"]
-    D --> E["Vec&lt;Patch&gt;"]
-    E --> F["apply 到保留式控件树"]
-    F --> G["ObjectId 树 + 焦点注册表 + 控件内部状态"]
-    G --> H["自绘渲染管线（不变）"]
-    C -.->|"编译期门控边界"| I["full_widgets only"]
+ A["应用状态 state"] --> B["View::build 纯函数"]
+ B --> C["Node 树（声明，带 key）"]
+ C --> D["diff(old, new) 纯函数"]
+ D --> E["Vec&lt;Patch&gt;"]
+ E --> F["apply 到保留式控件树"]
+ F --> G["ObjectId 树 + 焦点注册表 + 控件内部状态"]
+ G --> H["自绘渲染管线（不变）"]
+ C -.->|"编译期门控边界"| I["full_widgets only"]
 ```
 
 | 轴 | 归属 | 本轮是否改变 |
@@ -221,29 +221,29 @@ graph TD
 ```rust
 // src/view/node.rs:34
 pub struct Node {
-    pub widget: String,
-    /// `None` = 按位置匹配（规则 #87 警告的降级路径，由 DiffReport 计数上报）。
-    pub key: Option<String>,
-    /// 属性按名字驱动既有属性契约。用 HashMap：diff 只做「取值」与「枚举差异」。
-    pub props: HashMap<String, CapabilityValue>,
-    /// 顺序即布局/绘制顺序，也是 sibling 匹配的最后手段。
-    pub children: Vec<Node>,
+ pub widget: String,
+ /// `None` = 按位置匹配（规则 #87 警告的降级路径，由 DiffReport 计数上报）。
+ pub key: Option<String>,
+ /// 属性按名字驱动既有属性契约。用 HashMap：diff 只做「取值」与「枚举差异」。
+ pub props: HashMap<String, CapabilityValue>,
+ /// 顺序即布局/绘制顺序，也是 sibling 匹配的最后手段。
+ pub children: Vec<Node>,
 }
 
 // src/view/diff.rs — Patch 只覆盖「保留式树能执行」的操作
 pub enum Patch {
-    SetProperty { id: ObjectId, name: String, value: CapabilityValue }, // 落 write_property
-    Remove     { id: ObjectId },
-    Insert     { parent: ObjectId, index: usize, node: Node },
-    Move       { id: ObjectId, parent: ObjectId, index: usize },
-    Replace    { id: ObjectId, parent: ObjectId, index: usize, node: Node },
+ SetProperty { id: ObjectId, name: String, value: CapabilityValue }, // 落 write_property
+ Remove { id: ObjectId },
+ Insert { parent: ObjectId, index: usize, node: Node },
+ Move { id: ObjectId, parent: ObjectId, index: usize },
+ Replace { id: ObjectId, parent: ObjectId, index: usize, node: Node },
 }
 
 // src/view/diff.rs — 降级必须上报（规则 #87）
 pub struct DiffReport {
-    pub patches: Vec<Patch>,
-    pub positional_matches: usize,   // > 0 ⇒ 调用方应补 key
-    pub replaced_subtrees: usize,    // 类型或 key 变化导致整棵重建
+ pub patches: Vec<Patch>,
+ pub positional_matches: usize, // > 0 ⇒ 调用方应补 key
+ pub replaced_subtrees: usize, // 类型或 key 变化导致整棵重建
 }
 
 // src/view/diff.rs:189 —— 注意：身份查询是**注入**的，不是硬连 layout
@@ -255,50 +255,50 @@ pub fn diff(old: &Node, new: &Node, id_of: &dyn Fn(&[usize], usize) -> Option<Ob
 ```rust
 // src/view/engine.rs:42
 pub trait View {
-    /// 必须无副作用：可能被调用任意多次。读时钟/随机数会让 diff 永不收敛。
-    fn build(&self) -> Node;
+ /// 必须无副作用：可能被调用任意多次。读时钟/随机数会让 diff 永不收敛。
+ fn build(&self) -> Node;
 }
 
 // src/view/engine.rs:66
 pub struct ViewEngine {
-    current: Option<Node>,                                   // 保留上一棵声明树
-    layout: crate::json::BoundJsonLayout,                    // 需要 G4 的树结构
-    id_of_path: HashMap<Vec<usize>, ObjectId>,               // 形状 → 活控件 id
+ current: Option<Node>, // 保留上一棵声明树
+ layout: crate::json::BoundJsonLayout, // 需要 G4 的树结构
+ id_of_path: HashMap<Vec<usize>, ObjectId>, // 形状 → 活控件 id
 }
 impl ViewEngine {
-    pub fn mount(&mut self, view: &dyn View, create: &dyn Fn(&Node) -> Option<ObjectId>) -> ApplyReport;
-    pub fn update(&mut self, view: &dyn View, create: &dyn Fn(&Node) -> Option<ObjectId>) -> DiffReport;
-    pub fn id_at(&self, path: &[usize]) -> Option<ObjectId>;   // 回答「焦点还在原来那个控件上吗」
+ pub fn mount(&mut self, view: &dyn View, create: &dyn Fn(&Node) -> Option<ObjectId>) -> ApplyReport;
+ pub fn update(&mut self, view: &dyn View, create: &dyn Fn(&Node) -> Option<ObjectId>) -> DiffReport;
+ pub fn id_at(&self, path: &[usize]) -> Option<ObjectId>; // 回答「焦点还在原来那个控件上吗」
 }
 ```
 
 **设计要点（值得保留的判断）**：
 
 1. `create` 闭包注入而非硬连 `JsonLoader` —— 让引擎可在**无窗口**下测试，
-   也让宿主（设计工具复用控件池、测试打桩）不被 loader 的实现选择绑架。
+ 也让宿主（设计工具复用控件池、测试打桩）不被 loader 的实现选择绑架。
 2. `update` 在未 `mount` 时**自动 mount** —— 调用方不必区分首次与后续调用。
 3. `diff` 的身份查询注入而非直接查 `layout` —— 纯函数侧不依赖运行中的控件树
-   （这正是 Phase B 能早于 Phase C 完成的原因）。
+ （这正是 Phase B 能早于 Phase C 完成的原因）。
 4. `apply` 是**唯一**会 mutate 的地方 —— 规则 #89 的反向注入靠这一点成立
-   （见 `src/view/apply.rs:12-15` 模块文档）。
+ （见 `src/view/apply.rs:12-15` 模块文档）。
 
 ### 3.4 数据流（含 `data_binding` 的闭环）
 
 ```mermaid
 sequenceDiagram
-    participant U as 用户操作
-    participant B as Binding&lt;T&gt;
-    participant E as ViewEngine
-    participant V as View::build
-    participant D as diff
-    participant W as 保留式控件树
-    U->>B: binding.set(v)
-    B->>E: 通知（FnListener）
-    E->>V: view.build()
-    V->>D: new Node
-    D->>E: Vec&lt;Patch&gt; + DiffReport
-    E->>W: apply(patches)
-    W->>W: 仅被 patch 的节点变化<br/>焦点/滚动/其他字段存活
+ participant U as 用户操作
+ participant B as Binding&lt;T&gt;
+ participant E as ViewEngine
+ participant V as View::build
+ participant D as diff
+ participant W as 保留式控件树
+ U->>B: binding.set(v)
+ B->>E: 通知（FnListener）
+ E->>V: view.build()
+ V->>D: new Node
+ D->>E: Vec&lt;Patch&gt; + DiffReport
+ E->>W: apply(patches)
+ W->>W: 仅被 patch 的节点变化<br/>焦点/滚动/其他字段存活
 ```
 
 ✅ 该闭环的每一环都已存在，并已由 `src/view/reactive.rs`（`ReactiveHost`）串成可运行的接线：
@@ -548,9 +548,9 @@ BLUE18 的规则 #92 **消费**该体系，把声明式层挂在既有 `full_wid
 🆕 两个必须补上的保护（当前**正确但无门禁**）：
 
 1. `tools/check_view_platform_gate.sh` —— 断言 `view` 在 mini/embedded 下**不参与编译**，
-   且漏写 `widgets_unstripped` 时必须 FAIL（F10 / E′-5）；
+ 且漏写 `widgets_unstripped` 时必须 FAIL（F10 / E′-5）；
 2. `tools/check_view_keys_are_unique.py` —— 规则 #88 的机器化判据，
-   因为 `src/view/node.rs:124` **已经引用了这个名字**却并不存在（G8）。
+ 因为 `src/view/node.rs:124` **已经引用了这个名字**却并不存在（G8）。
 
 以及两个收尾：`data_binding` 的端到端闭环用例（G5）、
 `json/mod.rs:11` 的 hot-reload 承诺指向 `ViewEngine::update`（G6 / 规则 #91）。

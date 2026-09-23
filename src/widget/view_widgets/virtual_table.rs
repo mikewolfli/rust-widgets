@@ -227,6 +227,68 @@ impl VirtualTable {
     fn emit_visible_window(&self) {
         self.visible_window_changed.emit(self.visible_window());
     }
+
+    /// The box a data cell occupies, in the table's own coordinates.
+    ///
+    /// # Why the cell position is a function rather than an accumulator
+    ///
+    /// The draw loop used to advance `x += column_width` and `y += row_height` as it went,
+    /// which makes every cell's position depend on how many cells were drawn *before* it in
+    /// that particular loop. Two consequences follow, and both are real: a later pass that
+    /// wanted one cell's box (a hit test, a tooltip, a selection rectangle) had to replay the
+    /// whole accumulator, and any change to the leading inset moved every cell without the
+    /// later passes knowing. Expressing the position as `origin + index * stride` makes a
+    /// cell's box answerable for any index, independently of what was drawn.
+    ///
+    /// The two insets are `2` rather than `0` so the first row and column do not sit on the
+    /// table's own border, and they are shared with the cell's *size* below.
+    fn cell_rect(&self, origin: Rect, row: usize, column: usize) -> Rect {
+        const INSET: i32 = 2;
+        let stride_x = self.column_width as i32;
+        let stride_y = self.row_height as i32;
+        Rect::new(
+            origin.x + INSET + column as i32 * stride_x,
+            origin.y + INSET + row as i32 * stride_y,
+            // The cell is 2 px smaller than its stride on each axis, so the grid lines are the
+            // surface showing through rather than strokes that would double up where cells meet.
+            self.column_width.saturating_sub(2),
+            self.row_height.saturating_sub(2),
+        )
+    }
+
+    /// How many rows and columns fit inside `rect`.
+    ///
+    /// The counts the draw loop uses, and the ones a hit test would need, so neither derives
+    /// its own "how many fit" rule. At least one of each: a table clipped to a sliver still
+    /// paints its first cell, which is what makes a degenerate rectangle visibly degenerate
+    /// rather than blank.
+    fn visible_grid(&self, rect: Rect) -> (usize, usize) {
+        const INSET: i32 = 2;
+        let usable_w = (rect.width as i32 - INSET * 2).max(0) as u32;
+        let usable_h = (rect.height as i32 - INSET * 2).max(0) as u32;
+        let columns = (usable_w / self.column_width.max(1)).max(1) as usize;
+        let rows = (usable_h / self.row_height.max(1)).max(1) as usize;
+        (rows, columns)
+    }
+
+    /// The first cell whose box contains `pos`, if any.
+    ///
+    /// Derived from [`Self::cell_rect`], so the box a press resolves to is the box that was
+    /// painted. Absent from the previous version entirely: the table had no way to answer
+    /// "which cell is under this point?", because the only record of a cell's position was the
+    /// draw loop's local accumulator.
+    pub fn cell_at(&self, pos: crate::core::Point) -> Option<(usize, usize)> {
+        let rect = self.geometry();
+        let (rows, columns) = self.visible_grid(rect);
+        for row in 0..rows {
+            for column in 0..columns {
+                if self.cell_rect(rect, row, column).contains(pos) {
+                    return Some((row, column));
+                }
+            }
+        }
+        None
+    }
 }
 
 impl Widget for VirtualTable {
@@ -436,16 +498,14 @@ impl Draw for VirtualTable {
             return;
         }
 
-        let mut y = rect.y + 4;
-        for row in data.iter().take(10) {
-            let mut x = rect.x + 4;
-            for cell in row.iter().take(6) {
-                let cell_rect = Rect::new(
-                    x,
-                    y,
-                    self.column_width.saturating_sub(2),
-                    self.row_height.saturating_sub(2),
-                );
+        // The grid's extent and each cell's box come from `visible_grid`/`cell_rect`, the same
+        // derivation `cell_at` reads, so the cell a press resolves to is the cell that was
+        // painted. The loop no longer carries `x`/`y` accumulators — a cell's position is a
+        // function of its own indices, which is what makes it answerable outside this loop.
+        let (visible_rows, visible_columns) = self.visible_grid(rect);
+        for (row_index, row) in data.iter().take(visible_rows).enumerate() {
+            for (column_index, cell) in row.iter().take(visible_columns).enumerate() {
+                let cell_rect = self.cell_rect(rect, row_index, column_index);
                 context.draw_rect(cell_rect, cell_border);
                 if let Some(value) = cell {
                     // The cell is the band. `y + row_height / 2` as a `draw_text` origin placed
@@ -460,11 +520,6 @@ impl Draw for VirtualTable {
                         HorizontalAlignment::Left,
                     );
                 }
-                x += self.column_width as i32;
-            }
-            y += self.row_height as i32;
-            if y >= rect.y + rect.height as i32 {
-                break;
             }
         }
     }
@@ -713,5 +768,72 @@ mod tests {
 
         table.set_column_width(80);
         assert_eq!(table.column_width(), 80);
+    }
+
+    // ── The shared cell derivation ───────────────────────────────────────
+
+    #[test]
+    fn a_cells_box_is_a_function_of_its_own_indices() {
+        // The defect this pins: the cell position used to be an accumulator inside the draw
+        // loop (`x += column_width`), so a cell's box depended on how many cells happened to
+        // be drawn before it and could not be asked for independently. It is now
+        // `origin + index * stride`.
+        let mut table = VirtualTable::new(Rect::new(10, 20, 400, 300));
+        table.set_column_width(80);
+        table.set_row_height(40);
+        let origin = table.geometry();
+
+        // (0,0) sits at the inset, and each step is exactly one stride.
+        let first = table.cell_rect(origin, 0, 0);
+        assert_eq!(first.x, origin.x + 2);
+        assert_eq!(first.y, origin.y + 2);
+        assert_eq!(first.width, 78);
+        assert_eq!(first.height, 38);
+
+        let third_column = table.cell_rect(origin, 0, 3);
+        assert_eq!(third_column.x, first.x + 3 * 80, "a column is one stride apart");
+        let second_row = table.cell_rect(origin, 2, 0);
+        assert_eq!(second_row.y, first.y + 2 * 40, "a row is one stride apart");
+
+        // Asking for a box twice gives the same answer: no accumulated state.
+        assert_eq!(table.cell_rect(origin, 2, 3), table.cell_rect(origin, 2, 3));
+    }
+
+    #[test]
+    fn the_box_a_press_resolves_to_is_the_box_that_was_painted() {
+        // The draw loop and the hit test now read one derivation. Before, the only record of a
+        // cell's position was the draw loop's local variable, so the table could not answer
+        // "which cell is under this point?" at all.
+        let mut table = VirtualTable::new(Rect::new(0, 0, 400, 300));
+        table.set_column_width(80);
+        table.set_row_height(40);
+
+        let cell = table.cell_rect(table.geometry(), 1, 2);
+        let centre = crate::core::Point::new(
+            cell.x + cell.width as i32 / 2,
+            cell.y + cell.height as i32 / 2,
+        );
+        assert_eq!(table.cell_at(centre), Some((1, 2)));
+
+        // A point on the table's own border, outside every inset cell, resolves to no cell
+        // rather than to a neighbour — the boxes are the authority, not a division of the
+        // whole rectangle.
+        assert_eq!(table.cell_at(crate::core::Point::new(0, 0)), None);
+    }
+
+    #[test]
+    fn the_visible_grid_counts_what_fits_and_never_reports_zero() {
+        let mut table = VirtualTable::new(Rect::new(0, 0, 400, 300));
+        table.set_column_width(100);
+        table.set_row_height(50);
+
+        // Usable extent is the rectangle minus the 2 px inset on each side: 396 x 296, so
+        // three 100 px columns and five 50 px rows fit.
+        assert_eq!(table.visible_grid(table.geometry()), (5, 3));
+
+        // A table clipped to a sliver still reports one of each, so its first cell is drawn
+        // rather than the control coming out blank.
+        let sliver = Rect::new(0, 0, 3, 3);
+        assert_eq!(table.visible_grid(sliver), (1, 1));
     }
 }

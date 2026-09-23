@@ -97,7 +97,7 @@ occupy — not how big it should draw. Those are two questions, and answering th
 stops a switch from being painted as a 240x120 stadium:
 
 ```rust
-implicit_size = max(floor, content + padding)     // Qt Quick's Button.qml formula
+implicit_size = max(floor, content + padding)
 ```
 
 The `max` is the load-bearing part: the **floor is a minimum tappable area**, so a button labelled

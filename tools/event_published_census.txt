@@ -101,7 +101,7 @@ material_snackbar: action_pressed, dismissed
 mdi_area: subwindow_activated
 media_player: playback_changed, position_changed, volume_changed, source_changed
 mention: mention_inserted, popup_toggled, text_changed
-menu: triggered, triggered_index, about_to_show, about_to_hide
+menu: triggered, triggered_index, about_to_show, submenu_requested, about_to_hide
 menu_bar: triggered, hovered_entry
 menu_button: item_triggered
 message_box: button_clicked, accepted, rejected

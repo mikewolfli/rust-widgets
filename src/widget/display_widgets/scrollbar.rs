@@ -233,28 +233,87 @@ impl ScrollBar {
         }
     }
 
-    /// Returns value for a given pixel position.
+    /// The length of the thumb the draw pass paints, in pixels.
     ///
-    /// The inverse of [`Self::value_to_pixel_pos`]: both read the same **track band**, so the
-    /// value a drag reads back is the value the thumb was drawn at.
-    fn pixel_pos_to_value(&self, pos: f32) -> i32 {
+    /// The draw pass sizes the thumb from the **track between the arrow cells** and floors it at
+    /// [`dimensions::SCROLLBAR_MIN_LENGTH`], so a long document still leaves something to grab.
+    /// It also stops the thumb at the trough's far edge. Both of those are drawing decisions, but
+    /// they describe the *grip the user actually sees*, and a conversion that assumed a different
+    /// grip could not be inverted — so this is the same measure the draw pass takes, and
+    /// [`Self::travel_band`] is the single consumer of it.
+    fn thumb_length(&self) -> f32 {
         let band = self.track_band();
-        let slider_size = self.slider_size();
-        let range = (self.maximum - self.minimum) as f32;
-        // The available travel is the band's length, not the control's: with the band centred
-        // in a 120 px cell, measuring the pointer from the *control's* edge would map a click
-        // 60 px above the bar to a position on it. The `slider_size` term is deliberately
-        // *not* subtracted, because `value_to_pixel_pos` does not subtract it either — a
-        // scrollbar's thumb does not travel its own length, and the two must be inverses.
+        let cell = self.arrow_cell();
+        let track = match self.orientation {
+            Orientation::Horizontal => band.width as f32,
+            Orientation::Vertical => band.height as f32,
+        };
+        let between_arrows = (track - cell * 2.0).max(0.0);
+        let proportional = between_arrows * self.slider_size();
+        // Mirrors the draw pass exactly: floor first, then clamp inside the trough, so the length
+        // here never exceeds the room it has. The floor is expressed against `track` rather than
+        // `between_arrows` for the same reason the draw pass does: a floor that could exceed the
+        // space available would make a short bar's thumb overshoot the trough it sits in.
+        let floor = dimensions::SCROLLBAR_MIN_LENGTH.min(track as u32) as f32;
+        let floored = proportional.max(floor);
+        floored.min(between_arrows.max(1.0))
+    }
+
+    /// The **one** origin and length the two value/pixel conversions are defined against.
+    ///
+    /// # Why this exists (BLUE22 · G-2)
+    ///
+    /// `pixel_pos_to_value` and `value_to_pixel_pos` used to derive *different* travel from the
+    /// same trough: the reader measured from the band's edge over the band's whole length, while
+    /// the writer first skipped an arrow cell and scaled the rest by `1 - slider_size`. Neither
+    /// was wrong on its own, but they were not inverses of each other — a value drawn at `x` read
+    /// back as a different value, so clicking the thumb did not select the value it showed, and
+    /// the error grew with the range rather than being a rounding artefact.
+    ///
+    /// `slider` had already been through exactly this and its comment states the rule: the two
+    /// functions must share the inset, because that is what makes them exact inverses. The same
+    /// reading applies here, with one correction the slider does not face — this control's thumb
+    /// is a *fraction* of the track, not a constant, so the shared travel has to be
+    /// **track minus thumb** rather than *track scaled by a fraction*. That is also the honest
+    /// reading of the geometry: the thumb stops when its leading edge reaches the far end of the
+    /// trough, so its centre travels `track - thumb`, and its own length is what it cannot travel.
+    ///
+    /// One derivation, two consumers, so they cannot drift apart.
+    fn travel_band(&self) -> (f32, f32) {
+        let band = self.track_band();
+        let cell = self.arrow_cell();
         let (origin, length) = match self.orientation {
             Orientation::Horizontal => (band.x as f32, band.width as f32),
             Orientation::Vertical => (band.y as f32, band.height as f32),
         };
-        let available = (length * (1.0 - slider_size)).max(0.0);
-        if available == 0.0 {
+        // The travel is the **band between the two arrow cells**, not the whole trough: the arrows
+        // occupy fixed cells at each end, so a thumb travelling the full length would pass beneath
+        // them. The drawn thumb is already sized against that same span, which is what makes the
+        // subtraction below a statement about *this* control rather than a second convention.
+        let span = (length - cell * 2.0).max(0.0);
+        // The thumb travels the span **minus its own length**: it is the only part that cannot be
+        // traversed, and it is read from the same derivation the draw pass paints with.
+        let travel = (span - self.thumb_length()).max(0.0);
+        (origin + cell, travel)
+    }
+
+    /// Returns value for a given pixel position.
+    ///
+    /// The exact inverse of [`Self::value_to_pixel_pos`]: both read [`Self::travel_band`], so the
+    /// value a drag reads back is the value the thumb was drawn at.
+    fn pixel_pos_to_value(&self, pos: f32) -> i32 {
+        let range = (self.maximum - self.minimum) as f32;
+        if range == 0.0 {
             return self.minimum;
         }
-        let relative = (pos - origin) / available;
+        let (origin, travel) = self.travel_band();
+        // A trough with no room left travels nowhere, so every position on it is the minimum.
+        // That is the same answer `value_to_pixel_pos` gives for the same trough, which is what
+        // keeps the pair total rather than merely monotonic.
+        if travel <= 0.0 {
+            return self.minimum;
+        }
+        let relative = (pos - origin) / travel;
         // The pointer arrives in the left-edge frame and the value lives in reading order, so this
         // is the one place the conversion belongs — and `value_to_pixel_pos` applies the same one in
         // the other direction, which is what keeps a drag reading back the value the thumb was drawn
@@ -269,32 +328,21 @@ impl ScrollBar {
     }
     /// Returns pixel position for a given value.
     ///
-    /// Read the trough from [`Self::track_band`] and the cells from [`Self::arrow_cell`], so
-    /// the thumb, the arrows and the hit test are three consumers of **one** geometry rather
-    /// than three derivations that can drift.
+    /// Read the trough from [`Self::track_band`], the cells from [`Self::arrow_cell`] and the
+    /// travel from [`Self::travel_band`], so the thumb, the arrows and the hit test are consumers
+    /// of **one** geometry rather than derivations that can drift.
     fn value_to_pixel_pos(&self, value: i32) -> f32 {
-        let band = self.track_band();
         let clamped = ordered_clamp_i32(value, self.minimum, self.maximum);
-        let slider_size = self.slider_size();
         let range = (self.maximum - self.minimum) as f32;
-        //
-        // The travel is the **band between the two arrow cells**, not the whole control: the
-        // arrows occupy fixed cells at each end, so a thumb travelling the full length would
-        // pass underneath them.
-        let cell = self.arrow_cell();
-        let (origin, length) = match self.orientation {
-            Orientation::Horizontal => (band.x as f32, band.width as f32),
-            Orientation::Vertical => (band.y as f32, band.height as f32),
-        };
+        let (origin, travel) = self.travel_band();
         if range == 0.0 {
-            return origin + cell;
+            return origin;
         }
         let mut relative = (clamped - self.minimum) as f32 / range;
         if self.orientation == Orientation::Horizontal {
             relative = self.direction.begin_fraction_to_left_fraction(relative);
         }
-        let available = (length - cell * 2.0).max(0.0) * (1.0 - slider_size);
-        origin + cell + available * relative
+        origin + travel * relative
     }
     /// Triggers a scroll action.
     pub fn trigger_action(&mut self, action: ScrollBarAction) {
@@ -991,10 +1039,8 @@ mod tests {
     /// The pointer → value and value → pointer mappings must stay **ordered the same way** in both
     /// directions, so a drag toward the end the user is heading for raises the value.
     ///
-    /// The two functions are not exact inverses in this control: `pixel_pos_to_value` measures from
-    /// the band's edge while `value_to_pixel_pos` first skips an arrow cell, and that asymmetry
-    /// predates the direction field. What the direction must not do is break it — so the assertion
-    /// is that both stay monotonic and agree about which end is which.
+    /// The direction is what this test is about; the two functions being exact inverses is pinned
+    /// separately by [`the_two_conversions_are_exact_inverses`] (BLUE22 · G-2).
     #[test]
     fn the_value_and_pixel_mappings_agree_about_which_way_is_forward() {
         use crate::core::TextDirection;
@@ -1019,17 +1065,113 @@ mod tests {
                     value + 50
                 );
             }
-            // And reading the pixel back returns a value in the same half of the range.
-            for value in [0, 250, 750, 1000] {
+            // And reading the pixel back returns the value itself, not merely the same half of the
+            // range: the two halves agreeing was all the pre-G-2 mapping could promise, because it
+            // measured the trough by two different rules.
+            for value in (0..=1000).step_by(50) {
                 let back = sb.pixel_pos_to_value(sb.value_to_pixel_pos(value));
-                let half = 500;
                 assert_eq!(
-                    back >= half,
-                    value >= half,
-                    "{direction:?}: value {value} read back as {back}, which is the other half"
+                    back, value,
+                    "{direction:?}: value {value} was drawn and read back as {back}"
                 );
             }
         }
+    }
+
+    /// The two conversions are **exact inverses** of each other, in both orientations.
+    ///
+    /// # The defect this pins (BLUE22 · G-2)
+    ///
+    /// `pixel_pos_to_value` measured the pointer from the band's edge across the band's whole
+    /// length, while `value_to_pixel_pos` skipped an arrow cell and scaled the remainder by
+    /// `1 - slider_size`. Two different rules over the same trough cannot be inverses: a value
+    /// drawn at `x` read back as a different value, so clicking the thumb did not select the value
+    /// it was showing, and the error grew with the range rather than being a rounding artefact.
+    ///
+    /// `slider` had already been through this and fixed it by sharing the inset. The rule is the
+    /// same here, and it is stated in one place — [`ScrollBar::travel_band`] — which both functions
+    /// now read. This test is what keeps a future edit from re-deriving either half.
+    #[test]
+    fn the_two_conversions_are_exact_inverses() {
+        for orientation in [Orientation::Horizontal, Orientation::Vertical] {
+            let geometry = match orientation {
+                Orientation::Horizontal => Rect::new(0, 0, 200, 16),
+                Orientation::Vertical => Rect::new(0, 0, 16, 200),
+            };
+            // Several ranges, because `slider_size()` is a fraction of the range: the old defect was
+            // invisible for one range and large for another, which is exactly why it survived.
+            for (minimum, maximum) in [(0, 100), (0, 1000), (-50, 50), (0, 20)] {
+                let mut sb = ScrollBar::new(geometry);
+                sb.set_orientation(orientation);
+                sb.set_range(minimum, maximum);
+                let span = maximum - minimum;
+                for step in 0..=10 {
+                    let value = minimum + span * step / 10;
+                    let drawn_at = sb.value_to_pixel_pos(value);
+                    let read_back = sb.pixel_pos_to_value(drawn_at);
+                    assert_eq!(
+                        read_back, value,
+                        "{orientation:?} range {minimum}..{maximum}: {value} was drawn at \
+                         {drawn_at} but read back as {read_back}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A trough too narrow to hold its own arrows still answers both conversions, and answers them
+    /// consistently.
+    ///
+    /// The travel collapses to zero, so there is no position that means anything other than the
+    /// minimum. The pre-G-2 pair disagreed even here — the reader divided by a positive number while
+    /// the writer had already run out of room — so the degenerate trough is where the two halves were
+    /// furthest apart, not where they were safest.
+    #[test]
+    fn a_trough_with_no_travel_answers_both_conversions_with_the_minimum() {
+        // 8 px wide with 4 px arrow cells leaves nothing between them, and the 48 px thumb floor is
+        // clamped to the span, so the travel is zero.
+        let mut sb = ScrollBar::new(Rect::new(0, 0, 8, 16));
+        sb.set_range(0, 100);
+        let (origin, travel) = sb.travel_band();
+        assert_eq!(travel, 0.0, "this trough must have no travel for the test to mean anything");
+        assert_eq!(sb.value_to_pixel_pos(0), origin);
+        assert_eq!(sb.value_to_pixel_pos(100), origin);
+        assert_eq!(sb.pixel_pos_to_value(origin), 0);
+        assert_eq!(sb.pixel_pos_to_value(origin + 500.0), 0);
+    }
+
+    /// The thumb's drawn position, its drawn length and the travel all agree with one another.
+    ///
+    /// This is the geometric statement behind the inverse property: the thumb starts at the travel's
+    /// origin for the minimum, and its **trailing edge** reaches the far end of the trough for the
+    /// maximum. The old mapping placed the maximum's thumb so that the thumb itself could not finish
+    /// its journey — the reader and the writer disagreed about where the end was.
+    #[test]
+    fn the_thumb_starts_at_one_end_and_finishes_at_the_other() {
+        let mut sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        sb.set_range(0, 1000);
+        let band = sb.track_band();
+        let cell = sb.arrow_cell();
+        let (origin, travel) = sb.travel_band();
+        let thumb = sb.thumb_length();
+
+        assert_eq!(
+            sb.value_to_pixel_pos(0),
+            origin,
+            "the minimum's thumb begins where the travel begins"
+        );
+        assert_eq!(
+            sb.value_to_pixel_pos(1000),
+            origin + travel,
+            "the maximum's thumb ends where the travel ends"
+        );
+        // The far end of the travel plus the thumb is the trough's own far edge, so the grip the user
+        // sees never leaves the track it runs in.
+        assert_eq!(
+            origin + travel + thumb,
+            band.x as f32 + band.width as f32 - cell,
+            "the thumb's trailing edge must stop at the trough's far arrow cell"
+        );
     }
 
     /// The vertical bar is the block axis, which a right-to-left script does not reverse, so the
