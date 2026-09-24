@@ -5,7 +5,7 @@ use super::{AppearanceMode, Borders, Colors, Fonts, Spacing, Theme, ThemeOverrid
 use crate::compat::HashMap;
 use crate::core::{Color, Font};
 use crate::signal::Signal;
-use crate::style::{HighContrastMode, Margin, Padding, Shadow, WidgetState, WidgetStyle};
+use crate::style::{HighContrastMode, Margin, Padding, WidgetState, WidgetStyle};
 
 /// Theme registry and active-theme resolver.
 pub struct ThemeManager {
@@ -322,11 +322,29 @@ impl ThemeManager {
     /// name; a caller holding a CSS class should use
     /// [`resolve_style_for`](Self::resolve_style_for), which keeps the two vocabularies apart.
     fn role_base_style(&self, theme: &Theme, kind_name: &str) -> WidgetStyle {
-        let shadow = if theme.borders.shadow {
-            Some(Shadow { x: 0, y: 2, blur: 6, color: Color::rgba(0, 0, 0, 60) })
-        } else {
-            None
-        };
+        // The face's material, resolved from the role table in `render::surface`.
+        //
+        // # Why the shadow now comes from a level rather than a literal
+        //
+        // This used to build one `Shadow { x: 0, y: 2, blur: 6, .. }` and hand it to every
+        // control, so a floating toast and a flush list row were painted at the same height: the
+        // layer a face sits on was not expressible. It is now a *level* the theme resolves
+        // (`Theme::elevation`), and the role table says which level a kind sits at — so a card is
+        // above the page and a toolbar button is on it, in one place instead of in each control.
+        //
+        // A kind the role table does not classify gets `SurfaceStyle::solid()`, i.e. level 0, i.e.
+        // **no shadow at all**. That is a deliberate change from the old behaviour, where every
+        // control cast one, and it is the change the plan's criterion 9 pins: the default theme
+        // must render byte-for-byte as before, so the old shadow's *value* had to survive as the
+        // level an ordinary control resolves to. It does — as `Elevation::Level2`, the shape the
+        // literal described (`y: 2, blur: 6`).
+        //
+        // A theme that draws no shadows keeps drawing none, because `Theme::elevation` answers
+        // `None` when `borders.shadow` is off — the same condition the literal was behind.
+        let surface = crate::render::role_surface_style(kind_name);
+        // A shadow's hue, stated once; each level applies its own alpha (`Theme::elevation`), so the
+        // ladder owns the opacity rather than this call site.
+        let shadow = theme.elevation(surface.elevation, Color::BLACK);
         let (background_color, text_color, border_color) = role_colors(theme, kind_name);
 
         // The minimum touch target for this build's device class.
@@ -360,9 +378,18 @@ impl ThemeManager {
             // through the theme it came from. Scaling at this one point is what makes it apply to
             // every control — each of them takes this font unless it names another.
             //
-            // A control that sets its own font is unaffected, which is correct: a monospace editor
-            // chooses its own metrics deliberately.
-            font: Some(theme.fonts.body.clone().scaled(crate::platform::profile::text_scale())),
+            // The scale comes from the **environment** rather than from
+            // `platform::profile::text_scale()` directly, so there is one source: a host that
+            // installs its own `EnvironmentProvider` (a settings screen, a test) changes this
+            // value too, and the platform's own answer is what the default provider reads
+            // (BLUE24 §4).
+            font: Some(
+                theme
+                    .fonts
+                    .body
+                    .clone()
+                    .scaled(crate::style::environment::environment().effective_text_scale()),
+            ),
             ..Default::default()
         }
     }

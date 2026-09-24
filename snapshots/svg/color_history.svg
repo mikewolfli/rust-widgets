@@ -4,9 +4,9 @@
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="rgba(30,30,33,1.00)" />
   <rect x="2" y="2" width="20" height="20" fill="rgba(66,133,244,1.00)" />
-  <rect x="2" y="2" width="20" height="20" fill="none" stroke="rgba(0,0,0,0.16)" stroke-width="1" />
+  <rect x="2" y="2" width="20" height="20" fill="none" stroke="rgba(50,72,93,1.00)" stroke-width="1" />
   <rect x="26" y="2" width="20" height="20" fill="rgba(219,68,55,1.00)" />
-  <rect x="26" y="2" width="20" height="20" fill="none" stroke="rgba(0,0,0,0.16)" stroke-width="1" />
+  <rect x="26" y="2" width="20" height="20" fill="none" stroke="rgba(50,72,93,1.00)" stroke-width="1" />
   <rect x="50" y="2" width="20" height="20" fill="rgba(244,180,0,1.00)" />
-  <rect x="50" y="2" width="20" height="20" fill="none" stroke="rgba(0,0,0,0.16)" stroke-width="1" />
+  <rect x="50" y="2" width="20" height="20" fill="none" stroke="rgba(50,72,93,1.00)" stroke-width="1" />
 </svg>

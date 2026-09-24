@@ -144,3 +144,14 @@ pub mod bevel;
 pub use bevel::{
     Bevel, BevelDirection, BEVEL_INNER_SHADE_WEIGHT, BEVEL_INNER_WEIGHT, BEVEL_WEIGHT,
 };
+
+// The surface declaration channel: what kind of face a control's rectangle is. Added as its own
+// module — compiled in every profile, including `mini`/`embedded` — so a theme can say "this is a
+// flat theme" or "this is a dimensional one" as data rather than every control deciding its own
+// material. See the module docs for the three measurements that motivated it and the role table
+// it replaces the fixed per-control shadow literal with.
+pub mod surface;
+pub use surface::{
+    bevel_fits, default_shadow, role_surface_style, BevelSpec, Elevation, ElevationShadow,
+    Hairline, Material, SurfaceShadow, SurfaceStyle,
+};

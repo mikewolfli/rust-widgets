@@ -75,11 +75,14 @@ pub struct Button {
     /// The value actually painted, interpolated by [`Button::tick`]. Kept as a fraction
     /// rather than a colour so the target can change mid-flight — a press during a hover
     /// animation retargets the same transition instead of restarting it, which is what
-    /// makes a quick press-and-release read as one movement rather than two fades. The shared
-    /// [`crate::style::Transition`] owns the interpolation and the theme-derived duration.
-    interaction_progress: crate::style::Transition,
-    /// The progress value the transition is travelling toward.
-    interaction_target: f32,
+    /// makes a quick press-and-release read as one movement rather than two fades.
+    ///
+    /// [`crate::style::PropertyDriver`] owns the interpolation, the theme-derived duration
+    /// **and the target**. The target used to be a second field here
+    /// (`interaction_target: f32`), which meant two controls carried a cache of the same
+    /// fact that had to stay in step with `widget_state()` on its own; the driver holds it
+    /// now, so there is no cache left to go stale (BLUE24 §2.3).
+    interaction_progress: crate::style::PropertyDriver,
     /// Emitted on the rising edge of the pressed flag (button down).
     ///
     /// Suppressed entirely while the button is disabled, so a disabled button
@@ -120,8 +123,10 @@ impl Button {
             // A freshly constructed button is at rest, so its progress is at the rest end of the
             // interpolation. Starting at the interactive end would make every button fade *out* on
             // its first frame. `Normal` is the tempo a state change takes.
-            interaction_progress: crate::style::Transition::new(),
-            interaction_target: 0.0,
+            //
+            // `PropertyDriver`'s own default is the same value, so this is the documented
+            // rest state rather than a second, independent choice.
+            interaction_progress: crate::style::PropertyDriver::default(),
             pressed_signal: GenericSignal::new(),
             released_signal: GenericSignal::new(),
             state_changed: Signal1::new(),
@@ -315,20 +320,22 @@ impl Button {
     /// repainting forever, which is why the boolean is part of the signature rather than something
     /// the caller infers.
     ///
-    /// # Why the work is delegated to `Transition`
+    /// # Why the work is delegated to `PropertyDriver`
     ///
     /// The interpolation, the iteration counting and the engine's callback ownership are the
     /// same for every control that animates between two appearances. Keeping a private copy here
     /// meant the duration was read from `crate::theme` directly, which only exists in a build with
     /// a device profile — so this file failed to compile under `mini`/`embedded` until the read was
-    /// routed through the `style` facade. `Transition` owns that read once.
+    /// routed through the `style` facade. `PropertyDriver` owns that read once.
+    ///
+    /// It also owns the **target**, so this method no longer writes a second field: the target is
+    /// recomputed from the control's own state every tick (so a state change that arrived without a
+    /// tick in between is picked up rather than missed) and handed to the driver, which keeps it.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
         // The target is recomputed every tick from the control's own state, so a state change
         // that arrived without a `tick` in between is picked up rather than missed.
-        let target = self.interaction_target_progress();
-        let moving = self.interaction_progress.tick(target, delta_ms);
-        self.interaction_target = target;
-        moving
+        self.interaction_progress.set_target(self.interaction_target_progress());
+        self.interaction_progress.tick(delta_ms)
     }
 
     /// The progress the current interaction state calls for.
@@ -537,7 +544,7 @@ impl Widget for Button {
         // has run to recompute the target. Reading the stale field made `is_animating`
         // answer `false` for a button that had just been hovered, so the bus would never
         // start its frames.
-        self.interaction_progress.progress() != self.interaction_target_progress()
+        self.interaction_progress.value() != self.interaction_target_progress()
     }
 
     impl_draw_bridge!();
@@ -786,7 +793,7 @@ impl Draw for Button {
         //
         // At progress `0.0` — a fresh control, or one whose transition has settled at rest — the
         // result is exactly the resting colour, so a snapshot taken without ticking is unchanged.
-        let progress = self.interaction_progress.progress();
+        let progress = self.interaction_progress.value();
         let bg = if progress <= 0.0 {
             bg
         } else {
@@ -1764,7 +1771,7 @@ mod tests {
             frames += 1;
             assert!(frames < 100, "the transition must terminate rather than tick forever");
         }
-        assert_eq!(b.interaction_progress.progress(), 0.5, "a hover settles exactly on its target");
+        assert_eq!(b.interaction_progress.value(), 0.5, "a hover settles exactly on its target");
 
         // Settled means settled: **each** further tick reports no work. Asserted in a loop rather
         // than once, because a single `!tick()` would also pass for an implementation that
@@ -1775,7 +1782,7 @@ mod tests {
                 !b.tick(16),
                 "a settled transition must report that no frame is needed (tick {frame})"
             );
-            assert_eq!(b.interaction_progress.progress(), 0.5, "and must not drift while settled");
+            assert_eq!(b.interaction_progress.value(), 0.5, "and must not drift while settled");
         }
     }
 
@@ -1785,13 +1792,13 @@ mod tests {
         let mut b = make_button();
         b.set_hovered(true);
         b.tick(50);
-        let partway = b.interaction_progress.progress();
+        let partway = b.interaction_progress.value();
         assert!(partway > 0.0 && partway < 0.5, "the hover is in flight: {partway}");
 
         b.set_pressed(true);
         assert!(b.tick(1), "the press must continue the movement, not settle on the first frame");
         assert!(
-            b.interaction_progress.progress() > partway,
+            b.interaction_progress.value() > partway,
             "a press must move the progress onward from where the hover left it, not back to zero"
         );
     }

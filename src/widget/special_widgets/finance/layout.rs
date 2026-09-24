@@ -347,6 +347,39 @@ mod tests {
         assert_ne!(colors.grid, colors.ink, "a gridline at full ink is a rule, not a grid");
     }
 
+    /// The crosshair and the level lines are hairlines of the same pairing, so a surface the
+    /// theme moves must move them with it.
+    ///
+    /// Regression: all four panes wrote `Color::rgb(120, 120, 120)` for the crosshair and
+    /// `rgb(230, 230, 230)` for its readout, which is invisible on a white pane and glaring on
+    /// a dark one — the same shape as the `rgb(18, 22, 28)` the surface itself started as.
+    /// The assertion is a *relation*, not three literals: whatever the surface and ink are,
+    /// the crosshair sits strictly between them, and the reference line no stronger than it.
+    #[test]
+    fn the_crosshair_follows_the_surface_and_ink_it_is_drawn_from() {
+        let dark =
+            panel_colors(Some(&WidgetStyle::default().with_background(Color::rgb(18, 22, 28))));
+        let light =
+            panel_colors(Some(&WidgetStyle::default().with_background(Color::rgb(255, 255, 255))));
+        assert_ne!(
+            dark.crosshair, light.crosshair,
+            "a crosshair that does not move with the pane is the literal this test exists for"
+        );
+        for colors in [dark, light] {
+            assert_ne!(
+                colors.crosshair, colors.surface,
+                "a crosshair in the panel colour is invisible"
+            );
+            assert_ne!(colors.crosshair, colors.ink, "a crosshair at full ink is a data line");
+            assert_ne!(colors.grid, colors.crosshair, "the crosshair is the stronger hairline");
+            assert_ne!(colors.reference, colors.crosshair, "the level line is the weaker one");
+            assert_ne!(
+                colors.reference, colors.surface,
+                "a level line in the panel colour is invisible"
+            );
+        }
+    }
+
     /// A surface the theme would make identical to the window behind it is stepped away from
     /// it, so the pane has a visible extent — while a colour the caller set is never moved.
     #[test]
@@ -517,17 +550,17 @@ impl PlotArea {
 }
 
 /// The whole chrome of one financial pane: the surface it is painted on, the ink drawn on
-/// top of that surface, and the hairline its frame and gridlines are drawn in.
+/// top of that surface, and the hairlines its frame, gridlines and crosshair are drawn in.
 ///
 /// # Why this is a type and not three more `Color` parameters
 ///
-/// The three colours are not independent: `ink` is only legible *against `surface`*, and
-/// `grid` is a blend of the two. Passing them as separate arguments is how a caller supplies
-/// an ink derived from the window behind the panel rather than from the panel itself — which
-/// is exactly the defect that made the K-line pane's price labels unreadable in earlier
-/// rounds, and the same one that made this crate's `chart` control paint the dark theme's
-/// ink onto a hardcoded white slab (2.52:1). One value carries all three, so they cannot be
-/// taken from different derivations.
+/// The colours are not independent: `ink` is only legible *against `surface`*, and `grid`
+/// and `crosshair` are blends of the two. Passing them as separate arguments is how a caller
+/// supplies an ink derived from the window behind the panel rather than from the panel
+/// itself — which is exactly the defect that made the K-line pane's price labels unreadable
+/// in earlier rounds, and the same one that made this crate's `chart` control paint the dark
+/// theme's ink onto a hardcoded white slab (2.52:1). One value carries all of them, so they
+/// cannot be taken from different derivations.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PanelColors {
     /// The colour the plot panel is filled with.
@@ -536,6 +569,42 @@ pub struct PanelColors {
     pub ink: Color,
     /// The colour the frame and gridlines are drawn in: `ink` blended into `surface`.
     pub grid: Color,
+    /// The colour a reader's crosshair and its level lines are drawn in.
+    ///
+    /// Stronger than `grid` because a crosshair is a moveable annotation the reader is
+    /// following with the pointer, and weaker than `ink` because it is never the message —
+    /// the bar under it is. It is a blend of the two rather than a fourth independent
+    /// colour for the same reason `grid` is: on a white pane a slate crosshair is invisible
+    /// and on a near-black one it glares, and this crate already measured that defect on all
+    /// four panes (`rgb(120, 120, 120)` written out four times).
+    pub crosshair: Color,
+    /// The colour a price level's dashed reference line is drawn in.
+    ///
+    /// Weaker than `crosshair`: a level is a background annotation, not something the
+    /// pointer is tracking, so it must not compete with the crosshair that may cross it.
+    pub reference: Color,
+}
+
+impl PanelColors {
+    /// Builds a pane's chrome from a surface and an ink that have *already* been resolved.
+    ///
+    /// # Why this exists when [`panel_colors`] already does it
+    ///
+    /// `order_book` and `quote_board` are reader-facing tables rather than plots: their
+    /// surface and ink come from their own two-tone row derivation, not from the plot
+    /// resolver. They still hand a [`PanelColors`] to the shared empty-pane renderer, so
+    /// without this they would each have to spell out every field — which is exactly how
+    /// the three hairlines got inlined the first time. Going through one constructor means
+    /// a field added later is not forgotten at two of the six construction sites.
+    pub fn from_parts(surface: Color, ink: Color) -> Self {
+        PanelColors {
+            surface,
+            ink,
+            grid: surface.blend(&ink, 0.22),
+            crosshair: surface.blend(&ink, 0.45),
+            reference: surface.blend(&ink, 0.32),
+        }
+    }
 }
 
 /// How far the ink used for axis text and labels is stepped toward legibility.
@@ -613,5 +682,7 @@ pub fn panel_colors(style: Option<&WidgetStyle>) -> PanelColors {
         .unwrap_or_else(|| surface.contrast_color());
     let ink = ink.legible_on(surface, PANEL_MIN_CONTRAST);
 
-    PanelColors { surface, ink, grid: surface.blend(&ink, 0.22) }
+    // One construction point for the three hairlines, shared with `from_parts`, so the
+    // weights cannot drift between the plot panes and the reader-facing tables.
+    PanelColors::from_parts(surface, ink)
 }

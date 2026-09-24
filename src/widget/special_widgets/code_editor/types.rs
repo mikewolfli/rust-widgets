@@ -123,6 +123,20 @@ pub struct SyntaxPalette {
 
 impl Default for SyntaxPalette {
     fn default() -> Self {
+        Self::light()
+    }
+}
+
+impl SyntaxPalette {
+    /// The palette for a light editor background.
+    ///
+    /// # Why the light palette is the `Default`
+    ///
+    /// `Default` has to pick one, and this is the one an unthemed build drew — keeping it means
+    /// a build with no theme is byte-for-byte unchanged. `CODE_EDITOR`'s constructor picks
+    /// between this and [`Self::dark`] by the active appearance, so a themed host never gets
+    /// the other one by accident.
+    pub fn light() -> Self {
         Self {
             colors: vec![
                 (TokenKind::Plain, Color::rgb(43, 55, 74)),
@@ -132,8 +146,8 @@ impl Default for SyntaxPalette {
                 (TokenKind::String, Color::rgb(174, 100, 34)),
                 (TokenKind::Character, Color::rgb(150, 96, 30)),
                 (TokenKind::Number, Color::rgb(186, 88, 48)),
-                (TokenKind::Comment, Color::rgb(110, 128, 116)),
-                (TokenKind::BlockComment, Color::rgb(110, 128, 116)),
+                (TokenKind::Comment, Color::rgb(96, 112, 102)),
+                (TokenKind::BlockComment, Color::rgb(96, 112, 102)),
                 (TokenKind::Preprocessor, Color::rgb(120, 96, 60)),
                 (TokenKind::Operator, Color::rgb(72, 88, 112)),
                 (TokenKind::Identifier, Color::rgb(43, 55, 74)),
@@ -151,6 +165,67 @@ impl Default for SyntaxPalette {
             chrome_background: Color::rgb(238, 242, 248),
             chrome_text: Color::rgb(70, 84, 106),
             chrome_dim_text: Color::rgb(140, 152, 170),
+        }
+    }
+
+    /// The palette for a dark editor background.
+    ///
+    /// # Why this is a second palette and not a blend
+    ///
+    /// Syntax colours are not chrome: each one is the *identity* of a token category, the way
+    /// the rising green is the identity of a candle. Blending the light set toward the ink would
+    /// collapse the distinctions a reader scans by (a comment and a keyword would converge), so
+    /// the hues are chosen at the tones they read at on a dark ground — the same set of
+    /// categories, restated for the other appearance. The field is `pub`, so a host that wants
+    /// its own scheme still replaces the whole value.
+    ///
+    /// Regression (BLUE21 P4-4): the constructor used `Self::default()` unconditionally, so a
+    /// dark host got a near-white editor slab with dark ink inside its dark window.
+    pub fn dark() -> Self {
+        Self {
+            colors: vec![
+                (TokenKind::Plain, Color::rgb(212, 218, 228)),
+                (TokenKind::Keyword, Color::rgb(197, 134, 192)),
+                (TokenKind::Type, Color::rgb(86, 156, 214)),
+                (TokenKind::Function, Color::rgb(220, 220, 170)),
+                (TokenKind::String, Color::rgb(206, 145, 120)),
+                (TokenKind::Character, Color::rgb(206, 145, 120)),
+                (TokenKind::Number, Color::rgb(181, 206, 168)),
+                (TokenKind::Comment, Color::rgb(106, 153, 85)),
+                (TokenKind::BlockComment, Color::rgb(106, 153, 85)),
+                (TokenKind::Preprocessor, Color::rgb(155, 179, 217)),
+                (TokenKind::Operator, Color::rgb(212, 218, 228)),
+                (TokenKind::Identifier, Color::rgb(212, 218, 228)),
+            ],
+            bracket_color: Color::rgb(86, 156, 214),
+            active_line_color: Color::rgb(38, 40, 44),
+            indent_guide_color: Color::rgb(52, 55, 60),
+            selection_color: Color::rgb(38, 79, 120),
+            search_color: Color::rgb(97, 79, 36),
+            search_current_color: Color::rgb(140, 110, 40),
+            occurrence_color: Color::rgb(86, 156, 214),
+            gutter_background: Color::rgb(30, 32, 36),
+            background: Color::rgb(24, 26, 30),
+            border_color: Color::rgb(62, 66, 74),
+            chrome_background: Color::rgb(32, 34, 38),
+            chrome_text: Color::rgb(204, 210, 220),
+            chrome_dim_text: Color::rgb(140, 148, 162),
+        }
+    }
+
+    /// The palette that matches the active appearance, or the light one when no theme is active.
+    ///
+    /// Read through `crate::style`, not `crate::theme`: the theme module only exists in a build
+    /// with a device profile, and the editor is compiled in every one.
+    pub fn for_active_appearance() -> Self {
+        let dark = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.appearance == crate::style::AppearanceMode::Dark)
+            .unwrap_or(false);
+        if dark {
+            Self::dark()
+        } else {
+            Self::light()
         }
     }
 }

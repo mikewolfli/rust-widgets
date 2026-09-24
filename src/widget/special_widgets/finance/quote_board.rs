@@ -623,9 +623,10 @@ impl Draw for QuoteBoard {
                     context,
                     &PlotArea::of(body),
                     crate::widget::special_widgets::finance::layout::PanelColors {
-                        surface: panel,
-                        ink,
                         grid: panel.blend(&secondary, 0.45),
+                        ..crate::widget::special_widgets::finance::layout::PanelColors::from_parts(
+                            panel, ink,
+                        )
                     },
                 );
             }

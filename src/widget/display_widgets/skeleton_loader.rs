@@ -64,13 +64,33 @@ fn expect_skeleton_shape(value: CapabilityValue) -> Result<SkeletonShape, Capabi
 /// Timer ID used to drive the shimmer animation.
 const SKELETON_ANIMATION_TIMER_ID: u32 = 0x534B;
 
+/// How long one full shimmer pulse takes, in milliseconds.
+///
+/// The pulse is a loop, so it is priced from the theme's `slow` token scaled up by
+/// [`PULSE_SLOW_MULTIPLE`] — the same rule `progress_circle`'s revolution follows, because
+/// both are "an indefinite wait, animated" and a theme that slows everything down should
+/// slow them together. The literal is the no-theme fallback.
+const DEFAULT_PULSE_PERIOD_MS: u32 = 1200;
+
+/// How many `slow` tokens one shimmer pulse is worth.
+const PULSE_SLOW_MULTIPLE: u32 = 4;
+
 /// SkeletonLoader widget — renders a shimmering placeholder shape while data loads.
 pub struct SkeletonLoader {
     base: BaseWidget,
     shape: SkeletonShape,
     animated: bool,
-    /// Counter incremented on each timer tick to drive opacity oscillation.
-    animation_counter: u32,
+    /// The shimmer's phase, in turns: `0.0` and `1.0` are the same point in the pulse.
+    ///
+    /// # Why this is a phase and not a frame counter
+    ///
+    /// The pulse used to advance one step per `Event::Timer`, which made its *rate* a
+    /// property of how often the host happened to send that event: the same placeholder
+    /// pulsed at one speed on a 60 Hz host and twice as fast on a 120 Hz one, and it sat
+    /// outside the animation bus entirely. A pulse is a duration, so it is driven by
+    /// [`SkeletonLoader::tick`] from `delta_ms` — the same contract every other animation in
+    /// the crate uses (BLUE23 \u00a73).
+    phase: f32,
 }
 
 impl SkeletonLoader {
@@ -83,7 +103,7 @@ impl SkeletonLoader {
             base: BaseWidget::new(WidgetKind::SkeletonLoader, geometry, "SkeletonLoader"),
             shape: SkeletonShape::Rect(200, 20),
             animated: true,
-            animation_counter: 0,
+            phase: 0.0,
         }
     }
 
@@ -109,19 +129,44 @@ impl SkeletonLoader {
         self.animated
     }
 
-    /// Computes the current shimmer opacity based on the animation counter.
+    /// Computes the current shimmer opacity from the pulse phase.
     ///
-    /// Uses a triangle wave over 20 frames to oscillate between 0.1 and 0.3:
-    /// - Frames 0..9  → increasing opacity (0.1 → 0.3)
-    /// - Frames 10..19 → decreasing opacity (0.3 → 0.1)
-    /// - Disabled animation returns a static 0.2.
+    /// A triangle wave over the phase: `0.0` and `1.0` are the dimmest point, `0.5` the
+    /// brightest. A disabled animation returns the static mid-point, which is also the wave's
+    /// own mean — so switching the animation off dims the shimmer to its average brightness
+    /// rather than jumping to one extreme.
     fn current_opacity(&self) -> f32 {
         if !self.animated {
             return 0.2;
         }
-        let phase = self.animation_counter % 20;
-        let t = if phase < 10 { phase as f32 / 9.0 } else { (19 - phase) as f32 / 9.0 };
-        0.1 + 0.2 * t
+        // `1 - |2p - 1|` is the triangle: 0 at both ends, 1 at the middle.
+        let triangle = 1.0 - (2.0 * self.phase - 1.0).abs();
+        0.1 + 0.2 * triangle
+    }
+
+    /// Advances the shimmer by `delta_ms` and reports whether another frame is owed.
+    ///
+    /// Only the animated state owes frames: a static placeholder is drawn once, so it must
+    /// not keep the frame bus alive (\u00a73.2).
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.animated {
+            return false;
+        }
+        // Wrapped rather than clamped, so a long-running app cannot drift into a large value
+        // and lose float precision on the phase.
+        self.phase = (self.phase + delta_ms as f32 / self.pulse_period_ms() as f32).fract();
+        self.base.request_redraw();
+        true
+    }
+
+    /// The duration of one full pulse, priced by the theme.
+    fn pulse_period_ms(&self) -> u32 {
+        let slow = crate::style::motion_tokens().2;
+        if slow == 0 {
+            DEFAULT_PULSE_PERIOD_MS
+        } else {
+            slow.saturating_mul(PULSE_SLOW_MULTIPLE).max(1)
+        }
     }
 }
 
@@ -135,6 +180,16 @@ impl Widget for SkeletonLoader {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(300, 20)
+    }
+
+    /// One frame of the shimmer. The frame bus calls this; nothing else does.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        SkeletonLoader::tick(self, delta_ms)
+    }
+
+    /// Only a shimmering placeholder owes frames; a static one is a still picture.
+    fn is_animating(&self) -> bool {
+        self.animated
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -270,18 +325,18 @@ impl Draw for SkeletonLoader {
 
 impl EventHandler for SkeletonLoader {
     fn handle_event(&mut self, event: &Event) {
+        // A disabled control consumes nothing, so the base state stays authoritative.
         if !self.base.is_enabled() {
             return;
         }
-        match event {
-            Event::Timer { id } if *id == SKELETON_ANIMATION_TIMER_ID => {
-                if self.animated {
-                    self.animation_counter = self.animation_counter.wrapping_add(1);
-                    self.base.request_redraw();
-                }
-            }
-            _ => {
-                self.base.handle_event(event);
+        self.base.handle_event(event);
+        // The legacy timer still advances the pulse, at a nominal frame's worth of time, so a
+        // host that has not moved to the frame bus sees the shimmer it always did. It is a
+        // fallback, not the driver: the pulse's *rate* now comes from the theme rather than
+        // from how often this event arrives.
+        if let Event::Timer { id } = event {
+            if *id == SKELETON_ANIMATION_TIMER_ID && self.animated {
+                self.tick(16);
             }
         }
     }
@@ -322,41 +377,55 @@ mod tests {
         assert_eq!(sl.shape(), SkeletonShape::TextLine(150));
     }
 
+    /// The shimmer oscillates between its two ends, and its rate is a *duration* — not a frame
+    /// count.
+    ///
+    /// Regression: the pulse advanced one step per `Event::Timer`, so its rate depended on how
+    /// often the host sent that event and it stood outside the frame bus. It is now driven by
+    /// `tick(delta_ms)` from the theme's `slow` token, so the same control pulses at the same
+    /// rate on any host. The legacy timer still nudges it, which is why the event path is
+    /// exercised here as well.
     #[test]
-    fn skeleton_loader_animated_timer_creates_oscillation() {
+    fn skeleton_loader_pulses_over_time_and_holds_still_when_static() {
         let mut sl = SkeletonLoader::new(Rect::new(0, 0, 200, 100));
         assert!(sl.is_animated());
-        assert_eq!(sl.animation_counter, 0);
 
-        // Single timer tick advances the counter
-        sl.handle_event(&Event::Timer { id: SKELETON_ANIMATION_TIMER_ID });
-        assert_eq!(sl.animation_counter, 1);
-
-        // Multiple timer ticks advance the counter
-        for _ in 0..10 {
-            sl.handle_event(&Event::Timer { id: SKELETON_ANIMATION_TIMER_ID });
-        }
-        assert_eq!(sl.animation_counter, 11);
-
-        // Collect opacities over a full cycle to verify oscillation
-        let opacities: Vec<f32> = (0..20)
+        // Collect opacities across one full period, stepping in tenths of the period.
+        let period = sl.pulse_period_ms();
+        let at_rest = sl.current_opacity();
+        let opacities: Vec<f32> = (0..10)
             .map(|_| {
-                sl.handle_event(&Event::Timer { id: SKELETON_ANIMATION_TIMER_ID });
+                assert!(sl.tick(period / 10), "an animated pulse owes another frame");
                 sl.current_opacity()
             })
             .collect();
 
-        // Should have both the low (~0.1) and high (~0.3) ends of the range
+        // Both ends of the range are reached, so the pulse reads as a shimmer and not a wobble.
         let min_op = opacities.iter().cloned().fold(f32::MAX, f32::min);
         let max_op = opacities.iter().cloned().fold(f32::MIN, f32::max);
-        assert!(min_op < 0.15, "minimum opacity should be near 0.1, got {}", min_op);
-        assert!(max_op > 0.25, "maximum opacity should be near 0.3, got {}", max_op);
+        assert!(min_op < 0.15, "minimum opacity should be near 0.1, got {min_op}");
+        assert!(max_op > 0.25, "maximum opacity should be near 0.3, got {max_op}");
 
-        // Disabling animation freezes opacity at mid-point (0.2)
+        // Ten steps of a tenth of a period is exactly one turn, so the pulse is back where it
+        // started: the phase is a loop, not a counter that grows without bound.
+        assert!(
+            (sl.current_opacity() - at_rest).abs() < 0.02,
+            "one period returns to the start: {} vs {at_rest}",
+            sl.current_opacity()
+        );
+
+        // Disabling the animation freezes it at the wave's mean and stops it owing frames.
         sl.set_animated(false);
         assert!(!sl.is_animated());
         let static_op = sl.current_opacity();
-        assert!((static_op - 0.2).abs() < 0.01, "static opacity should be 0.2, got {}", static_op);
+        assert!((static_op - 0.2).abs() < 0.01, "static opacity should be 0.2, got {static_op}");
+        assert!(!sl.tick(period), "a static placeholder must not request another frame");
+
+        // The legacy timer path still advances the pulse for a host that has not migrated.
+        sl.set_animated(true);
+        let before = sl.current_opacity();
+        sl.handle_event(&Event::Timer { id: SKELETON_ANIMATION_TIMER_ID });
+        assert_ne!(sl.current_opacity(), before, "the legacy timer still nudges the pulse");
     }
 
     #[test]

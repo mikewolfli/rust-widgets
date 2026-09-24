@@ -278,19 +278,17 @@ pub struct ThemeStateManager {
     light_theme: StatefulTheme,
     dark_theme: StatefulTheme,
     current_mode: ThemeMode,
-    auto_switch_threshold: Option<(u8, u8)>,
     /// Callbacks invoked when the theme mode changes.
     on_mode_changed: ModeChangedCallback,
 }
 impl ThemeStateManager {
     /// Creates a manager holding the two themes, starting in [`ThemeMode::Light`]
-    /// with automatic switching disabled and no callbacks registered.
+    /// with no callbacks registered.
     pub fn new(light: StatefulTheme, dark: StatefulTheme) -> Self {
         Self {
             light_theme: light,
             dark_theme: dark,
             current_mode: ThemeMode::Light,
-            auto_switch_threshold: None,
             on_mode_changed: Rc::new(RefCell::new(Vec::new())),
         }
     }
@@ -322,7 +320,9 @@ impl ThemeStateManager {
     /// Borrows whichever of the two themes is currently active.
     ///
     /// [`ThemeMode::Light`] and [`ThemeMode::Dark`] return their theme directly;
-    /// [`ThemeMode::Auto`] consults the time window from [`Self::set_auto_switch`].
+    /// [`ThemeMode::Auto`] asks the installed
+    /// [`EnvironmentProvider`](crate::style::environment::EnvironmentProvider) which appearance
+    /// the device asks for (see [`Self::should_use_dark`]).
     pub fn current_theme(&self) -> &StatefulTheme {
         match self.current_mode {
             ThemeMode::Light => &self.light_theme,
@@ -349,51 +349,53 @@ impl ThemeStateManager {
         };
         self.set_mode(new_mode);
     }
-    /// Enables [`ThemeMode::Auto`] resolution using an hour window.
+    /// Enables [`ThemeMode::Auto`] resolution from the installed environment provider.
     ///
-    /// `hour_start` and `hour_end` are UTC hours in `0..24`, and dark mode is
-    /// chosen when the current hour is in `[hour_start, hour_end)`. The window
-    /// does not wrap past midnight, so `(22, 6)` never selects dark; use
-    /// `(0, 6)` plus `(22, 24)` semantics in application code if needed. Calling
-    /// this does not by itself switch the mode to [`ThemeMode::Auto`].
-    pub fn set_auto_switch(&mut self, hour_start: u8, hour_end: u8) {
-        self.auto_switch_threshold = Some((hour_start, hour_end));
+    /// # Why this is now a no-op that only sets the mode
+    ///
+    /// It used to configure an hour window on this manager. That field existed only to be read by
+    /// `should_use_dark`'s wall-clock comparison, and when that was replaced by the environment
+    /// provider (see [`Self::should_use_dark`]) this setter had **zero callers and nothing to
+    /// configure** — a dangling mirror of a setting that no longer existed (principle #99).
+    ///
+    /// The method is kept, with its signature intact (principle #21), because it is a sensible
+    /// public way to say "follow the device": switching to [`ThemeMode::Auto`] is exactly what a
+    /// caller reaching for it wants, and `set_mode` fires the callbacks. The two hour arguments are
+    /// ignored — a caller that genuinely wants time-of-day behaviour resolves it itself and calls
+    /// [`Self::set_mode`] with the `Dark`/`Light` it decided on, which is the only form the library
+    /// can honour without guessing.
+    pub fn set_auto_switch(&mut self, _hour_start: u8, _hour_end: u8) {
+        self.set_mode(ThemeMode::Auto);
     }
-    /// Resolves whether the automatic window currently calls for the dark theme.
+    /// Resolves whether the automatic mode currently calls for the dark theme.
     ///
-    /// Compares against the system clock read as UTC whole hours from the Unix
-    /// epoch, which is approximate for local-time expectations. Returns `false`
-    /// when no window is configured or the clock is unavailable (an error is
-    /// treated as the epoch).
+    /// # Why this no longer reads a clock
     ///
-    /// # Under `mini`
+    /// It used to compare `SystemTime::now()`'s UTC hour against a hand-written window, which is
+    /// the wrong shape in three ways at once (BLUE24 §4.1 gives the measurement):
     ///
-    /// The wall clock is not readable: `SystemTime` is `std`-only and `mini` has no
-    /// `compat` clock that reports a calendar time (`compat::Instant` is monotonic
-    /// and has no epoch). The `mini` arm therefore reports `false` — the same value
-    /// the documented "clock is unavailable" case already produces, so a `mini`
-    /// build keeps the light theme rather than guessing an hour.
-    #[cfg(not(alloc_frugal))]
+    /// * **The question is not answerable from a clock.** Whether the user wants a dark UI is a
+    ///   *preference*; the hour of the day is at best a proxy for it, and a poor one — a user in
+    ///   a dark room at noon wants dark, and a user who simply prefers light wants light at
+    ///   midnight. The authority is the host, so the answer now comes from the installed
+    ///   [`EnvironmentProvider`](crate::style::environment::EnvironmentProvider).
+    /// * **It failed silently where it mattered.** Under `mini` there is no wall clock, so the
+    ///   answer was hardcoded `false` — which reads as "the user wants light" when the truth was
+    ///   "I cannot tell". That is principle #37's forbidden fabricated value.
+    /// * **It could not be tested.** A test cannot set the system clock to 22:00, so the dark
+    ///   path was unreachable from a unit test. The environment seam makes it a one-line fixture.
+    ///
+    /// The hour window is gone rather than deprecated because nothing else could use it: a host
+    /// that does want time-of-day behaviour resolves it itself and reports `Dark` or `Light`, and
+    /// it is the only party that knows the user's actual preference. This method keeps its name
+    /// and its answer shape so callers are unchanged (principle #21).
     fn should_use_dark(&self) -> bool {
-        if let Some((start, end)) = self.auto_switch_threshold {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            // UTC hour (approximate - good enough for dark mode toggle)
-            let hour = ((now / 3600) % 24) as u8;
-            hour >= start && hour < end
-        } else {
-            false
-        }
-    }
-    /// Resolves whether the automatic window currently calls for the dark theme.
-    ///
-    /// See the `not(alloc_frugal)` definition above: no wall clock is available
-    /// under `mini`, so this is always `false`.
-    #[cfg(alloc_frugal)]
-    fn should_use_dark(&self) -> bool {
-        false
+        // `Auto` means "follow the device", and the device's answer is a colour scheme. A provider
+        // that itself reports `Auto` has expressed no preference, so light is the neutral result —
+        // the same value an uninstalled build produced, now arrived at by asking rather than by
+        // guessing.
+        self.current_mode == ThemeMode::Auto
+            && crate::style::environment::environment().color_scheme == ThemeMode::Dark
     }
     /// Looks up the [`StateTheme`] for `state` in the theme that is currently
     /// active, falling back to that theme's default state as

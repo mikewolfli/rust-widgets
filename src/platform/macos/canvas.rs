@@ -944,13 +944,35 @@ unsafe fn window_did_resize(this: &Object, _cmd: Sel, notification: id) {
     crate::queue_resize_trigger(widget_id, width, height);
 }
 
-/// Safe-ABI trampoline for the `tick:` timer implementation.
+/// Safe-ABI trampoline for the frame timer implementation.
 ///
 /// Same reason as [`window_did_resize_impl`]: `add_method` accepts only the safe
 /// `extern "C"` form.
+///
+/// # Why it drives a frame rather than draining the queue
+///
+/// The selector is still `tick:` and the timer is unchanged, but the body used to be
+/// `crate::drain_triggers()` alone -- half a frame. Emptying the trigger queue re-runs
+/// layout after a resize and does nothing else, so on macOS every hover fade, caret
+/// blink and toggle transition was unreachable: nothing advanced the animation bus
+/// (BLUE24 §0A.1 measurement 1). `crate::drive_frame` is that missing half, and it
+/// drains as well, so this is strictly the same queue handling plus the animation step.
+///
+/// The timer is left repeating unconditionally. A `ControlFlow`-style stop is not
+/// available to `NSTimer` without invalidating it, and doing so would stop the drain
+/// too -- so a still window would stop hearing the resizes that could start it moving.
+/// A still frame is only a lookup plus an `is_animating()` sweep, which is what makes
+/// the unconditional heartbeat affordable; see [`crate::drive_frame`].
 extern "C" fn drain_triggers_impl(_this: &Object, _cmd: Sel, _timer: id) {
-    crate::drain_triggers();
+    crate::drive_frame(FRAME_INTERVAL_MS as u32);
 }
+
+/// The frame interval this backend's timer runs at, in milliseconds.
+///
+/// The timer's interval and the delta handed to [`crate::drive_frame`] must be the same
+/// number, or every transition runs at the ratio between them; naming it once keeps
+/// them from drifting apart (see `platform/linux/platform_impl.rs`'s twin).
+const FRAME_INTERVAL_MS: u64 = 16;
 
 /// Installs the resize delegate on `window` and tags it with `widget_id`.
 ///
@@ -969,7 +991,7 @@ pub(crate) unsafe fn install_resize_delegate(window: id, widget_id: ObjectId) {
     );
     let _: () = msg_send![window, setDelegate: delegate];
 
-    // Start the drain tick, targeting this delegate.
+    // Start the frame tick, targeting this delegate.
     //
     // Scheduled on the current run loop and repeating, so it fires for as long as
     // AppKit runs. `retain` is not used: the timer is added to the run loop, which owns
@@ -979,7 +1001,7 @@ pub(crate) unsafe fn install_resize_delegate(window: id, widget_id: ObjectId) {
     // this module registered on its class above.
     let _timer: id = msg_send![
         class!(NSTimer),
-        scheduledTimerWithTimeInterval: 1.0f64 / 60.0f64
+        scheduledTimerWithTimeInterval: (FRAME_INTERVAL_MS as f64) / 1000.0f64
         target: delegate
         selector: sel!(tick:)
         userInfo: nil

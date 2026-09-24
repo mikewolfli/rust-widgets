@@ -250,6 +250,32 @@ impl Draw for BottomNavigationBar {
             let total_content_height = icon_metrics.height + label_metrics.height + 4;
             let content_y = tab_rect.y + (tab_rect.height as i32 - total_content_height as i32) / 2;
 
+            // The selected tab's indicator is Material M3's **pill**: a 64×32 rounded capsule
+            // behind the icon, in the accent, rather than the 3 px underline this used to draw.
+            //
+            // The underline was the M2 shape and it also read ambiguously: pinned to the bar's
+            // top edge, it looked like the bar's own border in the one place a reader expects to
+            // find "which tab am I on". The pill states it where the eye already is — on the
+            // icon — and it is drawn *before* the icon so the glyph sits on it. Its size follows
+            // the icon's own box, so a bar with a larger font gets a larger pill instead of a
+            // fixed capsule the icon outgrows.
+            if is_selected && is_enabled {
+                const PILL_WIDTH: u32 = 64;
+                const PILL_HEIGHT: u32 = 32;
+                let pill_width = PILL_WIDTH.min(tab_rect.width);
+                let pill_height = PILL_HEIGHT.min(tab_rect.height);
+                let pill_x = tab_rect.x + (tab_rect.width as i32 - pill_width as i32) / 2;
+                // Centred on the icon rather than on the tab, so the glyph is optically inside
+                // it: the label below must not make the pill drift downward.
+                let pill_y = content_y + (icon_metrics.height as i32 - pill_height as i32) / 2;
+                let pill = Rect::new(pill_x, pill_y, pill_width, pill_height);
+                // The capsule is a *tint* of the accent, not the accent at full strength: the
+                // icon on top of it is drawn in the accent, and an accent on an accent is
+                // unreadable. Blending it into the bar is the same treatment `chip`'s selected
+                // state uses.
+                context.fill_rounded_rect(pill, pill_height / 2, accent.blend(&bar_color, 0.24));
+            }
+
             // Draw icon. `content_y` is the top of the icon+label stack and the glyph origin is
             // the box's top edge, so no ascent term belongs here — the one that used to be
             // added pushed the icon a full line down and the label with it.
@@ -273,16 +299,6 @@ impl Draw for BottomNavigationBar {
                 label_color,
                 HorizontalAlignment::Left,
             );
-
-            // Draw selected indicator (accent line above icon)
-            if is_selected && is_enabled {
-                let indicator_height = 3u32;
-                let indicator_width = (tab_width * 3 / 5).max(20).min(tab_width);
-                let indicator_x = tab_rect.x + (tab_rect.width as i32 - indicator_width as i32) / 2;
-                let indicator_rect =
-                    Rect::new(indicator_x, rect.y, indicator_width, indicator_height);
-                context.fill_rounded_rect(indicator_rect, 1, accent);
-            }
         }
     }
 }
@@ -533,6 +549,30 @@ mod tests {
         let svg = render_to_svg(&mut bar);
         assert!(svg.starts_with("<svg"));
         assert!(svg.ends_with("</svg>"));
+    }
+
+    /// The selected tab is marked by an M3 pill, not by the 3 px underline it used to draw.
+    ///
+    /// Regression (BLUE21 AR2): the indicator was a 3 px accent line pinned to the bar's top
+    /// edge — the M2 shape, and in the one place a reader is most likely to read it as the bar's
+    /// own border rather than as "which tab am I on". The pill is a 64×32 capsule behind the
+    /// icon, so the assertion is on that geometry: exactly one fully-rounded 64×32 rect, and no
+    /// 3 px full-height line at the bar's top edge.
+    #[test]
+    fn the_selected_tab_is_marked_by_a_pill_not_an_underline() {
+        let mut bar = make_bar();
+        bar.set_selected_index(1);
+        let svg = render_to_svg(&mut bar);
+
+        let pill = svg
+            .split("<rect")
+            .skip(1)
+            .find(|rect| rect.contains("width=\"64\"") && rect.contains("height=\"32\""))
+            .unwrap_or_else(|| panic!("the pill capsule must be painted: {svg}"));
+        assert!(pill.contains("rx=\"16\""), "a capsule is half its height in radius: {pill}");
+
+        // Only the selected tab carries a pill, so there is exactly one.
+        assert_eq!(svg.matches("width=\"64\"").count(), 1, "one selected tab, one pill: {svg}");
     }
 
     #[test]

@@ -371,22 +371,22 @@ impl IndicatorChart {
     }
 
     /// Draws a dashed horizontal reference level.
+    ///
+    /// `color` is passed in rather than resolved here so the level line comes from the same
+    /// [`PanelColors`] as the crosshair crossing it: a level that a theme move leaves behind
+    /// is exactly the defect this pane's four hardcoded literals used to be.
     fn draw_reference_line(
         context: &mut RenderContext,
         area: &PlotArea,
         price_axis: &PriceAxis,
         level: f64,
+        color: Color,
     ) {
         let y = price_axis.y_for(level);
         let mut x = area.rect.x;
         while x < area.right() {
             let dash_end = (x + 4).min(area.right());
-            context.draw_line_stroke(
-                Point { x, y },
-                Point { x: dash_end, y },
-                Color::rgb(88, 96, 108),
-                1,
-            );
+            context.draw_line_stroke(Point { x, y }, Point { x: dash_end, y }, color, 1);
             x += 8;
         }
     }
@@ -606,7 +606,7 @@ impl Draw for IndicatorChart {
 
         if self.show_reference_levels {
             for level in self.mode.reference_levels() {
-                Self::draw_reference_line(context, &area, &price_axis, *level);
+                Self::draw_reference_line(context, &area, &price_axis, *level, chrome.reference);
             }
         }
 
@@ -624,7 +624,7 @@ impl Draw for IndicatorChart {
             context.draw_line_stroke(
                 Point { x, y: area.rect.y },
                 Point { x, y: area.bottom() },
-                Color::rgb(120, 120, 120),
+                chrome.crosshair,
                 1,
             );
             // The readings at that bar, one per drawn series.
@@ -644,7 +644,7 @@ impl Draw for IndicatorChart {
                     Point { x: label_x.max(area.rect.x), y: area.rect.y + 2 },
                     &text,
                     &Font::simple("Sans", 11.0),
-                    Color::rgb(230, 230, 230),
+                    chrome.ink,
                     HorizontalAlignment::Left,
                 );
             }

@@ -280,6 +280,11 @@ impl Draw for Canvas {
 
 impl EventHandler for Canvas {
     fn handle_event(&mut self, event: &Event) {
+        // Forwarded *before* the match, so the base records the pointer facts (`hovered`,
+        // `grabbed`, focus) that `widget_state()` reads. Without it the theme's `"canvas:hover"`
+        // key could never match, which is the same defect `list_view` and `data_grid` had: a
+        // control whose `handle_event` replaces the base's rather than extending it.
+        self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }
@@ -421,5 +426,28 @@ mod tests {
         canvas.fill_rounded_rect(Rect::new(5, 5, 50, 50), 8, Color::rgba(255, 0, 0, 128));
         canvas.draw_line_aa(Point::new(0, 0), Point::new(100, 50), Color::GREEN);
         assert_eq!(canvas.command_count(), 2);
+    }
+    /// The canvas forwards pointer events to its base, so hover becomes a state it can report.
+    ///
+    /// Regression: `handle_event` *replaced* the base's rather than extending it, so
+    /// `MouseEnter`/`MouseLeave` never reached `BaseWidget`, `widget_state()` could never be
+    /// `Hover`, and the theme's `"canvas:hover"` key was dead — the same defect `list_view` and
+    /// `data_grid` had. The assertion is the state the contract publishes, not a signal.
+    #[test]
+    fn the_canvas_reports_hover_because_it_forwards_to_its_base() {
+        use crate::style::WidgetState;
+
+        let mut canvas = Canvas::new(Rect::new(0, 0, 200, 100));
+        assert_eq!(canvas.widget_state(), WidgetState::Normal);
+
+        canvas.handle_event(&Event::MouseEnter { pos: Point::new(10, 10) });
+        assert_eq!(
+            canvas.widget_state(),
+            WidgetState::Hover,
+            "the base must have been told the pointer arrived"
+        );
+
+        canvas.handle_event(&Event::MouseLeave { pos: Point::new(500, 500) });
+        assert_eq!(canvas.widget_state(), WidgetState::Normal, "and that it left");
     }
 }

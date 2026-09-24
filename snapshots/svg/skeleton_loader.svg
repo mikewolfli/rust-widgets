@@ -2,5 +2,5 @@
 <!-- control: skeleton_loader | appearance: dark -->
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
-  <rect x="20" y="50" width="200" height="20" rx="4" ry="4" fill="rgba(98,98,100,0.10)" />
+  <rect x="20" y="50" width="200" height="20" rx="4" ry="4" fill="rgba(98,98,100,0.11)" />
 </svg>

@@ -39,6 +39,18 @@ use gtk::glib;
 #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
 use std::thread;
 
+#[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
+use std::thread;
+
+/// The frame interval this backend's event loop runs at, in milliseconds.
+///
+/// One constant rather than a `16` written at each loop and at each `drive_frame`
+/// call, because the two must agree: a loop that wakes on a 16 ms timer but advances
+/// the animation bus by a different delta makes every transition run at a speed that
+/// is a ratio of the two, with nothing to notice the mismatch. Named here so a backend
+/// that later runs at the display's own rate changes exactly one value.
+const FRAME_INTERVAL_MS: u64 = 16;
+
 impl Platform for LinuxPlatform {
     fn as_any(&self) -> &dyn crate::compat::Any {
         self
@@ -218,20 +230,33 @@ impl Platform for LinuxPlatform {
     fn run(&self) {
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
-            // Drain the widget-trigger queue on every tick of the GTK loop.
+            // One frame, on every tick of the GTK loop.
             //
             // `gtk::main()` runs the toolkit's loop, and the toolkit's callbacks are what
             // *fill* the trigger queue: a `connect_size_allocate` handler calls
             // `queue_resize_trigger`, which pushes a `Resized` event. `gtk::main()` never
             // reads that queue back, so the event sat there and the layout was never
-            // re-run — the backend reported a resize correctly and the library never acted
+            // re-run -- the backend reported a resize correctly and the library never acted
             // on it. See `crate::drain_triggers` for the contract.
+            //
+            // `crate::drive_frame` is what replaced the bare `drain_triggers()` call here.
+            // Draining alone was half a frame: the queue emptied, and no control was ever
+            // advanced, so every animation in the library was unreachable from a GTK window
+            // (BLUE24 §0A.1 measurement 1 -- `tick_animations` had no caller). A frame now
+            // drains, advances the animation bus once, and answers whether another frame is
+            // owed; see `drive_frame` for why that order is the only correct one.
             //
             // `glib::timeout_add_local` runs its closure on the GTK main thread, which is
             // the thread GTK requires for widget work, so dispatching from here is
             // main-thread work rather than a cross-thread call.
-            glib::timeout_add_local(core::time::Duration::from_millis(16), || {
-                crate::drain_triggers();
+            //
+            // The timer keeps running regardless of the answer: `ControlFlow::Break` here
+            // would stop the *drain* as well, so a still window would stop receiving the
+            // events that could start it moving again. `drive_frame` already makes a still
+            // frame nearly free -- two thread-local lookups and one `is_animating()` sweep
+            // -- which is the property that makes an unconditional heartbeat affordable.
+            glib::timeout_add_local(core::time::Duration::from_millis(FRAME_INTERVAL_MS), || {
+                crate::drive_frame(FRAME_INTERVAL_MS as u32);
                 glib::ControlFlow::Continue
             });
             gtk::main();
@@ -242,8 +267,23 @@ impl Platform for LinuxPlatform {
                 self.init();
             }
             self.runtime.running.store(true, Ordering::SeqCst);
+            // The library-painted path's frame loop.
+            //
+            // This used to be `while running { sleep(16) }` -- a loop that woke every
+            // frame and did **nothing at all**, which is why the animation bus was inert
+            // on a GTK-less Linux window: the sleep was the whole body. It now advances
+            // the frame, and *that* is what makes a hover transition on this path reach
+            // its end (BLUE24 §1 criterion 5 -- the end-to-end "it really moves" check).
+            //
+            // The sleep length is still fixed at the frame interval. A host that wants an
+            // event-driven loop would block until the next event when
+            // `needs_another_frame` is `false`; this backend has no such primitive --
+            // `Platform::run` is entered once and owns the thread until `quit` -- so it
+            // polls. What matters for correctness is that the *library* is asked per frame
+            // and that a still frame costs nothing but the sweep.
             while self.runtime.running.load(Ordering::SeqCst) {
-                thread::sleep(Duration::from_millis(16));
+                crate::drive_frame(FRAME_INTERVAL_MS as u32);
+                thread::sleep(Duration::from_millis(FRAME_INTERVAL_MS));
             }
         }
     }

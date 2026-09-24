@@ -51,10 +51,15 @@ pub struct ProgressBar {
     indeterminate: bool,
     /// The sweep phase for the indeterminate state, in `0.0..1.0`.
     ///
-    /// A single looping value rather than a `Transition` between two ends: the sweep is
-    /// **periodic**, so "half way" is a different concept from "ended" and a transition's
-    /// settle-to-target model does not describe it. `ProgressBar::tick` wraps it.
-    sweep_phase: crate::style::Transition,
+    /// A single looping value rather than a two-end property: the sweep is **periodic**, so
+    /// "half way" is a different concept from "ended" and a driver's settle-to-target model
+    /// does not describe it. `ProgressBar::tick` wraps it with
+    /// [`jump_to`](crate::style::PropertyDriver::jump_to), which is the driver's own spelling
+    /// of "and then restart" — the same operation, named at the one type that owns the value
+    /// (BLUE24 §2.3's "one animation state type" rule; the plan's own §2.2 text says this
+    /// control's loop is the case a driver *cannot* be aimed at, and `jump_to` is why it can
+    /// still be *held* by one).
+    sweep_phase: crate::style::PropertyDriver,
     /// Emitted with the new value after any change to `value` — from
     /// `set_value`, the steppers, or keyboard/wheel input. Not emitted when the
     /// value is set to the value it already had.
@@ -75,7 +80,7 @@ impl ProgressBar {
             indeterminate: false,
             // The sweep is a slow, steady loop; `slow` is the theme's longest token and matches
             // the unhurried feel an indeterminate indicator should have.
-            sweep_phase: crate::style::Transition::with_tempo(crate::style::TransitionTempo::Slow),
+            sweep_phase: crate::style::PropertyDriver::at(0.0, crate::style::MotionSlot::Slow),
             value_changed: Signal1::new(),
         }
     }
@@ -217,15 +222,16 @@ impl ProgressBar {
         //
         // # Why the test is `!moving` and not a named `arrived`
         //
-        // `Transition::tick` answers "has this not reached its target yet", which is `false` on the
+        // The driver answers "has this not reached its target yet", which is `false` on the
         // frame the value **lands** on the target — and that landing frame is the one to wrap. An
         // earlier version of this read treated the return value as "arrived", so it wrapped on
         // every frame *except* the one that arrived: the phase was reset to 0 on the first tick and
         // then never wrapped again, making the first two samples of the band identical and the
         // sweep appear to jump backwards. The flag now says what the value means.
-        let moving = self.sweep_phase.tick(1.0, delta_ms);
+        self.sweep_phase.set_target(1.0);
+        let moving = self.sweep_phase.tick(delta_ms);
         if !moving {
-            self.sweep_phase.reset_to(0.0);
+            self.sweep_phase.jump_to(0.0);
         }
         self.base.request_redraw();
         true
@@ -257,7 +263,7 @@ impl ProgressBar {
         // band enters, crosses and leaves rather than appearing in place.
         let band = (run / 3).max(1);
         let travel = run + band;
-        let lead = (travel as f32 * self.sweep_phase.progress()) as u32;
+        let lead = (travel as f32 * self.sweep_phase.value()) as u32;
         // The band's **trailing** edge is what travels; its length is fixed.
         //
         // Deriving both edges from `lead` (a `lead.min(run)` end and a `lead - band` start) made the

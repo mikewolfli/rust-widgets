@@ -197,7 +197,7 @@ fn advance_host_owned_control(widget: &mut dyn Widget) {
     let _ = widget;
 }
 
-/// The delta the paint path hands a host-owned control, in milliseconds.
+/// The delta one frame of the paint path is worth, in milliseconds.
 ///
 /// # Why a constant and not a measured frame time
 ///
@@ -207,8 +207,18 @@ fn advance_host_owned_control(widget: &mut dyn Widget) {
 /// `tick`s accumulate against a *target* rather than a deadline, so a fixed step simply paces the
 /// movement and cannot overshoot. 16 ms is the step a 60 Hz host would use, so an animation takes
 /// the same time here as it would on that host.
+///
+/// # Why it is shared rather than copied
+///
+/// `Carousel`'s legacy `Event::Timer` arm steps its autoplay clock by one nominal frame, which is
+/// the *same* quantity this paint path hands a control. A second `16` there would be a copy of a
+/// policy with nothing linking the copy to it — the drift the duration gate exists to stop — so
+/// the value is published from here and both readers name it. It is deliberately **not** a
+/// `theme.motion` token: it is a sample size, not a duration, which is why
+/// `tools/transition_duration_exemptions.txt` records the reason rather than the value being
+/// folded into a tempo (BLUE22 §6.7's distinction, and BLUE24 §2.4 gate A).
 #[cfg(not(alloc_frugal))]
-const ANIMATION_FRAME_DELTA_MS: u32 = 16;
+pub const ANIMATION_FRAME_DELTA_MS: u32 = 16;
 
 /// Reports whether `widget` is a control the frame sweep does **not** own but which is in flight.
 ///

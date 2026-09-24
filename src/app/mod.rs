@@ -16,6 +16,10 @@ mod handle;
 pub mod lifecycle;
 
 pub use app_core::{App, AppConfig};
+/// Test-only seam onto the value-changed router, re-exported so a frame-driver test can
+/// observe the dispatch path without a window handle. See the function's own docs.
+#[cfg(test)]
+pub(crate) use handle::set_widget_value_callback as handle_set_widget_value_callback;
 pub use handle::{
     dispatch_trigger, drain_triggers, ButtonHandle, CheckBoxHandle, CheckState, ComboBoxHandle,
     CustomWidgetHandle, CustomWidgetMountError, DialogHandle, EchoMode, FrameHandle,

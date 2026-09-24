@@ -12,6 +12,7 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::{expect_f32, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -122,7 +123,20 @@ pub struct PieMenu {
     hovered_index: Option<usize>,
     current_index: usize,
     center: Point,
-    animation_progress: f32,
+    /// How far the menu has opened, `0.0` at rest and `1.0` fully shown.
+    ///
+    /// # Why this is a driver and not a bare `f32`
+    ///
+    /// It used to be a plain number that started at `1.0` and that **nothing read** — not
+    /// `draw`, not any accessor beyond its own getter. So the field was dead state, and the
+    /// one thing it asserted was wrong: it began at the *target* end, which is the shape
+    /// BLUE24 §2.4 gate B exists to catch ("a control constructed already finished").
+    ///
+    /// As a [`PropertyDriver`] the value is owned by the same type every other animated
+    /// control uses, starts at the resting end, is driven by [`PieMenu::tick`], and is read
+    /// by `draw` to scale the ring out as the menu opens — so the declaration and the picture
+    /// are the same fact.
+    animation_progress: PropertyDriver,
     hover_color: Color,
     text_color: Color,
     /// Emitted with the index whose selection was applied. Fires from user
@@ -171,7 +185,10 @@ impl PieMenu {
             hovered_index: None,
             current_index: 0,
             center,
-            animation_progress: 1.0,
+            // At rest, so a freshly built menu opens rather than appearing already open. The
+            // ring unfurling is a larger movement than a pointer reaction, so it is priced by
+            // the theme's `slow` token.
+            animation_progress: PropertyDriver::at(0.0, MotionSlot::Slow),
             hover_color: Color::rgb(0, 120, 215),
             text_color: Color::rgb(30, 30, 30),
             triggered: Signal1::new(),
@@ -341,18 +358,35 @@ impl PieMenu {
         self.update_geometry();
     }
 
-    /// Returns the animation progress (0.0 to 1.0).
+    /// Returns the animation progress (`0.0` to `1.0`).
     pub fn animation_progress(&self) -> f32 {
-        self.animation_progress
+        self.animation_progress.value()
     }
 
     /// Sets the animation progress, clamped to `0.0 ..= 1.0`.
     ///
-    /// The value is a plain stored number: the widget never advances it itself
-    /// and does not request a redraw, so an animating caller must step it and
-    /// repaint. `1.0` (fully shown) is the initial value.
+    /// The value is snapped rather than eased: a caller driving the reveal itself wants a
+    /// definite picture, so both the position and the target are written (a driver that kept
+    /// pointing at the previous target would animate away from where it was just placed).
     pub fn set_animation_progress(&mut self, progress: f32) {
-        self.animation_progress = progress.clamp(0.0, 1.0);
+        self.animation_progress.jump_to(progress.clamp(0.0, 1.0));
+    }
+
+    /// Advances the opening reveal by `delta_ms`, reporting whether another frame is needed.
+    ///
+    /// The target follows visibility: a shown menu opens to `1.0`, a hidden one closes to
+    /// `0.0`. A menu that is hidden is not drawn at all, so the closed end is reached off
+    /// screen and the value is ready at the resting end for the next `show_at` — which is what
+    /// makes "open" start from nothing instead of from wherever the last close stopped.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        let target = if self.is_visible() { 1.0 } else { 0.0 };
+        self.animation_progress.set_target(target);
+        if self.animation_progress.tick(delta_ms) {
+            self.base.request_redraw();
+            return true;
+        }
+        // The settle frame is still paint-worthy: it is the frame that draws the open menu.
+        self.animation_progress.is_moving()
     }
 
     /// Returns the hover highlight color.
@@ -585,6 +619,15 @@ impl Widget for PieMenu {
         self.hovered_index = None;
         self.about_to_hide.emit();
     }
+
+    /// Lifts the reveal onto the trait so the animation bus can reach it through `&mut dyn Widget`.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        PieMenu::tick(self, delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.animation_progress.is_moving()
+    }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -732,8 +775,18 @@ impl Draw for PieMenu {
             .unwrap_or_else(|| ring.blend(&secondary, 0.45));
 
         let center = self.center;
-        let outer_r = self.radius;
-        let inner_r = self.inner_radius;
+        // The reveal scales the ring 's radii, so an opening menu grows into place instead of
+        // appearing whole. The progress is read here rather than in the hit test: the *picture*
+        // follows the animation, while the hit test keeps using the final geometry, so a pointer
+        // that arrives mid-open cannot land on a wedge that is not there yet.
+        let reveal = self.animation_progress.value();
+        let outer_r = self.radius * reveal;
+        let inner_r = self.inner_radius * reveal;
+        if reveal <= 0.0 {
+            // Fully closed: nothing to draw. Reached both at rest and while the close animation
+            // runs out after `hide`, which is what makes the closed end invisible either way.
+            return;
+        }
         let cx = center.x as f32;
         let cy = center.y as f32;
 
@@ -847,7 +900,11 @@ mod tests {
         assert_eq!(menu.inner_radius(), radius * 0.35);
         assert_eq!(menu.current_index(), 0);
         assert_eq!(menu.hovered_index(), None);
-        assert_eq!(menu.animation_progress(), 1.0);
+        // At the **resting** end: a freshly built menu has not been opened yet, so it starts
+        // closed and unfurls. The previous expectation (`1.0`) was the shape BLUE24 §2.4 gate B
+        // forbids -- a control constructed already finished, which makes `show_at` a no-op
+        // animation and hides the reveal entirely.
+        assert_eq!(menu.animation_progress(), 0.0);
         assert_eq!(menu.item_count(), 0);
         assert!(menu.is_visible());
         assert!(menu.is_enabled());
@@ -1191,6 +1248,12 @@ mod tests {
         menu.add_item("Cut");
         menu.add_item("Copy");
         menu.add_item("Paste");
+        // A menu opens from the resting end, so it has to be opened (and advanced to the end of
+        // the reveal) before there is a picture to snapshot. This is the same order a host uses:
+        // `show_at`, then frames until `tick` reports settled (BLUE24 §2.3's three-frame
+        // criterion form).
+        menu.show_at(Point::new(50, 50));
+        while menu.tick(1000) {}
 
         let svg = render_to_svg(&mut menu);
 
@@ -1206,10 +1269,16 @@ mod tests {
         assert!(svg.contains("circle"));
         assert!(svg.contains("line"));
 
-        // Empty menu also produces SVG with just circles
-        let mut empty = PieMenu::new(Point::new(10, 10), 10.0);
-        let empty_svg = render_to_svg(&mut empty);
-        assert!(empty_svg.starts_with("<svg"));
+        // A closed menu draws nothing at all, which is the resting state rather than an error:
+        // the reveal scales the ring down to zero, so any host that has not opened it sees an
+        // empty frame instead of a menu that was never asked for. Asserted so the two ends are
+        // both pinned and the `reveal <= 0.0` early return cannot silently become "draw the
+        // full menu anyway".
+        let mut closed = PieMenu::new(Point::new(10, 10), 10.0);
+        closed.add_item("Cut");
+        let closed_svg = render_to_svg(&mut closed);
+        assert!(closed_svg.starts_with("<svg"));
+        assert!(!closed_svg.contains("circle"), "a closed menu draws no ring");
     }
 
     /// 15. Disabled state blocks events
@@ -1331,8 +1400,8 @@ mod tests {
     fn test_animation_progress() {
         let mut menu = PieMenu::new(Point::new(100, 100), 80.0);
 
-        // Default
-        assert!((menu.animation_progress() - 1.0).abs() < 0.001);
+        // Default: the resting end, not the target end (BLUE24 §2.4 gate B).
+        assert!((menu.animation_progress() - 0.0).abs() < 0.001);
 
         // Set value
         menu.set_animation_progress(0.5);

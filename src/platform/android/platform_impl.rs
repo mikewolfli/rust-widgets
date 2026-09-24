@@ -35,6 +35,15 @@ use std::thread;
 
 impl AndroidPlatform {}
 
+/// The frame interval this backend's loop runs at, in milliseconds.
+///
+/// The same value as every other backend's twin constant, and named here for the same
+/// reason: the sleep between iterations and the delta handed to [`crate::drive_frame`]
+/// must be the same number, or every transition runs at the ratio between them with
+/// nothing to notice the mismatch. A backend that later runs at the display's own rate
+/// changes exactly this value.
+const FRAME_INTERVAL_MS: u64 = 16;
+
 impl Platform for AndroidPlatform {
     fn as_any(&self) -> &dyn crate::compat::Any {
         self
@@ -96,9 +105,13 @@ impl Platform for AndroidPlatform {
         self.runtime.running.store(true, Ordering::SeqCst);
         // The loop is also the drain tick, so a `Resized` event the host queued reaches
         // the window layout. See `crate::drain_triggers`.
+        //
+        // `crate::drive_frame` additionally advances the animation bus, which the drain
+        // alone did not: layout was correct and every animation was inert, because no code
+        // ran the per-frame step (BLUE24 §0A.1 measurement 1).
         while self.runtime.running.load(Ordering::SeqCst) {
-            crate::drain_triggers();
-            thread::sleep(Duration::from_millis(16));
+            crate::drive_frame(FRAME_INTERVAL_MS as u32);
+            thread::sleep(Duration::from_millis(FRAME_INTERVAL_MS));
         }
     }
 

@@ -51,3 +51,23 @@ src/widget/dialog/tooltip.rs    hover dwell timings with their own settable prop
 # Verified: the constant is read only by `draw_of`'s single `widget.tick(ANIMATION_FRAME_DELTA_MS)`
 # call, and no control reads it as a duration.
 src/widget/draw_bridge.rs    the per-frame sample step of the paint path, not a transition duration
+
+# ─────────────────────────────────────────────────────────────────────────────
+# These two entries are NO-THEME FALLBACKS for a looping animation, not hardcoded durations.
+#
+# Both controls price an *indefinite* animation (a progress ring's revolution, a skeleton's
+# shimmer pulse) from the theme's `slow` token scaled by a multiple, because a loop is not a
+# state change: `slow` is sized for a transition that ends, and a ring completing a revolution
+# in 300 ms reads as a stutter rather than as progress. So both already follow a theme, which is
+# the whole point of the rule.
+#
+# The literal is what the control uses when the theme carries **no** motion tokens at all
+# (`motion_tokens()` returns a zero `slow`, which happens in a build with no theme palette).
+# A control that animated nothing in that case would be a control that stopped working in a
+# `mini`/`embedded` build, so a fallback is the honest answer -- and its value is the one the
+# preset's `slow` produces, written down so the no-theme picture matches the themed one.
+#
+# Verified: each constant is read in exactly one place, the `slow == 0` arm of its period
+# accessor, and both accessors are reached from that control's own `tick`.
+src/widget/display_widgets/progress_circle.rs    no-theme fallback for a looping animation; the themed path reads theme.motion.slow
+src/widget/display_widgets/skeleton_loader.rs    no-theme fallback for a looping animation; the themed path reads theme.motion.slow

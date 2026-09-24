@@ -642,6 +642,26 @@ pub fn remove_callbacks(id: ObjectId) {
     });
 }
 
+/// Registers a value-changed callback directly, without going through a handle.
+///
+/// # Why this exists rather than a test reaching into the registry
+///
+/// [`dispatch_trigger`] resolves a `ValueChanged` trigger through `VALUE_CALLBACKS`, and
+/// the only production writer is `WindowHandle::on_value_changed` -- which needs a
+/// *handle*, and therefore a window, to install one. A test that observes the dispatch
+/// path (BLUE24 §1 criterion 3 drives a frame that must drain before it advances) has
+/// neither, and reaching into the private registry from another module would make the
+/// test an unofficial second writer of state the router reads.
+///
+/// Writing through the same table the handle writes keeps one writer, so what a test
+/// observes through this seam is the production path rather than a parallel one.
+#[cfg(test)]
+pub(crate) fn set_widget_value_callback(id: ObjectId, callback: ValueChangedCallback) {
+    VALUE_CALLBACKS.with(|map| {
+        map.borrow_mut().insert(id, callback);
+    });
+}
+
 /// Dispatch a trigger event to the registered callback for `widget_id`.
 /// Returns `true` if a callback was found and invoked.
 ///

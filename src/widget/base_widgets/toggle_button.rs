@@ -85,9 +85,11 @@ pub struct ToggleButton {
     /// hover fades in and a press deepens it instead of both snapping — and, at progress `0.0`,
     /// the fill is exactly the resting colour, which is why adding it left every committed
     /// snapshot byte-identical.
-    interaction_progress: crate::style::Transition,
-    /// The progress value the transition is travelling toward.
-    interaction_target: f32,
+    ///
+    /// [`crate::style::PropertyDriver`] owns the value **and its target**, so the second
+    /// `interaction_target` field this control used to carry is gone — see `Button`'s field
+    /// for the same reasoning (BLUE24 §2.3).
+    interaction_progress: crate::style::PropertyDriver,
 }
 impl ToggleButton {
     /// Creates an unchecked, enabled toggle button with the given caption.
@@ -106,8 +108,7 @@ impl ToggleButton {
             pressed_signal: GenericSignal::new(),
             released_signal: GenericSignal::new(),
             state_changed: Signal1::new(),
-            interaction_progress: crate::style::Transition::new(),
-            interaction_target: 0.0,
+            interaction_progress: crate::style::PropertyDriver::default(),
         }
     }
     /// Returns the button caption, drawn centered. Empty by default only if
@@ -240,10 +241,8 @@ impl ToggleButton {
     /// `Motion::normal` rather than a constant in this file, so a theme can state its own tempo
     /// and a test can shorten it to reach the end state deterministically.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
-        let target = self.interaction_target_progress();
-        let moving = self.interaction_progress.tick(target, delta_ms);
-        self.interaction_target = target;
-        moving
+        self.interaction_progress.set_target(self.interaction_target_progress());
+        self.interaction_progress.tick(delta_ms)
     }
 }
 impl Widget for ToggleButton {
@@ -280,7 +279,7 @@ impl Widget for ToggleButton {
         // the control animating at once, before any `tick` has run to recompute the target.
         // Reading the stale field would answer `false` for a button that was just hovered, so the
         // bus would never start its frames. `Button::is_animating` documents the same trap.
-        self.interaction_progress.progress() != self.interaction_target_progress()
+        self.interaction_progress.value() != self.interaction_target_progress()
     }
 
     impl_draw_bridge!();
@@ -408,7 +407,7 @@ impl Draw for ToggleButton {
         let bg_color = if state == ToggleButtonState::Disabled {
             resting
         } else {
-            let progress = self.interaction_progress.progress();
+            let progress = self.interaction_progress.value();
             if progress <= 0.0 {
                 resting
             } else {

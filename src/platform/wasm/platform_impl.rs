@@ -13,6 +13,15 @@ use core::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use std::thread;
 
+/// The frame interval this backend's loop runs at, in milliseconds.
+///
+/// The same value as every other backend's twin constant, and named here for the same
+/// reason: the sleep between iterations and the delta handed to [`crate::drive_frame`]
+/// must be the same number, or every transition runs at the ratio between them with
+/// nothing to notice the mismatch. A backend that later runs at the display's own rate
+/// changes exactly this value.
+const FRAME_INTERVAL_MS: u64 = 16;
+
 impl Platform for WasmPlatform {
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -94,12 +103,13 @@ impl Platform for WasmPlatform {
         #[cfg(not(target_arch = "wasm32"))]
         {
             // The loop has no native message pump of its own — a browser host drives the
-            // events — so this is where the library's trigger queue is drained. Without
-            // it, a `Resized` event queued by the host never reached a window layout. See
-            // `crate::drain_triggers`.
+            // events — so this is where the library's trigger queue is drained and its
+            // animation bus is advanced. Draining alone left a `Resized` event reaching its
+            // window layout but every animation unreachable, because nothing ran the
+            // per-frame step (BLUE24 §0A.1 measurement 1). See `crate::drive_frame`.
             while self.runtime.running.load(Ordering::SeqCst) {
-                crate::drain_triggers();
-                thread::sleep(Duration::from_millis(10));
+                crate::drive_frame(FRAME_INTERVAL_MS as u32);
+                thread::sleep(Duration::from_millis(FRAME_INTERVAL_MS));
             }
         }
     }

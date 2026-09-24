@@ -506,6 +506,44 @@ pub struct Borders {
     pub shadow: bool,
 }
 
+impl Theme {
+    /// The drop shadow a face at `elevation` casts under this theme, or `None`.
+    ///
+    /// # Why this is a method here and not a serialised field
+    ///
+    /// A shadow is **derived** from two things the theme already states — whether this theme
+    /// uses shadows at all ([`Borders::shadow`]) and how far off the page the face sits — so
+    /// materialising it into the schema would be a second spelling of the same fact, and the
+    /// two would drift (principle #101). Keeping it a lookup also means `themes/*.json` needs
+    /// no new key, so an existing theme file keeps loading unchanged and this channel ships
+    /// without a fixture regeneration.
+    ///
+    /// # Why the levels are not all the same shadow
+    ///
+    /// This is the whole point of the method. Before it, `role_base_style` built one literal
+    /// shadow and gave it to every control, so a floating toast and a flush list row were
+    /// painted at the same height and a theme could not say "cards are level 1". Reading the
+    /// shadow through a *level* is what makes that expressible, and the ladder itself lives in
+    /// [`render::surface::default_shadow`] so the relationship between levels is stated once.
+    ///
+    /// `tint` is the shadow's hue (normally black); each level applies its own alpha to it, so a
+    /// theme states the hue once and the levels own their opacity.
+    ///
+    /// A theme that has shadows switched off gets `None` for every level, which is the honest
+    /// answer rather than a zero-alpha shadow.
+    pub fn elevation(&self, elevation: crate::render::Elevation, tint: Color) -> Option<Shadow> {
+        if !self.borders.shadow {
+            return None;
+        }
+        crate::render::default_shadow(elevation).map(|level| Shadow {
+            x: 0,
+            y: level.y,
+            blur: level.blur,
+            color: tint.with_alpha(level.alpha),
+        })
+    }
+}
+
 /// Style override map used for class-level theme customization.
 #[cfg_attr(not(alloc_frugal), derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]

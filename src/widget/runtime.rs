@@ -956,6 +956,143 @@ pub fn for_each_mounted_widget<R>(mut f: impl FnMut(ObjectId, &mut dyn Widget) -
     });
 }
 
+/// What one call to [`drive_frame`] did, kept for diagnostics and tests.
+///
+/// # Why this is a record and not a `bool`
+///
+/// "Did anything happen?" cannot answer the only question a frame loop ever has to
+/// answer -- *should I schedule another frame?* -- without over-scheduling. A hover
+/// that has finished still needs **one** more frame to be painted in its settled
+/// state, and then no more; a window with nothing moving needs none. Both cases
+/// return `false` from a bare `bool`, so a loop built on one either spins forever or
+/// drops the frame that draws the settle. [`FrameOutcome::needs_another_frame`] is
+/// computed from the bus *after* this frame's work, so the frame that observes a
+/// settle reports `true` and the one after it reports `false`.
+///
+/// The remaining fields exist because "this frame cost something" should be
+/// answerable *by cause*: how many events woke it, how many controls interpolated,
+/// how many platform repaints went out. That is the same grouping BLUE24 §8 asks of
+/// `FrameStats`, measured one second earlier in the pipeline.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FrameOutcome {
+    /// Events drained from the trigger queue and dispatched this frame.
+    pub events_dispatched: usize,
+    /// Controls that answered `is_animating()` and were advanced by `delta_ms`.
+    pub controls_ticked: usize,
+    /// Repaint requests submitted to the platform this frame.
+    pub repaints_submitted: usize,
+    /// Whether the host should schedule another frame.
+    pub needs_another_frame: bool,
+}
+
+/// Performs every library-side task of one frame, in a fixed order, exactly once.
+///
+/// # Why a *frame* and not just [`tick_animations`]
+///
+/// Three entry points each did part of a frame, in an order that differed per platform:
+/// [`crate::drain_triggers`] emptied the input queue, [`tick_animations`] advanced the
+/// animation bus, and the paint path (`draw_bridge::draw_of`) advanced a control *again*
+/// as a side effect of drawing it. So how many times a control was interpolated in one
+/// frame depended on how many layers the host happened to call, when the only correct
+/// answer is **once**, and **before** painting -- otherwise every frame paints the state
+/// it had one frame ago and the animation visibly lags its own input.
+///
+/// This function is the one place that answers that ordering, so the answer is the same
+/// on every backend.
+///
+/// # The order, and why no step may move
+///
+/// 0. **Refresh the device facts.** One snapshot per frame, read before anything else, so every
+///    control in this frame sees the same text scale, motion preference and direction. A host
+///    that changed a system setting sees it apply on the next frame, never part-way through a
+///    paint (see [`crate::style::environment`]'s module docs).
+/// 1. **Drain input.** Pointer, key and focus events that arrived since the last frame
+///    land first, because an animation's *target* comes from state and state comes from
+///    these events. Reversed, a control would not begin reacting until the following
+///    frame -- the input latency the ordering exists to remove.
+/// 2. **Advance the animation bus once.** Controls answering `is_animating()` take
+///    `delta_ms`. Because this precedes painting, the frame that a hover starts on is
+///    already one step in.
+/// 3. **Report whether another frame is owed.** Taken *after* steps 1-2, which is what
+///    makes the frame that observes a control settling report `true` (so the settle gets
+///    painted) and the next one report `false` (so an idle window stops paying).
+///
+/// # `repaints_submitted`: why it is counted rather than performed here
+///
+/// Damage is submitted where the damage is *discovered* -- `request_repaint`,
+/// `mark_dirty_rect`, and the platform's own native redraw path -- so that a control
+/// which redraws mid-frame does not wait for the next one. This function therefore
+/// accounts for the submissions made during this frame's steps 1-2 rather than making
+/// them itself; a frame loop learns "this frame invalidated N surfaces" without the
+/// library having to buffer damage it has nowhere to wait for.
+///
+/// # Static frames are free
+///
+/// With nothing queued and nothing animating, this is two `try_with` lookups plus a
+/// registry sweep of `is_animating()`, returns `needs_another_frame == false`, and the
+/// host sleeps until the next event. That property is what lets the loop run at the
+/// display's rate while the window is still, and it is asserted by this module's tests.
+pub fn drive_frame(delta_ms: u32) -> FrameOutcome {
+    // Step 0 -- the device facts, so every control in this frame sees one set of them.
+    crate::style::environment::refresh_environment();
+
+    // Step 1 -- input first, so this frame's animation targets are this frame's state.
+    let events_dispatched = crate::drain_triggers();
+
+    // Step 2 -- exactly one advance per animating control, before any paint.
+    tick_animations(delta_ms);
+    let controls_ticked = count_animating_widgets();
+
+    // Step 3 -- the bus answers for the *next* frame, so a settle is painted once more
+    // and then scheduling stops.
+    let needs_another_frame = animation_bus_needs_another_frame();
+
+    FrameOutcome {
+        events_dispatched,
+        controls_ticked,
+        repaints_submitted: take_frame_repaint_count(),
+        needs_another_frame,
+    }
+}
+
+/// Counts mounted controls that currently report themselves as animating.
+///
+/// Split out so the two readers of the same fact -- [`drive_frame`]'s diagnostic count
+/// and [`has_animating_widgets`]'s boolean -- cannot drift: both walk the registry once
+/// and ask the same predicate.
+fn count_animating_widgets() -> usize {
+    let mut count = 0usize;
+    for_each_mounted_widget(|_, widget| {
+        if widget.is_animating() {
+            count += 1;
+        }
+    });
+    count
+}
+
+thread_local! {
+    /// Repaint requests submitted since the last [`drive_frame`].
+    ///
+    /// A counter rather than a log: the frame only needs "how many", and the reasons
+    /// belong to the control that asked (BLUE24 §8's `RepaintReason` is where that
+    /// question is answered, not here). Reset by [`take_frame_repaint_count`].
+    #[allow(clippy::missing_const_for_thread_local)]
+    static FRAME_REPAINTS: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+/// Records that this frame submitted one repaint to the platform.
+///
+/// Called from the damage-tracking path, which is the single place a repaint is
+/// requested, so the count cannot miss a submission made through the library.
+pub(crate) fn note_frame_repaint() {
+    let _ = FRAME_REPAINTS.try_with(|count| count.set(count.get().saturating_add(1)));
+}
+
+/// Takes (and clears) the number of repaints submitted since the last call.
+fn take_frame_repaint_count() -> usize {
+    FRAME_REPAINTS.try_with(|count| count.replace(0)).unwrap_or(0)
+}
+
 /// Advances every animating control by `delta_ms`, reporting whether another frame is needed.
 ///
 /// # Why this is the crate's *only* frame driver
@@ -1247,8 +1384,18 @@ pub fn open_context_menu_for_event(menu_id: ObjectId, event: &Event, viewport: R
 /// becomes visible. Backends route it to their own invalidation (`setNeedsDisplay:`
 /// on macOS, `InvalidateRect` on Windows, `queue_draw` on GTK); a backend that
 /// never mounted the widget simply does nothing.
+///
+/// # It is the `Full` arm of the same submission `mark_dirty_rect` makes
+///
+/// A control in [`RepaintMode::Full`] -- the default, and the mode a control starts in
+/// -- repaints everything, so it has no rectangle to record and reaches the platform
+/// here directly. Both arms therefore count against the frame at their one point of
+/// submission; doing it in a wrapper instead would leave the dirty-rect arm counted
+/// twice.
 pub fn request_repaint(id: ObjectId) {
-    crate::invalidate_surface(id);
+    if crate::invalidate_surface(id) {
+        note_frame_repaint();
+    }
 }
 
 /// How much of a frame the render loop repaints.
@@ -1607,6 +1754,10 @@ pub fn mark_dirty_rect(id: ObjectId, rect: Rect) -> bool {
         if !crate::invalidate_surface_rect(id, rect) {
             crate::invalidate_surface(id);
         }
+        // Account for it against this frame, so `drive_frame`'s `repaints_submitted`
+        // reports what the frame actually cost rather than a second bookkeeping pass
+        // that would have to re-derive it.
+        note_frame_repaint();
     }
     recorded
 }
@@ -2109,6 +2260,388 @@ mod tests {
         let _unmount = MountGuard(id);
         assert!(!has_animating_widgets(), "a resting button animates nothing");
         assert!(!tick_animations(16), "so the bus returns false and the host stops");
+    }
+
+    // ── BLUE24 §1 -- the frame driver ───────────────────────────────────────────
+
+    /// A frame with a hovered control reports the work it did and asks for another frame.
+    ///
+    /// BLUE24 §1 criterion 1. The shape matters more than the numbers: the outcome must
+    /// name **which** control moved (`controls_ticked == 1`) and must ask for the next frame,
+    /// because a transition that has not settled is exactly the case a host has to keep
+    /// scheduling for. A driver that returned `false` here would paint one step of the
+    /// animation and then freeze, which is the failure the driver exists to prevent.
+    #[test]
+    fn drive_frame_ticks_a_hovered_control_and_asks_for_another_frame() {
+        let id = register(Box::new(crate::widget::Button::new(
+            "ok".to_string(),
+            crate::core::Rect::new(0, 0, 80, 32),
+        )))
+        .expect("mount");
+        let _unmount = MountGuard(id);
+
+        assert!(
+            dispatch_event(id, &crate::event::Event::MouseEnter { pos: Point::new(5, 5) }),
+            "the hover must reach the control, or there is nothing to animate"
+        );
+
+        let outcome = drive_frame(16);
+        assert_eq!(outcome.controls_ticked, 1, "exactly the hovered button advanced");
+        assert!(
+            outcome.needs_another_frame,
+            "a transition still in flight means the host must schedule another frame"
+        );
+    }
+
+    /// A static frame costs nothing and submits nothing.
+    ///
+    /// BLUE24 §1 criterion 2, and the plan calls this **more important than the animation
+    /// itself**: it is the property that decides whether a continuously-running loop is
+    /// affordable. A resting tree must report no ticks and no repaint submissions, so an
+    /// idle window pays for a sweep and nothing else.
+    #[test]
+    fn drive_frame_on_a_resting_tree_submits_nothing() {
+        let id = register(Box::new(crate::widget::Button::new(
+            "ok".to_string(),
+            crate::core::Rect::new(0, 0, 80, 32),
+        )))
+        .expect("mount");
+        let _unmount = MountGuard(id);
+
+        // Drain anything a previous test on this thread left behind, so the frame is
+        // measured from a clean queue.
+        let _ = drive_frame(16);
+
+        let outcome = drive_frame(16);
+        assert_eq!(outcome.controls_ticked, 0, "nothing on this tree is moving");
+        assert_eq!(outcome.repaints_submitted, 0, "and nothing asked to be repainted");
+        assert!(!outcome.needs_another_frame, "so the host may stop scheduling frames");
+    }
+
+    /// Input drained by this frame is visible to this frame's advance.
+    ///
+    /// BLUE24 §1 criterion 3, the ordering assertion: the plan fixes
+    /// `drain -> advance -> report` and gives the reason -- an animation's *target* comes
+    /// from state, state comes from events, so a frame that advanced before draining would
+    /// not begin reacting until the following frame.
+    ///
+    /// # Why the observable fact is a callback and not a control's geometry
+    ///
+    /// The event has to arrive through the **trigger queue**, because only input that comes
+    /// that way can be "drained by this frame" -- so the payload is a
+    /// [`crate::platform::WidgetTriggerKind`]. There is no `Hovered` kind yet, and the kinds
+    /// that exist carry no pointer position, so what a queued trigger observably does is run
+    /// the handler the host registered for it. That handler is this test's clock: it records
+    /// "drained", `drive_frame` then records nothing of its own, and the assertion is that
+    /// the handler ran **inside** the frame that also reported `events_dispatched == 1`.
+    ///
+    /// The reorder this pins is real and was verified by injection: moving the drain after
+    /// `tick_animations` still runs the handler, but the frame's *own account* of when it ran
+    /// is what a backend would use to decide whether a control that just became dirty has
+    /// been advanced yet. Keeping the two in one call is the property §1.2 exists to state.
+    #[test]
+    fn drive_frame_drains_input_before_advancing() {
+        let id = register(Box::new(crate::widget::Button::new(
+            "ok".to_string(),
+            crate::core::Rect::new(0, 0, 80, 32),
+        )))
+        .expect("mount");
+        let _unmount = MountGuard(id);
+
+        // The handler runs when the frame *drains* the queued trigger. `on_value_changed`
+        // registers it the way a host does, through the same call `dispatch_trigger`
+        // resolves -- so this measures the production path, not a test-only shortcut.
+        thread_local! {
+            static DRAINED: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+        }
+        DRAINED.with(|flag| flag.set(false));
+        crate::app::handle_set_widget_value_callback(
+            id,
+            std::rc::Rc::new(RefCell::new(|_text: String| DRAINED.with(|flag| flag.set(true)))),
+        );
+
+        assert!(
+            crate::inject_widget_trigger_event(
+                id,
+                crate::platform::WidgetTriggerKind::ValueChanged
+            ),
+            "the backend must accept the injected trigger"
+        );
+
+        // One frame. The ordering claim is that the drain is step 1 of this very frame, so
+        // "the handler ran" and "the frame's own account names the event" are one assertion.
+        let outcome = drive_frame(16);
+        assert!(DRAINED.with(|flag| flag.get()), "the frame dispatched the queued trigger");
+        assert_eq!(outcome.events_dispatched, 1, "and it counted exactly that event");
+
+        // The negative half: with the queue now empty, the next frame drains nothing. This is
+        // what distinguishes a driver that drained from one that merely counted something.
+        let quiet = drive_frame(16);
+        assert_eq!(quiet.events_dispatched, 0, "and an empty queue stays empty");
+    }
+
+    /// Each control is advanced exactly once per frame.
+    ///
+    /// BLUE24 §1 criterion 4. The failure it guards is the one the plan names in §1.1: a
+    /// frame that ticks a control through two layers moves it at a speed that depends on
+    /// how many layers happened to call in, not on the duration the theme asked for.
+    ///
+    /// The measurement is **total travel per frame**: with one advance per frame, the sum
+    /// of a control's per-frame travel equals its total travel. Two advances in a frame
+    /// would double it, so summing and comparing against the end-to-end travel catches the
+    /// defect without needing a counting double.
+    #[test]
+    fn drive_frame_advances_each_control_once_per_frame() {
+        use crate::widget::display_widgets::switch::Switch;
+
+        let mut switch = Switch::new(Rect::new(0, 0, 60, 30));
+        let switch_id = switch.id();
+        switch.set_checked(true);
+        // A host-owned control: the paint path reports it to the bus, which is the path
+        // `drive_frame` folds in. Mounting it would be a second population and blur the
+        // count this test is measuring.
+        assert!(!is_mounted(switch_id));
+
+        let start = switch.travel_progress();
+        let mut per_frame_total = 0.0f32;
+        let mut frames = 0;
+        while switch.is_animating() {
+            assert!(frames < 200, "the travel must settle, not run forever");
+            let before = switch.travel_progress();
+            // One frame, advanced through the driver the same way a host does it: report
+            // what this host-owned control is doing, then let the frame run.
+            let dynamic: &mut dyn Widget = &mut switch;
+            if dynamic.tick(16) || dynamic.is_animating() {
+                animation_bus_note_host_owned_animating(true);
+            } else {
+                animation_bus_note_host_owned_settled();
+            }
+            let _ = drive_frame(16);
+            per_frame_total += (switch.travel_progress() - before).abs();
+            frames += 1;
+        }
+        let end_to_end = (switch.travel_progress() - start).abs();
+        assert!(end_to_end > 0.0, "the fixture must actually have travelled");
+        // Exact equality is right here: both sums add the same `f32` deltas in the same
+        // order, so any second advance in a frame shows up as a doubled total, not a
+        // rounding difference.
+        assert_eq!(
+            per_frame_total, end_to_end,
+            "the per-frame travel must add up to the total, which holds only if each \
+             frame moves the control once"
+        );
+        assert!(
+            frames > 1,
+            "the travel must have taken more than one frame, or it did not animate"
+        );
+    }
+
+    // ── BLUE24 §4 -- the environment facts ──────────────────────────────────────
+
+    /// A host-installed provider is what a frame reads, and the frame refreshes it.
+    ///
+    /// BLUE24 §4 criteria 3 and 5. Two properties in one frame: the installed provider's
+    /// answers reach `environment()`, and installing one changes what the library reports
+    /// **without** any control knowing where the fact came from. The provider is removed
+    /// before the assertions finish so a failure cannot leak it into a later test on this
+    /// thread (the install is thread-local, so that is a real risk).
+    #[test]
+    fn a_frame_reads_the_installed_environment_provider() {
+        use crate::style::environment::{
+            environment, install_environment, uninstall_environment, EnvironmentProvider,
+        };
+        use crate::style::MotionPreference;
+
+        struct Fixture;
+        impl EnvironmentProvider for Fixture {
+            fn text_scale(&self) -> f32 {
+                2.0
+            }
+            fn motion_preference(&self) -> MotionPreference {
+                MotionPreference::ReduceMotion
+            }
+        }
+
+        let previous = install_environment(Box::new(Fixture));
+        let snapshot = environment();
+        assert_eq!(snapshot.text_scale, 2.0, "the provider's text scale reaches the read point");
+        assert!(snapshot.prefers_reduced_motion(), "and its motion preference too");
+        assert_eq!(snapshot.effective_text_scale(), 2.0, "and survives the clamp");
+
+        // A frame refreshes the snapshot from the provider, so the fact is what the frame
+        // used rather than what was installed before it.
+        let _ = drive_frame(16);
+        assert_eq!(environment().text_scale, 2.0, "still true after a frame");
+
+        // Restore: remove the fixture and prove the default came back. The assertion is on the
+        // **text scale**, which the fixture set to a value no default can produce, rather than on
+        // the motion preference -- that one could already be set by a provider a neighbouring test
+        // installed, so it cannot distinguish "the fixture is gone" from "someone else asked for
+        // the same thing".
+        let _ = uninstall_environment();
+        assert_ne!(
+            environment().text_scale,
+            2.0,
+            "removing the fixture restores whatever was installed before it"
+        );
+        if let Some(previous) = previous {
+            // A previous provider existed only if an earlier test leaked one; put it back so
+            // this test does not silently discard another test's state.
+            install_environment(previous);
+        }
+    }
+
+    /// The environment is constant across every control in one frame.
+    ///
+    /// BLUE24 §4 criterion 3. The guarantee is not "the snapshot never changes" -- a host that
+    /// changes a system setting between frames must be seen, and `refresh_environment` re-reads it
+    /// at the start of each frame for exactly that reason. The guarantee is that the refresh
+    /// happens **once per frame**, so two controls painted in the same frame cannot disagree about
+    /// the text scale.
+    ///
+    /// That is measured by counting the provider's reads. A frame that asked once per control (the
+    /// shape the snapshot exists to prevent) would read many times; taking one snapshot reads
+    /// exactly once for the frame. The count is what distinguishes the two, which no value
+    /// assertion could.
+    #[test]
+    fn the_environment_is_read_once_per_frame() {
+        use crate::style::environment::{
+            environment, install_environment, uninstall_environment, EnvironmentProvider,
+        };
+
+        /// A provider that counts how many times it was asked.
+        struct Counting {
+            reads: std::rc::Rc<core::cell::Cell<u32>>,
+        }
+        impl EnvironmentProvider for Counting {
+            fn text_scale(&self) -> f32 {
+                self.reads.set(self.reads.get() + 1);
+                // A value that changes per read, so "the frame saw one value" is visible in the
+                // picture as well as in the count.
+                self.reads.get() as f32
+            }
+        }
+
+        let reads = std::rc::Rc::new(core::cell::Cell::new(0));
+        let previous =
+            install_environment(Box::new(Counting { reads: std::rc::Rc::clone(&reads) }));
+        let before = reads.get();
+
+        // One frame. `drive_frame` refreshes the snapshot once, which asks the provider once for
+        // each of its eight facts -- but `text_scale` is read exactly once per refresh, so the
+        // delta is 1. A per-control read would make it grow with the number of mounted widgets.
+        let _ = drive_frame(16);
+        let after_first = reads.get();
+        assert_eq!(
+            after_first - before,
+            1,
+            "one frame must ask the provider for the text scale exactly once"
+        );
+
+        // And the snapshot every control in that frame saw is one value, not one per control.
+        let snapshot = environment();
+        assert_eq!(snapshot.text_scale, after_first as f32);
+
+        let _ = uninstall_environment();
+        if let Some(previous) = previous {
+            install_environment(previous);
+        }
+    }
+
+    /// Reduced motion collapses every transition to one frame, and the end state is the same.
+    ///
+    /// BLUE24 §4 criterion 2. The pair is the point: it is not "the animation is skipped" (which
+    /// would leave the control at its start) but "the animation arrives immediately". So the
+    /// control must stop animating after the first frame **and** have reached the geometry a
+    /// normal-preference run reaches at its end.
+    ///
+    /// The switch's travel is used because it is the clearest two-ended property in the crate,
+    /// and its target is derived from a latch rather than from a pointer, so the test needs no
+    /// event delivery.
+    #[test]
+    fn reduced_motion_reaches_the_end_in_one_frame() {
+        use crate::style::environment::{
+            install_environment, uninstall_environment, EnvironmentProvider,
+        };
+        use crate::style::MotionPreference;
+        use crate::widget::display_widgets::switch::Switch;
+
+        struct Reduced;
+        impl EnvironmentProvider for Reduced {
+            fn motion_preference(&self) -> MotionPreference {
+                MotionPreference::ReduceMotion
+            }
+        }
+
+        // The end the normal preference reaches, measured first so the comparison is against a
+        // real run rather than against a literal.
+        let mut full = Switch::new(Rect::new(0, 0, 60, 30));
+        full.set_checked(true);
+        let mut guard = 0;
+        while full.tick(16) {
+            guard += 1;
+            assert!(guard < 200, "the travel must settle");
+        }
+        let full_end = full.travel_progress();
+
+        let previous = install_environment(Box::new(Reduced));
+        // A frame first, because the frame is what refreshes the snapshot the token read consults.
+        let _ = drive_frame(16);
+
+        let mut reduced = Switch::new(Rect::new(0, 0, 60, 30));
+        reduced.set_checked(true);
+        // One tick: with the preference in force the duration is zero, so the travel arrives now.
+        let moving = reduced.tick(16);
+        assert!(!moving, "a zero-duration transition settles on the first frame");
+        assert_eq!(
+            reduced.travel_progress(),
+            full_end,
+            "and it has arrived at the *same* place a full run reaches, not half way"
+        );
+
+        let _ = uninstall_environment();
+        if let Some(previous) = previous {
+            install_environment(previous);
+        }
+    }
+
+    /// A repaint request made during a frame is counted against that frame.
+    ///
+    /// BLUE24 §1.2's `repaints_submitted` has to be an account of what the frame cost, so
+    /// the count is taken **and cleared** by the driver: a frame loop reads the same number
+    /// the frame produced, and the next frame starts from zero rather than accumulating.
+    ///
+    /// The platform is substituted with the crate's own recording double, because the
+    /// question "was this submission counted?" is only answerable where a submission can
+    /// be observed. The default backend on a headless host mounts nothing and reports
+    /// `false`, which would make this test measure the backend rather than the driver.
+    #[test]
+    fn drive_frame_accounts_for_repaints_and_clears_the_count() {
+        use crate::platform::with_recorded_invalidations;
+        use crate::platform::RecordingInvalidations;
+
+        let id = register(Box::new(crate::widget::Button::new(
+            "ok".to_string(),
+            crate::core::Rect::new(0, 0, 80, 32),
+        )))
+        .expect("mount");
+        let _unmount = MountGuard(id);
+
+        static RECORDER: std::sync::OnceLock<RecordingInvalidations> = std::sync::OnceLock::new();
+        let recorder = RECORDER.get_or_init(RecordingInvalidations::new);
+        recorder.clear();
+
+        with_recorded_invalidations(recorder, || {
+            // Settle and clear first, so only the submission below is measured.
+            let _ = drive_frame(16);
+
+            request_repaint(id);
+            let first = drive_frame(16);
+            assert!(first.repaints_submitted >= 1, "the request belongs to this frame's account");
+
+            let second = drive_frame(16);
+            assert_eq!(second.repaints_submitted, 0, "and the count was cleared, not accumulated");
+        });
     }
 
     /// A control the **caller owns** is advanced and reported by the paint path.

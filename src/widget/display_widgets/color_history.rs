@@ -245,6 +245,25 @@ impl Draw for ColorHistory {
         };
 
         // Draw each color swatch in a grid
+        //
+        // The three chrome colours below are resolved once, from the panel they are painted
+        // on, rather than being three literals repeated per swatch. They used to be
+        // `rgba(0,0,0,200)` for the selection and `rgba(0,0,0,40)` for the outline — both
+        // invisible on a dark panel — and a fixed `rgba(0,120,255,180)` for the hover, which
+        // is not the theme's accent. The selection now takes the theme's value-indicator role
+        // (the same slot `slider`, `progress_bar` and `rating` use), the outline is derived
+        // from the panel, and the checkerboard that stands for "transparent" is derived too,
+        // so a transparent swatch does not flash a bright grid on a dark theme.
+        let accent = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.primary)
+            .unwrap_or(Color::rgba(0, 120, 255, 255));
+        let outline = background.blend(&accent, 0.28);
+        // The checkerboard's two tones: one at the panel, one a step away from it, so the grid
+        // is legible in either appearance without being a second palette.
+        let checker_even = background.blend(&accent, 0.12);
+        let checker_odd = background.blend(&accent, 0.24);
+
         for (i, color) in swatches.iter().enumerate() {
             let row = i as u32 / SWATCHES_PER_ROW;
             let col = i as u32 % SWATCHES_PER_ROW;
@@ -258,8 +277,8 @@ impl Draw for ColorHistory {
             // Checkerboard for transparent colors
             if color.a < 255 {
                 let checker_size: u32 = 3;
-                let even = Color::rgba(200, 200, 200, 255);
-                let odd = Color::rgba(255, 255, 255, 255);
+                let even = checker_even;
+                let odd = checker_odd;
                 for cy in (y..y + SWATCH_SIZE as i32).step_by(checker_size as usize) {
                     for cx in (x..x + SWATCH_SIZE as i32).step_by(checker_size as usize) {
                         let tile_x = (cx - x) / checker_size as i32;
@@ -276,14 +295,15 @@ impl Draw for ColorHistory {
 
             // Selected highlight border
             if Some(i) == self.selected_index {
-                context.draw_rect_stroke(swatch_rect, Color::rgba(0, 0, 0, 200), 2);
+                context.draw_rect_stroke(swatch_rect, accent, 2);
             } else {
-                context.draw_rect_stroke(swatch_rect, Color::rgba(0, 0, 0, 40), 1);
+                context.draw_rect_stroke(swatch_rect, outline, 1);
             }
 
-            // Hovered highlight
+            // Hovered highlight: the same accent, weaker, so hover and selection are one
+            // family rather than the blue-plus-black pair the literals made them.
             if Some(i) == self.hovered_index && Some(i) != self.selected_index {
-                context.draw_rect_stroke(swatch_rect, Color::rgba(0, 120, 255, 180), 2);
+                context.draw_rect_stroke(swatch_rect, accent.with_alpha(140), 2);
             }
         }
     }
@@ -430,5 +450,54 @@ mod tests {
         assert_eq!(ch.colors().len(), 3);
         assert_eq!(ch.colors()[0], Color::GREEN);
         assert_eq!(ch.colors()[2], Color::WHITE);
+    }
+
+    /// The selection and hover marks follow the theme, and they are one family.
+    ///
+    /// Regression: the selection was `rgba(0,0,0,200)` and the unselected outline
+    /// `rgba(0,0,0,40)` — both invisible on a dark panel — and the hover was a fixed
+    /// `rgba(0,120,255,180)` that ignored the theme's own accent. The assertion is a relation:
+    /// the selection stroke must differ between a light and a dark panel, and it must match the
+    /// surrounding panel's chrome rather than a literal black.
+    #[test]
+    fn the_selection_mark_follows_the_theme() {
+        let mut ch = ColorHistory::new(Rect::new(0, 0, 200, 100));
+        ch.add_color(Color::RED);
+        ch.add_color(Color::GREEN);
+        ch.set_selected_index(Some(0));
+        let light = crate::widget::svg::render_to_svg(&mut ch);
+
+        // The selected swatch carries a 2 px stroke; there must be exactly one, and none of the
+        // strokes may be the old opaque black.
+        let selection_strokes = light.matches("stroke-width=\"2\"").count();
+        assert_eq!(selection_strokes, 1, "one selected swatch, one 2 px mark: {light}");
+        // The 2 px stroke must be the theme's primary, not the opaque black that vanished on a
+        // dark panel. The renderer writes alpha as a 0..1 fraction, so the old literal appears as
+        // `rgba(0,0,0,0.78)` — the form this asserts is absent.
+        let selection = light
+            .split("stroke-width=\"2\"")
+            .next()
+            .and_then(|head| head.rsplit("stroke=\"").next())
+            .and_then(|rest| rest.split('"').next())
+            .unwrap_or_default();
+        assert_ne!(
+            selection, "rgba(0,0,0,0.78)",
+            "the selection must not be the old literal black"
+        );
+        let expected = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.primary)
+            .unwrap_or(Color::rgba(0, 120, 255, 255));
+        assert_eq!(
+            selection,
+            std::format!(
+                "rgba({},{},{},{:.2})",
+                expected.r,
+                expected.g,
+                expected.b,
+                expected.a as f32 / 255.0
+            ),
+            "the selection is the theme's primary: {light}"
+        );
     }
 }

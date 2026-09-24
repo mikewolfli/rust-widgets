@@ -16,7 +16,7 @@ use crate::event::FocusReason;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-use crate::style::{Transition, TransitionTempo};
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -56,7 +56,7 @@ pub struct Switch {
     /// `visualPosition` are; this field is the crate's
     /// drawn position. `travel = 0` renders exactly the old off-end appearance, so a
     /// snapshot taken without a `tick` is unchanged.
-    travel: Transition,
+    travel: PropertyDriver,
     /// Emitted when the checked state changes.
     pub toggled: Signal1<bool>,
 }
@@ -73,7 +73,7 @@ impl Switch {
             // reaction to the pointer, which is what the theme's `slow` token describes.
             // Starting at rest (0.0) keeps a freshly built switch at the off end instead
             // of fading *out* on its first frame.
-            travel: Transition::with_tempo(TransitionTempo::Slow),
+            travel: PropertyDriver::at(0.0, MotionSlot::Slow),
             toggled: Signal1::new(),
         }
     }
@@ -174,7 +174,7 @@ impl Switch {
     /// reads to place the thumb and to blend the track colour, so the two cannot slide
     /// out of step with each other.
     pub fn travel_progress(&self) -> f32 {
-        self.travel.progress()
+        self.travel.value()
     }
 
     /// The thumb's rectangle for the current travel, or `None` when the track is too
@@ -201,7 +201,7 @@ impl Switch {
         // A disabled switch shows its logical state at rest; an enabled one follows the
         // travel, which is what lets the thumb be seen crossing.
         let travel = if self.base.is_enabled() {
-            self.travel.progress()
+            self.travel.value()
         } else if self.checked {
             1.0
         } else {
@@ -231,8 +231,23 @@ impl Switch {
     /// reversal mid-flight re-aims the travel from where it currently is instead of
     /// restarting from the far end.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
-        let target = if self.checked { 1.0 } else { 0.0 };
-        self.travel.tick(target, delta_ms)
+        // One place states which end `checked` means, so the tick and the "am I moving?" query
+        // cannot disagree about it (`Switch::travel_target`).
+        self.travel.set_target(self.travel_target());
+        self.travel.tick(delta_ms)
+    }
+
+    /// The travel the logical `checked` flag calls for.
+    ///
+    /// Split out because two readers answer questions about the same fact -- the tick aims at
+    /// it and `is_animating` compares against it -- and a `if self.checked { 1.0 } else { 0.0 }`
+    /// written twice is exactly the kind of copy that drifts.
+    fn travel_target(&self) -> f32 {
+        if self.checked {
+            1.0
+        } else {
+            0.0
+        }
     }
 }
 
@@ -289,8 +304,7 @@ impl Widget for Switch {
     }
 
     fn is_animating(&self) -> bool {
-        let target = if self.checked { 1.0 } else { 0.0 };
-        self.travel.progress() != target
+        self.travel.value() != self.travel_target()
     }
 }
 
@@ -421,12 +435,12 @@ impl Draw for Switch {
             caller_background.or(themed_track).unwrap_or(Color::rgba(180, 180, 180, 200));
         let on_track = caller_background.or(themed_accent).unwrap_or(Color::rgba(52, 199, 89, 200)); // iOS green
                                                                                                      // The track's colour is a function of the *travel*, not of two discrete states.
-                                                                                                     // Blending the two endpoint colours by `travel.progress()` is what makes the track
+                                                                                                     // Blending the two endpoint colours by `travel.value()` is what makes the track
                                                                                                      // change colour on the same frame as the thumb moves: a track that switched colour
                                                                                                      // on `checked` while the thumb was still crossing would read as two separate
                                                                                                      // actions, which is exactly the bug this control's `travel` exists to remove.
         let travel = if is_enabled {
-            self.travel.progress()
+            self.travel.value()
         } else {
             // A disabled switch shows its *logical* state at rest; there is no motion to
             // follow, and leaving it at 0 would draw a grey track for a switch that is on.
@@ -445,7 +459,7 @@ impl Draw for Switch {
 
         // Draw thumb
         //
-        // The thumb's x is derived from `travel.progress()` and **not** from `checked`.
+        // The thumb's x is derived from `travel.value()` and **not** from `checked`.
         // Reading `checked` here is precisely the defect the transition exists to fix: the
         // thumb would jump to the far end on the same frame the logical state changed, so
         // the animation could never be seen and a "travelling" toggle was really a

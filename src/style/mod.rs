@@ -56,6 +56,14 @@ pub mod css;
 /// module and `--all-targets` reported it as an unused import.
 #[cfg(not(alloc_frugal))]
 pub mod css_watcher;
+/// The facts about **this device, right now** — text scale, density, locale, appearance,
+/// motion preference, contrast, direction, mirroring — behind one interface.
+///
+/// Compiled in every profile, including `mini`/`embedded`: it depends only on `core` and the
+/// style layer's own value types, never on `crate::theme` (which a build with no device profile
+/// does not have). That is what lets a control ask about the environment without knowing which
+/// profile it was built into (BLUE24 §4.2).
+pub mod environment;
 /// Position-varying colour ramps, used where a constant colour would be a
 /// special case of a gradient.
 pub mod gradient;
@@ -75,6 +83,7 @@ pub use animation_group::*;
 pub use css::*;
 #[cfg(not(alloc_frugal))]
 pub use css_watcher::*;
+pub use environment::*;
 pub use gradient::*;
 pub use primitives::*;
 pub use selector::*;

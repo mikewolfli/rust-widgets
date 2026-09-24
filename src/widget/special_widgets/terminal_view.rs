@@ -7,6 +7,7 @@ use crate::core::{Color, Font, HorizontalAlignment, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::style::animation::CursorBlink;
 use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -21,6 +22,17 @@ pub struct TerminalView {
     input_line: String,
     history: Vec<String>,
     history_index: Option<usize>,
+    /// The caret at the end of the input line, which blinks while the terminal is enabled.
+    ///
+    /// # Why a terminal needs one more than most fields
+    ///
+    /// A terminal's whole appearance is *text that has stopped arriving*. Without a caret there
+    /// is nothing on screen that distinguishes "the shell is waiting for you" from "the shell
+    /// has hung", and a reader's first instinct on a frozen prompt is to kill the process. This
+    /// control drew no caret at all — no field, no blink, no `tick` — so it was the one control
+    /// in the crate whose animation a user is most likely to be *waiting on*. The blink is the
+    /// crate's shared [`CursorBlink`], the same primitive `line_edit` and `code_editor` use.
+    cursor: CursorBlink,
     /// Emitted when command is submitted.
     pub command_submitted: Signal1<String>,
 }
@@ -28,14 +40,39 @@ pub struct TerminalView {
 impl TerminalView {
     /// Creates terminal view.
     pub fn new(geometry: Rect) -> Self {
+        let mut cursor = CursorBlink::new();
+        // Started at construction rather than on `FocusGained`: a terminal is an *input device*
+        // by definition, so a freshly mounted one is already waiting for a command. Waiting for a
+        // focus event that a host may never send would put the caret back where this control was.
+        cursor.start();
         Self {
             base: BaseWidget::new(WidgetKind::TextEdit, geometry, "TerminalView"),
             lines: Vec::new(),
             input_line: String::new(),
             history: Vec::new(),
             history_index: None,
+            cursor,
             command_submitted: Signal1::new(),
         }
+    }
+
+    /// Whether the caret is drawn on the current frame.
+    ///
+    /// Exposed so the blink can be asserted without sleeping: the value is a function of the
+    /// ticks the control was given, not of the wall clock.
+    pub fn is_caret_visible(&self) -> bool {
+        self.cursor.is_visible()
+    }
+
+    /// Advances the caret's blink by `delta_ms` and reports whether another frame is owed.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        let owes_frame = self.cursor.tick(delta_ms);
+        if owes_frame {
+            // The caret's two halves are different pictures, so the frame that flips it must
+            // repaint. Without this the blink would advance and never be drawn.
+            self.base.request_redraw();
+        }
+        owes_frame
     }
 
     /// Returns output lines.
@@ -118,6 +155,17 @@ impl Widget for TerminalView {
         crate::core::Size::new(600, 300)
     }
 
+    /// One frame of the caret's blink. The frame bus calls this; nothing else does.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        TerminalView::tick(self, delta_ms)
+    }
+
+    /// A blinking caret always owes frames while it runs; a disabled terminal's steady caret
+    /// does not, which is what `CursorBlink::stop` is for.
+    fn is_animating(&self) -> bool {
+        self.cursor.is_running()
+    }
+
     impl_widget_property_hooks!();
 }
 
@@ -176,8 +224,14 @@ impl WidgetProperties for TerminalView {
 impl EventHandler for TerminalView {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
+        // A disabled terminal holds a steady caret (the shared rule for a control that cannot be
+        // typed into), and an enabled one blinks. This is the only place the two states differ.
         if !self.base.is_enabled() {
+            self.cursor.stop();
             return;
+        }
+        if !self.cursor.is_running() {
+            self.cursor.start();
         }
 
         if let Event::KeyPress { key, modifiers: _ } = event {
@@ -292,13 +346,36 @@ impl Draw for TerminalView {
 
         let prompt_y = (rect.y + rect.height as i32 - prompt_row_height as i32 + 3).max(rect.y);
         let prompt_text = format!("> {}", self.input_line);
+        let prompt_bounds =
+            Rect::new(rect.x + 8, prompt_y, rect.width.saturating_sub(16), prompt_line_height);
         context.draw_text_fitted(
-            Rect::new(rect.x + 8, prompt_y, rect.width.saturating_sub(16), prompt_line_height),
+            prompt_bounds,
             &prompt_text,
             &prompt_font,
             prompt_color,
             HorizontalAlignment::Left,
         );
+
+        // The caret sits immediately after the input text, in the prompt's own ink — it is the
+        // same line, continued. Its x is the measured advance of the text already typed, so it
+        // tracks the input rather than sitting at a fixed offset from the field's left edge.
+        //
+        // Drawn only when the blink's own half-period says so: a caret that ignores
+        // `cursor.is_visible()` is a caret that never blinks, which is the state this control was
+        // in before it had one at all.
+        if self.base.is_enabled() && self.cursor.is_visible() {
+            let typed = context.measure_text(&prompt_text, &prompt_font);
+            let caret_x = (rect.x + 8 + typed.width as i32)
+                .min(rect.x + rect.width as i32 - 2)
+                .max(rect.x + 8);
+            // A caret is a thin, full-height block rather than a stroke: it is the position the
+            // *next* character will occupy, so it is as tall as the line and as wide as one
+            // pixel column of it.
+            context.fill_rect(
+                Rect::new(caret_x, prompt_y, 1, prompt_line_height.max(1)),
+                prompt_color,
+            );
+        }
     }
 }
 
@@ -442,5 +519,34 @@ mod tests {
         // Down again clears
         terminal.handle_event(&Event::key_press(40, 0));
         assert_eq!(terminal.input_line(), "");
+    }
+    /// The caret blinks on the ticks it is given, and stops when the terminal is disabled.
+    ///
+    /// Regression (this plan's A.8.1b P0): the control drew no caret at all — no field, no blink,
+    /// no `tick` — so a terminal whose output had stopped was indistinguishable from one that had
+    /// hung. The blink is asserted through `is_caret_visible` rather than a pixel, because the
+    /// whole contract is that one boolean flipping on `delta_ms`.
+    #[test]
+    fn the_caret_blinks_on_the_ticks_it_is_given() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 400, 200));
+        assert!(terminal.is_animating(), "a fresh terminal waits for input, so it blinks");
+        assert!(terminal.is_caret_visible(), "a blink starts visible");
+
+        // A quarter period does not flip it; crossing the half-period does.
+        assert!(terminal.tick(100), "a running caret owes another frame");
+        assert!(terminal.is_caret_visible(), "100 ms is inside the visible half");
+        terminal.tick(crate::style::animation::CURSOR_BLINK_HALF_PERIOD_MS);
+        assert!(!terminal.is_caret_visible(), "one half-period later it is hidden");
+        terminal.tick(crate::style::animation::CURSOR_BLINK_HALF_PERIOD_MS);
+        assert!(terminal.is_caret_visible(), "and the next half brings it back");
+
+        // A disabled terminal holds a steady caret and stops owing frames, so an idle disabled
+        // control does not repaint forever.
+        terminal.handle_event(&Event::key_press(65, 0));
+        terminal.set_enabled(false);
+        terminal.handle_event(&Event::key_press(65, 0));
+        assert!(!terminal.is_animating(), "a disabled terminal's caret is steady");
+        assert!(terminal.is_caret_visible(), "a steady caret is visible, not hidden");
+        assert!(!terminal.tick(100), "and it owes no frames");
     }
 }

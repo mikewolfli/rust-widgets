@@ -372,13 +372,16 @@ impl Draw for OrderBookWidget {
             [BookSide::Bid, BookSide::Ask].iter().any(|side| !self.levels(*side).is_empty());
         if !has_levels {
             let area = PlotArea::of(geometry);
+            // The empty pane's frame follows the table's own row rule rather than the plot
+            // panes' ink-derived grid, so an empty book is chrome-identical to a full one.
             draw_empty_pane(
                 context,
                 &area,
                 crate::widget::special_widgets::finance::layout::PanelColors {
-                    surface: panel,
-                    ink,
                     grid: rule_color,
+                    ..crate::widget::special_widgets::finance::layout::PanelColors::from_parts(
+                        panel, ink,
+                    )
                 },
             );
             return;

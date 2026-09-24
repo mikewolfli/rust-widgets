@@ -235,7 +235,7 @@ impl CodeEditor {
             config,
             highlighter: None,
             completion_source: Box::new(DocumentCompletions),
-            palette: SyntaxPalette::default(),
+            palette: SyntaxPalette::for_active_appearance(),
             cursor: Cursor::default(),
             extra_cursors: Vec::new(),
             goal: CursorGoal::default(),

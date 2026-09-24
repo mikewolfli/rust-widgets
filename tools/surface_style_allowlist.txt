@@ -1,0 +1,132 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
+# SPDX-License-Identifier: MIT
+#
+# Allowlist for tools/check_surface_style_is_declared_not_hand_rolled.sh
+#
+# Format:  <path>  <reason>
+#
+# The gate measures files under `src/widget/` that blend a literal white or black to
+# derive a tone by hand. It does not require the count to reach zero today — migrating
+# 42 controls is a separate job — it requires the count never to RISE, and every file
+# still on this list to carry a reason.
+#
+# ============================================================================
+# Three genuinely different patterns are on this list, and lumping them together
+# would force bad migrations. They are separated here so a future reader can see
+# which are bevel work (migratable to `render::bevel`) and which are not.
+# ============================================================================
+#
+# ## Pattern A — a real bevel (lit edge + shaded edge, derived from the border)
+#
+# These ARE the relationship `render::bevel::Bevel` exists to state. They are
+# migratable, one control at a time, and each migration should shrink this list.
+# The gate's ceiling (42) is what stops a NEW one appearing while that happens.
+#
+#   src/widget/base_widgets/frame.rs                    — bevel, but only its *four-line
+#       groove* arm; the raised/sunken arms already call `Bevel`. Migrating the groove
+#       means adding a four-line shape to `Bevel`, which is its own change.
+#   src/widget/special_widgets/timeline_widget.rs       — a two-line bevel on the ruler.
+#   src/widget/special_widgets/chip.rs                  — a two-line bevel on the chip face.
+#   src/widget/special_widgets/command_palette.rs       — a two-line bevel on the input well.
+#
+# ## Pattern B — a *tint step* for a zebra/hover band, not a bevel
+#
+# These blend toward black once, on one surface, to make a *second* surface of the
+# same family read as one step recessed. There is no opposite pair and no direction,
+# so `Bevel` does not express them: a bevel with one edge is a different thing.
+# The right shared abstraction (if any) is a `shade(color, step)` helper in the
+# palette layer, not the bevel primitive. Listed with that conclusion stated so the
+# next reader does not "helpfully" migrate them into a shape they are not.
+#
+#   src/widget/container_widgets/stepper.rs
+#   src/widget/container_widgets/toolbox.rs
+#   src/widget/dialog/bottom_sheet.rs
+#   src/widget/display_widgets/color_well.rs
+#   src/widget/menu_toolbar/dropdown_menu.rs
+#   src/widget/misc_widgets/bezier_curve_editor.rs
+#   src/widget/misc_widgets/drop_zone.rs
+#   src/widget/overlay_widgets/refresh_control.rs
+#   src/widget/special_widgets/breadcrumb.rs
+#   src/widget/special_widgets/canvas.rs
+#   src/widget/special_widgets/diff_viewer.rs
+#   src/widget/special_widgets/gantt_widget.rs
+#   src/widget/special_widgets/kanban_board.rs
+#   src/widget/special_widgets/notification_center.rs
+#   src/widget/special_widgets/terminal_view.rs
+#   src/widget/special_widgets/toast/single.rs
+#   src/widget/special_widgets/toast/stack.rs
+#   src/widget/view_widgets/query_builder.rs
+#   src/widget/misc_widgets/barcode_scanner.rs
+#   src/widget/special_widgets/color_picker.rs
+#
+# ## Pattern C — a *disabled / secondary* rendition, not a face material at all
+#
+# These lighten a colour toward white to produce a *disabled* or *placeholder*
+# rendition of a control the theme already coloured. This is the "disabled variant"
+# relationship, which `Color::disabled_variant_of` already names — so the eventual
+# fix is to route these through that one function too, not through `SurfaceStyle`.
+# Kept separate because folding them into a bevel migration would be a category error.
+#
+#   src/widget/advanced_widgets/calendar.rs              — error-tone lighten, one edge only.
+#   src/widget/cupertino/core.rs                         — track lighter/darker pair for the switch.
+#   src/widget/dialog/file_dialog.rs                     — a side-panel tint, not a bevel.
+#   src/widget/dialog/find_replace_dialog.rs             — a field tint, not a bevel.
+#   src/widget/dialog/font_dialog.rs                     — a field tint, not a bevel.
+#   src/widget/dialog/input_dialog.rs                    — a field tint, not a bevel.
+#   src/widget/display_widgets/meter.rs                  — a highlight on the fill bar.
+#   src/widget/display_widgets/switch.rs                 — the thumb's own soft edge.
+#   src/widget/input_widgets/masked_edit.rs              — an "empty field" rendition.
+#   src/widget/input_widgets/range_slider.rs             — the track's lighter pair.
+#   src/widget/input_widgets/search_bar.rs               — a disabled rendition.
+#   src/widget/input_widgets/search_box.rs               — a disabled rendition + a placeholder ink.
+#   src/widget/input_widgets/tag_input.rs                — a disabled rendition.
+#   src/widget/media_widgets/animated_image.rs           — a disabled rendition.
+#   src/widget/media_widgets/hero_animation.rs           — a disabled rendition.
+#   src/widget/media_widgets/lottie_widget.rs            — a disabled rendition.
+#   src/widget/media_widgets/rive_widget.rs              — a disabled rendition.
+#   src/widget/menu_toolbar/tool_button.rs               — an "active" lighten on the icon.
+
+# ── The measured list (one line per file, with its pattern and reason) ────────
+
+src/widget/advanced_widgets/calendar.rs        C-disabled: lightens the error tone by one edge only
+src/widget/base_widgets/frame.rs                A-bevel: the four-line groove arm; raised/sunken already use Bevel
+src/widget/container_widgets/stepper.rs         B-tint: recessed step band, one shade of the page family
+src/widget/container_widgets/toolbox.rs         B-tint: recessed page band, one shade of the page colour
+src/widget/cupertino/core.rs                    C-disabled: the switch track's lighter/darker pair
+src/widget/dialog/bottom_sheet.rs               B-tint: the scrim darkening, one shade
+src/widget/dialog/file_dialog.rs                C-disabled: a side-panel tint
+src/widget/dialog/find_replace_dialog.rs        C-disabled: a field tint
+src/widget/dialog/font_dialog.rs                C-disabled: a field tint
+src/widget/dialog/input_dialog.rs               C-disabled: a field tint
+src/widget/display_widgets/color_well.rs        B-tint: the swatch's border step, one shade
+src/widget/display_widgets/meter.rs             C-disabled: a highlight on the fill bar
+src/widget/display_widgets/switch.rs            C-disabled: the thumb's own soft edge
+src/widget/input_widgets/masked_edit.rs         C-disabled: the empty-field rendition
+src/widget/input_widgets/range_slider.rs        C-disabled: the track's lighter pair
+src/widget/input_widgets/search_bar.rs          C-disabled: the disabled rendition
+src/widget/input_widgets/search_box.rs          C-disabled: the disabled rendition + placeholder ink
+src/widget/input_widgets/tag_input.rs           C-disabled: the disabled rendition
+src/widget/media_widgets/animated_image.rs      C-disabled: the disabled rendition
+src/widget/media_widgets/hero_animation.rs      C-disabled: the disabled rendition
+src/widget/media_widgets/lottie_widget.rs       C-disabled: the disabled rendition
+src/widget/media_widgets/rive_widget.rs         C-disabled: the disabled rendition
+src/widget/menu_toolbar/dropdown_menu.rs        B-tint: the pressed/hover band, one shade
+src/widget/menu_toolbar/tool_button.rs          C-disabled: the active lighten on the icon
+src/widget/misc_widgets/barcode_scanner.rs      B-tint: the letterbox/scrim, one shade
+src/widget/misc_widgets/bezier_curve_editor.rs  B-tint: the canvas gutter, one shade
+src/widget/misc_widgets/drop_zone.rs            B-tint: the rejected-state band, one shade
+src/widget/overlay_widgets/refresh_control.rs   B-tint: the pull track, one shade
+src/widget/special_widgets/breadcrumb.rs        B-tint: the separator band, one shade
+src/widget/special_widgets/canvas.rs            B-tint: the canvas gutter, one shade
+src/widget/special_widgets/chip.rs              A-bevel: a two-line bevel on the chip face (migratable)
+src/widget/special_widgets/color_picker.rs      B-tint: a palette highlight, one shade
+src/widget/special_widgets/command_palette.rs   A-bevel: a two-line bevel on the input well (migratable)
+src/widget/special_widgets/diff_viewer.rs       B-tint: the diff gutter, one shade
+src/widget/special_widgets/gantt_widget.rs      B-tint: the row band, one shade
+src/widget/special_widgets/kanban_board.rs      B-tint: the column band, one shade
+src/widget/special_widgets/notification_center.rs B-tint: the panel recess, one shade
+src/widget/special_widgets/terminal_view.rs     B-tint: the chrome bands, one shade each
+src/widget/special_widgets/timeline_widget.rs   A-bevel: a two-line bevel on the ruler (migratable)
+src/widget/special_widgets/toast/single.rs      B-tint: the toast recess, one shade
+src/widget/special_widgets/toast/stack.rs       B-tint: the stack recess, one shade
+src/widget/view_widgets/query_builder.rs        B-tint: the rule band, one shade

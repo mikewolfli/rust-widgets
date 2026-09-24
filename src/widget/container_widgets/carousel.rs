@@ -639,6 +639,29 @@ impl Widget for Carousel {
     fn size_hint(&self) -> Size {
         crate::core::Size::new(300, 200)
     }
+
+    /// One frame of the autoplay clock. The frame bus calls this; nothing else does.
+    ///
+    /// The elapsed time is handed to [`Carousel::advance_autoplay_by`], so the interval is
+    /// measured in milliseconds rather than in how often a driver nudged the control — the same
+    /// distinction `tooltip` and `skeleton_loader` make. Without this the autoplay was reachable
+    /// only through `Event::Timer`, whose rate set the interval, so the carousel advanced a page
+    /// per host tick instead of per its own configured seconds.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.autoplay_should_run() {
+            return false;
+        }
+        self.advance_autoplay_by(core::time::Duration::from_millis(u64::from(delta_ms)));
+        // The clock is still running, so the next frame is owed even when this one did not
+        // advance: the interval has to keep elapsing while nothing else repaints.
+        self.autoplay_should_run()
+    }
+
+    /// An autoplay carousel with more than one page owes frames; a paused or single-page one
+    /// does not, which is what keeps an idle carousel from repainting forever.
+    fn is_animating(&self) -> bool {
+        self.autoplay_should_run()
+    }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -1267,7 +1290,16 @@ impl EventHandler for Carousel {
                 }
             },
             Event::Timer { .. } => {
-                self.advance_autoplay();
+                // The legacy timer path drives the same clock the frame bus does, at one nominal
+                // frame's worth of time, so a host that has not moved to the bus sees the carousel
+                // it always did. It is a fallback: the interval is milliseconds, not tick counts.
+                //
+                // The step is the paint path's own `ANIMATION_FRAME_DELTA_MS` rather than a `16`
+                // written here, so "one frame" means one number across the crate instead of two
+                // copies that could drift (BLUE24 §2.4 gate A).
+                self.advance_autoplay_by(core::time::Duration::from_millis(u64::from(
+                    crate::widget::draw_bridge::ANIMATION_FRAME_DELTA_MS,
+                )));
             }
             Event::MouseEnter { .. } => {
                 self.pointer_inside = true;
@@ -1885,6 +1917,37 @@ mod tests {
         // Crossing the interval advances once.
         c.advance_autoplay_by(core::time::Duration::from_millis(700));
         assert_eq!(c.current(), 1);
+    }
+
+    /// The frame bus drives the autoplay, and the interval is milliseconds rather than tick
+    /// counts.
+    ///
+    /// Regression: autoplay was reachable only through `Event::Timer { .. }`, which advanced one
+    /// *interval* per event — so a carousel configured for "one page every 3 seconds" moved a page
+    /// on every host tick, and the configured interval meant nothing. Through `Widget::tick` the
+    /// same 3 seconds is 3 seconds of `delta_ms`, whatever the frame rate.
+    #[test]
+    fn the_frame_bus_drives_autoplay_by_duration_not_by_tick_count() {
+        let mut c = default_carousel();
+        c.set_autoplay(Some(core::time::Duration::from_millis(1000)));
+        assert!(c.is_animating(), "an autoplay carousel owes frames");
+        assert_eq!(c.current(), 0);
+
+        // Many small frames that add up to less than the interval must not advance the page —
+        // the assertion a tick-counted implementation cannot pass.
+        for _ in 0..50 {
+            assert!(c.tick(16), "the clock is still running, so another frame is owed");
+        }
+        assert_eq!(c.current(), 0, "800 ms is short of the one-second interval");
+
+        // The frames that cross the interval advance exactly one page.
+        c.tick(250);
+        assert_eq!(c.current(), 1, "1050 ms crosses the interval once");
+
+        // Turning autoplay off stops it owing frames at all.
+        c.set_autoplay(None);
+        assert!(!c.is_animating(), "a carousel with no autoplay must not keep repainting");
+        assert!(!c.tick(16), "and its tick owes nothing");
     }
 
     #[test]

@@ -460,9 +460,14 @@ impl CandlestickChart {
                 continue;
             }
             let color = match line.kind {
-                PriceLevelKind::Support => Color::rgb(38, 166, 91),
-                PriceLevelKind::Resistance => Color::rgb(220, 68, 70),
-                PriceLevelKind::PreviousClose => Color::rgb(158, 158, 158),
+                // A support level is drawn in the same green the rising bodies use and a
+                // resistance level in the same red the falling ones do, so a reader who has
+                // learnt the candles has already learnt the levels. `PreviousClose` is the
+                // odd one out: it is a neutral marker, so it takes the pane's own
+                // crosshair strength rather than a third fixed grey.
+                PriceLevelKind::Support => Self::rising_color(),
+                PriceLevelKind::Resistance => Self::falling_color(),
+                PriceLevelKind::PreviousClose => self.chrome().crosshair,
             };
             // Dashes rather than a solid line, so it reads as an annotation and not as
             // another data series.
@@ -647,10 +652,11 @@ impl CandlestickChart {
         }
         let index_axis = area.index_axis(bars.len());
         let x = index_axis.center_for(index);
+        let chrome = self.chrome();
         context.draw_line_stroke(
             crate::core::Point { x, y: area.rect.y },
             crate::core::Point { x, y: area.bottom() },
-            Color::rgb(120, 120, 120),
+            chrome.crosshair,
             1,
         );
 
@@ -671,7 +677,7 @@ impl CandlestickChart {
             crate::core::Point { x: label_x.max(area.rect.x), y: area.rect.y + 2 },
             &text,
             &Font::simple("Sans", 11.0),
-            Color::rgb(230, 230, 230),
+            chrome.ink,
             HorizontalAlignment::Left,
         );
         context.pop_clip();

@@ -285,9 +285,70 @@ pub mod widget;
 // Re-export all widget types for convenience
 pub use widget::*;
 
-/// Translates a message key, or returns it verbatim when i18n is not compiled in.
+/// Drives every library-side task of one frame, in the order they must happen.
 ///
-/// # Why a function next to the `tr!` macro
+/// # Why this is re-exported here rather than reached through `widget::runtime`
+///
+/// It is the counterpart of [`drain_triggers`]: both are "the library owns the logic,
+/// the platform owns the clock" entry points that a backend's event loop calls every
+/// frame. `drain_triggers` sits at the crate root because backends call it from
+/// `mini` too, where `widget::runtime` is not compiled -- so the frame entry point
+/// lives beside it, and the two are read together by every platform loop.
+///
+/// See [`widget::runtime::drive_frame`] for the ordering contract and the reason it is
+/// the crate's single frame driver.
+#[cfg(not(alloc_frugal))]
+pub use widget::runtime::{drive_frame, FrameOutcome};
+
+/// What one frame did, in the profile that has no animation bus.
+///
+/// # Why the allocation-frugal profile needs a *type* and not just a function
+///
+/// `mini` has no `widget::runtime` (`Rc`/`RefCell` widget state is what that profile exists
+/// to avoid), so it has no animation bus and no driver to speak of. But the platform loops
+/// are **shared** -- `android`/`ios`/`harmony`/`wasm` compile into `mini` as well as into the
+/// desktop profiles -- and each of them calls `crate::drive_frame` once per iteration.
+///
+/// The alternative would be a `cfg` at every one of those call sites (or a second, differently
+/// named function for one profile), which is the API fork principle #53 forbids: a capability
+/// difference is a runtime fact, not two function signatures. So the frame entry point exists
+/// in every profile, and in this one it reports the truth -- nothing was ticked, and no frame
+/// is owed -- rather than pretending to have driven a bus that is not there.
+#[cfg(alloc_frugal)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FrameOutcome {
+    /// Events drained from the trigger queue; always `0` in this profile, which has no queue.
+    pub events_dispatched: usize,
+    /// Controls advanced; always `0`, because this profile holds no widget objects.
+    pub controls_ticked: usize,
+    /// Repaint requests submitted; always `0`, for the same reason.
+    pub repaints_submitted: usize,
+    /// Whether another frame is owed; always `false` -- `mini` repaints whole frames on demand
+    /// rather than running an animation loop, so it never owes one.
+    pub needs_another_frame: bool,
+}
+
+/// Drives one frame in the allocation-frugal profile.
+///
+/// # Why this is a real function and not a stub
+///
+/// The plan's wording for this profile is "`drive_frame` is a no-op on `mini`/`embedded`, and no
+/// stub is provided" (BLUE24 §1.3). The half of that which matters is the *behaviour*: this
+/// profile must not run an animation bus, because it has no clock and no widget state to advance.
+/// It still needs an entry point, because the platform loops it shares with the desktop profiles
+/// call one.
+///
+/// So this is not a placeholder: it performs the one frame step this profile genuinely has
+/// (draining the trigger queue, which is how a host reports a resize here) and reports the
+/// honest answer for the rest. A control in this profile is painted whole, on demand, from its
+/// program state -- there is nothing to interpolate toward, so `needs_another_frame` is `false`
+/// and a loop built on it sleeps until the next event.
+#[cfg(alloc_frugal)]
+pub fn drive_frame(_delta_ms: u32) -> FrameOutcome {
+    FrameOutcome { events_dispatched: drain_triggers(), ..FrameOutcome::default() }
+}
+
+/// Translates a message key, or returns it verbatim when i18n is not compiled in.
 ///
 /// `tr!` needs a **literal** key, so it cannot serve a caller that holds a key at
 /// runtime (a control's `set_translated_tooltip`, a data-driven label). Without this

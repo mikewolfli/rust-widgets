@@ -234,16 +234,40 @@ pub fn layer_color(_layer: LayerColor) -> Option<Color> {
 /// real, usable tempo rather than an error: a control with no theme still animates.
 #[cfg(device_profile)]
 pub fn motion_tokens() -> (u32, u32, u32) {
-    crate::style::theme_manager()
+    let (fast, normal, slow) = crate::style::theme_manager()
         .current_theme()
         .map(|theme| (theme.motion.fast, theme.motion.normal, theme.motion.slow))
-        .unwrap_or((100, 200, 300))
+        .unwrap_or((100, 200, 300));
+    // The user's motion preference is applied **here**, which is the one place every transition's
+    // duration comes from -- so "reduced motion means no animation" is a property of the read
+    // rather than a branch each control has to remember (BLUE24 §4.4).
+    //
+    // Why collapsing to zero and not "skip the animation": a zero-duration transition still runs
+    // its interpolation, so it arrives at the target on the next `tick` and `is_moving()` turns
+    // false at once. The end state is therefore *reached*, and the code path is identical to the
+    // normal case. An `if reduced { set_final() } else { animate() }` in each control would be 188
+    // branches, each of which has to also settle the value correctly.
+    reduce_motion(fast, normal, slow)
+}
+
+/// Applies the environment's motion preference to a `(fast, normal, slow)` token triple.
+///
+/// Split out from [`motion_tokens`] so the rule is one expression that both the theme-reading and
+/// the theme-less `mini` arm share, rather than a `cfg`-duplicated `if` in each.
+fn reduce_motion(fast: u32, normal: u32, slow: u32) -> (u32, u32, u32) {
+    if crate::style::environment::environment().prefers_reduced_motion() {
+        (0, 0, 0)
+    } else {
+        (fast, normal, slow)
+    }
 }
 
 /// The active theme's motion tokens where there is no theme module to read them from.
 #[cfg(not(device_profile))]
 pub fn motion_tokens() -> (u32, u32, u32) {
-    (100, 200, 300)
+    // The same preference rule as the themed arm above: with no theme there is a fallback triple,
+    // not a reason to ignore the user's setting.
+    reduce_motion(100, 200, 300)
 }
 
 /// The curve every state transition runs on: the active theme's `motion.easing`.

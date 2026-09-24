@@ -28,6 +28,16 @@ use std::sync::atomic::Ordering;
 /// - Pointers passed to Win32 functions must remain valid for the duration of the call; wide
 ///   strings (`to_wide`) are kept alive via local variables that live across the `unsafe` block.
 /// - `ShowWindow` / `UpdateWindow` / `MoveWindow` operate on previously-validated HWNDs.
+/// The frame interval this backend's message loop runs at, in milliseconds.
+///
+/// The same value as every other backend's twin constant, and named here for the same
+/// reason: the sleep between iterations and the delta handed to [`crate::drive_frame`]
+/// must be the same number, or every transition runs at the ratio between them. It is
+/// defined unconditionally rather than under `cfg(target_os = "windows")` so the value
+/// is visible to the loop body's readers on every host, which is where it belongs
+/// (principle #42: the value is a frame rate, not an OS fact).
+const FRAME_INTERVAL_MS: u64 = 16;
+
 impl Platform for WindowsPlatform {
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -530,18 +540,23 @@ impl Platform for WindowsPlatform {
                     TranslateMessage(&msg);
                     DispatchMessageW(&msg);
                 }
-                // Drain the widget-trigger queue after the message pass.
+                // One library frame after the message pass.
                 //
                 // A `WM_SIZE` handler queues a `Resized` event for the library (see
                 // `crate::drain_triggers`); the Win32 message loop only delivers
-                // the OS message, so without this the queue would never be read and no
+                // the OS message, so without the drain the queue would never be read and no
                 // window layout would re-run for a window the user resized.
+                //
+                // The drain alone was half a frame, though: it re-ran layout and advanced
+                // no control, so every animation in the library was unreachable from a
+                // Win32 window (BLUE24 §0A.1 measurement 1). `crate::drive_frame` is the
+                // drain plus the animation step, in that order.
                 //
                 // Dispatching here is main-thread work: the window procedure ran on
                 // this same thread, which is what the widgets require.
-                crate::drain_triggers();
+                crate::drive_frame(FRAME_INTERVAL_MS as u32);
                 if self.runtime_running.load(Ordering::SeqCst) {
-                    thread::sleep(Duration::from_millis(10));
+                    thread::sleep(Duration::from_millis(FRAME_INTERVAL_MS));
                 }
             }
             self.runtime_running.store(false, Ordering::SeqCst);

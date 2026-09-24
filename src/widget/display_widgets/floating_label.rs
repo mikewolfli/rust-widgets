@@ -97,17 +97,16 @@ pub struct FloatingLabel {
     show_label_above: bool,
     /// The policy that decides when the label floats. See [`FloatingLabelBehavior`].
     behavior: FloatingLabelBehavior,
-    /// Interpolated float position, advanced toward `target_progress` by
+    /// Interpolated float position, advanced toward its target by
     /// [`FloatingLabel::tick`] and consumed by the draw pass. `0.0` draws the
     /// label inline; `1.0` draws it fully above the field.
     ///
-    /// Held as the shared [`Transition`](crate::style::Transition) rather than as a bare
+    /// Held as the shared [`PropertyDriver`](crate::style::PropertyDriver) rather than as a bare
     /// `f32`: the travel needs a *duration* and an *easing curve*, and both are theme
-    /// decisions this control used to hardcode (see `tick`).
-    travel: crate::style::Transition,
-    /// The value the travel moves toward — `1.0` when the label should
-    /// float, `0.0` when it should rest inline.
-    target_progress: f32,
+    /// decisions this control used to hardcode (see `tick`). The driver also holds the
+    /// target, so the `target_progress` field this control used to keep in step beside it
+    /// is gone (BLUE24 §2.3).
+    travel: crate::style::PropertyDriver,
     /// Emitted when the text content changes.
     pub text_changed: Signal1<String>,
 }
@@ -128,8 +127,7 @@ impl FloatingLabel {
             behavior: FloatingLabelBehavior::Auto,
             // The label rising out of a field is a direct reaction to focus, which is
             // what the theme's `fast` token describes.
-            travel: crate::style::Transition::with_tempo(crate::style::TransitionTempo::Fast),
-            target_progress: 0.0,
+            travel: crate::style::PropertyDriver::at(0.0, crate::style::MotionSlot::Fast),
             text_changed: Signal1::new(),
         }
     }
@@ -227,7 +225,7 @@ impl FloatingLabel {
             self.show_label_above = should_float;
             // Retarget, rather than jump: `tick` then interpolates the visible
             // position toward this target across subsequent frames.
-            self.target_progress = if should_float { 1.0 } else { 0.0 };
+            self.travel.set_target(if should_float { 1.0 } else { 0.0 });
         }
     }
 
@@ -237,7 +235,7 @@ impl FloatingLabel {
     /// another frame is needed, so the caller can schedule one only while the label is
     /// still moving — the contract every animated control in this crate follows.
     ///
-    /// # Why this drives the shared `Transition`
+    /// # Why this drives the shared `PropertyDriver`
     ///
     /// The travel used to be `progress += (target - progress) * delta / 150`. That is not
     /// a 150 ms animation: it is an **exponential approach** that only reaches the target
@@ -245,14 +243,14 @@ impl FloatingLabel {
     /// frames. It also hardcoded its duration, which meant the theme's `Motion` tokens
     /// could not re-price it — the one animated control in the crate that ignored them.
     ///
-    /// `Transition` supplies both halves correctly: the engine's eased interpolation over
+    /// `PropertyDriver` supplies both halves correctly: the engine's eased interpolation over
     /// a real duration, and the duration read from `theme.motion` (the `fast` token, since
     /// a label rising out of a field is a direct reaction to focus).
     pub fn tick(&mut self, delta_ms: u32) -> bool {
-        if !self.travel.tick(self.target_progress, delta_ms) {
-            // Settle exactly on the target: `Transition` snaps when it arrives, but a
-            // caller reading `animation_progress()` must never see a value a hair short.
-            self.travel.reset_to(self.target_progress);
+        if !self.travel.tick(delta_ms) {
+            // The settle frame is the frame that lands on the target: the driver writes the
+            // target value itself when it arrives, so there is no "a hair short" reading for
+            // a caller of `animation_progress()` to see -- and nothing to reset here.
             return false;
         }
         self.base.request_redraw();
@@ -263,7 +261,7 @@ impl FloatingLabel {
     /// `0.0 ..= 1.0`. Exposed for tests and animation-aware hosts; the draw pass
     /// consumes the same value to place the label.
     pub fn animation_progress(&self) -> f32 {
-        self.travel.progress()
+        self.travel.value()
     }
 
     /// The resolved field fill.
@@ -334,13 +332,13 @@ impl FloatingLabel {
         let floating_band = Rect::new(rect.x, rect.y + LABEL_TOP_MARGIN, 1, LABEL_LINE_HEIGHT);
         let floating_line = context.text_line(floating_band, &label_font);
 
-        if self.show_label_above || self.travel.progress() > 0.0 {
+        if self.show_label_above || self.travel.value() > 0.0 {
             // Float: interpolate the origin from the inline line up to the caption line. The
             // caption font is used only once the label has fully risen, so the glyphs do not
             // change size mid-flight.
-            let font = if self.travel.progress() >= 1.0 { &label_font } else { &input_font };
+            let font = if self.travel.value() >= 1.0 { &label_font } else { &input_font };
             let float_y = inline_line.y
-                + ((floating_line.y - inline_line.y) as f32 * self.travel.progress()) as i32;
+                + ((floating_line.y - inline_line.y) as f32 * self.travel.value()) as i32;
             context.draw_text(
                 Point::new(label_x, float_y),
                 &self.label,
@@ -388,7 +386,7 @@ impl Widget for FloatingLabel {
     }
 
     fn is_animating(&self) -> bool {
-        self.travel.progress() != self.target_progress
+        self.travel.is_moving()
     }
 }
 

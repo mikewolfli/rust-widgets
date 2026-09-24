@@ -421,7 +421,7 @@ impl Draw for DepthChart {
                 context.draw_line_stroke(
                     crate::core::Point { x, y: area.rect.y },
                     crate::core::Point { x, y: area.bottom() },
-                    Color::rgb(120, 120, 120),
+                    chrome.crosshair,
                     1,
                 );
             }

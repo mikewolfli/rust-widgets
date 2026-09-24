@@ -18,6 +18,28 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+/// The gap left where the progress arc meets the track, in logical pixels.
+///
+/// Material's `ProgressIndicator.trackGap` (`progress_indicator.dart:1636`). It is the
+/// difference between "this ring is 0%" and "this ring is broken": with a gap, a value of
+/// zero still shows two distinct ends, while without one the arc and the track are the same
+/// stroke at the same angle and the reader cannot tell the two apart at all.
+const TRACK_GAP: f32 = 4.0;
+
+/// How long one full revolution of the indeterminate sweep takes, in milliseconds.
+///
+/// # Why this is a multiple of the theme's `slow` token
+///
+/// The sweep is a *loop*, not a state change: `Motion::slow` is sized for a transition that
+/// ends (300 ms in the preset), and a ring completing a revolution that fast reads as a
+/// stutter rather than as progress. The revolution is therefore paced from `slow` scaled up
+/// by [`SPIN_SLOW_MULTIPLE`], so a theme that slows everything down slows the ring with it,
+/// and the no-theme fallback is this constant — the value the preset produces.
+const DEFAULT_SPIN_PERIOD_MS: u32 = 1400;
+
+/// How many `slow` tokens one revolution is worth.
+const SPIN_SLOW_MULTIPLE: u32 = 5;
+
 /// ProgressCircle widget — a Material-style circular progress indicator.
 ///
 /// In determinate mode, draws a track circle and a progress arc.
@@ -34,6 +56,17 @@ pub struct ProgressCircle {
     progress_color: Color,
     stroke_width: f32,
     diameter: u32,
+    /// The indeterminate sweep's rotation, in turns: `0.0` and `1.0` are the same angle.
+    ///
+    /// # Why this is a field and not `SystemTime::now()`
+    ///
+    /// The sweep used to read the wall clock inside `draw`. That made the control's appearance
+    /// a function of something no test could set, so the only way to assert the animation moved
+    /// was to sleep; it also meant the ring kept rotating in a frame nobody had asked for, and
+    /// that it could not participate in `Widget::tick` at all. A turning ring is state, and state
+    /// belongs to the control: the frame bus advances it through [`ProgressCircle::tick`], and a
+    /// paused or idle app simply does not advance it.
+    sweep: f32,
 }
 
 impl ProgressCircle {
@@ -58,6 +91,7 @@ impl ProgressCircle {
                 .unwrap_or(Color::PRIMARY),
             stroke_width: 4.0,
             diameter: geometry.width.min(geometry.height),
+            sweep: 0.0,
         }
     }
 
@@ -80,7 +114,48 @@ impl ProgressCircle {
     /// Sets whether the indicator shows indeterminate (spinning) animation.
     pub fn set_indeterminate(&mut self, indeterminate: bool) {
         self.indeterminate = indeterminate;
+        // Entering the spinning state starts from the top rather than wherever the last sweep
+        // stopped, so two rings switched on at different times still read as one animation.
+        if indeterminate {
+            self.sweep = 0.0;
+        }
         self.base.request_redraw();
+    }
+
+    /// The indeterminate sweep's current angle, in radians.
+    ///
+    /// Exposed so a test can assert the ring actually turns across frames without sleeping:
+    /// the value is a function of the ticks the control was given, not of the wall clock.
+    pub fn sweep_angle(&self) -> f32 {
+        self.sweep * 2.0 * core::f32::consts::PI
+    }
+
+    /// Advances the indeterminate sweep by `delta_ms` and reports whether another frame is owed.
+    ///
+    /// Only the indeterminate state animates: a determinate ring is a still picture that is
+    /// redrawn when its value changes, so it must not keep the frame bus alive (\u00a73.2's
+    /// "no animation, no repaint").
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        if !self.indeterminate {
+            return false;
+        }
+        let period = self.spin_period_ms();
+        // Wrapped rather than clamped: the sweep is a revolution, so `1.0` is `0.0` and the
+        // fraction is kept in `0.0..1.0` so a long-running app cannot drift into a large value
+        // and lose float precision on the angle.
+        self.sweep = (self.sweep + delta_ms as f32 / period as f32).fract();
+        self.base.request_redraw();
+        true
+    }
+
+    /// The duration of one full revolution, priced by the theme.
+    fn spin_period_ms(&self) -> u32 {
+        let slow = crate::style::motion_tokens().2;
+        if slow == 0 {
+            DEFAULT_SPIN_PERIOD_MS
+        } else {
+            slow.saturating_mul(SPIN_SLOW_MULTIPLE).max(1)
+        }
     }
 
     /// Returns the current track color.
@@ -163,6 +238,16 @@ impl Widget for ProgressCircle {
 
     fn size_hint(&self) -> Size {
         Size::new(self.diameter.max(60), self.diameter.max(60))
+    }
+
+    /// One frame of the indeterminate sweep. The frame bus calls this; nothing else does.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        ProgressCircle::tick(self, delta_ms)
+    }
+
+    /// Only the indeterminate ring owes frames; a determinate one is a still picture.
+    fn is_animating(&self) -> bool {
+        self.indeterminate
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -270,15 +355,15 @@ impl Draw for ProgressCircle {
         // threshold the caller chose, which is data, so its computation is left untouched.
 
         if self.indeterminate {
-            // In indeterminate mode, draw a single arc segment that sweeps ~135 degrees
-            // The starting angle is animated using a time-based offset.
-            let start_offset = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as f32
-                * 0.003; // Rotation speed
+            // The arc sweeps a fixed share of the circle and the whole thing revolves, which is
+            // the shape Material's indeterminate indicator describes: the arc's own length says
+            // "work is happening", the revolution says "and it has not stopped".
+            //
+            // The angle comes from `self.sweep`, advanced by `tick`, so nothing here reads the
+            // clock: two frames of the same control with the same tick history paint the same
+            // ring, which is what makes the animation assertable without sleeping.
             let arc_sweep = 2.4; // ~135 degrees in radians
-            let start_angle = start_offset;
+            let start_angle = self.sweep_angle();
             let end_angle = start_angle + arc_sweep;
 
             let prog_color =
@@ -296,7 +381,18 @@ impl Draw for ProgressCircle {
             // In determinate mode, draw the progress arc from 12 o'clock
             // -PI/2 (12 o'clock) to -PI/2 + 2*PI*value
             let start_angle = -std::f32::consts::FRAC_PI_2;
-            let end_angle = start_angle + 2.0 * std::f32::consts::PI * self.value;
+            // A non-zero value starts after a `TRACK_GAP`, so the arc's two ends are distinct
+            // from the track's two ends even at the smallest visible value. The gap is converted
+            // from pixels to radians at the drawn radius, so the visible breaking is the same
+            // size on a small ring and a large one.
+            let gap_radians = TRACK_GAP / radius.max(1.0);
+            let start_angle = start_angle + gap_radians;
+            let end_angle = -std::f32::consts::FRAC_PI_2 + 2.0 * std::f32::consts::PI * self.value;
+            // The arc must never run backwards or past its own start when the value is small
+            // enough that the gap would swallow it; a zero-or-negative sweep is nothing to draw.
+            if end_angle <= start_angle {
+                return;
+            }
 
             // A sweep too small to advance a pixel is skipped rather than emitted as a stream
             // of zero-length lines. This guard used to be the only thing standing between a
@@ -486,5 +582,85 @@ mod tests {
         // Should not panic
         pc.handle_event(&Event::MouseMove { pos: Point::new(10, 10) });
         pc.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+    }
+
+    /// The indeterminate ring must turn, and it must turn on the ticks it is given.
+    ///
+    /// This is the \u00a70.3 three-frame judgement: the three frames' geometry differ, and the
+    /// angle advances monotonically. It replaces a sweep read from `SystemTime::now()` inside
+    /// `draw`, which could only be tested by sleeping and which kept the ring turning in a
+    /// frame nobody had requested.
+    #[test]
+    fn the_indeterminate_ring_turns_on_the_ticks_it_is_given() {
+        let mut pc = ProgressCircle::new(Rect::new(0, 0, 48, 48));
+        pc.set_indeterminate(true);
+        let first = crate::widget::svg::render_to_svg(&mut pc);
+        let angle_before = pc.sweep_angle();
+
+        assert!(pc.tick(100), "an indeterminate ring owes another frame");
+        let second = crate::widget::svg::render_to_svg(&mut pc);
+        assert!(pc.tick(100), "and the frame after that");
+        let third = crate::widget::svg::render_to_svg(&mut pc);
+
+        assert!(pc.sweep_angle() > angle_before, "the ring must advance, not sit still");
+        assert_ne!(first, second, "frame one and frame two must not be the same picture");
+        assert_ne!(second, third, "nor frame two and frame three");
+    }
+
+    /// A determinate ring is a still picture: it owes no frames, and telling it so is a no-op.
+    ///
+    /// \u00a73.2 in one assertion: an animation that is not running must not keep the frame bus
+    /// alive, or every idle progress ring repaints the whole window forever.
+    #[test]
+    fn a_determinate_ring_owes_no_frames() {
+        let mut pc = ProgressCircle::new(Rect::new(0, 0, 48, 48));
+        pc.set_value(0.5);
+        assert!(!pc.tick(100), "a determinate ring must not request another frame");
+        let before = crate::widget::svg::render_to_svg(&mut pc);
+        assert!(!pc.tick(100), "and still not after being asked twice");
+        assert_eq!(before, crate::widget::svg::render_to_svg(&mut pc), "its picture is unchanged");
+    }
+
+    /// At value zero the arc and the track must still be two different strokes.
+    ///
+    /// Regression (BLUE21 A.3.6): without a track gap, a value just above zero draws the arc
+    /// flush against the track's own start, so the two read as one unbroken ring and the reader
+    /// cannot tell an empty indicator from a full one. The gap is what makes the arc's start
+    /// visible.
+    ///
+    /// # Why this measures the first *chord* and not the first vertex
+    ///
+    /// The arc helper rounds every sample onto a pixel, so on a 48 px ring a 4 px gap moves the
+    /// start by less than a pixel and the rounded corner is the same either way — an assertion on
+    /// the vertex passes with and without the gap. The arc's *length* is what actually changes:
+    /// the same value sweeps fewer pixels once the gap is taken out of it, so the gap is asserted
+    /// by measuring the swept length against the value's own angle.
+    #[test]
+    fn the_smallest_visible_arc_starts_after_a_track_gap() {
+        let mut pc = ProgressCircle::new(Rect::new(0, 0, 48, 48));
+        pc.set_value(0.25);
+        let svg = crate::widget::svg::render_to_svg(&mut pc);
+        let segments = arc_segments(&svg);
+        assert!(!segments.is_empty(), "a quarter ring is a visible arc: {svg}");
+
+        // The radius the control draws at is `min(w, h)/2 - stroke/2 - 1` — **not** half the
+        // box: the stroke is centred on the path, so the outer half of it would otherwise fall
+        // outside the rectangle. The gap comes out of the sweep's own angle, so the arc's pixel
+        // length is `radius * (quarter - gap/radius)` = `radius * quarter - gap`.
+        let radius = 48.0 / 2.0 - 4.0 / 2.0 - 1.0;
+        let gapped_px = (radius * core::f32::consts::FRAC_PI_2 - TRACK_GAP).ceil() as usize;
+        let ungapped_px = (radius * core::f32::consts::FRAC_PI_2).ceil() as usize;
+        assert!(
+            ungapped_px > gapped_px,
+            "the fixture must distinguish the two cases, or the assertion below is vacuous"
+        );
+        // The helper emits one chord per pixel of the gapped length (the last sample's rounding
+        // can collapse it by one), and this is strictly fewer than the ungapped sweep would be.
+        assert!(
+            segments.len() <= gapped_px && segments.len() < ungapped_px,
+            "the arc must be the gapped sweep, not the raw one: {} segments, expected <= \
+             {gapped_px} (gapped) and < {ungapped_px} (ungapped)",
+            segments.len()
+        );
     }
 }

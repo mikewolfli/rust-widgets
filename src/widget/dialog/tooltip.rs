@@ -13,6 +13,7 @@ use crate::core::ObjectId;
 use crate::core::{Color, Font, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+use crate::style::animation::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -59,9 +60,25 @@ pub struct Tooltip {
     max_width: u32,
     /// Tracks whether the pointer is currently hovering over the target area.
     hovering: bool,
-    /// Tracks whether a show timer has been requested and is pending.
+    /// What the bubble is fading towards: `1.0` shown, `0.0` hidden.
+    ///
+    /// # Why the fade is a field and not a fourth boolean
+    ///
+    /// A tooltip is the canonical *delayed* control: it waits out the show delay, appears,
+    /// and — the part a reader actually notices — lingers after the pointer leaves so it can
+    /// be read. It used to switch on and off across two `Event::Timer` ids, which made both
+    /// the fade and the two delays a function of how often the host sent those events
+    /// instead of a function of time. `fade` is driven by [`Tooltip::tick`] from `delta_ms`,
+    /// and the delays are elapsed-time counters on the same clock — so the 450 ms a tooltip
+    /// stays readable is 450 ms on every host, and `tick` is what the frame bus owns.
+    fade: PropertyDriver,
+    /// Milliseconds the pointer has rested on the target while a show is pending.
+    show_elapsed_ms: u64,
+    /// Milliseconds the pointer has been away while a hide is pending.
+    hide_elapsed_ms: u64,
+    /// Tracks whether a show delay is counting down.
     show_pending: bool,
-    /// Tracks whether a hide timer has been requested and is pending.
+    /// Tracks whether a hide delay is counting down.
     hide_pending: bool,
 }
 
@@ -85,6 +102,9 @@ impl Tooltip {
             font_size: DEFAULT_FONT_SIZE,
             max_width: DEFAULT_MAX_WIDTH,
             hovering: false,
+            fade: PropertyDriver::at(0.0, MotionSlot::Fast),
+            show_elapsed_ms: 0,
+            hide_elapsed_ms: 0,
             show_pending: false,
             hide_pending: false,
         }
@@ -101,20 +121,82 @@ impl Tooltip {
         &self.text
     }
 
-    /// Immediately shows the tooltip.
+    /// Immediately shows the tooltip, jumping the fade to its shown end.
+    ///
+    /// "Immediately" is the contract: a caller that calls `show` wants the bubble now, not a
+    /// fade toward it, so the transition is snapped rather than retargeted.
     pub fn show(&mut self) {
         self.show_pending = false;
         self.hide_pending = false;
+        self.show_elapsed_ms = 0;
+        self.hide_elapsed_ms = 0;
         self.visible = true;
+        self.fade.jump_to(1.0);
         self.base.request_redraw();
     }
 
-    /// Immediately hides the tooltip.
+    /// Immediately hides the tooltip, jumping the fade to its hidden end.
     pub fn hide(&mut self) {
         self.hide_pending = false;
         self.show_pending = false;
+        self.show_elapsed_ms = 0;
+        self.hide_elapsed_ms = 0;
         self.visible = false;
+        self.fade.jump_to(0.0);
         self.base.request_redraw();
+    }
+
+    /// How opaque the bubble currently is, in `0.0..=1.0`.
+    ///
+    /// Exposed so the fade can be asserted without depending on a rendered pixel — the
+    /// tooltip's whole timing contract is this one number moving on `tick`.
+    pub fn fade_progress(&self) -> f32 {
+        self.fade.value()
+    }
+
+    /// Advances the tooltip's delays and fade by `delta_ms`.
+    ///
+    /// # What this single entry point replaces
+    ///
+    /// Two `Event::Timer` ids used to do this work: one fired the pending show, one the
+    /// pending hide, and neither carried a duration — so the elapsed time was whatever the
+    /// host's timer interval happened to be, and the fade had no intermediate states at all.
+    /// Here the show/hide delays are elapsed counters and the fade is a `PropertyDriver`, both
+    /// stepped from the same `delta_ms` the frame bus hands every animation in the crate.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        let mut owes_frame = false;
+        if self.show_pending {
+            self.show_elapsed_ms = self.show_elapsed_ms.saturating_add(u64::from(delta_ms));
+            if self.show_elapsed_ms >= self.show_delay {
+                // A delayed show is a *fade in*, not a snap: `visible` flips so the bubble is
+                // on the painted path, and the transition carries it up from transparent.
+                self.show_pending = false;
+                self.visible = true;
+            }
+            // The countdown itself wants frames even before the bubble is visible, or the
+            // delay would only elapse while something else happened to repaint.
+            owes_frame = true;
+        }
+        if self.hide_pending {
+            self.hide_elapsed_ms = self.hide_elapsed_ms.saturating_add(u64::from(delta_ms));
+            if self.hide_elapsed_ms >= self.hide_delay {
+                self.hide_pending = false;
+                self.visible = false;
+            }
+            owes_frame = true;
+        }
+        // The target is the shown state while visible, the hidden state otherwise; a `show`
+        // that has not yet elapsed leaves `visible` false, so the bubble stays faded out
+        // until the delay is up — which is what makes the delay *and* the fade one mechanism.
+        let target = if self.visible { 1.0 } else { 0.0 };
+        self.fade.set_target(target);
+        if self.fade.tick(delta_ms) {
+            owes_frame = true;
+        }
+        if owes_frame {
+            self.base.request_redraw();
+        }
+        owes_frame
     }
 
     /// Returns whether the tooltip is currently visible.
@@ -234,6 +316,22 @@ impl Widget for Tooltip {
     fn size_hint(&self) -> Size {
         crate::core::Size::new(100, 30)
     }
+
+    /// One frame of the delays and the fade. The frame bus calls this; nothing else does.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        Tooltip::tick(self, delta_ms)
+    }
+
+    /// A pending delay or a mid-fade bubble owes frames; one fully shown or hidden does not.
+    fn is_animating(&self) -> bool {
+        if self.show_pending || self.hide_pending {
+            return true;
+        }
+        // The driver holds the target, so the comparison that used to re-derive it from
+        // `visible` here is the driver's own `is_moving` -- one statement of the fact, and the
+        // tick path aims at the same one.
+        self.fade.is_moving()
+    }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -305,34 +403,43 @@ impl EventHandler for Tooltip {
             Event::MouseEnter { pos: _ } => {
                 if !self.hovering {
                     self.hovering = true;
-                    // Cancel any pending hide
+                    // Cancel any pending hide and restart the show countdown from zero, so the
+                    // delay is measured from *this* entry and not from an earlier one.
                     self.hide_pending = false;
-                    // Schedule show (or show immediately if delay is 0)
+                    self.hide_elapsed_ms = 0;
+                    // A zero delay shows at once, which is the same path `tick` would take on
+                    // its first frame — stated here so `show_delay == 0` needs no frame to fire.
                     if self.show_delay == 0 {
                         self.show();
                     } else {
+                        self.show_elapsed_ms = 0;
                         self.show_pending = true;
+                        self.base.request_redraw();
                     }
                 }
             }
             Event::MouseLeave { pos: _ } => {
                 if self.hovering {
                     self.hovering = false;
-                    // Cancel any pending show
+                    // Cancel any pending show and restart the hide countdown.
                     self.show_pending = false;
-                    // Schedule hide (or hide immediately if delay is 0)
+                    self.show_elapsed_ms = 0;
                     if self.hide_delay == 0 {
                         self.hide();
                     } else {
+                        self.hide_elapsed_ms = 0;
                         self.hide_pending = true;
+                        self.base.request_redraw();
                     }
                 }
             }
+            // The legacy timer path drives the same `tick` the frame bus does, at a nominal
+            // frame's worth of time, so a host that has not moved to the bus sees the tooltip
+            // it always did. It is a fallback, not the clock: the delays are measured in
+            // milliseconds, not in how often this event arrives.
             Event::Timer { id } => {
-                if *id == TIMER_SHOW_ID && self.show_pending {
-                    self.show();
-                } else if *id == TIMER_HIDE_ID && self.hide_pending {
-                    self.hide();
+                if *id == TIMER_SHOW_ID || *id == TIMER_HIDE_ID {
+                    self.tick(16);
                 }
             }
             _ => {
@@ -397,10 +504,12 @@ impl Draw for Tooltip {
                 }
             }
         };
-        // A tooltip that is not showing is drawn as a dimmed bubble rather than omitted, so
-        // the control has a rendered body in every state instead of vanishing at rest.
-        let bubble_color =
-            if self.visible { bubble_color } else { window_fill.blend(&bubble_color, 0.45) };
+        // The bubble is blended toward the window by however far the fade has run, so the
+        // control still has a rendered body in every state instead of vanishing at rest — and a
+        // mid-fade bubble is genuinely between the two, which is what a fade *means*. The old
+        // form was a two-state dim (shown or 45% toward the window) with nothing in between;
+        // the fade now comes from `tick`, so it moves over time rather than snapping.
+        let bubble_color = window_fill.blend(&bubble_color, self.fade.value());
 
         // The label is chosen against the **bubble actually painted**, which is why this is
         // computed after the dimming step and not before it. Deriving it from the undimmed
@@ -543,47 +652,108 @@ mod tests {
         assert_eq!(tooltip.hide_delay, 300);
     }
 
+    /// The show delay is measured in milliseconds, and nothing before it elapses shows the bubble.
+    ///
+    /// This replaces an assertion that a *single* timer event fired the pending show. That test
+    /// encoded the defect: the delay was however long the host took to send the timer, so it was
+    /// 500 ms on one host and 32 ms on another. The delay is now a duration on `tick`'s clock,
+    /// which is what this asserts — including the part the old test could not state at all, that
+    /// the bubble stays hidden *until* the delay is up.
     #[test]
-    fn tooltip_event_mouse_enter_triggers_show_pending() {
+    fn the_show_delay_is_measured_in_milliseconds() {
         let mut tooltip = Tooltip::new("Tooltip", Rect::new(0, 0, 100, 40));
         assert!(!tooltip.is_visible());
         assert!(!tooltip.show_pending);
         assert!(!tooltip.hovering);
 
         tooltip.handle_event(&Event::MouseEnter { pos: Point::new(10, 10) });
-        assert!(tooltip.hovering);
-        assert!(tooltip.show_pending);
-        assert!(!tooltip.is_visible());
+        assert!(tooltip.hovering, "the pointer is on the target");
+        assert!(tooltip.show_pending, "and the delay is counting down");
+        assert!(!tooltip.is_visible(), "but the bubble is not up yet");
 
-        // Timer fires — should show
-        tooltip.handle_event(&Event::Timer { id: TIMER_SHOW_ID });
+        // Just short of the delay: still hidden. This is the assertion the old form could not
+        // make, because it had no notion of *how long* had passed.
+        assert!(tooltip.tick(DEFAULT_SHOW_DELAY_MS as u32 - 1), "the countdown owes frames");
+        assert!(!tooltip.is_visible(), "the delay must not be short-circuited");
+
+        // The final millisecond completes it.
+        tooltip.tick(1);
         assert!(tooltip.is_visible());
         assert!(!tooltip.show_pending);
     }
 
+    /// The full lifecycle, with both delays measured in milliseconds and a fade through it.
     #[test]
-    fn tooltip_event_mouse_leave_hides() {
+    fn tooltip_event_mouse_leave_hides_after_its_own_delay() {
         let mut tooltip = Tooltip::new("Tooltip", Rect::new(0, 0, 100, 40));
-        // Simulate the full lifecycle: enter → (timer) → shown → leave → (timer) → hidden
         tooltip.handle_event(&Event::MouseEnter { pos: Point::new(10, 10) });
-        assert!(tooltip.hovering);
-        assert!(tooltip.show_pending);
-        assert!(!tooltip.is_visible());
+        tooltip.tick(DEFAULT_SHOW_DELAY_MS as u32);
+        assert!(tooltip.is_visible(), "the show delay has elapsed");
 
-        // Timer fires — tooltip becomes visible
-        tooltip.handle_event(&Event::Timer { id: TIMER_SHOW_ID });
-        assert!(tooltip.is_visible());
-
-        // Now mouse leaves
+        // The pointer leaves: still visible, because the hide delay is what keeps a tooltip
+        // readable after the pointer has moved on — the whole reason it exists.
         tooltip.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
         assert!(!tooltip.hovering);
-        assert!(tooltip.hide_pending);
-        assert!(tooltip.is_visible()); // still visible until timer fires
+        assert!(tooltip.hide_pending, "the hide delay is counting down");
+        assert!(tooltip.is_visible(), "still readable until the delay elapses");
 
-        // Timer fires — should hide
-        tooltip.handle_event(&Event::Timer { id: TIMER_HIDE_ID });
+        tooltip.tick(DEFAULT_HIDE_DELAY_MS as u32 - 1);
+        assert!(tooltip.is_visible(), "one millisecond short is still shown");
+
+        tooltip.tick(1);
         assert!(!tooltip.is_visible());
         assert!(!tooltip.hide_pending);
+    }
+
+    /// The bubble fades in and out rather than snapping, and settles at both ends.
+    ///
+    /// A fade is what the show/hide delays are *for*: the delay waits, then the bubble arrives
+    /// gradually. The old form had no intermediate state — the bubble was either drawn or blended
+    /// 45% toward the window in one step.
+    #[test]
+    fn the_bubble_fades_rather_than_snapping() {
+        let mut tooltip = Tooltip::new("Tooltip", Rect::new(0, 0, 100, 40));
+        assert_eq!(tooltip.fade_progress(), 0.0, "a fresh tooltip starts hidden");
+
+        tooltip.show();
+        assert_eq!(tooltip.fade_progress(), 1.0, "`show` is immediate, so the fade is snapped");
+
+        // A zero hide delay hides at once, and "at once" includes the fade — a caller that
+        // asked for no delay asked for the bubble to be gone, not to fade over the next frames.
+        tooltip.handle_event(&Event::MouseEnter { pos: Point::new(10, 10) });
+        tooltip.set_hide_delay(0);
+        tooltip.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
+        assert!(!tooltip.is_visible(), "a zero hide delay hides at once");
+        assert_eq!(tooltip.fade_progress(), 0.0, "and snaps the fade with it");
+
+        // A *delayed* hide is the one that walks the fade: the bubble stays visible through the
+        // delay, then fades out over the frames that follow it.
+        tooltip.set_hide_delay(50);
+        tooltip.show();
+        tooltip.handle_event(&Event::MouseEnter { pos: Point::new(10, 10) });
+        tooltip.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
+        assert!(tooltip.is_visible(), "still readable through the delay");
+        assert_eq!(tooltip.fade_progress(), 1.0, "and fully faded in while it waits");
+        // Walk the delay out; the bubble then goes invisible while the fade is still full.
+        for _ in 0..4 {
+            tooltip.tick(16);
+        }
+        assert!(!tooltip.is_visible(), "the delay has elapsed");
+        let after_delay = tooltip.fade_progress();
+        assert!(after_delay < 1.0, "the fade starts once the delay expires: {after_delay}");
+        assert!(after_delay > 0.0, "and has only just started: {after_delay}");
+
+        // A single frame moves it part of the way, and further frames settle it at zero.
+        assert!(tooltip.tick(16), "a mid-fade bubble owes frames");
+        let partway = tooltip.fade_progress();
+        assert!(partway < 1.0, "the fade must have started: {partway}");
+        assert!(partway > 0.0, "and not jumped to the end: {partway}");
+
+        for _ in 0..40 {
+            tooltip.tick(16);
+        }
+        assert_eq!(tooltip.fade_progress(), 0.0, "the fade settles fully hidden");
+        assert!(!tooltip.tick(16), "and then owes no more frames");
     }
 
     #[test]

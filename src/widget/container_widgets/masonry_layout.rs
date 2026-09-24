@@ -27,6 +27,16 @@ pub struct MasonryItem {
     pub color: Color,
 }
 
+/// The vertical gap between two stacked cards, in logical pixels.
+const ITEM_SPACING: u32 = 4;
+
+/// The corner radius every card is drawn with.
+///
+/// Named because it was previously *two* values: a `let _corner_radius: u32 = 4` in the layout
+/// pass — bound and never read — beside a `6` in the draw. A reader who found the first would
+/// have concluded cards are rounded by 4 px. There is one radius and it belongs here.
+const CARD_CORNER_RADIUS: u32 = 6;
+
 /// MasonryLayout widget — a Pinterest-style waterfall grid.
 pub struct MasonryLayout {
     base: BaseWidget,
@@ -80,8 +90,7 @@ impl MasonryLayout {
 
         let rect = self.base.geometry();
         let col_w = rect.width / self.columns;
-        let spacing: u32 = 4; // gap between items
-        let _corner_radius: u32 = 4;
+        let spacing: u32 = ITEM_SPACING;
 
         // Track the current y-offset for each column.
         let mut col_heights = vec![0u32; self.columns as usize];
@@ -157,7 +166,6 @@ impl WidgetProperties for MasonryLayout {
 impl Draw for MasonryLayout {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        let corner_radius: u32 = 6;
         let font = Font::simple("Arial", 12.0);
 
         // The container behind the cards is this control's chrome, so it follows the
@@ -186,11 +194,22 @@ impl Draw for MasonryLayout {
         // rather than being indistinguishable from the frame behind it.
         context.fill_rect(rect, container_bg);
 
+        // A masonry column runs as tall as its items make it, so a list longer than the control
+        // would paint cards past the bottom edge — and nothing clips a widget at this layer, so
+        // they would land on whatever is behind it (BLUE21 D12). The clip is the control's own
+        // rectangle, and `layout_items` unchanged; only what is *painted* is bounded.
+        context.push_clip(rect.x, rect.y, rect.width, rect.height);
         for (_item, item_rect) in &layout {
+            // A card that starts below the visible area is dropped rather than clipped: the
+            // clip already handles the partial case, and skipping the fully-hidden ones keeps a
+            // long list from emitting drawing commands for pixels nobody can see.
+            if item_rect.y >= rect.y.saturating_add(rect.height as i32) {
+                continue;
+            }
             // Draw the item card background. `_item.color` is the per-card colour the
             // CALLER supplied — it identifies the card, so it is data and is passed
             // through untouched rather than resolved from the theme.
-            context.fill_rounded_rect(*item_rect, corner_radius, _item.color);
+            context.fill_rounded_rect(*item_rect, CARD_CORNER_RADIUS, _item.color);
 
             // Draw the label text centered in the item, in whichever ink is legible on
             // that card's own colour.
@@ -209,6 +228,7 @@ impl Draw for MasonryLayout {
                 HorizontalAlignment::Left,
             );
         }
+        context.pop_clip();
 
         // If there are no items, draw an empty-state hint. The hint is chrome, so it reads
         // the resolved ink instead of a literal grey.
@@ -306,5 +326,34 @@ mod tests {
         // Should not panic.
         ml.handle_event(&Event::MouseMove { pos: Point::new(50, 50) });
         ml.handle_event(&Event::KeyDown((65, 0)));
+    }
+
+    /// A list taller than the control is painted inside it, not over whatever is behind it.
+    ///
+    /// Regression (BLUE21 D12): the draw had no `push_clip`, and a masonry column runs as tall as
+    /// its items make it — so a long list emitted cards past the bottom edge, on top of the
+    /// sibling below the control. The clip bounds every card to the control's own rectangle.
+    #[test]
+    fn cards_past_the_bottom_edge_are_clipped_away() {
+        let mut ml = MasonryLayout::new(Rect::new(0, 0, 300, 120));
+        ml.set_columns(1);
+        for i in 0..10 {
+            ml.add_item(&std::format!("row {i}"), 100, Color::rgba(52, 152, 219, 255));
+        }
+        let svg = crate::widget::svg::render_to_svg(&mut ml);
+
+        assert!(svg.contains("<clipPath"), "the cards must be clipped to the control: {svg}");
+        // Every card's rounded rect is inside the clip group, so no card paints below y = 120.
+        let card_ys: Vec<i32> = svg
+            .split("<rect")
+            .skip(1)
+            .filter_map(|rest| rest.split("y=\"").nth(1))
+            .filter_map(|rest| rest.split('"').next())
+            .filter_map(|value| value.parse().ok())
+            .collect();
+        assert!(
+            card_ys.iter().all(|y| *y < 120),
+            "no card may start below the control's bottom edge: {card_ys:?}"
+        );
     }
 }

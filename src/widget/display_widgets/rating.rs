@@ -22,10 +22,25 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// Star rating widget for selecting a rating from 1 to N stars.
 pub struct Rating {
     base: BaseWidget,
-    rating: u32,
+    /// The rating, as a fraction so half-stars are representable.
+    ///
+    /// # Why this is `f32` while `rating()` is `u32`
+    ///
+    /// Real ratings are routinely fractional — "4.5 of 5" is the most common review score
+    /// there is — and the published contract has always declared `value` as `Float`. Storing
+    /// `u32` meant a caller writing `3.7` silently got `4`: the schema promised a float and the
+    /// control dropped the fraction, which is the "reported success for something that did not
+    /// happen" shape principle #1 rejects. The integral accessors stay as the projection for
+    /// callers that only ever deal in whole stars, so nothing that used the old API changes
+    /// behaviour; the exact accessors are what carry the fraction, and `draw` fills the star
+    /// the value lands in partially. (BLUE21 A.4.5d, this plan's A.4 `rating` row.)
+    rating: f32,
     max_rating: u32,
     star_size: u32,
-    /// Emitted when the rating value changes.
+    /// Emitted when the whole-star value changes.
+    ///
+    /// Kept as `u32` so an existing subscriber's handler signature is unchanged; the exact
+    /// value is available from [`Rating::rating_exact`] inside the handler.
     pub rating_changed: Signal1<u32>,
 }
 
@@ -35,25 +50,52 @@ impl Rating {
     pub fn new(geometry: Rect) -> Self {
         Self {
             base: BaseWidget::new(WidgetKind::Rating, geometry, "Rating"),
-            rating: 0,
+            rating: 0.0,
             max_rating: 5,
             star_size: dimensions::RATING_STAR_SIZE,
             rating_changed: Signal1::new(),
         }
     }
 
-    /// Returns the current rating value.
+    /// Returns the current rating, rounded to whole stars.
+    ///
+    /// The projection, not the whole story: a rating of 3.7 is *four* whole stars and reads as
+    /// "4 of 5" here, while [`Rating::rating_exact`] reports `3.7` and the drawn row fills the
+    /// fourth star 70% of the way.
     pub fn rating(&self) -> u32 {
+        self.rating.round() as u32
+    }
+
+    /// Returns the current rating as a fraction of a star.
+    pub fn rating_exact(&self) -> f32 {
         self.rating
     }
 
-    /// Sets the rating value, clamped to `[0, max_rating]`.
-    /// Emits `rating_changed` if the value actually changes.
+    /// Sets the rating value, clamped to `[0, max_rating]`, to whole stars.
+    /// Emits `rating_changed` if the whole-star value changes.
     pub fn set_rating(&mut self, rating: u32) {
-        let clamped = rating.min(self.max_rating);
+        self.set_rating_exact(rating as f32);
+    }
+
+    /// Sets the rating value, clamped to `[0, max_rating]`, keeping the fraction.
+    ///
+    /// This is the setter the `value` property uses, so `set("value", 3.5)` draws three and a
+    /// half stars rather than silently four. Emits `rating_changed` only when the *whole-star*
+    /// projection changes, so a subscriber counting stars is not woken by a half-step.
+    pub fn set_rating_exact(&mut self, rating: f32) {
+        // A non-finite write is rejected rather than clamped: `NaN.clamp` is `NaN`, and a NaN
+        // rating would make every subsequent comparison false and the row draw nothing.
+        if !rating.is_finite() {
+            return;
+        }
+        let clamped = rating.clamp(0.0, self.max_rating as f32);
+        let whole_before = self.rating();
         if self.rating != clamped {
             self.rating = clamped;
-            self.rating_changed.emit(clamped);
+            let whole_after = self.rating();
+            if whole_before != whole_after {
+                self.rating_changed.emit(whole_after);
+            }
             self.base.request_redraw();
         }
     }
@@ -68,9 +110,12 @@ impl Rating {
     pub fn set_max_rating(&mut self, max_rating: u32) {
         let max = max_rating.max(1);
         self.max_rating = max;
-        if self.rating > max {
-            self.rating = max;
-            self.rating_changed.emit(max);
+        if self.rating > max as f32 {
+            let whole_before = self.rating();
+            self.rating = max as f32;
+            if whole_before != max {
+                self.rating_changed.emit(max);
+            }
         }
         self.base.request_redraw();
     }
@@ -96,7 +141,18 @@ impl Rating {
     /// to disagree about whether three of five stars is 60% or 50%. Reads `max_rating().max(1)`, so a
     /// control whose ceiling was somehow zero reports `0.0` rather than dividing by zero.
     pub fn fill_fraction(&self) -> f32 {
-        (self.rating as f32 / self.max_rating.max(1) as f32).clamp(0.0, 1.0)
+        (self.rating / self.max_rating.max(1) as f32).clamp(0.0, 1.0)
+    }
+
+    /// The fraction of star `index` that is filled, in `0.0..=1.0`.
+    ///
+    /// Split out because a half-star is a *per-star* statement, not a row-level one: a 3.5 of 5
+    /// rating fills three stars completely, one half, and none of the fifth. Deriving it from
+    /// `fill_fraction` would fill 70% of the whole row instead, which is a progress bar wearing
+    /// stars. The same function answers both the draw and any test asserting the half.\
+    pub fn star_fill(&self, index: u32) -> f32 {
+        // The stars before `index` are whole; the star `index` holds the remainder.
+        (self.rating - index as f32).clamp(0.0, 1.0)
     }
 
     /// The rating as it should be spoken or shown: `"3 of 5"`, or `"no rating"` when unset.
@@ -108,10 +164,21 @@ impl Rating {
     /// a one-star verdict; the same distinction [`crate::platform::accessibility::A11yState::checked`]
     /// documents for `Option<bool>`.
     pub fn display_text(&self) -> String {
-        if self.rating == 0 {
+        if self.rating <= 0.0 {
             return "no rating".to_string();
         }
-        format!("{} of {}", self.rating, self.max_rating)
+        // A whole-star rating reads "3 of 5"; a fractional one keeps its fraction, because
+        // rounding it here would reintroduce on the announcement path exactly the silent
+        // truncation this control no longer has on the value path.
+        if (self.rating - self.rating.round()).abs() < 0.05 {
+            format!("{} of {}", self.rating(), self.max_rating)
+        } else {
+            format!(
+                "{} of {}",
+                crate::widget::display_widgets::rating::trim_trailing_zero(self.rating),
+                self.max_rating
+            )
+        }
     }
     /// The single column the whole star row is measured from.
     ///
@@ -191,14 +258,14 @@ impl Widget for Rating {
 ///
 /// Read/write semantics are carried over unchanged from the centralised
 /// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, so callers see
-/// the same coercions and the same errors as before. The widget stores both the
-/// rating and its ceiling as `u32`, while the schema publishes them as `Float` and
-/// `UInt`; `set` therefore rounds a `Float` to the nearest whole star, exactly as
-/// an integral value would have been rounded by the old coercers.
+/// the same coercions and the same errors as before. `value` is published as
+/// `Float` and is stored as the same fraction, so a caller writing `3.5` gets
+/// three and a half stars rather than the `4` the old rounding produced; `max`
+/// stays `UInt`.
 impl WidgetProperties for Rating {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
-            "value" => Ok(CapabilityValue::Float(f64::from(self.rating()))),
+            "value" => Ok(CapabilityValue::Float(f64::from(self.rating_exact()))),
             "max" => Ok(CapabilityValue::UInt(u64::from(self.max_rating()))),
             "star_size" => Ok(CapabilityValue::UInt(u64::from(self.star_size()))),
             // The proportional fill, in `0.0..=1.0`. `value` alone is not enough for a consumer that
@@ -219,7 +286,7 @@ impl WidgetProperties for Rating {
                 if !value.is_finite() {
                     return Err(CapabilityAccessError::TypeMismatch);
                 }
-                self.set_rating(value.round() as u32);
+                self.set_rating_exact(value as f32);
                 Ok(())
             }
             "max" => {
@@ -329,22 +396,68 @@ impl Draw for Rating {
             let Some(cell) = self.star_cell(i) else {
                 continue;
             };
-            let is_filled = i < self.rating;
+            let fill = self.star_fill(i);
+            let glyph_rect =
+                Rect { x: cell.x, y: center_y, width: cell.width, height: line.height };
 
-            let ch = if is_filled { "★" } else { "☆" };
-            let color = if is_filled { filled_color } else { empty_color };
-
+            // The empty glyph is always drawn first, so a partial star is a full outline with a
+            // filled portion inside it rather than a narrower star: a half-star is the same
+            // object as a whole one, seen half-rated.
+            //
             // `Center` positions the glyph from the cell's own midpoint, so the star needs a
             // cell — the previous form passed the cell's midpoint as a *left-origin* point and
             // then asked for `Center`, which shifted every star right by half its own advance.
             context.draw_text_fitted(
-                Rect { x: cell.x, y: center_y, width: cell.width, height: line.height },
-                ch,
+                glyph_rect,
+                "☆",
                 &font,
-                color,
+                empty_color,
                 HorizontalAlignment::Center,
             );
+            if fill <= 0.0 {
+                continue;
+            }
+            if fill >= 1.0 {
+                // A whole star needs no clip: the filled glyph exactly covers the outline.
+                context.draw_text_fitted(
+                    glyph_rect,
+                    "★",
+                    &font,
+                    filled_color,
+                    HorizontalAlignment::Center,
+                );
+                continue;
+            }
+            // A partial star is the filled glyph clipped to the rated share of the cell. The
+            // filled glyph is drawn in the *whole* cell and the clip cuts it, so the filled
+            // half is registered with the outline rather than squeezed into half a cell —
+            // squeezing it would draw a smaller star, not a half-filled one.
+            let filled_width = (cell.width as f32 * fill).round() as u32;
+            if filled_width == 0 {
+                continue;
+            }
+            context.push_clip(cell.x, cell.y, filled_width, cell.height);
+            context.draw_text_fitted(
+                glyph_rect,
+                "★",
+                &font,
+                filled_color,
+                HorizontalAlignment::Center,
+            );
+            context.pop_clip();
         }
+    }
+}
+
+/// Formats a fractional star count without a trailing `.0`.
+///
+/// A whole star reads `"4"` and a half reads `"4.5"`, so the announcement a screen reader gets
+/// matches what the row shows instead of saying "4.0 of 5" for four solid stars.\
+fn trim_trailing_zero(value: f32) -> String {
+    let text = format!("{value:.1}");
+    match text.strip_suffix(".0") {
+        Some(whole) => whole.to_string(),
+        None => text,
     }
 }
 
@@ -382,10 +495,11 @@ impl EventHandler for Rating {
                 // ink are the same set of cells, so a press where no star was painted must
                 // not rate.
                 if index < self.max_rating && self.star_cell(index).is_some() {
-                    // Clicking the same star as current rating toggles between
-                    // that star and clearing, depending on whether we click
-                    // the same or a different star.
-                    let new_rating = if self.rating == index + 1 { index } else { index + 1 };
+                    // Clicking the same star as the current rating toggles between that star
+                    // and clearing; any other star sets that many. Compared against the
+                    // whole-star projection so a 4.5 rating still toggles its fourth star off
+                    // rather than being treated as a fifth.
+                    let new_rating = if self.rating() == index + 1 { index } else { index + 1 };
                     self.set_rating(new_rating);
                 }
             }
@@ -514,6 +628,74 @@ mod tests {
         // The derived two are read-only: a second writer would be a second way to say the same thing.
         assert!(r.set("fill", CapabilityValue::Float(1.0)).is_err());
         assert!(r.set("display_text", CapabilityValue::String("x".into())).is_err());
+    }
+
+    /// A half-star is representable, and the published contract does not silently round it away.
+    ///
+    /// Regression (BLUE21 A.4.5d): the schema declared `value` as `Float` while the control stored
+    /// `u32`, so `set("value", 3.5)` produced four solid stars and a read-back of `4.0`. A review
+    /// score of "four and a half" — the most common fractional rating there is — could not be
+    /// expressed at all, and the contract reported success for a value it had changed.
+    #[test]
+    fn a_fractional_rating_round_trips_and_fills_one_star_partially() {
+        use crate::widget::capability::WidgetProperties;
+
+        let mut r = Rating::new(Rect::new(0, 0, 200, 40));
+        r.set("value", CapabilityValue::Float(3.5)).unwrap();
+
+        assert_eq!(
+            r.get("value").unwrap(),
+            CapabilityValue::Float(3.5),
+            "the contract must report the value it was given"
+        );
+        // The integral projection is still whole stars, so existing callers are unaffected.
+        assert_eq!(r.rating(), 4, "3.5 rounds to four whole stars");
+        assert_eq!(r.rating_exact(), 3.5);
+
+        // Per-star fills, not a row-level proportion: three solid, one half, one empty.
+        assert_eq!(r.star_fill(0), 1.0);
+        assert_eq!(r.star_fill(2), 1.0);
+        assert!((r.star_fill(3) - 0.5).abs() < 1e-5, "the fourth star is half rated");
+        assert_eq!(r.star_fill(4), 0.0, "the fifth is untouched");
+
+        // And the announcement keeps the fraction rather than reporting the rounded value.
+        assert_eq!(
+            r.get("display_text").unwrap().as_str(),
+            Some("3.5 of 5"),
+            "rounding on the announcement path would reintroduce the truncation"
+        );
+    }
+
+    /// A half-rated star paints the filled glyph clipped to the rated share of its cell.
+    ///
+    /// The assertion is on the *clip*, because that is what makes a partial star a full outline
+    /// with a filled part inside it rather than a smaller star: the filled glyph is drawn in the
+    /// whole cell and the clip cuts it. Glyphs reach the SVG as outlines rather than characters,
+    /// so the assertion counts the clip and the filled-coloured paths.
+    #[test]
+    fn a_half_rated_star_is_painted_with_a_clip() {
+        let mut r = Rating::new(Rect::new(0, 0, 200, 40));
+        r.set_rating_exact(2.5);
+        let svg = crate::widget::svg::render_to_svg(&mut r);
+
+        // Exactly one star is partial, so there is exactly one clip — and its width is half of a
+        // 24 px cell, which is what "half a star" means geometrically.
+        assert_eq!(svg.matches("<clipPath").count(), 1, "one partial star: {svg}");
+        let clip_width = svg
+            .split("<clipPath")
+            .nth(1)
+            .and_then(|rest| rest.split("width=\"").nth(1))
+            .and_then(|rest| rest.split('"').next())
+            .and_then(|value| value.parse::<u32>().ok())
+            .expect("the clip must carry a width");
+        assert_eq!(clip_width, 12, "half of a 24 px cell: {svg}");
+
+        // Three filled glyphs (two whole stars and the clipped half) at the filled colour, and
+        // five outlines at the empty colour; every star keeps its outline.
+        let filled = svg.matches("rgba(255,193,7,1.00)").count();
+        let empty = svg.matches("rgba(63,63,63,1.00)").count();
+        assert_eq!(filled, 3, "two whole stars and one clipped half: {svg}");
+        assert_eq!(empty, 5, "every star keeps its outline: {svg}");
     }
 
     /// `star_size` is reachable from the contract, so the setter is no longer unreachable.

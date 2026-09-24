@@ -1751,6 +1751,235 @@ impl Transition {
     }
 }
 
+/// A **named** motion token, for the one property a control drives itself.
+///
+/// # Why a second name for [`TransitionTempo`]
+///
+/// `TransitionTempo` is the same three tokens, and [`MotionSlot`] deliberately does not
+/// replace it: the former is what a `Transition` is *configured by* at construction, while
+/// this is what a [`PropertyDriver`] is *created with* and what BLUE24 §2.4's gate reads.
+/// Keeping the two spellings would be the "two enums, one meaning" mistake principle #54
+/// forbids -- so this is a **type alias**, not a copy: a reader sees one token set, and a
+/// new variant added to `TransitionTempo` cannot silently fail to reach a driver.
+pub type MotionSlot = TransitionTempo;
+
+/// One numeric property moving between two values, advanced once per frame.
+///
+/// # Why this is not [`AnimationDriver`]
+///
+/// `AnimationDriver` is **registry-shaped**: a caller registers a named animation and the
+/// driver advances it by id. That shape has the failure BLUE23 §3.3 already documented --
+/// "registered and never unregistered" -- and a control cannot answer "am I moving?"
+/// from a registry it does not own.
+///
+/// What the crate needs is **self-describing**: the control *is* the animation's owner, and
+/// `is_moving()` is its answer about itself. So this type is `Transition`'s sibling, with
+/// the one thing `Transition` left to its callers made explicit: **the target is stored**.
+///
+/// # Why storing the target removes a field from every control
+///
+/// `Transition::tick(target, delta)` takes the target *every call*, so a control that wants
+/// to answer `is_animating()` between frames has to cache it... which is exactly the second
+/// private field (`interaction_target: f32`) that `Button` and `ToggleButton` each carry.
+/// Two controls, two copies of the same three lines, and the copies had to agree with
+/// `widget_state()` on their own. Here the target is part of the value, so `set_target` is
+/// the only writer and `is_moving` reads the same fact the interpolation does -- the
+/// duplicated field goes away because there is nothing left for it to cache.
+///
+/// # Why there is no generic `T`
+///
+/// The properties that need driving are **scalar progress** (0..=1: a button's hover fill,
+/// a toggle's travel) and **pixel offset** (a thumb position), and both interpolate as
+/// `f32`. An `Interpolate` trait would add a `where` clause at every call site to express
+/// what one `f32` already expresses (principle #28). A future *colour* interpolation should
+/// be a new named method, not a type parameter.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PropertyDriver {
+    /// Where the value is now.
+    current: f32,
+    /// Where it is heading. Kept here so `is_moving` and `set_target` agree by construction.
+    target: f32,
+    /// Which motion token prices the move.
+    tempo: MotionSlot,
+}
+
+impl Default for PropertyDriver {
+    /// At the **resting** end, priced normally.
+    ///
+    /// This is the crate's one answer to "what is the first value", and it is the safe one:
+    /// starting at the target end would make a freshly built control animate *away* from its
+    /// own state on the first frame it is drawn (the defect `button.rs` records in prose and
+    /// `PieMenu` still exhibited -- BLUE24 §2.4 gate B exists to pin it here instead).
+    fn default() -> Self {
+        Self { current: 0.0, target: 0.0, tempo: MotionSlot::Normal }
+    }
+}
+
+impl PropertyDriver {
+    /// A driver resting at `value`, priced by `tempo`.
+    ///
+    /// The target starts equal to `value`, so a driver built at a non-zero value is **still**,
+    /// not "about to travel to zero". A control that wants the value to move calls
+    /// [`set_target`](Self::set_target).
+    pub fn at(value: f32, tempo: MotionSlot) -> Self {
+        Self { current: value, target: value, tempo }
+    }
+
+    /// The value the driver is currently interpolating, which is the same `f32` the
+    /// interpolation moves -- not a separate cache.
+    pub fn value(&self) -> f32 {
+        self.current
+    }
+
+    /// Aim the driver at `target`.
+    ///
+    /// # Same value does not restart
+    ///
+    /// Setting the target the driver is already at (or already heading to) is a no-op, so a
+    /// state change that is re-reported every frame -- which is what a `widget_state()`
+    /// derived target does -- cannot reset the progress and make the movement stutter. That is
+    /// the "interrupt re-aims rather than restarts" property `Transition` already had, kept
+    /// here by simply not touching `current`.
+    pub fn set_target(&mut self, target: f32) {
+        self.target = target;
+    }
+
+    /// The value the driver is heading toward.
+    pub fn target(&self) -> f32 {
+        self.target
+    }
+
+    /// Advance by `delta_ms` toward the target; `true` while there is still movement.
+    ///
+    /// The interpolation itself is [`Transition`]'s, so there is one place that knows the
+    /// curve, the pacing and the snap tolerance. This method is the storage half of the same
+    /// operation, which is why it is three lines rather than a second implementation.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        let mut transition = Transition::with_tempo(self.tempo);
+        transition.reset_to(self.current);
+        let moving = transition.tick(self.target, delta_ms);
+        self.current = transition.progress();
+        moving
+    }
+
+    /// Whether the driver is between two values -- **answers only, never advances**.
+    ///
+    /// This is the query `Widget::is_animating` needs: a frame loop asks every control
+    /// whether it owes frames without advancing any of them, so that the advance happens
+    /// exactly once and in one place (BLUE24 §1.2).
+    pub fn is_moving(&self) -> bool {
+        (self.current - self.target).abs() > f32::EPSILON
+    }
+
+    /// Jump to `value` and stop, so the next [`tick`](Self::tick) does not move it.
+    ///
+    /// Both ends are set, because a driver that jumped its position but kept pointing at the
+    /// old target would immediately animate away from where it was just placed -- which is
+    /// what a control disabling itself or being reset actually wants to avoid.
+    pub fn jump_to(&mut self, value: f32) {
+        self.current = value;
+        self.target = value;
+    }
+}
+
+#[cfg(test)]
+mod property_driver_tests {
+    use super::{MotionSlot, PropertyDriver};
+
+    /// The default is the resting end, and it is asserted rather than inferred.
+    ///
+    /// # The defect this pins
+    ///
+    /// BLUE24 §2.4 gate B: a control constructed at the **target** end of its own animation is
+    /// born already finished. Three consequences, none of which reports an error -- it fades
+    /// *out* on the first frame, `show_at`/`set_checked` have nothing left to animate, and
+    /// `is_moving()` is `false`, so the frame loop never schedules the reveal.
+    ///
+    /// `PieMenu` shipped exactly that (`animation_progress: 1.0` at construction, and no reader
+    /// of the field at all), while `button.rs` carried the lesson in prose. The crate's single
+    /// default is the place to make the rule structural once, so the gate can check the type
+    /// instead of every construction site.
+    #[test]
+    fn the_default_starts_at_the_resting_end() {
+        let driver = PropertyDriver::default();
+        assert_eq!(driver.value(), 0.0, "the first value must be the resting end");
+        assert!(!driver.is_moving(), "and a fresh driver is not travelling anywhere");
+    }
+
+    /// `at` starts still: the target equals the value, so nothing moves until aimed.
+    ///
+    /// The distinction matters because `at` is how a control states a non-zero rest position
+    /// (a menu that opens to a half-extended ring, a phase that starts mid-sweep). If `at`
+    /// injected a target, every such control would drift toward an end it never asked for.
+    #[test]
+    fn at_starts_still_at_the_given_value() {
+        let driver = PropertyDriver::at(0.25, MotionSlot::Slow);
+        assert_eq!(driver.value(), 0.25);
+        assert_eq!(driver.target(), 0.25, "at must not invent a destination");
+        assert!(!driver.is_moving());
+    }
+
+    /// A driver crosses in many frames, arrives exactly, and then stops asking for frames.
+    ///
+    /// The same contract every control's `tick` advertises, asserted once at the type so the
+    /// controls can rely on it rather than each re-deriving it: `true` while moving, then the
+    /// **end value on the settle frame**, then `false` forever after.
+    #[test]
+    fn a_driver_settles_exactly_and_then_reports_no_more_frames() {
+        let mut driver = PropertyDriver::at(0.0, MotionSlot::Normal);
+        driver.set_target(1.0);
+        assert!(driver.is_moving(), "a new target makes it moving at once, before any tick");
+
+        let mut frames = 0;
+        while driver.tick(16) {
+            frames += 1;
+            assert!(frames < 500, "the transition must terminate rather than tick forever");
+        }
+        assert!(frames > 1, "a transition must take more than one frame, or it is a cut: {frames}");
+        assert_eq!(driver.value(), 1.0, "the settle frame lands exactly on the target");
+        assert!(!driver.is_moving());
+        assert!(!driver.tick(16), "and it stays settled");
+    }
+
+    /// Setting the target it is already at does not restart the movement.
+    ///
+    /// This is what lets a control re-assert its target every frame (which is how a
+    /// `widget_state()`-derived target works) without the motion stuttering: `set_target`
+    /// only stores the destination and never rewinds `current`, so a repeated aim at the same
+    /// place is invisible.
+    #[test]
+    fn re_aiming_at_the_same_target_does_not_restart() {
+        let mut driver = PropertyDriver::at(0.0, MotionSlot::Normal);
+        driver.set_target(1.0);
+        let _ = driver.tick(16);
+        let partway = driver.value();
+        assert!(partway > 0.0 && partway < 1.0, "the fixture must be mid-flight: {partway}");
+
+        driver.set_target(1.0);
+        assert_eq!(driver.value(), partway, "re-aiming at the same place must not rewind it");
+        let _ = driver.tick(16);
+        assert!(driver.value() > partway, "and the next step must continue forward");
+    }
+
+    /// `jump_to` lands and stops, so the next tick does not animate away from it.
+    ///
+    /// It sets both ends for exactly that reason: a driver whose position jumped but whose
+    /// target stayed behind would immediately travel back to the stale aim, which is the
+    /// opposite of what "place this value here, now" means.
+    #[test]
+    fn jump_to_lands_and_stops() {
+        let mut driver = PropertyDriver::at(0.0, MotionSlot::Normal);
+        driver.set_target(1.0);
+        let _ = driver.tick(16);
+
+        driver.jump_to(0.5);
+        assert_eq!(driver.value(), 0.5);
+        assert!(!driver.is_moving(), "a jump is not a movement");
+        assert!(!driver.tick(16), "and nothing is left to animate");
+        assert_eq!(driver.value(), 0.5, "so the value stays where it was placed");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

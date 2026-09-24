@@ -559,3 +559,127 @@ fn position_at_point_is_inside_the_document() {
     let position = editor.position_at_point(Point::new(200, 120));
     assert!(position.is_some());
 }
+
+/// The editor's palette follows the active appearance, so it is not a white slab in a dark window.
+///
+/// Regression (BLUE21 P4-4): the constructor used `SyntaxPalette::default()` unconditionally, and
+/// that default is the *light* palette. A dark host therefore got a near-white editor background
+/// with dark token ink inside a dark window — the same shape `radar_chart` and `font_preview` had.
+/// The assertion is a relation between the two palettes, not two literals: the dark background must
+/// be darker than the light one, and each palette's plain ink must be legible on its own ground.
+#[test]
+fn the_syntax_palette_has_a_dark_counterpart_that_reads_on_its_own_ground() {
+    let light = SyntaxPalette::light();
+    let dark = SyntaxPalette::dark();
+
+    assert!(
+        dark.background.luminance() < light.background.luminance(),
+        "the dark palette's editor ground must be the darker of the two"
+    );
+    assert!(
+        dark.chrome_background.luminance() < light.chrome_background.luminance(),
+        "and its chrome with it"
+    );
+    for palette in [&light, &dark] {
+        let plain = palette.color_for(TokenKind::Plain);
+        assert!(
+            plain.contrast_ratio(palette.background) >= 4.5,
+            "plain text must clear the AA floor on its own ground: {:.2}:1",
+            plain.contrast_ratio(palette.background)
+        );
+        let comment = palette.color_for(TokenKind::Comment);
+        assert!(
+            comment.contrast_ratio(palette.background) >= 4.5,
+            "a comment must be readable, not merely present: {:.2}:1",
+            comment.contrast_ratio(palette.background)
+        );
+        // Every category is distinct from plain: a palette whose keywords look like identifiers is
+        // a palette a reader cannot scan.
+        for kind in [TokenKind::Keyword, TokenKind::Type, TokenKind::Function, TokenKind::String] {
+            assert_ne!(
+                palette.color_for(kind),
+                plain,
+                "{kind:?} must be distinguished from plain text"
+            );
+        }
+    }
+    assert_ne!(
+        SyntaxPalette::default(),
+        dark,
+        "the default stays the light palette so an unthemed build is unchanged"
+    );
+    assert_eq!(SyntaxPalette::default(), light, "and it is exactly the light one");
+}
+
+/// A freshly constructed editor picks the palette that matches the active appearance.
+///
+/// This is the half the palette test above cannot cover: that test proves both palettes exist and
+/// read correctly, while this one proves the *constructor* selects the right one. Regression
+/// (BLUE21 P4-4): it selected the light one unconditionally, so the dark census SVG carried a
+/// near-white editor inside a dark window.
+#[test]
+fn a_fresh_editor_picks_the_palette_that_matches_the_active_appearance() {
+    let _guard = crate::theme::theme_test_guard();
+    {
+        let mut manager = crate::theme::global_theme_manager();
+        manager.register_theme(crate::theme::Theme::default());
+        manager.register_theme(crate::theme::Theme::dark());
+    }
+
+    crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
+    let light = editor().palette().background;
+    crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Dark);
+    let dark = editor().palette().background;
+
+    assert!(
+        dark.luminance() < light.luminance(),
+        "the dark editor must have the darker ground: light={light:?} dark={dark:?}"
+    );
+    assert_eq!(light, SyntaxPalette::light().background, "light selects the light palette");
+    crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
+}
+
+/// The two palettes are opposite in the way that matters: every dark token ink is lighter than its
+/// light counterpart, and every one clears the AA floor on its own ground.
+///
+/// # Why this replaces a pixel assertion
+///
+/// A first attempt rendered the editor with text and compared the emitted token fills. That
+/// assertion **did not bear weight**: the renderer pushes a token's ink toward the *field* it sits
+/// on, and the field follows the theme — so the two appearances' token fills differ even when both
+/// draw the same palette, and forcing the light palette into the dark editor still left the dark
+/// render's tokens far lighter (min luminance 181 vs the light render's max 68). The palette's own
+/// effect is entangled with the field blend at that level.
+///
+/// The property that *is* the defect is a property of the palette itself — a light-ground palette
+/// used on a dark ground — so it is asserted on the palettes, where it is exact, rather than on a
+/// derivation that cannot separate the two.
+#[test]
+fn every_dark_token_ink_is_lighter_than_its_light_counterpart() {
+    let light = SyntaxPalette::light();
+    let dark = SyntaxPalette::dark();
+    let mut checked = 0;
+    for kind in [
+        TokenKind::Plain,
+        TokenKind::Keyword,
+        TokenKind::Type,
+        TokenKind::Function,
+        TokenKind::String,
+        TokenKind::Comment,
+        TokenKind::Number,
+    ] {
+        let l = light.color_for(kind);
+        let d = dark.color_for(kind);
+        assert!(
+            d.luminance() > l.luminance(),
+            "{kind:?} must be a lighter ink in the dark palette: light={l:?} dark={d:?}"
+        );
+        assert!(
+            d.contrast_ratio(dark.background) >= 4.5,
+            "{kind:?} must clear the AA floor on the dark ground: {:.2}:1",
+            d.contrast_ratio(dark.background)
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 7, "the loop must actually cover the categories it names");
+}

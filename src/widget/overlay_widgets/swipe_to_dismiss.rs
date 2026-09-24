@@ -51,7 +51,7 @@ pub struct SwipeToDismiss {
     /// The transition drives the row the rest of the way out from wherever the gesture released it,
     /// which is what every platform's swipe-to-delete does, and it costs nothing while at rest:
     /// progress `0.0` is exactly the un-dismissed picture, so every existing snapshot is unchanged.
-    exit: crate::style::Transition,
+    exit: crate::style::PropertyDriver,
     /// Text displayed in the action background (e.g., "Delete").
     action_text: String,
     /// Emitted when the item is dismissed.
@@ -69,7 +69,7 @@ impl SwipeToDismiss {
             swipe_offset: 0.0,
             drag_origin_x: None,
             is_dismissed: false,
-            exit: crate::style::Transition::new(),
+            exit: crate::style::PropertyDriver::default(),
             action_text: "Delete".to_string(),
             dismissed: Signal1::new(),
         }
@@ -126,6 +126,9 @@ impl SwipeToDismiss {
     pub fn reset_swipe(&mut self) {
         self.swipe_offset = 0.0;
         self.is_dismissed = false;
+        // The same reasoning as `dismiss`: undoing the decision must also un-aim the departure, or
+        // `is_animating()` would keep reporting a journey the control is no longer making.
+        self.exit.set_target(self.exit_target());
         self.base.request_redraw();
     }
 
@@ -135,9 +138,18 @@ impl SwipeToDismiss {
     /// the way out over the theme's `normal` tempo. `dismissed` is emitted at once — the *decision*
     /// is immediate, only the departure is animated — because a subscriber that removes the row
     /// from its model must not have to wait for a frame loop to hear about it.
+    ///
+    /// # Why this aims the driver rather than leaving it to `tick`
+    ///
+    /// The decision to leave is made **here**, so the fact "the row owes frames" has to be true
+    /// here too — `is_animating()` is what a frame loop consults *before* it decides to tick
+    /// anything, so a control that only becomes animating inside its own `tick` is never ticked at
+    /// all. `PropertyDriver` stores the target, which means this is the one statement that states
+    /// it: `set_target` is the same fact `tick` aims at, so the two cannot drift (BLUE24 §2.3).
     pub fn dismiss(&mut self) {
         if !self.is_dismissed {
             self.is_dismissed = true;
+            self.exit.set_target(self.exit_target());
             self.dismissed.emit(());
             self.base.request_redraw();
         }
@@ -149,7 +161,8 @@ impl SwipeToDismiss {
     /// theme's `Motion::normal` rather than a constant in this file, so a theme can state its own
     /// tempo and a test can drive it to the end deterministically.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
-        self.exit.tick(self.exit_target(), delta_ms)
+        self.exit.set_target(self.exit_target());
+        self.exit.tick(delta_ms)
     }
 
     /// The progress a departure should be travelling toward: `1.0` once dismissed, else `0.0`.
@@ -172,7 +185,7 @@ impl SwipeToDismiss {
     /// writers would have to keep in step.
     fn drawn_offset(&self) -> f32 {
         let gesture = self.swipe_offset;
-        let exit = self.exit.progress();
+        let exit = self.exit.value();
         if exit <= 0.0 {
             return gesture;
         }
@@ -197,10 +210,10 @@ impl Widget for SwipeToDismiss {
     }
 
     fn is_animating(&self) -> bool {
-        // Derived from the *state*, not from the tick-time progress field — a dismiss arriving
-        // makes the control animating before any `tick` has run. Reading the stale field would
-        // answer `false` for a row that was just dismissed, so the bus would never start.
-        self.exit.progress() != self.exit_target()
+        // The driver holds the target the tick aims at, so "is `is_dismissed` reflected yet" is
+        // one question asked in one place -- the field that used to be compared against a
+        // separately derived target is gone (BLUE24 §2.3).
+        self.exit.is_moving()
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
@@ -256,7 +269,7 @@ impl Draw for SwipeToDismiss {
         // the departure reaches `1.0`, which is the frame at which it has left the viewport — so
         // the `return` is on the progress rather than on the flag, and a snapshot taken before any
         // `tick` (progress `0.0`) is byte-identical to the un-dismissed picture.
-        if self.is_dismissed && self.exit.progress() >= 1.0 {
+        if self.is_dismissed && self.exit.value() >= 1.0 {
             return;
         }
 

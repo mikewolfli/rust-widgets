@@ -562,6 +562,12 @@ impl WaylandPlatform {
         // Idle timeout: bounds quit latency when the compositor is silent.
         const IDLE_TIMEOUT_MS: i32 = 50;
 
+        // The frame interval this backend advances the library by. Same value and same
+        // reason as the other backends' twin constants: the delta handed to
+        // `crate::drive_frame` is what makes a transition take the time the theme said it
+        // should, so it must not be a different number than the one the other hosts use.
+        const FRAME_INTERVAL_MS: i32 = 16;
+
         log::info!("[wayland] Entering native fd-based event loop");
         loop {
             if !self.runtime.running.load(std::sync::atomic::Ordering::SeqCst) {
@@ -577,8 +583,13 @@ impl WaylandPlatform {
                 // (a host reporting a size for a window it manages itself), and leaving it
                 // in the queue until a session appears would delay a layout run for as long
                 // as the window is absent. See `crate::drain_triggers`.
-                crate::drain_triggers();
-                std::thread::sleep(std::time::Duration::from_millis(16));
+                //
+                // `crate::drive_frame` rather than the bare drain: the animation step has to
+                // run even in this session-less arm, or a transition that started before the
+                // window appeared would freeze instead of finishing (BLUE24 §0A.1
+                // measurement 1).
+                crate::drive_frame(FRAME_INTERVAL_MS as u32);
+                std::thread::sleep(std::time::Duration::from_millis(FRAME_INTERVAL_MS as u64));
                 continue;
             };
 
@@ -614,18 +625,19 @@ impl WaylandPlatform {
                 }
             }
 
-            // Drain the widget-trigger queue after the protocol dispatch for this
-            // iteration.
+            // One library frame after the protocol dispatch for this iteration.
             //
-            // Deliberately **outside** the `native_session` lock taken above: the queue
-            // drain can re-enter library code that positions widgets, and holding this
-            // backend's session lock across that would let a re-entrant call deadlock on
-            // the same mutex. The lock guard is dropped at the end of the `match` above.
+            // Deliberately **outside** the `native_session` lock taken above: the frame can
+            // re-enter library code that positions widgets, and holding this backend's
+            // session lock across that would let a re-entrant call deadlock on the same
+            // mutex. The lock guard is dropped at the end of the `match` above.
             //
-            // Without this, a `Resized` event queued by a host never reached a window
+            // Without the drain, a `Resized` event queued by a host never reached a window
             // layout — the protocol events were dispatched and the library's own queue was
-            // never read. See `crate::drain_triggers`.
-            crate::drain_triggers();
+            // never read. Without the animation step that follows it, every hover fade and
+            // caret blink was inert on this backend for the same reason it was on the
+            // others (BLUE24 §0A.1 measurement 1). See `crate::drive_frame`.
+            crate::drive_frame(FRAME_INTERVAL_MS as u32);
         }
         log::info!("[wayland] Native event loop exited");
     }
@@ -641,11 +653,11 @@ impl WaylandPlatform {
         if let Some(ref mut session) = *guard {
             let _ = session.event_queue.dispatch_pending(&mut session.state);
         }
-        // Released before draining, so a trigger that positions a widget cannot
+        // Released before the frame, so a trigger that positions a widget cannot
         // deadlock on this mutex. This is the pump-callback spelling of the same tick
-        // the `run()` loop performs.
+        // the `run()` loop performs, animation step included.
         drop(guard);
-        crate::drain_triggers();
+        crate::drive_frame(FRAME_INTERVAL_MS as u32);
     }
 
     /// Attempt to create a native Wayland xdg_toplevel for this window.
