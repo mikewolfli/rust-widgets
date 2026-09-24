@@ -775,20 +775,41 @@ impl Draw for PieMenu {
             .unwrap_or_else(|| ring.blend(&secondary, 0.45));
 
         let center = self.center;
-        // The reveal scales the ring 's radii, so an opening menu grows into place instead of
+        // The reveal scales the ring's radii, so an opening menu grows into place instead of
         // appearing whole. The progress is read here rather than in the hit test: the *picture*
         // follows the animation, while the hit test keeps using the final geometry, so a pointer
         // that arrives mid-open cannot land on a wedge that is not there yet.
         let reveal = self.animation_progress.value();
-        let outer_r = self.radius * reveal;
-        let inner_r = self.inner_radius * reveal;
-        if reveal <= 0.0 {
-            // Fully closed: nothing to draw. Reached both at rest and while the close animation
-            // runs out after `hide`, which is what makes the closed end invisible either way.
-            return;
-        }
         let cx = center.x as f32;
         let cy = center.y as f32;
+
+        // A menu that is fully closed is still **drawn**, at its final geometry and at reduced
+        // strength, rather than omitted.
+        //
+        // # Why this is the crate's convention and not a favour to the census
+        //
+        // A pie menu is constructed closed (`PropertyDriver::at(0.0)`), and this control used to
+        // `return` outright at `reveal <= 0.0` — so a freshly built menu painted nothing at all.
+        // That is the exact defect `popover` documents and fixes in the same words: "the whole
+        // card used to be skipped unless the popover was already showing — so the census reported
+        // `ink = 0` *and* no response to a light/dark switch", and its half of the comment above
+        // ("a freshly constructed menu is visible rather than reporting `ink = 0`") was written
+        // for the same reason but could never run, because this return sat in front of it.
+        //
+        // The three sibling popups agree: `menu` draws its heading when closed, `tooltip` blends
+        // its bubble toward the window, and `popover` lays the card out and dims it 45 %. All three
+        // draw a *visible body* in the closed state, which is what makes the appearance switch
+        // observable before the thing is opened and what lets a reader see where it will appear.
+        // So the closed menu paints its track ring dimmed, and the opening animation scales that
+        // same ring up from it — the two states are the same object at two strengths, not one
+        // object and one blank.
+        let closed = reveal <= 0.0;
+        let outer_r = if closed { self.radius } else { self.radius * reveal };
+        let inner_r = if closed { self.inner_radius } else { self.inner_radius * reveal };
+        if closed {
+            self.fill_ring(context, center, outer_r, inner_r, window_fill.blend(&ring, 0.45));
+            return;
+        }
 
         // The ring track and its hub are drawn before the early return on an empty item list, so a
         // freshly constructed menu is visible rather than reporting `ink = 0`; an empty ring reads
