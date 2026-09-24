@@ -1,0 +1,123 @@
+# The colour-emoji codepoints the shipped subset carries (BLUE23 G-6).
+#
+# This is a *decision*, not a scrape: the full upstream face covers 1510 codepoints / 10.6 MB of
+# PNG data, which no demo library can ship. The list below is the set a UI toolkit actually needs
+# to demonstrate colour text, chosen so that every category a widget would plausibly show has at
+# least one member.
+#
+# Format: one codepoint or `A..B` inclusive range per line, `#` comments, blank lines ignored.
+# Consumed by tools/gen_emoji_subset.py. Regenerate with:
+#     python3 tools/gen_emoji_subset.py --license ofl-1.1
+
+# --- Smileys & emotion: the faces people actually recognisable-test against ---
+1F600..1F64F     # emoticons block: grinning, joy, sob, angry, ...
+1F910..1F92F     # supplemental symbols and pictographs: robot, hugs, mind-blown, ...
+263A, 2639       # white smiling face, white frowning face
+1F970..1F97A     # smiling face with hearts, yawning, pleading
+1F9D0           # face with monocle
+
+# --- Gestures & body: every demo hover/press animation wants a hand ---
+270A, 270B, 270C, 270D
+1F44A..1F450     # fist, thumbs up/down, clapping, raising hands, ...
+1F44B           # waving hand
+1F64C, 1F64F     # raising hands, folded hands
+1F91D           # handshake
+
+# --- Nature, weather, space ---
+2600..2604       # sun, cloud, umbrella, snowman, comet
+26A1             # high voltage
+2744             # snowflake
+1F308           # rainbow
+1F30D..1F30F     # earth globes
+1F31E, 1F31D, 1F31A, 1F31C  # sun/moon faces
+1F319           # crescent moon
+2B50             # white medium star
+1F31F, 1F320     # glowing star, shooting star
+1F340..1F343     # four leaf clover, maple leaf, fallen leaf, leaf fluttering
+1F338           # cherry blossom
+1F335           # cactus
+1F332..1F334     # evergreen, deciduous, palm tree
+
+# --- Food & drink: the canonical "does colour work" test ---
+1F34E, 1F34F     # red apple, green apple
+1F349, 1F34A, 1F34B, 1F34C  # watermelon, tangerine, lemon, banana
+1F351, 1F352, 1F353         # peach, cherries, strawberry
+1F355, 1F356, 1F357         # pizza, meat on bone, poultry leg
+1F35A..1F35D     # rice, curry, steaming bowl, spaghetti
+1F36A, 1F36B, 1F36C, 1F36D  # cookie, chocolate, candy, lollipop
+2615             # hot beverage
+1F37A, 1F37B, 1F377         # beer, clinking beer, wine glass
+1F382           # birthday cake
+1F369           # doughnut
+
+# --- Animals ---
+1F415, 1F416     # dog, pig
+1F408           # cat
+1F410, 1F411, 1F412  # goat, sheep, monkey
+1F418           # elephant
+1F426, 1F427     # bird, penguin
+1F41D, 1F41E     # honeybee, lady beetle
+1F41F, 1F420, 1F421  # fish, tropical fish, blowfish
+1F422, 1F423, 1F424  # turtle, hatching chick, baby chick
+1F42C           # dolphin
+
+# --- Travel & objects: what a widget library's own icons look like ---
+1F4A1           # light bulb
+1F4A5           # collision
+1F4A9           # pile of poo
+1F4AA           # flexed biceps
+1F4B0           # money bag
+1F4BB           # laptop
+1F4C5, 1F4C6     # calendar, tear-off calendar
+1F4C8, 1F4C9     # chart increasing, chart decreasing
+1F4CE           # paperclip
+1F4D1           # bookmark tabs
+1F4E7           # e-mail
+1F4F1           # mobile phone
+1F4F7           # camera
+1F50B           # battery
+1F50D           # magnifying glass
+1F511           # key
+1F512, 1F513     # lock, open lock
+1F514           # bell
+1F517           # link
+1F525           # fire
+1F527           # wrench
+1F528           # hammer
+1F52B           # water pistol
+1F5D1           # wastebasket
+1F6A8           # police car light
+1F6A9           # triangular flag
+1F6AA           # door
+1F6AB           # no entry
+1F680           # rocket
+1F6E0           # hammer and wrench
+231A, 23F0, 23F3 # watch, alarm clock, hourglass
+1F4E2           # loudspeaker
+1F3AF           # direct hit
+1F3B5, 1F3B6     # musical note, musical notes
+1F3C6           # trophy
+26BD, 26BE, 1F3C0  # soccer, baseball, basketball
+1F3AE           # video game
+1F3A8           # artist palette
+1F3AC           # clapper board
+
+# --- Symbols & signs: status markers, which is where a UI toolkit uses emoji most ---
+2705             # white heavy check mark
+274C             # cross mark
+26A0             # warning
+2753, 2754, 2755 # question marks
+2757, 2764, 2762 # exclamation, red heart, exclamation question
+2B06, 2B07, 2B05, 27A1  # arrows
+2139, 24C2, 2122, 00A9, 00AE  # information, M, trademark, copyright, registered
+1F4AF           # hundred points
+1F51E           # no one under eighteen
+1F6D1           # stop sign
+1F7E0..1F7EB     # coloured circles and squares
+1F534, 1F535     # red circle, blue circle
+1F7F0           # heavy equals sign
+
+# --- Regional indicators: every flag a two-letter pair over these 26 ---
+# Kept whole (26 glyphs, ~13 KB) because they are *meant* to compose: dropping any is what makes
+# a subset look broken rather than small.
+1F1E6..1F1FF

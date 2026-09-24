@@ -156,10 +156,9 @@ pub(crate) fn blend_painted_glyph(
         return false;
     };
     if painted.is_color() {
-        // Colour ink needs the four-byte buffer this path does not provide. Reporting "nothing
-        // drawn" is the honest answer: the alternative is to misinterpret four-byte pixels as
-        // coverage and paint noise. The colour path is reached through `paint_color_glyph` below,
-        // which is the caller that reserved the right buffer.
+        // Colour ink needs a four-byte-per-pixel buffer, which this path does not provide — see
+        // `blend_color_glyph`, which is the caller that reserved one. Reporting "nothing drawn" is
+        // the honest answer: the alternative is to read four-byte pixels as coverage and paint noise.
         return false;
     }
     let (width, height) = (cell.width as i32, cell.height as i32);
@@ -189,6 +188,110 @@ pub(crate) fn blend_painted_glyph(
                 );
                 any = true;
             }
+        }
+    }
+    any
+}
+
+/// Blend one glyph's **colour** ink into a canvas.
+///
+/// # Why this is a separate function from [`blend_painted_glyph`]
+///
+/// The two differ in what the face's bytes *mean*, and there is no way to tell from the bytes
+/// alone. Coverage ink is one byte per pixel and is an **alpha** for the caller's text colour; a
+/// colour glyph is four bytes per pixel and already carries its own colour, so the text colour must
+/// not be applied at all. Folding both into one function would mean either a branch on a flag
+/// passed alongside the buffer (which the caller can get out of step with what it allocated) or
+/// reading the fourth byte of every coverage glyph as alpha (which paints every antialiased glyph
+/// as garbage).
+///
+/// # Why this is gated on `fonts-emoji-color`
+///
+/// Without that feature no face in the crate can ever return [`InkKind::Color`], so a caller of
+/// this function would be drawing nothing on every call. Gating it removes the function — and its
+/// call site in the text path — rather than leaving dead code that looks like it works.
+///
+/// # The buffer is the caller's proof
+///
+/// `pixels` must hold at least `cell.area() * 4` bytes. `paint_active` reports `None` when the
+/// stack's only source for `ch` is a colour face and the buffer is too small, so a caller holding a
+/// 1-bit scratch gets `false` rather than a partial colour glyph. That is the same contract
+/// [`blend_painted_glyph`] states, expressed once at the point the buffer is chosen.
+///
+/// Returns whether any ink was blended.
+#[cfg(feature = "fonts-emoji-color")]
+pub(crate) fn blend_color_glyph(
+    ch: char,
+    x: i32,
+    y: i32,
+    /* RGBA scratch of at least `cell.area() * 4` bytes, reused across glyphs */
+    pixels: &mut [u8],
+    config: &mut GlyphDrawConfig,
+) -> bool {
+    if ch.is_whitespace() {
+        return false;
+    }
+    let cell = crate::render::text::Cell::new(config.w, config.h);
+    if cell.is_empty() || pixels.len() < cell.area() * 4 {
+        return false;
+    }
+    let Some(painted) = crate::render::text::paint_active(ch, cell, pixels) else {
+        return false;
+    };
+    // A face that answered with coverage here means the stack resolved `ch` through a 1-bit or
+    // vector source — there is no colour to blend, and reading the buffer as RGBA would be wrong.
+    // The caller that wants those uses `blend_painted_glyph`, so refusing is the correct answer.
+    if !painted.is_color() {
+        return false;
+    }
+    blend_rgba_over_canvas(pixels, cell, x, y, config)
+}
+
+/// Composites a `cell`-sized straight-RGBA buffer into a canvas at `(x, y)`, honouring the clip.
+///
+/// Split out from [`blend_color_glyph`] so the pixel loop can be tested with a hand-built buffer,
+/// without a colour font being present in the build.
+#[cfg(feature = "fonts-emoji-color")]
+fn blend_rgba_over_canvas(
+    pixels: &[u8],
+    cell: crate::render::text::Cell,
+    x: i32,
+    y: i32,
+    config: &mut GlyphDrawConfig,
+) -> bool {
+    let (width, height) = (cell.width as i32, cell.height as i32);
+    let mut any = false;
+    for py in 0..height {
+        let cy = y + py;
+        if cy < 0 || cy >= config.canvas_height as i32 {
+            continue;
+        }
+        for px in 0..width {
+            let si = ((py * width + px) * 4) as usize;
+            let Some(src) = pixels.get(si..si + 4) else {
+                continue;
+            };
+            // A fully transparent source pixel contributes nothing, and skipping it is what keeps a
+            // glyph's rectangular bounding box from darkening the canvas around it.
+            if src[3] == 0 {
+                continue;
+            }
+            let cx = x + px;
+            if cx < 0 || cx >= config.canvas_width as i32 {
+                continue;
+            }
+            if !pixel_visible(config.clip, cx, cy) {
+                continue;
+            }
+            blend_pixel(
+                config.canvas,
+                config.canvas_width,
+                cx as u32,
+                cy as u32,
+                Color::rgba(src[0], src[1], src[2], src[3]),
+                1.0,
+            );
+            any = true;
         }
     }
     any

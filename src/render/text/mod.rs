@@ -41,7 +41,7 @@ mod line;
 mod raster;
 
 #[cfg(feature = "text-shaping")]
-pub use raster::VectorSource;
+pub use raster::{outline, OutlinePoint, VectorSource, OUTLINE_MAX_CONTOURS, OUTLINE_MAX_POINTS};
 
 // Colour bitmap faces (G-6): `CBDT`/`CBLC` plus the PNG decoder that reads what they point at.
 //

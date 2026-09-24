@@ -543,120 +543,119 @@ impl FontStack {
 /// A caller that wants a different stack (a test, a host with its own face) builds a
 /// [`FontStack`] directly and passes it where it needs one.
 pub fn active_stack() -> FontStack {
-    // The stack with no opt-in font data: the crate's historical single face.
-    #[cfg(not(any(
-        feature = "fonts-cjk-bitmap",
-        feature = "fonts-vector-latin",
-        feature = "fonts-complex",
-        feature = "fonts-emoji-color"
-    )))]
-    static BASE: [&dyn GlyphSource; 1] = [&Font8x8Source::INSTANCE];
-
-    // The stack with the CJK bitmap face added.
+    // Why an if/else chain of `cfg` blocks rather than a set of `let stack = ...` definitions with
+    // mutually exclusive predicates:
     //
-    // The CJK face comes **first** for the characters it covers, because it is the only face
-    // that has them; the 8x8 face stays last so Latin resolution is untouched. Ordering it the
-    // other way (8x8 first) would be harmless for Latin — the 8x8 face does not cover CJK — but
-    // would leave the CJK face unreachable for any character the 8x8 face *does* cover, which is
-    // the opposite of a fallback chain's purpose.
-    #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex"))]
-    static WITH_VECTOR: [&dyn GlyphSource; 2] =
-        [&super::raster::VectorSource::INSTANCE, &Font8x8Source::INSTANCE];
+    // Two mutually exclusive `let` bindings both compile — only one is *reachable*, and Rust's
+    // dead-code analysis does not know that, so it warns. Worse, the compiler cannot check that the
+    // predicates cover every combination, so an unhandled feature set silently falls through to
+    // whatever the last `let` bound. Expressing it as one exhaustive chain makes the last arm the
+    // only fallback and makes all 16 combinations of the four data features explicit.
+    //
+    // Ordering rule, which every arm below follows: **the face that is the only source for a
+    // character is listed before the faces that would answer tofu for it.**
+    //
+    // 1. colour emoji — the only source for U+1F300..=U+1FAFF and the regional indicators;
+    // 2. CJK bitmap — the only source for Han and kana, and the *cheap* one;
+    // 3. vector — covers Latin, Arabic and (when `fonts-cjk` is on) CJK with real outlines. The 8x8
+    //    face also covers ASCII, so the vector face goes first so its antialiasing is what is used;
+    // 4. the 8x8 face — last, because it covers the most characters with the least fidelity and is
+    //    the historical default whose output must not change.
+    //
+    // `fonts-cjk` is a *vector* face, so it is served by arm 3: the arms below key on
+    // `fonts-vector-latin`/`fonts-complex` only for the sake of their array lengths, and `fonts-cjk`
+    // always implies `text-shaping`, which is what makes `VectorSource` exist. There is therefore no
+    // separate `fonts-cjk` arm — a `fonts-cjk` build with no other vector data still gets
+    // `VectorSource` by the arm that names no vector feature at all.
 
-    #[cfg(feature = "fonts-cjk-bitmap")]
-    static WITH_CJK: [&dyn GlyphSource; 2] =
+    #[cfg(all(
+        feature = "fonts-emoji-color",
+        feature = "fonts-cjk-bitmap",
+        any(feature = "fonts-vector-latin", feature = "fonts-complex")
+    ))]
+    static STACK: [&dyn GlyphSource; 4] = [
+        &ColorBitmapSource::INSTANCE,
+        &cjk::CjkBitmapSource::INSTANCE,
+        &super::raster::VectorSource::INSTANCE,
+        &Font8x8Source::INSTANCE,
+    ];
+
+    #[cfg(all(
+        feature = "fonts-emoji-color",
+        feature = "fonts-cjk-bitmap",
+        not(any(feature = "fonts-vector-latin", feature = "fonts-complex"))
+    ))]
+    static STACK: [&dyn GlyphSource; 3] =
+        [&ColorBitmapSource::INSTANCE, &cjk::CjkBitmapSource::INSTANCE, &Font8x8Source::INSTANCE];
+
+    #[cfg(all(
+        feature = "fonts-emoji-color",
+        not(feature = "fonts-cjk-bitmap"),
+        any(feature = "fonts-vector-latin", feature = "fonts-complex")
+    ))]
+    static STACK: [&dyn GlyphSource; 3] = [
+        &ColorBitmapSource::INSTANCE,
+        &super::raster::VectorSource::INSTANCE,
+        &Font8x8Source::INSTANCE,
+    ];
+
+    #[cfg(all(
+        feature = "fonts-emoji-color",
+        not(feature = "fonts-cjk-bitmap"),
+        not(any(feature = "fonts-vector-latin", feature = "fonts-complex"))
+    ))]
+    static STACK: [&dyn GlyphSource; 2] = [&ColorBitmapSource::INSTANCE, &Font8x8Source::INSTANCE];
+
+    #[cfg(all(
+        not(feature = "fonts-emoji-color"),
+        feature = "fonts-cjk-bitmap",
+        any(feature = "fonts-vector-latin", feature = "fonts-complex")
+    ))]
+    static STACK: [&dyn GlyphSource; 3] = [
+        &cjk::CjkBitmapSource::INSTANCE,
+        &super::raster::VectorSource::INSTANCE,
+        &Font8x8Source::INSTANCE,
+    ];
+
+    #[cfg(all(
+        not(feature = "fonts-emoji-color"),
+        feature = "fonts-cjk-bitmap",
+        not(any(feature = "fonts-vector-latin", feature = "fonts-complex"))
+    ))]
+    static STACK: [&dyn GlyphSource; 2] =
         [&cjk::CjkBitmapSource::INSTANCE, &Font8x8Source::INSTANCE];
 
-    #[cfg(feature = "fonts-emoji-color")]
-    static WITH_EMOJI: [&dyn GlyphSource; 2] =
-        [&ColorBitmapSource::INSTANCE, &Font8x8Source::INSTANCE];
-
-    // The three-way stacks. A colour emoji face goes **first**: it is the only source for a
-    // character outside the text faces, and the text faces answer tofu for those — so putting it
-    // later would make it unreachable for exactly the characters it exists for.
-    #[cfg(all(feature = "fonts-emoji-color", not(feature = "fonts-cjk-bitmap")))]
-    let stack = FontStack::new(&WITH_EMOJI);
-
-    #[cfg(all(feature = "fonts-emoji-color", feature = "fonts-cjk-bitmap"))]
-    static WITH_EMOJI_AND_CJK: [&dyn GlyphSource; 3] =
-        [&ColorBitmapSource::INSTANCE, &cjk::CjkBitmapSource::INSTANCE, &Font8x8Source::INSTANCE];
-    #[cfg(all(feature = "fonts-emoji-color", feature = "fonts-cjk-bitmap"))]
-    let stack = FontStack::new(&WITH_EMOJI_AND_CJK);
-
     #[cfg(all(
-        feature = "fonts-cjk-bitmap",
+        not(feature = "fonts-emoji-color"),
+        not(feature = "fonts-cjk-bitmap"),
         any(feature = "fonts-vector-latin", feature = "fonts-complex")
     ))]
-    static WITH_CJK_AND_VECTOR: [&dyn GlyphSource; 3] = [
-        &cjk::CjkBitmapSource::INSTANCE,
-        &super::raster::VectorSource::INSTANCE,
-        &Font8x8Source::INSTANCE,
-    ];
-    #[cfg(all(
-        feature = "fonts-cjk-bitmap",
-        any(feature = "fonts-vector-latin", feature = "fonts-complex"),
-        not(feature = "fonts-emoji-color")
-    ))]
-    let stack = FontStack::new(&WITH_CJK_AND_VECTOR);
+    static STACK: [&dyn GlyphSource; 2] =
+        [&super::raster::VectorSource::INSTANCE, &Font8x8Source::INSTANCE];
 
+    // `fonts-cjk` alone: a vector face and no other vector data. This arm exists because the arm
+    // above keys on `fonts-vector-latin`/`fonts-complex`, so without it a `fonts-cjk`-only build
+    // would fall through to the 8x8-only stack — and CJK resolution would silently be tofu. That
+    // was a real defect found by probing `source_for('\u{4E2D}')` on exactly this feature set.
     #[cfg(all(
-        feature = "fonts-cjk-bitmap",
-        any(feature = "fonts-vector-latin", feature = "fonts-complex"),
-        feature = "fonts-emoji-color"
-    ))]
-    static ALL_FACES: [&dyn GlyphSource; 4] = [
-        &ColorBitmapSource::INSTANCE,
-        &cjk::CjkBitmapSource::INSTANCE,
-        &super::raster::VectorSource::INSTANCE,
-        &Font8x8Source::INSTANCE,
-    ];
-    #[cfg(all(
-        feature = "fonts-cjk-bitmap",
-        any(feature = "fonts-vector-latin", feature = "fonts-complex"),
-        feature = "fonts-emoji-color"
-    ))]
-    let stack = FontStack::new(&ALL_FACES);
-
-    #[cfg(all(
-        feature = "fonts-cjk-bitmap",
-        not(any(feature = "fonts-vector-latin", feature = "fonts-complex")),
-        not(feature = "fonts-emoji-color")
-    ))]
-    let stack = FontStack::new(&WITH_CJK);
-
-    #[cfg(all(
+        feature = "fonts-cjk",
+        not(feature = "fonts-emoji-color"),
         not(feature = "fonts-cjk-bitmap"),
-        any(feature = "fonts-vector-latin", feature = "fonts-complex"),
-        not(feature = "fonts-emoji-color")
+        not(any(feature = "fonts-vector-latin", feature = "fonts-complex"))
     ))]
-    let stack = FontStack::new(&WITH_VECTOR);
-
-    #[cfg(all(
-        not(feature = "fonts-cjk-bitmap"),
-        feature = "fonts-emoji-color",
-        any(feature = "fonts-vector-latin", feature = "fonts-complex")
-    ))]
-    static EMOJI_AND_VECTOR: [&dyn GlyphSource; 3] = [
-        &ColorBitmapSource::INSTANCE,
-        &super::raster::VectorSource::INSTANCE,
-        &Font8x8Source::INSTANCE,
-    ];
-    #[cfg(all(
-        not(feature = "fonts-cjk-bitmap"),
-        feature = "fonts-emoji-color",
-        any(feature = "fonts-vector-latin", feature = "fonts-complex")
-    ))]
-    let stack = FontStack::new(&EMOJI_AND_VECTOR);
+    static STACK: [&dyn GlyphSource; 2] =
+        [&super::raster::VectorSource::INSTANCE, &Font8x8Source::INSTANCE];
 
     #[cfg(not(any(
         feature = "fonts-cjk-bitmap",
         feature = "fonts-vector-latin",
         feature = "fonts-complex",
+        feature = "fonts-cjk",
         feature = "fonts-emoji-color"
     )))]
-    let stack = FontStack::new(&BASE);
+    static STACK: [&dyn GlyphSource; 1] = [&Font8x8Source::INSTANCE];
 
-    stack
+    FontStack::new(&STACK)
 }
 
 /// Resolve `ch` through the active stack, falling back to tofu.
@@ -835,7 +834,8 @@ mod tests {
         assert_eq!(ink[15], 1 << 7, "and the stroke continues to the last row");
     }
 
-    /// The 1-bit view and the painted coverage are the **same picture**, pixel for pixel.
+    /// The 1-bit view and the painted coverage are the **same picture**, pixel for pixel —
+    /// **on a build whose first covering face is a 1-bit one**.
     ///
     /// This is the assertion that makes it safe for the rasteriser to ask faces to *paint* while
     /// the SVG backend keeps asking them for **rectangles**: if the two derivations ever disagreed,
@@ -843,6 +843,25 @@ mod tests {
     /// gate nor any test could say which was right. The reverse holds too — the rasteriser now
     /// blends real coverage, so anything other than `0`/`255` here would mean antialiasing had
     /// arrived on a face that has none.
+    ///
+    /// # Why the vector features are excluded, and why that is not a hole
+    ///
+    /// With `fonts-vector-latin` or `fonts-complex` enabled this identity is *false by design*: the
+    /// vector face answers first, and it legitimately produces partial coverage for the pixels the
+    /// rectangles would have filled completely — that is what antialiasing is. `glyph_rects` returns
+    /// the 1-bit face's answer, so comparing the two would be comparing two different faces.
+    ///
+    /// So the identity is a property of the *1-bit* stack. Running the gate without any vector
+    /// feature (``--no-default-features --features desktop,fonts-cjk-bitmap``) exercises it; the
+    /// vector stack's own coverage is asserted in `render::text::raster`.
+    ///
+    /// `fonts-cjk` is a vector feature and is excluded for the same reason as the other two: it is
+    /// served by the same `VectorSource`, so it produces the identical partial coverage.
+    #[cfg(not(any(
+        feature = "fonts-vector-latin",
+        feature = "fonts-complex",
+        feature = "fonts-cjk"
+    )))]
     #[test]
     fn the_bitmap_view_and_the_painted_coverage_agree() {
         // A few cells per glyph: smaller than the 8x8 source, exactly it, and larger on both axes.

@@ -234,12 +234,20 @@ appended to the fallback stack and can only answer for characters the base face 
 | feature | data | what it adds |
 |---|---|---|
 | `fonts-cjk-bitmap` | 84 996 bytes, generated | a 16x16 CJK bitmap face — Chinese, Japanese, Korean text, no shaping needed |
+| `fonts-cjk` | 361 704 bytes, OFL subset | the same script as **outlines**, so it is antialiased and scales to any px size |
 | `fonts-vector-latin` | 35 896 bytes, OFL subset | real advances and kerning, from a face named by `Font::family` |
 | `fonts-complex` | 70 576 bytes, OFL subset | Arabic joining, so `بيت` shapes to the word rather than three isolated letters |
+| `fonts-emoji-color` | 1 602 492 bytes, OFL subset | colour emoji — 317 codepoints including the 26 regional indicators |
 
-None of the three is enabled by any profile, and `--all-features` is the only way to get all of them
-at once. The two vector subsets are lazy-loaded from the binary's read-only section and are recorded,
-with their upstream digests, in [`NOTICE`](NOTICE).
+`fonts-cjk-bitmap` and `fonts-cjk` are two answers to one script, and the difference is size
+against quality: an outline subset at the bitmap's own coverage would weigh 581 KB, roughly 7x, so
+the bitmap is what a `mini`/`embedded` build uses and the vector face is for a desktop host that
+wants Chinese antialiased at any size. Enabling both makes the bitmap win for a character it
+covers — it is the cheaper face, and the stack keeps the cheap source in front.
+
+None of these is enabled by any profile, and `--all-features` is the only way to get all of them
+at once. The vector and colour subsets are lazy-loaded from the binary's read-only section and are
+recorded, with their upstream digests, in [`NOTICE`](NOTICE).
 
 The boundary is asserted from both sides (`render::pipeline::pixel_ops::text_coverage_tests` and
 `render::text::glyph_source`'s tests) — a non-Latin character must resolve to the fallback glyph on

@@ -46,7 +46,7 @@ const BIG_GLYPH_METRICS_LEN: usize = 8;
 /// `SmallGlyphMetrics`' length, which formats 17's and 2's strides include.
 const SMALL_GLYPH_METRICS_LEN: usize = 5;
 
-/// Header bytes ahead of the PNG in each `CBDT` image format:
+/// Header bytes ahead of the PNG in each `CBDT` image format.
 ///
 /// | format | header before the PNG |
 /// |---|---|
@@ -59,6 +59,7 @@ const SMALL_GLYPH_METRICS_LEN: usize = 5;
 /// and pads nothing, and format 1's offsets may include padding that `dataLen` excludes. Trusting the
 /// offset pair instead is what made the first attempt at this file slice a PNG blob four bytes early
 /// — the four bytes `00 00 02 f2` in front of every image are exactly this field.
+const _: () = ();
 
 /// `CBDT`/`CBLC` table versions this supports.
 ///
@@ -438,4 +439,147 @@ fn read_u16(data: &[u8], offset: usize) -> Option<u16> {
 fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
     let bytes = data.get(offset..offset + 4)?;
     Some(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+#[cfg(all(test, feature = "fonts-emoji-color"))]
+mod tests {
+    use super::*;
+    use crate::render::text::font_assets::EMOJI;
+
+    /// The face parses, which means both `CBLC` and `CBDT` are present and readable.
+    #[test]
+    fn the_shipped_face_parses() {
+        assert!(ColorBitmapFace::parse(EMOJI).is_some(), "the shipped emoji face must parse");
+    }
+
+    /// A colour face with no `CBLC` has indices into nothing and is refused.
+    #[test]
+    fn a_face_without_the_locator_table_is_refused() {
+        assert!(ColorBitmapFace::parse(b"").is_none());
+        assert!(ColorBitmapFace::parse(b"not a font").is_none());
+    }
+
+    /// A covered glyph resolves to a PNG, and the PNG really is one.
+    ///
+    /// This is the assertion that would have caught the original offset bug: a wrong
+    /// `imageDataOffset` base returns `Some` with a plausible length and bytes that are not a PNG.
+    ///
+    /// The glyph id is looked up through the cmap rather than hard-coded, because the shipped subset
+    /// is regenerated whenever the codepoint list changes and glyph ids move with it — the strike
+    /// starts at 16 in the current subset, and pinning `1` here made this test fail on a subset that
+    /// was in fact correct.
+    #[test]
+    fn a_covered_glyph_resolves_to_a_real_png() {
+        let face = ColorBitmapFace::parse(EMOJI).expect("parse");
+        let parsed = ttf_parser::Face::parse(EMOJI, 0).expect("ttf-parser face");
+        let glyph_id = parsed.glyph_index('\u{1F600}').expect("the grinning face is in the subset");
+        let image = face.image(glyph_id.0).expect("the grinning face has an image");
+        let bytes = EMOJI
+            .get(image.offset..image.offset + image.length)
+            .expect("the image is inside the face");
+        assert_eq!(
+            &bytes[..8],
+            PNG_SIGNATURE,
+            "the located bytes must start with the PNG signature"
+        );
+        // `IHDR` must agree with `SmallGlyphMetrics`, which the index located: the strike is
+        // 109 ppem and its glyphs are rendered at the exact pixel size they will be drawn at.
+        let (width, height) = png_dimensions(bytes).expect("IHDR is readable");
+        assert!(width > 0 && height > 0);
+        assert!(width <= 200 && height <= 200, "sane strike size, got {width}x{height}");
+    }
+
+    /// Every glyph the cmap names must resolve to an image, or the subset is inconsistent.
+    ///
+    /// This is the iceberg check for the offset bug: a single wrong base makes *one* glyph look
+    /// plausible and this count collapse, so ranging over the whole cmap is what makes the failure
+    /// loud instead of a silent "some emoji do not draw".
+    #[test]
+    fn every_cmap_glyph_has_an_image() {
+        let face = ColorBitmapFace::parse(EMOJI).expect("parse");
+        let parsed = ttf_parser::Face::parse(EMOJI, 0).expect("ttf-parser face");
+        let mut checked = 0usize;
+        for codepoint in 0u32..=0x10FFFF {
+            let Some(ch) = char::from_u32(codepoint) else { continue };
+            let Some(glyph_id) = parsed.glyph_index(ch) else { continue };
+            assert!(
+                face.image(glyph_id.0).is_some(),
+                "U+{codepoint:04X} maps to glyph {} with no image",
+                glyph_id.0
+            );
+            checked += 1;
+        }
+        assert!(checked > 200, "the shipped subset should carry hundreds of glyphs, got {checked}");
+    }
+
+    /// An out-of-range glyph is a miss, not a panic or a wrapped read.
+    #[test]
+    fn an_uncovered_glyph_is_a_miss() {
+        let face = ColorBitmapFace::parse(EMOJI).expect("parse");
+        assert!(face.image(0).is_none(), "glyph 0 is `.notdef` and has no image");
+        assert!(face.image(u16::MAX).is_none());
+    }
+
+    /// A real emoji paints as **colour**, with more than one distinct RGB value.
+    ///
+    /// The distinct-colour count is what makes this a colour test rather than a coverage test: a
+    /// 1-bit fallback would produce exactly one RGB triple (the ink colour) over the opaque pixels.
+    #[test]
+    fn a_real_emoji_paints_in_colour() {
+        let face = ColorBitmapFace::parse(EMOJI).expect("parse");
+        let parsed = ttf_parser::Face::parse(EMOJI, 0).expect("ttf-parser face");
+        let cell = super::super::Cell::new(48, 48);
+        let mut out = crate::compat::vec![0u8; cell.area() * 4];
+
+        // The grinning face: multi-colour by construction (yellow skin, white eyes, red mouth).
+        let glyph_id = parsed.glyph_index('\u{1F600}').expect("the grinning face is in the subset");
+        face.paint(glyph_id.0, cell, &mut out).expect("the grinning face paints");
+
+        let opaque = out.chunks_exact(4).filter(|px| px[3] != 0).count();
+        assert!(opaque > 0, "some pixels must be opaque");
+        let mut colours = std::collections::BTreeSet::new();
+        for px in out.chunks_exact(4) {
+            if px[3] != 0 {
+                colours.insert((px[0], px[1], px[2]));
+            }
+        }
+        assert!(
+            colours.len() > 1,
+            "a colour emoji must have more than one RGB value, got {}",
+            colours.len()
+        );
+    }
+
+    /// A cell the caller made too small for RGBA is refused rather than written past.
+    #[test]
+    fn a_cell_too_small_for_rgba_is_refused() {
+        let face = ColorBitmapFace::parse(EMOJI).expect("parse");
+        let parsed = ttf_parser::Face::parse(EMOJI, 0).expect("ttf-parser face");
+        let glyph_id = parsed.glyph_index('\u{1F600}').expect("grinning face present");
+        let cell = super::super::Cell::new(8, 8);
+        // One byte per pixel: enough for a 1-bit glyph, not for colour.
+        let mut out = crate::compat::vec![0u8; cell.area()];
+        assert!(face.paint(glyph_id.0, cell, &mut out).is_none());
+    }
+
+    /// An empty cell is refused before any lookup.
+    #[test]
+    fn an_empty_cell_is_refused() {
+        let face = ColorBitmapFace::parse(EMOJI).expect("parse");
+        let parsed = ttf_parser::Face::parse(EMOJI, 0).expect("ttf-parser face");
+        let glyph_id = parsed.glyph_index('\u{1F600}').expect("grinning face present");
+        let mut out = crate::compat::vec![0u8; 4];
+        assert!(face.paint(glyph_id.0, super::super::Cell::new(0, 0), &mut out).is_none());
+    }
+
+    /// A header length is defined for exactly the three PNG formats `CBDT` defines.
+    #[test]
+    fn only_the_png_image_formats_have_a_header_length() {
+        assert_eq!(image_format_header_len(17), Some(9), "small metrics + dataLen");
+        assert_eq!(image_format_header_len(18), Some(12), "big metrics + dataLen");
+        assert_eq!(image_format_header_len(19), Some(4), "dataLen only");
+        for legacy in [1u16, 2, 5, 6, 7, 8, 9, 20] {
+            assert_eq!(image_format_header_len(legacy), None, "format {legacy} is not PNG");
+        }
+    }
 }

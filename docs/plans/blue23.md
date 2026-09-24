@@ -119,11 +119,16 @@ src/render/text_shaper.rs:66 let total = char_count as f32 * font_size * 0.6; //
 | **G-2** | `FontStack` 装载与回退链 | G-1 | ✅ **已实施**（`FontStack` + `font_assets::active_faces`） |
 | **G-2b** | `GlyphSource` 抽象（点阵/矢量两种实现） | G-1 | ✅ **已实施**（点阵两种：8x8 与 16x16 CJK） |
 | **G-3** | `unicode-bidi` 接入 + `TextDirection` 统一 | G-1 | ✅ **已实施**（`render::text::bidi`，UAX #9 L2） |
-| **G-4a** | 子集生成器 + 许可门禁 + `NOTICE` | G-2 | ✅ **已实施**（两个生成器 + 6 道门禁之一 + `NOTICE`） |
+| **G-4a** | 子集生成器 + 许可门禁 + `NOTICE` | G-2 | ✅ **已实施**（三个生成器：`gen_cjk_bitmap.py` / `gen_font_subset.py` / `gen_emoji_subset.py`；许可门禁已扩到三个生成器 + emoji 码点表不许缺省 + 4 个表必须全部入账） |
 | **G-4b** | 点阵 CJK（`fonts-cjk-bitmap`，~85 KB，**不需塑形**） | G-2b | ✅ **已实施**（2361 字形 / 84996 字节数组数据） |
-| **G-4c** | 矢量子集打包（`fonts-latin` / `fonts-cjk` / `fonts-complex`） | G-4a | ✅ 部分（`fonts-vector-latin` 35896 B + `fonts-complex` 70576 B；`fonts-cjk` 矢量版未打包，见日志 §22） |
-| **G-5** | 矢量光栅化（抗锯齿 + 真实 advance + kerning） | G-1, G-4c | ⏳ 半程：真实 advance + kerning ✅；**抗锯齿 ⬜**（阻断点为接口级，见日志 §22） |
-| **G-6** | 彩色 emoji | G-5 | ⬜ **未做**（同上，需第二种像素格式） |
+| **G-4c** | 矢量子集打包（`fonts-latin` / `fonts-cjk` / `fonts-complex`） | G-4a | ✅ **已实施**（`fonts-vector-latin` 35896 B + `fonts-complex` 70576 B + **`fonts-cjk` 361704 B**；后者带 400 KB 预算门禁，见第 73 轮日志 §9.1） |
+| **G-5** | 矢量光栅化（抗锯齿 + 真实 advance + kerning） | G-1, G-4c | ✅ **已实施**（`render::text::raster`：自适应细分展平 + 非零环绕填充 + 4x4 子采样；`InkKind::Coverage` 走 `blend_painted_glyph` 同一混合，无第二条路径） |
+| **G-6** | 彩色 emoji | G-5 | ✅ **已实施**（`render::text::{color_bitmap, png}` + `InkKind::Color`；`fonts-emoji-color` 317 码点 / 1,602,492 字节，走 `blend_color_glyph` 端到端接通） |
+
+**G 系列现状：全部实现，无留白。** 六期均已实施并各自带判据；`fonts-cjk` 矢量版已在
+第 73 轮补齐（与 `fonts-cjk-bitmap` **互补**而非替代：位图面 85 KB 给 `mini`/`embedded`，
+矢量面 353 KB 给需要任意字号与抗锯刀的桌面宿主；同覆盖下矢量贵 7 倍，故此分工，实测见
+`log-20260924-1.md` §9.1）。
 
 **推荐顺序**：`G-1 → G-2b → G-4b`（先把 `mini`/`embedded` 的中文拿下，代价最小且不依赖塑形）
 `→ G-3 → G-2 → G-4a → G-4c → G-5 → G-6`。

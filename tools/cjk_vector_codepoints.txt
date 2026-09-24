@@ -1,0 +1,56 @@
+# The CJK codepoints the `fonts-cjk` vector face carries (BLUE23 §0A.4, G-4c).
+#
+# This is a *decision*, and it is deliberately narrower than `fonts-cjk-bitmap`'s coverage.
+#
+# # Why narrower, when the bitmap face has 2361 glyphs
+#
+# Measured against Noto Sans SC with `tools/gen_font_subset.py`:
+#
+#     symbols + kana        253 cps   127 KB
+#     + fullwidth forms     477 cps   190 KB
+#     + 500 Han             977 cps   274 KB
+#     + 1000 Han           1477 cps   396 KB
+#     + 2000 Han           2477 cps   612 KB
+#
+# The bitmap face is 85 KB for 2361 glyphs. A vector face at the same coverage costs **7x** more,
+# because an outline is inherently larger than a 16x16 bitmap — that is the trade, not a defect.
+#
+# BLUE23 §0A.4 constraint 2 says CJK is the script that needs data and no shaping, which is why
+# `mini`/`embedded` get Chinese from the bitmap. So this face exists for the *other* case: a
+# `desktop`/`tablet` host that wants Chinese at any px size with antialiasing (G-5). For that
+# purpose the small ranges matter most — kana and punctuation are drawn at small sizes where a
+# 16x16 bitmap is visibly coarse, and fullwidth forms are pure geometry.
+#
+# # The Han range
+#
+# Han is where the budget goes, so it is capped. The list below is the 1000 most-common Hanzi
+# (the `U+4E00` block's first 1000 codepoints) — enough that ordinary UI strings, menu items and
+# the demo strings in this repository are covered, and the remainder reach the bitmap face if it
+# is enabled or tofu if it is not. A host that needs more has one line to edit here.
+#
+# Format: one codepoint or `A..B` inclusive range per line, `#` comments, blank lines ignored.
+# Consumed by tools/gen_font_subset.py --face=cjk. Regenerate with:
+#     python3 tools/gen_font_subset.py --face=cjk --license=ofl-1.1
+
+# --- ASCII, so a mixed line's advances and kernng come from one face ---
+20..7E
+
+# --- CJK Symbols and Punctuation ---
+# Ideographic space, corner brackets, the iteration mark: drawn by every CJK line, and the
+# characters a bitmap face renders worst at small sizes.
+3000..303F
+
+# --- Hiragana and Katakana ---
+# The whole block, including the voiced-mark range: Japanese text needs all of it.
+3040..30FF
+
+# --- Halfwidth and Fullwidth Forms ---
+# Fullwidth punctuation and the fullwidth Latin letters, which appear in Chinese typography.
+FF00..FFEF
+
+# --- Han: the 800 most common ideographs ---
+# See the note above on why this is capped rather than matching the bitmap face's range.
+# Measured: 500 -> 277 KB, 700 -> 324 KB, 800 -> 353 KB, 1000 -> 399 KB. The budget in
+# `tools/gen_font_subset.py` (`CJK_VECTOR_BUDGET_BYTES`) is what keeps this honest, and it fails
+# the build rather than letting the payload creep.
+4E00..511F

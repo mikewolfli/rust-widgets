@@ -137,3 +137,108 @@ Reserved Font Name (OFL)
     restriction on this subset. The files are nonetheless named after this crate's
     modules (`arabic.rs` / `arabic.ttf`) rather than after the upstream family, so
     nothing in the shipped tree presents itself as the original font.
+
+================================================================================
+Noto Color Emoji — colour bitmap subset for `fonts-emoji-color`
+================================================================================
+
+Included files
+    src/render/text/font_assets/emoji.rs     (the provenance header and `include_bytes!`)
+    src/render/text/font_assets/emoji.ttf    (the subset itself)
+
+Origin
+    Noto Color Emoji, by the Noto project (Google).
+    Project:  https://github.com/googlefonts/noto-emoji
+    Source:   https://raw.githubusercontent.com/googlefonts/noto-emoji/main/2D/fonts/NotoColorEmoji.ttf
+    SHA-256 of the upstream `.ttf`:
+        15671215ab769fdc7162a045d56fd7d7e477c51b04e6b3c761d914d8fdd6cc44
+
+    The files are generated, never hand-edited. Regenerate with:
+        python3 tools/gen_emoji_subset.py --license=ofl-1.1
+
+What it is
+    A **subset** of Noto Color Emoji, reduced to the 317 codepoints listed in
+    `tools/emoji_subset_codepoints.txt`. Noto Color Emoji stores its glyphs as
+    **colour bitmaps**, not outlines: each glyph is a PNG held in the `CBDT`
+    table and indexed by `CBLC`. The subset retains those tables and the PNG
+    images **verbatim** — no image was redrawn, re-encoded, rescaled or
+    re-compressed, and no outline was synthesised. The generator runs fontTools'
+    subsetter with `recalc_timestamp=False`, so the retained tables are
+    byte-identical to upstream and the output is reproducible.
+
+    The codepoints were chosen by hand (faces, gestures, food, animals, symbols
+    and the 26 regional indicators), not by taking everything upstream: the full
+    face is 10,730,124 bytes and this subset is 1,602,492 bytes, which is what
+    makes it shippable. `--check` verifies the shipped bytes are exactly what the
+    generator produces from the pinned upstream digest.
+
+Licence
+    SIL Open Font License, Version 1.1
+        https://openfontlicense.org/
+
+Reserved Font Name (OFL)
+    Noto Color Emoji's licence declares **no** Reserved Font Name: its copyright
+    statement is followed by no name specification, so OFL 1.1 §3 imposes no naming
+    restriction on this subset. The files are nonetheless named after this crate's
+    modules (`emoji.rs` / `emoji.ttf`) rather than after the upstream family, and
+    the subset is a "Modified Version" (it retains only a portion of the upstream
+    glyphs), so nothing in the shipped tree presents itself as the original font.
+    The name "Noto Color Emoji" appears in this NOTICE and in the generated file's
+    header for attribution only.
+
+================================================================================
+Noto Sans SC — scalable CJK vector subset for `fonts-cjk`
+================================================================================
+
+Included files
+    src/render/text/font_assets/cjk.rs      (the provenance header and `include_bytes!`)
+    src/render/text/font_assets/cjk.ttf     (the subset itself)
+
+Origin
+    Noto Sans SC, by the Noto project (Adobe and Google).
+    Project:  https://github.com/notofonts/noto-cjk
+    Source:   https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/SubsetOTF/SC/NotoSansSC-Regular.otf
+    SHA-256 of the upstream `.otf`:
+        faa6c9df652116dde789d351359f3d7e5d2285a2b2a1f04a2d7244df706d5ea9
+
+    The files are generated, never hand-edited. Regenerate with:
+        python3 tools/gen_font_subset.py --face=cjk --license=ofl-1.1
+
+What it is
+    A **subset** of Noto Sans SC (Regular), reduced to the codepoints listed in
+    `tools/cjk_vector_codepoints.txt`: ASCII, CJK Symbols and Punctuation, Hiragana
+    and Katakana, Halfwidth and Fullwidth Forms, and the first 800 CJK Unified
+    Ideographs. No outline was redrawn, re-hinted or modified; the glyph outlines
+    and the layout tables (GSUB, GPOS) are Noto Sans SC's own. The upstream
+    `SubsetOTF` release is already a single weight, so there is no variable axis to
+    instantiate. The generator runs fontTools' subsetter with
+    `recalcTimestamp=False`, so the retained tables are byte-identical to upstream
+    and the output is reproducible.
+
+    This face is **distinct from** `src/render/text/cjk_bitmap_data.rs`
+    (`fonts-cjk-bitmap`). They are two answers to the same script and they are not
+    interchangeable:
+
+        fonts-cjk-bitmap   2361 glyphs, fixed 16x16 bitmap   ~85 KB
+        fonts-cjk          2053 glyphs, outlines, any size   ~353 KB
+
+    An outline is several times a 16x16 bitmap, so a vector subset at the bitmap's
+    own coverage weighs 581 KB — about 7x. The bitmap face is therefore what
+    `mini`/`embedded` use (data only, no shaping engine), and this face is for a
+    `desktop`/`tablet` host that wants Chinese antialiased at any pixel size.
+    `tools/gen_font_subset.py` enforces a 400,000-byte budget on this face so the
+    payload cannot creep unnoticed.
+
+Licence
+    SIL Open Font License, Version 1.1
+        https://openfontlicense.org/
+
+Reserved Font Name (OFL)
+    Noto Sans SC's licence declares **no** Reserved Font Name: its copyright
+    statement is followed by no name specification, so OFL 1.1 §3 imposes no naming
+    restriction on this subset. The files are nonetheless named after this crate's
+    modules (`cjk.rs` / `cjk.ttf`) rather than after the upstream family, and the
+    subset is a "Modified Version" (it retains only a portion of the upstream
+    glyphs), so nothing in the shipped tree presents itself as the original font.
+    The name "Noto Sans SC" appears in this NOTICE and in the generated file's
+    header for attribution only.

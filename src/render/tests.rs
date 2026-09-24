@@ -120,6 +120,78 @@ fn draw_text_rasterizes_glyph_instead_of_full_rect_fill() {
     assert!(painted > 0);
     assert!(painted < bbox_area);
 }
+
+/// A colour glyph reaches the surface in colour, through the same `draw_text` path.
+///
+/// # Why more than one RGB value is the assertion
+///
+/// `draw_text` has always blended *coverage*: one alpha per pixel for the caller's text colour,
+/// which for `Color::WHITE` can only produce white and its shades. A colour emoji blended that way
+/// would still paint pixels and still set alpha, so "something was drawn" proves nothing. Counting
+/// distinct RGB values does: a face that carries its own colour produces many, and a coverage blend
+/// of white over transparent black produces exactly one.
+///
+/// The text colour passed in is deliberately **red**, which is the other half of the assertion: a
+/// colour glyph must carry its own colours rather than being tinted by the caller's.
+#[cfg(feature = "fonts-emoji-color")]
+#[test]
+fn a_colour_emoji_reaches_the_surface_in_colour() {
+    let mut surface = SoftwareSurface::new(Size { width: 64, height: 64 }, 1.0);
+    surface.begin_frame(Color::TRANSPARENT);
+    let emoji_font = Font::new("Sans", 48.0, false, false);
+    surface.draw_text(
+        Point { x: 4, y: 4 },
+        "\u{1F600}",
+        &emoji_font,
+        Color::rgba(255, 0, 0, 255),
+        HorizontalAlignment::Left,
+    );
+    surface.end_frame();
+
+    let frame = surface.frame_rgba();
+    let mut colours = std::collections::BTreeSet::new();
+    for pixel in frame.chunks_exact(4) {
+        if pixel[3] != 0 {
+            colours.insert((pixel[0], pixel[1], pixel[2]));
+        }
+    }
+    assert!(
+        colours.len() > 1,
+        "a colour emoji must produce more than one RGB value, got {colours:?}"
+    );
+    // The grinning face's skin is yellow, so a green-dominant or blue-dominant pixel would mean the
+    // channel order is wrong. `r > b` holds for every yellow and red in the glyph.
+    assert!(
+        colours.iter().any(|(r, _, b)| r > b),
+        "the emoji's warm colours must survive the blend, got {colours:?}"
+    );
+}
+
+/// A colour glyph on a 1-bit-sized scratch is refused rather than misread.
+///
+/// This is the buffer contract between `draw_text` and the glyph stack stated as a test: the stack
+/// must answer `None` for a colour-only character when given one byte per pixel, because the caller
+/// that reserved that buffer is the 1-bit path and reading RGBA out of it would paint noise.
+#[cfg(feature = "fonts-emoji-color")]
+#[test]
+fn a_colour_glyph_is_refused_on_a_coverage_sized_buffer() {
+    use crate::render::text::{paint_active, Cell, InkKind};
+    let cell = Cell::new(16, 16);
+    let mut one_byte_per_pixel = vec![0u8; cell.area()];
+    let painted = paint_active('\u{1F600}', cell, &mut one_byte_per_pixel);
+    // Tofu is the honest fallback: the stack has no 1-bit source for an emoji, so it draws the
+    // missing-glyph block rather than half a colour glyph.
+    assert!(
+        painted.is_none() || painted.expect("checked").ink != InkKind::Color,
+        "a colour glyph must not be painted into a coverage-sized buffer"
+    );
+    // And the right-sized buffer does produce colour, so the refusal above is about the buffer and
+    // not about the face being unreadable.
+    let mut rgba = vec![0u8; cell.area() * 4];
+    let painted = paint_active('\u{1F600}', cell, &mut rgba).expect("a colour glyph paints");
+    assert_eq!(painted.ink, InkKind::Color);
+}
+
 #[test]
 fn fill_circle_writes_center_pixels() {
     let mut surface = SoftwareSurface::new(Size { width: 12, height: 12 }, 1.0);

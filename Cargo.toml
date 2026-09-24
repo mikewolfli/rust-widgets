@@ -320,6 +320,35 @@ fonts-cjk-bitmap = []
 fonts-vector-latin = ["text-shaping"]
 fonts-complex = ["text-shaping"]
 
+## `fonts-cjk` adds a **scalable** CJK vector face (`NotoSansSC`, outlines) — the counterpart to
+## `fonts-cjk-bitmap` above, and a different trade.
+##
+## # Why both exist, and why this one is not the default CJK answer
+##
+## Measured against Noto Sans SC, subset to the codepoints in `tools/cjk_vector_codepoints.txt`:
+##
+## | face | coverage | size |
+## |---|---|---|
+## | `fonts-cjk-bitmap` | 2361 glyphs, fixed 16x16 | ~85 KB |
+## | `fonts-cjk` | 2053 glyphs, outlines, any size | ~353 KB |
+##
+## An outline is inherently several times a 16x16 bitmap, so a vector face at the bitmap's *own*
+## coverage weighs 581 KB — 7x. That is why BLUE23 §0A.4 constraint 2 keeps CJK on the bitmap for
+## `mini`/`embedded` (data, no shaping engine, 85 KB) and why this face exists for the *other* case:
+## a `desktop`/`tablet` host that wants Chinese antialiased at any px size (G-5).
+##
+## # What it enables that the bitmap cannot
+##
+## Two things, and both need the shaping feature:
+##
+##   * **Real advances and kerning.** A CJK ideograph is one full-width cell either way, but a line
+##     of mixed Chinese and Latin needs the Latin advances from the same face that supplied the Han;
+##   * **Any px size.** A 16x16 bitmap scaled to 14 px or to 96 px is visibly coarse; an outline
+##     is rasterised at exactly the requested size.
+##
+## Because it carries outlines and layout tables, this feature implies `text-shaping`.
+fonts-cjk = ["text-shaping"]
+
 ## `fonts-emoji-color` adds a colour emoji face: `CBDT`/`CBLC` bitmap glyphs, each a PNG, plus the
 ## PNG decoder that reads them — G-6.
 ##
@@ -331,9 +360,20 @@ fonts-complex = ["text-shaping"]
 ##
 ## # What it costs
 ##
-## The payload is a subset of Noto Color Emoji at 109 ppem — see `NOTICE`. It is measured in
-## megabytes on the full face and in hundreds of kilobytes on the smallest upstream release, which
-## is why it is opt-in rather than a default.
+## The payload is a subset of Noto Color Emoji at 109 ppem — see `NOTICE`. Measured on the shipped
+## subset: 1,602,492 bytes of `CBDT` data covering 317 codepoints. (The upstream face is 10,730,124
+## bytes; the subset is generated from it by `tools/gen_emoji_subset.py`, and the codepoints are
+## chosen in `tools/emoji_subset_codepoints.txt`. The much smaller
+## `NotoColorEmoji-flagsonly.ttf` is *not* usable — see that generator's module docs.)
+##
+## That size is why it is opt-in rather than a default.
+##
+## # Why it does not need `text-shaping`
+##
+## `ttf-parser` alone resolves a character to a glyph id through `cmap`, which is all a colour face
+## needs — there is no `GSUB`/`GPOS` step. So the two features can be enabled independently, and
+## every combination of them builds (the reference-count matrix in `docs/plans/blue23.md` §0A.4
+## lists them).
 fonts-emoji-color = ["dep:ttf-parser"]
 
 

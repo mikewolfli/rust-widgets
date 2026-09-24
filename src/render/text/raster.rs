@@ -412,7 +412,7 @@ impl Accumulator<'_> {
 fn resolve_coverage(rows: &[i32], sub_width: usize, cell: Cell, out: &mut [u8]) {
     let device_w = cell.width as usize;
     let device_h = cell.height as usize;
-    let total = (SUBSAMPLES * SUBSAMPLES) as u32;
+    let total = SUBSAMPLES * SUBSAMPLES;
     for py in 0..device_h {
         for px in 0..device_w {
             let mut inside = 0u32;
@@ -438,6 +438,142 @@ fn resolve_coverage(rows: &[i32], sub_width: usize, cell: Cell, out: &mut [u8]) 
         }
     }
 }
+
+/// One vertex of a flattened glyph outline, in device pixels.
+///
+/// # Why this is not [`crate::core::Point`]
+///
+/// The core point is `i32`, because it is a *layout* coordinate. A glyph outline needs sub-pixel
+/// precision: rounding each flattened vertex to a whole pixel is what makes an antialiased glyph
+/// look like it was carved out of blocks, and it is the same defect as dropping coverage
+/// information. So this carries `f32` and the caller decides when to round — an SVG writer emits
+/// the fraction, a PDF writer may keep it too.
+///
+/// Fields are public so a backend can read them without a getter per axis; there is no invariant
+/// to maintain between them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OutlinePoint {
+    /// Device x, from the cell's left edge.
+    pub x: f32,
+    /// Device y, from the cell's top edge.
+    pub y: f32,
+}
+
+/// One glyph's outline as device-space polygons, ready for a vector backend to emit.
+///
+/// # Why this exists, and why it is not the rasteriser's output
+///
+/// The SVG and PDF backends need **geometry**: a `<path>` or a PDF path operator, not pixels. The
+/// rasteriser produces coverage bytes, which a vector backend cannot use without turning every
+/// destination pixel into a rectangle — 750 subpaths for an 8x8 glyph in a 40 px box, and an
+/// outright unusable number for a colour emoji.
+///
+/// So the two backends ask different questions of the same face, and the answers must agree. They
+/// do, because both are derived from the same [`Flattener`] with the same [`Placement`]: the
+/// rasteriser fills the polygons, this hands them out. There is one flattening rule, not two.
+///
+/// # Why the polygons arrive as deviceless points instead of a path string
+///
+/// A string would put SVG syntax in the text layer, which knows nothing about SVG — and the same
+/// geometry has to serve a PDF writer. Returning points keeps the text layer's output a data
+/// structure and leaves the syntax to whoever speaks it.
+///
+/// # Why the buffers are the caller's
+///
+/// Consistent with [`GlyphSource::paint`]: the text layer owns no per-glyph storage. `points`
+/// receives the flattened vertices in order and `contours` the `(start, end)` sub-range of each
+/// closed polygon within it, exactly as [`PointBuffer`] records them. Returns `None` when no face
+/// covers `ch`, when the cell is degenerate, or when the outline does not fit — the same refusals
+/// `paint` makes, for the same reasons.
+///
+/// # Why the caller's `points` slice is packed rather than strided
+///
+/// The `contours` entries index directly into `points`: contour `i` occupies
+/// `points[contours[i].0 .. contours[i].1]`. That means the slice only has to be as long as the
+/// glyph's *total* vertex count, not `MAX_CONTOURS * MAX_POINTS`, and a caller can size it exactly.
+/// An earlier revision multiplied the contour index by `MAX_POINTS`, which made the second contour
+/// need `2 * MAX_POINTS` slots and turned every multi-contour glyph (`A` has two) into a `None` —
+/// so every glyph fell through to the bitmap path and the outline path was silently never used.
+///
+/// `contours.len()` must be at least [`MAX_CONTOURS`]; both constants are exported so a caller can
+/// size them without guessing.
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", feature = "fonts-cjk"))]
+/// # Why the face is chosen by `family`, not by coverage
+///
+/// The outline must come from the **same face the layout measured with**. Measurement goes through
+/// [`crate::render::text::shape_line`], which selects a face with `shaping::face_for_family` — so a
+/// `Font::new("Arial", 11.0, …)` on a build that ships only Open Sans measures with the
+/// *estimate* model (0.6 em per Latin cluster) and is drawn by the default bitmap face. Emitting
+/// Open Sans outlines for it would draw a glyph the layout never reserved room for, and every
+/// "the ink is centred in its box" assertion would fail by the width difference between 0.6 em and
+/// a real advance.
+///
+/// So this honours `family` for the same reason [`crate::render::text::shaping::face_for_family`]
+/// documents: the caller named the face, and a feature that silently re-laid-out every control
+/// would be a surprise rather than an upgrade.
+pub fn outline(
+    ch: char,
+    cell: Cell,
+    family: &str,
+    points: &mut [OutlinePoint],
+    contours: &mut [(usize, usize)],
+) -> Option<usize> {
+    if cell.is_empty() || points.len() < MAX_POINTS || contours.len() < MAX_CONTOURS {
+        return None;
+    }
+    // The face the caller's `Font` names, if this build ships it — the same selection the shaper
+    // makes, so measurement and drawing cannot disagree about which face is in play.
+    let face_bytes = super::shaping::face_for_family(family)?;
+    let face = ttf_parser::Face::parse(face_bytes.bytes, 0).ok()?;
+    let glyph = face.glyph_index(ch)?;
+    let units_per_em = face.units_per_em() as f32;
+    if units_per_em <= 0.0 {
+        return None;
+    }
+    let placement = Placement {
+        units_per_em,
+        pixel_size: cell.height as f32,
+        origin_x: 0.0,
+        baseline_y: cell.height as f32 * ASCENT_SHARE,
+        x_direction: 1.0,
+    };
+    let mut buffer = PointBuffer::new();
+    {
+        let mut flattener = Flattener::new(placement, &mut buffer);
+        face.outline_glyph(glyph, &mut flattener)?;
+        flattener.finish();
+        if flattener.overflowed {
+            return None;
+        }
+    }
+    // Copy out of the fixed-size scratch into the caller's slice, packed: contour `i` occupies
+    // `points[contours[i].0 .. contours[i].1]`. The scratch is a stack array of `MAX_POINTS`
+    // points, so this is one bounded copy per contour rather than an allocation.
+    let mut contour_count = 0usize;
+    let mut cursor = 0usize;
+    for (index, contour) in buffer.contours().enumerate() {
+        let end = cursor.checked_add(contour.len())?;
+        let destination = points.get_mut(cursor..end)?;
+        for (slot, source) in destination.iter_mut().zip(contour.iter()) {
+            *slot = OutlinePoint { x: source.x, y: source.y };
+        }
+        *contours.get_mut(index)? = (cursor, end);
+        cursor = end;
+        contour_count = index + 1;
+    }
+    if contour_count == 0 {
+        return None;
+    }
+    Some(contour_count)
+}
+
+/// The vertex capacity [`outline`] needs in the slice it is handed.
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", feature = "fonts-cjk"))]
+pub const OUTLINE_MAX_POINTS: usize = MAX_POINTS;
+
+/// The contour capacity [`outline`] needs in the slice it is handed.
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", feature = "fonts-cjk"))]
+pub const OUTLINE_MAX_CONTOURS: usize = MAX_CONTOURS;
 
 /// Rasterises `ch` through the build's vector faces into coverage.
 pub struct VectorSource;
@@ -606,10 +742,56 @@ impl ttf_parser::OutlineBuilder for Flattener<'_> {
     }
 }
 
-#[cfg(test)]
+/// The rasteriser's tests, which need a vector face to rasterise.
+///
+/// # Why the gate is the vector data features and not `text-shaping`
+///
+/// The module above is gated on `text-shaping`, but the *behaviour* under test is "a vector face's
+/// outline comes out antialiased" — and a build can enable shaping without any face data (the
+/// shaper is then fed a host-supplied face). Such a build compiles this module and has no
+/// [`VectorSource`] covering anything, so every test here would fail on an empty result rather
+/// than on a defect. Gating on the data features is the narrower, honest question — and `fonts-cjk`
+/// is one of them, since it too ships an outline face.
+#[cfg(all(
+    test,
+    any(feature = "fonts-vector-latin", feature = "fonts-complex", feature = "fonts-cjk")
+))]
 mod tests {
+
+    /// The symbols these tests use that live outside this module.
+    ///
+    /// `super::*` brings in this module's own items (`outline`, `OutlinePoint` and the two capacity
+    /// constants), and the explicit list adds the ones defined in `glyph_source` and re-exported
+    /// from `crate::render::text` — importing those explicitly is what makes this compile regardless
+    /// of which of them a given feature set brings into existence.
+    /// # Why each import is separately gated
+    ///
+    /// The module's gate is `any(vector-latin, complex, cjk)`, but no single test needs all of
+    /// them: a `fonts-complex`-only build has an Arabic face and no Latin one, so the outline tests
+    /// are compiled out and their imports would be unused. Gating each group where it is used is
+    /// what keeps every combination warning-free — the same discipline the stack arms follow.
+    #[allow(unused_imports)]
     use super::*;
-    use crate::render::text::{paint_active, Cell, GlyphSource, InkKind};
+    #[allow(unused_imports)]
+    use crate::render::text::{paint_active, Cell, GlyphSource, InkKind, VectorSource};
+
+    /// The family name of a Latin face this build ships, or a name no face uses.
+    ///
+    /// The outline path selects a face by `Font::family`, so a test that wants Latin outlines must
+    /// name a face the *current feature set* provides. `fonts-vector-latin` ships Open Sans;
+    /// `fonts-cjk` ships Noto Sans SC, which also covers ASCII. A build with neither has no Latin
+    /// outline face and the tests that need one are compiled out.
+    #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-cjk"))]
+    fn latin_family() -> &'static str {
+        #[cfg(feature = "fonts-vector-latin")]
+        {
+            "Open Sans"
+        }
+        #[cfg(all(not(feature = "fonts-vector-latin"), feature = "fonts-cjk"))]
+        {
+            "Noto Sans SC"
+        }
+    }
 
     /// The two things a rasteriser can get wrong that a 1-bit face cannot: it produces interior
     /// coverage values, and it fills *inside* the outline.
@@ -630,8 +812,8 @@ mod tests {
         assert!(!painted.is_color(), "and it is not a colour glyph");
         assert_eq!(painted.source_cell, None, "there is no source pixel grid to compress by");
 
-        assert!(out.iter().any(|v| *v == 0), "the glyph must not fill its whole cell");
-        assert!(out.iter().any(|v| *v == 255), "its interior must be solid");
+        assert!(out.contains(&0), "the glyph must not fill its whole cell");
+        assert!(out.contains(&255), "its interior must be solid");
         // This is the assertion a 1-bit face cannot satisfy: 'o' has a curved outline, so some
         // pixel must be partially covered.
         assert!(
@@ -700,16 +882,28 @@ mod tests {
     ///
     /// The property the whole fallback chain rests on: a source that claims a character it cannot
     /// draw makes every later source unreachable.
-    #[cfg(feature = "fonts-vector-latin")]
+    ///
+    /// # Why the character is chosen from the heap, not from a script
+    ///
+    /// This used to assert on `U+4E00`, on the reasoning that "an ideograph is not in a Latin
+    /// subset". That reasoning was about *one* feature set: once `fonts-cjk` is also enabled the ideograph
+    /// **is** covered, and the assertion became false — which is exactly the mistake this test is
+    /// about, one level up. A character outside one face is not outside every face; only a
+    /// character outside *every* enabled face is.
+    ///
+    /// `U+E000` is a private-use codepoint. No subset this generator can produce includes the
+    /// private use area, and `fonts-vector-latin` and `fonts-cjk` both exclude it by construction,
+    /// so it is out of the stack under every combination — which is what makes it the right probe.
+    #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-cjk"))]
     #[test]
     fn a_character_outside_the_face_is_refused() {
         let source = VectorSource::INSTANCE;
-        assert!(source.covers('A'), "the Latin subset carries ASCII letters");
+        assert!(source.covers('A'), "the Latin and CJK subsets both carry ASCII letters");
         let cell = Cell::new(16, 16);
         let mut out = vec![0u8; cell.area()];
         assert!(
-            source.paint('\u{4e00}', cell, &mut out).is_none(),
-            "an ideograph is not in a Latin subset, so the face must say so"
+            source.paint('\u{e000}', cell, &mut out).is_none(),
+            "a private-use codepoint is in no shipped subset, so the face must say so"
         );
     }
 
@@ -763,5 +957,183 @@ mod tests {
             "ink must scale with the cell's area: 8x8 -> {small_ink}, 64x64 -> {large_ink}, \
              ratio {ratio}"
         );
+    }
+
+    /// The scalable CJK face (`fonts-cjk`) draws an ideograph, a kana and fullwidth punctuation.
+    ///
+    /// # Why this calls `VectorSource` directly instead of `paint_active`
+    ///
+    /// With `fonts-cjk-bitmap` also enabled, `paint_active` resolves a Han character through the
+    /// **bitmap** face — by design, since the stack puts the cheap face first (see
+    /// `glyph_source::active_stack`'s ordering rule). Asserting the outline path through the stack
+    /// would therefore assert the bitmap's behaviour, and the test would break the moment two faces
+    /// are enabled together. Calling the source under test directly is what makes this a test of
+    /// *this* face under every feature combination.
+    ///
+    /// # What this pins that the bitmap face's test cannot
+    ///
+    /// `fonts-cjk-bitmap`'s test asserts a 16x16 bit pattern, which is a completely different code
+    /// path. This one asserts the *outline* path for CJK: the face is found by cmap, its `unitsPerEm`
+    /// is read (Noto Sans SC is 1000, not the 2048 of the Latin subset, which a hardcoded divisor
+    /// would get wrong), the outline is flattened and filled, and the result has interior coverage
+    /// values. A glyph that came out as a solid block or as an empty cell would fail the shape check.
+    #[cfg(feature = "fonts-cjk")]
+    #[test]
+    fn the_scalable_cjk_face_draws_ideographs_and_kana() {
+        let cell = Cell::new(32, 32);
+        let mut out = vec![0u8; cell.area()];
+        for (ch, label) in [
+            ('\u{4E2D}', "U+4E2D a Han ideograph"),
+            ('\u{3042}', "U+3042 hiragana A"),
+            ('\u{30AB}', "U+30AB katakana KA"),
+            ('\u{FF01}', "U+FF01 fullwidth exclamation"),
+        ] {
+            let painted = VectorSource::INSTANCE
+                .paint(ch, cell, &mut out)
+                .unwrap_or_else(|| panic!("{label} must be covered by the CJK vector face"));
+            assert_eq!(painted.ink, InkKind::Coverage, "{label} is outline ink");
+            assert_eq!(painted.source, "Noto Sans SC", "{label} came from the CJK face");
+
+            let lit = out.iter().filter(|v| **v > 0).count();
+            let interior = out.iter().filter(|v| **v > 0 && **v < 255).count();
+            assert!(lit > 0, "{label} must draw something");
+            // A glyph covering the entire cell would be "something", and so would a stray pixel.
+            // These bounds are wide on purpose: they reject a solid rectangle and a speck, and
+            // they do not need to be tight enough to be fragile.
+            let area = cell.area();
+            assert!(
+                lit < area,
+                "{label} must not fill the whole {area}-pixel cell (that is a solid block, not a glyph)"
+            );
+            assert!(
+                lit > area / 40,
+                "{label} must cover more than a speck: {lit} of {area} pixels"
+            );
+            // Antialiasing is the reason this face exists, so an all-or-nothing result means the
+            // rasteriser was bypassed.
+            assert!(
+                interior > 0,
+                "{label} must have antialiased edge pixels, got {interior} interior values"
+            );
+        }
+    }
+
+    /// An ideograph outside the *CJK subset* is refused, even though it is in the Han block.
+    ///
+    /// The subset covers `U+4E00..=U+511F`, so `U+9000` (a common-but-not-in-the-cap ideograph) is
+    /// absent. Asserting on the boundary rather than on a script is what keeps this true as the
+    /// codepoint list changes: it is the *list* that decides, not the block.
+    #[cfg(feature = "fonts-cjk")]
+    #[test]
+    fn an_ideograph_outside_the_cjk_subset_is_refused() {
+        let cell = Cell::new(16, 16);
+        let mut out = vec![0u8; cell.area()];
+        assert!(
+            VectorSource::INSTANCE.paint('\u{9000}', cell, &mut out).is_none(),
+            "U+9000 is in the Han block but past the subset's cap, so it must be a miss"
+        );
+    }
+
+    // ── `outline`: the geometry the SVG backend emits ───────────────────────────────────────────
+
+    /// The outline API returns closed contours whose points are in device space with sub-pixel
+    /// precision.
+    ///
+    /// # Why this is a separate test from the rasteriser's
+    ///
+    /// The rasteriser and this share the flattener but not the output: the rasteriser resolves the
+    /// polygons to coverage bytes, and this hands the polygons over. A defect in the *packing* would
+    /// leave the rasteriser perfect and the SVG backend silently drawing rectangle fallbacks —
+    /// which is exactly what happened while this function was being written (contour `i` was
+    /// indexed at `i * MAX_POINTS`, so any glyph with two contours, i.e. `A`, returned `None` and
+    /// the outline path was never taken). Asserting contour *count* and *vertex count* is what
+    /// catches that class of defect; asserting painted coverage never would.
+    #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-cjk"))]
+    #[test]
+    fn the_outline_geometry_has_closed_contours_with_subpixel_points() {
+        let mut points = [OutlinePoint { x: 0.0, y: 0.0 }; OUTLINE_MAX_POINTS];
+        let mut contours = [(0usize, 0usize); OUTLINE_MAX_CONTOURS];
+        let cell = Cell::new(32, 32);
+
+        // `A` is the multi-contour case that the packing bug made fail: a triangle-ish outer ring
+        // plus the counter above the crossbar.
+        let count = outline('A', cell, latin_family(), &mut points, &mut contours)
+            .expect("the Latin subset covers 'A'");
+        assert_eq!(count, 2, "'A' has an outer contour and a counter");
+
+        // The contours must be packed in order and non-overlapping, and the last one's end must be
+        // within the slice — the invariant that `contours[i]` indexes `points` directly.
+        let mut cursor = 0usize;
+        for (index, (start, end)) in contours.iter().take(count).enumerate() {
+            assert_eq!(*start, cursor, "contour {index} must start where the previous one ended");
+            assert!(end > start, "contour {index} must have at least one vertex");
+            cursor = *end;
+        }
+        assert!(cursor <= points.len(), "the contours must fit the slice");
+
+        // Sub-pixel precision is the point of an outline over a bitmap: an outline whose vertices
+        // were all whole numbers would mean the coordinates were rounded somewhere, which would
+        // make the SVG and the rasteriser disagree.
+        let has_fraction =
+            points[..cursor].iter().any(|p| p.x.fract() != 0.0 || p.y.fract() != 0.0);
+        assert!(has_fraction, "outline vertices must keep their sub-pixel precision");
+
+        // And the points must be inside a sane box for the cell, so a scale defect does not slip
+        // through as "some geometry was produced".
+        for point in &points[..cursor] {
+            assert!(
+                (-1.0..=33.0).contains(&point.x) && (-1.0..=33.0).contains(&point.y),
+                "a 32x32 cell's glyph must land near the cell, got ({}, {})",
+                point.x,
+                point.y
+            );
+        }
+    }
+
+    /// A glyph with a counter keeps it: `o`'s two contours nest, and the inner one is the hole.
+    ///
+    /// The `fill-rule="nonzero"` the SVG backend emits is what turns the inner ring into a hole,
+    /// and it only works if the ring is a contour of its own — a single merged contour would be
+    /// filled solid. So the contour *count* is the assertion that makes the rule meaningful.
+    #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-cjk"))]
+    #[test]
+    fn a_glyph_with_a_counter_reports_two_contours() {
+        let mut points = [OutlinePoint { x: 0.0, y: 0.0 }; OUTLINE_MAX_POINTS];
+        let mut contours = [(0usize, 0usize); OUTLINE_MAX_CONTOURS];
+        let count = outline('o', Cell::new(32, 32), latin_family(), &mut points, &mut contours)
+            .expect("the Latin subset covers 'o'");
+        assert_eq!(count, 2, "'o' is a ring, so it needs an outer contour and an inner one");
+    }
+
+    /// A character no outline face covers is a miss, not an empty success.
+    ///
+    /// The SVG backend relies on this: `outline` returning `Some(0)` would make it emit an empty
+    /// path element rather than falling through to the bitmap rectangles, and the snapshot gate
+    /// reads a drawing element that draws nothing as a defect.
+    #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-cjk"))]
+    #[test]
+    fn an_uncovered_character_has_no_outline() {
+        let mut points = [OutlinePoint { x: 0.0, y: 0.0 }; OUTLINE_MAX_POINTS];
+        let mut contours = [(0usize, 0usize); OUTLINE_MAX_CONTOURS];
+        // A private-use codepoint is in no shipped subset, so no outline face answers for it.
+        assert!(outline('\u{e000}', Cell::new(32, 32), latin_family(), &mut points, &mut contours)
+            .is_none());
+        // A degenerate cell is refused before any lookup, like `paint`.
+        assert!(outline('A', Cell::new(0, 0), latin_family(), &mut points, &mut contours).is_none());
+    }
+
+    /// Undersized scratch slices are refused rather than written past.
+    #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-cjk"))]
+    #[test]
+    fn an_undersized_scratch_is_refused() {
+        let mut contours = [(0usize, 0usize); OUTLINE_MAX_CONTOURS];
+        let mut small_points = [OutlinePoint { x: 0.0, y: 0.0 }; OUTLINE_MAX_POINTS - 1];
+        assert!(outline('A', Cell::new(32, 32), latin_family(), &mut small_points, &mut contours)
+            .is_none());
+
+        let mut points = [OutlinePoint { x: 0.0, y: 0.0 }; OUTLINE_MAX_POINTS];
+        let mut small_contours = [(0usize, 0usize); OUTLINE_MAX_CONTOURS - 1];
+        assert!(outline('A', Cell::new(32, 32), latin_family(), &mut points, &mut small_contours)
+            .is_none());
     }
 }

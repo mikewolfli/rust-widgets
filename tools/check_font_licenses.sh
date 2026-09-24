@@ -93,13 +93,52 @@ if "$PYTHON" tools/font_license_scan.py --inject="$INJECT_DIR/unrecorded_font_ta
     exit 1
 fi
 
-# ── Half 2: the inbound gate must still refuse ──────────────────────────────────────────────────
-if "$PYTHON" tools/gen_cjk_bitmap.py >/dev/null 2>&1; then
-    echo "FAIL: the generator ran with no --license; the licence gate is gone"
+# ── Half 2: the inbound gate must still refuse ─────────────────────────────────────────────────
+#
+# Every generator that ships third-party glyph data is checked, not just the one that happened to
+# exist first. A generator added later without the gate is the way this half silently stops
+# covering the tree, so the list below is the gate's scope and adding a generator means adding it
+# here. `tools/check_font_licenses.sh` fails if a generator is listed but missing, which keeps the
+# list from drifting into a list of things that no longer run.
+for generator in tools/gen_cjk_bitmap.py tools/gen_font_subset.py tools/gen_emoji_subset.py; do
+    if [ ! -f "$generator" ]; then
+        echo "FAIL: $generator is listed as licence-gated but does not exist"
+        exit 1
+    fi
+    if "$PYTHON" "$generator" >/dev/null 2>&1; then
+        echo "FAIL: $generator ran with no --license; the licence gate is gone"
+        exit 1
+    fi
+    if "$PYTHON" "$generator" --license=not-a-real-licence >/dev/null 2>&1; then
+        echo "FAIL: $generator accepted an unknown --license"
+        exit 1
+    fi
+done
+
+# ── Half 3: the codepoint list the emoji generator reads must not be a wildcard ─────────────────
+#
+# The emoji generator reads `tools/emoji_subset_codepoints.txt`. If that file were missing or
+# empty the generator refuses (see `read_codepoint_list`), which is the behaviour this asserts —
+# shipping the whole 10.6 MB face because a file was renamed is the regression that would
+# otherwise go unnoticed until someone checked the binary size.
+mv tools/emoji_subset_codepoints.txt "$INJECT_DIR/emoji_subset_codepoints.txt"
+if "$PYTHON" tools/gen_emoji_subset.py --license=ofl-1.1 >/dev/null 2>&1; then
+    mv "$INJECT_DIR/emoji_subset_codepoints.txt" tools/emoji_subset_codepoints.txt
+    echo "FAIL: the emoji generator ran with no codepoint list; it must not default to everything"
     exit 1
 fi
-if "$PYTHON" tools/gen_cjk_bitmap.py --license=not-a-real-licence >/dev/null 2>&1; then
-    echo "FAIL: the generator accepted an unknown --license"
+mv "$INJECT_DIR/emoji_subset_codepoints.txt" tools/emoji_subset_codepoints.txt
+
+# ── Half 4: the generated font tables must all be accounted for ────────────────────────────────
+#
+# The count is what makes "a new generated table was added without a NOTICE entry" fail rather than
+# pass: the scan's own `checked=N` is compared against the number of tables this repository ships.
+# Update this constant when a table is added *and* its NOTICE section is written — which is the
+# order the gate is here to enforce.
+EXPECTED_FONT_TABLES=5   # cjk_bitmap_data, latin, arabic, cjk, emoji
+if ! "$PYTHON" tools/font_license_scan.py | grep -q "checked=${EXPECTED_FONT_TABLES} failed=0"; then
+    echo "FAIL: the scan does not find exactly ${EXPECTED_FONT_TABLES} recorded font tables;"
+    echo "      a generated table is unrecorded, or one was added without its NOTICE section"
     exit 1
 fi
 

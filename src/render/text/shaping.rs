@@ -252,6 +252,14 @@ mod tests {
         );
     }
 
+    /// A family name selects the face, case-insensitively, and an unknown family does not.
+    ///
+    /// Gated on `fonts-vector-latin` specifically, not on "a vector feature": the body asserts the
+    /// **Open Sans** face, which only that feature ships. Gating this on the module's own
+    /// `any(fonts-vector-latin, fonts-complex)` window made it fail on a `fonts-complex`-only build,
+    /// where the face it names genuinely does not exist — the test was asserting a fact about the
+    /// wrong build configuration.
+    #[cfg(feature = "fonts-vector-latin")]
     #[test]
     fn the_face_a_family_names_is_the_face_that_is_used() {
         assert_eq!(

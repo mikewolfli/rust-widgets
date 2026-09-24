@@ -170,16 +170,27 @@ fn path_bounds(d: &str) -> Option<(i32, i32, i32, i32)> {
     let bytes = d.as_bytes();
     let mut i = 0usize;
     let mut bounds: Option<(i32, i32, i32, i32)> = None;
-    let mut cursor: Option<(i32, i32)> = None;
+    let mut cursor: Option<(f32, f32)> = None;
     while i < bytes.len() {
         let command = bytes[i];
         i += 1;
         match command {
-            b'M' => {
+            b'M' | b'L' => {
                 let (x, y, next) = number_pair(d, i)?;
                 i = next;
                 cursor = Some((x, y));
                 include(&mut bounds, x, y);
+            }
+            b'm' | b'l' => {
+                // A relative move is relative to the current point, so the cursor is required — a
+                // document starting with `m` would be malformed, and `?` reports that rather than
+                // treating the delta as absolute.
+                let (dx, dy, next) = number_pair(d, i)?;
+                i = next;
+                let (x, y) = cursor?;
+                let point = (x + dx, y + dy);
+                cursor = Some(point);
+                include(&mut bounds, point.0, point.1);
             }
             b'h' | b'v' => {
                 let (delta, next) = number(d, i)?;
@@ -210,16 +221,38 @@ fn path_bounds(d: &str) -> Option<(i32, i32, i32, i32)> {
     bounds
 }
 
-/// Widens `bounds` to cover `(x, y)`.
-fn include(bounds: &mut Option<(i32, i32, i32, i32)>, x: i32, y: i32) {
+/// Widens `bounds` to cover `(x, y)`, truncating each coordinate toward the low corner.
+///
+/// # Why `floor` on both ends, and not `floor`/`ceil`
+///
+/// `floor`/`ceil` is what a *geometric* bound would do, but it moves the box's **midpoint**: a
+/// glyph whose ink runs `20.0..29.0` would bound as `20..=30`, shifting the centre by half a pixel,
+/// and the tests that assert "this ink is centred on that line" compare midpoints and fail by one.
+/// Truncating both ends keeps the convention this function has always had — for an integer path
+/// `floor` is the identity, so every 1-bit face's box is unchanged bit for bit — while still
+/// reading a fractional coordinate instead of refusing it.
+///
+/// The consequence is that a box's high corner can be up to one pixel short of the true ink, which
+/// is the same convention as before this function learned about fractions. Callers use the box to
+/// assert *placement* (is the ink inside the field, is it centred), not to measure the ink's exact
+/// extent, so a conservative high corner is the right trade.
+fn include(bounds: &mut Option<(i32, i32, i32, i32)>, x: f32, y: f32) {
+    let (x, y) = (x.floor() as i32, y.floor() as i32);
     *bounds = Some(match *bounds {
         None => (x, y, x, y),
         Some((left, top, right, bottom)) => (left.min(x), top.min(y), right.max(x), bottom.max(y)),
     });
 }
 
-/// Reads a run of digits (and an optional leading `-`) starting at `at`.
-fn number(text: &str, at: usize) -> Option<(i32, usize)> {
+/// Reads a run of digits (and an optional leading `-`) starting at `at`, as a float.
+///
+/// # Why a float and not an integer
+///
+/// The 1-bit face's subpaths are whole pixels (`M8 4h3v4h-3z`), but a **glyph outline** carries
+/// fractional vertices (`M21.45 30.24`), because sub-pixel precision is the whole point of drawing
+/// an outline instead of a bitmap. An integer reader returns `None` at the `.`, which makes
+/// [`path_bounds`] silently answer "no ink" for every vector-rendered glyph.
+fn number(text: &str, at: usize) -> Option<(f32, usize)> {
     let bytes = text.as_bytes();
     let mut i = at;
     while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b',') {
@@ -233,14 +266,20 @@ fn number(text: &str, at: usize) -> Option<(i32, usize)> {
     while i < bytes.len() && bytes[i].is_ascii_digit() {
         i += 1;
     }
+    if i < bytes.len() && bytes[i] == b'.' {
+        i += 1;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+    }
     if i == digits_start {
         return None;
     }
-    text[start..i].parse().ok().map(|value| (value, i))
+    text[start..i].parse().ok().map(|value: f32| (value, i))
 }
 
 /// Reads two numbers separated by whitespace or a comma.
-fn number_pair(text: &str, at: usize) -> Option<(i32, i32, usize)> {
+fn number_pair(text: &str, at: usize) -> Option<(f32, f32, usize)> {
     let (first, after_first) = number(text, at)?;
     let (second, after_second) = number(text, after_first)?;
     Some((first, second, after_second))

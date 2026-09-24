@@ -13,6 +13,9 @@ use crate::render::pipeline::pixel_ops::{
     inset_rect, line_stroke_coverage_grid, pixel_visible, rounded_rect_coverage,
     rounded_rect_coverage_grid, rounded_rect_effective_radius, set_pixel, GlyphDrawConfig,
 };
+// Imported separately because it only exists when a colour face does — see its own docs.
+#[cfg(feature = "fonts-emoji-color")]
+use crate::render::pipeline::pixel_ops::blend_color_glyph;
 use crate::render::text::{is_combining_mark, is_variation_selector};
 use crate::render::SoftwareSurface;
 
@@ -660,6 +663,14 @@ impl SoftwareSurface {
             .max()
             .unwrap_or(0);
         let mut coverage: crate::compat::Vec<u8> = crate::compat::vec![0u8; max_cell];
+        // A **second** scratch, four bytes per pixel, used only when the active stack resolves a
+        // cluster through a colour face. It is allocated once per line and only when the build has
+        // such a face, so a build without one pays nothing. Keeping it separate from `coverage`
+        // rather than sizing `coverage` at `max_cell * 4` unconditionally is what keeps the 8x8
+        // path's allocation exactly as it was — every existing snapshot stays byte-identical.
+        #[cfg(feature = "fonts-emoji-color")]
+        let mut color_scratch: crate::compat::Vec<u8> =
+            crate::compat::vec![0u8; max_cell.saturating_mul(4)];
         for (index, cluster) in shaped.clusters().iter().enumerate() {
             let glyph_width = cluster.advance.max(1.0).round() as i32;
             let display_char = cluster
@@ -676,7 +687,29 @@ impl SoftwareSurface {
                     color,
                     clip,
                 };
-                blend_painted_glyph(ch, pen_x.round() as i32, origin.y, &mut coverage, &mut config);
+                // Colour ink needs the four-byte scratch, and the two calls are mutually exclusive
+                // by what each one's buffer means: `blend_color_glyph` refuses coverage ink and
+                // `blend_painted_glyph` refuses colour ink, so trying one and then the other draws
+                // each cluster exactly once whichever kind of face answered for it.
+                #[cfg(feature = "fonts-emoji-color")]
+                let drawn = blend_color_glyph(
+                    ch,
+                    pen_x.round() as i32,
+                    origin.y,
+                    &mut color_scratch,
+                    &mut config,
+                );
+                #[cfg(not(feature = "fonts-emoji-color"))]
+                let drawn = false;
+                if !drawn {
+                    blend_painted_glyph(
+                        ch,
+                        pen_x.round() as i32,
+                        origin.y,
+                        &mut coverage,
+                        &mut config,
+                    );
+                }
             }
             pen_x += cluster.advance;
             if index < last_index {

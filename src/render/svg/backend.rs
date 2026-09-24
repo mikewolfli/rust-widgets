@@ -68,6 +68,140 @@ impl SvgPaintBackend {
     fn push_element(&mut self, element: String) {
         self.elements.push(element);
     }
+
+    /// Appends `ch`'s **outline** to `path`, returning whether it produced any geometry.
+    ///
+    /// # Why the geometry comes from `text::outline` and not from `glyph_rects`
+    ///
+    /// A vector face's ink is curves, and the rasteriser antialiases those curves. Emitting the
+    /// face's *bitmap* view here instead would draw a different picture from the one the pixels
+    /// show, which is exactly what a snapshot must not do. `text::outline` gives the same flattened
+    /// polygons the rasteriser fills, so the two backends stay one drawing.
+    ///
+    /// # Why this returns a `bool` rather than writing tofu itself
+    ///
+    /// "No outline face covers this character" is a *fall-through*, not a failure: the caller has a
+    /// second path for 1-bit ink and must be allowed to take it. Returning a flag keeps that
+    /// decision in one place (the cluster loop) instead of duplicating the fallback rule.
+    ///
+    /// # Why the polygons become one subpath each
+    ///
+    /// `fill-rule="nonzero"` on the emitted element is what makes a counter a hole: an `o`'s inner
+    /// ring winds opposite to its outer one, so the non-zero rule leaves it empty. That is the same
+    /// rule the rasteriser applies, so a glyph with a hole keeps it in both backends.
+    ///
+    /// # Why this is gated on the vector features
+    ///
+    /// `text::outline` only exists when a build carries an outline face, and a build that carries
+    /// none has no outline ink to emit. Gating the whole function — rather than returning `false`
+    /// unconditionally — is what keeps the default build's code path byte-identical: without an
+    /// outline face, every glyph takes [`Self::append_bitmap_rects`] exactly as it always did.
+    #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", feature = "fonts-cjk"))]
+    fn append_outline(
+        &self,
+        path: &mut String,
+        ch: char,
+        pen_x: f32,
+        origin_y: i32,
+        glyph_width: u32,
+        glyph_height: u32,
+        family: &str,
+    ) -> bool {
+        // The buffers live here rather than in the cluster loop so one allocation of each covers a
+        // whole line, and they are the same order as the rasteriser's own scratch (`MAX_POINTS` is
+        // 1024). They are dropped at the end of the call, so no glyph outline is ever resident.
+        let mut points = [crate::render::text::OutlinePoint { x: 0.0, y: 0.0 };
+            crate::render::text::OUTLINE_MAX_POINTS];
+        let mut contours = [(0usize, 0usize); crate::render::text::OUTLINE_MAX_CONTOURS];
+        // The **same cell the rasteriser uses**, so the two backends draw one picture: the cluster's
+        // advance wide and the measured line box tall. `Cell::new(glyph_height, glyph_height)` was
+        // the first attempt and it is wrong — a glyph 14 px wide in a 24 px square cell lands
+        // outside the column its own advance reserves, which is why a dozen widget tests saw ink in
+        // the wrong column.
+        let cell = crate::render::text::Cell::new(glyph_width, glyph_height);
+        let Some(count) =
+            crate::render::text::outline(ch, cell, family, &mut points, &mut contours)
+        else {
+            return false;
+        };
+        // # Clipping to the cell is the rasteriser's own behaviour, not a shortcut
+        //
+        // An outline is scaled to the cell's *height*, so a glyph wider than the estimate-based
+        // advance (`M` is 1.37 em wide) reaches past the cell's right edge. The rasteriser never
+        // writes those pixels — its loop is `for py in 0..cell.height { for px in 0..cell.width }` —
+        // so emitting them here would make the snapshot show ink the pixels do not have. That is the
+        // two-backends-disagree failure this backend exists to prevent.
+        //
+        // A contour is kept only when **every** vertex is inside the cell. Proper polygon clipping
+        // would mean computing intersections and emitting new polygons, which is a second geometry
+        // pipeline for a case that only arises on a face/advance mismatch — and a glyph whose shape
+        // genuinely straddles its own advance is a metrics problem, not a shape to be trimmed. So an
+        // overflowing contour is dropped, exactly as the rasteriser drops the pixels outside the
+        // cell.
+        let clip_left = pen_x;
+        let clip_right = pen_x + glyph_width as f32;
+        let clip_top = origin_y as f32;
+        let clip_bottom = clip_top + glyph_height as f32;
+        let before = path.len();
+        for (start, end) in contours.iter().take(count) {
+            let Some(contour) = points.get(*start..*end) else {
+                continue;
+            };
+            let Some(first) = contour.first() else {
+                continue;
+            };
+            let inside = contour.iter().all(|p| {
+                (clip_left..=clip_right).contains(&(pen_x + p.x))
+                    && (clip_top..=clip_bottom).contains(&(origin_y as f32 + p.y))
+            });
+            if !inside {
+                continue;
+            }
+            // Polygon subpaths are `M` then `L`s then `Z`. Coordinates are rounded to two decimals
+            // rather than to integers: an antialiased outline's whole advantage is its sub-pixel
+            // precision, and rounding to whole pixels would turn every curve back into the blocks
+            // the 1-bit path already draws.
+            path.push_str(&format!("M{:.2} {:.2}", pen_x + first.x, origin_y as f32 + first.y));
+            for point in contour.iter().skip(1) {
+                path.push_str(&format!("L{:.2} {:.2}", pen_x + point.x, origin_y as f32 + point.y));
+            }
+            path.push('Z');
+        }
+        // A face can report a contour whose points all coincide, which produces an empty subpath.
+        // Treating that as "no geometry" sends the glyph to the bitmap path rather than emitting a
+        // degenerate `Mx yZ` that draws nothing.
+        path.len() > before
+    }
+
+    /// Appends `ch`'s 1-bit **bitmap rectangles** to `path`.
+    ///
+    /// # Why rectangles-per-source-pixel is the right answer here
+    ///
+    /// A set bit in an 8x8 or 16x16 source bitmap is one rectangle however large the cell is, so an
+    /// 8x8 glyph in a 40 px box is 30 subpaths rather than 750. Compressing is not a shortcut here:
+    /// the ink genuinely has no detail between the bits, so the rectangles are the face's exact
+    /// geometry rather than an approximation of it.
+    fn append_bitmap_rects(
+        &self,
+        path: &mut String,
+        ch: char,
+        pen_x: f32,
+        origin_y: i32,
+        glyph_width: u32,
+        glyph_height: u32,
+    ) {
+        for (x0, y0, x1, y1) in crate::render::glyph_rects(
+            ch,
+            pen_x.round() as i32,
+            origin_y,
+            glyph_width,
+            glyph_height,
+        ) {
+            // Each rectangle is one subpath. Axis-aligned subpaths that never overlap need no
+            // `fill-rule`, but the element carries `nonzero` anyway for the outline path's sake.
+            path.push_str(&format!("M{x0} {y0}h{}v{}h-{}z", x1 - x0, y1 - y0, x1 - x0));
+        }
+    }
 }
 
 // ─── Helper: RGBA→BMP conversion ──────────────────────────────────────────
@@ -275,7 +409,7 @@ impl PaintBackend for SvgPaintBackend {
 
             // ── Text ───────────────────────────────────────────────────
             //
-            // # Why this draws glyph bitmaps instead of a `<text>` element
+            // # Why this draws glyph geometry instead of a `<text>` element
             //
             // A `<text>` element hands the string to the viewer's font engine. That is a
             // *different renderer* from this crate's, in three ways at once:
@@ -283,7 +417,7 @@ impl PaintBackend for SvgPaintBackend {
             // | | software rasteriser | `<text>` element |
             // |---|---|---|
             // | glyph source | the whole font stack (`render::text`) | whatever font the viewer has |
-            // | glyph shape | solid rectangles at the set bits | vector outlines |
+            // | glyph shape | a filled outline, or bitmap rectangles | vector outlines |
             // | advance | `estimate_cluster_advance` (0.6 em, 1.0 em wide, 0.33 em space) | the font's own metrics |
             //
             // `snapshots/svg/` exists to be a *picture of what the control draws*, so a snapshot
@@ -291,19 +425,26 @@ impl PaintBackend for SvgPaintBackend {
             // font is `render::text` — kept in every profile including `mini` — so the backend that
             // must change is this one.
             //
-            // # Why this reads the 1-bit view rather than the painted coverage
+            // # The two glyph paths, and why both are needed
             //
-            // The rasteriser blends per-pixel coverage; this backend needs geometry, and a set
-            // source bit is **one rectangle** however large the cell is. Both are views of the same
-            // face — `paint_bitmap` and `glyph_rects` implement one placement rule, and
-            // `glyph_source`'s tests assert they agree pixel for pixel — so the two backends are one
-            // drawing by construction. Compressing is not a shortcut: for an 8x8 glyph in a 40px
-            // box, rectangles-per-source-bit is 30 subpaths against 750 per-destination-pixel.
+            // The ink a face produces decides which path expresses it:
             //
-            // A face whose ink is *not* 1-bit (an antialiased vector face, a colour bitmap) is the
-            // case this path cannot express, and it is not silently wrong: `source_cell` is the
-            // hook a future pass uses to emit an outline `<path>` instead. There is no baseline
-            // conversion: both backends paint downward from `origin.y`.
+            // * a **1-bit** face (the default 8x8, the CJK bitmap) is rectangles at its set source
+            //   pixels — `glyph_rects`. That is the compression this backend wants: 30 subpaths for
+            //   an 8x8 glyph in a 40 px box, against 750 per-destination-pixel rectangles;
+            // * an **outline** face (any `fonts-vector-*` or `fonts-cjk`) is real curves, which
+            //   `text::outline` hands over as device-space polygons. Emitting rectangles for it
+            //   would *understate* the ink — the rasteriser antialiases the same outline — so the
+            //   snapshot would disagree with the pixels by construction.
+            //
+            // Both paths read the same face and the same [`Placement`], so they are one drawing.
+            // The choice is made per glyph by `text::outline`'s success, which is exactly the
+            // question "is this character covered by an outline face?".
+            //
+            // A **colour** face is the case neither path can express as geometry: its ink is a
+            // PNG's pixels, and no path compresses it. Those glyphs fall through to the 1-bit path,
+            // which draws tofu — a deliberate, visible degradation rather than a silently wrong
+            // picture. See `snapshots/svg/README.md` and the round log for why that is the ruling.
             RenderCommand::DrawText { origin, text, font, color, alignment } => {
                 // `origin` is the glyph box's **top-left**, exactly as for the rasteriser.
                 //
@@ -330,32 +471,39 @@ impl PaintBackend for SvgPaintBackend {
                         .chars()
                         .find(|ch| !is_combining_mark(*ch) && !is_variation_selector(*ch));
                     if let Some(ch) = display_char {
-                        // The rectangles come from `glyph_rects` — the bitmap face's **source-
-                        // pixel** geometry: a set source bit is one rectangle, however large the
-                        // cell. That is the compression this backend wants (30 subpaths instead of
-                        // 750 for an 8x8 glyph in a 40px box), and it is one placement rule shared
-                        // with the rasteriser's coverage rather than a second derivation.
-                        //
-                        // A face whose ink is not 1-bit (an antialiased vector face, a colour
-                        // bitmap) is the case this path cannot express. It is not silently wrong:
-                        // `GlyphSource::paint`'s `source_cell` reports whether the ink was 1-bit,
-                        // and that report is the hook a future pass uses to emit an outline
-                        // `<path>` instead.
-                        for (x0, y0, x1, y1) in crate::render::glyph_rects(
+                        // Try the outline path first: an outline face covers ASCII (and, with
+                        // `fonts-cjk`, Han and kana), while the bitmap faces cover everything the
+                        // default build draws. Only one of the two ever produces geometry, so the
+                        // order is a statement of preference, not a risk of double-drawing.
+                        #[cfg(any(
+                            feature = "fonts-vector-latin",
+                            feature = "fonts-complex",
+                            feature = "fonts-cjk"
+                        ))]
+                        let outlined = self.append_outline(
+                            &mut path,
                             ch,
-                            pen_x.round() as i32,
+                            pen_x,
                             origin.y,
                             glyph_width,
                             glyph_height,
-                        ) {
-                            // Each rectangle is one subpath. Axis-aligned subpaths that never
-                            // overlap need no `fill-rule`.
-                            path.push_str(&format!(
-                                "M{x0} {y0}h{}v{}h-{}z",
-                                x1 - x0,
-                                y1 - y0,
-                                x1 - x0
-                            ));
+                            font.family(),
+                        );
+                        #[cfg(not(any(
+                            feature = "fonts-vector-latin",
+                            feature = "fonts-complex",
+                            feature = "fonts-cjk"
+                        )))]
+                        let outlined = false;
+                        if !outlined {
+                            self.append_bitmap_rects(
+                                &mut path,
+                                ch,
+                                pen_x,
+                                origin.y,
+                                glyph_width,
+                                glyph_height,
+                            );
                         }
                     }
                     pen_x += cluster.advance;
@@ -366,6 +514,26 @@ impl PaintBackend for SvgPaintBackend {
                     // which the snapshot gate reads as a defect.
                     return;
                 }
+                // `fill-rule` is emitted only when an outline face is in the build. The 1-bit path
+                // needs none — axis-aligned, non-overlapping rectangles are the same picture under
+                // either rule — and adding the attribute unconditionally would rewrite all 376
+                // committed snapshots for no behavioural change, which is exactly the kind of
+                // silent churn the byte-identical requirement exists to prevent.
+                #[cfg(any(
+                    feature = "fonts-vector-latin",
+                    feature = "fonts-complex",
+                    feature = "fonts-cjk"
+                ))]
+                self.push_element(format!(
+                    r#"<path d="{}" fill="{}" fill-rule="nonzero" />"#,
+                    path,
+                    color_to_rgba(color)
+                ));
+                #[cfg(not(any(
+                    feature = "fonts-vector-latin",
+                    feature = "fonts-complex",
+                    feature = "fonts-cjk"
+                )))]
                 self.push_element(format!(
                     r#"<path d="{}" fill="{}" />"#,
                     path,
@@ -667,6 +835,97 @@ mod tests {
         assert!(result.contains("<path d=\"M"), "the string must be drawn as glyph geometry");
     }
 
+    /// A vector face is emitted as a real **outline**, and a 1-bit face as rectangles.
+    ///
+    /// # Why the distinction is asserted on `L` commands rather than on painted output
+    ///
+    /// The two glyph paths differ in *geometry*, and the difference is exactly this: a 1-bit face's
+    /// subpaths are `M{x} {y}h{w}v{h}h-{w}z` — axis-aligned runs with no `L` and integer
+    /// coordinates — while an outline's are `M{a.b} {c.d}L...Z` with `L`s and decimals. So counting
+    /// `L`s is the cheapest honest discriminator, and it fails loudly if the outline path is ever
+    /// silently bypassed (which is what happened while `text::outline` was being written: every
+    /// glyph fell through to the rectangles and no coverage-level test noticed).
+    ///
+    /// The test is gated on a vector feature because without one there is no outline face and the
+    /// rectangle path is the *correct* answer, not a fallback.
+    #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-cjk"))]
+    #[test]
+    fn svg_backend_emits_an_outline_for_a_vector_face() {
+        // A Latin face this build ships. The outline path selects by `Font::family`, so the name
+        // has to match a feature that is on — `fonts-complex` ships only Arabic and would correctly
+        // fall through to the bitmap path for `A`, which is not what this test is about.
+        let family =
+            if cfg!(feature = "fonts-vector-latin") { "Open Sans" } else { "Noto Sans SC" };
+        let mut svg = SvgPaintBackend::new(Size::new(120, 48));
+        svg.begin_frame(Color::TRANSPARENT);
+        svg.execute_command(&RenderCommand::DrawText {
+            origin: Point::new(4, 4),
+            text: "A".to_string(),
+            // Named as `Font::family` names it: the outline path selects by family for the reason
+            // `text::outline` documents.
+            font: Font::new(family, 32.0, false, false),
+            color: Color::WHITE,
+            alignment: HorizontalAlignment::Left,
+        });
+        svg.end_frame();
+        let result = svg.finish();
+        let path = result
+            .split("<path d=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("the backend emitted a glyph path");
+        assert!(
+            path.contains('L') && path.contains('.'),
+            "a vector face must be emitted as an outline (`L` commands, fractional coordinates), \
+             not as bitmap rectangles; got: {path}"
+        );
+        // The non-zero fill rule is what keeps a counter a hole, and an outline is the only ink that
+        // needs it — so its presence is part of the same claim.
+        assert!(
+            result.contains("fill-rule=\"nonzero\""),
+            "an outline path must carry the non-zero fill rule so a counter stays a hole"
+        );
+    }
+
+    /// The default build's element format is unchanged: rectangles and **no** `fill-rule`.
+    ///
+    /// The attribute is emitted only when an outline face exists, because adding it unconditionally
+    /// would rewrite all 376 committed snapshots for no behavioural change. This pins that.
+    #[cfg(not(any(
+        feature = "fonts-vector-latin",
+        feature = "fonts-complex",
+        feature = "fonts-cjk"
+    )))]
+    #[test]
+    fn svg_backend_emits_rectangles_without_a_fill_rule_by_default() {
+        let mut svg = SvgPaintBackend::new(Size::new(120, 48));
+        svg.begin_frame(Color::TRANSPARENT);
+        svg.execute_command(&RenderCommand::DrawText {
+            origin: Point::new(4, 4),
+            text: "A".to_string(),
+            // No outline face exists on this build, so any family name resolves to the bitmap face.
+            font: Font::new("Arial", 32.0, false, false),
+            color: Color::WHITE,
+            alignment: HorizontalAlignment::Left,
+        });
+        svg.end_frame();
+        let result = svg.finish();
+        let path = result
+            .split("<path d=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("the backend emitted a glyph path");
+        assert!(
+            !path.contains('L') && !path.contains('.'),
+            "the 8x8 face's ink is whole pixels, so its subpaths are integer runs with no `L`; \
+             got: {path}"
+        );
+        assert!(
+            !result.contains("fill-rule"),
+            "the default build must not gain an attribute: it would rewrite every committed snapshot"
+        );
+    }
+
     #[test]
     fn svg_backend_honours_horizontal_alignment() {
         // Rule: the two backends must put the ink in the same place. The software rasteriser
@@ -699,13 +958,20 @@ mod tests {
 
         // The leftmost `M` subpath start in the emitted `<path>` is the alignment's effect, so
         // the assertion is about where the ink actually begins rather than about an attribute.
+        //
+        // The coordinate is parsed as `f32` and rounded, not as `i32`: with a vector face the ink
+        // is an outline whose coordinates carry fractions (`M21.45 …`), and an integer parse would
+        // fail on every subpath of every glyph. Rounding here is what keeps the assertion about
+        // the alignment shift, which is a whole number of device pixels, rather than about the
+        // glyph's own sub-pixel placement.
         let first_ink_x = |svg: &str| -> i32 {
             let d = svg.find("<path d=\"").expect("the backend emitted a glyph path") + 9;
             let end = svg[d..].find('"').expect("the attribute is closed") + d;
             svg[d..end]
                 .split('M')
                 .skip(1)
-                .filter_map(|sub| sub.split([' ', 'h']).next()?.parse::<i32>().ok())
+                .filter_map(|sub| sub.split([' ', 'h', 'L']).next()?.parse::<f32>().ok())
+                .map(|x| x.round() as i32)
                 .min()
                 .expect("the path has at least one subpath")
         };
