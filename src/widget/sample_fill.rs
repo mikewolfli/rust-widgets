@@ -51,6 +51,8 @@ use crate::widget::Widget;
 use crate::compat::{String, Vec};
 use crate::widget::advanced_widgets::tab_bar::TabBar;
 use crate::widget::container_widgets::groupbox::GroupBox;
+use crate::widget::display_widgets::slider::{Slider, TickPosition};
+use crate::widget::display_widgets::switch::Switch;
 use crate::widget::input_widgets::cascader::{Cascader, CascaderOption};
 use crate::widget::input_widgets::combobox::ComboBox;
 use crate::widget::input_widgets::dropdown::Dropdown;
@@ -87,6 +89,44 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
             Some(group_box) => {
                 group_box.set_checkable(true);
                 group_box.set_checked(true);
+                true
+            }
+            None => false,
+        },
+
+        // ── Controls whose *state* is the feature ──
+        //
+        // `CheckBox`/`Switch`/`Slider` each draw something in one state and nothing in the other, and each
+        // shipped in the state that draws nothing. The consequence is not cosmetic: `draw` has a branch for
+        // the tick, the travel and the tick marks, and **no snapshot, census colour sample or gate ever made
+        // it execute**, so a defect inside those branches was invisible to every automated check the crate
+        // has. Turning the state on here is what puts the branch into the picture.
+        //
+        // This is the same reasoning as the `group_box` arm below, applied to the three controls whose
+        // "other half" carries the most drawing. A caller still gets the default state from `create`: this
+        // module is only reached from the verification paths (see the module docs).
+        "check_box" => match widget_as_mut::<CheckBox>(widget) {
+            Some(checkbox) => {
+                checkbox.set_checked(true);
+                true
+            }
+            None => false,
+        },
+        "switch" => match widget_as_mut::<Switch>(widget) {
+            Some(switch) => {
+                switch.set_checked(true);
+                true
+            }
+            None => false,
+        },
+        // `Slider` needs `tick_interval > 0` as well as a non-`NoTicks` position: `draw` guards the whole
+        // tick loop on both, so setting only the position leaves the marks unrendered and the snapshot
+        // would claim a feature that is still not in the picture.
+        "slider" => match widget_as_mut::<Slider>(widget) {
+            Some(slider) => {
+                slider.set_value(30);
+                slider.set_tick_position(TickPosition::TicksBelow);
+                slider.set_tick_interval(25);
                 true
             }
             None => false,
@@ -309,6 +349,10 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
 // The sample sources
 // ---------------------------------------------------------------------------
 
+// `CheckBox` is imported here rather than with the other control types because it belongs to the
+// `base_widgets` family and the arms above are its only use in this module.
+use crate::widget::base_widgets::checkbox::CheckBox;
+
 /// A two-level cascade, so the control draws its branches *and* a leaf rather than one flat list.
 ///
 /// A single level would not show what a cascader is for: the expand affordance and the indent are the
@@ -432,10 +476,20 @@ mod tests {
     /// The negative half matters as much as the positive: a fill that returned `true` for everything would
     /// make the exporter's `sample-filled` count meaningless, and a control whose content was written by the
     /// wrong arm would be counted as a success.
+    /// A control with no *data* concept is not filled by [`apply`].
+    ///
+    /// # Why `slider` is no longer in this list
+    ///
+    /// It was, and correctly: `slider` has no data to load. But it does have a **feature** that is
+    /// invisible in its default state — its tick marks are guarded on both a non-`NoTicks` position
+    /// and a non-zero interval, and the constructor sets neither, so the marks belonged to no
+    /// snapshot. The module fills it for the same reason it fills `group_box`'s tick, which is a
+    /// different question from "does it hold data"; `slider` therefore moved out of this list and
+    /// into the feature list covered by [`a_state_feature_is_switched_on_for_its_own_snapshot`].
     #[test]
     fn a_control_without_a_data_concept_is_not_filled() {
         let factory = WidgetFactory::new_with_defaults();
-        for name in ["button", "label", "slider", "divider", "line_edit"] {
+        for name in ["button", "label", "divider", "line_edit"] {
             let Some(mut widget) =
                 factory.create(name, crate::widget::census::CENSUS_RECT, "Sample")
             else {
@@ -443,6 +497,45 @@ mod tests {
             };
             assert!(!apply(name, widget.as_mut()), "{name} has no data to fill");
         }
+    }
+
+    /// Each control whose *state* is the feature has that state switched on for its snapshot.
+    ///
+    /// # Why this needs its own assertion
+    ///
+    /// A control that draws something in one state and nothing in the other makes every check the
+    /// crate has agree on a picture that shows no feature: the tick branch, the travel branch and
+    /// the tick-mark branch are all unreachable in the default state, so a defect inside them is
+    /// invisible to the snapshot, the census colour sample and every gate. This pins the set that
+    /// has been switched on, so a control dropping out of it is a failure rather than a quietly
+    /// emptier picture.
+    #[test]
+    fn a_state_feature_is_switched_on_for_its_own_snapshot() {
+        use crate::widget::display_widgets::slider::{Slider, TickPosition};
+        use crate::widget::display_widgets::switch::Switch;
+
+        let factory = WidgetFactory::new_with_defaults();
+        for name in ["check_box", "switch", "slider", "group_box"] {
+            let Some(mut widget) =
+                factory.create(name, crate::widget::census::CENSUS_RECT, "Sample")
+            else {
+                panic!("{name} is published by the registry but could not be built");
+            };
+            assert!(apply(name, widget.as_mut()), "{name} owns a state feature");
+        }
+
+        // The state each one depends on is genuinely on, rather than the fill merely returning
+        // `true`: a `Slider` needs both halves of its guard, and the constructor sets neither.
+        let mut slider = Slider::new(crate::core::Rect::new(0, 0, 120, 8));
+        assert_eq!(slider.tick_position(), TickPosition::NoTicks, "the constructor default");
+        assert!(apply("slider", &mut slider));
+        assert_ne!(slider.tick_position(), TickPosition::NoTicks, "and the fill moved it");
+        assert!(slider.tick_interval() > 0, "or the draw guard still refuses the marks");
+
+        let mut switch = Switch::new(crate::core::Rect::new(0, 0, 60, 30));
+        assert!(!switch.is_checked(), "the constructor default");
+        assert!(apply("switch", &mut switch));
+        assert!(switch.is_checked(), "and the fill turned it on");
     }
 
     /// The table's two routes expose the same data, so `data_grid.svg` and `table_widget.svg` differ only

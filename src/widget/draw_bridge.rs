@@ -128,8 +128,107 @@ macro_rules! impl_default_via_new {
 /// The single entry point the render loop should use. It asks the widget itself,
 /// so a wrapper that paints through a child keeps working, and a widget that
 /// implements `Draw` answers `Some(self)` through [`crate::impl_draw_bridge!`].
+///
+/// # Painting is also where a **host-owned** control is advanced
+///
+/// [`crate::widget::runtime::tick_animations`] sweeps the mounted registry. A control held as a
+/// `Box<dyn Widget>` is not in it, so nothing advanced it and nothing knew it was in flight: a
+/// `Switch` set to ON and then painted showed its thumb at the off end every frame, forever, and
+/// reported no error. That is not a hypothetical host — it is how `census`,
+/// `examples/export_control_svgs.rs` and this function's own callers hold their controls, and it is
+/// the pattern the crate's front-page example documents.
+///
+/// So the paint path advances such a control and records the fact. Both halves are needed:
+/// advancing is what makes the picture move, and recording is what lets
+/// [`crate::widget::runtime::animation_bus_needs_another_frame`] answer `true`, so a loop learns
+/// the frame it would otherwise never schedule is needed.
+///
+/// # The two exclusions, and why each is load-bearing
+///
+/// **A mounted control is not advanced here.** It reaches this function every frame too, and
+/// advancing it would run its animation once for `tick_animations` and once for its own paint —
+/// twice per frame, the exact failure `tick_animations`' documentation warns about ("the same
+/// button advanced twice in one frame"). [`crate::widget::runtime::is_mounted`] keeps the two
+/// populations disjoint.
+///
+/// **A control that manages its own repaint is not advanced here either.** Such a control's
+/// `tick` calls [`crate::widget::BaseWidget::request_redraw`], so advancing it on every paint
+/// would make every advance ask for the next paint: a feedback loop with no way to stop, and
+/// nothing outside this function can see that the owner is already choosing when to repaint.
+/// [`crate::widget::Widget::manages_own_repaint`] reports that fact and defaults to "no", so an
+/// ordinary control — a hovered `Button`, a toggled `Switch`, the case that made this necessary —
+/// is advanced, while a free-running `Spinner` draws whatever frame it is on and keeps its own
+/// cadence. The observable consequence for the snapshots is that two consecutive renders of the
+/// same control are identical, which the exporter's reproducibility depends on.
+///
+/// A resting owned control costs one `is_animating()` call, which is what keeps the "a still
+/// window pays nothing" property of the bus intact.
 pub fn draw_of(widget: &mut dyn Widget) -> Option<&mut dyn Draw> {
+    advance_host_owned_control(widget);
     widget.as_draw_mut()
+}
+
+/// Advances an owned control that owes frames, and tells the bus so.
+///
+/// Split from [`draw_of`] so the **whole** of the animation-bus interaction — the frame step, the
+/// `is_mounted` question and the two bus calls — is one call site that a build without the runtime
+/// can compile out. `mini` and `embedded` are `alloc_frugal`: they have no `widget::runtime` (the
+/// module is `#[cfg(not(alloc_frugal))]`), no registry to ask, and no frame bus to answer. Those
+/// builds paint whole frames on demand, so there is nothing for this to drive and no host loop to
+/// keep awake — the honest behaviour is to do nothing, not to carry a stub of a mechanism that
+/// does not exist in the profile.
+#[cfg(not(alloc_frugal))]
+fn advance_host_owned_control(widget: &mut dyn Widget) {
+    if !is_host_owned(widget) || widget.manages_own_repaint() {
+        return;
+    }
+    let _ = widget.tick(ANIMATION_FRAME_DELTA_MS);
+    let settled = !widget.is_animating();
+    crate::widget::runtime::animation_bus_note_host_owned_animating(state_after_advance(settled));
+}
+
+/// The frame advance where the profile has no frame bus.
+///
+/// `mini`/`embedded` have no `widget::runtime`, so there is no registry to distinguish a mounted
+/// control from an owned one and no bus to report to. Nothing is advanced, which is what those
+/// profiles already did: they repaint whole frames from their own host loop.
+#[cfg(alloc_frugal)]
+fn advance_host_owned_control(widget: &mut dyn Widget) {
+    let _ = widget;
+}
+
+/// The delta the paint path hands a host-owned control, in milliseconds.
+///
+/// # Why a constant and not a measured frame time
+///
+/// At this entry point the crate has no clock and will not grow one: a wrong frame delta is worse
+/// than a fixed one — a single long frame (the host loaded a font, the window was occluded) would
+/// otherwise teleport every in-flight animation to its end. `Switch::tick` and the other control
+/// `tick`s accumulate against a *target* rather than a deadline, so a fixed step simply paces the
+/// movement and cannot overshoot. 16 ms is the step a 60 Hz host would use, so an animation takes
+/// the same time here as it would on that host.
+#[cfg(not(alloc_frugal))]
+const ANIMATION_FRAME_DELTA_MS: u32 = 16;
+
+/// Reports whether `widget` is a control the frame sweep does **not** own but which is in flight.
+///
+/// Split out so the two independent facts — "is this mounted?" and "does it owe frames?" — are
+/// asked of one named place rather than as a compound condition inside the paint path. The
+/// `is_animating()` read is second, so a control that is mounted (the common case) or resting pays
+/// nothing for the question.
+#[cfg(not(alloc_frugal))]
+fn is_host_owned(widget: &dyn Widget) -> bool {
+    widget.is_animating() && !crate::widget::runtime::is_mounted(widget.id())
+}
+
+/// Maps "has this control settled?" onto the bus fact.
+///
+/// A named translation rather than a bare negation at the call site: the bus speaks in
+/// "a host-owned control is animating", while `tick` speaks in "it needs another frame", and
+/// conflating the two is how the two halves of the animation contract drift apart.
+#[cfg(not(alloc_frugal))]
+fn state_after_advance(settled: bool) -> bool {
+    !settled
 }
 
 #[cfg(test)]

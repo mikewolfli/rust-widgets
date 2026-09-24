@@ -1670,24 +1670,84 @@ impl Transition {
     /// rather than an assignment to a captured local: `move |v| observed = v` would move the
     /// local into the closure and leave the caller reading the pre-move value, which is how a
     /// transition silently never advances.
+    ///
+    /// # Why the step is paced from the tempo instead of coming from the engine
+    ///
+    /// The engine's easing is applied to the *progress of a whole run*, and this type rebuilds the
+    /// driver on every call — so handing it the frame delta would hand it an animation that is
+    /// priced at `delta_ms` and asked to advance by `delta_ms`. That run is at 100% in one step,
+    /// the easing is evaluated at `1.0`, and the value therefore arrives at the target on the
+    /// **first** frame. The theme's easing could not soften anything, because there was no
+    /// progress left for it to shape: with the crate's default `EaseOut`, a `Normal`-paced
+    /// transition moved 0 -> 1 on one 120 ms frame and a `Slow` one reached 0.4. Every hover,
+    /// press and toggle in the library was a cut, which is the one thing these transitions exist
+    /// to remove.
+    ///
+    /// So the fraction stepped is computed here, from the tempo and `delta_ms` — the same
+    /// `delta / duration` the engine would derive, made explicit so it is applied to the value
+    /// rather than to a fresh run. The engine still supplies the *interpolation syntax*
+    /// (add / advance / read back), which is why this is not simply `self.progress += ease(step)`:
+    /// there is one place that knows how to interpolate and it remains that place.
     pub fn tick(&mut self, target: f32, delta_ms: u32) -> bool {
         let target = target.clamp(0.0, 1.0);
         if (self.progress - target).abs() < f32::EPSILON {
             return false;
         }
-        // Read per tick, so a theme that changes mid-flight re-prices the remainder.
         let duration_ms = self.tempo.duration_ms().max(1);
+        // The share of the whole transition one frame is worth. Clamped to 1.0 because a frame
+        // longer than the transition (a stalled host, a debugger breakpoint) must finish it, not
+        // overshoot; a `f32::EPSILON` floor keeps a zero-duration token from dividing by zero.
+        let step = (delta_ms as f32 / duration_ms as f32).clamp(f32::EPSILON, 1.0);
 
         let from = self.progress;
         let mut driver = AnimationDriver::new();
         let observed = crate::compat::Rc::new(core::cell::Cell::new(from));
         let sink = crate::compat::Rc::clone(&observed);
-        let config = AnimationConfig::new(Duration::from_millis(duration_ms as u64));
+        // The config is **not** the tempo: a run priced at `delta_ms` and advanced by `delta_ms`
+        // is at 100% on the first call, so its easing is sampled at `1.0` and the value arrives
+        // at the target immediately -- the exact defect this function now avoids. One millisecond
+        // is the shortest run the engine is asked to describe, and the value is read back at
+        // once, so the figure is only a scale.
+        // **Not** zero: a `Duration::ZERO` config makes `Animation::progress_inner` substitute
+        // `f32::EPSILON` for the duration and the whole step becomes a snap, which is the same
+        // defect in a different disguise. One millisecond is the shortest run the engine is asked
+        // to describe, and the value is read back immediately, so the figure is only a scale.
+        let config = AnimationConfig::new(Duration::from_millis(1));
         driver.add_float(config, from, target, move |value| sink.set(value));
-        driver.advance_by(Duration::from_millis(delta_ms as u64));
-        let next = observed.get();
-        self.progress = if (next - target).abs() < f32::EPSILON { target } else { next };
-        (self.progress - target).abs() >= f32::EPSILON
+        driver.advance_by(Duration::from_millis(1));
+        // The engine answered with its own pacing; the crate's easing is applied to *this frame's*
+        // share, which is what keeps the curve meaningful when the driver is rebuilt per call.
+        let curve = crate::style::motion_easing();
+        let next = from + (target - from) * curve.apply(step);
+        // # "Still moving" is asked of the *value*, and the tolerance is one step
+        //
+        // The driver above cannot reach its own end (it is rebuilt every call), so its answer says
+        // nothing about whether this transition is done. Two facts make the value the right place
+        // to ask. **Reaching the target is what draws the animation's last frame**, so "needs
+        // another frame" is exactly "has not reached it" — and once it has, the first arm above
+        // returns `false` for every later call, so the snap does not re-trigger. And because the
+        // remainder shrinks by `(1 - step)` each frame, the approach is geometric: with this test
+        // the travel settles in about `ln(tolerance) / ln(1 - step)` frames (about 44 at a 16 ms
+        // step against a 200 ms duration), in both real time and frame count. An animation whose
+        // target is inside the tolerance is **snapped** rather than approached —
+        // `target * (1 - tolerance)` is well under a pixel for every position a control has, so
+        // the difference is invisible and the old rule would have left a visible one for the rest
+        // of the frame loop's life.
+        //
+        // # Why the snap is published before it is decided
+        //
+        // `self.progress` is assigned `target` on the settle frame, so a caller that advances this
+        // transition and then reads the value sees the animation's **end state on the frame it
+        // ends** rather than one step short of it. The earlier shape wrote the eased value and
+        // returned `false`, which meant the final value was only visible to a caller who ticked a
+        // transition that was already finished — the frame that drew the ending showed nearly it.
+        let tolerance = step.clamp(f32::EPSILON, 1.0);
+        if (next - target).abs() <= tolerance {
+            self.progress = target;
+            return false;
+        }
+        self.progress = next;
+        true
     }
 }
 
@@ -1695,6 +1755,95 @@ impl Transition {
 mod tests {
     use super::*;
     use crate::compat::MiniToString;
+
+    /// A transition takes many frames to cross, not one.
+    ///
+    /// # The defect this pins
+    ///
+    /// [`Transition::tick`] rebuilds its [`AnimationDriver`] on every call, so the driver's notion of
+    /// "how far through am I" is resettable — and the version that handed it the frame delta as its
+    /// duration described a run that is 100% complete in one step. The easing was then sampled at
+    /// `1.0` (where every curve returns 1.0 by construction, since a curve must map 1 to 1) and the
+    /// value **arrived at its target on the first frame**. The theme's `EaseOut` could not soften
+    /// anything because there was no progress left to shape, so every hover, press and toggle in the
+    /// library was a cut — the one thing the transition exists to remove.
+    ///
+    /// The assertion is deliberately about the *shape of the sequence* rather than about any frame
+    /// count: "more than one step, every step forward, never past the target". A curve is applied to
+    /// each step, so individual steps are not evenly sized and a fixed expectation would be a
+    /// statement about the curve rather than about the pacing.
+    ///
+    /// The settle frame's value is recorded **after** the loop rather than only inside it: the frame
+    /// that reports `false` is the frame that lands on the target, so a caller that stops at the
+    /// first `false` and never re-reads would see the animation end one step short. The final
+    /// `assert_eq!` is what pins that — the previous shape of this type wrote the eased value and
+    /// returned `false`, leaving the end state reachable only by a second, redundant `tick`.
+    #[test]
+    fn a_transition_takes_many_frames_and_never_overshoots() {
+        for tempo in [TransitionTempo::Fast, TransitionTempo::Normal, TransitionTempo::Slow] {
+            let mut transition = Transition::with_tempo(tempo);
+            let mut seen = vec![transition.progress()];
+            let mut steps = 0;
+            // 200 frames at 16 ms is 3.2 s, past every tempo the theme ships.
+            while transition.tick(1.0, 16) {
+                steps += 1;
+                seen.push(transition.progress());
+                assert!(steps < 200, "{tempo:?} must settle, not run forever: {seen:?}");
+                assert!(
+                    seen[seen.len() - 2] < seen[seen.len() - 1],
+                    "{tempo:?} must move forward on every frame: {seen:?}"
+                );
+                assert!(
+                    seen[seen.len() - 1] <= 1.0,
+                    "{tempo:?} must never pass its target: {seen:?}"
+                );
+            }
+            // The frame that reported "done" landed on the target; its value is what it published.
+            seen.push(transition.progress());
+            assert!(steps > 1, "{tempo:?} must take more than one frame, not arrive at once");
+            assert!(
+                seen.iter().any(|p| *p > 0.0 && *p < 1.0),
+                "{tempo:?} must be seen mid-flight: {seen:?}"
+            );
+            assert_eq!(
+                seen.last().copied(),
+                Some(1.0),
+                "{tempo:?} must land exactly on its target: {seen:?}"
+            );
+            assert!(
+                seen.windows(2).all(|pair| pair[0] <= pair[1]),
+                "{tempo:?} must never move backwards: {seen:?}"
+            );
+        }
+    }
+
+    /// A step at least as long as the transition finishes it in that frame.
+    ///
+    /// The other side of the same rule: a host that hands over a delta longer than the whole tempo —
+    /// a stalled frame, a breakpoint, a first frame after a resize — must see the transition
+    /// complete, not advance a fraction of it and then need a second frame to finish. This is what
+    /// the `step` clamp to `1.0` is for.
+    #[test]
+    fn a_frame_longer_than_the_transition_finishes_it() {
+        for tempo in [TransitionTempo::Fast, TransitionTempo::Normal, TransitionTempo::Slow] {
+            let mut transition = Transition::with_tempo(tempo);
+            assert!(
+                !transition.tick(1.0, tempo.duration_ms() * 4),
+                "{tempo:?} must be done after a frame longer than its own duration"
+            );
+            assert_eq!(transition.progress(), 1.0, "{tempo:?} must land on the target exactly");
+        }
+    }
+
+    /// A transition already at its target owes nothing, whatever the tempo.
+    #[test]
+    fn a_transition_at_its_target_owes_no_frames() {
+        let mut transition = Transition::default();
+        assert!(!transition.tick(0.0, 16), "0.0 is where it starts, so it is already there");
+        transition.reset_to(1.0);
+        assert!(!transition.tick(1.0, 16), "and 1.0 needs no approach");
+        assert_eq!(transition.progress(), 1.0, "with no drift from the repeated calls");
+    }
 
     #[test]
     fn test_easing_functions() {

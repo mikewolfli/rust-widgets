@@ -112,6 +112,21 @@ impl Spinner {
     /// `delta_ms` is the elapsed time in milliseconds since the last frame.
     /// The angle advances at a base rate of 0.1 degrees per millisecond,
     /// multiplied by `self.speed`.
+    ///
+    /// # Why this does not ask for a frame of its own
+    ///
+    /// The rotation is the whole point of the control, so an advance is paint-worthy — and the
+    /// tempting line is `self.base.request_redraw()` here. It is the wrong line twice over.
+    ///
+    /// **It would not mean what it looks like.** `request_redraw` asks the *host* for a frame; a
+    /// `Spinner` cannot hear the answer, and a control that asks on every step asks forever. The
+    /// crate's model is the other way round: `tick` says "advance me", `is_animating` says "keep
+    /// doing it", and the owner decides when to stop.
+    ///
+    /// **And what this control actually owes is a declaration, not a request.** A spinner
+    /// free-runs, so [`crate::widget::Widget::manages_own_repaint`] must answer `true` and the
+    /// frame bus must leave it to its owner. That is declared in the draw path below — where the
+    /// fact is about the control rather than about a step — so a `tick` has nothing to add.
     pub fn tick(&mut self, delta_ms: u32) {
         self.angle = (self.angle + delta_ms as f32 * 0.1 * self.speed) % 360.0;
     }
@@ -251,6 +266,13 @@ impl EventHandler for Spinner {
 
 impl Draw for Spinner {
     fn draw(&mut self, context: &mut RenderContext) {
+        // Declares that this control's frames are its own: a free-running spinner is *always*
+        // mid-motion, so neither driver may step it (a paint-driven step would replace its 0.1°/ms
+        // rate with the paint schedule, and would ask for the next paint forever). Recorded here,
+        // at the point where the fact is true, rather than in `tick` — the declaration is about how
+        // the control animates, not about whether a step has happened yet. See
+        // [`crate::widget::Widget::manages_own_repaint`].
+        self.base.declare_self_driving_animation();
         // `center_and_radius` already refuses a rectangle with no extent, so this path
         // only runs when there is a disc to paint.
         let Some((center, radius)) = self.center_and_radius() else {

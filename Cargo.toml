@@ -313,8 +313,28 @@ fonts-cjk-bitmap = []
 ## Vector faces. Unlike the bitmap face above these carry outlines and layout tables, so they
 ## answer two questions the bitmap face cannot: real advances and kerning, and the contextual
 ## substitutions complex scripts need (`arabic` carries the `GSUB` joining features).
+##
+## They also *draw*: `render::text::raster` rasterises their outlines into antialiased coverage at
+## whatever size the caller asked for, which is G-5. A build with one of these faces gets
+## antialiased text; the default build's 8x8 face stays 1-bit, byte-identical to what it always drew.
 fonts-vector-latin = ["text-shaping"]
 fonts-complex = ["text-shaping"]
+
+## `fonts-emoji-color` adds a colour emoji face: `CBDT`/`CBLC` bitmap glyphs, each a PNG, plus the
+## PNG decoder that reads them — G-6.
+##
+## # Why this is a different axis from the vector faces
+##
+## A colour glyph is not an outline with colour: it is a designer's *rendering* at one size, stored
+## as compressed pixels. So this face needs no shaper (there is nothing to substitute) and no
+## rasteriser (there is nothing to outline), and it is not implied by `text-shaping`.
+##
+## # What it costs
+##
+## The payload is a subset of Noto Color Emoji at 109 ppem — see `NOTICE`. It is measured in
+## megabytes on the full face and in hundreds of kilobytes on the smallest upstream release, which
+## is why it is opt-in rather than a default.
+fonts-emoji-color = ["dep:ttf-parser"]
 
 
 # ── INTERNAL FEATURES (used by profiles, not user-facing) ──

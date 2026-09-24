@@ -246,6 +246,31 @@ pub fn motion_tokens() -> (u32, u32, u32) {
     (100, 200, 300)
 }
 
+/// The curve every state transition runs on: the active theme's `motion.easing`.
+///
+/// # Why this is a function and not a field read
+///
+/// [`motion_tokens`] already exists for the same reason: `Theme::motion` is only present where the
+/// theme module is, so shared code cannot write `theme.motion.easing` without failing to compile
+/// in a build that has no theme. It also keeps the *choice* of curve in one place, which is what
+/// lets a theme author change how the library feels without any control changing.
+///
+/// The fallback is [`EasingFunction::default`], which is the same curve an unthemed build drew
+/// before the token existed — not an invented value, so a build with no theme is unchanged.
+#[cfg(device_profile)]
+pub fn motion_easing() -> crate::style::animation::EasingFunction {
+    crate::style::theme_manager()
+        .current_theme()
+        .map(|theme| theme.motion.easing)
+        .unwrap_or_default()
+}
+
+/// The transition curve where there is no theme module to read it from.
+#[cfg(not(device_profile))]
+pub fn motion_easing() -> crate::style::animation::EasingFunction {
+    crate::style::animation::EasingFunction::default()
+}
+
 /// The process-wide theme manager, behind its lock.
 ///
 /// The return type is spelled out rather than elided because it is a guard: a caller must

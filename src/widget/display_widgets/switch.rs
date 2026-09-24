@@ -84,11 +84,34 @@ impl Switch {
     }
 
     /// Sets the checked state. Emits `toggled` signal if the state actually changes.
+    ///
+    /// # Why this does **not** declare that the control drives its own frames
+    ///
+    /// `checked` decides which end of the track the thumb travels toward, so the change is
+    /// paint-worthy — and the tempting move is to say so here, since a control that repaints itself
+    /// tells the frame bus to leave it alone. This one must not: the *drawn* state is `travel`,
+    /// `travel` only advances in [`Self::tick`], and [`Self::tick`] belongs to whoever owns the
+    /// control — the frame loop when it is mounted, [`crate::widget::draw_bridge::draw_of`] when the
+    /// host owns it. Declaring self-driving here would take the owned case away from the only
+    /// driver it has, leaving the thumb frozen at whichever end it was on when the caller toggled
+    /// it.
+    ///
+    /// Asking for a repaint is not what makes the motion visible either, which is the second
+    /// reason there is nothing to do here:
+    ///
+    /// * **mounted** — [`crate::widget::runtime::tick_animations`] reports `true` while any control
+    ///   is in flight, and the frame loop paints again because of that;
+    /// * **host-owned** — the paint path advances the control and reports the result through
+    ///   [`crate::widget::runtime::animation_bus_needs_another_frame`], the same answer by a
+    ///   different route.
+    ///
+    /// So the honest declaration is the one already in place: a `Switch` does not drive its own
+    /// frames. Everything that must re-read `checked` — the capability layer, the JSON loader, the
+    /// signal a host connected — is reached by the signal below.
     pub fn set_checked(&mut self, checked: bool) {
         if self.checked != checked {
             self.checked = checked;
             self.toggled.emit(checked);
-            self.base.request_redraw();
         }
     }
 

@@ -94,6 +94,19 @@ pub struct BaseWidget {
     /// than a link because that module is not compiled on `mini`, and a doc link that
     /// resolves only on some profiles fails the doc build on the others.
     pub(crate) ever_requested_redraw: core::cell::Cell<bool>,
+    /// Whether this control declared that it drives its own animation frames.
+    ///
+    /// Set by [`Self::declare_self_driving_animation`] and read through
+    /// [`crate::widget::Widget::manages_own_repaint`], which is how
+    /// [`crate::widget::draw_bridge::draw_of`] avoids advancing a self-driving animation on every
+    /// paint. Deliberately **separate** from [`Self::ever_requested_redraw`]: that one is `true`
+    /// for almost every control (constructors ask for a first frame) and is already used by
+    /// `runtime::should_track_damage`, so one flag could not answer both questions.
+    ///
+    /// A `Cell` for the same reason as the flag above — the declaration is made from inside
+    /// `Draw::draw`, which has only `&mut self` but not a route back through the trait object's
+    /// owner.
+    pub(crate) self_driving_animation: core::cell::Cell<bool>,
     /// Whether the pointer is currently over this widget.
     ///
     /// # Why this lives here and not in each control
@@ -168,6 +181,7 @@ impl BaseWidget {
             layout_requested: GenericSignal::new(),
             changed: GenericSignal::new(),
             ever_requested_redraw: core::cell::Cell::new(false),
+            self_driving_animation: core::cell::Cell::new(false),
             hovered: false,
             pressed: false,
             grabbed: false,
@@ -618,6 +632,36 @@ impl BaseWidget {
         #[cfg(not(alloc_frugal))]
         crate::widget::runtime::mark_widget_damage(self.id(), self.geometry());
         self.redraw_requested.emit();
+    }
+
+    /// Declares that this control drives its **own** animation frames.
+    ///
+    /// # Why this is a separate flag rather than `request_redraw`
+    ///
+    /// [`crate::widget::Widget::manages_own_repaint`] answers "does this control decide when it
+    /// is repainted?", and the answer is needed by
+    /// [`crate::widget::draw_bridge::draw_of`] to keep a self-driving animation from being
+    /// advanced on every paint — a feedback loop that never stops. Asking
+    /// [`Self::ever_requested_redraw`] instead *looked* equivalent and was not: every widget whose
+    /// constructor prepares its first frame calls [`Self::request_redraw`] while it is still being
+    /// built, so "has ever asked" is `true` for essentially every control in the crate, including
+    /// a plain `Button`. It is also already load-bearing for a different question —
+    /// `runtime::should_track_damage` uses it to decide whether a control is worth damage
+    /// tracking — so widening its meaning would silently disable regioned repaint for every
+    /// control that ever asks.
+    ///
+    /// Two questions, two flags. This one is set at the point where the claim is true (the draw
+    /// path of a control whose motion is always in progress) and is never cleared, because "this
+    /// control animates by itself" is a property of the control, not of a moment.
+    pub fn declare_self_driving_animation(&self) {
+        self.self_driving_animation.set(true);
+    }
+
+    /// Whether [`Self::declare_self_driving_animation`] has been called on this widget.
+    ///
+    /// Read by [`crate::widget::Widget::manages_own_repaint`], which is what the frame bus asks.
+    pub fn is_self_driving_animation(&self) -> bool {
+        self.self_driving_animation.get()
     }
     /// Whether [`Self::request_redraw`] has ever been called on this widget.
     ///

@@ -444,6 +444,46 @@ pub trait Widget: EventHandler + Any {
     fn is_animating(&self) -> bool {
         false
     }
+
+    /// Whether this control decides *when* it is repainted, rather than waiting to be asked.
+    ///
+    /// # Why the frame bus has to be able to ask
+    ///
+    /// [`crate::widget::draw_bridge::draw_of`] advances a **host-owned** control — one a host holds
+    /// itself rather than mounting in this crate's registry. The registry has a frame loop to do
+    /// that for it; an owned control has only its owner's paint calls, so if it never advances
+    /// there, it never advances at all. That is exactly the shape of this crate's original defect:
+    /// a `Switch` toggled ON showed its thumb at the off end on every frame, forever, silently.
+    ///
+    /// But advancing on every paint is only correct for a control whose motion **starts when
+    /// something chooses to change it** — a hovered `Button`, a toggled `Switch`. Such a control's
+    /// motion is the *consequence* of a paint-worthy change, so advancing it on a paint and
+    /// answering "yes, paint again" is a complete, terminating loop.
+    ///
+    /// A control that **free-runs** is the opposite: a `Spinner` turning at a fixed rate, an
+    /// `AnimatedImage`, a caret blink. Its motion is not a consequence of anything; it is always
+    /// in progress. Advancing it on every paint would (a) replace its own tempo with the paint
+    /// schedule and (b) make every paint ask for the next one, forever, because nothing outside
+    /// the paint path can say the motion is done. That second half is the difference between an
+    /// animation and a traffic loop.
+    ///
+    /// So such a control answers `true` here, and the two statements become one: **a control that
+    /// repaints itself declares `manages_own_repaint() == true`.** That single declaration covers
+    /// both ordering cases — a mounted free-runner is driven by the frame loop, an owned one is
+    /// left to its owner — without the crate needing to know which it is.
+    ///
+    /// # Why the point is the trait and not each control
+    ///
+    /// A control declares the fact with [`BaseWidget::declare_self_driving_animation`] at the
+    /// point where it is true — in its `draw`, where it also decides what frame it is on. The
+    /// default reads that declaration, and it is a **separate** flag from
+    /// [`BaseWidget::has_ever_requested_redraw`], which every constructor sets while preparing its
+    /// first frame and which `runtime::should_track_damage` already depends on. A control that
+    /// declares nothing answers `false` and is unaffected, which is why a hovered `Button` still
+    /// reaches the paint path.
+    fn manages_own_repaint(&self) -> bool {
+        self.base().is_self_driving_animation()
+    }
     /// Replaces the whole style record at once, overwriting every style field.
     /// Prefer the individual shorthand setters when only one property changes.
     fn set_style(&mut self, style: WidgetStyle) {

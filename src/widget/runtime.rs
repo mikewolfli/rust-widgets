@@ -152,6 +152,29 @@ thread_local! {
     #[allow(clippy::missing_const_for_thread_local)]
     static HOVERED: RefCell<Option<ObjectId>> = const { RefCell::new(None) };
 
+    /// Whether the last [`tick_animations`] sweep left a **mounted** control in flight.
+    ///
+    /// Kept across frames because the frame that observes a control *settling* is one the
+    /// sweep reports `false` for, and a loop that stopped there would never paint that frame.
+    /// See [`animation_bus_needs_another_frame`].
+    ///
+    /// The trailing `#[allow]` is **not** redundant with the one above it. Clippy accepts
+    /// `const { Cell::new(false) }` as a const initializer only on some toolchains — on the
+    /// OpenHarmony target it rejects exactly this shape while accepting the `RefCell` ones — so
+    /// the spelling above has to stay as it is and the lint is silenced per entry, which is what
+    /// every other non-`const` entry in this block already does.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static LAST_SWEEP_HAD_UNSETTLED_MOUNTED: std::cell::Cell<bool> = std::cell::Cell::new(false);
+
+    /// Whether a **host-owned** control was advanced this frame and has not settled.
+    ///
+    /// A control held as a `Box<dyn Widget>` is not in [`MOUNTED`], so the sweep cannot see
+    /// it; its owner reports the fact instead. See
+    /// [`animation_bus_note_host_owned_animating`]. The `#[allow]` is a per-target
+    /// toolchain difference — see `LAST_SWEEP_HAD_UNSETTLED_MOUNTED` above.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static HOST_OWNED_ANIMATING: std::cell::Cell<bool> = std::cell::Cell::new(false);
+
     /// The widget that has captured the pointer, if any.
     ///
     /// While a control holds capture it receives every pointer event regardless of
@@ -873,8 +896,22 @@ pub fn widget_id_for_host_window(host: ObjectId) -> Option<ObjectId> {
 }
 
 /// Returns whether `id` refers to a mounted self-drawn widget.
+///
+/// # Why a `try_borrow` and not a `borrow`
+///
+/// This is asked from inside the paint path — [`crate::widget::draw_bridge::draw_of`] uses it to
+/// tell a control the registry owns from one the host owns — and the paint path is reached while
+/// [`for_each_mounted_widget`] already holds the registry mutably. A plain `borrow()` panics there
+/// ("RefCell already mutably borrowed"), turning an ordinary question into a crash.
+///
+/// Answering `true` on a borrow conflict is the safe reading rather than a guess: the only caller
+/// holding the registry open is the sweep iterating it, so the widget *is* mounted. The alternative
+/// answer would make the paint path advance a control the frame loop is also advancing — the
+/// double-step this function exists to prevent.
 pub fn is_mounted(id: ObjectId) -> bool {
-    MOUNTED.try_with(|map| map.borrow().contains_key(&id)).unwrap_or(false)
+    MOUNTED
+        .try_with(|map| map.try_borrow().map(|map| map.contains_key(&id)).unwrap_or(true))
+        .unwrap_or(false)
 }
 
 /// Returns whether the widget mounted under `id` can carry a tri-state value.
@@ -946,11 +983,32 @@ pub fn for_each_mounted_widget<R>(mut f: impl FnMut(ObjectId, &mut dyn Widget) -
 /// `false` and pays nothing per frame -- a still application does not burn a core, which is
 /// the half of "smooth" that is easy to forget.
 ///
-/// # Borrowing
+/// # Where a control can be, and why the sweep has to cover both
 ///
-/// Each control is advanced in place under the same map borrow as
-/// [`for_each_mounted_widget`]; a control's own `tick` therefore must not mount or unmount
-/// widgets.
+/// A control lives in exactly one of two places, and they are reached by completely
+/// different APIs:
+///
+/// * **mounted** on the [`MOUNTED`] registry, which is how a host that built its tree
+///   through [`crate::app`] holds every control; the window tree sweeps it;
+/// * **owned by the caller**, as the `Box<dyn Widget>` that
+///   [`crate::widget::WidgetFactory::create`] returns and that the documented embedding
+///   pattern holds directly.
+///
+/// The first version of this driver swept only the registry. That is wrong for the owned
+/// case, and wrong in the worst possible way: a control that is not mounted was never
+/// advanced, yet nobody notices, because the control still *draws* -- it simply draws its
+/// start state forever. A `CheckBox` ticked on program output, a `Switch` set from a
+/// settings file, a caret in a directly-held `LineEdit` all sat motionless and reported no
+/// error. The `census`/snapshot path in this very crate holds controls that way
+/// (`draw_bridge::draw_of` takes `&mut dyn Widget`), which is why the gap is reachable from
+/// the crate's own code and not only from a host's.
+///
+/// So a control that is advanced while the registry is being swept is recorded here, and
+/// anything that subsequently asks *"should the next frame be scheduled?"* gets the union
+/// of the two populations. That is what makes
+/// [`crate::widget::draw_bridge::draw_of`] -- the single entry point for painting a
+/// directly-owned control -- able to drive the frames such a control needs. Without it the
+/// animation bus would be complete for mounted trees and silently inert for owned ones.
 pub fn tick_animations(delta_ms: u32) -> bool {
     let mut still_animating = false;
     for_each_mounted_widget(|_, widget| {
@@ -964,7 +1022,68 @@ pub fn tick_animations(delta_ms: u32) -> bool {
             }
         }
     });
+    if still_animating {
+        let _ = LAST_SWEEP_HAD_UNSETTLED_MOUNTED.try_with(|flag| flag.set(true));
+    }
     still_animating
+}
+
+/// Records that a **host-owned** control was advanced this frame, and reports whether the
+/// animation bus should currently consider one to be in flight.
+///
+/// # Why this is a pair of free functions and not a method
+///
+/// [`tick_animations`] hands a control `delta_ms` and receives "do I need another frame?"
+/// back. A host that owns its controls and calls their `tick` directly never goes through
+/// that function, so it has no way to tell it what it saw. These two functions are that
+/// channel: the control's owner reports the fact, and the bus folds it into the answer a
+/// frame loop asks for.
+///
+/// The state is deliberately **not** cleared by [`tick_animations`]: a frame loop that calls
+/// the bus for its mounted tree and calls `tick` on its owned controls usually asks the
+/// question *after* tickling them, so clearing on the sweep would erase the answer the
+/// caller had just reported. It is cleared when a host-owned control is observed to have
+/// settled ([`animation_bus_note_host_owned_settled`]) or by
+/// [`animation_bus_reset_host_owned`].
+pub fn animation_bus_note_host_owned_animating(animating: bool) {
+    let _ = HOST_OWNED_ANIMATING.try_with(|flag| flag.set(animating));
+}
+
+/// Clears the host-owned in-flight fact once such a control has settled.
+pub fn animation_bus_note_host_owned_settled() {
+    let _ = HOST_OWNED_ANIMATING.try_with(|flag| flag.set(false));
+}
+
+/// Forgets every host-owned in-flight fact, including the record of the last registry sweep.
+///
+/// A frame loop that has torn down its controls calls this so a settled window cannot be kept
+/// awake by a control that no longer exists.
+pub fn animation_bus_reset_host_owned() {
+    let _ = HOST_OWNED_ANIMATING.try_with(|flag| flag.set(false));
+    let _ = LAST_SWEEP_HAD_UNSETTLED_MOUNTED.try_with(|flag| flag.set(false));
+}
+
+/// Whether the animation bus should schedule another frame right now.
+///
+/// # What it covers, and why it is not just [`has_animating_widgets`]
+///
+/// Two populations can be animating, and a host that owns some of its controls has to be
+/// able to hear about both:
+///
+/// * the **mounted registry**, answered by [`has_animating_widgets`];
+/// * a **host-owned** control that was advanced this frame, which the host reports with
+///   [`animation_bus_note_host_owned_animating`] -- and, on the frame it settles, which is
+///   the frame the old answer was `true` for a control that has since stopped, which is why
+///   [`LAST_SWEEP_HAD_UNSETTLED_MOUNTED`] is kept: it is the only way to schedule the frame
+///   that observes the settle.
+///
+/// ["smooth"](super) has two halves and this function is what keeps the second one honest:
+/// a host asks *this*, not a constant `true`, so a window with nothing moving pays nothing.
+pub fn animation_bus_needs_another_frame() -> bool {
+    let host_owned = HOST_OWNED_ANIMATING.try_with(|flag| flag.get()).unwrap_or(false);
+    let sweep_unsettled =
+        LAST_SWEEP_HAD_UNSETTLED_MOUNTED.try_with(|flag| flag.get()).unwrap_or(false);
+    host_owned || sweep_unsettled || has_animating_widgets()
 }
 
 /// Whether any mounted control is currently animating.
@@ -1992,12 +2111,248 @@ mod tests {
         assert!(!tick_animations(16), "so the bus returns false and the host stops");
     }
 
+    /// A control the **caller owns** is advanced and reported by the paint path.
+    /// A host-owned control whose motion was started by something else is advanced by the paint
+    /// path.
+    ///
+    /// # The defect this pins
+    ///
+    /// [`tick_animations`] sweeps the mounted registry. A control held as a
+    /// `Box<dyn Widget>` -- which is what [`crate::widget::WidgetFactory::create`] returns,
+    /// what `census` and `examples/export_control_svgs.rs` hold, and what this crate's own
+    /// front-page example documents -- is not in that registry, so nothing advanced it. A
+    /// `Switch` toggled ON and then painted drew its thumb at the **off** end on every frame,
+    /// forever, and reported no error: its `travel_progress` stayed where it started while
+    /// `is_checked` said `true`.
+    ///
+    /// A `Switch` is used as the fixture because its own `tick` does **not** request a repaint,
+    /// which is what `manages_own_repaint` reports -- so it is the case the paint path has to
+    /// handle. The `Button`/`Spinner` split is covered by its own test below.
+    #[test]
+    fn the_paint_path_advances_a_host_owned_control() {
+        use crate::widget::display_widgets::switch::Switch;
+        use crate::widget::draw_bridge::draw_of;
+
+        let mut switch = Switch::new(Rect::new(0, 0, 60, 30));
+        assert!(!is_mounted(switch.id()), "the fixture must not be in the registry");
+        switch.set_checked(true);
+        assert!(switch.is_animating(), "a freshly toggled switch owes frames");
+        assert!(
+            !switch.manages_own_repaint(),
+            "and it does not repaint itself, so only the paint path can advance it"
+        );
+
+        let start = switch.travel_progress();
+        let mut positions = vec![start];
+        // 200 frames at the paint path's 16 ms step is 3.2 s of virtual time, past the `Slow`
+        // token the travel runs on. The bound makes a transition that never settles fail here
+        // instead of looping; the assertions are about the shape of the travel, not its length.
+        let mut frames = 0;
+        let mut bus_asked_for_a_frame = false;
+        while switch.is_animating() {
+            assert!(frames < 200, "the travel must settle, not run forever");
+            frames += 1;
+            let dynamic: &mut dyn Widget = &mut switch;
+            let _ = draw_of(dynamic);
+            positions.push(switch.travel_progress());
+            if switch.is_animating() {
+                bus_asked_for_a_frame |= animation_bus_needs_another_frame();
+            }
+        }
+        assert!(frames > 1, "a travel must take more than one frame, or it did not animate");
+        assert!(
+            bus_asked_for_a_frame,
+            "while it was in flight the bus had to say another frame is needed"
+        );
+        assert!(
+            positions.last().copied().unwrap() > start,
+            "painting an owned switch must advance its travel, not repaint a frozen frame"
+        );
+        assert!(
+            positions.windows(2).all(|pair| pair[1] >= pair[0]),
+            "the travel must be monotonic: {positions:?}"
+        );
+        assert!(
+            positions.iter().any(|position| *position > 0.0 && *position < 1.0),
+            "and it must pass through the middle, or it jumped rather than slid"
+        );
+        assert!(
+            (positions.last().copied().unwrap() - 1.0).abs() < f32::EPSILON,
+            "and it must arrive on the target, not one step short of it: {:?}",
+            positions.last()
+        );
+    }
+
+    /// A control that repaints itself is **not** advanced by repeated paints.
+    ///
+    /// # The second defect this pins, and it is worse than the first
+    ///
+    /// The first version of the paint path advanced every unmounted control. A `Spinner` is
+    /// unmounted in the snapshot export, and its `tick` requests a repaint, so this was a
+    /// feedback loop: every paint advanced it and every advance asked for the next paint, so
+    /// `spinner.svg` differed between two consecutive exports of an unchanged build. A snapshot
+    /// that is not reproducible cannot show a regression, which is the whole reason the export
+    /// exists.
+    ///
+    /// `Spinner` is the free-running case: at rest its `tick` still returns `true` (it turns at a
+    /// fixed rate forever), so "two paints of a resting spinner are identical" is exactly the
+    /// property under test. A `Button` is the opposite case and is checked in the same test, so
+    /// the rule is shown to cut between the two rather than exclude animation wholesale.
+    ///
+    /// # The one step a free-runner still takes, and why that is correct
+    ///
+    /// A control can only declare that it repaints itself by painting, so the frame that paints
+    /// it for the first time is also the frame on which the declaration is made — and that frame
+    /// is advanced. Leaving it out would mean the gate could never be satisfied for a control
+    /// whose first frame *is* its declaration. The step is bounded (one per control, not one per
+    /// paint) and does not break reproducibility, because the export paints each control several
+    /// times and only the first of those moves it: measured on `spinner.svg`, two consecutive
+    /// export runs are byte-identical.
+    #[test]
+    fn the_paint_path_skips_a_control_that_repaints_itself() {
+        use crate::widget::display_widgets::spinner::Spinner;
+        use crate::widget::draw_bridge::draw_of;
+
+        let mut spinner = Spinner::new(Rect::new(0, 0, 120, 120));
+        assert!(spinner.is_animating(), "the fixture must have something to advance");
+        paint_owned(&mut spinner);
+        assert!(
+            spinner.manages_own_repaint(),
+            "painting a spinner must declare that its frames are its own"
+        );
+
+        let settled = spinner.angle();
+        for _ in 0..5 {
+            paint_owned(&mut spinner);
+        }
+        assert!(
+            (spinner.angle() - settled).abs() < f32::EPSILON,
+            "once it has declared itself, further paints must not advance it: {} -> {}",
+            settled,
+            spinner.angle()
+        );
+
+        // The other side of the same gate: a `Button` is *not* excluded, so the rule is about who
+        // repaints rather than about animation in general.
+        let mut button =
+            crate::widget::Button::new("ok".to_string(), crate::core::Rect::new(0, 0, 80, 32));
+        button.set_hovered(true);
+        assert!(!button.manages_own_repaint(), "an ordinary control must not claim its frames");
+        assert!(button.is_animating(), "while still owing frames for the hover");
+        let _ = draw_of(&mut button as &mut dyn Widget);
+        assert!(
+            button.is_animating() || button.widget_state() == crate::style::WidgetState::Hover,
+            "the paint path advanced the button's interaction transition"
+        );
+    }
+
+    /// Paints a host-owned control the way a host would: **through** [`draw_of`], into a surface.
+    ///
+    /// Doing the draw rather than only asking for the painting channel matters here, because the
+    /// declaration a free-running control makes lives in its `draw`. A helper that stopped at
+    /// `draw_of` would test the wrong thing.
+    fn paint_owned(widget: &mut dyn Widget) {
+        use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
+        let Some(drawable) = crate::widget::draw_bridge::draw_of(widget) else {
+            return;
+        };
+        let mut surface = SoftwarePaintBackend::new(Size::new(240, 120), 1.0);
+        surface.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut surface);
+            drawable.draw(&mut context);
+        }
+        surface.end_frame();
+    }
+
+    /// An owned control that has settled keeps the bus quiet.
+    ///
+    /// The other half of [`the_paint_path_advances_a_host_owned_control`]: advancing must not
+    /// become a reason to repaint a still window forever.
+    #[test]
+    fn an_owned_control_at_rest_does_not_keep_the_bus_awake() {
+        use crate::widget::display_widgets::switch::Switch;
+        use crate::widget::draw_bridge::draw_of;
+
+        animation_bus_reset_host_owned();
+        let mut resting = Switch::new(Rect::new(0, 0, 60, 30));
+        let dynamic: &mut dyn Widget = &mut resting;
+        let _ = draw_of(dynamic);
+        assert!(
+            !animation_bus_needs_another_frame(),
+            "painting a resting owned control must not ask for another frame"
+        );
+    }
+
+    /// A mounted control is advanced **once** per frame, not twice.
+    ///
+    /// `tick_animations` and the paint path are two different drivers, and a control that both
+    /// registered itself and was then painted would otherwise run its animation at double speed —
+    /// the failure `tick_animations`' own documentation calls out. The paint path therefore skips
+    /// anything the registry owns.
+    #[test]
+    fn a_mounted_control_is_not_advanced_by_the_paint_path() {
+        use crate::widget::display_widgets::switch::Switch;
+        use crate::widget::draw_bridge::draw_of;
+
+        let mut mounted = Switch::new(Rect::new(0, 0, 60, 30));
+        mounted.set_checked(true);
+        // Advanced by hand up to a mid-travel position, so the control *is* in flight and still
+        // has somewhere to go — which is what makes "a paint must not move it" a real assertion
+        // rather than one a settled control would pass vacuously.
+        let mid_flight = mounted.tick(30);
+        let id = register(Box::new(mounted)).expect("mount");
+        let _unmount = MountGuard(id);
+        let before = with_widget_mut(id, widget_travel).unwrap_or(-1.0);
+        assert!(mid_flight, "the fixture must still owe frames to be worth stepping");
+        assert!(
+            before > 0.0 && before < 1.0,
+            "the fixture must be mid-travel, or the test proves nothing: {before}"
+        );
+
+        // Painting it must not move it. `draw_of` takes `&mut dyn Widget`, so the mounted widget
+        // has to be reached the way the frame loop reaches it.
+        with_widget_mut(id, |widget| {
+            for _ in 0..5 {
+                let _ = draw_of(widget);
+            }
+        });
+        let after = with_widget_mut(id, widget_travel).unwrap_or(-1.0);
+        assert!(
+            (before - after).abs() < f32::EPSILON,
+            "a mounted control must be advanced only by the bus: {before} -> {after}"
+        );
+
+        // And the bus does move it, so the fixture was genuinely animating.
+        let stepped = with_widget_mut(id, |widget| {
+            widget.tick(100);
+            widget_travel(widget)
+        })
+        .unwrap_or(-1.0);
+        assert!(
+            stepped > after,
+            "the same control advanced directly must move: {after} -> {stepped}"
+        );
+    }
+
     /// Unmounts a widget registered by a test, even on panic.
     struct MountGuard(ObjectId);
     impl Drop for MountGuard {
         fn drop(&mut self) {
             let _ = unregister(self.0);
         }
+    }
+
+    /// The travel of a mounted switch, or `-1.0` when `widget` is not one.
+    ///
+    /// Read through the widget's own accessor rather than a test-only field, so the
+    /// measurement is of the same fact the draw site reads to place the thumb.
+    fn widget_travel(widget: &mut dyn Widget) -> f32 {
+        use crate::widget::display_widgets::switch::Switch;
+        (widget as &mut dyn std::any::Any)
+            .downcast_mut::<Switch>()
+            .map(|switch| switch.travel_progress())
+            .unwrap_or(-1.0)
     }
 
     /// Downcasts a mounted widget to the concrete editor type.

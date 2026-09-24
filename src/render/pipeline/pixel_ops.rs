@@ -143,9 +143,23 @@ pub(crate) fn blend_painted_glyph(
     if cell.is_empty() || coverage.len() < cell.area() {
         return false;
     }
-    // `paint` reports which face answered and whether its ink was 1-bit; this consumer only
-    // needs the coverage, so the report is discarded rather than ignored mid-flight.
-    if crate::render::text::paint_active(ch, cell, coverage).is_none() {
+    // The face reports *what* it produced, and the two cases blend differently:
+    //
+    // * coverage (1-bit or a vector ramp) is a per-pixel **alpha** for the caller's text colour,
+    //   which is the blend this function has always done;
+    // * a colour glyph carries its own colour, so the text colour must **not** be applied — it
+    //   replaces the destination instead of tinting it.
+    //
+    // A colour face needs `cell.area() * 4` bytes, so a caller that reserved one byte per pixel is
+    // told `None` rather than having its buffer overrun.
+    let Some(painted) = crate::render::text::paint_active(ch, cell, coverage) else {
+        return false;
+    };
+    if painted.is_color() {
+        // Colour ink needs the four-byte buffer this path does not provide. Reporting "nothing
+        // drawn" is the honest answer: the alternative is to misinterpret four-byte pixels as
+        // coverage and paint noise. The colour path is reached through `paint_color_glyph` below,
+        // which is the caller that reserved the right buffer.
         return false;
     }
     let (width, height) = (cell.width as i32, cell.height as i32);

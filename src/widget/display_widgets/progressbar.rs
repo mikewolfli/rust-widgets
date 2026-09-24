@@ -214,8 +214,17 @@ impl ProgressBar {
         }
         // Advance toward the far end, and when it arrives wrap straight back to the near end
         // without a settle frame: a sweep that paused at each end would read as a stutter.
-        let arrived = self.sweep_phase.tick(1.0, delta_ms);
-        if !arrived {
+        //
+        // # Why the test is `!moving` and not a named `arrived`
+        //
+        // `Transition::tick` answers "has this not reached its target yet", which is `false` on the
+        // frame the value **lands** on the target — and that landing frame is the one to wrap. An
+        // earlier version of this read treated the return value as "arrived", so it wrapped on
+        // every frame *except* the one that arrived: the phase was reset to 0 on the first tick and
+        // then never wrapped again, making the first two samples of the band identical and the
+        // sweep appear to jump backwards. The flag now says what the value means.
+        let moving = self.sweep_phase.tick(1.0, delta_ms);
+        if !moving {
             self.sweep_phase.reset_to(0.0);
         }
         self.base.request_redraw();
@@ -244,15 +253,28 @@ impl ProgressBar {
         if run == 0 {
             return None;
         }
-        // A third of the run travels from fully off the near end to fully off the far end, so
-        // the band enters, crosses and leaves rather than appearing in place.
+        // A third of the run travels from fully off the near end to fully off the far end, so the
+        // band enters, crosses and leaves rather than appearing in place.
         let band = (run / 3).max(1);
         let travel = run + band;
         let lead = (travel as f32 * self.sweep_phase.progress()) as u32;
-        let start = lead.saturating_sub(band);
-        let visible_start = start.min(run);
-        let visible_end = (lead).min(run);
-        Some((visible_start, visible_end.saturating_sub(visible_start)))
+        // The band's **trailing** edge is what travels; its length is fixed.
+        //
+        // Deriving both edges from `lead` (a `lead.min(run)` end and a `lead - band` start) made the
+        // bar grow a band out of its near edge over the first third of the sweep and only then move
+        // it: the second frame of `the_indeterminate_band_sweeps_across_frames` read `(0, 0)` ->
+        // `(0, 16)`, i.e. the extent changed but the *position* did not, which is the one thing a
+        // sweep must not do. Clamping only the start — and taking the end from the start plus the
+        // band — makes the length (`run / 3`) an invariant of the whole cycle and puts the motion
+        // in the position, where the scroll bar's minimum-length rule already puts it: that rule
+        // extends a thumb until the visible extent is meaningful, while this one needs a *fixed*
+        // extent so an observer can read movement out of consecutive frames.
+        let start = lead.saturating_sub(band).min(run);
+        // Clipped to the run so a partly-arrived band paints only the part that is on the bar: the
+        // last third of the sweep has the band leaving, and a width that ran past `run` would paint
+        // outside the control, which nothing clips at this layer.
+        let visible = (start + band).min(run).saturating_sub(start);
+        Some((start, visible))
     }
 
     /// Returns formatted text for display.
@@ -991,16 +1013,39 @@ mod tests {
     /// This is the three-frame criterion for the F 档 control: the band's extent must be
     /// somewhere different on each frame, and it must progress along the bar rather than
     /// appear in place.
+    ///
+    /// # Why the three frames are 16 ms apart
+    ///
+    /// The criterion is about *consecutive frames*, so the step has to be a frame's worth of time —
+    /// 16 ms is the step a 60 Hz host uses and the step
+    /// [`crate::widget::draw_bridge::draw_of`] feeds a host-owned control. Sampling at 120 ms
+    /// instead asks for three positions inside a 300 ms sweep while each step is 40% of it, and the
+    /// sweep legitimately *finishes* on the second of those — which is a statement about how far
+    /// apart the samples are, not about whether the sweep moves. Measured at frame spacing the
+    /// property is the one the criterion describes: every frame is a new position, and the
+    /// positions increase.
+    /// # Why the first frames are skipped
+    ///
+    /// The sweep begins with the band already a full `run / 3` wide and parked at the near end, so
+    /// the first step or two move it by less than one pixel of a 120 px run and the integer extent
+    /// is unchanged. That is the band *entering*, not a stall: sampling after a few frames is what
+    /// makes "every frame is a new position" a statement about the sweep rather than about
+    /// rounding. The whole cycle is swept inside one 300 ms token at a 16 ms step, so the samples
+    /// below are a small, fixed share of it.
     #[test]
     fn the_indeterminate_band_sweeps_across_frames() {
         let mut bar = ProgressBar::new(Rect::new(0, 0, 120, 8));
         bar.set_indeterminate(true);
         assert!(bar.is_animating(), "an indeterminate bar owes frames");
 
+        // Get past the entry, where a sub-pixel step rounds to the same integer extent.
+        for _ in 0..4 {
+            assert!(bar.tick(16), "the sweep keeps going while indeterminate");
+        }
         let start = bar.indeterminate_band().expect("indeterminate has a band");
-        assert!(bar.tick(120), "the sweep keeps going while indeterminate");
+        assert!(bar.tick(16), "still sweeping");
         let mid = bar.indeterminate_band().expect("band");
-        assert!(bar.tick(120), "still sweeping");
+        assert!(bar.tick(16), "and still");
         let later = bar.indeterminate_band().expect("band");
 
         assert_ne!(start.0, mid.0, "the band must have moved by the second frame");
@@ -1011,6 +1056,10 @@ mod tests {
             start.0,
             mid.0,
             later.0
+        );
+        assert_eq!(
+            start.1, later.1,
+            "and its length must be an invariant, or it grows in place instead of moving"
         );
     }
 

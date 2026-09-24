@@ -97,6 +97,21 @@ pub enum BitOrder {
 }
 
 /// What a face actually produced, so a caller can tell *which* face answered and how.
+///
+/// # Why the caller is told rather than left to guess
+///
+/// A renderer has to know **what shape of ink** arrived, because the same buffer can now hold
+/// three different things and only one of them is the crate's historical 1-bit coverage:
+///
+/// * a 1-bit face writes `0` or `255` — a bitmap backend may emit one rectangle per source pixel;
+/// * a vector face writes a coverage ramp `0..=255` — the rasteriser blends it directly and a
+///   vector backend can no longer compress by source pixel, because there is no source pixel grid;
+/// * a colour face writes **four** bytes per pixel — the rasteriser must stop treating the buffer
+///   as coverage and start treating it as RGBA.
+///
+/// Reporting the shape is what makes all three reachable through one call site without a second
+/// entry point, a downcast, or a guess. `Painted::is_coverage` and `Painted::is_color` are the two
+/// questions a renderer actually asks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Painted {
     /// The name of the source that answered ([`GlyphSource::name`]).
@@ -105,9 +120,68 @@ pub struct Painted {
     ///
     /// A vector backend uses this to emit **one rectangle per source pixel** rather than one per
     /// destination pixel: for an 8x8 glyph scaled into a 40x40 box the difference is 30 subpaths
-    /// against 750. `None` means the ink is not 1-bit (a coverage face), which a bitmap-compressing
-    /// backend must handle the other way.
+    /// against 750. `None` means the ink is not 1-bit, which a bitmap-compressing backend must
+    /// handle the other way.
     pub source_cell: Option<Cell>,
+    /// What the bytes written into the caller's buffer *are*.
+    pub ink: InkKind,
+}
+
+/// What shape of ink [`GlyphSource::paint`] produced.
+///
+/// The buffer is the caller's and its length is `cell.area()` pixels in every case; what differs is
+/// how many bytes per pixel and what they mean. Named as an enum rather than a `bool` per shape
+/// because the shapes are mutually exclusive — a face produces exactly one of them — and a pair of
+/// flags would admit the impossible `color && coverage` state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InkKind {
+    /// One byte per pixel, `0` or `255`: the crate's historical 1-bit ink.
+    ///
+    /// This is the only kind for which [`Painted::source_cell`] is meaningful, because it is the
+    /// only kind that came from a source pixel grid.
+    Bitmap,
+    /// One byte per pixel, `0..=255`: antialiased coverage from a vector outline or a scaled face.
+    ///
+    /// A caller blends it as alpha exactly as it blends a unit-scale 1-bit ramp; the difference is
+    /// that the ramp has interior values, which a bitmap backend cannot compress into rectangles.
+    Coverage,
+    /// **Four** bytes per pixel, premultiplied-ready straight RGBA: a colour glyph (a CBDT/sbix
+    /// bitmap or a COLR layer stack).
+    ///
+    /// The buffer therefore has to be `cell.area() * 4` bytes for this kind, which is the one case
+    /// where "the buffer is one byte per pixel" stops holding. A caller that only reserved
+    /// `cell.area()` bytes is told `None` rather than having its buffer overrun.
+    Color,
+}
+
+impl Painted {
+    /// Bytes per pixel this ink occupies.
+    pub const fn bytes_per_pixel(self) -> usize {
+        match self.ink {
+            InkKind::Bitmap | InkKind::Coverage => 1,
+            InkKind::Color => 4,
+        }
+    }
+
+    /// The buffer size [`GlyphSource::paint`] needs for this kind at `cell`.
+    pub const fn buffer_len(self, cell: Cell) -> usize {
+        cell.area() * self.bytes_per_pixel()
+    }
+
+    /// Whether the ink is a per-pixel alpha ramp (so the rasteriser can blend it as-is).
+    pub const fn is_coverage(self) -> bool {
+        matches!(self.ink, InkKind::Bitmap | InkKind::Coverage)
+    }
+
+    /// Whether the ink carries its own colour, so the caller's text colour must not be applied.
+    pub const fn is_color(self) -> bool {
+        matches!(self.ink, InkKind::Color)
+    }
+
+    /// A 1-bit report from a named source over a source cell, or the tofu fallback.
+    const fn bitmap(source: &'static str, source_cell: Option<Cell>) -> Self {
+        Self { source, source_cell, ink: InkKind::Bitmap }
+    }
 }
 
 /// Scale a 1-bit glyph into `cell`, writing one coverage byte per cell pixel.
@@ -185,19 +259,21 @@ pub trait GlyphSource: Send + Sync {
 
     /// Paint `ch`'s coverage into `out`, one byte per pixel of `cell`, row-major.
     ///
-    /// `out` must be at least `cell.area()` bytes. `None` means this face does not cover `ch` (so
-    /// a stack falls through) or could not paint; a face that covers the character but has no ink
-    /// for it (a space) returns `Some` with the buffer left blank, which is the honest report —
-    /// "this character is mine, and it is empty".
+    /// `out` must be at least `cell.area()` bytes for a coverage or bitmap face, and
+    /// `cell.area() * 4` for a colour face; a buffer too short for what this face produces is
+    /// refused with `None` rather than written past. `None` also means this face does not cover
+    /// `ch` (so a stack falls through) or could not paint; a face that covers the character but has
+    /// no ink for it (a space) returns `Some` with the buffer left blank, which is the honest
+    /// report — "this character is mine, and it is empty".
     ///
     /// The default implementation is the 1-bit path: take the glyph, scale it by
     /// [`paint_bitmap`]. A face whose ink is not 1-bit (a vector outline, a colour bitmap)
-    /// overrides this and writes its own coverage.
+    /// overrides this and writes its own coverage, and reports which with [`Painted::ink`].
     fn paint(&self, ch: char, cell: Cell, out: &mut [u8]) -> Option<Painted> {
         let glyph = self.glyph(ch)?;
         let source_cell = Cell::new(glyph.width, glyph.height);
         paint_bitmap(&glyph, cell, out);
-        Some(Painted { source: self.name(), source_cell: Some(source_cell) })
+        Some(Painted::bitmap(self.name(), Some(source_cell)))
     }
 }
 
@@ -310,6 +386,91 @@ impl GlyphSource for Font8x8Source {
     }
 }
 
+/// The opt-in colour emoji face: `CBDT`/`CBLC` bitmap glyphs, each a PNG (G-6).
+///
+/// # Why this overrides `paint` and returns `None` from `glyph`
+///
+/// Every other source in this module answers both questions — "what bits are you?" ([`Self::glyph`])
+/// and "what does it look like in this cell?" ([`Self::paint`]). A colour face can only answer the
+/// second: its ink is colour RGBA at whatever cell the caller asked for, so there is no 1-bit view to
+/// return, and the value is computed per call rather than borrowed from the binary.
+///
+/// That is not a gap. [`Self::glyph`] is documented as the **1-bit view**, and a resolution chain
+/// that wants a bitmap will simply not use this face; [`Self::paint`] is the path a renderer takes,
+/// and a colour face reports [`InkKind::Color`] so the renderer knows the bytes are RGBA.
+#[cfg(feature = "fonts-emoji-color")]
+pub struct ColorBitmapSource;
+
+#[cfg(feature = "fonts-emoji-color")]
+impl ColorBitmapSource {
+    /// The one shared instance.
+    pub const INSTANCE: Self = Self;
+
+    /// The colour face that covers `ch`, if this build enabled one.
+    fn face_for(&self, ch: char) -> Option<crate::render::text::font_assets::ColorFaceBytes> {
+        let codepoint = ch as u32;
+        crate::render::text::font_assets::active_color_faces()
+            .iter()
+            .copied()
+            .find(|face| has_glyph(face.bytes, codepoint))
+    }
+}
+
+/// Whether `face` has a glyph for `codepoint`.
+///
+/// Parsed per query rather than cached: a `CBDT` glyph is looked up once per cluster per frame, the
+/// face directory is 13 entries, and caching would need either a global or a lifetime threaded
+/// through every call — for a table this size neither is worth it.
+#[cfg(feature = "fonts-emoji-color")]
+fn has_glyph(face: &[u8], codepoint: u32) -> bool {
+    ttf_parser::Face::parse(face, 0)
+        .ok()
+        .and_then(|parsed| parsed.glyph_index(char::from_u32(codepoint)?))
+        .is_some()
+}
+
+#[cfg(feature = "fonts-emoji-color")]
+impl GlyphSource for ColorBitmapSource {
+    fn glyph(&self, ch: char) -> Option<GlyphBitmap> {
+        // A colour glyph has no 1-bit view. Answering `None` is the honest report: the ink is RGBA
+        // and it depends on the cell. See this type's own docs.
+        let _ = self.face_for(ch);
+        None
+    }
+
+    fn name(&self) -> &'static str {
+        "color-emoji"
+    }
+
+    fn covers(&self, ch: char) -> bool {
+        self.face_for(ch).is_some()
+    }
+
+    fn paint(&self, ch: char, cell: Cell, out: &mut [u8]) -> Option<Painted> {
+        let face_bytes = self.face_for(ch)?;
+        let parsed = ttf_parser::Face::parse(face_bytes.bytes, 0).ok()?;
+        let glyph_id = parsed.glyph_index(ch)?;
+        let face = crate::render::text::ColorBitmapFace::parse(face_bytes.bytes)?;
+        // The buffer check and the buffer *use* are deliberately adjacent: `face.paint` also checks,
+        // but checking here means a caller that handed a 1-bit-sized buffer gets the honest `None`
+        // (and therefore the fall-through to the 1-bit face behind this one) from the same place
+        // that located the glyph, rather than after a failed lookup.
+        //
+        // A caller that *can* take colour ink sizes its buffer with `cell.area() * 4`; the same
+        // contract reaches the host through `render::text::InkKind::Color`.
+        if cell.is_empty() || out.len() < cell.area() * 4 {
+            return None;
+        }
+        face.paint(glyph_id.0, cell, out)?;
+        Some(Painted {
+            source: face_bytes.name,
+            // There is no source pixel grid to compress by: this ink is colour, not a bitmap ramp.
+            source_cell: None,
+            ink: InkKind::Color,
+        })
+    }
+}
+
 /// The block a character with no glyph is drawn as — a hollow box, "tofu".
 ///
 /// # Why this is not a [`GlyphSource`]
@@ -383,7 +544,12 @@ impl FontStack {
 /// [`FontStack`] directly and passes it where it needs one.
 pub fn active_stack() -> FontStack {
     // The stack with no opt-in font data: the crate's historical single face.
-    #[cfg(not(feature = "fonts-cjk-bitmap"))]
+    #[cfg(not(any(
+        feature = "fonts-cjk-bitmap",
+        feature = "fonts-vector-latin",
+        feature = "fonts-complex",
+        feature = "fonts-emoji-color"
+    )))]
     static BASE: [&dyn GlyphSource; 1] = [&Font8x8Source::INSTANCE];
 
     // The stack with the CJK bitmap face added.
@@ -393,14 +559,103 @@ pub fn active_stack() -> FontStack {
     // other way (8x8 first) would be harmless for Latin — the 8x8 face does not cover CJK — but
     // would leave the CJK face unreachable for any character the 8x8 face *does* cover, which is
     // the opposite of a fallback chain's purpose.
+    #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex"))]
+    static WITH_VECTOR: [&dyn GlyphSource; 2] =
+        [&super::raster::VectorSource::INSTANCE, &Font8x8Source::INSTANCE];
+
     #[cfg(feature = "fonts-cjk-bitmap")]
     static WITH_CJK: [&dyn GlyphSource; 2] =
         [&cjk::CjkBitmapSource::INSTANCE, &Font8x8Source::INSTANCE];
 
-    #[cfg(feature = "fonts-cjk-bitmap")]
+    #[cfg(feature = "fonts-emoji-color")]
+    static WITH_EMOJI: [&dyn GlyphSource; 2] =
+        [&ColorBitmapSource::INSTANCE, &Font8x8Source::INSTANCE];
+
+    // The three-way stacks. A colour emoji face goes **first**: it is the only source for a
+    // character outside the text faces, and the text faces answer tofu for those — so putting it
+    // later would make it unreachable for exactly the characters it exists for.
+    #[cfg(all(feature = "fonts-emoji-color", not(feature = "fonts-cjk-bitmap")))]
+    let stack = FontStack::new(&WITH_EMOJI);
+
+    #[cfg(all(feature = "fonts-emoji-color", feature = "fonts-cjk-bitmap"))]
+    static WITH_EMOJI_AND_CJK: [&dyn GlyphSource; 3] =
+        [&ColorBitmapSource::INSTANCE, &cjk::CjkBitmapSource::INSTANCE, &Font8x8Source::INSTANCE];
+    #[cfg(all(feature = "fonts-emoji-color", feature = "fonts-cjk-bitmap"))]
+    let stack = FontStack::new(&WITH_EMOJI_AND_CJK);
+
+    #[cfg(all(
+        feature = "fonts-cjk-bitmap",
+        any(feature = "fonts-vector-latin", feature = "fonts-complex")
+    ))]
+    static WITH_CJK_AND_VECTOR: [&dyn GlyphSource; 3] = [
+        &cjk::CjkBitmapSource::INSTANCE,
+        &super::raster::VectorSource::INSTANCE,
+        &Font8x8Source::INSTANCE,
+    ];
+    #[cfg(all(
+        feature = "fonts-cjk-bitmap",
+        any(feature = "fonts-vector-latin", feature = "fonts-complex"),
+        not(feature = "fonts-emoji-color")
+    ))]
+    let stack = FontStack::new(&WITH_CJK_AND_VECTOR);
+
+    #[cfg(all(
+        feature = "fonts-cjk-bitmap",
+        any(feature = "fonts-vector-latin", feature = "fonts-complex"),
+        feature = "fonts-emoji-color"
+    ))]
+    static ALL_FACES: [&dyn GlyphSource; 4] = [
+        &ColorBitmapSource::INSTANCE,
+        &cjk::CjkBitmapSource::INSTANCE,
+        &super::raster::VectorSource::INSTANCE,
+        &Font8x8Source::INSTANCE,
+    ];
+    #[cfg(all(
+        feature = "fonts-cjk-bitmap",
+        any(feature = "fonts-vector-latin", feature = "fonts-complex"),
+        feature = "fonts-emoji-color"
+    ))]
+    let stack = FontStack::new(&ALL_FACES);
+
+    #[cfg(all(
+        feature = "fonts-cjk-bitmap",
+        not(any(feature = "fonts-vector-latin", feature = "fonts-complex")),
+        not(feature = "fonts-emoji-color")
+    ))]
     let stack = FontStack::new(&WITH_CJK);
-    #[cfg(not(feature = "fonts-cjk-bitmap"))]
+
+    #[cfg(all(
+        not(feature = "fonts-cjk-bitmap"),
+        any(feature = "fonts-vector-latin", feature = "fonts-complex"),
+        not(feature = "fonts-emoji-color")
+    ))]
+    let stack = FontStack::new(&WITH_VECTOR);
+
+    #[cfg(all(
+        not(feature = "fonts-cjk-bitmap"),
+        feature = "fonts-emoji-color",
+        any(feature = "fonts-vector-latin", feature = "fonts-complex")
+    ))]
+    static EMOJI_AND_VECTOR: [&dyn GlyphSource; 3] = [
+        &ColorBitmapSource::INSTANCE,
+        &super::raster::VectorSource::INSTANCE,
+        &Font8x8Source::INSTANCE,
+    ];
+    #[cfg(all(
+        not(feature = "fonts-cjk-bitmap"),
+        feature = "fonts-emoji-color",
+        any(feature = "fonts-vector-latin", feature = "fonts-complex")
+    ))]
+    let stack = FontStack::new(&EMOJI_AND_VECTOR);
+
+    #[cfg(not(any(
+        feature = "fonts-cjk-bitmap",
+        feature = "fonts-vector-latin",
+        feature = "fonts-complex",
+        feature = "fonts-emoji-color"
+    )))]
     let stack = FontStack::new(&BASE);
+
     stack
 }
 
@@ -414,6 +669,15 @@ pub fn resolve(ch: char) -> (GlyphBitmap, Option<&'static str>) {
 /// This is [`resolve`]'s sibling for a renderer that draws *pixels* rather than rectangles, and
 /// the two agree by construction: the tofu fallback paints the same 8x8 block `resolve` returns,
 /// and a covering face paints its own ink either way. `None` means the buffer was too small.
+///
+/// # Buffer sizing is the caller's contract, and a colour face needs four bytes per pixel
+///
+/// Most faces here are 1-bit coverage: one byte per pixel, so `cell.area()` is the right size. A
+/// colour face ([`InkKind::Color`]) writes RGBA — four bytes per pixel — so the same cell needs
+/// `cell.area() * 4`. A caller that reserved only `cell.area()` still gets its pixels, just not
+/// from the colour face: the source refuses the short buffer and the stack falls through to the
+/// 1-bit face behind it rather than a slice of the caller's buffer being overwritten past its end.
+/// Use [`Painted::buffer_len`] to size a buffer when colour ink is possible.
 pub fn paint_active(ch: char, cell: Cell, out: &mut [u8]) -> Option<Painted> {
     let stack = active_stack();
     for source in stack.sources() {
@@ -421,10 +685,11 @@ pub fn paint_active(ch: char, cell: Cell, out: &mut [u8]) -> Option<Painted> {
             return Some(painted);
         }
     }
-    // No face covers the character: tofu, exactly as `resolve` would return it.
+    // No face covers the character: tofu, exactly as `resolve` would return it. Tofu is 1-bit, so a
+    // buffer sized for colour is truncated to its first `cell.area()` bytes by `paint_bitmap`.
     let tofu = GlyphBitmap::inline8(TOFU);
     paint_bitmap(&tofu, cell, out);
-    Some(Painted { source: "tofu", source_cell: Some(Cell::new(8, 8)) })
+    Some(Painted::bitmap("tofu", Some(Cell::new(8, 8))))
 }
 
 /// Which source answers `ch` on this build, or `None` for tofu.

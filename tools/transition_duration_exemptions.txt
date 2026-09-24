@@ -35,3 +35,19 @@
 # Verified: `show_delay` and `hide_delay` are public, settable fields (`set_show_delay`,
 # `set_hide_delay`), and the constants are only their documented defaults. No transition reads them.
 src/widget/dialog/tooltip.rs    hover dwell timings with their own settable properties, not transitions
+
+# ─────────────────────────────────────────────────────────────────────────────
+# This entry is a FRAME STEP, not a transition duration.
+#
+# `ANIMATION_FRAME_DELTA_MS` is not how long anything takes; it is how much time one *sample* is
+# worth. The paint path in `draw_bridge::draw_of` advances a host-owned control by it because that
+# entry point has no clock, and every control's `tick` accumulates the step against a target, so the
+# step paces the motion and cannot overshoot or re-price it. Reading it from `theme.motion.fast`
+# would be a category error that also misbehaves: `fast` is a whole-transition duration (100 ms), and
+# advancing by 100 ms per paint would make a 200 ms hover take two frames — the cut this step exists
+# to avoid. The transition's own duration still comes from the theme, through `TransitionTempo` inside
+# each control, which is what the rule is about.
+#
+# Verified: the constant is read only by `draw_of`'s single `widget.tick(ANIMATION_FRAME_DELTA_MS)`
+# call, and no control reads it as a duration.
+src/widget/draw_bridge.rs    the per-frame sample step of the paint path, not a transition duration

@@ -24,13 +24,36 @@ mod glyph_source;
 
 // The opt-in vector faces (generated data) and the shaper that reads them. Both are gated by
 // the shaping feature, because a face with no shaper to read it has no consumer.
-#[cfg(feature = "text-shaping")]
-mod font_assets;
+#[cfg(any(feature = "text-shaping", feature = "fonts-emoji-color"))]
+pub mod font_assets;
 #[cfg(feature = "text-shaping")]
 pub mod shaping;
 
 // The one derivation of a line's clusters, shared by both renderers.
 mod line;
+
+// Vector outline rasterisation (G-5): the coverage-producing implementation of `GlyphSource`.
+//
+// Gated on the shaping feature because it reads the same `ttf-parser` face data the shaper does —
+// a rasteriser with no face to rasterise is dead weight, and `ttf-parser` is the shaper's own
+// dependency, so this adds none.
+#[cfg(feature = "text-shaping")]
+mod raster;
+
+#[cfg(feature = "text-shaping")]
+pub use raster::VectorSource;
+
+// Colour bitmap faces (G-6): `CBDT`/`CBLC` plus the PNG decoder that reads what they point at.
+//
+// The two share one gate because they are one capability: a `CBDT` index is useless without a
+// decoder for its payload, and a decoder with no index has nothing to decode. It also keeps
+// `miniz_oxide` out of a build with no colour face.
+#[cfg(feature = "fonts-emoji-color")]
+mod color_bitmap;
+#[cfg(feature = "fonts-emoji-color")]
+mod png;
+#[cfg(feature = "fonts-emoji-color")]
+pub use color_bitmap::ColorBitmapFace;
 
 // Bidirectional reordering (UAX #9). Always compiled: it is logic, not data.
 pub mod bidi;
@@ -42,8 +65,11 @@ mod cjk_bitmap_data;
 
 pub use glyph_source::{
     active_stack, paint_active, resolve, source_for, BitOrder, Cell, Font8x8Source, FontStack,
-    GlyphBitmap, GlyphSource, Painted, TOFU,
+    GlyphBitmap, GlyphSource, InkKind, Painted, TOFU,
 };
+
+#[cfg(feature = "fonts-emoji-color")]
+pub use glyph_source::ColorBitmapSource;
 
 // The wide-scalar table is a property of the characters, needed by the renderer's advance
 // model *and* by a control's implicit-size estimate, so it is exported rather than copied.

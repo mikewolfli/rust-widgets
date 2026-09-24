@@ -103,7 +103,7 @@ src/widget/display_widgets/meter.rs 392 backlog
 src/widget/display_widgets/mini_canvas.rs 89 backlog
 src/widget/display_widgets/mini_chart.rs 129 backlog
 src/widget/display_widgets/progress_circle.rs 164 backlog
-src/widget/display_widgets/progressbar.rs 281 backlog
+src/widget/display_widgets/progressbar.rs 303 backlog
 src/widget/display_widgets/roller.rs 193 backlog
 src/widget/display_widgets/skeleton_loader.rs 136 backlog
 src/widget/display_widgets/slider.rs 463 backlog
