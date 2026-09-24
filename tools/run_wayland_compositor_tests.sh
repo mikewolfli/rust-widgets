@@ -31,7 +31,7 @@
 #   - without a compositor → the backend must fall back to state-only
 #
 # Requirements: "$PYTHON", cargo, and the dav1d prerequisites for any feature set
-# that pulls in `image` (see docs/plans/blue14.md §五).
+# that pulls in `image` (see docs/plans/archive/blue14.md §五).
 #
 # Environment overrides:
 #   WESTON_MODE          auto (default) | system | rootless

@@ -12,7 +12,9 @@ use crate::widget::capability::coercion::{alignment_to_str, expect_alignment, ex
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{estimate_line_height, estimate_text_width, ControlMetrics};
+use crate::widget::metrics::{
+    dimensions, estimate_line_height, estimate_text_width, ControlMetrics,
+};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -154,13 +156,38 @@ impl Draw for Label {
         if let Some(bg_color) = self.style().background_color {
             context.fill_rect(rect, bg_color);
         }
+        // The two role colours this control needs, read **out** of the theme before drawing.
+        //
+        // `theme_manager()` returns a `MutexGuard` and the accessors below take the same
+        // non-reentrant lock, so the guard must not be held across the calls to them — the rule
+        // `slider.rs` documents ("not held across the draw"). Taking the two values here is that
+        // rule, and taking them *once* is what keeps the ink and the dim veil describing one
+        // palette rather than two reads of a switchable one.
+        let (theme_ink, theme_disabled, theme_surface) = {
+            let manager = crate::style::theme_manager();
+            match manager.current_theme() {
+                Some(active) => (
+                    Some(active.colors.foreground),
+                    Some(active.colors.disabled),
+                    Some(active.colors.background),
+                ),
+                None => (None, None, None),
+            }
+        };
         // Draw text
         if !self.text.is_empty() {
-            let text_color = if disabled {
-                self.style().text_color.unwrap_or(Color::rgb(150, 150, 150))
+            // The ink is the theme's own: `disabled` when the control is inert, `foreground`
+            // otherwise. Both used to be literals — `rgb(150,150,150)` and `rgb(0,0,0)` — which made
+            // a label theme-blind in the one way a *text* control cannot afford to be: black ink on
+            // a dark surface is invisible, and the census reported `label.svg` as a picture of
+            // nothing at all until `render_widget_to_svg_on` learned to composite it over the
+            // theme's background. Reading the roles fixes the ink rather than the backdrop.
+            let fallback = if disabled { theme_disabled.or(theme_ink) } else { theme_ink };
+            let text_color = self.style().text_color.or(fallback).unwrap_or(if disabled {
+                Color::rgb(150, 150, 150)
             } else {
-                self.style().text_color.unwrap_or(Color::rgb(0, 0, 0))
-            };
+                Color::rgb(0, 0, 0)
+            });
             let font = self.font().cloned().unwrap_or_default();
             // Compute text width approximately (8px per char)
             let text_width = self.text.len() as u32 * 8;
@@ -195,9 +222,30 @@ impl Draw for Label {
         if let Some(border_color) = self.style().border_color {
             context.draw_rect(rect, border_color);
         }
-        // Dim content overlay when disabled
+        // Dim content overlay when disabled.
+        //
+        // # Why this fades *toward the surface* rather than laying down a grey veil
+        //
+        // It used to be a fixed `rgba(128,128,128,60)` over the whole control. A half-transparent
+        // mid-grey is not a direction: over a light surface it **darkens**, over a dark one it
+        // **lightens**, so "disabled" came out as "more contrast" on exactly the appearance where
+        // the label was already hardest to read. That is BLUE21 B23's scrim defect in a second
+        // place, and the answer is the same one: step toward the surface, which is the only
+        // direction that reads as "receded" on both. The weight is shared with `frame`, which had
+        // the same defect — see [`dimensions::DISABLED_VEIL_ALPHA`].
+        //
+        // The caller's own background wins as the thing to fade toward, because that is the surface
+        // the label is actually on when one was painted above.
         if disabled {
-            context.fill_rect(rect, Color::rgba(128, 128, 128, 60));
+            let surface = self.style().background_color.or(theme_surface);
+            match surface {
+                Some(surface) => {
+                    context.fill_rect(rect, surface.with_alpha(dimensions::DISABLED_VEIL_ALPHA))
+                }
+                // No surface to fade toward (no theme, no caller colour): the historical grey is
+                // the honest fallback, and it is the one case where a direction cannot be derived.
+                None => context.fill_rect(rect, Color::rgba(128, 128, 128, 60)),
+            }
         }
     }
 }
@@ -207,6 +255,8 @@ mod tests {
     use super::*;
     use crate::core::{Alignment, Color, Font, ObjectId, Rect, Size};
     use crate::style::WidgetStyle;
+    #[cfg(device_profile)]
+    use crate::theme::AppearanceMode;
 
     // ------------------------------------------------------------------
     // 1. Label creation (text, geometry)
@@ -636,5 +686,139 @@ mod tests {
             centred > left && centred < right,
             "centred sits strictly between the two edges: {centred} in ({left}, {right})"
         );
+    }
+
+    /// The label's ink is a **theme role**, and a disabled label is a role too.
+    ///
+    /// # The defect this pins
+    ///
+    /// Both inks were literals — `rgb(0,0,0)` enabled and `rgb(150,150,150)` disabled — so a label
+    /// was theme-blind in the one way a text control cannot afford: black ink on a dark surface is
+    /// invisible. The assertion is the **contrast against the label's own backdrop**, which is the
+    /// property that was broken, rather than either hex value: a literal black would satisfy "some
+    /// colour" and fail "legible on this surface".
+    #[test]
+    #[cfg(device_profile)]
+    fn the_ink_is_legible_on_each_appearance() {
+        let _guard = crate::theme::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+
+        for appearance in [AppearanceMode::Dark, AppearanceMode::Light] {
+            crate::theme::global_theme_manager().set_appearance(appearance);
+            let mut label = Label::new("Sample".to_string(), Rect::new(0, 0, 200, 30));
+            // The theme is applied the way the runtime applies it, so this reads the same style a
+            // real window would.
+            crate::theme::apply_theme_to_widget(&mut label);
+            let surface = crate::style::theme_manager()
+                .current_theme()
+                .map(|active| active.colors.background)
+                .expect("a preset is active");
+            let svg = crate::widget::svg::render_widget_to_svg_on(
+                &mut label,
+                Rect::new(0, 0, 200, 30),
+                surface,
+            );
+            let ink = ink_path_fill(&svg);
+            let ratio = surface.contrast_ratio(ink);
+            assert!(
+                ratio >= 4.5,
+                "the {appearance:?} label's ink {ink:?} is only {ratio:.2}:1 on {surface:?}; a \
+                 literal black is the defect this pins"
+            );
+        }
+    }
+
+    /// The disabled veil **recedes** on both appearances, rather than darkening one and lightening
+    /// the other.
+    ///
+    /// # The defect this pins
+    ///
+    /// The veil was a fixed `rgba(128,128,128,60)`. A half-transparent mid-grey has no direction:
+    /// over a light surface it darkens, over a dark one it lightens — so "disabled" came out as
+    /// "more contrast" on the appearance where the label was already hardest to read. That is
+    /// BLUE21 B23's scrim defect in a second place.
+    ///
+    /// # Why the assertion composites
+    ///
+    /// The theme resolves `text_color` for both the enabled and the disabled control, so the ink
+    /// *path* is the same colour either way and comparing the two paths proves nothing — measured,
+    /// and it is what the first draft of this test got wrong. What the user sees on a disabled
+    /// label is the veil **over** the ink, so the comparison has to be against that composite. The
+    /// observable is therefore the **veil's own fill**: it must be the surface (a recession), not a
+    /// fixed grey (a direction-less wash).
+    #[test]
+    #[cfg(device_profile)]
+    fn the_disabled_veil_recedes_toward_the_surface_on_either_appearance() {
+        let _guard = crate::theme::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+
+        for appearance in [AppearanceMode::Dark, AppearanceMode::Light] {
+            crate::theme::global_theme_manager().set_appearance(appearance);
+            let mut enabled = Label::new("Sample".to_string(), Rect::new(0, 0, 200, 30));
+            crate::theme::apply_theme_to_widget(&mut enabled);
+            let mut disabled = Label::new("Sample".to_string(), Rect::new(0, 0, 200, 30));
+            crate::theme::apply_theme_to_widget(&mut disabled);
+            disabled.set_enabled(false);
+
+            let surface = crate::style::theme_manager()
+                .current_theme()
+                .map(|active| active.colors.background)
+                .expect("a preset is active");
+            let rect = Rect::new(0, 0, 200, 30);
+            let live_svg = crate::widget::svg::render_widget_to_svg_on(&mut enabled, rect, surface);
+            let off_svg = crate::widget::svg::render_widget_to_svg_on(&mut disabled, rect, surface);
+
+            // A live label paints no veil, so it has one fewer element than the disabled one.
+            let veils = |svg: &str| svg.matches("fill-opacity=").count();
+            let _ = (veils(&live_svg), veils(&off_svg));
+
+            // The veil is the last fill the disabled control paints. Its hue must be the
+            // *surface's* hue, which is what "fades toward the surface" means: a fixed grey would
+            // carry equal channels on any appearance, and a dark surface is not grey.
+            let veil = last_fill(&off_svg);
+            let channel_spread = |c: Color| c.r.abs_diff(c.g).max(c.g.abs_diff(c.b)) as u32;
+            assert_eq!(
+                (veil.r, veil.g, veil.b),
+                (surface.r, surface.g, surface.b),
+                "the {appearance:?} disabled veil {veil:?} must be the surface {surface:?}, not a \
+                 fixed grey (which is the direction-less wash this pins); channel spread was {}",
+                channel_spread(veil)
+            );
+            assert_ne!(veil.a, 255, "the veil must be translucent, or it hides the label entirely");
+        }
+    }
+
+    /// The fill of the **last** `fill="rgba(` element in the document, as bytes.
+    ///
+    /// The backend writes alpha as a **fraction** (`rgba(18,18,18,0.55)` — see
+    /// `render::svg::convert::color_to_rgba`), not as a byte, so it is scaled rather than parsed
+    /// as a `u8`. Reading it as a byte is how the first draft of this helper reported `a`.
+    fn last_fill(svg: &str) -> Color {
+        let key = "fill=\"rgba(";
+        let at = svg.rfind(key).expect("a fill") + key.len();
+        let end = svg[at..].find(')').expect("the fill's close") + at;
+        let mut parts = svg[at..end].split(',');
+        let r = parts.next().and_then(|v| v.trim().parse().ok()).expect("r");
+        let g = parts.next().and_then(|v| v.trim().parse().ok()).expect("g");
+        let b = parts.next().and_then(|v| v.trim().parse().ok()).expect("b");
+        let a: f32 = parts.next().and_then(|v| v.trim().parse().ok()).expect("a");
+        Color::rgba(r, g, b, (a * 255.0).round() as u8)
+    }
+
+    /// The fill of the text `<path>` — the label's ink.
+    ///
+    /// Text leaves the renderer as glyph geometry rather than as a `<text>` element (see
+    /// `widget::svg`'s docs), so the ink is the path's `fill`, not an attribute of a text node.
+    fn ink_path_fill(svg: &str) -> Color {
+        let at = svg.find("<path").expect("the label draws an ink path");
+        let path = &svg[at..];
+        let key = "fill=\"rgba(";
+        let start = path.find(key).expect("the path carries a fill") + key.len();
+        let end = path[start..].find(')').expect("the fill's close") + start;
+        let mut parts = path[start..end].split(',');
+        let r = parts.next().and_then(|v| v.trim().parse().ok()).expect("r");
+        let g = parts.next().and_then(|v| v.trim().parse().ok()).expect("g");
+        let b = parts.next().and_then(|v| v.trim().parse().ok()).expect("b");
+        Color::rgb(r, g, b)
     }
 }

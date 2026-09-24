@@ -1,5 +1,11 @@
 # Rust Widgets Optimization and Improvement Steps
 
+> **目录约定（2026-09-24）**：`docs/plans/` 已完成归档清理，
+> 入口见 [`README.md`](README.md)。**本文件是参考资料，不是待办清单**——
+> 它记录的 Phase 1–N 已全部完成，保留以供追溯。
+> 若本文件与 [`TODO.md`](TODO.md) 不一致，**以 `TODO.md` 为准**
+> （`TODO.md` 是唯一带完成率与实跑证据的待办载体）。
+
 ## Overview
 This document outlines optimization and improvement tasks for the rust-widgets project based on comprehensive codebase review in advice.md.
 

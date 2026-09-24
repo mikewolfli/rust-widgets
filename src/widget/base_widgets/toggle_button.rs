@@ -354,11 +354,21 @@ impl Draw for ToggleButton {
         let state = self.state();
         let style = self.style();
         use crate::core::Color;
-        // Read once: the resting fill, the border and the label's contrast colour all resolve
-        // against the same palette, and three separate `current_theme()` calls could observe
-        // three different ones if a switch landed between them.
-        let manager = crate::style::theme_manager();
-        let theme = manager.current_theme();
+        // Read the three role colours out and **release the guard** before drawing. `theme_manager()`
+        // returns a `MutexGuard`, and the accessors below (`layer_color`, `semantic_color`) take the
+        // same non-reentrant lock themselves — so holding it here and calling one of them deadlocks.
+        // The crate's own doc says a guard must not be held across a draw; this is that rule.
+        let (outline, outline_variant, disabled) = {
+            let manager = crate::style::theme_manager();
+            match manager.current_theme() {
+                Some(active) => (
+                    Some(active.colors.outline),
+                    Some(active.colors.outline_variant),
+                    Some(active.colors.disabled),
+                ),
+                None => (None, None, None),
+            }
+        };
 
         // ── The box actually painted ──
         //
@@ -425,11 +435,9 @@ impl Draw for ToggleButton {
                 crate::style::semantic_color(crate::style::SemanticColor::Info)
                     .unwrap_or(Color::rgb(80, 120, 200))
             } else if state == ToggleButtonState::Disabled {
-                theme
-                    .map(|active| active.colors.outline_variant)
-                    .unwrap_or(Color::rgb(180, 180, 180))
+                outline_variant.unwrap_or(Color::rgb(180, 180, 180))
             } else {
-                theme.map(|active| active.colors.outline).unwrap_or(Color::rgb(180, 180, 180))
+                outline.unwrap_or(Color::rgb(180, 180, 180))
             }
         });
         let bw = style.border_width.unwrap_or(0);
@@ -443,7 +451,7 @@ impl Draw for ToggleButton {
                     // The disabled ink is the theme's own disabled colour rather than the
                     // near-invisible `rgb(150, 150, 150)` literal, which measured below the
                     // 4.5:1 floor once the disabled fill went to the theme's surface.
-                    theme.map(|active| active.colors.disabled).unwrap_or(Color::rgb(150, 150, 150))
+                    disabled.unwrap_or(Color::rgb(150, 150, 150))
                 } else {
                     // The label sits on the control's own fill, so it takes that fill's contrast
                     // colour instead of a literal black — the same rule `CheckBox`'s mark, the
@@ -794,6 +802,10 @@ mod tests {
     #[test]
     fn the_interaction_transition_moves_the_fill_across_three_frames() {
         let _guard = crate::theme::theme_test_guard();
+        // The presets carry the `toggle_button:hover` / `:pressed` overrides, so a build with no
+        // theme would have nothing to move the fill *toward* — and this test would be asserting a
+        // property of a palette that is not installed.
+        crate::widget::census::install_preset_appearances();
         let inside = Point::new(20, 15);
         let mut tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 100, 30));
 
@@ -817,7 +829,7 @@ mod tests {
         // transition tests use — and the loop is bounded besides.
         let mut mid = resting;
         for _ in 0..64 {
-            if !tb.tick(1000) {
+            if !tb.tick(16) {
                 break;
             }
             let now = rendered_fill(&mut tb);
@@ -829,12 +841,14 @@ mod tests {
         assert_ne!(mid, resting, "the transition must move the fill, not snap at the end");
 
         // Frame 3: run it out, and require it to settle *and* to stop asking for frames — the
-        // economy `is_animating` exists for (a settled control costs nothing per frame).
-        let mut guard = 0;
-        while tb.tick(1000) {
-            guard += 1;
-            assert!(guard < 64, "the transition must terminate");
+        // economy `is_animating` exists for (a settled control costs nothing per frame). The bound
+        // is on the loop itself, so a `tick` that never reports rest fails the test rather than
+        // hanging it — the failure mode the first draft of this test actually had.
+        let mut guard = 64;
+        while guard > 0 && tb.tick(1000) {
+            guard -= 1;
         }
+        assert!(guard > 0, "the transition must terminate, not ask for frames forever");
         assert!(!tb.is_animating(), "a settled toggle must stop asking for frames");
         let settled = rendered_fill(&mut tb);
         assert_ne!(settled, resting, "a hovered toggle must not look like a resting one");
@@ -846,13 +860,21 @@ mod tests {
     /// Reading the drawing rather than the progress field is what makes the frame assertions
     /// properties of the picture: a mutation that stopped *using* `interaction_progress` in
     /// `draw` would leave every progress assertion green.
+    ///
+    /// # Why the *second* filled rect
+    ///
+    /// The exporter composites a control over the active theme's background, so the first
+    /// `fill="rgba(` in the document is the **backdrop**, not the control. Reading it made this
+    /// helper answer a constant white for every widget, which would have made the frame assertions
+    /// compare a value against itself — the same trap the `group_box` tick test documents.
     fn rendered_fill(tb: &mut ToggleButton) -> (u8, u8, u8) {
         let svg = crate::widget::svg::render_widget_to_svg(tb, Rect::new(0, 0, 100, 30));
-        // The first `<rect … fill="rgba(…)" />` is the control's own face.
-        let at =
-            svg.find("fill=\"rgba(").expect("the face is a filled rect") + "fill=\"rgba(".len();
-        let end = svg[at..].find(')').expect("the fill's close") + at;
-        let mut parts = svg[at..end].split(',');
+        let key = "fill=\"rgba(";
+        let backdrop = svg.find(key).expect("a backdrop rect") + key.len();
+        let face =
+            svg[backdrop..].find(key).expect("the control's own face") + backdrop + key.len();
+        let end = svg[face..].find(')').expect("the fill's close") + face;
+        let mut parts = svg[face..end].split(',');
         let r = parts.next().and_then(|v| v.trim().parse().ok()).expect("r");
         let g = parts.next().and_then(|v| v.trim().parse().ok()).expect("g");
         let b = parts.next().and_then(|v| v.trim().parse().ok()).expect("b");

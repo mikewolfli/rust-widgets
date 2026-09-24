@@ -140,12 +140,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .push(format!("{name}: the registry publishes it but `create` returned None"));
                 continue;
             };
-            // The theme the control renders under is applied the way the runtime applies
-            // it, so the snapshot shows the colours a user would actually get. Without
-            // this the two appearances produced identical drawings — the files existed and
-            // proved nothing, which is precisely the failure rule #106 is about.
-            rust_widgets::theme::apply_theme_to_widget(widget.as_mut());
-
             // Give the data-bearing controls their content.
             //
             // # Why here and not in the factory
@@ -157,6 +151,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if rust_widgets::widget::sample_fill::apply(name, widget.as_mut()) {
                 filled += 1;
             }
+
+            // The theme the control renders under is applied the way the runtime applies
+            // it, so the snapshot shows the colours a user would actually get. Without
+            // this the two appearances produced identical drawings — the files existed and
+            // proved nothing, which is precisely the failure rule #106 is about.
+            //
+            // # Why this runs **after** the sample fill, and not before
+            //
+            // `apply_active_theme` looks the control up by `"<kind>:<state>"`, and the state it
+            // asks for is `widget.widget_state()`. Applying the theme first therefore resolved the
+            // **constructor's** state, so every `:checked` key in the presets was invisible to the
+            // snapshot: `check_box.svg` was drawn checked but painted the *resting* fill, because at
+            // theme time the box was still unchecked. A state override the picture cannot show is
+            // the same defect as a state the control never reports — the key is declared and
+            // carries nothing.
+            //
+            // The runtime has the same ordering requirement, and for the same reason: a style is
+            // resolved *for the state the control is in*. A host that re-applies the theme when a
+            // control's state changes (which is what `request_redraw`'s callers do) reaches the same
+            // answer this ordering reaches once.
+            rust_widgets::theme::apply_theme_to_widget(widget.as_mut());
 
             write_one(
                 dir,
@@ -181,7 +196,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let Some(mut widget) = factory.create(name, CENSUS_RECT, CENSUS_TEXT) else {
                 continue;
             };
-            rust_widgets::theme::apply_theme_to_widget(widget.as_mut());
             rust_widgets::widget::sample_fill::apply(name, widget.as_mut());
             if !apply_extra_state(control, state_suffix, widget.as_mut()) {
                 failed.push(format!(
@@ -189,6 +203,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ));
                 continue;
             }
+            // After the state, for the same reason the two-appearance loop above applies it there:
+            // the state is what the lookup key is built from, so theming first would resolve the
+            // constructor's state and this file would show the state's *shape* in the resting
+            // colours — which is exactly what it is not for.
+            rust_widgets::theme::apply_theme_to_widget(widget.as_mut());
             write_one(
                 dir,
                 &mut written,

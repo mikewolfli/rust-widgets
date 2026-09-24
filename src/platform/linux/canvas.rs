@@ -9,7 +9,7 @@
 //! pulls one RGBA frame out of `crate::widget::runtime` and blits it with
 //! cairo.
 //!
-//! See `docs/plans/custom-paint_mounting.md`.
+//! See `docs/plans/custom_widget_mounting.md`.
 //!
 //! This module compiles only with `gtk-native`; without it the platform keeps
 //! the trait's `false` defaults and callers get an explicit "cannot display

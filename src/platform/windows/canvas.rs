@@ -8,7 +8,7 @@
 //! distinct class is used rather than extending `RustWidgetsWindowClass`, so the
 //! canvas message path stays independent of menu/control command routing.
 //!
-//! See `docs/plans/custom-paint_mounting.md`.
+//! See `docs/plans/custom_widget_mounting.md`.
 //!
 //! # Feature gate
 //!

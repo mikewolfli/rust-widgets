@@ -86,7 +86,16 @@ pub(super) fn preset_state_overrides(colors: &Colors) -> BTreeMap<String, ThemeS
 
     // Latching controls: the checked fill is the brand colour, so a checked box reads as
     // "on" at a glance rather than as a slightly darker box.
-    for kind in ["check_box", "radio_button", "switch", "chip"] {
+    //
+    // # Why the controls report these states themselves
+    //
+    // Every key below is looked up as `"<kind>:<state>"`, so a key is only reachable if some
+    // control actually *reports* that state. The trait's default `widget_state` knows the four
+    // primitive flags (`disabled`/`pressed`/`hovered`/`focused`) and **none of them means
+    // "latched"** — so before the latching controls overrode it, all four of these keys per
+    // preset resolved to `Normal` and never painted. `CheckBox::widget_state` and its siblings are
+    // the consuming half.
+    for kind in ["check_box", "radio_button", "switch"] {
         styles.insert(
             format!("{kind}:checked"),
             ThemeStyleToken {
@@ -96,6 +105,17 @@ pub(super) fn preset_state_overrides(colors: &Colors) -> BTreeMap<String, ThemeS
             },
         );
     }
+    // A chip list is a collection, not a latch, so it reports `Selected` rather than `Checked`.
+    // The key used to be `chip:selected`'s predecessor (`chip:checked`), which the control never
+    // reported; see `Chip::widget_state`.
+    styles.insert(
+        "chip:selected".to_string(),
+        ThemeStyleToken {
+            background: Some(colors.primary),
+            foreground: Some(colors.primary.contrast_color()),
+            ..ThemeStyleToken::default()
+        },
+    );
 
     // Validation. This is the one place the `error` role reaches a control's own style,
     // which is why it is a border rather than a fill: an invalid field keeps its
@@ -131,8 +151,9 @@ pub(super) fn preset_state_overrides(colors: &Colors) -> BTreeMap<String, ThemeS
 /// test that pins the count read the same number rather than each hard-coding it. A
 /// preset with fewer keys than this means a state group was dropped.
 pub fn preset_state_key_count() -> usize {
-    // 4 push-button kinds x 3 states, 4 latching kinds x 1, 10 editable kinds x 1.
-    4 * 3 + 4 + 10
+    // 4 push-button kinds x 3 states, 3 latching kinds x 1 `checked` + 1 chip `selected`,
+    // 10 editable kinds x 1.
+    4 * 3 + 3 + 1 + 10
 }
 
 #[cfg(test)]
@@ -154,6 +175,13 @@ mod tests {
             assert!(styles.contains_key("button:pressed"));
             assert!(styles.contains_key("button:disabled"));
             assert!(styles.contains_key("check_box:checked"));
+            assert!(styles.contains_key("chip:selected"));
+            // The key that named a state no control reported: it must be gone, not merely
+            // unreferenced, or the table still claims a state the crate cannot reach.
+            assert!(
+                !styles.contains_key("chip:checked"),
+                "`chip` is a collection and reports `Selected`, never `Checked`"
+            );
             assert!(styles.contains_key("line_edit:error"));
         }
     }

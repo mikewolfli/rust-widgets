@@ -275,7 +275,7 @@
         "shadow": "Inherit",
         "touch_target": null
       },
-      "chip:checked": {
+      "chip:selected": {
         "background": {
           "r": 100,
           "g": 181,

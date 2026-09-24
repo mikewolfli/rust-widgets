@@ -79,6 +79,26 @@ pub enum TickPosition {
 /// inside the control and the metric table that names it must not be able to disagree.
 const SLIDER_SIZE: f32 = (dimensions::SLIDER_THUMB_RADIUS * 2) as f32;
 
+/// How far the hover halo reaches past the handle's own edge.
+///
+/// Half a handle, so the halo reads as a ring around a disc rather than as a second, larger disc:
+/// the handle stays the shape the census measures as the dominant colour.
+const HALO_EXTRA_RADIUS: u32 = dimensions::SLIDER_THUMB_RADIUS / 2;
+
+/// How far a **hovered** slider's halo is stepped toward the window fill.
+///
+/// The figure the major toolkits publish for "the pointer is over me" — Material's `hoverOpacity`
+/// on a text field, the same 0.08 this crate's own state overrides use for a hovered fill
+/// (`preset_states::HOVER_BLEND`), so the slider's halo and a button's hover are the same strength
+/// of gesture rather than two arbitrary numbers.
+const HOVER_HALO_WEIGHT: f32 = 0.08;
+
+/// How far a **dragged** slider's halo is stepped toward the window fill.
+///
+/// Firmer than [`HOVER_HALO_WEIGHT`], because a drag is a committed gesture — the same relation
+/// `preset_states::PRESSED_BLEND` (0.12) has to its hover.
+const DRAG_HALO_WEIGHT: f32 = 0.12;
+
 /// Formats a [`TickPosition`] as its published token.
 ///
 /// Local rather than imported from `capability::access` (or `coercion`) for the
@@ -795,6 +815,27 @@ impl Draw for Slider {
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))
             .filter(|resolved| *resolved != handle_color)
             .unwrap_or_else(|| handle_color.blend(&accent, 0.40));
+        // ── The interaction halo (BLUE23 附录 A.4 / M1) ──
+        //
+        // # The defect this removes
+        //
+        // The control maintained a private `mouse_pressed` flag that `draw` **never read** (BLUE21
+        // AR6): a slider could be dragged with no visual confirmation that it was being dragged,
+        // and hovering it did nothing at all. `BaseWidget` already keeps both facts — that is the
+        // whole point of M1 — so this reads them rather than the field, and the field stays what
+        // it is for (deciding whether a pointer move resizes the value).
+        //
+        // The weights are the two the major toolkits publish for exactly this: a hover is a faint
+        // step, a drag a firmer one. Drawn as a disc **behind** the handle, so the halo cannot hide
+        // the value indicator it is drawing attention to.
+        let halo_weight = if self.base.is_pressed() {
+            Some(DRAG_HALO_WEIGHT)
+        } else if self.base.is_hovered() {
+            Some(HOVER_HALO_WEIGHT)
+        } else {
+            None
+        };
+        let halo_color = halo_weight.map(|weight| handle_color.blend(&window_fill, weight));
         // Draw groove (track)
         //
         // The groove and the handle are **fixed-size chrome centred in the area the control
@@ -832,6 +873,9 @@ impl Draw for Slider {
                 // own middle line, so it reads as sitting *on* the groove at every height.
                 let handle_centre =
                     Point::from_f32(slider_pos, thumb.y as f32 + thumb.height as f32 / 2.0);
+                if let Some(halo) = halo_color {
+                    context.fill_circle(handle_centre, handle_radius + HALO_EXTRA_RADIUS, halo);
+                }
                 context.fill_circle(handle_centre, handle_radius, handle_color);
                 // Draw handle border
                 let handle_ring =
@@ -886,6 +930,9 @@ impl Draw for Slider {
                 // control's own box rather than filling it.
                 let handle_centre =
                     Point::from_f32(thumb.x as f32 + thumb.width as f32 / 2.0, slider_pos);
+                if let Some(halo) = halo_color {
+                    context.fill_circle(handle_centre, handle_radius + HALO_EXTRA_RADIUS, halo);
+                }
                 context.fill_circle(handle_centre, handle_radius, handle_color);
                 // Draw handle border
                 let handle_ring =
@@ -1710,5 +1757,106 @@ mod tests {
         s2.set_value(1);
         s2.trigger_action(SliderAction::SliderSingleStepAdd);
         assert_eq!(s2.value(), 1);
+    }
+
+    /// BLUE23 附录 A.4 / M1: hovering or dragging a slider is **visible**, and a drag is the
+    /// firmer of the two gestures.
+    ///
+    /// # The defect this pins
+    ///
+    /// The control maintained a private `mouse_pressed` that `draw` never read (BLUE21 AR6). A
+    /// slider could be dragged with no confirmation it was being dragged, and hovering it did
+    /// nothing at all. `BaseWidget` already keeps both facts, which is the whole point of M1.
+    ///
+    /// The observable is the halo's **colour**: it is a step from the handle toward the window
+    /// fill, so at rest there is no halo at all, hovered it is a faint step, and dragged a firmer
+    /// one. Asking for the colour rather than counting shapes keeps the assertion about what the
+    /// user sees rather than about which SVG element the backend picked.
+    #[test]
+    fn hovering_and_dragging_step_the_halo_by_different_amounts() {
+        let inside = crate::core::Point::new(100, 15);
+        let mut s = make_slider();
+
+        // At rest the handle is the only disc, so the halo colour is absent.
+        assert_eq!(halo_colour(&mut s), None, "a resting slider has no halo");
+
+        s.handle_event(&Event::MouseEnter { pos: inside });
+        let hovered = halo_colour(&mut s).expect("a hovered slider shows a halo");
+
+        s.handle_event(&Event::MousePress { pos: inside, button: 1 });
+        let dragged = halo_colour(&mut s).expect("a dragging slider shows a halo");
+        // A drag must be the **firmer** gesture, not merely a different one: the halo is a step
+        // from the handle toward the window fill, so "firmer" is "closer to the fill". A bare
+        // `assert_ne!` passed when the two weights were swapped — measured — because swapping them
+        // still yields two different colours. Stating the direction is what pins the relation.
+        let fill = window_fill_of(&mut s);
+        let dist = |c: Color| {
+            (c.r as i32 - fill.r as i32).abs()
+                + (c.g as i32 - fill.g as i32).abs()
+                + (c.b as i32 - fill.b as i32).abs()
+        };
+        assert!(
+            dist(dragged) < dist(hovered),
+            "a drag must step further toward the surface than a hover: dragged {dragged:?} is {} \
+             away from {fill:?}, hovered {hovered:?} is {}",
+            dist(dragged),
+            dist(hovered)
+        );
+
+        // Releasing returns to the hover strength rather than dropping straight to nothing — the
+        // pointer is still over the control, and that is still a state.
+        s.handle_event(&Event::MouseRelease { pos: inside, button: 1 });
+        assert_eq!(
+            halo_colour(&mut s),
+            Some(hovered),
+            "releasing leaves the pointer hovering, so the hover halo returns"
+        );
+
+        s.handle_event(&Event::MouseLeave { pos: inside });
+        assert_eq!(halo_colour(&mut s), None, "leaving must remove the halo, not latch it");
+    }
+
+    /// The window fill the halo is stepped *toward* — the control's own backdrop.
+    ///
+    /// Read from the first `fill="rgba(` in the document, which is the backdrop the exporter
+    /// composites over. Named separately because "firmer" is only meaningful relative to it.
+    fn window_fill_of(s: &mut Slider) -> Color {
+        let svg = crate::widget::svg::render_widget_to_svg(s, Rect::new(0, 0, 200, 30));
+        let at = svg.find("fill=\"rgba(").expect("a backdrop") + "fill=\"rgba(".len();
+        let end = svg[at..].find(')').expect("the backdrop's close") + at;
+        let mut parts = svg[at..end].split(',');
+        let r = parts.next().and_then(|v| v.trim().parse().ok()).expect("r");
+        let g = parts.next().and_then(|v| v.trim().parse().ok()).expect("g");
+        let b = parts.next().and_then(|v| v.trim().parse().ok()).expect("b");
+        Color::rgb(r, g, b)
+    }
+
+    /// The halo's colour, or `None` when the control paints only its handle.
+    ///
+    /// # How the halo is told apart from the handle
+    ///
+    /// The document always holds two circles: the handle's **fill** (`r=10`, a colour) and the
+    /// handle's **outline** (`fill="none"`). A halo is a third, and it is painted before the
+    /// handle, so "more than one *filled* circle" is the test — the outline is filtered out by its
+    /// `fill="none"` rather than by position, which would break the moment a tick mark moved.
+    ///
+    /// Returning `Option` rather than a count is what lets "no halo" and "a halo the same colour
+    /// as the handle" be told apart: the second is a halo the user cannot see, which is the defect.
+    fn halo_colour(s: &mut Slider) -> Option<Color> {
+        let svg = crate::widget::svg::render_widget_to_svg(s, Rect::new(0, 0, 200, 30));
+        let filled: crate::compat::Vec<&str> = svg
+            .match_indices("<circle")
+            .map(|(i, _)| &svg[i..])
+            .filter(|c| c.contains("fill=\"rgba("))
+            .collect();
+        // One filled circle = the handle alone. Two = a halo, then the handle.
+        let halo = filled.first().filter(|_| filled.len() > 1)?;
+        let at = halo.find("fill=\"rgba(")? + "fill=\"rgba(".len();
+        let end = halo[at..].find(')')? + at;
+        let mut parts = halo[at..end].split(',');
+        let r = parts.next()?.trim().parse().ok()?;
+        let g = parts.next()?.trim().parse().ok()?;
+        let b = parts.next()?.trim().parse().ok()?;
+        Some(Color::rgb(r, g, b))
     }
 }

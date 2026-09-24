@@ -1010,6 +1010,23 @@ pub mod dimensions {
     /// The step between visual-density levels: 4 logical px per unit.
     pub const DENSITY_STEP: u32 = 4;
 
+    /// How opaque the **disabled veil** is, as a byte alpha.
+    ///
+    /// # Why this is a shared constant and not a per-control literal
+    ///
+    /// Two controls dim their contents when disabled — `label` and `frame` — and both used to do it
+    /// by laying down a fixed mid-grey (`rgba(128,128,128,60)` and `rgba(128,128,128,80)`). A
+    /// half-transparent mid-grey has **no direction**: over a light surface it darkens, over a dark
+    /// one it lightens, so "disabled" came out as "more contrast" on whichever appearance was
+    /// already hardest to read. That is BLUE21 B23's scrim defect in two more places.
+    ///
+    /// The fix is the same one the scrim needed — step the veil *toward the surface*, which is the
+    /// only direction that reads as "receded" on both appearances — and the weight is here rather
+    /// than in each file so the two controls recede by the same amount. `140` is the same figure
+    /// the preset state overrides use for a disabled fill (`preset_states::DISABLED_FADE`, 0.55),
+    /// so a disabled label, a disabled frame and a disabled button all recede alike.
+    pub const DISABLED_VEIL_ALPHA: u8 = 140;
+
     /// Which way a visual-density level shifts metric sizes.
     ///
     /// The density level is a signed offset in [`DENSITY_STEP`] units, and

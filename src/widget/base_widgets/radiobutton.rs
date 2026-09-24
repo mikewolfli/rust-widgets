@@ -281,6 +281,33 @@ impl Widget for RadioButton {
         );
         self.implicit_size()
     }
+
+    /// Reports `Checked` for a selected radio, so the preset's `radio_button:checked` override is
+    /// reachable. The same defect and the same fix as `CheckBox::widget_state` — see that method
+    /// for the full argument (the trait default knows the four primitive flags and none of them
+    /// means "latched", so the key was declared and unreachable).
+    ///
+    /// A radio's latch is exclusive within its group, which makes this *more* important than it is
+    /// for a checkbox: the selected member is the only one the user needs to be able to spot.
+    fn widget_state(&self) -> crate::style::WidgetState {
+        use crate::style::WidgetState;
+        if !self.base.is_enabled() {
+            return WidgetState::Disabled;
+        }
+        if self.checked {
+            return WidgetState::Checked;
+        }
+        if self.base.is_pressed() {
+            WidgetState::Pressed
+        } else if self.base.is_hovered() {
+            WidgetState::Hover
+        } else if self.base.draws_focus_ring() {
+            WidgetState::Focused
+        } else {
+            WidgetState::Normal
+        }
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -962,5 +989,28 @@ mod tests {
             fired.load(std::sync::atomic::Ordering::SeqCst),
             "redraw_requested_signal should fire when text is set"
         );
+    }
+
+    /// A selected radio reports `Checked`, so the preset's `radio_button:checked` key is reachable.
+    ///
+    /// The same defect `CheckBox::widget_state` documents: the trait default knows the four
+    /// primitive flags and none of them means "latched", so the key resolved to `Normal` on every
+    /// radio and the accent fill was never painted. A radio makes this the most visible of the
+    /// four, because the selected member of a group is the one the user must be able to find.
+    #[test]
+    fn widget_state_reports_checked_for_a_selected_radio() {
+        use crate::style::WidgetState;
+        let mut rb = RadioButton::new(Rect::new(0, 0, 100, 30));
+        assert_eq!(rb.widget_state(), WidgetState::Normal);
+
+        rb.set_checked(true);
+        assert_eq!(rb.widget_state(), WidgetState::Checked);
+
+        // The latch outranks the momentary states, and disabled outranks the latch — the
+        // precedence `Widget::widget_state` documents.
+        rb.handle_event(&Event::MouseEnter { pos: Point::new(1, 1) });
+        assert_eq!(rb.widget_state(), WidgetState::Checked);
+        rb.set_enabled(false);
+        assert_eq!(rb.widget_state(), WidgetState::Disabled);
     }
 }

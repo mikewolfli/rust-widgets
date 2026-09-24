@@ -92,7 +92,7 @@ PY
 if [[ -n "$RESIDUE" ]]; then
     echo "  FAIL  the removed native web engine is referenced again:"
     printf '%s\n' "$RESIDUE"
-    echo "  The deletion was ruling W1 (2026-09-21); see docs/plans/blue20.md 3.5.4."
+    echo "  The deletion was ruling W1 (2026-09-21); see docs/plans/archive/blue20.md 3.5.4."
     exit 1
 fi
 echo "  PASS  no live reference to the removed wrapper"

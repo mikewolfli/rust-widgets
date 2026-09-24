@@ -8,7 +8,7 @@
 //! view's CoreGraphics context. That is the entire contract: the widget owns its
 //! pixels, this view owns the window region they land in.
 //!
-//! See `docs/plans/custom-paint_mounting.md` for why this is one capability rather
+//! See `docs/plans/custom_widget_mounting.md` for why this is one capability rather
 //! than a `create_*` method per self-drawn widget kind.
 //!
 //! # Feature gate

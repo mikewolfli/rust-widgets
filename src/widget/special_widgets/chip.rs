@@ -224,6 +224,37 @@ impl Widget for Chip {
         crate::core::Size::new(80, 24)
     }
 
+    /// Reports `Selected` when at least one chip is chosen.
+    ///
+    /// # Why `Selected` and not `Checked`
+    ///
+    /// This control is a **list**, not a latch: several of its members can be chosen at once, and
+    /// there is no single "on" for the control as a whole. `WidgetState::Selected` is precisely
+    /// "one of the currently selected items in a collection", which is what a chip list is, and
+    /// `Checked` would claim the control has one binary state it does not have.
+    ///
+    /// The preset keys follow the report: `chip:checked` was declared for a state this control
+    /// never reaches (see `CheckBox::widget_state` for the same defect), so the keys are now
+    /// `chip:selected` — a declared state with a consumer, in both directions.
+    fn widget_state(&self) -> crate::style::WidgetState {
+        use crate::style::WidgetState;
+        if !self.base.is_enabled() {
+            return WidgetState::Disabled;
+        }
+        if self.items.iter().any(|item| item.selected) {
+            return WidgetState::Selected;
+        }
+        if self.base.is_pressed() {
+            WidgetState::Pressed
+        } else if self.base.is_hovered() {
+            WidgetState::Hover
+        } else if self.base.draws_focus_ring() {
+            WidgetState::Focused
+        } else {
+            WidgetState::Normal
+        }
+    }
+
     impl_widget_property_hooks!();
 }
 
@@ -596,5 +627,38 @@ mod tests {
         let rect = chip.chip_rect(0).expect("one item has one chip");
         assert!(rect.y >= 0, "the chip must start inside the control");
         assert!(rect.y + rect.height as i32 <= 16, "the chip must end inside the control");
+    }
+
+    /// A chip list with a chosen member reports `Selected` — its own state, not `Checked`.
+    ///
+    /// # Why this is `Selected` and not `Checked`
+    ///
+    /// The preset carries a `selected` key for the state that means "one of the currently selected
+    /// items in a collection" and a `checked` key for "a toggle-like control is on". This control
+    /// is a **collection**: several of its members can be chosen at once, and there is no single
+    /// binary "on" for the list as a whole. Reporting `Checked` would claim a shape the control
+    /// does not have.
+    ///
+    /// The defect was the same as the latching controls', one level down: the trait default knows
+    /// only the four primitive flags, so **neither** key was ever reached from here.
+    #[test]
+    fn widget_state_reports_selected_for_a_chip_list_with_a_chosen_member() {
+        use crate::style::WidgetState;
+        let mut chip = Chip::new(Rect::new(0, 0, 240, 16));
+        chip.set_items(vec![ChipItem::new("a", "A"), ChipItem::new("b", "B")]);
+        assert_eq!(chip.widget_state(), WidgetState::Normal);
+
+        // Selection is a property of an *item*, so the report follows the collection.
+        let mut items = chip.items().to_vec();
+        items[1].selected = true;
+        chip.set_items(items);
+        assert_eq!(chip.widget_state(), WidgetState::Selected);
+
+        chip.handle_event(&Event::MouseEnter { pos: Point::new(1, 1) });
+        assert_eq!(
+            chip.widget_state(),
+            WidgetState::Selected,
+            "a chosen member outranks the list's own hover"
+        );
     }
 }

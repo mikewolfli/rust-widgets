@@ -11,6 +11,7 @@ use crate::widget::capability::coercion::{expect_f32, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::dimensions;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Frame widget.
@@ -386,17 +387,45 @@ impl Frame {
     }
     /// Draws panel frame with a subtle background fill and simple border.
     fn draw_panel_frame(&self, context: &mut RenderContext, rect: Rect) {
+        let (surface, outline) = self.theme_roles();
         let style = self.style();
-        let bg_color = style.background_color.unwrap_or(Color::rgb(236, 233, 216));
+        let bg_color = style.background_color.or(surface).unwrap_or(Color::rgb(236, 233, 216));
         context.fill_rect(rect, bg_color);
-        context.draw_rect(rect, style.border_color.unwrap_or(Color::rgb(64, 64, 64)));
+        context.draw_rect(rect, style.border_color.or(outline).unwrap_or(Color::rgb(64, 64, 64)));
     }
     /// Draws styled panel frame.
     fn draw_styled_panel_frame(&self, context: &mut RenderContext, rect: Rect) {
         // More sophisticated panel with gradient
-        let bg_color = self.style().background_color.unwrap_or(Color::rgb(240, 240, 240));
+        let bg_color = self
+            .style()
+            .background_color
+            .or_else(|| self.theme_roles().0)
+            .unwrap_or(Color::rgb(240, 240, 240));
         context.fill_rect(rect, bg_color);
         self.draw_box_frame(context, rect);
+    }
+    /// The two theme roles a frame's flat parts read: its surface and its outline.
+    ///
+    /// # Why these four fallbacks were literals and should not be
+    ///
+    /// `draw_panel_frame`, `draw_styled_panel_frame` and `draw_win_panel_frame` each fell back to
+    /// their own opaque constant when the caller set no colour — `rgb(236,233,216)`, `rgb(240,240,240)`
+    /// and `rgb(240,240,240)` for the fill, `rgb(0,0,0)` and `rgb(64,64,64)` for the line. None of
+    /// them moves with the appearance, so a themed frame kept a light 1990s panel fill inside a dark
+    /// window, and the census reported the control as one that "does not respond to the theme".
+    ///
+    /// The three reads are taken **out** of the guard before anything is drawn, because
+    /// `theme_manager()` is a non-reentrant mutex and the drawing path takes the same one — the rule
+    /// `slider.rs` documents.
+    ///
+    /// The **bevel** colours are deliberately not derived from here: the raised-edge illusion is a
+    /// highlight and a shadow, and `draw_win_panel_frame`'s own note explains why they stay literal.
+    fn theme_roles(&self) -> (Option<Color>, Option<Color>) {
+        let manager = crate::style::theme_manager();
+        match manager.current_theme() {
+            Some(active) => (Some(active.colors.surface_container), Some(active.colors.outline)),
+            None => (None, None),
+        }
     }
     /// Draws horizontal line frame.
     fn draw_hline_frame(&self, context: &mut RenderContext, rect: Rect) {
@@ -404,7 +433,7 @@ impl Frame {
         context.draw_line_stroke(
             Point::new(rect.x, y),
             Point::new(rect.x + rect.width as i32, y),
-            self.style().border_color.unwrap_or(Color::rgb(0, 0, 0)),
+            self.style().border_color.or(self.theme_roles().1).unwrap_or(Color::rgb(0, 0, 0)),
             self.line_width as u32,
         );
     }
@@ -414,7 +443,7 @@ impl Frame {
         context.draw_line_stroke(
             Point::new(x, rect.y),
             Point::new(x, rect.y + rect.height as i32),
-            self.style().border_color.unwrap_or(Color::rgb(0, 0, 0)),
+            self.style().border_color.or(self.theme_roles().1).unwrap_or(Color::rgb(0, 0, 0)),
             self.line_width as u32,
         );
     }
@@ -427,7 +456,10 @@ impl Frame {
         // derived from the border colour. A panel that has asked for a dark background
         // still wants its highlight to read as a highlight.
         let style = self.style();
-        let bg_color = style.background_color.unwrap_or(Color::rgb(240, 240, 240));
+        let bg_color = style
+            .background_color
+            .or_else(|| self.theme_roles().0)
+            .unwrap_or(Color::rgb(240, 240, 240));
         context.fill_rect(rect, bg_color);
         // Draw 3D border
         let light_color = Color::rgb(255, 255, 255);
@@ -600,10 +632,26 @@ impl Draw for Frame {
                 reg.borrow_mut().draw_widget(widget_id, context);
             }
         }
-        // Dim content when disabled
+        // Dim content when disabled.
+        //
+        // A **recession toward the surface**, not a grey wash: the fixed
+        // `rgba(128,128,128,80)` this used to paint has no direction, so it lightened the contents
+        // on a dark appearance and darkened them on a light one — "disabled" reading as "more
+        // contrast" exactly where legibility was worst. Same defect and same fix as the modal
+        // scrim (BLUE21 B23); see [`dimensions::DISABLED_VEIL_ALPHA`].
         if !self.base.is_enabled() {
             let rect = self.geometry();
-            context.fill_rect(rect, Color::rgba(128, 128, 128, 80));
+            let surface = self.style().background_color.or_else(|| {
+                crate::style::theme_manager().current_theme().map(|active| active.colors.background)
+            });
+            match surface {
+                Some(surface) => {
+                    context.fill_rect(rect, surface.with_alpha(dimensions::DISABLED_VEIL_ALPHA))
+                }
+                // No surface to fade toward: the historical grey is the honest fallback, and it is
+                // the one case where a direction cannot be derived.
+                None => context.fill_rect(rect, Color::rgba(128, 128, 128, 80)),
+            }
         }
     }
 }
@@ -764,5 +812,68 @@ mod tests {
         let _hover = f.base().hover_signal();
         let _mouse_down = f.base().mouse_down_signal();
         let _mouse_up = f.base().mouse_up_signal();
+    }
+
+    /// A panel-shaped frame's fill is a **theme role**, not a 1990s constant.
+    ///
+    /// # The defect this pins
+    ///
+    /// `draw_panel_frame` / `draw_styled_panel_frame` / `draw_win_panel_frame` each fell back to
+    /// their own opaque literal — `rgb(236,233,216)`, `rgb(240,240,240)`, `rgb(240,240,240)` — when
+    /// the caller set no colour. None moves with the appearance, so a themed frame kept a light
+    /// panel fill inside a dark window and the census reported the control as theme-blind.
+    ///
+    /// # Why the census snapshot does not cover this
+    ///
+    /// The exported `frame` uses the **default** `Box` shape, which paints no fill at all — so the
+    /// panel arms were reachable only through a caller that asked for a shape, and no snapshot ever
+    /// did. This asserts the fill directly instead of pretending the gallery covers it.
+    #[test]
+    #[cfg(device_profile)]
+    fn a_panels_fill_moves_with_the_appearance() {
+        let _guard = crate::theme::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        let rect = Rect::new(0, 0, 100, 50);
+
+        let fill_of = |appearance| {
+            crate::theme::global_theme_manager().set_appearance(appearance);
+            let mut frame = Frame::new(rect);
+            frame.set_frame_shape(FrameShape::Panel);
+            crate::theme::apply_theme_to_widget(&mut frame);
+            let surface = crate::style::theme_manager()
+                .current_theme()
+                .map(|active| active.colors.background)
+                .expect("a preset is active");
+            let svg = crate::widget::svg::render_widget_to_svg_on(&mut frame, rect, surface);
+            // The panel's fill is the first `fill="rgba(` after the backdrop.
+            let key = "fill=\"rgba(";
+            let backdrop = svg.find(key).expect("a backdrop") + key.len();
+            let face = svg[backdrop..].find(key).expect("the panel's fill") + backdrop + key.len();
+            let end = svg[face..].find(')').expect("the fill's close") + face;
+            let mut parts = svg[face..end].split(',');
+            let r = parts.next().and_then(|v| v.trim().parse().ok()).expect("r");
+            let g = parts.next().and_then(|v| v.trim().parse().ok()).expect("g");
+            let b = parts.next().and_then(|v| v.trim().parse().ok()).expect("b");
+            (Color::rgb(r, g, b), surface)
+        };
+
+        let dark = fill_of(crate::theme::AppearanceMode::Dark);
+        let light = fill_of(crate::theme::AppearanceMode::Light);
+        assert_ne!(
+            dark.0, light.0,
+            "a panel's fill must follow the appearance; both were {:?}",
+            dark.0
+        );
+        // Each must be the **surface role** rather than any literal — the panel reads
+        // `surface_container`, which is a step off the page in that appearance, so the fill must
+        // differ from the window it sits on. A literal that happened to equal the page would make
+        // a panel invisible; the literals this replaced did exactly that in one appearance each.
+        for (label, (fill, surface)) in [("dark", dark), ("light", light)] {
+            assert_ne!(
+                fill, surface,
+                "the {label} panel fill {fill:?} must be a step off the page {surface:?}, or the \
+                 panel has no edge to see"
+            );
+        }
     }
 }

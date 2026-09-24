@@ -2,7 +2,7 @@
 <!-- control: check_box | appearance: light -->
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(240,240,240,1.00)" />
-  <rect x="2" y="51" width="18" height="18" fill="rgba(180,180,180,1.00)" />
+  <rect x="2" y="51" width="18" height="18" fill="rgba(33,150,243,1.00)" />
   <rect x="2" y="51" width="18" height="18" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
   <line x1="5" y1="62" x2="8" y2="66" stroke="rgba(0,0,0,1.00)" stroke-width="2" />
   <line x1="8" y1="66" x2="13" y2="57" stroke="rgba(0,0,0,1.00)" stroke-width="2" />

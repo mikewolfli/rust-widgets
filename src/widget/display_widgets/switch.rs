@@ -257,6 +257,31 @@ impl Widget for Switch {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+
+    /// Reports `Checked` for an on switch, so the preset's `switch:checked` override is reachable.
+    /// The same defect and the same fix as `CheckBox::widget_state` — the trait default knows the
+    /// four primitive flags and none of them means "latched", so the key was declared and
+    /// unreachable. This one is the most visible of the four: a switch's whole meaning is its
+    /// position.
+    fn widget_state(&self) -> crate::style::WidgetState {
+        use crate::style::WidgetState;
+        if !self.base.is_enabled() {
+            return WidgetState::Disabled;
+        }
+        if self.checked {
+            return WidgetState::Checked;
+        }
+        if self.base.is_pressed() {
+            WidgetState::Pressed
+        } else if self.base.is_hovered() {
+            WidgetState::Hover
+        } else if self.base.draws_focus_ring() {
+            WidgetState::Focused
+        } else {
+            WidgetState::Normal
+        }
+    }
+
     // `Switch::tick` owns the thumb travel; the trait spelling is what the animation bus
     // reaches through `&mut dyn Widget`, which is the only way the sliding actually happens.
     fn tick(&mut self, delta_ms: u32) -> bool {
@@ -871,5 +896,27 @@ mod tests {
         // The host-facing setter is the same fact, for a backend with no hover event.
         sw.set_hovered(true);
         assert!(sw.is_hovered());
+    }
+
+    /// An on switch reports `Checked`, so the preset's `switch:checked` key is reachable.
+    ///
+    /// The same defect `CheckBox::widget_state` documents: the trait default knows the four
+    /// primitive flags and none of them means "latched", so the key resolved to `Normal` and the
+    /// accent fill the preset asks for was never painted. A switch is the most visible case — its
+    /// whole meaning is the position it reports.
+    #[test]
+    fn widget_state_reports_checked_for_an_on_switch() {
+        use crate::style::WidgetState;
+        let mut sw = Switch::new(crate::core::Rect::new(0, 0, 60, 30));
+        assert_eq!(sw.widget_state(), WidgetState::Normal);
+
+        sw.set_checked(true);
+        assert_eq!(sw.widget_state(), WidgetState::Checked);
+
+        sw.handle_event(&Event::MouseEnter { pos: Point::new(1, 1) });
+        assert_eq!(sw.widget_state(), WidgetState::Checked, "the latch outranks a hover");
+
+        sw.set_enabled(false);
+        assert_eq!(sw.widget_state(), WidgetState::Disabled, "disabled outranks the latch");
     }
 }

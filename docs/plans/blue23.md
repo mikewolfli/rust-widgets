@@ -1353,8 +1353,8 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
 | `button` | `button.rs` | 4 | ✅ 唯一已有完整交互过渡的控件（`interaction_progress` + `tick`，4 条单测） | ① 私有 `pressed`/`hovered`/`focus_reason` 上提（§2.2 的**原型**）② 硬编码 `Color::rgb(240,240,240)` 三态回落改 `theme` ③ `visual_focus` 上提 | **M1**（原型）**M2** **M4** **M11** | **P0** |
-| `toggle_button` | `toggle_button.rs` | 8 | 有 `pressed` 字段但 **`draw` 不读**（BLUE21 AR6 原样）；`ToggleButtonState` 只有 3 态（Normal/Checked/Disabled），**枚举本身缺 Hover/Pressed/Focused** ⇒ draw 无法表达 | ① 状态枚举补 3 态 ② 接 M1/M2 ③ 加 `tick`（M3） | **M1** **M2** **M3** **M4** | **P0** |
-| `check_box` | `checkbox.rs` | 0 | `MousePress` 臂**完全不看 `pos`**（控件矩形内任意点都切换）；无 hover/focus/error 态（主流 material 实现 有 9+ 组合） | ① 补 `:checked`/`:error` 覆盖（`colors.error` 至今**零消费者**）② 命中改 `contains_point_with_touch_expansion` ③ 勾色取**框填充的对比色** | **M1** **M2** **M9**（三态 `checked`/`mixed`） | **P0** |
+| `toggle_button` | `toggle_button.rs` | 7 | ✅ **第 73 轮已修**（实测见 `log-20260924-1.md` §29）：状态枚举补上 `Hover`/`Pressed`（原来只 3 态，而控件自己维护的 `is_pressed` 与基类的 `hovered` **都到不了枚举** ⇒ `draw` 无法表达，用户悬停/按下**毫无反馈**）；接 M3（`Transition` + `tick` + `is_animating`）；三个字面量（`rgb(200,220,255)` / `rgb(240,240,240)` / `rgb(80,120,200)` / `rgb(150,150,150)`）改读主题角色。**静止态快照逐字节不变**（progress=0 即静止色） | ①~③ **全部完成** | **M1** **M2** **M3** **M4** | ✅ **P0 完成** |
+| `check_box` | `checkbox.rs` | 0 | ✅ **第 73 轮已修**（实测见 `log-20260924-1.md` §34）：① `:checked` 覆盖**从来没有消费者** —— 四个 `:checked` 状态键声明了两轮却从未被任何控件报告，因为 trait 默认 `widget_state` 只知道四个原始标志、没有一个表示「已锁存」；现由控件自己报告 `Checked`。另发现**导出器把主题应用在状态之前**，所以即使键能拼出来，`check_box.svg` 也用的是静止色；顺序已修正。反向注入已证承重。| ① **完成** ② 命中测试**早已修好**（`hit_area().contains_point`，实测复核）`contains_point_with_touch_expansion`；③ 勾色取框填充对比色**早已修好** | **M1** **M2** **M9**（三态 `checked`/`mixed`） | ✅ **P0 完成（M9 待做）** |
 | `radio_button` | `radiobutton.rs` | 0 | ✅ 几何已修（`r8` + `r5` 点，快照已证）；有 `visual_focus` | ① 接 M1/M2 ② a11y 补 `checked` ③ 组内互斥语义已有则保持 | **M1** **M2** **M9** | P1 |
 | `label` | `label.rs` | 12 | 12 个字面量（纯文本控件却有色彩常量）；`swipe_to_dismiss` 曾被解析到此文件（分组工具的边界） | ① 文字色改读 `style.text_color`（12 → 0）② 与 `swipe_to_dismiss` 拆清 | **M4** | P1 |
 | `frame` | `frame.rs` | 29 | **本组字面量最多（29）**；虽有七种形状（含 `WinPanel`，BLUE21 A.7 记为优势）但两色斜角是字面量 | ① 斜角色走 `border_color` 的**派生**（`frame.rs:196-208` 已有范式，扩展到 29 处）② 保留七形状（**优势不动**） | **M4** | P1 |
@@ -1415,7 +1415,15 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
 | `switch` | `switch.rs` | 5 | ✅ 几何已修（`52×32`/`r14`）；**有 `travel` 与 `tick` 但无驱动者** ⇒ 开关**硬切**；`off_track` 已正确读 `theme_derived` | ① **M3（最高价值：一行让开关滑动）** ② 5 字面量清理 | **M3** **M4** | **P0** |
-| `slider` | `slider.rs` | 10 | `Slider::mouse_pressed` **存了 `draw` 不读**（BLUE21 AR6）；主流 material 实现 有 5 态（hover/focus/drag 光晕），本仓只有 enable/disable | ① **M1** ② 加 hover/drag 光晕（主流 material 实现 透明度 drag 0.1 / hover 0.08）③ 10 字面量清理 | **M1** **M2** **M4** | **P0** |
+| `slider` | `slider.rs` | 12 | ✅ **第 73 轮已修**（实测见 `log-20260924-1.md` §30）：`mouse_pressed` 存了不读 ⇒ 拖拽无任何视觉确认、悬停完全无反应。现改为读 `BaseWidget` 的 `hovered`/`pressed` 画一个 **halo**（悬停 0.08 / 拖拽 0.12，即主题状态覆盖用的同一对权重）；**静止态快照逐字节不变**（无交互则无 halo） | ① **M1 完成**（② 的 halo 即 主流 material 实现 那对权重的落位；③ 12 个字面量中剩余的是无主题时的回落值与测试值） | **M1** **M2** **M4** | ✅ **P0 完成** |
+
+> **🔴 §A.2 开工记录（第 73 轮）**：本附录共 15 组、~58 行处方。第 73 轮从
+> **A.2（Base controls）** 开始——计划自己写「本组是其他 181 个控件的模板，**必须最干净**」。
+> 本轮完成 `toggle_button`（P0，本条），其余 6 个待做。
+>
+> **逐步方法**（每行同此）：先对着源码实测确认缺陷 → 改 → 反向注入证明承重 →
+> 跑 `cargo test` + `clippy` + `check_profiles` → 重生成快照并**确认静止态逐字节不变**
+> （§9 判据 24 的「安全绳」）。
 | `progress_bar` | `progressbar.rs` | 4 | ✅ 几何已修（`h4 r2`）；**不确定态无动画**（主流 material 实现 1800 ms）；轨道色已改派生态（BLUE21 B8 已修） | ① 不确定态加 `tick`（1800 ms）② `range_slider.rs:405` 的承载面派生已做对，保持 | **M3** **M2** | P1 |
 | `progress_circle` | `progress_circle.rs` | 3 | BLUE21 A.3.6：无 `trackGap`（值 0 时弧与轨道**无法区分**） | ① 补 `trackGap = 4`（主流 material 实现 `progress_indicator.dart:1636`）② 不确定态旋转（M3） | **M10** **M3** | P1 |
 | `spinner` | `spinner.rs` | 3 | 有 `tick` **无驱动者** ⇒ **转圈不转** | **M3**（一行） | **P0** |

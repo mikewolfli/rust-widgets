@@ -309,6 +309,47 @@ impl Widget for CheckBox {
         );
         self.implicit_size()
     }
+
+    /// Reports `Checked` when the box is latched, so the preset's `check_box:checked` override
+    /// is actually reachable.
+    ///
+    /// # The defect this pins
+    ///
+    /// Both presets declare `check_box:checked` (and `radio_button:checked`, `switch:checked`,
+    /// `chip:checked`), and `ThemeManager::resolve_style_for_state` looks a control up by
+    /// `"<kind>:<state>"`. But **no control in the crate ever reported `WidgetState::Checked`** —
+    /// the trait's default only knows the four primitive flags (`disabled`/`pressed`/`hovered`/
+    /// `focused`), and none of them means "latched". So four state keys per preset were declared,
+    /// documented, and unreachable: a checked box resolved to `Normal` and the accent fill the
+    /// preset asks for was never painted.
+    ///
+    /// This is BLUE23 §5.5's rule ("a declared token must have a consumer") at the state level,
+    /// and the fix is the same shape: the control that *owns* the fact reports it.
+    ///
+    /// `Checked` outranks the momentary states because a latch is a persistent fact and a hover
+    /// is the overlay — the precedence `Widget::widget_state`'s doc describes, applied here.
+    /// `PartiallyChecked` deliberately also reports `Checked`: the preset paints one accent fill
+    /// for "on", and a mixed box is on. The three-way distinction is carried by the control's own
+    /// mark (`partial_rect`) and by `a11y_state`, which is where a screen reader reads it.
+    fn widget_state(&self) -> crate::style::WidgetState {
+        use crate::style::WidgetState;
+        if !self.base.is_enabled() {
+            return WidgetState::Disabled;
+        }
+        if self.state != CheckState::Unchecked {
+            return WidgetState::Checked;
+        }
+        if self.base.is_pressed() {
+            WidgetState::Pressed
+        } else if self.base.is_hovered() {
+            WidgetState::Hover
+        } else if self.base.draws_focus_ring() {
+            WidgetState::Focused
+        } else {
+            WidgetState::Normal
+        }
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -1041,5 +1082,41 @@ mod tests {
         cb.handle_event(&Event::MouseEnter { pos: Point::new(1, 1) });
         cb.set_enabled(false);
         assert_eq!(cb.widget_state(), WidgetState::Disabled);
+    }
+
+    /// A latched box reports `Checked`, which is what makes the preset's `check_box:checked`
+    /// override reachable at all.
+    ///
+    /// # The defect this pins
+    ///
+    /// Both presets declare `check_box:checked`, and the theme manager looks a control up by
+    /// `"<kind>:<state>"`. But the trait's default `widget_state` only knows the four primitive
+    /// flags — `disabled`/`pressed`/`hovered`/`focused` — and none of them means "latched". So the
+    /// key was declared, documented, and resolved to `Normal` on every checkbox, and the accent
+    /// fill the preset asks for was never painted. A declared state with no consumer is the
+    /// state-level form of §5.5's rule.
+    #[test]
+    fn widget_state_reports_checked_for_a_latched_box() {
+        use crate::style::WidgetState;
+        let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
+        assert_eq!(cb.widget_state(), WidgetState::Normal);
+
+        cb.set_state(CheckState::Checked);
+        assert_eq!(cb.widget_state(), WidgetState::Checked);
+
+        // `PartiallyChecked` also reports `Checked`: the preset paints one accent fill for "on",
+        // and a mixed box is on. The three-way answer is carried by the control's own mark and by
+        // `a11y_state`, which is where a screen reader reads it.
+        cb.set_state(CheckState::PartiallyChecked);
+        assert_eq!(cb.widget_state(), WidgetState::Checked);
+
+        // And the latch outranks the momentary states, so a checked box that is hovered is still
+        // reported as checked — the precedence the trait documents.
+        cb.handle_event(&Event::MouseEnter { pos: Point::new(1, 1) });
+        assert_eq!(cb.widget_state(), WidgetState::Checked);
+
+        // Unchecking hands the report back to the momentary states.
+        cb.set_state(CheckState::Unchecked);
+        assert_eq!(cb.widget_state(), WidgetState::Hover);
     }
 }
