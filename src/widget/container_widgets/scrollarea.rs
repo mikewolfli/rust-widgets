@@ -496,6 +496,21 @@ impl ScrollArea {
     /// The thumb length is proportional to the visible fraction and never
     /// collapses below a minimal usable size. When the content fits inside the
     /// viewport the thumb spans the whole track and cannot move.
+    ///
+    /// # The minimum is a fraction's *floor*, not a replacement for it
+    ///
+    /// The floor used to be the bare literal `10` — two digits that meant "small enough to look
+    /// like a thumb, large enough to grab" and were never related to the bar they sat in. On the
+    /// crate's own `SCROLLBAR_THICKNESS = 8` that reads as a thumb barely taller than the groove
+    /// is wide, and it is *shorter* than the 48 px `dimensions::SCROLLBAR_MIN_LENGTH` every other
+    /// consumer of a scroll bar already agreed on — the crate had two answers to one question.
+    ///
+    /// So the length is `max(SCROLLBAR_MIN_LENGTH, track * view/content)`, clamped to the track:
+    /// the same shape `draw_sticky_band` uses for its own geometry (resolve from the named
+    /// constant, do not restate the number), and the same rule the reference toolkit's scroll bar
+    /// states — the minimum is a **fraction** that a floor protects, not a constant that replaces
+    /// it. The clamp to `track_len` is what keeps a bar shorter than the floor from overflowing
+    /// its own groove.
     fn thumb_metrics(track_len: u32, content_len: u32, view_len: u32, scroll: i32) -> (u32, i32) {
         let track_len = track_len.max(1);
         if view_len == 0 || content_len <= view_len {
@@ -503,7 +518,9 @@ impl ScrollArea {
         }
         let max_scroll = (content_len - view_len) as i32;
         let proportional = (track_len as u64 * view_len as u64) / content_len as u64;
-        let thumb = proportional.clamp(10, track_len as u64) as u32;
+        let thumb = proportional
+            .max(dimensions::SCROLLBAR_MIN_LENGTH as u64)
+            .clamp(1, track_len as u64) as u32;
         let max_thumb_pos = (track_len - thumb) as i32;
         let scroll = scroll.clamp(0, max_scroll);
         let pos = (max_thumb_pos as i64 * scroll as i64) / max_scroll as i64;
@@ -1081,35 +1098,63 @@ mod tests {
 
     #[test]
     fn thumb_metrics_proportional_and_tracks_scroll() {
-        // track 80, content 200, viewport 100 => thumb = 80*100/200 = 40.
+        // track 80, content 200, viewport 100 => thumb = 80*100/200 = 40, which is below the
+        // floor, so the floor is what the track gets.
         let (len0, pos0) = ScrollArea::thumb_metrics(80, 200, 100, 0);
-        assert_eq!(len0, 40);
+        assert_eq!(len0, dimensions::SCROLLBAR_MIN_LENGTH);
         assert_eq!(pos0, 0);
 
         // Halfway through the scrollable range the thumb is centered.
         let (len, pos) = ScrollArea::thumb_metrics(80, 200, 100, 50);
-        assert_eq!(len, 40);
-        assert_eq!(pos, 20);
+        assert_eq!(len, dimensions::SCROLLBAR_MIN_LENGTH);
+        assert_eq!(pos, (80 - dimensions::SCROLLBAR_MIN_LENGTH) as i32 / 2);
 
         // Maximum scroll pins the thumb at the far end of the track.
         let (len, pos) = ScrollArea::thumb_metrics(80, 200, 100, 100);
-        assert_eq!(len, 40);
-        assert_eq!(pos, 40);
+        assert_eq!(len, dimensions::SCROLLBAR_MIN_LENGTH);
+        assert_eq!(pos, (80 - dimensions::SCROLLBAR_MIN_LENGTH) as i32);
 
         // Out-of-range scroll values are clamped to the track.
         let (_, pos) = ScrollArea::thumb_metrics(80, 200, 100, -5);
         assert_eq!(pos, 0);
         let (_, pos) = ScrollArea::thumb_metrics(80, 200, 100, 999);
-        assert_eq!(pos, 40);
+        assert_eq!(pos, (80 - dimensions::SCROLLBAR_MIN_LENGTH) as i32);
+
+        // A **proportional** thumb above the floor is exactly the ratio, so the floor cannot be
+        // mistaken for the rule. track 800, content 2000, viewport 1000 => 800*1000/2000 = 400.
+        let (len, _) = ScrollArea::thumb_metrics(800, 2000, 1000, 0);
+        assert_eq!(len, 400);
     }
 
     #[test]
     fn thumb_metrics_never_collapses_below_minimum() {
+        // The floor is `SCROLLBAR_MIN_LENGTH`, the same constant every other consumer of a scroll
+        // bar agrees on — not the literal `10` this used to clamp to, which was shorter than the
+        // groove is wide (`SCROLLBAR_THICKNESS`) and shorter than the crate's own minimum.
         let (len, _) = ScrollArea::thumb_metrics(1000, 100_000, 100, 0);
-        assert_eq!(len, 10);
+        assert_eq!(len, dimensions::SCROLLBAR_MIN_LENGTH);
 
-        let (len, _) = ScrollArea::thumb_metrics(50, 100_000, 50, 0);
-        assert_eq!(len, 10);
+        // A track shorter than the floor cannot give the thumb more room than it has.
+        let (len, _) = ScrollArea::thumb_metrics(20, 100_000, 20, 0);
+        assert_eq!(len, 20);
+
+        // And the floor is genuinely above the old literal, so this test would have failed
+        // against the previous code rather than passing on a coincidence.
+        const { assert!(dimensions::SCROLLBAR_MIN_LENGTH > 10) };
+    }
+
+    /// The thumb's floor and the groove's thickness must be a **usable pair**: a thumb thinner
+    /// than the groove is a smudge, not a handle. This is the property the old `10` broke.
+    #[test]
+    fn the_thumb_floor_is_never_thinner_than_the_groove() {
+        // A `const` block, because both sides are constants: the relation is a property of the
+        // dimension table and should fail the build, not a run.
+        const {
+            assert!(
+                dimensions::SCROLLBAR_MIN_LENGTH >= dimensions::SCROLLBAR_THICKNESS,
+                "the bar is narrower than the thumb it must carry"
+            )
+        };
     }
 
     #[test]

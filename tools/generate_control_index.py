@@ -269,17 +269,48 @@ def resolve_constructor(types: dict[str, str], entry: str, depth: int = 0) -> st
     return target
 
 
+EXPORTER = ROOT / "examples" / "export_control_svgs.rs"
+
+
+def extra_appearances() -> dict[str, str]:
+    """The extra (state) appearances, as `file stem -> the control it belongs to`.
+
+    Read from `export_control_svgs.rs`'s own `EXTRA_APPEARANCES` table rather than inferred from
+    the file name, for the reason that table exists: "which files exist" and "which states are
+    declared" must be one fact. A name pattern would also be a trap — `*_checked` would silently
+    absorb a real control that happened to end that way, and this page would then fold two
+    controls into one row.
+    """
+    if not EXPORTER.exists():
+        return {}
+    text = EXPORTER.read_text(encoding="utf-8")
+    match = re.search(r"EXTRA_APPEARANCES[^=]*=\s*&\[(.*?)\];", text, re.DOTALL)
+    if match is None:
+        return {}
+    found = {}
+    for control, suffix, _word in re.findall(
+        r'\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\)', match.group(1)
+    ):
+        found[control + suffix] = control
+    return found
+
+
 def registry_names() -> list[str]:
     """The control names the snapshot exporter writes, taken from the files themselves.
 
     The snapshot set *is* the registry's published set (`export_control_svgs.rs` iterates
     `factory.widget_names()`), so reading the directory keeps this page in step with the
     registry without a second list to maintain.
+
+    The **extra state appearances are excluded**: `group_box_checked.svg` is not a nineteenth
+    control, it is `group_box` in a state, and listing it as its own row would both inflate the
+    count and present a state as a control. They are reported separately in the extras section.
     """
+    extras = extra_appearances()
     names = sorted(
         path.name[: -len(".svg")]
         for path in SNAPSHOTS.glob("*.svg")
-        if not path.name.endswith(".light.svg")
+        if not path.name.endswith(".light.svg") and path.name[: -len(".svg")] not in extras
     )
     return names
 
@@ -305,6 +336,7 @@ def main() -> int:
     families = control_families()
     sources = source_families()
     names = registry_names()
+    extras = extra_appearances()
     if not names:
         print(f"error: no snapshots found in {SNAPSHOTS}", file=sys.stderr)
         return 1
@@ -329,6 +361,20 @@ def main() -> int:
         f"本仓一共有 **{len(names)}** 个控件，每个控件有两个外观（深色 / 浅色），"
         f"共 **{len(names) * 2}** 张 SVG。"
     )
+    if extras:
+        out.append("")
+        out.append(
+            f"此外还有 **{len(extras)}** 张**状态快照**（下表），它们不是额外的控件，"
+            "而是某个控件在用户可切换到的状态下的样子。"
+        )
+        out.append("")
+        out.append("| 状态快照 | 控件 | 说明 |")
+        out.append("|---|---|---|")
+        for stem, control in sorted(extras.items()):
+            out.append(
+                f"| `snapshots/svg/{stem}.svg` | `{control}` | "
+                f"`{control}` 的 `{stem[len(control) + 1:]}` 态（默认外观） |"
+            )
     out.append("")
     out.append(
         "这些图片由 `examples/export_control_svgs.rs` 从**控件注册表**导出，"

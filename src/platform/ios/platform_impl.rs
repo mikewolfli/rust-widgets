@@ -57,19 +57,50 @@ impl Platform for IosMobilePlatform {
 
     /// Reads installed physical memory via `sysconf(_SC_PHYS_PAGES)` in
     /// [`crate::platform::darwin_probes`]. iOS does not mount `/proc/meminfo`.
+    ///
+    /// # Why the probe is gated rather than the whole module
+    ///
+    /// `darwin_probes` needs `libc` symbols that only exist on an Apple target, and that one fact
+    /// used to cost this module everything: `platform_impl.rs` carries the `Platform` impl, so
+    /// gating *it* also hid [`super::tests`] — 9 assertions that exercise only the trait interface
+    /// and touch no UIKit — from every non-Apple host. Gating the three probe bodies here is the
+    /// same fix `platform/ime_macos.rs` applies to its AppKit touch points, and it keeps the
+    /// selection rule where it belongs (`platform/mod.rs` still requires an Apple target for the
+    /// backend to be chosen).
     fn total_memory_mb(&self) -> Option<u64> {
-        crate::platform::darwin_probes::total_memory_mb()
+        #[cfg(target_vendor = "apple")]
+        {
+            crate::platform::darwin_probes::total_memory_mb()
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            None
+        }
     }
 
     /// Reports whether `pmset -g batt` says the device is drawing from its battery.
     fn is_on_battery(&self) -> bool {
-        crate::platform::darwin_probes::is_on_battery()
+        #[cfg(target_vendor = "apple")]
+        {
+            crate::platform::darwin_probes::is_on_battery()
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            false
+        }
     }
 
     /// Samples RSS over VSZ for this process from `ps`, in
     /// [`crate::platform::darwin_probes`].
     fn process_memory_utilization(&self) -> Option<f32> {
-        crate::platform::darwin_probes::process_memory_utilization()
+        #[cfg(target_vendor = "apple")]
+        {
+            crate::platform::darwin_probes::process_memory_utilization()
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            None
+        }
     }
 
     /// CPU tick accounting has no lock-free Darwin source here, so this reports

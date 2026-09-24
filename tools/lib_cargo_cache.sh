@@ -38,6 +38,23 @@
 # for the same reason. `--no-cache` (or `RW_GATE_NO_CACHE=1`) bypasses it, which is how you debug a
 # step you do not trust.
 #
+# # `rw_cargo_cached` is for **pure** steps only — a generator must not use it
+#
+# The cache stores an exit status and the two output streams. Replaying them is indistinguishable
+# from re-running the command **except for side effects**, which a replay does not perform. That is
+# fine for every step this file was written for (`check`, `test`, `clippy` — they write only inside
+# `target/`), and it is a real defect for a step that writes into the working tree.
+#
+# Measured: `tools/check_generated_sources.sh` calls `designer_generate` through this cache, and
+# `designer_generate` **writes** `examples/generated_project/src/generated/*.rs`. Its
+# `REGENERATE_IN_PLACE` does `rm -rf $dir` and then runs the generator. On a cache hit the generator
+# never runs, so the directory is left **deleted** and the next step reports "commits no generated
+# source" — a false failure caused entirely by the cache, and one that only appears once the cache
+# is warm. `RW_GATE_NO_CACHE=1` hid it, which is why it survived until the cache was populated.
+#
+# The rule: a step whose purpose is to *produce* files must not be cached. Run it directly (or with
+# `RW_GATE_NO_CACHE=1` in scope) so the side effect actually happens.
+#
 # # Usage
 #
 #   . "$ROOT_DIR/tools/lib_cargo_cache.sh"

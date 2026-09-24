@@ -34,19 +34,53 @@ impl Platform for MacOSObjc2Platform {
 
     /// Reads installed physical memory via `sysconf(_SC_PHYS_PAGES)` in
     /// [`crate::platform::darwin_probes`].
+    ///
+    /// # Why this is gated, and what the other branch means
+    ///
+    /// `darwin_probes` needs `libc` symbols that only exist on an Apple target. The module used to
+    /// carry a `target_vendor = "apple"` gate for this one reason, which made its **entire** test
+    /// suite (`tests.rs`, 10 assertions that touch only the `Platform` trait interface) invisible on
+    /// every other host — tests that never run are tests that cannot fail, which is the risk this
+    /// crate has a standing rule about.
+    ///
+    /// So the probe is gated here instead, exactly as `platform/ime_macos.rs` gates its AppKit
+    /// touch points. On a non-Apple host this backend cannot be *selected* (`platform/mod.rs` still
+    /// requires `target_vendor = "apple"` — a build on Linux never constructs one), so the fallback
+    /// is not a behaviour any user can reach; it exists so the type and its tests compile.
     fn total_memory_mb(&self) -> Option<u64> {
-        crate::platform::darwin_probes::total_memory_mb()
+        #[cfg(target_vendor = "apple")]
+        {
+            crate::platform::darwin_probes::total_memory_mb()
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            None
+        }
     }
 
     /// Reports whether `pmset -g batt` says the machine is drawing from its battery.
     fn is_on_battery(&self) -> bool {
-        crate::platform::darwin_probes::is_on_battery()
+        #[cfg(target_vendor = "apple")]
+        {
+            crate::platform::darwin_probes::is_on_battery()
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            false
+        }
     }
 
     /// Samples RSS over VSZ for this process from `ps`, in
     /// [`crate::platform::darwin_probes`].
     fn process_memory_utilization(&self) -> Option<f32> {
-        crate::platform::darwin_probes::process_memory_utilization()
+        #[cfg(target_vendor = "apple")]
+        {
+            crate::platform::darwin_probes::process_memory_utilization()
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            None
+        }
     }
 
     /// CPU tick accounting has no lock-free Darwin source here, so this reports

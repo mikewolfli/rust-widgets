@@ -127,7 +127,7 @@ src/render/text_shaper.rs:66 let total = char_count as f32 * font_size * 0.6; //
 
 **G 系列现状：全部实现，无留白。** 六期均已实施并各自带判据；`fonts-cjk` 矢量版已在
 第 73 轮补齐（与 `fonts-cjk-bitmap` **互补**而非替代：位图面 85 KB 给 `mini`/`embedded`，
-矢量面 353 KB 给需要任意字号与抗锯刀的桌面宿主；同覆盖下矢量贵 7 倍，故此分工，实测见
+矢量面 353 KB 给需要任意字号与抗锯齿的桌面宿主；同覆盖下矢量贵 7 倍，故此分工，实测见
 `log-20260924-1.md` §9.1）。
 
 **推荐顺序**：`G-1 → G-2b → G-4b`（先把 `mini`/`embedded` 的中文拿下，代价最小且不依赖塑形）
@@ -161,20 +161,24 @@ src/render/text_shaper.rs:66 let total = char_count as f32 * font_size * 0.6; //
 
 | ITEM | 内容 | 实测状态 | 能否在本仓推进 |
 |---|---|---|---|
-| 0 | Hybrid 策略的**编译期**路由闭合 | 运行时矩阵门禁 **PASS**（`check_control_route_matrix.sh`，167 变体 / 0 缺失） | ✅ 可（差类型系统强制那一半） |
+| 0 | Hybrid 策略的**编译期**路由闭合 | ✅ **已关闭**（第 73 轮）：穷举 `match`（无通配 arm）已在，**编译器真的会拦**（实测删一条 arm → `E0004: non-exhaustive patterns`）；缺的那半条通配 arm 漏洞已由新门禁 `check_routing_match_is_exhaustive.sh` 堵上（实测：追加 `_ =>` 后旧门禁全绿、此门禁 FAIL） | ✅ **已完成** |
 | 1 | Linux 无 `gtk-native` 的原生对等 | 现为 preview/state loop | ⚠️ 需定后端策略 |
 | 2 | Harmony 桌面原生窗口/渲染/事件循环 | 未做 | ⚠️ 需 Harmony 宿主 |
 | 2b | Windows 原生 SpinBox/ListView/ScrollArea | **已落地，运行时未验证** | ⚠️ 需 Windows 宿主 |
 | 5 | macOS objc2 preview backend 转正 | 未做 | ⚠️ 需 macOS 宿主 |
 | 5b | cocoa-legacy off-main-thread 崩溃 | 未修 | ⚠️ 需 macOS 宿主 |
 | 6 | 跨平台控件对等矩阵闭合 | 未做 | ⚠️ 需多宿主 |
-| 7 | **宿主不可见测试** | Round 7 已救回 26 个；**剩余 47 个**（`ime_macos` 21 / `macos_objc2` 10 / `ios` 9 / `android` 7） | ✅ **可**（逐模块把纯逻辑与 OS 部分拆开） |
+| 7 | **宿主不可见测试** | **已关闭**（第 73 轮）：`macos_objc2` 10 / `ios` 9 从「一个主机都不编译」变为在本机运行；`android_jni` 7 与 `ime_macos` 19 经复核**本来就能跑**（前者靠 `android-jni` feature，后者早已无条件声明），不需要改。**新可见 19 条**（不是计划里记的 47——逐条实数见日志 §14.1） | ✅ **已完成** |
 
-> **ITEM 7 是本表里最值得先做的一条**：它是**纯重构**，不需要任何新宿主，
-> 而它救回的是**当前完全不在任何机器上执行**的 47 条断言 —— 与「测试绿了但其实没跑」
-> 是同一类风险（本仓已为此立过规矩）。
+> **ITEM 7 已在本轮关闭**（实测见 `log-20260924-1.md` §14）：两个模块的 `target_vendor = "apple"`
+> 门已被「把探针调用点单独 gate」取代（`ime_macos.rs` 早就在用这个写法），于是 19 条断言从
+> 「在任何机器上都不执行」变为在本机执行。另两组经复核**不是**宿主不可见（`android_jni` 靠
+> feature、`ime_macos` 早已无条件声明），如实记下，不把它们算作「本轮修好了」。
 >
-> **ITEM 0 的剩余半条同理**：矩阵门禁已在，缺的只是把它接进类型系统。
+> **ITEM 0 已在本轮关闭**（实测见 `log-20260924-1.md` §15）：编译期穷举已经是真的（删一条 arm 即 `E0004`），
+> 但它**离失效一个字**——追加 `_ =>` 就能让新变体静默通过，而当时**没有任何门禁能看出**
+> （实测：加了通配 arm 后全量测试全绿、运行时矩阵仍然 0 missing）。新门禁检查的是
+> 「**不存在**通配 arm」，即那个变异本身，所以不可能被它要防的编辑满足。
 
 ### 0A.7 本节验收判据
 
@@ -672,6 +676,15 @@ pub fn tick_animations(delta_ms: u32) -> bool;
 
 ### 4.1 P1-1 `group_box` 可勾选态：**纯黑勾**（BLUE21 B22，**至今未修**）
 
+> **✅ 第 73 轮已修**（实测见 `log-20260924-1.md` §22）。修法比原文多一层：框是**描边**，
+> 所以「框填充的对比色」本来是**没有指涉物**的 —— 这就是缺陷能以「主题恰好把
+> `style.background_color` 填成 `Some`」的方式活下来的原因（唯一露出来的是**没有主题时**）。
+> 现在框会**画自己的填充**，勾读 `field.contrast_color()`，与 `CheckBox` 的推导逐字相同。
+> 两态各自的断言是**两个发射值之间的关系**（抹掉填充读描边色则变红），且两条都已反向注入
+> 验证：注入 `Color::BLACK` 与 `Color::WHITE` 各让一条不同的断言变红。
+> 快照产出见同节：`group_box_checked.svg`（暗态、勾为白）；`group_box.svg` 的勾随
+> `checked=false` 一同归零。
+
 ```text
 $ grep -n "checkable\|Color::rgb" src/widget/container_widgets/groupbox.rs
 ```
@@ -690,6 +703,15 @@ $ grep -n "checkable\|Color::rgb" src/widget/container_widgets/groupbox.rs
 BLUE22 已建 `ActionRow`（`composite.rs`），但 8 个对话框**刻意未合并**（§5.4）。
 **本项只需把 `ActionRow` 产出的行盒交给 `draw_text_fitted`**，不动结构。
 
+> **✅ 第 73 轮复核：已修，走的是 `draw_text_line`。** 「把行盒交给 `draw_text_fitted`」是
+> 这条修法的**效果**；本仓把它收敛成了 `RenderContext::draw_text_line` —— 内部正是
+> `self.text_line(bounds, font)` 推出行盒再交给 `draw_text_fitted`，所以行盒的计算只有一处。
+> 6 个对话框（`color_dialog` / `input_dialog` / `message_box` / `file_dialog` /
+> `progress_dialog` / `font_dialog`）现在都调 `draw_text_line`。
+> **判据用计划自己点的工具**：`python3 tools/audit_text_y.py` ⇒
+> `scanned 369 files; suspicious placements: 0`（BLUE21 A12 记的 12 条 `HUG-TOP` 全部消失）。
+> 实证：`message_box.svg` 的按钮带是 `y=92 h=28`（中线 106），文字墨在 `99..112`，居中而非贴顶。
+
 ### 4.3 P1-3 `scroll_area` 的滚动条（BLUE21 B13，8 处字面量）
 
 同一文件 `draw_sticky_band`（`scrollarea.rs:453-468`）**已做对**，滚动条未抄。
@@ -698,12 +720,30 @@ BLUE22 已建 `ActionRow`（`composite.rs`），但 8 个对话框**刻意未合
 本仓已有 `dimensions::SCROLLBAR_MIN_LENGTH = 48`——**两者应一致**：
 `max(SCROLLBAR_MIN_LENGTH, track * content_ratio)`。
 
+> **✅ 第 73 轮已修**（实测见 `log-20260924-1.md` §23）。`thumb_metrics` 的下限原是字面量
+> `10` —— 比槽还窄（`SCROLLBAR_THICKNESS = 8` 的槽里放 10 px 的拇指），且与全仓
+> `SCROLLBAR_MIN_LENGTH = 48` 冲突。现在写成一件事：
+> `proportional.max(SCROLLBAR_MIN_LENGTH).clamp(1, track_len)`。
+> 反向注入（把下限改回 `clamp(10, …)`）⇒ 两条测试同时变红，证明承重。
+> 另立一条**性质**断言：`SCROLLBAR_MIN_LENGTH >= SCROLLBAR_THICKNESS`（写成 `const` 块，
+> 失败在**编译期**而不是运行期）。
+> **说明**：本节不改任何快照 —— `scroll_area` 的快照没有可滚动内容，两条 bar 都是 `None`，
+> 所以这条判据在源码级（单元测试），不在图上。
+
 ### 4.4 P1-4 `tab_bar` 三种形状画得一样（BLUE21 D9）+ 无溢出出口（D10）
 
 `tabwidget.rs:519-560` 的三种形状是**真画**的；`tab_bar.rs:584-610` 三臂相同，
 且注释描述了没做的活。**同一枚举值在两个 tab 控件里含义必须一致**。
 溢出：参考工具包 出滚动箭头、主流 material 实现 `isScrollable`、`tab_view.rs:227` 已有
 `rect.width / tab_count` 的解法——**三选一，不留悬空**。
+
+> **✅ 第 73 轮复核：两项都已落地。**
+> * **D9 三种形状**：`tab_bar.rs` 的三臂各自**真画**（`Rounded` 圆角、`Triangular` 闭合三角路径、
+>   `Rectangular` 直角），判据 `tabbar_tab_shapes_are_distinct` 断言三者两两不同；
+>   与 `tabwidget` 的同一枚举**含义一致**。
+> * **D10 溢出**：选了「均分」这一路（`fitted_tab_width` = `rect.width / tab_count`，扣除间隔预算，
+>   下限 `tab_min_width`），并由 `tabbar_tabs_are_kept_inside_a_narrow_strip` 对 1/2/3/6 个 tab
+>   逐个断言「每一个都在条内」，RTL 另有一条镜像断言。**不是悬空**。
 
 ### 4.5 P1-5 `meter` 刻度与弧相差 90°（BLUE21 D16）
 
@@ -730,6 +770,16 @@ BLUE22 已建 `ActionRow`（`composite.rs`），但 8 个对话框**刻意未合
 而不是朝 ink——暗态下朝 ink 会把背板**照亮**）。
 
 **判据**：暗态遮罩的亮度 **<** 它覆盖的面；明暗两态的 scrim 不再「数值巧合相同」。
+
+> **✅ 第 73 轮已修，而且缺陷就在 token 里**（实测见 `log-20260924-1.md` §24）。
+> BLUE21 B23 引入 `scrim` 角色就是为了修「逆积把暗底照亮」，但**暗态预设又把该角色写成了
+> 白色薄幕** `rgba(255,255,255,38)`：压在 `rgb(18,18,18)` 上合成出 `rgb(53,53,53)` ——
+> 同一缺陷换了个形式回来。现改为 `rgba(0,0,0,130)`。
+>
+> 两态仍**不共享一个数**（B23 的第二条发现）：暗态面更暗，所以需要更重的幕才能达到与浅色
+> 面同等的分离度，`a=130 > 82`。两条断言都写成**关系**而不是十六进制值：
+> 「合成后的亮度 < 底面的亮度」与「暗态的 `a` > 浅态的 `a`」。
+> 反向注入（改回白幕）⇒ 两条同时变红，报出 `18 -> 53 is a lift`。
 
 ### 5.2 P1-8 `surface_container*`：卡片与面板的层级
 
@@ -796,7 +846,50 @@ BLUE21 那轮的性质是修既有控件的错，混进加能力会让「修了�
 > 「**逻辑上是子节点、视觉上必须脱离父裁剪**」的控件，在声明式层里**无法表达**。
 > 这不是「还没写」，是**模型缺一个维度**。
 
-### 5A.1 现状取证（本计划实跑，非引用）
+### 5A.1 现状取证（**本节已于第 73 轮复核，原取证已不再成立**）
+
+原文的取证（下方保留）是在本节刚写时跑的，**现在全部不成立了**。复核命令与结果：
+
+```text
+$ grep -rn "children_if" src/ --include=*.rs | wc -l
+0                     # 原为 2（定义 + 自己的单测）⇒ 判据 30 走了【选项 B：删除】
+
+$ grep -rn "fn portal" src/view/ --include=*.rs
+src/view/node.rs:189:    pub fn portal(mut self) -> Self    # 原为零命中 ⇒ P1-12 已实施
+
+$ grep -rn "fn on_mount\|fn on_unmount" src/view/ --include=*.rs
+src/view/node.rs:170:    pub fn on_mount(...)               # 原为零命中 ⇒ P1-13 已实施
+src/view/node.rs:179:    pub fn on_unmount(...)
+
+$ grep -n "pub struct Context" src/view/engine.rs
+src/view/engine.rs:28:pub struct Context      # 原为「Node 没有第五个字段」⇒ P1-14 已实施
+
+$ grep -n "pub enum ViewError" src/view/apply.rs
+src/view/apply.rs:103:pub enum ViewError       # 原为扁平类型 ⇒ P1-15 已实施（带 widget/key/父链）
+```
+
+对应的判据也已逐条实跑（全部绿）：
+
+```text
+$ cargo test --features desktop view::engine
+  a_portal_control_is_hosted_in_the_overlay_layer          ... ok   # 判据 26
+  a_tree_without_portals_has_no_overlay_layer              ... ok   # 判据 26 的反面
+  on_mount_fires_once_and_not_on_a_stable_rebuild          ... ok   # 判据 27
+  on_unmount_fires_once_when_the_tree_is_replaced          ... ok   # 判据 27
+  a_context_value_reaches_the_described_props              ... ok   # 判据 28
+  the_context_is_absent_from_the_comparison                ... ok   # 判据 28
+  a_missing_context_key_is_none                            ... ok   # 判据 28
+  a_bad_child_does_not_remove_its_good_siblings            ... ok   # 判据 11
+  a_failure_carries_the_widget_name_key_and_ancestor_chain ... ok   # 判据 12
+  a_failure_yields_a_placeholder_that_names_it             ... ok   # 判据 13
+$ bash tools/check_view_failures_are_local.sh
+  checks=3 failures_pushed=4 failed=0                              # 判据 31（新增门禁，双向注入已验证）
+```
+
+**§5A 六项全部收口**。
+
+<details>
+<summary>原文取证（已过时，保留以对照）</summary>
 
 ```text
 $ grep -rn "children_if" src/ --include=*.rs
@@ -814,6 +907,8 @@ $ grep -n "pub struct Node" -A 12 src/view/node.rs
 ```
 
 **五项全部确认未做**，且 `children_if` 的「零消费者」在 `blue21.md:175` 记录之后**至今未变**。
+
+</details>
 
 ### 5A.2 P1-12 `portal`：让「逻辑子节点、视觉脱离父裁剪」可声明
 

@@ -664,30 +664,72 @@ mod tests {
         assert!(svg.ends_with("</svg>"));
     }
 
-    /// BLUE23 §5.1 — the modal scrim reads the `scrim` role, and dims rather than lifts.
+    /// BLUE23 §5.1, judgement 15 — the modal scrim is **darker** than the surface it covers.
     ///
-    /// The defect this pins: a scrim derived from the *foreground* instead of an absolute
-    /// direction came out **brighter** than the surface it covered on one appearance, so the
-    /// "dimming" layer brightened the backdrop. Deriving from the theme's `scrim` token keeps
-    /// the direction the theme's business, and this asserts the two facts that matter: the
-    /// role is what is read, and the fallback darkens.
+    /// # What this pins, and why the previous assertion did not
+    ///
+    /// The defect is BLUE21 B23's: a scrim derived from the *foreground* came out **brighter**
+    /// than the surface it covered, so the "dimming" layer lifted the backdrop. BLUE21 B23
+    /// introduced the `scrim` role to fix it — but the dark preset then authored that role as a
+    /// white veil (`rgba(255,255,255,38)`), which put the defect straight back: over the dark
+    /// window it composites to `rgb(54,54,54)` against a `rgb(18,18,18)` page.
+    ///
+    /// The assertion that catches that is **composited** luminance, not `scrim != window` and not
+    /// the blend fallback on its own: the veil *did* differ from the page, and its fallback was
+    /// fine — the comparison that matters is the one the user sees. Off the plan's own wording,
+    /// "暗态遮罩的亮度 < 它覆盖的面".
     #[test]
-    fn the_scrim_reads_its_role_and_darkens_the_backdrop() {
+    #[cfg(device_profile)]
+    fn the_scrim_composites_darker_than_the_backdrop() {
         let _guard = crate::theme::theme_test_guard();
-        let window = crate::style::theme_manager()
-            .current_theme()
-            .map(|active| active.colors.background)
-            .expect("a preset is active");
-        let scrim = crate::style::layer_color(crate::style::LayerColor::Scrim)
-            .expect("the preset defines a scrim role");
-        // A light appearance dims by darkening; a dark one dims by a light veil. Either way the
-        // scrim must differ from the backdrop, or it is not a layer at all.
-        assert_ne!(scrim, window, "the scrim role must not be the page colour");
-        // And the fallback derivation -- used when no theme is active -- darkens absolutely.
-        let fallback = window.blend(&crate::core::Color::BLACK, 0.32);
+        for appearance in [crate::theme::AppearanceMode::Dark, crate::theme::AppearanceMode::Light]
+        {
+            crate::theme::global_theme_manager().set_appearance(appearance);
+            let window = crate::style::theme_manager()
+                .current_theme()
+                .map(|active| active.colors.background)
+                .expect("a preset is active");
+            let scrim = crate::style::layer_color(crate::style::LayerColor::Scrim)
+                .expect("the preset defines a scrim role");
+            // What the user sees: the scrim laid over the page, at the scrim's own alpha.
+            let composited = window.blend(&scrim, scrim.a as f32 / 255.0);
+            assert!(
+                composited.luminance() < window.luminance(),
+                "the {appearance:?} scrim must dim the page: {window:?} -> {composited:?} \
+                 (scrim {scrim:?}) is a lift, which is BLUE21 B23"
+            );
+        }
+    }
+
+    /// BLUE23 §5.1: the two appearances' scrims must not be a numerical coincidence.
+    ///
+    /// BLUE21 B23's second finding was that the old foreground-derived blend landed on 121 (dark)
+    /// and 122 (light) — "almost the same number", which is the signature of an expression that
+    /// happened to agree under these two presets rather than of a derived quantity. A scrim that
+    /// reads the same on both appearances is the same defect wearing a token.
+    #[test]
+    #[cfg(device_profile)]
+    fn the_two_appearances_do_not_share_one_scrim_number() {
+        let _guard = crate::theme::theme_test_guard();
+        let scrim_of = |appearance| {
+            crate::theme::global_theme_manager().set_appearance(appearance);
+            crate::style::theme_manager()
+                .current_theme()
+                .map(|active| active.colors.scrim)
+                .expect("a preset is active")
+        };
+        let dark = scrim_of(crate::theme::AppearanceMode::Dark);
+        let light = scrim_of(crate::theme::AppearanceMode::Light);
+        assert_ne!(
+            dark, light,
+            "both appearances resolve one scrim value; that is a constant, not a theme role"
+        );
+        // Stated as the property, not as a hex value: the dark backdrop is darker, so its veil has
+        // to carry more weight to separate the modal from the page.
         assert!(
-            fallback.luminance() < window.luminance(),
-            "the blend fallback must darken, not lighten"
+            dark.a > light.a,
+            "a near-black backdrop needs a heavier veil than a light one (dark {dark:?}, light \
+             {light:?})"
         );
     }
 }

@@ -25,7 +25,9 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::special_widgets::finance::layout::PlotArea;
 use crate::widget::special_widgets::finance::types::Quote;
+use crate::widget::special_widgets::finance::volume_chart::draw_empty_pane;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -604,6 +606,32 @@ impl Draw for QuoteBoard {
         // The rows, clipped to the pane by the loop bound rather than by a clip push:
         // a board taller than its frame simply does not draw the rows past the end.
         let available = ((geometry.height as i32 - row_height) / row_height).max(0) as usize;
+
+        // BLUE23 §4.6 (BLUE21 D5): a board with columns but no quotes drew its header over an
+        // empty body, which reads as a rendering failure rather than as "no data yet". The header
+        // is kept — it is what tells a reader what the missing rows would mean — and the body gets
+        // the same shared message its finance siblings use.
+        if self.quotes.is_empty() {
+            let body = Rect::new(
+                geometry.x,
+                geometry.y + row_height,
+                geometry.width,
+                geometry.height.saturating_sub(row_height as u32),
+            );
+            if body.height > 0 {
+                draw_empty_pane(
+                    context,
+                    &PlotArea::of(body),
+                    crate::widget::special_widgets::finance::layout::PanelColors {
+                        surface: panel,
+                        ink,
+                        grid: panel.blend(&secondary, 0.45),
+                    },
+                );
+            }
+            return;
+        }
+
         for (index, quote) in self.quotes.iter().enumerate().take(available) {
             let y = self.first_row_y() + index as i32 * row_height;
             if self.selected == Some(index) {
@@ -933,6 +961,51 @@ mod tests {
             crate::render::SoftwarePaintBackend::new(crate::core::Size::new(480, 240), 1.0);
         let mut context = RenderContext::new(&mut backend);
         board.draw(&mut context);
+    }
+
+    /// A board with columns but no quotes draws a **`No data` message** over the empty body.
+    ///
+    /// BLUE23 §4.6 (BLUE21 D5). Before this, the header drew and the body was empty: a reader saw
+    /// a labelled grid of nothing, which reads as a rendering failure rather than as "no data
+    /// yet".
+    ///
+    /// # Why the assertion is on the body's y-band, not on the total ink
+    ///
+    /// The header is deliberately kept (it is what gives the missing rows their meaning), so
+    /// "some text was drawn" is already true on the broken version — measured: a mutation that
+    /// deletes the message still passed a total-ink assertion. Isolating by y is what makes the
+    /// check about the *body*: the message is centred in the region below the header, while the
+    /// header's own labels sit inside the first row band.
+    #[test]
+    fn an_empty_board_draws_the_no_data_message() {
+        let mut board = QuoteBoard::new(Rect::new(0, 0, 480, 240));
+        let empty_svg =
+            crate::widget::svg::render_widget_to_svg(&mut board, Rect::new(0, 0, 480, 240));
+        // The header occupies row 0; anything at or below the second row is body ink.
+        let header_height = board.row_height();
+        let body_runs = crate::widget::svg::text_ink_boxes(&empty_svg)
+            .into_iter()
+            .filter(|(_, top, _, _)| *top >= header_height)
+            .count();
+        assert!(
+            body_runs > 0,
+            "the empty body must say so rather than showing a header over nothing: \
+             {body_runs} body text runs, header height {header_height}"
+        );
+
+        // And a populated board puts *rows* there instead, so the two states are distinguishable.
+        let mut filled = QuoteBoard::new(Rect::new(0, 0, 480, 240));
+        filled.set_quotes(fixtures::sample_quotes(8));
+        let filled_svg =
+            crate::widget::svg::render_widget_to_svg(&mut filled, Rect::new(0, 0, 480, 240));
+        let filled_runs = crate::widget::svg::text_ink_boxes(&filled_svg)
+            .into_iter()
+            .filter(|(_, top, _, _)| *top >= header_height)
+            .count();
+        assert!(
+            filled_runs > body_runs,
+            "eight quotes must draw more body runs ({filled_runs}) than the message ({body_runs})"
+        );
     }
 
     /// A board with every column selected draws without panicking.

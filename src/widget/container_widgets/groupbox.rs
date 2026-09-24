@@ -625,17 +625,23 @@ impl Draw for GroupBox {
                 // pure-black stroke on a dark appearance is the least readable mark in the
                 // control, and it is the very part the user toggles. Same rule as
                 // `mdiarea.rs`, which draws its active title in `primary.contrast_color()`.
+                //
+                // The fill has to be painted for that rule to have a referent. This box used to
+                // be an outline only, so the tick's contrast decision was made against the
+                // *border* colour — a mid-grey, whose contrast colour is black on every
+                // appearance. A theme resolved the ambiguity by accident (`style.background_color`
+                // is `Some`), which is exactly why the defect survived: it only showed where no
+                // theme was active. The box now paints its own field and the tick reads
+                // `field.contrast_color()`, which is `CheckBox`'s derivation verbatim — one
+                // control's indicator, one rule.
                 let box_color = style.border_color.unwrap_or(Color::rgb(100, 100, 100));
+                let field = style.background_color.unwrap_or(Color::WHITE);
+                context.fill_rect(checkbox_rect, field);
                 context.draw_rect(checkbox_rect, box_color);
                 // Draw checkmark if checked
                 if self.checked {
-                    // The box above is an outline, so the fill the tick sits on is the
-                    // control's own background — the colour the contrast decision must be
-                    // made against.
-                    let tick_color = style
-                        .background_color
-                        .unwrap_or_else(|| box_color.contrast_color())
-                        .contrast_color();
+                    // The mark lands on the box's own fill, so its colour is that fill's contrast.
+                    let tick_color = field.contrast_color();
                     context.draw_line(
                         Point::from_f32(
                             checkbox_rect.x as f32 + 2.0,
@@ -691,6 +697,8 @@ impl Draw for GroupBox {
 mod tests {
     use super::*;
     use crate::core::{ObjectId, Rect};
+    #[cfg(device_profile)]
+    use crate::theme::AppearanceMode;
 
     #[test]
     fn groupbox_creation_defaults() {
@@ -851,5 +859,137 @@ mod tests {
         let gb = GroupBox::new(Rect::new(0, 0, 200, 100));
         assert!(gb.children().is_empty());
         assert_eq!(gb.children().len(), 0);
+    }
+
+    /// The tick is painted in the **contrast colour of the box's fill** (BLUE23 §4.1, judgement 17a).
+    ///
+    /// # Why this reads the emitted document, and not a colour field
+    ///
+    /// The defect it pins is "the tick is a literal black on a dark appearance". A first version of
+    /// this test computed `box_color.contrast_color()` itself and compared it against itself, so a
+    /// mutation that replaced the draw path's colour with `Color::BLACK` still passed — measured.
+    ///
+    /// A second version asserted `tick == WHITE` unconditionally, which is also wrong: it silently
+    /// assumed a theme was active. Under no theme the box's fill is `WHITE`, so the *correct*
+    /// contrast colour is `BLACK`, and that assertion would have demanded a bug.
+    ///
+    /// So the assertion is a **relationship between two emitted values** — the fill the indicator
+    /// paints and the stroke the tick paints — and, where a theme registry exists, evaluated under
+    /// **both** appearances, installed the way the exporter installs them
+    /// (`install_preset_appearances` and `apply_theme_to_widget`). That is the plan's rule stated
+    /// literally, and no constant can satisfy it across both: a literal black fails on the dark
+    /// fill, a literal white on the light one.
+    ///
+    /// # Why the appearance loop is gated on `device_profile`
+    ///
+    /// `crate::theme` is what compiles the theme registry, and the stripped profiles (`mini`,
+    /// `embedded`) do not have it — `theme_manager()` there is a placeholder. Gating the *loop*
+    /// rather than the whole test keeps the relationship assertion running everywhere: with no
+    /// theme the box's fill is `WHITE`, so the correct contrast colour is `BLACK`, and a drawing
+    /// that answered a constant would still be caught on the profile that has no appearances to
+    /// compare against.
+    #[test]
+    fn the_tick_is_the_contrast_of_the_box_it_sits_in() {
+        #[cfg(device_profile)]
+        let _guard = crate::theme::theme_test_guard();
+        #[cfg(device_profile)]
+        crate::widget::census::install_preset_appearances();
+        let frame = Rect::new(0, 0, 200, 100);
+
+        // The indicator is the last `<rect … stroke-width="1" />` before the tick, and the tick is
+        // the `<line … stroke="rgba(…)" />` pair. Reading the document is what makes the
+        // comparison a property of the drawing rather than a restatement of the source.
+        let rgb = |fragment: &str, key: &str| -> Option<(u8, u8, u8)> {
+            let at = fragment.find(key)? + key.len();
+            let end = fragment[at..].find(')')? + at;
+            let mut parts = fragment[at..end].split(',');
+            let r = parts.next()?.trim().parse().ok()?;
+            let g = parts.next()?.trim().parse().ok()?;
+            let b = parts.next()?.trim().parse().ok()?;
+            Some((r, g, b))
+        };
+
+        let mut seen_fills = crate::compat::Vec::new();
+        let mut seen_ticks: crate::compat::Vec<crate::compat::Vec<(u8, u8, u8)>> =
+            crate::compat::Vec::new();
+        #[cfg(device_profile)]
+        let appearances = [Some(AppearanceMode::Dark), Some(AppearanceMode::Light)].as_slice();
+        #[cfg(not(device_profile))]
+        let appearances = [Option::<crate::style::AppearanceMode>::None].as_slice();
+        for appearance in appearances {
+            let mut ticks_this_appearance = crate::compat::Vec::new();
+            // Installed exactly as `export_control_svgs` does it, so this test and the committed
+            // snapshot for the same appearance describe the same drawing.
+            #[cfg(device_profile)]
+            let backdrop = {
+                crate::theme::global_theme_manager()
+                    .set_appearance(appearance.expect("an appearance"));
+                crate::theme::global_theme_manager()
+                    .current_theme()
+                    .map(|active| active.colors.background)
+                    .unwrap_or(Color::WHITE)
+            };
+            #[cfg(not(device_profile))]
+            let backdrop = Color::WHITE;
+            let mut gb = GroupBox::new(frame);
+            gb.set_title("Options".to_string());
+            gb.set_checkable(true);
+            gb.set_checked(true);
+            #[cfg(device_profile)]
+            crate::theme::apply_theme_to_widget(&mut gb);
+            let svg = crate::widget::svg::render_widget_to_svg_on(&mut gb, frame, backdrop);
+            let tick_at = svg.find("<line").expect("a checked box draws the tick's two strokes");
+            // The indicator's **fill** element is the last one before the tick that paints a
+            // `fill="rgba(`, because the indicator's outline (`fill="none"`) sits between it and
+            // the tick. Reading the fill directly is what picks the surface the tick sits *in*
+            // rather than the box's edge.
+            let fill_at = svg[..tick_at].rfind("fill=\"rgba(").expect("the indicator's fill");
+            let fill = rgb(&svg[fill_at..], "fill=\"rgba(").expect("a parseable fill");
+
+            // Both tick strokes, so "one of the two is right" cannot pass.
+            let tick_lines: crate::compat::Vec<&str> =
+                svg.match_indices("<line").map(|(i, _)| &svg[i..]).collect();
+            assert!(tick_lines.len() >= 2, "the tick is two strokes");
+            for (n, line) in tick_lines.iter().enumerate() {
+                let tick = rgb(line, "stroke=\"rgba(").expect("the tick carries a stroke colour");
+                let want = Color::rgb(fill.0, fill.1, fill.2).contrast_color();
+                assert_eq!(
+                    tick,
+                    (want.r, want.g, want.b),
+                    "tick stroke {n} ({tick:?}) must be the contrast colour of the box fill \
+                     {fill:?} it sits in; a literal black is the BLUE21 B22 defect this pins"
+                );
+                ticks_this_appearance.push(tick);
+            }
+            seen_fills.push(fill);
+            seen_ticks.push(ticks_this_appearance);
+        }
+
+        // The rule is only a rule if it *moves*: where there are two appearances, one whose tick
+        // colour is the same constant for both would satisfy every assertion above by coincidence
+        // for one of them. The stripped profiles have one backdrop, so there is nothing to compare
+        // — the relationship assertion above is what carries them.
+        #[cfg(device_profile)]
+        assert_ne!(
+            seen_ticks[0], seen_ticks[1],
+            "the tick must follow the fill; the two appearances produced {seen_ticks:?} from fills \
+             {seen_fills:?}"
+        );
+        // Not `unused`: the single-appearance profiles still record the fill, and keeping the
+        // collection unconditional is what makes this test one shape rather than two.
+        let _ = seen_fills;
+
+        // And the two states must differ, or the `group_box_checked` snapshot would be
+        // indistinguishable from the default one.
+        let mut unchecked = GroupBox::new(frame);
+        unchecked.set_title("Options".to_string());
+        unchecked.set_checkable(true);
+        unchecked.set_checked(false);
+        let plain = crate::widget::svg::render_widget_to_svg(&mut unchecked, frame);
+        assert_eq!(
+            plain.matches("<line").count(),
+            0,
+            "an unchecked box draws no tick, so the checked state is not implied"
+        );
     }
 }

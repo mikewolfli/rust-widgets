@@ -26,7 +26,9 @@ use crate::render::RenderContext;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::special_widgets::finance::layout::PlotArea;
 use crate::widget::special_widgets::finance::types::{BookLevel, OrderBook};
+use crate::widget::special_widgets::finance::volume_chart::draw_empty_pane;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -360,6 +362,28 @@ impl Draw for OrderBookWidget {
         let hover_fill = panel.blend(&ink, 0.12);
         let rule_color = panel.blend(&secondary, 0.45);
 
+        // BLUE23 §4.6 (BLUE21 D5): an empty book must still say so.
+        //
+        // The two loops below simply draw nothing for an empty side, which left the panel as a
+        // bare slab — the same "silent gap" the finance siblings had. This reuses the shared
+        // [`draw_empty_pane`], so the message and its contrast floor are one derivation across
+        // every chart in this family rather than a second copy here.
+        let has_levels =
+            [BookSide::Bid, BookSide::Ask].iter().any(|side| !self.levels(*side).is_empty());
+        if !has_levels {
+            let area = PlotArea::of(geometry);
+            draw_empty_pane(
+                context,
+                &area,
+                crate::widget::special_widgets::finance::layout::PanelColors {
+                    surface: panel,
+                    ink,
+                    grid: rule_color,
+                },
+            );
+            return;
+        }
+
         let max_quantity = self.book.max_level_quantity();
         let row_height = self.row_height();
         let decimals = self.effective_decimals();
@@ -632,6 +656,53 @@ mod tests {
             crate::render::SoftwarePaintBackend::new(crate::core::Size::new(320, 240), 1.0);
         let mut context = RenderContext::new(&mut backend);
         ladder.draw(&mut context);
+    }
+
+    /// An empty book draws the **`No data` message**, not just a panel.
+    ///
+    /// BLUE23 §4.6 (BLUE21 D5). "Draws without panicking" is satisfied by a bare slab, which is
+    /// exactly what this control used to produce: the two row loops iterate over an empty book and
+    /// paint nothing. So the assertion is on the ink the message leaves, through the SVG backend —
+    /// the same backend the snapshot gate reads, so what this proves is what a reviewer sees.
+    ///
+    /// The signal is the **message**, which `text_line` centres in the pane: measured, it lands at
+    /// y `108..118` in a 240 px pane — the *ink* band, which sits just above the geometric middle
+    /// because `text_line` offsets by whole glyph boxes. So the band is asserted as "in the middle
+    /// third", which is what distinguishes a centred message from rows drawn from the top down.
+    #[test]
+    fn an_empty_book_draws_the_no_data_message() {
+        let mut ladder = OrderBookWidget::new(Rect::new(0, 0, 320, 240));
+        let empty_svg =
+            crate::widget::svg::render_widget_to_svg(&mut ladder, Rect::new(0, 0, 320, 240));
+        // The middle third of a 240 px pane: 80..=160. A message is centred here; the rows of a
+        // populated book start at the top (bids first) and never land here for a 5-level book.
+        let (low, high) = (80, 160);
+        let centred_runs = crate::widget::svg::text_ink_boxes(&empty_svg)
+            .into_iter()
+            .filter(|(_, top, _, bottom)| *top >= low && *bottom <= high)
+            .count();
+        assert!(
+            centred_runs > 0,
+            "an empty book must say so: the pane owes the reader a centred message, \
+             got {centred_runs} runs in y {low}..={high}"
+        );
+
+        // And the message is a *message*: one short run, not a table's worth of cells.
+        assert_eq!(
+            crate::widget::svg::text_ink_boxes(&empty_svg).len(),
+            1,
+            "the empty state is one message, not a grid"
+        );
+
+        let mut filled = OrderBookWidget::new(Rect::new(0, 0, 320, 240));
+        filled.set_book(fixtures::sample_book(5));
+        let filled_svg =
+            crate::widget::svg::render_widget_to_svg(&mut filled, Rect::new(0, 0, 320, 240));
+        assert!(
+            crate::widget::svg::text_subpath_count(&filled_svg)
+                > crate::widget::svg::text_subpath_count(&empty_svg),
+            "a populated book must draw more ink than the empty-state message"
+        );
     }
 
     /// A zero depth draws nothing rather than panicking on a division by zero.

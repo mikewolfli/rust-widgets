@@ -15,12 +15,32 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Toggle button state enumeration.
 ///
+/// # Why the two interaction states are derived rather than stored
+///
+/// This enum used to have exactly the two *persistent* states (`Checked` / `Normal`) plus
+/// `Disabled`, so `draw` had no way to express "the pointer is over this" or "this is being held"
+/// — the control's own `is_pressed` flag was maintained and then never read. A user toggling a
+/// button therefore got no feedback at all until the latch flipped, which is the one moment the
+/// feedback was least needed.
+///
+/// `Hover` and `Pressed` are read off [`BaseWidget`], which is where the crate keeps its single
+/// copy of those facts (that is what makes M1 a zero-code win for every control). They sit
+/// **below** `Checked`/`Disabled` in the precedence because those are persistent facts about the
+/// control while these are momentary: a checked button that is hovered is still usefully called
+/// `Checked`, and the hover is then an *overlay* the draw path adds — the same layering
+/// [`Widget::widget_state`] describes. Putting it in this order is what keeps the existing
+/// `state` property value stable for every caller that already reads it.
+///
 /// Derived from the checked and enabled flags, never stored: see
 /// [`ToggleButton::state`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToggleButtonState {
-    /// Enabled and not checked.
+    /// Enabled, not checked, and not being pointed at or held.
     Normal,
+    /// Enabled, not checked, and the pointer is over it.
+    Hover,
+    /// Enabled, not checked, and currently held down.
+    Pressed,
     /// Enabled and checked. Disabled always wins over checked, so an unchecked
     /// *and* disabled button also reports [`ToggleButtonState::Disabled`].
     Checked,
@@ -59,6 +79,15 @@ pub struct ToggleButton {
     /// disabled button can still report a stale `Normal`. Reading
     /// [`ToggleButton::state`] after `set_enabled` gives the current value.
     pub state_changed: Signal1<ToggleButtonState>,
+    /// The interpolated interaction progress, 0.0 at rest and 1.0 fully pressed.
+    ///
+    /// The same type and the same contract as `Button::interaction_progress`. It exists so a
+    /// hover fades in and a press deepens it instead of both snapping — and, at progress `0.0`,
+    /// the fill is exactly the resting colour, which is why adding it left every committed
+    /// snapshot byte-identical.
+    interaction_progress: crate::style::Transition,
+    /// The progress value the transition is travelling toward.
+    interaction_target: f32,
 }
 impl ToggleButton {
     /// Creates an unchecked, enabled toggle button with the given caption.
@@ -77,6 +106,8 @@ impl ToggleButton {
             pressed_signal: GenericSignal::new(),
             released_signal: GenericSignal::new(),
             state_changed: Signal1::new(),
+            interaction_progress: crate::style::Transition::new(),
+            interaction_target: 0.0,
         }
     }
     /// Returns the button caption, drawn centered. Empty by default only if
@@ -167,16 +198,52 @@ impl ToggleButton {
             self.released_signal.emit();
         }
     }
-    /// Returns the interaction state derived from the enabled and checked
-    /// flags. Disabled takes precedence over checked.
+    /// Returns the interaction state derived from the enabled, checked, hovered
+    /// and pressed flags. Disabled takes precedence over checked, and checked over
+    /// the two momentary states; see [`ToggleButtonState`] for why that order.
     pub fn state(&self) -> ToggleButtonState {
         if !self.base.enabled {
             ToggleButtonState::Disabled
         } else if self.checked {
             ToggleButtonState::Checked
+        } else if self.base.is_pressed() {
+            ToggleButtonState::Pressed
+        } else if self.base.is_hovered() {
+            ToggleButtonState::Hover
         } else {
             ToggleButtonState::Normal
         }
+    }
+
+    /// The progress the current interaction state calls for.
+    ///
+    /// Mirrors `Button::interaction_target_progress`: a press is the furthest point, a hover a
+    /// partial step, and a disabled control always rests. The checked state is deliberately **not**
+    /// part of this — a latch is a value, not a gesture, and animating it would make the toggle's
+    /// fill depend on when the user last clicked rather than on whether it is on.
+    fn interaction_target_progress(&self) -> f32 {
+        if !self.base.enabled {
+            0.0
+        } else if self.base.is_pressed() {
+            1.0
+        } else if self.base.is_hovered() {
+            0.5
+        } else {
+            0.0
+        }
+    }
+
+    /// Advances the interaction transition by `delta_ms`, reporting whether another
+    /// frame is needed.
+    ///
+    /// The same contract as `Button::tick` — and, like it, the duration is the active theme's
+    /// `Motion::normal` rather than a constant in this file, so a theme can state its own tempo
+    /// and a test can shorten it to reach the end state deterministically.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        let target = self.interaction_target_progress();
+        let moving = self.interaction_progress.tick(target, delta_ms);
+        self.interaction_target = target;
+        moving
     }
 }
 impl Widget for ToggleButton {
@@ -200,6 +267,22 @@ impl Widget for ToggleButton {
             dimensions::BUTTON_MIN,
         )
     }
+
+    /// Lifts the control's own `tick` onto the trait so a host holding `&mut dyn Widget` can
+    /// advance it. One line, and it is the whole reason the trait method exists: without it
+    /// the animation is written and unreachable.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        ToggleButton::tick(self, delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        // Derived from the *state*, not from the tick-time target field: a hover arriving makes
+        // the control animating at once, before any `tick` has run to recompute the target.
+        // Reading the stale field would answer `false` for a button that was just hovered, so the
+        // bus would never start its frames. `Button::is_animating` documents the same trap.
+        self.interaction_progress.progress() != self.interaction_target_progress()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -217,6 +300,8 @@ impl WidgetProperties for ToggleButton {
             "state" => {
                 let state = match self.state() {
                     ToggleButtonState::Normal => "normal",
+                    ToggleButtonState::Hover => "hover",
+                    ToggleButtonState::Pressed => "pressed",
                     ToggleButtonState::Checked => "checked",
                     ToggleButtonState::Disabled => "disabled",
                 };
@@ -269,6 +354,11 @@ impl Draw for ToggleButton {
         let state = self.state();
         let style = self.style();
         use crate::core::Color;
+        // Read once: the resting fill, the border and the label's contrast colour all resolve
+        // against the same palette, and three separate `current_theme()` calls could observe
+        // three different ones if a switch landed between them.
+        let manager = crate::style::theme_manager();
+        let theme = manager.current_theme();
 
         // ── The box actually painted ──
         //
@@ -281,19 +371,65 @@ impl Draw for ToggleButton {
         let rect = ControlMetrics::full_width_band(rect, self.size_hint().height);
 
         // ── Background ──
-        let bg_color = style.background_color.unwrap_or_else(|| match state {
-            ToggleButtonState::Disabled => Color::rgb(220, 220, 220),
-            ToggleButtonState::Checked => Color::rgb(200, 220, 255),
-            ToggleButtonState::Normal => Color::rgb(240, 240, 240),
+        //
+        // Three literals used to decide this, and the enum had no hover or pressed arm at all, so
+        // a toggle button gave **no feedback until the latch flipped** — the one moment feedback
+        // was least needed. The resting colours now come from the theme like every other control's
+        // (BLUE23 §5 / M4), and the interaction is a **blend** whose weight is the transition's
+        // progress, so a hover fades in and a press deepens it rather than both snapping. At
+        // progress `0.0` the result is exactly the resting colour, which is why every committed
+        // snapshot stayed byte-identical.
+        let resting = style.background_color.unwrap_or_else(|| {
+            // Both resting colours are **theme roles** rather than the literals that used to be
+            // here (`rgb(200,220,255)` checked, `rgb(240,240,240)` normal). The checked one was
+            // the light preset's tint, so a checked toggle read wrong on every dark appearance;
+            // the roles move with the appearance by construction.
+            let role = if self.checked {
+                crate::style::LayerColor::SurfaceContainerHigh
+            } else {
+                crate::style::LayerColor::SurfaceContainer
+            };
+            crate::style::layer_color(role).unwrap_or(if self.checked {
+                Color::rgb(200, 220, 255)
+            } else {
+                Color::rgb(240, 240, 240)
+            })
         });
+        let bg_color = if state == ToggleButtonState::Disabled {
+            resting
+        } else {
+            let progress = self.interaction_progress.progress();
+            if progress <= 0.0 {
+                resting
+            } else {
+                let interactive = if state == ToggleButtonState::Pressed {
+                    resting
+                } else {
+                    resting.blend(&resting.contrast_color(), 0.22)
+                };
+                resting.blend(&interactive, progress)
+            }
+        };
         context.fill_rect(rect, bg_color);
 
         // ── Border ──
+        //
+        // The checked border is the theme's **info** token rather than the literal
+        // `rgb(80, 120, 200)`, for the same reason the fill above is: a control whose "on" colour
+        // does not move with the appearance is theme-blind in exactly the way the census exists to
+        // catch. The unchecked border reads the theme's separator role — the weak one when
+        // disabled, so "switched off" and "inert" are two different lines rather than the same
+        // grey.
         let border_color = style.border_color.unwrap_or_else(|| {
             if self.checked {
-                Color::rgb(80, 120, 200)
+                crate::style::semantic_color(crate::style::SemanticColor::Info)
+                    .unwrap_or(Color::rgb(80, 120, 200))
+            } else if state == ToggleButtonState::Disabled {
+                theme
+                    .map(|active| active.colors.outline_variant)
+                    .unwrap_or(Color::rgb(180, 180, 180))
             } else {
-                Color::rgb(180, 180, 180)
+                theme.map(|active| active.colors.outline).unwrap_or(Color::rgb(180, 180, 180))
             }
         });
         let bw = style.border_width.unwrap_or(0);
@@ -304,9 +440,15 @@ impl Draw for ToggleButton {
         if !self.text.is_empty() {
             let text_color = style.text_color.unwrap_or_else(|| {
                 if state == ToggleButtonState::Disabled {
-                    Color::rgb(150, 150, 150)
+                    // The disabled ink is the theme's own disabled colour rather than the
+                    // near-invisible `rgb(150, 150, 150)` literal, which measured below the
+                    // 4.5:1 floor once the disabled fill went to the theme's surface.
+                    theme.map(|active| active.colors.disabled).unwrap_or(Color::rgb(150, 150, 150))
                 } else {
-                    Color::rgb(0, 0, 0)
+                    // The label sits on the control's own fill, so it takes that fill's contrast
+                    // colour instead of a literal black — the same rule `CheckBox`'s mark, the
+                    // `group_box` tick and this crate's other indicators follow.
+                    bg_color.contrast_color()
                 }
             });
             let default_font = crate::core::Font::default();
@@ -586,5 +728,134 @@ mod tests {
         assert!(!tb.is_pressed());
         tb.handle_event(&Event::MouseRelease { pos: inside, button: 1 });
         assert!(!tb.is_checked());
+    }
+
+    /// BLUE23 附录 A.2 / M1: the two *momentary* states are now reachable.
+    ///
+    /// # The defect this pins
+    ///
+    /// `ToggleButtonState` had exactly `Normal` / `Checked` / `Disabled`. The control maintained
+    /// `is_pressed` and this crate's `BaseWidget` maintains `hovered`, and **neither reached the
+    /// enum**, so `draw` could not express either. A user pointing at a toggle button got no
+    /// feedback at all until the latch flipped — the one moment feedback was least needed.
+    #[test]
+    fn a_momentary_state_is_reachable_on_a_toggle_button() {
+        let inside = Point::new(20, 15);
+        let mut tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 100, 30));
+        assert_eq!(tb.state(), ToggleButtonState::Normal);
+
+        tb.handle_event(&Event::MouseEnter { pos: inside });
+        assert_eq!(tb.state(), ToggleButtonState::Hover, "a pointer over the control is a state");
+
+        tb.handle_event(&Event::MousePress { pos: inside, button: 1 });
+        assert_eq!(tb.state(), ToggleButtonState::Pressed, "a held control is a state");
+
+        tb.handle_event(&Event::MouseRelease { pos: inside, button: 1 });
+        // The latch wins once it is set: "checked" is a persistent fact, and the hover it
+        // happens to sit under is the *overlay* the draw path adds. Asserting the precedence
+        // stops someone "fixing" the enum order later and silently breaking the property value.
+        assert_eq!(tb.state(), ToggleButtonState::Checked);
+
+        tb.handle_event(&Event::MouseLeave { pos: inside });
+        tb.set_checked(false);
+        assert_eq!(tb.state(), ToggleButtonState::Normal);
+
+        tb.set_enabled(false);
+        assert_eq!(
+            tb.state(),
+            ToggleButtonState::Disabled,
+            "disabled outranks a momentary state, exactly as it outranks checked"
+        );
+    }
+
+    /// The state the property path publishes has to name the new arms, or the two views of the
+    /// enum disagree (BLUE23 M10: "declared but cannot be read back").
+    #[test]
+    fn the_state_property_names_every_arm() {
+        let inside = Point::new(20, 15);
+        let mut tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 100, 30));
+        let read = |w: &ToggleButton| match w.get("state") {
+            Ok(CapabilityValue::String(s)) => s,
+            other => panic!("state must read back as a string, got {other:?}"),
+        };
+        assert_eq!(read(&tb), "normal");
+        tb.handle_event(&Event::MouseEnter { pos: inside });
+        assert_eq!(read(&tb), "hover");
+        tb.handle_event(&Event::MousePress { pos: inside, button: 1 });
+        assert_eq!(read(&tb), "pressed");
+    }
+
+    /// BLUE23 附录 A.2 / M3 + §9 判据 10: three frames of the interaction are **geometrically
+    /// distinct**, and the fill arrives at the resting colour when the transition is at rest.
+    ///
+    /// The plan asks for "三帧几何互异" on a button. A toggle button's shape does not move, so the
+    /// observable is the **fill**: at `t=0` it is the resting colour, mid-transition it is between
+    /// the resting and interactive colours, and at the end it has settled on the interactive one.
+    #[test]
+    fn the_interaction_transition_moves_the_fill_across_three_frames() {
+        let _guard = crate::theme::theme_test_guard();
+        let inside = Point::new(20, 15);
+        let mut tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 100, 30));
+
+        // At rest the control owes no frames, so it costs nothing per frame (judgement 8).
+        assert!(!tb.is_animating(), "a resting toggle must not ask for frames");
+        let resting = rendered_fill(&mut tb);
+
+        // Hovering makes it animating *before* any tick has run — the trap `Button` documents:
+        // reading the tick-time target field instead of the state answers `false` here and the
+        // bus would never start.
+        tb.handle_event(&Event::MouseEnter { pos: inside });
+        assert!(tb.is_animating(), "a hovered toggle owes frames at once");
+
+        // Frame 1: progress is still 0, so the fill is the resting colour exactly. This is also
+        // why adding the transition left every committed snapshot byte-identical.
+        assert_eq!(rendered_fill(&mut tb), resting, "the first frame is the resting colour");
+
+        // The theme's own tempo, so a test can shorten it rather than wait. A one-millisecond step
+        // would never land *exactly* on the target (`tick` answers `false` only within
+        // `f32::EPSILON`), so the step is a whole frame's worth — the same 1000 ms `Button`'s own
+        // transition tests use — and the loop is bounded besides.
+        let mut mid = resting;
+        for _ in 0..64 {
+            if !tb.tick(1000) {
+                break;
+            }
+            let now = rendered_fill(&mut tb);
+            if now != resting {
+                mid = now;
+                break;
+            }
+        }
+        assert_ne!(mid, resting, "the transition must move the fill, not snap at the end");
+
+        // Frame 3: run it out, and require it to settle *and* to stop asking for frames — the
+        // economy `is_animating` exists for (a settled control costs nothing per frame).
+        let mut guard = 0;
+        while tb.tick(1000) {
+            guard += 1;
+            assert!(guard < 64, "the transition must terminate");
+        }
+        assert!(!tb.is_animating(), "a settled toggle must stop asking for frames");
+        let settled = rendered_fill(&mut tb);
+        assert_ne!(settled, resting, "a hovered toggle must not look like a resting one");
+        assert_ne!(settled, mid, "the end state is reached, not abandoned mid-transition");
+    }
+
+    /// The fill the control actually paints, read out of the emitted SVG.
+    ///
+    /// Reading the drawing rather than the progress field is what makes the frame assertions
+    /// properties of the picture: a mutation that stopped *using* `interaction_progress` in
+    /// `draw` would leave every progress assertion green.
+    fn rendered_fill(tb: &mut ToggleButton) -> (u8, u8, u8) {
+        let svg = crate::widget::svg::render_widget_to_svg(tb, Rect::new(0, 0, 100, 30));
+        // The first `<rect … fill="rgba(…)" />` is the control's own face.
+        let at =
+            svg.find("fill=\"rgba(").expect("the face is a filled rect") + "fill=\"rgba(".len();
+        let end = svg[at..].find(')').expect("the fill's close") + at;
+        let mut parts = svg[at..end].split(',');
+        let r = parts.next().and_then(|v| v.trim().parse().ok()).expect("r");
+        let g = parts.next().and_then(|v| v.trim().parse().ok()).expect("g");
+        let b = parts.next().and_then(|v| v.trim().parse().ok()).expect("b");
+        (r, g, b)
     }
 }

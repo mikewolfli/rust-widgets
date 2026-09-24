@@ -110,12 +110,28 @@ import re, pathlib
 src = pathlib.Path("src/widget/capability/properties.rs").read_text(encoding="utf-8")
 print(len(re.findall(r"canonical_name:\s*\x22", src)))
 ')"
+# The extra appearances are read from the exporter's own table rather than counted here.
+#
+# # Why derived and not hard-coded
+#
+# A number written into this gate would have to be edited in lockstep with `EXTRA_APPEARANCES`,
+# and the failure mode of forgetting is the one this check exists to catch — a snapshot file that
+# nothing accounts for. Reading the table means "which files exist" and "which states are declared"
+# are the same fact, so adding an appearance cannot leave this gate asserting a stale total.
+EXTRAS="$("$PYTHON" - <<'PY'
+import pathlib, re
+src = pathlib.Path("examples/export_control_svgs.rs").read_text(encoding="utf-8")
+match = re.search(r"EXTRA_APPEARANCES[^=]*=\s*&\[(.*?)\];", src, re.DOTALL)
+print(0 if match is None else len(re.findall(r"\(\s*\x22[^\x22]+\x22\s*,", match.group(1))))
+PY
+)"
 COMMITTED="$(find "$SNAPSHOT_DIR" -maxdepth 1 -name '*.svg' | wc -l)"
-if [[ "$COMMITTED" -ne $((CONTROLS * 2)) ]]; then
-    echo "  FAIL  expected $((CONTROLS * 2)) committed SVGs ($CONTROLS controls x 2 appearances), found $COMMITTED"
+EXPECTED=$((CONTROLS * 2 + EXTRAS))
+if [[ "$COMMITTED" -ne "$EXPECTED" ]]; then
+    echo "  FAIL  expected $EXPECTED committed SVGs ($CONTROLS controls x 2 appearances + $EXTRAS extra state(s)), found $COMMITTED"
     exit 1
 fi
-echo "  PASS  $CONTROLS controls x 2 appearances = $COMMITTED files"
+echo "  PASS  $CONTROLS controls x 2 appearances + $EXTRAS extra = $COMMITTED files"
 
 echo "[3b/5] every file has a drawing element, not just an svg skeleton"
 EMPTY="$("$PYTHON" - <<'PY'
@@ -187,10 +203,30 @@ if not EXEMPT:
     raise SystemExit("the exemption table could not be read, so this step cannot judge")
 
 same = []
+# The extra appearances are single-appearance by design: they exist to show a *state* the two
+# default files cannot, and rendering each one in both themes would double the set for a question
+# the default pair already answers. They are therefore skipped rather than reported as "no light
+# companion", which is a real defect for a control and a category error for a state file.
+#
+# Derived from the exporter's table, not from the file name: a name pattern like `*_checked` would
+# silently absorb a future control that happened to end that way.
+extra_state = set()
+exporter = pathlib.Path("examples/export_control_svgs.rs")
+if exporter.exists():
+    match_extra = re.search(r"EXTRA_APPEARANCES[^=]*=\s*&\[(.*?)\];", exporter.read_text(encoding="utf-8"), re.S)
+    if match_extra:
+        for control, suffix, _ in re.findall(
+            r"\(\s*\"([^\"]+)\"\s*,\s*\"([^\"]+)\"\s*,\s*\"([^\"]+)\"\s*\)",
+            match_extra.group(1),
+        ):
+            extra_state.add(f"{control}{suffix}")
+
 for path in sorted(pathlib.Path("snapshots/svg").glob("*.svg")):
     if path.name.endswith(".light.svg"):
         continue
     name = path.name[: -len(".svg")]
+    if name in extra_state:
+        continue
     light = path.with_name(path.name[: -len(".svg")] + ".light.svg")
     if not light.exists():
         same.append(f"{name}: no light companion")

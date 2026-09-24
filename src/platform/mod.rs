@@ -55,17 +55,17 @@ pub mod macos;
 // this module would silently vanish from a build that explicitly asked for a
 // macOS backend. Mirrors `src/platform/runtime.rs` and `macos/macos_bridge.rs`.
 //
-// `target_vendor = "apple"` is added because the state machine is not the whole
-// backend: `platform_impl.rs` answers the four `Platform` OS probes from
-// [`darwin_probes`], which is Apple-only (it needs `libc`). Compiling the module
-// on a non-Apple host — a `cargo test` on Windows with the `macos` feature on, or
-// a cross-check of the Windows target — leaves those paths unresolvable.
+// `target_vendor = "apple"` used to be required here because `platform_impl.rs` answered the four
+// `Platform` OS probes from [`darwin_probes`], which needs `libc` and is Apple-only. Those probe
+// call sites are now individually `#[cfg(target_vendor = "apple")]`-gated (see `platform_impl.rs`),
+// so the module compiles on any host while the *selection* rule stays here: a build that did not ask
+// for a macOS backend, or is not on Apple, still gets no `macos_objc2`.
 //
-// Known trade-off: this means the module's own state-machine unit tests do not
-// run on a non-Apple host. That is the honest cost of the probe change, and
-// `macos/tests.rs` plus `control_backend`'s route matrix cover the state contract
-// where it is reachable.
-#[cfg(all(any(feature = "macos", feature = "cocoa-legacy"), target_vendor = "apple"))]
+// The reason the gate could not simply stay: it silently removed `tests.rs` — 10 assertions that use
+// only the `Platform` trait interface and touch no AppKit at all — from every host that is not
+// Apple, so they never ran and could never fail. That is the host-invisible-test class `blue23.md`
+// §0A.6 ITEM 7 is about. `macos/tests.rs` (the cocoa-legacy sibling) has always compiled this way.
+#[cfg(any(feature = "macos", feature = "cocoa-legacy"))]
 pub mod macos_objc2;
 #[cfg(feature = "mobile-api")]
 pub mod mobile;

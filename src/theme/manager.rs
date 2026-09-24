@@ -805,10 +805,24 @@ impl Theme {
             // window.
             outline: Color { r: 147, g: 143, b: 153, a: 255 },
             outline_variant: Color { r: 73, g: 69, b: 79, a: 255 },
-            // A dark theme cannot dim by *darkening*: the scrim has to be a light
-            // veil over a dark surface, which is the whole reason the role exists
-            // rather than an inline translucent black.
-            scrim: Color { r: 255, g: 255, b: 255, a: 38 },
+            // A scrim dims the surface it covers, on **every** appearance — that direction is not
+            // an appearance-dependent choice. This used to be a white veil (`rgba(255,255,255,38)`)
+            // on the argument that "a dark theme cannot dim by darkening". It can, and the veil was
+            // wrong: over the dark window (`rgb(18,18,18)`) it composites to `rgb(54,54,54)`, so the
+            // modal backdrop came out **brighter** than the page it covered — BLUE21 B23's defect,
+            // re-derived through the token that was introduced to fix it. BLUE21 B23 lists the four
+            // platforms (Material `Colors.black54`, UIKit, the reference toolkit,
+            // the declarative mainstream) and **none of them lightens a backdrop toward the
+            // foreground**. Judgement 15 in BLUE23 §5 pins the direction: the dark scrim must be
+            // darker than the face beneath it.
+            //
+            // It is also deliberately not the light preset's `rgba(0,0,0,82)`: a scrim that
+            // composites to the same number on both appearances is the "coincidence, not a derived
+            // quantity" signature BLUE21 B23 named. A dark theme starts from a near-black backdrop,
+            // so it needs a *heavier* veil to reach the same separation the light preset gets from a
+            // light one — the ratio below is that heavier veil, stated as a value rather than left to
+            // whatever the light preset happens to be.
+            scrim: Color { r: 0, g: 0, b: 0, a: 130 },
             surface_container: Color { r: 30, g: 30, b: 33, a: 255 },
             surface_container_high: Color { r: 40, g: 40, b: 44, a: 255 },
             inverse_surface: Color { r: 228, g: 225, b: 229, a: 255 },

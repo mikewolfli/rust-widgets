@@ -81,14 +81,23 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
     match name {
         // ── A container whose *state* is the feature ──
         //
-        // `group_box` ships with `checkable == false`, so its tick — the one part of it a user
-        // toggles — was never in any snapshot, and a colour regression in that tick was
-        // invisible to both the gallery and its gate. Enabling the state here is what makes
-        // the tick part of the checked appearance the exporter renders.
+        // `group_box` ships with `checkable == false`, so the tick is a shape no default
+        // construction reaches. This arm turns the flag on so the box is drawn at all, and leaves
+        // `checked` at the constructor's default.
+        //
+        // # Why this no longer forces `set_checked(true)`
+        //
+        // It used to, reasoning that "the tick was never in any snapshot". That captured the wrong
+        // artefact: `GroupBox::new` already starts `checked = true`, so forcing it changed nothing,
+        // and the pair `group_box.svg` / `group_box_checked.svg` came out byte-identical — two
+        // files proving one thing. The checked state is now an *extra appearance* the exporter
+        // declares (`EXTRA_APPEARANCES`), and this arm clears the flag so the default file shows
+        // the state a caller actually gets while the extra file shows the toggled one. Both states
+        // are then reviewable, and neither is implied by the other's absence.
         "group_box" => match widget_as_mut::<GroupBox>(widget) {
             Some(group_box) => {
                 group_box.set_checkable(true);
-                group_box.set_checked(true);
+                group_box.set_checked(false);
                 true
             }
             None => false,
