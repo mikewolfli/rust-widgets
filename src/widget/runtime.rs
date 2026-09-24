@@ -2656,6 +2656,12 @@ mod tests {
     /// wrong part (or left a stale one).
     #[test]
     fn an_incremental_repaint_matches_a_full_repaint() {
+        // Frames are compared byte for byte, and a control's chrome reads the active theme, so the
+        // appearance has to be pinned for the comparison to be about the repaint strategy rather
+        // than about whichever theme a concurrently-running test left selected.
+        let _guard = crate::theme::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
         let size = Size::new(320, 200);
 
         // Reference: paint whole every time.

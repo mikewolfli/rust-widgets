@@ -190,6 +190,14 @@ fn bar_chart_gridline_toggle_changes_line_count() {
 }
 #[test]
 fn svg_snapshot_line_chart_stable() {
+    // A chart's axis chrome reads the active theme, and the theme registry is process-wide, so a
+    // hash-pinned snapshot has to pin the appearance it hashes. Without this the test compared its
+    // hash against whichever theme happened to be active while it ran, and it failed
+    // intermittently whenever a concurrently-running test had switched to dark — a real
+    // "observe another test's state" failure, not a defect in the chart.
+    let _guard = crate::theme::theme_test_guard();
+    crate::widget::census::install_preset_appearances();
+    crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
     let mut chart = LineChart::new();
     chart.set_title("SnapshotLine".to_string());
     chart.set_x_axis_label("X".to_string());
@@ -211,6 +219,10 @@ fn svg_snapshot_line_chart_stable() {
 }
 #[test]
 fn svg_snapshot_bar_chart_stable() {
+    // Same guard and pin as the line chart's snapshot, for the same reason.
+    let _guard = crate::theme::theme_test_guard();
+    crate::widget::census::install_preset_appearances();
+    crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
     let mut chart = BarChart::new();
     chart.set_title("SnapshotBar".to_string());
     chart.set_x_axis_label("Bucket".to_string());

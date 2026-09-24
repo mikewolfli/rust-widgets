@@ -313,11 +313,41 @@ impl Draw for VideoPlayer {
         let rect = self.geometry();
         let is_enabled = self.base.is_enabled();
 
+        // # Which of this control's colours are chrome and which are the video's own frame
+        //
+        // A media player deliberately draws its *transport* chrome in white on a black band:
+        // the picture beneath is arbitrary, so an overlay that took the page's ink would be
+        // unreadable over a light frame and disappear over a dark one. Those literals are kept,
+        // and they are the reason `audit_appearance.py` still counts literals in this file.
+        //
+        // Two things are **not** the video's frame, and those follow the theme:
+        //
+        //   * the **empty state** -- there is no picture yet, so the rectangle is a placeholder
+        //     panel, and a panel belongs to the page's surface scale (`surface_container`);
+        //   * the **seek fill** -- a value indicator, so it is the accent, exactly as a slider's
+        //     fill or a progress bar's is. It was a fixed `rgb(60,140,240)` that no theme could
+        //     move.
+        let (accent, placeholder, placeholder_ink) = {
+            let manager = crate::style::theme_manager();
+            match manager.current_theme() {
+                Some(active) => (
+                    active.colors.primary,
+                    active.colors.surface_container,
+                    active.colors.secondary,
+                ),
+                None => (
+                    Color::rgba(60, 140, 240, 230),
+                    Color::rgba(30, 30, 30, 255),
+                    Color::rgba(180, 180, 180, 220),
+                ),
+            }
+        };
+
         // ── Video area ──────────────────────────────────────────────────
         let video_bg = if !is_enabled {
             Color::rgba(200, 200, 200, 100)
         } else if self.source.is_empty() {
-            Color::rgba(30, 30, 30, 255)
+            placeholder
         } else {
             Color::rgba(20, 20, 40, 255)
         };
@@ -337,7 +367,7 @@ impl Draw for VideoPlayer {
                 line,
                 text,
                 &font,
-                Color::rgba(180, 180, 180, 220),
+                placeholder_ink,
                 HorizontalAlignment::Center,
             );
             return;
@@ -403,11 +433,7 @@ impl Draw for VideoPlayer {
         if fill_width > 0 {
             let seek_bar_fill =
                 Rect::new(seek_bar_full.x, seek_bar_full.y, fill_width, seek_bar_full.height);
-            context.fill_rounded_rect(
-                seek_bar_fill,
-                seek_bar_height / 2,
-                Color::rgba(60, 140, 240, 230),
-            );
+            context.fill_rounded_rect(seek_bar_fill, seek_bar_height / 2, accent);
         }
 
         // Time display.
@@ -576,6 +602,65 @@ mod context {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    /// Renders the player over `backdrop` and returns its RGBA frame.
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn render_on(vp: &mut VideoPlayer, size: crate::core::Size, backdrop: Color) -> Vec<u8> {
+        use crate::render::{PaintBackend, SoftwarePaintBackend};
+        let mut backend = SoftwarePaintBackend::new(size, 1.0);
+        backend.begin_frame(backdrop);
+        let mut context = RenderContext::new(&mut backend);
+        vp.draw(&mut context);
+        backend.end_frame();
+        backend.frame_rgba().to_vec()
+    }
+
+    /// The RGBA pixel at `(x, y)` of a `size`-wide frame.
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn pixel(frame: &[u8], size: crate::core::Size, x: u32, y: u32) -> [u8; 4] {
+        let index = ((y * size.width + x) * 4) as usize;
+        [frame[index], frame[index + 1], frame[index + 2], frame[index + 3]]
+    }
+
+    /// The empty-state panel follows the appearance rather than a fixed near-black.
+    ///
+    /// # What is themed here, and what deliberately is not
+    ///
+    /// The transport chrome stays white on a black band on purpose: the picture beneath is
+    /// arbitrary, so an overlay that took the page's ink would be unreadable over a light frame.
+    /// The **empty state** is different — there is no picture, so the rectangle is a placeholder
+    /// panel and belongs to the page's surface scale. It used to be a fixed `rgb(30,30,30)`, which on
+    /// a light appearance was a black rectangle where every other placeholder in the crate is a
+    /// surface.
+    #[test]
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn the_empty_state_follows_the_appearance() {
+        let _guard = crate::theme::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        let rect = Rect::new(0, 0, 320, 240);
+        let size = crate::core::Size::new(320, 240);
+
+        let centre = |appearance| -> [u8; 4] {
+            crate::theme::global_theme_manager().set_appearance(appearance);
+            let backdrop = crate::style::theme_manager()
+                .current_theme()
+                .map(|active| active.colors.background)
+                .expect("a preset is active");
+            let mut vp = VideoPlayer::new(rect);
+            crate::theme::apply_theme_to_widget(&mut vp);
+            let frame = render_on(&mut vp, size, backdrop);
+            // No source is loaded, so the whole rectangle is the empty-state panel. The sample is
+            // near the top-left, clear of the centred "No video loaded" label.
+            pixel(&frame, size, 5, 5)
+        };
+
+        let dark = centre(crate::theme::AppearanceMode::Dark);
+        let light = centre(crate::theme::AppearanceMode::Light);
+        assert_ne!(
+            dark, light,
+            "the empty-state panel must follow the appearance; both were {dark:?}"
+        );
+    }
 
     #[test]
     fn video_player_creation_defaults() {

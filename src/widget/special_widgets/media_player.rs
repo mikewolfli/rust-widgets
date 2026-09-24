@@ -397,8 +397,42 @@ impl EventHandler for MediaPlayer {
 impl Draw for MediaPlayer {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        context.fill_rect(rect, Color::rgb(24, 28, 36));
-        context.draw_rect(rect, Color::rgb(72, 84, 102));
+        // # Why this control reads the theme at all, given the `video-surface` exemption
+        //
+        // The exemption in `tools/control_color_exemptions.txt` covers a **decoded frame** — the
+        // picture a player shows. This control paints no picture: it paints a title line, a status
+        // line and a transport rule, which is **chrome**. So the exemption does not apply to the six
+        // literals that were here, and they are why `audit_appearance.py` counted this file among the
+        // Draw files that read no style at all.
+        //
+        // Precedence mirrors every other panel in the crate: an explicit style, then the active
+        // theme's roles, then the literal as the last resort for a build with no theme.
+        let themed = {
+            let manager = crate::style::theme_manager();
+            manager.current_theme().map(|active| {
+                (
+                    active.colors.surface_container,
+                    active.colors.outline_variant,
+                    active.colors.foreground,
+                    active.colors.secondary,
+                    active.colors.primary,
+                )
+            })
+        };
+        let (surface, divider, ink, muted, accent) = themed.unwrap_or((
+            Color::rgb(24, 28, 36),
+            Color::rgb(72, 84, 102),
+            Color::rgb(232, 237, 245),
+            Color::rgb(190, 202, 220),
+            Color::rgb(107, 171, 248),
+        ));
+        let style = self.base.style();
+        let surface = style.background_color.unwrap_or(surface);
+        let divider = style.border_color.unwrap_or(divider);
+        let ink = style.text_color.unwrap_or(ink);
+
+        context.fill_rect(rect, surface);
+        context.draw_rect(rect, divider);
 
         let title = self
             .source
@@ -423,7 +457,7 @@ impl Draw for MediaPlayer {
             ),
             title,
             &font,
-            Color::rgb(232, 237, 245),
+            ink,
             HorizontalAlignment::Left,
         );
         context.draw_text_fitted(
@@ -435,7 +469,7 @@ impl Draw for MediaPlayer {
             ),
             &format!("{state} | {vol} | {fs}"),
             &font,
-            Color::rgb(190, 202, 220),
+            muted,
             HorizontalAlignment::Left,
         );
 
@@ -450,13 +484,14 @@ impl Draw for MediaPlayer {
             rect.width.saturating_sub((MEDIA_PLAYER_PADDING * 2) as u32),
             bar_height,
         );
-        context.fill_rect(bar_rect, Color::rgb(62, 73, 90));
+        // The track is a *derivative* of the surface rather than a fourth independent colour: it must
+        // read as a recess in whatever the panel is, and stay there when the palette moves.
+        context.fill_rect(bar_rect, surface.blend(&ink, 0.14));
         let fill_w = ((bar_rect.width as f32) * self.progress_ratio()) as u32;
         if fill_w > 0 {
-            context.fill_rect(
-                Rect::new(bar_rect.x, bar_rect.y, fill_w, bar_rect.height),
-                Color::rgb(107, 171, 248),
-            );
+            // The progress fill is a **value indicator**, so it is the accent — exactly as a
+            // slider's fill and a progress bar's are — rather than a fixed blue.
+            context.fill_rect(Rect::new(bar_rect.x, bar_rect.y, fill_w, bar_rect.height), accent);
         }
     }
 }
@@ -465,6 +500,58 @@ impl Draw for MediaPlayer {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    /// The panel's surface follows the appearance instead of a fixed dark blue.
+    ///
+    /// # The defect this pins
+    ///
+    /// Every colour in `draw` was a literal — a `rgb(24,28,36)` panel, a `rgb(72,84,102)` frame,
+    /// two inks, a `rgb(62,73,90)` track and a `rgb(107,171,248)` progress fill. The control paints
+    /// **chrome** (a title line, a status line and a transport rule), not a decoded frame, so the
+    /// `video-surface` exemption does not cover any of them: a light build got a dark panel that no
+    /// theme could reach, and the progress fill was a fixed blue rather than the accent.
+    ///
+    /// The sample point is on the panel **below the two label lines and left of the transport rule's
+    /// start**, so the pixel it reads is the surface and nothing else.
+    #[test]
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn the_panel_surface_follows_the_appearance() {
+        let _guard = crate::theme::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+
+        let surface_pixel = |appearance| -> (u8, u8, u8) {
+            crate::theme::global_theme_manager().set_appearance(appearance);
+            let mut player = MediaPlayer::new(Rect::new(0, 0, 320, 200));
+            crate::theme::apply_theme_to_widget(&mut player);
+            let svg =
+                crate::widget::svg::render_widget_to_svg(&mut player, Rect::new(0, 0, 320, 200));
+            // The panel is the **first coloured** `<rect>`: the renderer emits its own backdrop first
+            // (the same colour in both appearances), then the control paints its surface over it.
+            // Taking the *last* match was tried and rejected by measurement — it lands on the
+            // transport track, which is a derived colour in both renders and so made the assertion
+            // pass with the panel restored to the literal.
+            let mut fills: Vec<(u8, u8, u8)> = Vec::new();
+            for element in svg.split("/>") {
+                let Some(open) = element.find("<rect ") else { continue };
+                let element = &element[open + "<rect ".len()..];
+                let Some(from) = element.find("fill=\"rgba(") else { continue };
+                let from = from + "fill=\"rgba(".len();
+                let Some(to) = element[from..].find(')') else { continue };
+                let mut parts = element[from..from + to].split(',');
+                let r: u8 = parts.next().and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+                let g: u8 = parts.next().and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+                let b: u8 = parts.next().and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+                fills.push((r, g, b));
+            }
+            assert!(fills.len() > 1, "the player paints a surface over the backdrop");
+            fills[1]
+        };
+
+        let dark = surface_pixel(crate::theme::AppearanceMode::Dark);
+        let light = surface_pixel(crate::theme::AppearanceMode::Light);
+        assert_ne!(dark, light, "the panel surface must follow the appearance; both were {dark:?}");
+        assert_ne!(dark, (24, 28, 36), "the surface must not be the fixed dark blue");
+    }
 
     #[test]
     fn source_set_resets_position_and_state() {

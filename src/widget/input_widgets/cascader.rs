@@ -348,12 +348,15 @@ impl Cascader {
         if level != self.expanded_path.len() {
             return siblings;
         }
-        let needle = self.filter.to_lowercase();
-        // A `Vec` cannot be returned by reference from a filtered view, so the
-        // filter is applied at the call sites that draw or hit-test. Returning the
-        // unfiltered slice here keeps this accessor allocation-free; `filtered_indices`
-        // is the one that narrows.
-        let _ = needle;
+        // A `Vec` cannot be returned by reference from a filtered view, so the filter is not
+        // applied here: this accessor answers "what rows exist at this level", and
+        // [`Self::filtered_indices`] is the one that narrows them. They share the
+        // `level == expanded_path.len()` guard above, so the two cannot disagree about which
+        // level is browsable.
+        //
+        // This used to compute `self.filter.to_lowercase()` and discard it (`let _ = needle;`),
+        // which read as a filter that had been started and forgotten. It filtered nothing, so it
+        // is removed rather than left to imply otherwise.
         siblings
     }
 
@@ -786,6 +789,17 @@ impl Cascader {
     }
 
     /// Draws one column of the overlay.
+    ///
+    /// # Why the column reads the theme and the field's fallbacks do not
+    ///
+    /// The closed field's literals are *fallbacks*: `apply_active_theme` fills
+    /// `style.background_color` / `border_color` / `text_color` before this runs, so on a themed
+    /// build the `unwrap_or` arms are unreachable. The overlay is different — it painted
+    /// `Color::WHITE` and three fixed greys unconditionally, so nothing the theme said reached the
+    /// list a dark build opens. That is the same defect `dropdown` had, and it is fixed the same
+    /// way: a popup is one step above the page, so the column is `surface_container`; a highlighted
+    /// row is a *selection*, so it is the accent pair rather than a paler grey; and the branch
+    /// chevron is the weak separator ink rather than a literal.
     fn draw_level(
         &self,
         context: &mut RenderContext,
@@ -793,8 +807,31 @@ impl Cascader {
         column: Rect,
         visible: &[usize],
     ) {
-        context.fill_rounded_rect(column, 4, Color::WHITE);
-        context.draw_rounded_rect_stroke(column, 4, Color::rgb(190, 192, 198), 1);
+        // A single guard over the theme reads, released before drawing: `theme_manager()` is a
+        // non-reentrant mutex and the context's accessors cannot take it.
+        let (column_surface, highlight_surface, separator, on_highlight, branch_ink) = {
+            let manager = crate::style::theme_manager();
+            match manager.current_theme() {
+                Some(active) => (
+                    active.colors.surface_container,
+                    active.colors.primary,
+                    active.colors.outline_variant,
+                    active.colors.primary.contrast_color(),
+                    active.colors.secondary,
+                ),
+                None => (
+                    Color::WHITE,
+                    Color::rgb(232, 240, 254),
+                    Color::rgb(190, 192, 198),
+                    Color::rgb(40, 44, 52),
+                    Color::rgb(140, 144, 152),
+                ),
+            }
+        };
+        let row_ink = self.style().text_color.unwrap_or_else(|| column_surface.contrast_color());
+
+        context.fill_rounded_rect(column, 4, column_surface);
+        context.draw_rounded_rect_stroke(column, 4, separator, 1);
 
         let Some(siblings) = self.siblings_at(level) else {
             return;
@@ -812,16 +849,19 @@ impl Cascader {
                 column.width,
                 ROW_HEIGHT,
             );
-            if option_index == current.unwrap_or(usize::MAX) {
+            let highlighted = option_index == current.unwrap_or(usize::MAX);
+            if highlighted {
                 // The row the path points at is highlighted, which is how the user
-                // sees which branch the next column belongs to.
-                context.fill_rect(row_rect, Color::rgb(232, 240, 254));
+                // sees which branch the next column belongs to. The fill is the accent, so the
+                // row reads as a **selection** rather than as a paler grey; its ink is the
+                // accent's contrast colour, which is legible on that fill by construction.
+                context.fill_rect(row_rect, highlight_surface);
             }
             context.draw_text(
                 Point::new(row_rect.x + 8, row_rect.y + 18),
                 &option.label,
                 &Font::simple("Sans", 12.0),
-                Color::rgb(40, 44, 52),
+                if highlighted { on_highlight } else { row_ink },
                 HorizontalAlignment::Left,
             );
             if option.is_loading() {
@@ -833,7 +873,7 @@ impl Cascader {
                     Point::new(row_rect.x + row_rect.width as i32 - 18, row_rect.y + 18),
                     "...",
                     &Font::simple("Sans", 12.0),
-                    Color::rgb(140, 144, 152),
+                    branch_ink,
                     HorizontalAlignment::Left,
                 );
             } else if !option.is_leaf() {
@@ -844,13 +884,13 @@ impl Cascader {
                 context.draw_line_stroke(
                     Point::new(ax - 2, ay - 4),
                     Point::new(ax + 2, ay),
-                    Color::rgb(140, 144, 152),
+                    branch_ink,
                     1,
                 );
                 context.draw_line_stroke(
                     Point::new(ax + 2, ay),
                     Point::new(ax - 2, ay + 4),
-                    Color::rgb(140, 144, 152),
+                    branch_ink,
                     1,
                 );
             }
@@ -1001,13 +1041,29 @@ mod tests {
     }
 
     /// Renders and returns the RGBA frame.
+    ///
+    /// Gated like its consumer: the software backend and `Size` only exist behind a device
+    /// profile with `software`, so an ungated helper is a dead-code warning (or a hard error in a
+    /// `no_std` profile) for a build that never calls it.
     fn render(c: &mut Cascader, size: Size) -> Vec<u8> {
+        render_on(c, size, Color::WHITE)
+    }
+
+    /// Renders over an explicit backdrop, which is the surface the control would sit on.
+    fn render_on(c: &mut Cascader, size: Size, backdrop: Color) -> Vec<u8> {
         let mut backend = SoftwarePaintBackend::new(size, 1.0);
-        backend.begin_frame(Color::WHITE);
+        backend.begin_frame(backdrop);
         let mut context = RenderContext::new(&mut backend);
         c.draw(&mut context);
         backend.end_frame();
         backend.frame_rgba().to_vec()
+    }
+
+    /// The RGBA pixel at `(x, y)` of a `size`-wide frame.
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn pixel(frame: &[u8], size: Size, x: u32, y: u32) -> [u8; 4] {
+        let index = ((y * size.width + x) * 4) as usize;
+        [frame[index], frame[index + 1], frame[index + 2], frame[index + 3]]
     }
 
     #[test]
@@ -1377,6 +1433,62 @@ mod tests {
         c.set_selected_path(vec![0, 0, 0, 0]);
         let with_value = render(&mut c, Size::new(200, 32));
         assert_ne!(placeholder, with_value, "a value must look different from the hint");
+    }
+
+    /// The open overlay column follows the appearance, not just the closed field.
+    ///
+    /// # The defect this pins
+    ///
+    /// `draw_level` painted `Color::WHITE` for the column and three fixed greys for its ink and
+    /// separators, so nothing the theme said reached the list a dark build opens — the same
+    /// "half themed, half literal" shape `dropdown` had. The field was themed because it reads
+    /// `style.*`; the popup hung off it was not.
+    ///
+    /// # Why the assertion names the column's own pixel
+    ///
+    /// Comparing the two whole frames would pass even with `Color::WHITE` restored, because the
+    /// field's own fill and the backdrop still differ between appearances — a document-wide or
+    /// frame-wide comparison is satisfied by a colour this test is not about. The sample point is
+    /// inside the **overlay column** (below the field's band) and away from any glyph, so the pixel
+    /// it reads is the column surface and nothing else.
+    #[test]
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn the_open_overlay_follows_the_appearance() {
+        let _guard = crate::theme::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        let size = Size::new(400, 200);
+
+        let column_pixel = |appearance| -> [u8; 4] {
+            crate::theme::global_theme_manager().set_appearance(appearance);
+            let backdrop = crate::style::theme_manager()
+                .current_theme()
+                .map(|active| active.colors.background)
+                .expect("a preset is active");
+            let mut c = cascader();
+            c.expand();
+            crate::theme::apply_theme_to_widget(&mut c);
+            let frame = render_on(&mut c, size, backdrop);
+            // The column's **interior**, well clear of any rounded corner: a point on a corner's
+            // antialiased arc reads the *border*, which is themed for a different reason and, when
+            // this sample was at the bottom-right pixel, made the assertion below pass even with the
+            // fill restored to `Color::WHITE` (measured). Half the column's width and a y below the
+            // last row's text are both unambiguously the column surface.
+            let x = LEVEL_WIDTH / 2;
+            let y = 32 + 2 * ROW_HEIGHT - 4;
+            pixel(&frame, size, x, y)
+        };
+
+        let dark = column_pixel(crate::theme::AppearanceMode::Dark);
+        let light = column_pixel(crate::theme::AppearanceMode::Light);
+        assert_ne!(
+            dark, light,
+            "the overlay column must follow the appearance; both were {dark:?}"
+        );
+        assert_ne!(
+            dark,
+            [255, 255, 255, 255],
+            "the overlay column must not be the fixed white the defect used"
+        );
     }
 
     // ── Property contract ───────────────────────────────────────────────────

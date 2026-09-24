@@ -1585,6 +1585,10 @@ mod tests {
     /// The default must be byte-identical, so a menu that never asks behaves exactly as it did.
     #[test]
     fn the_default_menu_is_still_left_to_right() {
+        // The two renders are compared to each other, so the appearance has to be the same for both
+        // halves: a concurrent theme switch between them would make this fail for a reason that has
+        // nothing to do with direction.
+        let _guard = crate::theme::theme_test_guard();
         let mut untouched = context_menu();
         untouched.open_at(Point::new(0, 0), Rect::new(0, 0, 400, 400));
         let mut ltr = context_menu();

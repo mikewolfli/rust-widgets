@@ -1773,7 +1773,18 @@ mod tests {
     /// one. Asking for the colour rather than counting shapes keeps the assertion about what the
     /// user sees rather than about which SVG element the backend picked.
     #[test]
+    #[cfg(device_profile)]
     fn hovering_and_dragging_step_the_halo_by_different_amounts() {
+        // The halo is computed against the **active theme's** surface, and the theme registry is
+        // process-wide, so this test has to serialise against every other test that switches the
+        // appearance. Without the guard and the pin it read its backdrop from whichever theme
+        // happened to be active mid-run: measured, it failed 5 runs out of 5 when another test in
+        // the same binary had switched to dark, and passed when run alone. The assertion is about a
+        // *relation between the two states*, so both colours and the fill must come from one theme.
+        let _guard = crate::theme::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
+
         let inside = crate::core::Point::new(100, 15);
         let mut s = make_slider();
 

@@ -118,6 +118,23 @@ impl CheckBox {
         self.style().spacing.unwrap_or(dimensions::INDICATOR_TEXT_SPACING) as i32
     }
 
+    /// The surface the control's **label** is drawn on: the page, not the indicator's own fill.
+    ///
+    /// # Why the page is not `style.background_color`
+    ///
+    /// In the resting state the two coincide, which is why reading the resolved background was
+    /// enough until the `:checked` override existed. Under `"check_box:checked"` the theme sets
+    /// `background` to the *primary* fill, and `foreground` to that fill's contrast colour — both
+    /// describe the **box interior**. The label is beside the box, on the page, so an ink chosen
+    /// from the box's fill is chosen against the wrong surface: on the dark appearance it resolved
+    /// to black, and the word beside a checked box was unreadable on the dark page.
+    ///
+    /// Returns `None` when no theme is active, so the caller falls back to the resolved background
+    /// — correct for an unthemed build, where no state override can move the two apart.
+    fn page_surface(&self) -> Option<Color> {
+        crate::style::theme_manager().current_theme().map(|active| active.colors.background)
+    }
+
     fn hit_area(&self) -> Rect {
         let rect = self.geometry();
         // The renderer's line height for the default font is one em, which is what
@@ -493,6 +510,19 @@ impl Draw for CheckBox {
             // The mark lands on the box's own fill, so its colour is that fill's contrast
             // colour. A literal accent blue here would be unreadable whenever the field is
             // dark, which is every dark appearance.
+            //
+            // # Why the mark and the label read different inks
+            //
+            // They are painted on **different surfaces**. The theme's `"check_box:checked"`
+            // override sets `foreground = primary.contrast_color()` — the right ink for a mark on
+            // the primary fill — but `style.text_color` is one field, and this control used it for
+            // the mark *and* for the label beside the box. The label does not sit on the primary
+            // fill; it sits on the page. So on the dark appearance a checked checkbox drew its
+            // label in `primary.contrast_color()`, which is **black** on a dark page: the mark was
+            // legible and the word next to it was not (measured — the label path came out
+            // `rgba(0,0,0)` in both appearances). The mark therefore keeps the resolved ink, which
+            // the theme's `:checked` rule exists to supply, and the label falls back to the
+            // surface's own contrast colour when the resolved ink is clearly not an ink for it.
             let check_color = style.text_color.unwrap_or_else(|| field.contrast_color());
             match self.state {
                 CheckState::Checked => {
@@ -542,13 +572,22 @@ impl Draw for CheckBox {
             // for this pair, never for siblings). A themed spacing therefore tunes
             // this one relation and cannot accidentally re-space a whole row.
             let gap = self.label_gap();
-            let text_color = style.text_color.unwrap_or_else(|| {
-                if enabled {
-                    surface.contrast_color()
-                } else {
-                    surface.contrast_color().with_alpha(150)
-                }
-            });
+            // The label sits on the **page**, so its ink has to be legible on the page. The
+            // resolved `text_color` is the theme's answer for this control, which is right in every
+            // state except one: under `"check_box:checked"` the theme's `foreground` is the ink for
+            // a mark on the *primary fill*, and its `background` is that fill too — so both fields
+            // describe the box interior, and the label is not in the box. Reading the page surface
+            // from the theme is what gives the label the surface it is actually drawn on; the
+            // control's own resolved background is not it under `:checked`. `legible_on` then states
+            // the requirement the label has: keep a theme's own label ink when it already clears the
+            // AA floor against the page, and repair it when it does not.
+            let page = self.page_surface().unwrap_or(surface);
+            let requested = style.text_color.unwrap_or_else(|| page.contrast_color());
+            let text_color = if enabled {
+                requested.legible_on(page, 4.5)
+            } else {
+                requested.legible_on(page, 4.5).with_alpha(150)
+            };
             context.draw_text_fitted(
                 Rect::new(
                     checkbox_rect.x + checkbox_rect.width as i32 + gap,
@@ -791,6 +830,12 @@ mod tests {
         // its own rectangle. The checkbox is 18 px tall, so on a phone profile (48 px) a point a few
         // pixels above it is inside the reachable target.
         let mut cb = CheckBox::new(Rect::new(20, 20, 24, 18));
+        // The theme registry is process-wide, so a test that **switches** the appearance must take
+        // the same guard every other switching test does; otherwise it leaves `Light` selected for
+        // whichever test runs next, and a test that compares two appearances can observe this one's
+        // leftover as its own. That is the failure mode that made `display_widgets`'s slider halo
+        // assertion fail only in a batch (see its own note).
+        let _guard = crate::theme::theme_test_guard();
         // Theming is what installs the touch target, so the test installs and applies one the way
         // the runtime does before registering a control. Reading it off an un-themed control would
         // assert the wrong precondition — the point of the mechanism is that the *platform* supplies
@@ -823,6 +868,69 @@ mod tests {
         let mut cb = CheckBox::new(Rect::new(100, 100, 24, 18));
         cb.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
         assert_eq!(cb.state(), CheckState::Unchecked);
+    }
+
+    /// A checked box's **label** stays legible on the page, on both appearances.
+    ///
+    /// # The defect this pins
+    ///
+    /// The theme's `"check_box:checked"` override sets `background` to the primary fill and
+    /// `foreground` to that fill's contrast colour — both describing the **box interior**. The draw
+    /// path used `style.text_color` for the mark *and* for the label, and the label is beside the
+    /// box, on the page: on the dark appearance `primary.contrast_color()` is black, so a checked box
+    /// drew a legible mark next to a word that had gone black on a dark page. The census measured the
+    /// two appearances as byte-identical for exactly this reason (the label dominates the render),
+    /// which is how it was found.
+    ///
+    /// The label now resolves against the **page** rather than the box, so the assertion is a
+    /// contrast ratio against the active theme's background — the surface the user actually reads it
+    /// on — rather than against a colour the control is not drawn on.
+    #[test]
+    #[cfg(device_profile)]
+    fn a_checked_box_keeps_its_label_legible_on_the_page() {
+        let _guard = crate::theme::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+
+        for appearance in [crate::theme::AppearanceMode::Light, crate::theme::AppearanceMode::Dark]
+        {
+            crate::theme::global_theme_manager().set_appearance(appearance);
+            let mut cb = CheckBox::new(Rect::new(0, 0, 200, 24));
+            cb.set_text("Label".to_string());
+            cb.set_checked(true);
+            crate::theme::apply_active_theme(&mut cb);
+
+            let page = crate::style::theme_manager()
+                .current_theme()
+                .map(|active| active.colors.background)
+                .expect("a preset is active");
+            let svg = crate::widget::svg::render_widget_to_svg(&mut cb, Rect::new(0, 0, 200, 24));
+            let ink = label_ink(&svg).unwrap_or_else(|| {
+                panic!("a checked box with text must paint its label; svg was {svg}")
+            });
+            let ratio = ink.contrast_ratio(page);
+            assert!(
+                ratio >= 4.5,
+                "the label of a checked box must clear the AA floor on the page it sits on: \
+                 {appearance:?} painted {ink:?} on {page:?}, a ratio of {ratio:.2}:1"
+            );
+        }
+    }
+
+    /// The fill of the SVG `<path>` element that carries the label's glyph geometry.
+    #[cfg(device_profile)]
+    fn label_ink(svg: &str) -> Option<Color> {
+        let at = svg.find("<path d=\"")?;
+        let rest = &svg[at..];
+        let end = rest.find("/>")? + 2;
+        let element = &rest[..end];
+        let key = "fill=\"rgba(";
+        let from = element.find(key)? + key.len();
+        let to = element[from..].find(')')? + from;
+        let mut parts = element[from..to].split(',');
+        let r = parts.next()?.trim().parse().ok()?;
+        let g = parts.next()?.trim().parse().ok()?;
+        let b = parts.next()?.trim().parse().ok()?;
+        Some(Color::rgb(r, g, b))
     }
 
     #[test]

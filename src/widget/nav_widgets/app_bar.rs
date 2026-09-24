@@ -804,6 +804,10 @@ mod tests {
     /// The default must remain byte-identical so a bar that never asks behaves exactly as it did.
     #[test]
     fn the_default_bar_is_still_left_to_right() {
+        // Both halves are rendered and compared, so pin the appearance across them as every other
+        // two-render comparison in the crate does; otherwise a concurrent theme switch between the
+        // two renders fails this for a reason unrelated to direction.
+        let _guard = crate::theme::theme_test_guard();
         let mut untouched = make_app_bar();
         untouched.set_show_back(true);
         untouched.set_action_text("Save");

@@ -88,6 +88,12 @@ pub struct DataGrid {
     /// Set through [`Self::cell_at`], so a selection can only ever name a cell that was
     /// actually painted.
     selection: Option<(usize, usize)>,
+    /// The projected `(row, column)` under the pointer, or `None` when it is elsewhere.
+    ///
+    /// Set through the **same** [`Self::cell_at`] the press uses, so the cell a hover points at is
+    /// the cell a click would select — the two cannot disagree about where a cell begins. A grid is a
+    /// matrix of independent targets, so this has to name a cell rather than light the control.
+    hovered_cell: Option<(usize, usize)>,
     /// Emitted when visible row/column window changes.
     pub visible_window_changed: Signal1<(usize, usize, usize, usize)>,
 }
@@ -111,6 +117,7 @@ impl DataGrid {
             filter_expr: FilterExpr::MatchAll,
             window_cache: None,
             selection: None,
+            hovered_cell: None,
             visible_window_changed: Signal1::new(),
         }
     }
@@ -760,6 +767,29 @@ impl Draw for DataGrid {
             }
         }
 
+        // ── Selection and hover, painted **over** the cells ──
+        //
+        // The selection was stored and never drawn: a press set `self.selection`, re-requested a
+        // redraw, and the grid came back looking exactly the same. A stored state with no consumer
+        // is the same shape as a declared token with no consumer — the user cannot tell a selected
+        // cell from any other. It is drawn here, over the cell borders, so the marker is not
+        // overpainted by the next row's line.
+        //
+        // The hover is the accent at **lower** alpha: pointer position rather than a committed
+        // choice, so it points at the cell a click would select without competing with the one
+        // already selected. Both come from `cell_rect`, the same derivation `cell_at` reads, so a
+        // highlighted cell is always a cell that can be hit.
+        if let Some((row, column)) = self.hovered_cell {
+            if Some((row, column)) != self.selection {
+                let box_rect = self.cell_rect(row, column);
+                context.draw_rect_stroke(box_rect, accent.with_alpha(120), 1);
+            }
+        }
+        if let Some((row, column)) = self.selection {
+            let box_rect = self.cell_rect(row, column);
+            context.draw_rect_stroke(box_rect, accent, 2);
+        }
+
         if self.frozen_columns > 0 {
             let split_x = cells.x + (self.frozen_columns as i32) * self.column_width as i32;
             if split_x > cells.x {
@@ -775,6 +805,9 @@ impl Draw for DataGrid {
 
 impl crate::event::EventHandler for DataGrid {
     fn handle_event(&mut self, event: &Event) {
+        // The base keeps the control-level hover/press facts and answers `widget_state()`. This
+        // handler did not forward to it, so `"data_grid:hover"` could never fire.
+        self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }
@@ -803,6 +836,27 @@ impl crate::event::EventHandler for DataGrid {
                 self.selection = hit;
                 self.base.request_redraw();
             }
+        }
+
+        match event {
+            // Cell hover, from the same `cell_at` the press reads: the cell that is outlined is the
+            // cell a click would select. A pointer that leaves the cells (into the title strip, past
+            // the last column, or off the control) clears it rather than latching the last cell it
+            // crossed.
+            Event::MouseMove { pos } => {
+                let hovered = self.cell_at(*pos);
+                if hovered != self.hovered_cell {
+                    self.hovered_cell = hovered;
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseLeave { .. } => {
+                let had_hover = self.hovered_cell.take().is_some();
+                if had_hover {
+                    self.base.request_redraw();
+                }
+            }
+            _ => { /* The wheel and press arms above already handled those. */ }
         }
     }
 }
@@ -891,6 +945,59 @@ mod tests {
         let below = Point::new(centre.x, target.y + 20 * 100);
         grid.handle_event(&Event::MousePress { pos: below, button: 1 });
         assert_eq!(grid.selection(), None, "a press on empty space must clear the selection");
+    }
+
+    /// A selected cell is **painted** as selected, and a hovered cell is marked more faintly.
+    ///
+    /// # The defect this pins
+    ///
+    /// `selection` was stored and never drawn: a press set the field, re-requested a redraw, and the
+    /// grid came back byte-identical. A stored state with no consumer is the same shape as a declared
+    /// token with no consumer, and this one is a *user-visible* one — the user cannot tell the cell
+    /// they clicked from any other.
+    ///
+    /// # Why the assertion counts accent strokes rather than comparing documents
+    ///
+    /// "The document changed" would also be satisfied by the hover outline or by the frozen-column
+    /// rule. The marker is emitted as a `<rect ... stroke="..." stroke-width="2" />` in the accent
+    /// colour, so counting elements carrying that stroke names exactly the element under test.
+    #[test]
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn a_selected_cell_is_painted_as_selected() {
+        let _guard = crate::theme::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
+
+        let mut grid = DataGrid::new(Rect::new(0, 0, 400, 300));
+        grid.set_data_source(Arc::new(StaticSource {
+            rows: 4,
+            cols: 4,
+            data: (0..4).map(|r| (0..4).map(|c| format!("{r}:{c}")).collect()).collect(),
+        }));
+
+        let target = grid.cell_rect(1, 1);
+        let centre =
+            Point::new(target.x + target.width as i32 / 2, target.y + target.height as i32 / 2);
+
+        let before = width_two_strokes(&mut grid);
+        assert_eq!(before, 0, "an untouched grid draws no selection marker");
+
+        grid.handle_event(&Event::MousePress { pos: centre, button: 1 });
+        assert_eq!(grid.selection(), Some((1, 1)));
+        let after = width_two_strokes(&mut grid);
+        assert_eq!(
+            after,
+            before + 1,
+            "selecting a cell must paint exactly one selection marker (had {before}, now {after})"
+        );
+    }
+
+    /// How many SVG `<rect>` strokes are drawn at width 2 — how the selection marker is emitted.
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn width_two_strokes(grid: &mut DataGrid) -> usize {
+        let rect = grid.geometry();
+        let svg = crate::widget::svg::render_widget_to_svg(grid, rect);
+        svg.match_indices("stroke-width=\"2\"").count()
     }
 
     /// Scrolling moves the mapping from a point to a cell along with the cells themselves.

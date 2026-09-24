@@ -129,6 +129,50 @@ impl FontPreview {
     fn build_font(&self, size: f32) -> Font {
         Font::new(&self.font_family, size, self.bold, self.italic)
     }
+
+    /// The panel fill and the three inks its rows use, in precedence order:
+    /// the control's explicit style, then the active theme's roles, then literals.
+    ///
+    /// # Why one resolver
+    ///
+    /// This panel used five literals and read the theme nowhere, so on a dark appearance it painted
+    /// a light rectangle with black ink that could not be reached by any theme. Resolving them
+    /// together keeps the four in step: a caller that sets only `background_color` still gets inks
+    /// that are legible on it, and a themed build moves all four at once. The literals are the last
+    /// resort for a build with no theme at all — the same precedence `WidgetStyle` uses.
+    pub(crate) fn panel_colors(&self) -> (Color, Color, Color, Color) {
+        let style = self.style();
+        // The guard is released before `self.style()` is read below: `theme_manager()` is a
+        // non-reentrant mutex, so the theme facts are copied out of it in one scope and the rest of
+        // the resolution happens without holding it.
+        let themed = {
+            let manager = crate::style::theme_manager();
+            manager.current_theme().map(|theme| {
+                (
+                    theme.colors.surface_container,
+                    theme.colors.foreground,
+                    theme.colors.secondary,
+                    theme.colors.outline_variant,
+                )
+            })
+        };
+        let (t_surface, t_ink, t_muted, t_separator) = themed.unwrap_or((
+            Color::WHITE,
+            Color::BLACK,
+            Color::GRAY,
+            Color::rgba(200, 200, 200, 255),
+        ));
+
+        let panel = style.background_color.unwrap_or(t_surface);
+        let ink = style.text_color.unwrap_or(t_ink);
+        // A sample row and the info line are annotations about the preview, not the preview
+        // itself, so they take the theme's weak ink rather than a second `foreground` literal.
+        let muted = t_muted;
+        // A divider between the preview and the samples is structure, not content, so it is the
+        // weak separator role rather than a grey about the same strength as the sample text.
+        let separator = style.border_color.unwrap_or(t_separator);
+        (panel, ink, muted, separator)
+    }
 }
 
 impl Widget for FontPreview {
@@ -188,8 +232,13 @@ impl Draw for FontPreview {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
 
-        // Draw background
-        context.fill_rect(rect, Color::WHITE);
+        // Every colour below used to be a literal (a white panel, black preview, two greys and a
+        // separator grey), so the control painted a light panel on any appearance and could not be
+        // themed at all — `audit_appearance.py` counted it among the Draw files reading no style.
+        // They now resolve from one place: an explicit style first, then the theme's roles, then the
+        // literals as a last resort for a build with no theme at all.
+        let (panel, ink, muted, separator) = self.panel_colors();
+        context.fill_rect(rect, panel);
 
         let mut y: u32 = (rect.y + 10) as u32;
         let margin = 10u32;
@@ -217,7 +266,7 @@ impl Draw for FontPreview {
             Rect::new(rect.x + margin as i32, y as i32, text_w, info_font.size() as u32),
             &info_text,
             &info_font,
-            Color::rgba(100, 100, 100, 255),
+            muted,
             HorizontalAlignment::Left,
         );
 
@@ -235,7 +284,7 @@ impl Draw for FontPreview {
                 Rect::new(rect.x + margin as i32, y as i32, text_w, preview_font.size() as u32),
                 &self.preview_text,
                 &preview_font,
-                Color::BLACK,
+                ink,
                 HorizontalAlignment::Left,
             );
             y += (self.font_size * 1.4) as u32;
@@ -247,7 +296,7 @@ impl Draw for FontPreview {
         context.draw_line(
             Point::new(rect.x + margin as i32, baseline_y as i32),
             Point::new(rect.x + rect.width as i32 - margin as i32, baseline_y as i32),
-            Color::rgba(200, 200, 200, 255),
+            separator,
         );
         y += 10;
 
@@ -263,7 +312,7 @@ impl Draw for FontPreview {
                 Rect::new(rect.x + margin as i32, y as i32, text_w, sample_font.size() as u32),
                 text,
                 &sample_font,
-                Color::rgba(60, 60, 60, 255),
+                muted,
                 HorizontalAlignment::Left,
             );
             y += 22;
@@ -280,6 +329,73 @@ impl EventHandler for FontPreview {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(all(device_profile, feature = "desktop"))]
+    use crate::core::Size;
+    #[cfg(all(device_profile, feature = "desktop"))]
+    use crate::render::{PaintBackend, SoftwarePaintBackend};
+
+    /// Renders the panel over `backdrop` and returns its RGBA frame.
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn render_on(fp: &mut FontPreview, size: Size, backdrop: Color) -> Vec<u8> {
+        let mut backend = SoftwarePaintBackend::new(size, 1.0);
+        backend.begin_frame(backdrop);
+        let mut context = RenderContext::new(&mut backend);
+        fp.draw(&mut context);
+        backend.end_frame();
+        backend.frame_rgba().to_vec()
+    }
+
+    /// The RGBA pixel at `(x, y)` of a `size`-wide frame.
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn pixel(frame: &[u8], size: Size, x: u32, y: u32) -> [u8; 4] {
+        let index = ((y * size.width + x) * 4) as usize;
+        [frame[index], frame[index + 1], frame[index + 2], frame[index + 3]]
+    }
+
+    /// The panel fill follows the appearance instead of a fixed white.
+    ///
+    /// # The defect this pins
+    ///
+    /// `Draw` read no style at all: the panel was `Color::WHITE`, the preview black, the info line
+    /// and the sample rows two greys, and the separator a third. On a dark appearance the control
+    /// therefore painted a bright panel with near-black ink that no theme could reach — the
+    /// `audit_appearance.py` count of "Draw files reading no style colour" named it.
+    ///
+    /// The sample point is in the panel's blank right-hand area, clear of every glyph and of the
+    /// separator rule, so the pixel it reads is the panel fill and nothing else.
+    #[test]
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn the_panel_follows_the_appearance() {
+        let _guard = crate::theme::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        let rect = Rect::new(0, 0, 300, 200);
+        let size = Size::new(300, 200);
+
+        let panel_pixel = |appearance| -> [u8; 4] {
+            crate::theme::global_theme_manager().set_appearance(appearance);
+            let backdrop = crate::style::theme_manager()
+                .current_theme()
+                .map(|active| active.colors.background)
+                .expect("a preset is active");
+            let mut fp = FontPreview::new("Arial", rect);
+            crate::theme::apply_theme_to_widget(&mut fp);
+            let frame = render_on(&mut fp, size, backdrop);
+            // The right edge of the panel, well below the info line: no sample row reaches it.
+            pixel(&frame, size, 295, 150)
+        };
+
+        let dark = panel_pixel(crate::theme::AppearanceMode::Dark);
+        let light = panel_pixel(crate::theme::AppearanceMode::Light);
+        assert_ne!(
+            dark, light,
+            "the font-preview panel must follow the appearance; both were {dark:?}"
+        );
+        assert_ne!(
+            dark,
+            [255, 255, 255, 255],
+            "the panel must not be the fixed white the defect used"
+        );
+    }
 
     #[test]
     fn font_preview_initial_state() {

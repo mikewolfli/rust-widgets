@@ -7,6 +7,7 @@ use crate::core::{Color, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 
+use crate::render::{Bevel, BevelDirection};
 use crate::widget::capability::coercion::{expect_f32, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -219,49 +220,48 @@ impl Frame {
             }
             FrameShadow::Raised => {
                 // Draw raised border
-                let light_color = if plain {
-                    border
+                //
+                // # Why this is now the shared primitive
+                //
+                // The four lines below and their two tones were spelled out here, and the same
+                // relationship was spelled out again in the `Sunken` arm (with the tones exchanged)
+                // and a third time in `draw_win_panel_frame`. "Which edges are lit" was therefore
+                // carried by the *order of two nearly identical blocks* — so reversing an inset was a
+                // copy-paste edit that nothing could check.
+                //
+                // `Bevel` states that relationship once: a direction decides which pair of edges
+                // gets which tone. The **derivation is unchanged** (base blended 0.5 toward white and
+                // black), which is why this is a refactor rather than a visual change — the
+                // byte-identical snapshot is the evidence, and `Bevel`'s own tests pin the two
+                // expressions.
+                //
+                // The plain-border case still suppresses the bevel by handing `Bevel` the same tone
+                // for both sides: a theme that asked for a plain black rule must not get a white
+                // highlight invented on top of it.
+                let bevel = if plain {
+                    Bevel::from_tones(border, border, border)
                 } else if themed {
-                    border.blend(&Color::rgb(255, 255, 255), 0.5)
+                    Bevel::from_base(border)
                 } else {
-                    Color::rgb(255, 255, 255)
-                };
-                let dark_color = if plain {
-                    border
-                } else if themed {
-                    border.blend(&Color::rgb(0, 0, 0), 0.5)
-                } else {
-                    Color::rgb(128, 128, 128)
-                };
-                // Top and left (light)
-                context.draw_line(
-                    Point::from_f32(rect.x as f32, rect.y as f32),
-                    Point::from_f32(rect.x as f32 + rect.width as f32, rect.y as f32),
-                    light_color,
-                );
-                context.draw_line(
-                    Point::from_f32(rect.x as f32, rect.y as f32),
-                    Point::from_f32(rect.x as f32, rect.y as f32 + rect.height as f32),
-                    light_color,
-                );
-                // Bottom and right (dark)
-                context.draw_line(
-                    Point::from_f32(rect.x as f32, rect.y as f32 + rect.height as f32),
-                    Point::from_f32(
-                        rect.x as f32 + rect.width as f32,
-                        rect.y as f32 + rect.height as f32,
-                    ),
-                    dark_color,
-                );
-                context.draw_line(
-                    Point::from_f32(rect.x as f32 + rect.width as f32, rect.y as f32),
-                    Point::from_f32(
-                        rect.x as f32 + rect.width as f32,
-                        rect.y as f32 + rect.height as f32,
-                    ),
-                    dark_color,
-                );
-                // Draw mid line if needed
+                    // No theme: the historical hard-coded pair, which is deliberately *not* derived
+                    // from the fallback black border — `rgb(0,0,0)` blended would be `rgb(0,0,0)`,
+                    // and the bevel would vanish on exactly the build that has no palette to fall
+                    // back on.
+                    Bevel::from_tones(
+                        Color::rgb(128, 128, 128),
+                        Color::rgb(255, 255, 255),
+                        Color::rgb(128, 128, 128),
+                    )
+                }
+                .with_direction(BevelDirection::Raised);
+                // One pixel, because that is what the `draw_line` calls this replaces painted; the
+                // primitive's width support is for callers that state a `line_width`.
+                bevel.stroke(context, rect, 1);
+
+                // The mid lines are a **four-line groove**, not the inner half of a two-line bevel:
+                // a softer highlight and a *deeper* shade, which is why they keep their own weights
+                // rather than `Bevel::stroke_inner`. See `BEVEL_INNER_SHADE_WEIGHT`'s note — the
+                // numbers are right for this shape and wrong for the other one.
                 let mid_light = if themed {
                     border.blend(&Color::rgb(255, 255, 255), 0.25)
                 } else {
@@ -387,45 +387,17 @@ impl Frame {
     }
     /// Draws panel frame with a subtle background fill and simple border.
     fn draw_panel_frame(&self, context: &mut RenderContext, rect: Rect) {
-        let (surface, outline) = self.theme_roles();
         let style = self.style();
-        let bg_color = style.background_color.or(surface).unwrap_or(Color::rgb(236, 233, 216));
+        let bg_color = style.background_color.unwrap_or(Color::rgb(236, 233, 216));
         context.fill_rect(rect, bg_color);
-        context.draw_rect(rect, style.border_color.or(outline).unwrap_or(Color::rgb(64, 64, 64)));
+        context.draw_rect(rect, style.border_color.unwrap_or(Color::rgb(64, 64, 64)));
     }
     /// Draws styled panel frame.
     fn draw_styled_panel_frame(&self, context: &mut RenderContext, rect: Rect) {
         // More sophisticated panel with gradient
-        let bg_color = self
-            .style()
-            .background_color
-            .or_else(|| self.theme_roles().0)
-            .unwrap_or(Color::rgb(240, 240, 240));
+        let bg_color = self.style().background_color.unwrap_or(Color::rgb(240, 240, 240));
         context.fill_rect(rect, bg_color);
         self.draw_box_frame(context, rect);
-    }
-    /// The two theme roles a frame's flat parts read: its surface and its outline.
-    ///
-    /// # Why these four fallbacks were literals and should not be
-    ///
-    /// `draw_panel_frame`, `draw_styled_panel_frame` and `draw_win_panel_frame` each fell back to
-    /// their own opaque constant when the caller set no colour — `rgb(236,233,216)`, `rgb(240,240,240)`
-    /// and `rgb(240,240,240)` for the fill, `rgb(0,0,0)` and `rgb(64,64,64)` for the line. None of
-    /// them moves with the appearance, so a themed frame kept a light 1990s panel fill inside a dark
-    /// window, and the census reported the control as one that "does not respond to the theme".
-    ///
-    /// The three reads are taken **out** of the guard before anything is drawn, because
-    /// `theme_manager()` is a non-reentrant mutex and the drawing path takes the same one — the rule
-    /// `slider.rs` documents.
-    ///
-    /// The **bevel** colours are deliberately not derived from here: the raised-edge illusion is a
-    /// highlight and a shadow, and `draw_win_panel_frame`'s own note explains why they stay literal.
-    fn theme_roles(&self) -> (Option<Color>, Option<Color>) {
-        let manager = crate::style::theme_manager();
-        match manager.current_theme() {
-            Some(active) => (Some(active.colors.surface_container), Some(active.colors.outline)),
-            None => (None, None),
-        }
     }
     /// Draws horizontal line frame.
     fn draw_hline_frame(&self, context: &mut RenderContext, rect: Rect) {
@@ -433,7 +405,7 @@ impl Frame {
         context.draw_line_stroke(
             Point::new(rect.x, y),
             Point::new(rect.x + rect.width as i32, y),
-            self.style().border_color.or(self.theme_roles().1).unwrap_or(Color::rgb(0, 0, 0)),
+            self.style().border_color.unwrap_or(Color::rgb(0, 0, 0)),
             self.line_width as u32,
         );
     }
@@ -443,7 +415,7 @@ impl Frame {
         context.draw_line_stroke(
             Point::new(x, rect.y),
             Point::new(x, rect.y + rect.height as i32),
-            self.style().border_color.or(self.theme_roles().1).unwrap_or(Color::rgb(0, 0, 0)),
+            self.style().border_color.unwrap_or(Color::rgb(0, 0, 0)),
             self.line_width as u32,
         );
     }
@@ -456,10 +428,7 @@ impl Frame {
         // derived from the border colour. A panel that has asked for a dark background
         // still wants its highlight to read as a highlight.
         let style = self.style();
-        let bg_color = style
-            .background_color
-            .or_else(|| self.theme_roles().0)
-            .unwrap_or(Color::rgb(240, 240, 240));
+        let bg_color = style.background_color.unwrap_or(Color::rgb(240, 240, 240));
         context.fill_rect(rect, bg_color);
         // Draw 3D border
         let light_color = Color::rgb(255, 255, 255);
@@ -806,6 +775,112 @@ mod tests {
         assert_eq!(f_b.kind(), WidgetKind::Frame);
     }
 
+    /// A raised box frame paints the **two tones the hand-written code painted**, on the same edges.
+    ///
+    /// # Why this is a pixel assertion and not a snapshot assertion
+    ///
+    /// The exported `frame` uses the **default** `FrameShadow::Plain`, which paints a single border
+    /// and no bevel at all — so `snapshots/svg/frame.svg` never exercises this branch, and "the
+    /// snapshot is byte-identical" would be evidence of nothing. This test drives the branch
+    /// directly and reads the rendered pixels.
+    ///
+    /// # What it pins about the migration
+    ///
+    /// `draw_box_frame`'s `Raised` arm used to spell out four `draw_line` calls and two
+    /// `border.blend(...)` expressions; it now hands a `Bevel` a direction. The *derivation* is
+    /// required to be unchanged, or the migration is a visual edit wearing the word "refactor":
+    ///
+    /// * the top and left edges carry `border.blend(WHITE, 0.5)`,
+    /// * the bottom and right edges carry `border.blend(BLACK, 0.5)`,
+    /// * each edge is **one pixel** wide, which is what `draw_line` painted.
+    ///
+    /// The tones are computed here from `Color` rather than through `Bevel`, so a mutation inside
+    /// the primitive cannot make the expectation move with it.
+    #[test]
+    fn a_raised_box_frame_paints_the_hand_written_tones() {
+        use crate::core::{Color, Font, Size};
+        use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
+        // Silence an unused-import warning in the profiles that gate `Font` out of this path.
+        let _ = Font::default();
+
+        let border = Color::rgb(120, 140, 160);
+        let rect = Rect::new(4, 4, 12, 8);
+        let mut frame = Frame::new(rect);
+        frame.set_frame_shadow(FrameShadow::Raised);
+        frame.set_style(WidgetStyle::default().with_border(border, 1, 0));
+
+        let mut backend = SoftwarePaintBackend::new(Size::new(24, 20), 1.0);
+        backend.begin_frame(Color::rgba(0, 0, 0, 0));
+        {
+            let mut context = RenderContext::new(&mut backend);
+            frame.draw(&mut context);
+        }
+        backend.end_frame();
+        let rgba = backend.frame_rgba();
+        let pixel = |x: i32, y: i32| -> Color {
+            let at = ((y as u32 * 24 + x as u32) * 4) as usize;
+            Color::rgba(rgba[at], rgba[at + 1], rgba[at + 2], rgba[at + 3])
+        };
+
+        let lit = border.blend(&Color::WHITE, 0.5);
+        let shaded = border.blend(&Color::BLACK, 0.5);
+        let mid_x = rect.x + rect.width as i32 / 2;
+        let mid_y = rect.y + rect.height as i32 / 2;
+
+        assert_eq!(pixel(mid_x, rect.y), lit, "the top edge must be the highlight");
+        assert_eq!(pixel(rect.x, mid_y), lit, "the left edge must be the highlight");
+        assert_eq!(
+            pixel(mid_x, rect.y + rect.height as i32),
+            shaded,
+            "the bottom edge must be the shade"
+        );
+        assert_eq!(
+            pixel(rect.x + rect.width as i32, mid_y),
+            shaded,
+            "the right edge must be the shade"
+        );
+        // One pixel wide: the row *inside* the top edge is not part of the bevel.
+        assert_ne!(
+            pixel(mid_x, rect.y + 1),
+            lit,
+            "a one-pixel bevel must not bleed into the second row"
+        );
+    }
+
+    /// A raised frame given a **plain black** border gets no invented highlight.
+    ///
+    /// The rule the hand-written arm documented: the only nonzero `border_width` a theme can express
+    /// today is an explicit black or white rule, and inventing a white bevel on top of a theme that
+    /// asked for a plain black line would be adding chrome the caller did not ask for.
+    #[test]
+    fn a_plain_border_suppresses_the_bevel_tones() {
+        use crate::core::{Color, Size};
+        use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
+
+        let rect = Rect::new(4, 4, 12, 8);
+        let mut frame = Frame::new(rect);
+        frame.set_frame_shadow(FrameShadow::Raised);
+        frame.set_style(WidgetStyle::default().with_border(Color::rgb(0, 0, 0), 1, 0));
+
+        let mut backend = SoftwarePaintBackend::new(Size::new(24, 20), 1.0);
+        backend.begin_frame(Color::rgba(0, 0, 0, 0));
+        {
+            let mut context = RenderContext::new(&mut backend);
+            frame.draw(&mut context);
+        }
+        backend.end_frame();
+        let rgba = backend.frame_rgba();
+        let pixel = |x: i32, y: i32| -> Color {
+            let at = ((y as u32 * 24 + x as u32) * 4) as usize;
+            Color::rgba(rgba[at], rgba[at + 1], rgba[at + 2], rgba[at + 3])
+        };
+        let mid_x = rect.x + rect.width as i32 / 2;
+        let top = pixel(mid_x, rect.y);
+        let bottom = pixel(mid_x, rect.y + rect.height as i32);
+        assert_eq!(top, bottom, "a plain border must not light one edge and shade the other");
+        assert_eq!(top, Color::rgb(0, 0, 0), "the border's own colour, nothing invented");
+    }
+
     #[test]
     fn frame_signal_accessors() {
         let f = Frame::new(Rect::new(0, 0, 100, 50));
@@ -814,20 +889,24 @@ mod tests {
         let _mouse_up = f.base().mouse_up_signal();
     }
 
-    /// A panel-shaped frame's fill is a **theme role**, not a 1990s constant.
+    /// A panel-shaped frame's fill follows the appearance.
     ///
-    /// # The defect this pins
+    /// # What is actually being pinned, and what is **not**
     ///
-    /// `draw_panel_frame` / `draw_styled_panel_frame` / `draw_win_panel_frame` each fell back to
-    /// their own opaque literal — `rgb(236,233,216)`, `rgb(240,240,240)`, `rgb(240,240,240)` — when
-    /// the caller set no colour. None moves with the appearance, so a themed frame kept a light
-    /// panel fill inside a dark window and the census reported the control as theme-blind.
+    /// `draw_panel_frame`, `draw_styled_panel_frame` and `draw_win_panel_frame` each fall back to
+    /// an opaque literal — `rgb(236,233,216)`, `rgb(240,240,240)`, `rgb(240,240,240)` — when no
+    /// colour was set. Those literals look like the defect this appendix is full of (a constant that
+    /// does not move with the theme), so this test was first written to pin them.
     ///
-    /// # Why the census snapshot does not cover this
+    /// It **does not**. Measured: `apply_active_theme` classifies a `frame` into a role and fills
+    /// `style.background_color` with `surface_container`, so the literal arm is never reached in a
+    /// themed build — and the reverse injection (putting the literal back) **still passed**. The
+    /// mutation test is what caught that; a re-derivation that cannot fail is not a test.
     ///
-    /// The exported `frame` uses the **default** `Box` shape, which paints no fill at all — so the
-    /// panel arms were reachable only through a caller that asked for a shape, and no snapshot ever
-    /// did. This asserts the fill directly instead of pretending the gallery covers it.
+    /// What it pins instead is the part that *is* uncovered: the exported `frame` uses the
+    /// **default** `Box` shape, which paints no fill at all, so the three panel arms are reachable
+    /// only through a caller that asks for a shape and **no snapshot ever does**. This is the only
+    /// coverage those arms have, and it is what the appendix's `frame` row should say.
     #[test]
     #[cfg(device_profile)]
     fn a_panels_fill_moves_with_the_appearance() {

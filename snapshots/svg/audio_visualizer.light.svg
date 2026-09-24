@@ -2,7 +2,7 @@
 <!-- control: audio_visualizer | appearance: light -->
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(240,240,240,1.00)" />
-  <rect x="0" y="0" width="240" height="120" fill="rgba(20,20,30,1.00)" />
+  <rect x="0" y="0" width="240" height="120" fill="rgba(243,237,247,1.00)" />
   <rect x="2" y="54" width="1" height="11" fill="rgba(12,12,200,1.00)" />
   <rect x="5" y="47" width="1" height="25" fill="rgba(27,27,200,1.00)" />
   <rect x="9" y="40" width="1" height="38" fill="rgba(42,42,200,1.00)" />

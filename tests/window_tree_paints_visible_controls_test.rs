@@ -34,6 +34,7 @@
 use rust_widgets::app::{App, WidgetHandle, WindowHandle};
 use rust_widgets::core::{Color, Rect, Size};
 use rust_widgets::theme::{global_theme_manager, AppearanceMode};
+use rust_widgets::widget::runtime::with_widget;
 
 /// The rectangle a control was placed at, in the window's coordinate space.
 const COMBO_BOX: Rect = Rect { x: 20, y: 142, width: 180, height: 26 };
@@ -144,13 +145,38 @@ fn the_window_paints_its_own_background_rather_than_leaving_the_clear_colour() {
     let win = demo_window(&mut app);
 
     let size = Size::new(1120, 620);
-    let frame = render(&win, size);
 
     // A corner is outside every control, so it shows what the window itself painted.
+    //
+    // The expected colour is derived through the **same precedence the window's `draw` uses** —
+    // explicit style, then the active theme's `background`, then the literal — rather than being
+    // hard-coded. It was `[240, 240, 240]`, which happened to equal the light preset's background
+    // when this test was written; the window classifies as `Surface`, so `apply_active_theme`
+    // resolved it to `surface_container`, and when that role moved the hard-coded expectation went
+    // stale for a reason that has nothing to do with the painting. Reading the live widget keeps the
+    // two from disagreeing again.
+    let expected_fill = |win: &WindowHandle, appearance: AppearanceMode| -> [u8; 4] {
+        let _ = global_theme_manager().set_appearance(appearance);
+        rust_widgets::reapply_active_theme();
+        let manager = global_theme_manager();
+        let theme_background =
+            manager.current_theme().expect("a preset is active").colors.background;
+        let resolved =
+            with_widget(win.raw_id(), |w| w.style().background_color.or(Some(theme_background)))
+                .flatten()
+                .unwrap_or(Color::rgb(240, 240, 240));
+        [resolved.r, resolved.g, resolved.b, 255]
+    };
+    let dark_expected = expected_fill(&win, AppearanceMode::Dark);
+
+    // Back to light for the render under test, which also re-establishes the light theme the
+    // window will read when it paints.
+    let light_expected = expected_fill(&win, AppearanceMode::Light);
+    let frame = render(&win, size);
     let corner = frame[0];
     assert_eq!(
         [corner[0], corner[1], corner[2], corner[3]],
-        [240, 240, 240, 255],
+        light_expected,
         "in the light appearance the window must paint its own light background"
     );
 
@@ -160,10 +186,15 @@ fn the_window_paints_its_own_background_rather_than_leaving_the_clear_colour() {
     rust_widgets::reapply_active_theme();
     let dark_frame = render(&win, size);
     let dark_corner = dark_frame[0];
+    assert_eq!(
+        [dark_corner[0], dark_corner[1], dark_corner[2], dark_corner[3]],
+        dark_expected,
+        "after switching to dark the window must paint the dark preset's own background"
+    );
     assert_ne!(
         [dark_corner[0], dark_corner[1], dark_corner[2]],
-        [240, 240, 240],
-        "after switching to dark the window must not still paint the light background"
+        [light_expected[0], light_expected[1], light_expected[2]],
+        "and that must differ from the light background, or the switch proved nothing"
     );
 
     let _ = global_theme_manager().set_appearance(AppearanceMode::Light);

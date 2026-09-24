@@ -32,8 +32,16 @@ pub struct AudioVisualizer {
     bar_spacing: f32,
     /// Color of the bars.
     bar_color: Color,
-    /// Background color of the visualization area.
-    background_color: Color,
+    /// Background color of the visualization area, when the caller has chosen one.
+    ///
+    /// `None` means "use the active theme's surface", which is what a visualizer drawn on a themed
+    /// page wants. It used to be a **fixed** `rgb(20, 20, 30)` initialised in `new()`, so the
+    /// control painted a near-black rectangle on the light appearance as well and the
+    /// `style.background_color` that `apply_active_theme` wrote was read by nobody — a declared
+    /// value with no consumer. Keeping it `Option` is what lets "the caller set one" and "the
+    /// theme supplies one" be told apart, the same distinction `WidgetStyle::theme_derived`
+    /// records for the base style.
+    background_color: Option<Color>,
     /// Whether to mirror the visualization (bottom half mirrors top).
     mirror: bool,
     /// Whether to show peak hold markers.
@@ -54,7 +62,7 @@ impl AudioVisualizer {
             bar_count,
             bar_spacing: 2.0,
             bar_color: Color::rgba(0, 150, 255, 255),
-            background_color: Color::rgba(20, 20, 30, 255),
+            background_color: None,
             mirror: false,
             peak_hold: false,
             peak_hold_duration: 500,
@@ -121,13 +129,30 @@ impl AudioVisualizer {
 
     /// Sets the background color of the visualization area.
     pub fn set_background_color(&mut self, color: Color) {
-        self.background_color = color;
+        self.background_color = Some(color);
         self.base.request_redraw();
     }
 
-    /// Returns the current background color.
+    /// Returns the background color the visualizer will paint.
+    ///
+    /// An explicit [`Self::set_background_color`] wins; otherwise this is the active theme's
+    /// surface, so the control sits on the page rather than on a fixed near-black. The final
+    /// fallback covers a build with no theme at all.
     pub fn background_color(&self) -> Color {
-        self.background_color
+        self.resolved_background()
+    }
+
+    /// The fill the draw path should use: the caller's colour, else the theme's surface.
+    fn resolved_background(&self) -> Color {
+        if let Some(chosen) = self.background_color {
+            return chosen;
+        }
+        // A visualizer's panel is a **surface one step above the page**, the same role
+        // `font_preview` and the popup panels use. The theme guard is released before returning.
+        let themed = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.surface_container);
+        themed.unwrap_or(Color::rgba(20, 20, 30, 255))
     }
 
     /// Enables or disables mirror mode. When enabled, the bottom half mirrors the top.
@@ -224,7 +249,7 @@ impl Draw for AudioVisualizer {
         }
 
         // Draw background
-        context.fill_rect(rect, self.background_color);
+        context.fill_rect(rect, self.resolved_background());
 
         // Calculate bar layout
         let total_spacing = self.bar_spacing * (self.bar_count as f32 + 1.0);
@@ -400,5 +425,41 @@ mod tests {
         assert!((av.bar_spacing() - 2.0).abs() < f32::EPSILON);
         av.set_bar_spacing(5.0);
         assert!((av.bar_spacing() - 5.0).abs() < f32::EPSILON);
+    }
+
+    /// The panel colour is the theme's surface unless the caller chose one.
+    ///
+    /// # The defect this pins
+    ///
+    /// `new()` initialised `background_color` to a fixed `rgb(20, 20, 30)` and `draw` read that
+    /// field directly, so the visualizer painted a near-black rectangle on the light appearance too,
+    /// and the `style.background_color` that `apply_active_theme` wrote was read by **nobody** — a
+    /// declared value with no consumer. It now resolves to `surface_container` unless
+    /// `set_background_color` was called, which is what the `Option` field distinguishes.
+    #[test]
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn the_background_defaults_to_the_theme_and_still_honours_an_override() {
+        let _guard = crate::theme::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+
+        let themed = |appearance| -> Color {
+            crate::theme::global_theme_manager().set_appearance(appearance);
+            AudioVisualizer::new(Rect::new(0, 0, 300, 150)).background_color()
+        };
+
+        let dark = themed(crate::theme::AppearanceMode::Dark);
+        let light = themed(crate::theme::AppearanceMode::Light);
+        assert_ne!(
+            dark, light,
+            "an un-configured visualizer must take the theme's surface, not a fixed near-black; \
+             both were {dark:?}"
+        );
+
+        // An explicit choice still wins over the theme, which is what keeps the setter meaningful.
+        crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
+        let mut av = AudioVisualizer::new(Rect::new(0, 0, 300, 150));
+        let chosen = Color::rgb(1, 2, 3);
+        av.set_background_color(chosen);
+        assert_eq!(av.background_color(), chosen, "a caller's colour must survive the theme");
     }
 }

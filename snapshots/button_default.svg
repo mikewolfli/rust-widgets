@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="80" height="30" viewBox="0 0 80 30">
   <rect x="0" y="0" width="80" height="30" fill="rgba(255,255,255,1.00)" />
   <rect x="0" y="0" width="80" height="30" fill="rgba(240,240,240,1.00)" />
-  <text x="6" y="8" dominant-baseline="text-before-edge" font-family="Arial" font-size="14" font-style="normal" font-weight="400" fill="rgba(0,0,0,1.00)">OK</text>
+  <path d="M34 8h1v1h-1zM35 8h1v1h-1zM36 8h1v1h-1zM33 9h1v2h-1zM34 9h1v2h-1zM36 9h1v2h-1zM37 9h1v2h-1zM32 11h1v2h-1zM33 11h1v2h-1zM37 11h1v2h-1zM38 11h1v2h-1zM32 13h1v2h-1zM33 13h1v2h-1zM37 13h1v2h-1zM38 13h1v2h-1zM32 15h1v1h-1zM33 15h1v1h-1zM37 15h1v1h-1zM38 15h1v1h-1zM33 16h1v2h-1zM34 16h1v2h-1zM36 16h1v2h-1zM37 16h1v2h-1zM34 18h1v2h-1zM35 18h1v2h-1zM36 18h1v2h-1zM40 8h1v1h-1zM41 8h1v1h-1zM42 8h1v1h-1zM45 8h1v1h-1zM46 8h1v1h-1zM41 9h1v2h-1zM42 9h1v2h-1zM45 9h1v2h-1zM46 9h1v2h-1zM41 11h1v2h-1zM42 11h1v2h-1zM44 11h1v2h-1zM45 11h1v2h-1zM41 13h1v2h-1zM42 13h1v2h-1zM43 13h1v2h-1zM44 13h1v2h-1zM41 15h1v1h-1zM42 15h1v1h-1zM44 15h1v1h-1zM45 15h1v1h-1zM41 16h1v2h-1zM42 16h1v2h-1zM45 16h1v2h-1zM46 16h1v2h-1zM40 18h1v2h-1zM41 18h1v2h-1zM42 18h1v2h-1zM45 18h1v2h-1zM46 18h1v2h-1z" fill="rgba(0,0,0,1.00)" />
 </svg>

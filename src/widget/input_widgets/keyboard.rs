@@ -53,6 +53,21 @@ pub struct Keyboard {
     shift: bool,
     /// Whether to show lowercase when shift is off.
     lowercase: bool,
+    /// The key currently held down, as `(row, column)`, or `None` when none is.
+    ///
+    /// # Why the keyboard needed this while the mouse is "pressed"
+    ///
+    /// `BaseWidget` records that the **control** is pressed, not which of its keys is, and a
+    /// keyboard is a grid of independent targets: pressing one key and seeing the whole board react
+    /// would be a lie about which key is being activated. Until this field existed a key down gave
+    /// no visual confirmation at all — the signal fired, and the board looked exactly as it did a
+    /// moment before, which is the one affordance a virtual keyboard most needs because the user's
+    /// finger is covering the key they pressed.
+    ///
+    /// The pair rather than the key code: the layout has two keys with the same code in different
+    /// rows (a numeric row and a keypad column both carry digit codes), so a code alone cannot name
+    /// the key to highlight.
+    pressed_key: Option<(usize, usize)>,
     /// Signal emitted with `(key_code, modifiers)` when any key is pressed.
     pub key_pressed: Signal1<(u32, u32)>,
     /// Signal emitted when Enter (key code 13) is pressed.
@@ -75,6 +90,7 @@ impl Keyboard {
             keys: Vec::new(),
             shift: false,
             lowercase: true,
+            pressed_key: None,
             key_pressed: Signal1::new(),
             enter_pressed: GenericSignal::new(),
             backspace_pressed: GenericSignal::new(),
@@ -371,10 +387,45 @@ impl EventHandler for Keyboard {
             // Only handle MousePress (modern variant) to avoid double-trigger
             // with MouseDown (legacy variant).
             Event::MousePress { pos, button: _ } => {
-                let key_code = self.key_at_position(*pos).and_then(|(r, c)| {
+                let hit = self.key_at_position(*pos);
+                let key_code = hit.and_then(|(r, c)| {
                     self.keys.get(r).and_then(|row| row.get(c)).map(|k| k.key_code)
                 });
                 if let Some(code) = key_code {
+                    // The latch is what the draw path reads, so the key the user pressed is the
+                    // key that lights up. Set from the **hit test**, the same function the click
+                    // itself uses, so the highlight and the action can never name different keys.
+                    if let Some(at) = hit {
+                        self.pressed_key = Some(at);
+                        self.base.request_redraw();
+                    }
+                    if code == 16 {
+                        self.toggle_shift();
+                    } else {
+                        self.emit_key_signals(code);
+                    }
+                    self.base.clicked.emit();
+                }
+            }
+            // The press ends when the pointer goes up, wherever it went up: the key was activated
+            // on the press (that is this control's contract), so the confirmation is released with
+            // the pointer rather than being latched until the next press.
+            Event::MouseRelease { .. } => {
+                if self.pressed_key.take().is_some() {
+                    self.base.request_redraw();
+                }
+            }
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { pos, .. } => {
+                let hit = self.key_at_position(*pos);
+                let key_code = hit.and_then(|(r, c)| {
+                    self.keys.get(r).and_then(|row| row.get(c)).map(|k| k.key_code)
+                });
+                if let Some(code) = key_code {
+                    if let Some(at) = hit {
+                        self.pressed_key = Some(at);
+                        self.base.request_redraw();
+                    }
                     if code == 16 {
                         self.toggle_shift();
                     } else {
@@ -384,17 +435,9 @@ impl EventHandler for Keyboard {
                 }
             }
             #[cfg(feature = "touch")]
-            Event::TouchBegin { pos, .. } => {
-                let key_code = self.key_at_position(*pos).and_then(|(r, c)| {
-                    self.keys.get(r).and_then(|row| row.get(c)).map(|k| k.key_code)
-                });
-                if let Some(code) = key_code {
-                    if code == 16 {
-                        self.toggle_shift();
-                    } else {
-                        self.emit_key_signals(code);
-                    }
-                    self.base.clicked.emit();
+            Event::TouchEnd { .. } => {
+                if self.pressed_key.take().is_some() {
+                    self.base.request_redraw();
                 }
             }
             Event::KeyPress { key, modifiers: _ } => {
@@ -513,7 +556,7 @@ impl Draw for Keyboard {
             let total_ratio: f32 = row_keys.iter().map(|k| k.width_ratio).sum();
 
             let mut cursor_x = rect.x as f32;
-            for key in row_keys {
+            for (col_idx, key) in row_keys.iter().enumerate() {
                 let key_w = row_width * key.width_ratio / total_ratio;
                 let key_rect = Rect::from_f32(
                     cursor_x,
@@ -529,6 +572,15 @@ impl Draw for Keyboard {
                     special_bg
                 } else {
                     key_bg
+                };
+
+                // A key under the pointer right now steps once more out of the board, so the press
+                // is visible under the finger that is covering the key. `pressed_key` names the key
+                // by position because two keys in different rows can share a key code.
+                let kbg = if self.pressed_key == Some((row_idx, col_idx)) {
+                    kbg.blend(&ink, 0.25)
+                } else {
+                    kbg
                 };
 
                 // Fill key background.
@@ -710,6 +762,117 @@ mod tests {
             // by verifying internal state is consistent.
             assert_eq!(kbd.keys.len(), 4);
         }
+    }
+
+    /// A key that is held down is painted differently from the same key at rest.
+    ///
+    /// # The defect this pins
+    ///
+    /// The keyboard had no press feedback at all: `handle_event` fired the signals and the board
+    /// looked identical a moment later. `BaseWidget` records that the **control** is pressed, not
+    /// which of its keys is, and a keyboard is a grid of independent targets — highlighting the whole
+    /// board on any key press would be a worse lie than highlighting nothing. The latch is therefore
+    /// per key, and it names the key by position because two keys in different rows can share a code.
+    ///
+    /// # Why the assertion compares one key's fill against its own resting fill
+    ///
+    /// A whole-document comparison would pass for a board where *any* pixel changed — including one
+    /// this fix does not touch. The helper reads the fill of the rectangle at a named key's centre,
+    /// so the assertion is about that key.
+    #[test]
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn a_pressed_key_is_painted_as_pressed() {
+        // The key fills are derived from the active theme, so pin the appearance and hold the
+        // registry guard; otherwise a concurrently-running test can switch the theme between the
+        // resting and pressed reads and the comparison is of two different appearances.
+        let _guard = crate::theme::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
+        let rect = Rect::new(0, 0, 320, 160);
+        let mut kbd = Keyboard::new(rect);
+        // A key in the middle of the first row: far enough from the edges that the sample is plainly
+        // inside it whatever the row heights work out to.
+        let row = 0usize;
+        let col = 2usize;
+        let centre = key_centre(&kbd, row, col).expect("the key must have a rectangle");
+
+        let resting = key_fill(&mut kbd, rect, centre).expect("a key paints a fill");
+        kbd.handle_event(&Event::MousePress { pos: centre, button: 1 });
+        let pressed = key_fill(&mut kbd, rect, centre).expect("a pressed key paints a fill");
+        assert_ne!(
+            pressed, resting,
+            "the key under the pointer must be visible as pressed; both fills were {resting}"
+        );
+
+        kbd.handle_event(&Event::MouseRelease { pos: centre, button: 1 });
+        let released = key_fill(&mut kbd, rect, centre).expect("the key still paints a fill");
+        assert_eq!(
+            released, resting,
+            "releasing must return the key to its resting fill, not latch it"
+        );
+    }
+
+    /// The centre of the key at `(row, col)`, from the same geometry the draw path uses.
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn key_centre(kbd: &Keyboard, row: usize, col: usize) -> Option<Point> {
+        let rect = kbd.geometry();
+        let row_keys = kbd.keys.get(row)?;
+        let total: f32 = row_keys.iter().map(|k| k.width_ratio).sum();
+        let key = row_keys.get(col)?;
+        let before: f32 = row_keys.iter().take(col).map(|k| k.width_ratio).sum();
+        let row_height = rect.height as f32 / kbd.keys.len() as f32;
+        let x = rect.x as f32 + (before + key.width_ratio / 2.0) / total * rect.width as f32;
+        let y = rect.y as f32 + (row as f32 + 0.5) * row_height;
+        Some(Point::new(x as i32, y as i32))
+    }
+
+    /// The fill of the **innermost** SVG `<rect>` that contains `at`.
+    ///
+    /// Innermost rather than first: the document opens with the board's own full-canvas rectangle,
+    /// which also contains the sample point. Keeping the smallest-area match is what makes the
+    /// returned fill the *key's*, which is the element the assertion is about — the same "name the
+    /// element" rule the fill assertions elsewhere in the crate follow.
+    ///
+    /// Split on the self-closing tag rather than searching forward for it: an `element[..end]`
+    /// cursor that slices at the *first* `/>` from a position can land inside the next element when
+    /// a tag is emitted without the space before it, which read the wrong rectangle's attributes
+    /// (measured: every candidate came back `320x160`).
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn key_fill(kbd: &mut Keyboard, rect: Rect, at: Point) -> Option<String> {
+        let svg = crate::widget::svg::render_widget_to_svg(kbd, rect);
+        let mut best: Option<(u32, String)> = None;
+        for element in svg.split("/>") {
+            let Some(open) = element.find("<rect ") else {
+                continue;
+            };
+            let element = &element[open + "<rect ".len()..];
+            let attr = |name: &str| -> Option<i32> {
+                let key = format!("{name}=\"");
+                let at = element.find(&key)? + key.len();
+                let to = element[at..].find('"')? + at;
+                element[at..to].parse().ok()
+            };
+            let (Some(x), Some(y), Some(w), Some(h)) =
+                (attr("x"), attr("y"), attr("width"), attr("height"))
+            else {
+                continue;
+            };
+            if at.x < x || at.x >= x + w || at.y < y || at.y >= y + h {
+                continue;
+            }
+            let Some(fill_at) = element.find("fill=\"") else {
+                continue;
+            };
+            let from = fill_at + "fill=\"".len();
+            let Some(to) = element[from..].find('"') else {
+                continue;
+            };
+            let area = (w as u32).saturating_mul(h as u32);
+            if best.as_ref().map(|(a, _)| area < *a).unwrap_or(true) {
+                best = Some((area, element[from..from + to].to_string()));
+            }
+        }
+        best.map(|(_, fill)| fill)
     }
 
     #[test]

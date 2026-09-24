@@ -190,7 +190,17 @@ impl Draw for CommandLink {
         let style = self.style();
         let bg_color = style.background_color.unwrap_or(Color::TRANSPARENT);
         let text_color = style.text_color.unwrap_or(Color::rgb(0, 102, 204));
-        let hover_color = Color::rgb(0, 0, 255);
+        // The hover ink is the theme's `primary`, the hue a theme is expected to vary most.
+        //
+        // It used to be a literal `rgb(0, 0, 255)`, applied unconditionally on hover — so the
+        // themed `text_color` above was thrown away the moment the pointer arrived, and a
+        // command link was the one control in its group that ignored the appearance in exactly
+        // the state a user is most likely to be looking at. Deriving it means light and dark
+        // differ on hover rather than both snapping to the same blue.
+        let hover_color = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.primary)
+            .unwrap_or(text_color);
         let disabled_color = Color::GRAY;
         let is_hovered = self.base.is_hovered();
         let is_enabled = self.base.is_enabled();
@@ -374,5 +384,63 @@ mod tests {
         let cl = CommandLink::new(Rect::new(0, 0, 100, 50));
         let _clicked = &cl.clicked;
         let _hovered = &cl.hovered;
+    }
+
+    /// The hover underline follows the appearance rather than a fixed blue.
+    ///
+    /// # The defect this pins
+    ///
+    /// On hover the ink was a literal `rgb(0, 0, 255)`, applied unconditionally to the label
+    /// **and** to the underline. The themed `text_color` the control had just resolved was
+    /// therefore discarded in the one state a user is most likely to be looking at, so a light
+    /// and a dark build drew the same blue under a link whose resting ink differed.
+    ///
+    /// # Why the underline, and not the whole document
+    ///
+    /// A first instinct is to compare the two documents wholesale, but a document-wide
+    /// comparison is satisfied by any colour that differs — including ones this test is not
+    /// about. The hover underline is emitted as a single `<line ... stroke="rgba(...)" />`,
+    /// which names the exact element the fix moved, so that is what the assertion reads.
+    #[test]
+    #[cfg(feature = "desktop")]
+    fn the_hover_ink_follows_the_appearance() {
+        let _guard = crate::theme::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        let rect = Rect::new(0, 0, 300, 60);
+
+        let hover_stroke = |appearance| -> String {
+            crate::theme::global_theme_manager().set_appearance(appearance);
+            let mut cl = CommandLink::new(rect);
+            cl.set_text("Open".to_string());
+            // The `MouseEnter` the base records is what puts the control in its hover state, so
+            // the underline is drawn at all.
+            cl.handle_event(&Event::MouseEnter { pos: Point::new(1, 1) });
+            crate::theme::apply_theme_to_widget(&mut cl);
+            let svg = crate::widget::svg::render_widget_to_svg(&mut cl, rect);
+            underline_stroke(&svg).unwrap_or_else(|| {
+                panic!("a hovered command link must underline itself; svg was {svg}")
+            })
+        };
+
+        let dark = hover_stroke(crate::theme::AppearanceMode::Dark);
+        let light = hover_stroke(crate::theme::AppearanceMode::Light);
+        assert_ne!(dark, light, "the hover ink must follow the appearance; both were {dark}");
+        assert_ne!(
+            dark, "rgba(0,0,255,255)",
+            "the hover ink must not be the fixed blue the defect used"
+        );
+    }
+
+    /// The `stroke` of the SVG `<line>` element, if the document has one.
+    #[cfg(feature = "desktop")]
+    fn underline_stroke(svg: &str) -> Option<String> {
+        let at = svg.find("<line ")?;
+        let rest = &svg[at..];
+        let end = rest.find("/>")? + 2;
+        let element = &rest[..end];
+        let key = "stroke=\"";
+        let from = element.find(key)? + key.len();
+        let to = element[from..].find('"')? + from;
+        Some(element[from..to].to_string())
     }
 }

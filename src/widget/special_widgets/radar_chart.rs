@@ -71,6 +71,24 @@ const PALETTE: [Color; 6] = [
     Color::rgb(0, 172, 193),
 ];
 
+/// The chart's resolved chrome, so one `style`-then-theme lookup feeds every consumer.
+///
+/// Five fields because five distinct things are painted; the **series palette is deliberately
+/// absent**, because a series colour is data rather than chrome (see [`RadarChart::chrome_colors`]).
+#[derive(Debug, Clone, Copy)]
+struct RadarChrome {
+    /// The plotting surface the polygons are drawn on.
+    surface: Color,
+    /// The control's own frame.
+    border: Color,
+    /// The rings and spokes. Weaker than `border`, derived from it.
+    grid: Color,
+    /// The axis names.
+    label: Color,
+    /// The "No data" caption.
+    placeholder: Color,
+}
+
 /// Nudges a text box of `width`×`height` at `(x, y)` back inside `rect`.
 ///
 /// The returned box is the caller's own measured size, moved so it lies within `rect`.
@@ -406,8 +424,9 @@ impl Draw for RadarChart {
         if rect.width == 0 || rect.height == 0 {
             return;
         }
-        context.fill_rect(rect, Color::rgb(255, 255, 255));
-        context.draw_rect(rect, Color::rgb(200, 200, 200));
+        let chrome = self.chrome_colors();
+        context.fill_rect(rect, chrome.surface);
+        context.draw_rect(rect, chrome.border);
 
         let axis_count = self.axis_count();
         let Some(max) = self.data_max() else {
@@ -442,13 +461,64 @@ impl Draw for RadarChart {
 }
 
 impl RadarChart {
+    /// The chart's **chrome** colours, resolved once: axe surface, border, grid, label ink and the
+    /// empty-state caption.
+    ///
+    /// # Why the chrome moved off literals
+    ///
+    /// Every one of these was a literal — a `rgb(255,255,255)` surface, a `rgb(200,200,200)` frame,
+    /// a `rgb(225,225,225)` grid and two greys for the ink — so the control painted a **white board
+    /// with near-black lettering** on every appearance and `audit_appearance.py` counted it among the
+    /// Draw files that read no style at all. The **series palette is deliberately not here**: which
+    /// colour identifies which axis polygon is the data's identity, and recolouring it by appearance
+    /// would misrepresent it (the exemption `tools/control_color_exemptions.txt` records for
+    /// `radar_chart`).
+    ///
+    /// Precedence mirrors every other panel in the crate: an explicit style wins, then the active
+    /// theme's roles, then the literal as the last resort for a build with no theme.
+    fn chrome_colors(&self) -> RadarChrome {
+        let style = self.style();
+        // The guard is released before `self.style()` is consumed below — `theme_manager()` is a
+        // non-reentrant mutex, so the theme facts are copied out in one scope.
+        let themed = {
+            let manager = crate::style::theme_manager();
+            manager.current_theme().map(|theme| {
+                (
+                    theme.colors.surface_container,
+                    theme.colors.outline_variant,
+                    theme.colors.foreground,
+                    theme.colors.secondary,
+                )
+            })
+        };
+        let (surface, divider, ink, muted) = themed.unwrap_or((
+            Color::rgb(255, 255, 255),
+            Color::rgb(200, 200, 200),
+            Color::rgb(90, 90, 90),
+            Color::rgb(180, 180, 180),
+        ));
+
+        let surface = style.background_color.unwrap_or(surface);
+        let ink = style.text_color.unwrap_or(ink);
+        let divider = style.border_color.unwrap_or(divider);
+        RadarChrome {
+            surface,
+            border: divider,
+            // The grid is a *derivative* of the axes rather than a second token: it must read as
+            // weaker than the frame it sits inside on any appearance.
+            grid: surface.blend(&divider, 0.55),
+            label: ink,
+            placeholder: muted,
+        }
+    }
+
     /// Draws the "no data" caption.
     fn draw_placeholder(&self, context: &mut RenderContext, rect: Rect) {
         context.draw_text_fitted(
             rect,
             "No data",
             &Font::simple("Sans", 12.0),
-            Color::rgb(180, 180, 180),
+            self.chrome_colors().placeholder,
             HorizontalAlignment::Left,
         );
     }
@@ -462,7 +532,7 @@ impl RadarChart {
         axis_count: usize,
     ) {
         const RINGS: u32 = 4;
-        let grid = Color::rgb(225, 225, 225);
+        let grid = self.chrome_colors().grid;
         // Rings: one per quarter of the radius, so the gauge reading is easy to
         // estimate. Drawn as polylines through the axis angles, which is what makes
         // them polygons rather than circles — a radar chart's rings are the shapes
@@ -505,6 +575,7 @@ impl RadarChart {
         const LABEL_GAP: u32 = 10;
         let rect = self.base.geometry();
         let font = Font::simple("Sans", 10.0);
+        let label_ink = self.chrome_colors().label;
         let label_radius = radius + LABEL_GAP;
         for axis in 0..axis_count {
             let Some(label) = self.axes.get(axis) else {
@@ -529,13 +600,7 @@ impl RadarChart {
             let text_y = anchor_y - metrics.height as i32 / 2;
             let bounds =
                 label_box(text_x, text_y, metrics.width as i32, metrics.height as i32, rect);
-            context.draw_text_fitted(
-                bounds,
-                label,
-                &font,
-                Color::rgb(90, 90, 90),
-                HorizontalAlignment::Left,
-            );
+            context.draw_text_fitted(bounds, label, &font, label_ink, HorizontalAlignment::Left);
         }
     }
 
@@ -770,6 +835,59 @@ mod tests {
             .count()
     }
 
+    /// The chart's plotting surface follows the appearance.
+    ///
+    /// # The defect this pins
+    ///
+    /// `draw` filled the whole rectangle with a literal `rgb(255,255,255)` and framed it with a
+    /// `rgb(200,200,200)` stroke, so a radar chart painted a **white board** on the dark appearance —
+    /// the same shape as `font_preview`'s unthemed panel. The grid and both inks were literals too.
+    ///
+    /// # What must **not** change
+    ///
+    /// The series palette stays put: which colour identifies which axis polygon is the data's
+    /// identity, and the exemption table records that judgement for this control. The assertion is
+    /// therefore about the surface and not about the coloured series at all.
+    #[test]
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn the_plotting_surface_follows_the_appearance() {
+        let _guard = crate::theme::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        let rect = Rect::new(0, 0, 240, 200);
+        let size = Size::new(240, 200);
+
+        let surface_pixel = |appearance| -> (u8, u8, u8) {
+            crate::theme::global_theme_manager().set_appearance(appearance);
+            let mut chart = RadarChart::new(rect);
+            chart.set_axes(vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+            crate::theme::apply_theme_to_widget(&mut chart);
+            let frame = render(&mut chart, size);
+            // A point that is **only** the surface: past the frame stroke, past the grid rings and
+            // away from every label box. The top-left was tried and rejected by measurement — it lands
+            // on the frame stroke, and the grid rings reach further in than they look, so a point near
+            // the corner read one of those instead and the assertion passed with the surface restored
+            // to white. The bottom strip below the outermost ring is clear of all three.
+            let width = size.width as usize;
+            let x = 6usize;
+            let y = size.height as usize - 3;
+            let offset = (y * width + x) * 4;
+            let px = &frame[offset..offset + 3];
+            (px[0], px[1], px[2])
+        };
+
+        let dark = surface_pixel(crate::theme::AppearanceMode::Dark);
+        let light = surface_pixel(crate::theme::AppearanceMode::Light);
+        assert_ne!(
+            dark, light,
+            "the plotting surface must follow the appearance; both were {dark:?}"
+        );
+        assert_ne!(
+            dark,
+            (255, 255, 255),
+            "the surface must not be the fixed white the defect used"
+        );
+    }
+
     #[test]
     fn radar_chart_creation_defaults() {
         let chart = RadarChart::new(Rect::new(0, 0, 320, 320));
@@ -921,17 +1039,34 @@ mod tests {
 
     #[test]
     fn radar_chart_hidden_grid_removes_grid_pixels() {
+        // # Why this asserts on the two frames rather than on a probed colour
+        //
+        // The first version counted pixels near the literal `(225,225,225)` — the grid's colour when
+        // this test was written. The grid is **derived** from the chrome palette now, so that literal
+        // names nothing and both counts collapsed to the background (`100149 vs 100149`). Probing the
+        // derived colour instead was tried and also wrong (`0 vs 101425`): the strokes are rasterised
+        // with coverage, so almost no pixel equals the stroke colour exactly. Both failures are the
+        // same lesson — **counting pixels of one colour is a fragile probe for "a set of lines was
+        // drawn"**. Comparing the two whole frames states the intent directly: turning the grid off
+        // must change the picture, and turning it back on must restore it.
         let size = Size::new(320, 320);
         let mut with_grid = chart();
         with_grid.set_show_axis_labels(false);
-        let grid_pixels = count_near(&render(&mut with_grid, size), (225, 225, 225));
+        let painted = render(&mut with_grid, size);
 
         let mut without_grid = chart();
         without_grid.set_show_axis_labels(false);
         without_grid.set_show_grid(false);
-        let bare_pixels = count_near(&render(&mut without_grid, size), (225, 225, 225));
+        let bare = render(&mut without_grid, size);
 
-        assert!(grid_pixels > bare_pixels, "the grid must paint: {grid_pixels} vs {bare_pixels}");
+        assert_ne!(painted.len(), 0);
+        assert_eq!(painted.len(), bare.len(), "both renders cover the same surface");
+        let differing =
+            painted.chunks_exact(4).zip(bare.chunks_exact(4)).filter(|(a, b)| a != b).count();
+        assert!(
+            differing > 0,
+            "turning the grid off must change the picture; the two renders were identical"
+        );
     }
 
     #[test]

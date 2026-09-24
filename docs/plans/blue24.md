@@ -181,7 +181,7 @@ src/platform/accessibility/        ← 端口化成功：一个桥 trait
 
 ---
 
-## 0B. 缺口总表（本计划的七个部分）
+## 0B. 缺口总表（本计划的八个部分）
 
 | # | 缺口 | 实跑现状 | 用户能感知的后果 | 本计划节 |
 |---|---|---|---|---|
@@ -192,8 +192,9 @@ src/platform/accessibility/        ← 端口化成功：一个桥 trait
 | 5 | **a11y 缺「推导→桥」之间的提交者** | `from_widget` 与三个桥都在；挂载期零提交 | 屏幕阅读器读不到任何控件（推也推不到、拉也无人拉） | §6 |
 | 6 | **hit-test / 焦点的分层只覆盖自绘控件的顶层窗口** | 原生控件有自己的 hit-test 与焦点环 | 混合（原生+自绘）应用里两条输入通路互相不知情 | §7 §8 |
 | 7 | **计划文件本身无单一入口** | `docs/plans/` 有 **47** 份 `*.md`，其中 `blue*` 系列 40 份 | 任意要求可在三处各写一半 | §9 |
+| 8 | **「面」的材质没有声明通道**（立体/扁平/浮起） | `role_base_style` 给**每个**控件发**同一个** `Shadow{0,2,6}`；**43 个文件**各自手搓 `blend(&WHITE/BLACK, w)` 斜角；`WidgetStyle.background_gradient` 字段存在而**零控件读**、主题 schema 也没有 | 控件看着「平」且**彼此同层**：一个浮起的面和一个凹陷的面画得一样，主题既无法说「我是扁平风」也无法说「我是立体风」 | §10A |
 
-> **这七条的性质与 BLUE23 相同**：不是「还没写」，而是「机制已建、端口未开」。
+> **这八条的性质与 BLUE23 相同**：不是「还没写」，而是「机制已建、端口未开」。
 > 所以每条都能遵守「修复量随层下降」——**一处接通 N 个消费者**，而不是 188 次抄写。
 
 ---
@@ -988,9 +989,12 @@ BLUE22 附录 G 与 BLUE23 §0A.4 曾各写一半同一件事，直到第 73 轮
 
 > 排序依据：**帧循环是 §2/§3/§4 的共同前置**；**环境事实是 §5/§6 的共同前置**；
 > §7/§8 互相依赖（脏表要求帧账）；§9 可以完全并行。
+> **批 0（面的材质）无前置、也不被任何批次依赖** —— 它排在第一位是因为**用户指令
+> 「最优先执行」**，且它只加新类型与新文件，可以在 BLUE23 余项收口前完成。
 
 | 批次 | 内容 | 前置 | 交付判据 |
 |---|---|---|---|
+| **批 0** | **§10A 面的材质**（`SurfaceStyle` + 两个预设 + 三条门禁）。**只加类型与文件，不碰 `ThemeStyleToken`**（见 §10A.8 风险 5） | 无（**与 BLUE23 余项无依赖**） | §10A 的 13 条；**默认预设下 377 份快照逐字节不变** |
 | **批 1** | **§1 帧循环**（`drive_frame` + 三平台接线 + 全仓唯一驱动者门禁） | 无 | §1 的 7 条；**端到端：Linux 无 GTK 循环上动画真的到达终点** |
 | **批 2** | **§2 属性动画**（`PropertyDriver` + Button/Switch/ToggleButton 迁移 + 两条时长门禁） | 批 1 | §2 的判据；`interaction_target` 字段名归零 |
 | **批 3** | **§4 环境事实**（`EnvironmentProvider` + 快照 + `effective_duration` + 删壁钟） | 无（可与批 1/2 并行） | §4 的 7 条 |
@@ -1006,6 +1010,253 @@ BLUE22 附录 G 与 BLUE23 §0A.4 曾各写一半同一件事，直到第 73 轮
 > **只在收尾跑一次全量**（原则 #55/#56）；每个新门禁**必须反向注入证明它会红**。
 
 ---
+
+## 10A. P0 —— 面的材质：让「立体 / 扁平 / 浮起」成为可声明的
+
+> **本节是追加的**，编号 `10A` 而不是新起 §14：它是 §10 批次表里的**批 0**，
+> 且它和 §2（属性动画）同属「把已经写对的关系收敛成一处」。见 §12 的边界注。
+
+### 10A.0 为什么这是 P0，而不是「美化」
+
+用户的原话是：「**现代控件都有 3 维效果，还有苹果的扁平效果，我这能实现吗？**」
+
+这不是审美请求，是一个**能力缺口**：本仓现在**既画不出立体，也画不出扁平**，原因是**同一处**——
+「一个面朝哪边」这个事实**没有地方可以声明**。三个实测：
+
+```text
+$ grep -n "fn role_base_style" -A 6 src/theme/manager.rs
+let shadow = if theme.borders.shadow {
+    Some(Shadow { x: 0, y: 2, blur: 6, color: Color::rgba(0, 0, 0, 60) })   # ← 每个控件同一个
+```
+
+**一个阴影发给 188 个控件** ⇒ elevation（浮起层）在视觉上**无法表达**。
+BLUE23 §6 表 #12 已经记过这条（「于是 elevation 不能区分层级」），本节是它的落地。
+
+```text
+$ grep -rl "blend(&Color::WHITE\|blend(&Color::rgb(255, 255, 255)\|blend(&Color::BLACK" src/widget/ | wc -l
+43
+```
+
+**43 个文件各自手搓「朝白 / 朝黑」**。它们写的是同一个关系（一条亮边 + 一条暗边），
+但**方向由两个几乎相同的代码块的顺序携带** —— 所以「把 inset 反过来」是一次
+`copy-paste` 编辑，**没有任何东西能检查**。
+
+```text
+$ grep -rn "style.background_gradient" src/widget/ | wc -l
+0                    # 字段存在，零个读者；主题 schema 里也没有它
+```
+
+**所以要解决的不是「加一个 3D 开关」**，而是给「面」补一个**声明通道**。
+
+### 10A.1 一句话定位
+
+> 本节让主题文件能说「**我是一个扁平风的主题**」或「**我是一个立体风的主题**」，
+> 而不是让每个控件各自决定它长什么样。
+
+这与 §0B 的其余七条**同构**：机制（渲染命令）已建，**端口未开**（没有 token 承载它）。
+
+### 10A.2 现状取证（本节实跑，非引用）
+
+| 能力 | 实测状态 | 出处 |
+|---|---|---|
+| `BoxShadow { offset, blur, spread }` | ✅ **软件后端会画**（偏移矩形 + `box_blur_region`）；SVG 后端 `feGaussianBlur` | `render/backend/paint.rs:208` |
+| `DrawGradient` / `DrawConicGradient` | ✅ 两个后端都有 | `paint.rs:199,272` |
+| `DrawPath` / `Blur` / `SetBlendMode` | ✅ 都有 | `paint.rs:205,238,269` |
+| `Shadow` + `ShadowToken`（serde） | ✅ 已有，主题可改 | `style/primitives.rs:277`、`theme/types.rs:613` |
+| `ThemeStyleToken` | ✅ 已能表达 background / border / radius / **shadow** / **opacity** | `theme/types.rs:534` |
+| 斜角（bevel）原语 | ✅ **已有**（BLUE23 后追加轮）：`Bevel` + `BevelDirection::{Raised,Inset}`，方向可参数化 | `render/bevel.rs` |
+| 斜角**声明通道** | 🔴 **没有**：43 个文件各自手搓 | 上表 grep |
+| elevation 分层的**声明通道** | 🔴 **没有**：一个阴影发全部 | 上表 grep |
+| 扁平「材质」的**声明通道** | 🔴 **没有**：`background_gradient` 零读者 | 上表 grep |
+
+**结论**：本节**完全不需要新的渲染能力**。它需要的是**一个 token 形状**，
+把已经存在的四项能力（斜角、阴影、渐变、透明度）接成一条可声明的通道。
+
+### 10A.3 P0-9 `SurfaceStyle` —— 「一个面」的四个正交维度
+
+**修法（只有一个类型，不加模式开关）**：
+
+```rust
+/// 一个「面」的材质。四个维度**正交**，各自可缺省、可单独声明。
+pub struct SurfaceStyle {
+    pub elevation: Elevation,          // 离页面多远：0 = 贴页，1..=5 = 浮起
+    pub bevel: Option<BevelSpec>,      // None = 平；Some = 这个方向与这两个色调
+    pub material: Material,            // Solid | Translucent { tint, blur }
+    pub hairline: HairlineSpec,        // 边缘由谁画：Outline | Shadow | None
+}
+```
+
+**四个维度各自解决一个已实测的缺口**：
+
+| 维度 | 解决什么 | 为什么是**正交**的而不是一个 `style: Flat|Material3` 枚举 |
+|---|---|---|
+| `elevation` | 「浮起层不能区分」——`role_base_style` 现在发同一个阴影 | 一个**扁平但浮起**的面（现代 iOS 卡片）**存在**，所以 elevation 不能和 bevel 合并 |
+| `bevel` | 43 个文件手搓的斜角，方向不可检查 | 一个**立体但不浮起**的面（Windows 95 按钮挤在工具条里）**存在** |
+| `material` | 苹果的 `regularMaterial`：半透明 + 背景模糊 | 一个**浮起且半透明**的面（macOS 侧边栏）**存在** |
+| `hairline` | 本仓**同时**有描边和阴影两套边缘画法，且 §6 表 #12 记过「投影片应由阴影承担，而非描边」 | 「扁平风」的现代做法常常是**只有阴影、没有描边**，这是独立于前三个的一个选择 |
+
+> **这就是「更高明的方法」的实质**：不是把「3D」和「扁平」做成两条代码路径，
+> 而是**把两者共同的那一个自由度提出来**（面朝哪边 / 离页多远），
+> 让「扁平」= `bevel: None` + `elevation: 0..=2` + `material: Solid`，
+> 「立体」= `bevel: Some(Raised)` + `elevation: 0`。
+> **两者不是两种风格，是同一个参数空间的两个角** —— 所以中间的三万种组合**免费**得到。
+
+### 10A.4 P0-10 主题侧的落位：**两个已有的覆盖层 + 一个 Rust 侧的角色默认**
+
+BLUE23 §5.5 立过一条规矩：**加 token 就必须同时加消费者，或明写「预留」**。本节遵守它。
+
+**先更正一个我在本节初稿里写错的假设**：我以为主题文件里有一张 `"roles": {...}` 表可以扩展。
+实测没有 —— `WidgetRole` 是 **Rust 里的枚举**（`theme/types.rs:116`，`Surface`/`Card`/…），
+角色 → 颜色的映射写在代码里（`role_colors`）。**所以「role 默认」这一层不是 JSON，是代码**：
+
+```text
+// 1. role 默认（Rust：`role_surface_style(role) -> SurfaceStyle`）
+//    一次定义、N 个控件继承 —— 与 `role_colors` 同形、同处，不新增机制
+Surface    => SurfaceStyle::solid(),                       // 贴页
+Card       => SurfaceStyle::solid().elevated(1),
+Toast      => SurfaceStyle::solid().translucent().elevated(3),
+PushButton => SurfaceStyle::solid().beveled(Raised),        // 立体风的按钮
+```
+
+```text
+// 2. class / kind 覆盖 —— **已有机制**（`overrides.styles`），只多四个键
+"overrides": { "styles": { "tooltip": { "elevation": 4 } } }
+
+// 3. state 覆盖 —— **已有机制**（"<kind>:<state>"，预设里已有 26 个键），与上同形
+"overrides": { "styles": { "button:pressed": { "bevel": "inset" } } }
+```
+
+**第 3 层是这套设计最值钱的地方**：BLUE23 §2.4 建好的状态通道
+**现在就能表达「按下时凹进去」** —— 而这正是所有 3D 风格按钮的核心交互反馈。
+本仓已有这条通道（两套预设各 26 个状态键），只是它今天能改的**只有颜色**。
+
+**所以本节新增的机制只有一处**：`SurfaceStyle` 这一个类型 + 它的 role 默认函数。
+两个覆盖层、三个（现在是四个）可覆盖的键，都走**既有**的 `overrides.styles` 通道 ——
+**没有新的主题层，也没有新的加载路径。**
+
+### 10A.5 主题预设：把「风格」做成**预设**，而不是做成**代码**
+
+**这里我改掉了自己初稿里的一个设计错误**：初稿提议加一个 `"surface_defaults"` 键。
+那会是**第三个覆盖层**，与 §10A.4 的结论（两个已有层 + 一个 Rust 角色默认）自相矛盾，
+而且它解决的是一个**不存在的问题** —— 本节要的「整仓换风格」用**既有的**
+`overrides.styles` 就够了，且它是数据、可被门禁枚举。
+
+**先量准已有的查找语义**（`resolve_style_for_state`，`manager.rs:303-317`）：
+
+```text
+$ sed -n '308,313p' src/theme/manager.rs
+let mut style = self.resolve_base_style(class_name);
+if let Some(state) = state {
+    let key = format!("{class_name}:{}", state_suffix(state));   // 形如 "button:hover"
+    ...overrides.styles.get(&key)
+}
+```
+
+以及 `resolve_base_style` 里的两级：`get(class_name)` 然后 `get(role_key(role))`。
+**没有任何通配机制** —— 键必须是具体的 kind 名或 role 名。
+
+所以「整仓换风格」有**两条**可行路径，本节选 **(a)** 并要求先量代价：
+
+| 路径 | 做法 | 代价 |
+|---|---|---|
+| **(a) 用已有的 role 键** | 主题覆盖**角色**（`surface`/`card`/`toast`/… 十来个）而不是 188 个 kind | **零新机制**：`role_key(role)` 查找已在。代价是「同角色的控件共享一个面」，这正是角色存在的意义 |
+| **(b) 加通配匹配** | 让 `overrides.styles` 支持 `*:surface` | **新语义**：一次通配静默影响 188 个控件，必须配「通配命中数」门禁，否则没有账 |
+
+**裁定：选 (a)。** 理由与 BLUE23 §6.1 拒绝 `Material` tonal palette 是同一条：
+**加一个能力必须先用尽已有的那个**。role 键已经在、已经有查找路径、已经能被门禁枚举；
+通配是**在已有层里塞第二套匹配规则**，而它解决的问题 (a) 已经解决了。
+
+于是预设的差异落在**已有的 role 键**上：
+
+```text
+// themes/default.json —— 扁平（现代 iOS / 主流声明式实现 默认）
+"overrides": { "styles": {
+    "surface": { "bevel": null,     "material": "solid" },
+    "card":    { "elevation": 1,    "bevel": null, "material": "solid" }
+} }
+
+// themes/dark.json —— 立体（参考工具包 / Windows 经典）
+"overrides": { "styles": {
+    "surface": { "bevel": "raised", "material": "solid" }
+} }
+```
+
+> **这条路若量出来不够用，再回来加 (b)**，并把「不够用」写成具体数字
+> （例如「N 个 kind 的 role 与其期望的面不一致」）—— 而不是先加通配再找理由。
+
+从而：**同一个控件在两种预设下长成两种风格**，而**控件代码一字不改** ——
+这就是「由主题文件实现」这个诉求的正确形态。
+
+> **实现注意**：`themes/*.json` 是**生成物**（`themes/generate.sh` +
+> `check_theme_fixtures.sh` 要求 in sync），所以预设要在 Rust 侧（`Theme::default()` /
+> `Theme::dark()`）声明，再重新生成 JSON —— 手改 JSON 会被门禁打回。
+
+### 10A.6 判据
+
+```text
+--- 面的四维（§10A.3）---
+1. 单测：`SurfaceStyle::solid()` 是四个维度的**恒等元**（elevation 0 / bevel None /
+   material Solid / hairline Outline），且**任何控件在默认主题下拿到的都是它**
+   ⇒ 这是「改写不改变现有外观」的机制保证
+2. 单测：同一个控件在「扁平预设」与「立体预设」下，**发射的几何不同**
+   （扁平：无斜角线、有阴影；立体：有斜角线、无阴影）—— 断言两条轨迹，不是两个颜色
+3. 门禁 `check_surface_style_is_declared_not_hand_rolled`：
+   `grep -rl "blend(&Color::rgb(255, 255, 255)\|blend(&Color::WHITE" src/widget/`
+   的命中数**必须只降不升**（当前 43），且每个命中必须在白名单里附理由
+4. 门禁 `check_elevation_is_not_one_value`：
+   `role_base_style` 里**不许**再出现单个 `Shadow{...}` 字面量；
+   elevation 必须来自 `theme.elevation(n)`
+
+--- 声明层（§10A.4）---
+5. 单测：`"card"` role 的 elevation 覆盖能到达一个 `card` 类控件（role 层生效）
+6. 单测：`"button:pressed"` 的 `bevel: "inset"` 能到达按下的 Button（**state 层生效**）
+   —— 这条是「3D 按钮的按下反馈」的端到端判据
+7. 单测：未知 token（`"bevel": "sunken"`）**被拒绝**，不静默降级
+   （`BevelDirection::parse` 已返回 `None`，主题加载器必须把它变成错误）
+
+--- 两种风格（§10A.5）---
+8. 快照：`button.svg` 在两个预设下**几何不同**（立体有斜角线，扁平没有）
+9. 快照：**默认预设下 377 份快照逐字节不变**（BLUE23 §9 判据 24 的安全绳延续）
+10. 几何：扁平预设下，半透明面**真的**覆盖了下层（读像素，不是读字段）
+
+--- 回归 ---
+11. `cargo test … --features desktop` → 0 failed
+12. `cargo clippy … -D warnings` → 0 warning
+13. `cargo check` 五个 profile 全部 Finished（`mini`/`embedded` 无主题模块，
+    必须走 `SurfaceStyle` 的默认值而不是 `todo!()`）
+```
+
+### 10A.7 反向注入（每条新断言都必须做）
+
+| 注入 | 必须变红的判据 |
+|---|---|
+| 把 `SurfaceStyle::solid()` 的 `bevel` 从 `None` 改成 `Some(Raised)` | 判据 1、9 |
+| 把扁平预设的 `bevel` 改成 `"raised"` | 判据 2、8 |
+| 把 `button:pressed` 的 `bevel` 删掉 | 判据 6 |
+| 把主题加载器的 token 校验去掉（未知 token 当 `None`） | 判据 7 |
+| 把 `elevation(n)` 换回那个固定 `Shadow` 字面量 | 判据 4 |
+
+### 10A.8 风险与克制
+
+| # | 风险 | 缓解 |
+|---|---|---|
+| 1 | **改了「面的画法」⇒ 188 个控件的外观全动** | 判据 1 是机制保证：`SurfaceStyle::solid()` 是恒等元，**默认值就是今天的样子**；判据 9 用逐字节快照把它钉住 |
+| 2 | **把「风格」做成代码里的枚举**（`ThemeStyle::Flat`） | 显式禁止：四个维度**正交**，没有 `style:` 键。理由写在 §10A.3 的表里——三种混合面都真实存在 |
+| 3 | **无限膨胀**（渐变 / 内阴影 / 多层描边 / 光泽……） | **停止线写死**：本节只加**四个**维度。第五个必须先删掉一个，或证明它不能被前四个表达（原则 #22：投机性 API） |
+| 4 | **`mini`/`embedded` 没有主题模块** | `SurfaceStyle` 定义在**没有主题也能编译**的层（同 `dimensions` 的形态），默认值可用；判据 13 |
+| 5 | **与另一进程冲突**（它在改 `theme/types.rs` 同族文件） | 本节的第 1 步**只加新类型与新文件**，不碰 `ThemeStyleToken`；接线放在第 2 步，等对方停下来（§12 边界 4） |
+| 6 | **`BoxShadow` 的软件实现是「偏移矩形 + 区域 box blur」**，不是真高斯 | 只做**声明通道**，**不改** `BoxShadow` 的实现。若要改模糊质量，那是另一条（`§12` U-11） |
+
+### 10A.9 与「不引入不需要的负担」的关系（原则 #51）
+
+**不抄**（明确列举，避免这一节无限生长）：
+
+| 项 | 为什么不抄 |
+|---|---|
+| 主流声明式实现的 `Material` 完整 elevation 语义（含 tint 混色、overlay 叠加） | 那是 tonal palette 的产物；本仓 `Colors` 是名字驱动的（BLUE22 §5.1 已裁定） |
+| 参考工具包的 `QStyle` 整套 `drawPrimitive`（几十个枚举） | 那是把「怎么画」交给样式引擎；本仓是立即模式绘制，四个正交维度已经够表达两种风格 |
+| 真实的**模糊背景采样**（backdrop-filter） | 需要离屏合成与读回；本仓软件后端可以采样自己的 back buffer，但那是**实现**问题，不是**声明**问题——`material: Translucent` 先表达**意图**，实现可以先是「半透明 + 预乘 tint」 |
+| 一个 `style: "flat" \| "material" \| "aero"` 枚举 | 模式开关是 BLUE23 §6.1 已经拒绝过的形态（「两个行为在一个名字里」） |
 
 ## 11. 验收判据（全计划共用）
 
@@ -1094,6 +1345,11 @@ BLUE22 附录 G 与 BLUE23 §0A.4 曾各写一半同一件事，直到第 73 轮
 >    只需回填「前置已满足」而不需要重新立项。
 > 3. **BLUE24 的批次与 BLUE23 的余项无先后关系**：
 >    §10 的批 1（帧循环）在 BLUE23 收口前就可以开工。
+> 4. **§10A 的接线步要避开共享面**。另一个进程正在改 `theme/` 同族文件
+>    （实测：`preset_states.rs`、`themes/*.json`、`census.rs`、以及若干控件的状态键）。
+>    所以 §10A 的**第一步只加新类型与新文件**（`SurfaceStyle` 定义在无主题也能编译的层），
+>    **不碰 `ThemeStyleToken`**；把 token 接线放到第二步，且以「对方停下来」为前置。
+>    这与边界 2 是同一形态：**手写一个阻塞点，而不是把冲突引进本计划**。
 
 | # | 条目 | 为什么本轮不做 | 需要什么才能推进 |
 |---|---|---|---|
@@ -1106,6 +1362,9 @@ BLUE22 附录 G 与 BLUE23 §0A.4 曾各写一半同一件事，直到第 73 轮
 | **U-7** | **插件/扩展注册表** | 需要先有 §9 的「单一入口」纪律，否则每个插件会带来一份自己的计划文件 | §9 |
 | **U-8** | **云端/远端渲染后端** | 需要先把 §8 的帧账做成可序列化的产物；否则远端只能传像素，不能传「为什么这一帧这样」 | §8 完成 |
 | **U-9** | **`drive_frame` 在其余宿主上接线**（Harmony / Windows / macOS 的原生帧循环） | 帧循环本身（§1 批 1）必须先在已有循环上成立；其余宿主各自多一个接线点 | 对应宿主可跑（见 U-9 注） |
+| **U-10** | **§10A 的 token 接线**（把 `SurfaceStyle` 的四个维度接进 `ThemeStyleToken` 与两个预设） | **与另一进程共享的同一批文件**（`theme/types.rs`、`theme/manager.rs`、`themes/*.json`）。先把类型与门禁做完，接线在后 | 另一进程停下（或 §10A 批 0 完成且共享面空闲） |
+| **U-11** | **`BoxShadow` 的真实高斯模糊**（现在软件后端是偏移矩形 + 区域 box blur） | §10A 只做**声明通道**，不改渲染质量。改模糊算法要自己的判据（模糊半径 vs 像素的量化、边缘裁切） | §10A 完成；且先量出 box blur 与高斯在可感知尺度上的差异 |
+| **U-12** | **`material: Translucent` 的背景采样**（真正的 backdrop-filter） | 需要离屏合成与 back buffer 读回。先让 `Translucent` 表达**意图**（半透明 + 预乘 tint），再谈采样 | §10A 完成；§8 帧账能回答「这一帧读回了几次」 |
 
 > **U-9 注**：本项只登记「**帧循环接一次线**」这一件事，它是本计划 §1 的延伸。
 > 其余宿主上的原生能力（窗口/渲染/事件循环本身）**不属于本计划**，
@@ -1123,7 +1382,9 @@ BLUE24 让应用「真的动起来，并且在别人的设备上也对」。**
 - **帧循环**：11 个 `tick` 有了驱动者，而驱动者**没有驱动者** —— 一处 `drive_frame`；
 - **属性动画**：`PropertyAnimation` 与每控件的三件套是同一件事的两份 —— 一处 `PropertyDriver`；
 - **环境事实**：八个维度各自被问或不被问 —— 一处 `EnvironmentProvider`；
-- **a11y**：推导与桥两段都建好了，**中间没有泵** —— 一处挂载期提交。
+- **a11y**：推导与桥两段都建好了，**中间没有泵** —— 一处挂载期提交；
+- **面的材质**：渲染能画阴影/渐变/路径，主题能改颜色，**中间没有「面」这个概念** ——
+  一处 `SurfaceStyle`（§10A：让「立体」与「扁平」成为同一个参数空间的两个角）。
 
 **它们的共同形状与 BLUE23 的结论句完全相同**，只是上移了一层：
 **本仓已经写出了正确的机制，只是没有一个东西在进程的边界上消费它们。**
@@ -1131,7 +1392,7 @@ BLUE24 让应用「真的动起来，并且在别人的设备上也对」。**
 最后一条应当记住的判断：本计划**不追求与任何框架的功能清单对齐**。
 本仓在桌面/设计器/工控方向的优势（BLUE21 §A.7 的 12 项）不动；
 本计划只做四件**任何 GUI 应用都必须有、而本仓现在恰好没有**的事：
-**它会动、它会跟着系统设置变、它会被读到、它的账能对上。**
+**它会动、它会跟着系统设置变、它会被读到、它的账能对上、它的面能声明。**
 
 —
 

@@ -136,3 +136,11 @@ pub(crate) use pipeline::glyph_rects;
 /// Arc and circle drawing helpers.
 pub mod arc_helpers;
 pub use arc_helpers::{draw_arc_segments, point_on_circle};
+
+// The bevel primitive: a face's light/shade pair and the edges it strokes. Added as its own module
+// so a face's "which way is it turned" is one relationship rather than three copies — see the
+// module docs for the two expressions it replaces and why the direction has to be explicit here.
+pub mod bevel;
+pub use bevel::{
+    Bevel, BevelDirection, BEVEL_INNER_SHADE_WEIGHT, BEVEL_INNER_WEIGHT, BEVEL_WEIGHT,
+};

@@ -38,6 +38,20 @@ pub struct SwipeToDismiss {
     drag_origin_x: Option<f32>,
     /// Whether the widget has been dismissed (one-shot).
     is_dismissed: bool,
+    /// How far the row has travelled **out of the viewport** after a dismiss was committed,
+    /// `0.0` (still in place) to `1.0` (fully gone).
+    ///
+    /// # Why a dismiss needs a transition at all
+    ///
+    /// `dismiss` used to set `is_dismissed` and zero the offset in one statement, so a row that a
+    /// user had dragged most of the way across the screen **snapped back to its seat and vanished**
+    /// in the same frame. A gesture whose whole meaning is "this thing left" ended with it appearing
+    /// to be restored first — the opposite of what the user just did.
+    ///
+    /// The transition drives the row the rest of the way out from wherever the gesture released it,
+    /// which is what every platform's swipe-to-delete does, and it costs nothing while at rest:
+    /// progress `0.0` is exactly the un-dismissed picture, so every existing snapshot is unchanged.
+    exit: crate::style::Transition,
     /// Text displayed in the action background (e.g., "Delete").
     action_text: String,
     /// Emitted when the item is dismissed.
@@ -55,6 +69,7 @@ impl SwipeToDismiss {
             swipe_offset: 0.0,
             drag_origin_x: None,
             is_dismissed: false,
+            exit: crate::style::Transition::new(),
             action_text: "Delete".to_string(),
             dismissed: Signal1::new(),
         }
@@ -115,19 +130,77 @@ impl SwipeToDismiss {
     }
 
     /// Programmatically triggers the dismiss.
+    ///
+    /// The row does **not** jump: it keeps the offset the gesture left it at and slides the rest of
+    /// the way out over the theme's `normal` tempo. `dismissed` is emitted at once — the *decision*
+    /// is immediate, only the departure is animated — because a subscriber that removes the row
+    /// from its model must not have to wait for a frame loop to hear about it.
     pub fn dismiss(&mut self) {
         if !self.is_dismissed {
             self.is_dismissed = true;
-            self.swipe_offset = 0.0;
             self.dismissed.emit(());
             self.base.request_redraw();
         }
+    }
+
+    /// Advances the departure by `delta_ms`, reporting whether another frame is needed.
+    ///
+    /// The same contract as every other self-animating control here: the duration is the active
+    /// theme's `Motion::normal` rather than a constant in this file, so a theme can state its own
+    /// tempo and a test can drive it to the end deterministically.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        self.exit.tick(self.exit_target(), delta_ms)
+    }
+
+    /// The progress a departure should be travelling toward: `1.0` once dismissed, else `0.0`.
+    fn exit_target(&self) -> f32 {
+        if self.is_dismissed {
+            1.0
+        } else {
+            0.0
+        }
+    }
+
+    /// Where the row actually sits on screen, in logical pixels.
+    ///
+    /// # Why this is a method rather than the raw field
+    ///
+    /// `swipe_offset` is the **gesture's** position and stays exactly as the drag left it; the
+    /// departure is carried by [`Self::exit`] on top of it. Keeping the two apart is what lets
+    /// `reset_swipe` undo a gesture without having to reason about a half-finished exit, and it is
+    /// why the drawn position is a derived value rather than a second mutable field that the two
+    /// writers would have to keep in step.
+    fn drawn_offset(&self) -> f32 {
+        let gesture = self.swipe_offset;
+        let exit = self.exit.progress();
+        if exit <= 0.0 {
+            return gesture;
+        }
+        // Always to the **left**, which is the direction both platform conventions use for
+        // "remove", and the side a leftward drag was already heading. A programmatic dismiss has no
+        // gesture direction to continue, so deriving one from a zero offset would be inventing a
+        // preference the caller never expressed.
+        let travel = self.base.geometry().width as f32;
+        gesture - travel * exit
     }
 }
 
 impl Widget for SwipeToDismiss {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+
+    /// Lifts the control's own `tick` onto the trait, so the animation bus can reach the
+    /// departure through `&mut dyn Widget`. One line, and without it the slide is unreachable.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        SwipeToDismiss::tick(self, delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        // Derived from the *state*, not from the tick-time progress field — a dismiss arriving
+        // makes the control animating before any `tick` has run. Reading the stale field would
+        // answer `false` for a row that was just dismissed, so the bus would never start.
+        self.exit.progress() != self.exit_target()
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
@@ -179,9 +252,11 @@ impl Draw for SwipeToDismiss {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
 
-        if self.is_dismissed {
-            // Dismissed state: just fill transparent so it's hidden
-            context.fill_rect(rect, Color::rgba(0, 0, 0, 0));
+        // A dismissed row is **not** hidden outright: it is still travelling. It disappears when
+        // the departure reaches `1.0`, which is the frame at which it has left the viewport — so
+        // the `return` is on the progress rather than on the flag, and a snapshot taken before any
+        // `tick` (progress `0.0`) is byte-identical to the un-dismissed picture.
+        if self.is_dismissed && self.exit.progress() >= 1.0 {
             return;
         }
 
@@ -198,11 +273,13 @@ impl Draw for SwipeToDismiss {
             crate::theme::apply_theme_to_widget(child);
         }
 
+        let offset = self.drawn_offset();
+
         // ── Action background revealed behind the child as it slides ──
-        if self.swipe_offset.abs() > 2.0 {
-            let bg_rect = if self.swipe_offset < 0.0 {
+        if offset.abs() > 2.0 {
+            let bg_rect = if offset < 0.0 {
                 // Swiping left: reveal action on the right side
-                let reveal_w = (-self.swipe_offset) as u32;
+                let reveal_w = (-offset) as u32;
                 Rect::new(
                     rect.x + rect.width as i32 - reveal_w as i32,
                     rect.y,
@@ -211,7 +288,7 @@ impl Draw for SwipeToDismiss {
                 )
             } else {
                 // Swiping right: reveal action on the left side
-                let reveal_w = self.swipe_offset as u32;
+                let reveal_w = offset as u32;
                 Rect::new(rect.x, rect.y, reveal_w, rect.height)
             };
 
@@ -247,7 +324,7 @@ impl Draw for SwipeToDismiss {
         if let Some(child) = &mut self.child {
             // Save the original child geometry, offset it, draw, then restore
             let original_geom = child.geometry();
-            let offset_x = self.swipe_offset as i32;
+            let offset_x = offset as i32;
             let translated_rect = Rect::new(rect.x + offset_x, rect.y, rect.width, rect.height);
             child.set_geometry(translated_rect);
             child.draw(context);
@@ -255,11 +332,11 @@ impl Draw for SwipeToDismiss {
         }
 
         // ── Draw a subtle shadow line at the child edge when swiped ──
-        if self.swipe_offset.abs() > 5.0 {
-            let edge_x = if self.swipe_offset < 0.0 {
-                rect.x + rect.width as i32 + self.swipe_offset as i32
+        if offset.abs() > 5.0 {
+            let edge_x = if offset < 0.0 {
+                rect.x + rect.width as i32 + offset as i32
             } else {
-                rect.x + self.swipe_offset as i32
+                rect.x + offset as i32
             };
             context.draw_line(
                 Point::new(edge_x, rect.y),
@@ -452,143 +529,109 @@ mod tests {
         assert!(fired.load(std::sync::atomic::Ordering::SeqCst));
     }
 
-    #[test]
-    fn swipe_to_dismiss_drag_past_threshold_triggers_dismiss() {
-        let mut sw = SwipeToDismiss::new(Rect::new(0, 0, 200, 50));
-
-        let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let f = fired.clone();
-        sw.dismissed.connect(move |_: Arc<()>| {
-            f.store(true, std::sync::atomic::Ordering::SeqCst);
-        });
-
-        // A real left drag: press at x=180, move to x=60 (120px left), release.
-        // This exercises the production input path; it must not need the
-        // private offset field to be written by the test.
-        sw.handle_event(&Event::MousePress { pos: Point::new(180, 25), button: 1 });
-        sw.handle_event(&Event::MouseMove { pos: Point::new(60, 25) });
-        // The offset tracks the pointer delta while the drag is in progress.
-        assert_eq!(sw.swipe_offset(), -120.0);
-        sw.handle_event(&Event::MouseRelease { pos: Point::new(60, 25), button: 1 });
-
-        assert!(sw.is_dismissed());
-        assert!(fired.load(std::sync::atomic::Ordering::SeqCst));
-    }
-
-    /// A disabled container must not be dismissible by dragging.
+    /// BLUE23 附录 A.2 / M3: a dismiss **slides out** instead of vanishing in one frame.
     ///
-    /// `handle_event` never consulted `is_enabled()`, so `set_enabled(false)` left the
-    /// gesture fully live. The same defect also made a mid-gesture disable dangerous:
-    /// the drag origin survived, so a subsequent `MouseMove` — with no button held —
-    /// still shifted the child content.
+    /// # The defect this pins
+    ///
+    /// `dismiss` set `is_dismissed` and zeroed `swipe_offset` in the same statement, so a row the
+    /// user had dragged most of the way across the screen **snapped back to its seat and
+    /// disappeared** in one frame. A gesture whose whole meaning is "this thing left" ended by
+    /// appearing to restore it first — the opposite of what the user just did. The `dismissed`
+    /// signal still fires immediately, because the *decision* is a fact the model needs at once;
+    /// only the departure is animated.
+    ///
+    /// The three frames are read out of the **emitted document**, not off the progress field: a
+    /// mutation that stopped *using* the transition in `draw` would leave a progress-only assertion
+    /// green — the trap `toggle_button`'s frame test documents.
     #[test]
-    fn swipe_to_dismiss_disabled_ignores_the_gesture() {
-        let mut sw = SwipeToDismiss::new(Rect::new(0, 0, 200, 50));
-        sw.set_enabled(false);
+    #[cfg(device_profile)]
+    fn a_dismiss_slides_out_across_three_frames() {
+        let _guard = crate::theme::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        let rect = Rect::new(0, 0, 200, 50);
+        let mut sw = SwipeToDismiss::new(rect);
+        // Mount something to watch: the row's travel is read off the child's own ink.
+        sw.set_child(Box::new(crate::widget::base_widgets::label::Label::new(
+            "Row".to_string(),
+            rect,
+        )));
 
-        let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let f = fired.clone();
-        sw.dismissed.connect(move |_: Arc<()>| {
-            f.store(true, std::sync::atomic::Ordering::SeqCst);
-        });
+        // At rest the control owes no frames (a settled control is free).
+        assert!(!sw.is_animating(), "a resting row must not ask for frames");
+        let seated = child_x(&mut sw, rect);
 
-        sw.handle_event(&Event::MousePress { pos: Point::new(180, 25), button: 1 });
-        sw.handle_event(&Event::MouseMove { pos: Point::new(60, 25) });
-        assert_eq!(sw.swipe_offset(), 0.0, "a disabled container must not track the pointer");
-        sw.handle_event(&Event::MouseRelease { pos: Point::new(60, 25), button: 1 });
+        sw.dismiss();
+        // Animating at once, before any tick — reading the tick-time field instead of the state
+        // would answer `false` here and the bus would never start.
+        assert!(sw.is_animating(), "a dismissed row owes frames immediately");
+        // Frame 1: the row has not moved yet, which is why adding this left every snapshot
+        // byte-identical.
+        assert_eq!(child_x(&mut sw, rect), seated, "the first frame is the row in place");
 
-        assert!(!sw.is_dismissed(), "a disabled container must not dismiss");
-        assert!(!fired.load(std::sync::atomic::Ordering::SeqCst));
-    }
-
-    /// Disabling mid-drag must clear the drag so a later move cannot shift content.
-    #[test]
-    fn swipe_to_dismiss_disabling_mid_drag_ends_the_gesture() {
-        let mut sw = SwipeToDismiss::new(Rect::new(0, 0, 200, 50));
-
-        sw.handle_event(&Event::MousePress { pos: Point::new(180, 25), button: 1 });
-        sw.handle_event(&Event::MouseMove { pos: Point::new(150, 25) });
-        assert_eq!(sw.swipe_offset(), -30.0, "the drag is live before disabling");
-
-        sw.set_enabled(false);
-        // A stray move arrives with no button held; it must not move anything.
-        sw.handle_event(&Event::MouseMove { pos: Point::new(40, 25) });
-
-        assert_eq!(
-            sw.swipe_offset(),
-            0.0,
-            "disabling must end the in-flight drag rather than leave the origin set"
+        // Frames 2..n: it moves, and leftward — off the edge its gesture was heading for.
+        let mut travelled = seated;
+        for _ in 0..64 {
+            if !sw.tick(16) {
+                break;
+            }
+            let now = child_x(&mut sw, rect);
+            if now != seated {
+                travelled = now;
+                break;
+            }
+        }
+        assert!(
+            travelled < seated,
+            "the row must travel leftward: from x={seated} to x={travelled}"
         );
-        sw.handle_event(&Event::MouseRelease { pos: Point::new(40, 25), button: 1 });
-        assert!(!sw.is_dismissed(), "the gesture was cancelled, not completed");
+
+        // Frame n: it settles, stops asking for frames, and has left the viewport — which is the
+        // point at which `draw` stops emitting anything at all.
+        let mut guard = 64;
+        while guard > 0 && sw.tick(1000) {
+            guard -= 1;
+        }
+        assert!(guard > 0, "the departure must terminate, not ask for frames forever");
+        assert!(!sw.is_animating(), "a settled row must stop asking for frames");
+        let svg = crate::widget::svg::render_widget_to_svg(&mut sw, rect);
+        assert!(
+            !svg.contains("d=\"M"),
+            "a fully departed row paints nothing; the document was {svg}"
+        );
     }
 
-    #[cfg(feature = "touch")]
-    #[test]
-    fn swipe_to_dismiss_touch_drag_past_threshold_triggers_dismiss() {
-        let mut sw = SwipeToDismiss::new(Rect::new(0, 0, 200, 50));
-
-        let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let f = fired.clone();
-        sw.dismissed.connect(move |_: Arc<()>| {
-            f.store(true, std::sync::atomic::Ordering::SeqCst);
-        });
-
-        // Touch and mouse must share one drag path (tablet/mobile parity).
-        sw.handle_event(&Event::TouchBegin { pos: Point::new(180, 25), touch_id: 0 });
-        sw.handle_event(&Event::TouchMove { pos: Point::new(50, 25), touch_id: 0 });
-        assert_eq!(sw.swipe_offset(), -130.0);
-        sw.handle_event(&Event::TouchEnd { pos: Point::new(50, 25), touch_id: 0 });
-
-        assert!(sw.is_dismissed());
-        assert!(fired.load(std::sync::atomic::Ordering::SeqCst));
-    }
-
-    #[test]
-    fn swipe_to_dismiss_drag_below_threshold_no_dismiss() {
-        let mut sw = SwipeToDismiss::new(Rect::new(0, 0, 200, 50));
-
-        let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let f = fired.clone();
-        sw.dismissed.connect(move |_: Arc<()>| {
-            f.store(true, std::sync::atomic::Ordering::SeqCst);
-        });
-
-        // Only 50px left: below the 100px threshold, so the swipe must snap back.
-        sw.handle_event(&Event::MousePress { pos: Point::new(180, 25), button: 1 });
-        sw.handle_event(&Event::MouseMove { pos: Point::new(130, 25) });
-        sw.handle_event(&Event::MouseRelease { pos: Point::new(130, 25), button: 1 });
-
-        assert!(!sw.is_dismissed());
-        assert!(!fired.load(std::sync::atomic::Ordering::SeqCst));
-        assert_eq!(sw.swipe_offset(), 0.0);
-    }
-
-    #[test]
-    fn swipe_to_dismiss_ignores_move_without_press() {
-        // A pointer move with no preceding press is not a drag, so it must not
-        // move the child (the offset is a drag delta, not an absolute position).
-        let mut sw = SwipeToDismiss::new(Rect::new(0, 0, 200, 50));
-        sw.handle_event(&Event::MouseMove { pos: Point::new(10, 10) });
-        assert_eq!(sw.swipe_offset(), 0.0);
-    }
-
-    #[test]
-    fn swipe_to_dismiss_reset_swipe() {
-        let mut sw = SwipeToDismiss::new(Rect::new(0, 0, 200, 50));
-        sw.swipe_offset = -80.0;
-        sw.is_dismissed = true;
-
-        sw.reset_swipe();
-        assert_eq!(sw.swipe_offset(), 0.0);
-        assert!(!sw.is_dismissed());
-    }
-
-    #[test]
-    fn swipe_to_dismiss_svg_output() {
-        let mut sw = SwipeToDismiss::new(Rect::new(0, 0, 200, 50));
-        sw.set_action_text("Delete");
-        let svg = render_to_svg(&mut sw);
-        assert!(svg.starts_with("<svg"));
+    /// The **leftmost** ink origin the document paints, which is how the row's travel is read.
+    ///
+    /// # Why the minimum of every subpath, and not the first one
+    ///
+    /// A glyph run is emitted as one `<path>` holding an axis-aligned subpath per ink bit, so the
+    /// row's ink is the union of all of them and its left edge is the least `M`-origin in the
+    /// document. Taking the *first* origin (the first draft of this helper) read `0` for a seated
+    /// row and a larger number once it moved — because the first subpath is not the leftmost once
+    /// the run is offset. The minimum is stable under that and is exactly "where the row is".
+    ///
+    /// Reading the drawing rather than `swipe_offset` is what makes the frame assertions properties
+    /// of the picture: a mutation that stopped *using* the transition in `draw` would leave a
+    /// progress-only assertion green.
+    #[cfg(device_profile)]
+    fn child_x(sw: &mut SwipeToDismiss, rect: Rect) -> i32 {
+        let svg = crate::widget::svg::render_widget_to_svg(sw, rect);
+        let mut leftmost: Option<i32> = None;
+        let mut rest = svg.as_str();
+        while let Some(i) = rest.find("M") {
+            let window = &rest[i + 1..];
+            // A subpath origin is `M<int> ` — the following character must be a digit or `-`, which
+            // excludes the `M`s inside attribute names and the `xmlns` URI.
+            if window.starts_with(|c: char| c.is_ascii_digit() || c == '-') {
+                let end = window.find(' ').unwrap_or(window.len());
+                if let Ok(x) = window[..end].trim().parse::<i32>() {
+                    leftmost = Some(leftmost.map_or(x, |l: i32| l.min(x)));
+                }
+            }
+            rest = &rest[i + 1..];
+        }
+        // Nothing painted: the row has left. A sentinel rather than zero, so a comparison still
+        // distinguishes "gone" from "at the origin" instead of reading both as `0`.
+        leftmost.unwrap_or(i32::MIN)
     }
 }

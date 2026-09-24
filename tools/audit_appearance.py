@@ -32,7 +32,23 @@ import sys
 WIDGET_GLOB = "src/widget/**/*.rs"
 COLOR_LITERAL = re.compile(r"Color::rgb\(|Color::rgba\(")
 # The style fields a `Draw` impl would read to honour the active theme.
-STYLE_READ = re.compile(r"style\.(background_color|text_color|border_color)")
+#
+# The pattern must match **every** way a control reaches its style record:
+#
+#   * `style.background_color`         -- a local `let style = self.style();` binding
+#   * `self.style().background_color`  -- read inline, with no binding
+#   * `self.base.style().text_color`   -- read via the base directly
+#
+# It matched only the first until this was fixed, so a file that read its style inline
+# (`textarea.rs`, `inplace_editor.rs`) was counted among the "Draw files reading no style
+# colour" even though it read all three. The count is the sizing evidence for the
+# light/dark judgement, so an over-count here is not cosmetic: it makes the number report
+# a defect that is not there, and a fix aimed at it has nothing to change.
+STYLE_READ = re.compile(
+    r"\.style\(\s*\)\s*\.\s*(?:background_color|text_color|border_color)"
+    r"|\bstyle\s*\.\s*(?:background_color|text_color|border_color)",
+    re.MULTILINE,
+)
 # The ways a test can look at rendered pixels rather than at widget state.
 PIXEL_READ = re.compile(r"render_frame_tree|frame_rgba|blit_rgba|render_widget_to_svg")
 

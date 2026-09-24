@@ -60,8 +60,12 @@ pub const CENSUS_TEXT: &str = "Sample";
 pub struct AppearanceCensus {
     /// Pixels whose RGB differs from the frame's fill colour.
     pub non_background: u32,
-    /// The most common painted RGB triple, or `None` when nothing was painted.
-    pub dominant: Option<(u8, u8, u8)>,
+    /// The most common painted RGBA quadruple, or `None` when nothing was painted.
+    ///
+    /// Alpha is part of the identity: a theme that varies a layer's opacity rather than its hue
+    /// (a scrim is the standard case) changes the drawing, and a key that dropped alpha could not
+    /// see it. See [`count_ink`].
+    pub dominant: Option<(u8, u8, u8, u8)>,
     /// Painted pixels that are not the dominant colour: text, borders, icons.
     pub detail: u32,
 }
@@ -81,9 +85,24 @@ impl AppearanceCensus {
     /// Distinct from [`Self::paints_anything`]: a control can fill its whole rect
     /// with the window colour, which paints plenty of pixels and still shows the
     /// user nothing. That was round 58's defect D.
+    ///
+    /// A translucent dominant is composited over `background` before the comparison, because that
+    /// blend is what the user sees: a scrim stored as `rgba(0,0,0,82)` over a white page is a
+    /// visibly grey rectangle, not "black, therefore different in every appearance". Comparing the
+    /// raw RGB would report a translucent layer as visible against any surface, which is the
+    /// false-pass direction this judgement exists to prevent.
     pub fn dominant_differs_from(&self, background: Color) -> bool {
         match self.dominant {
-            Some((r, g, b)) => (r, g, b) != (background.r, background.g, background.b),
+            Some((r, g, b, a)) => {
+                let seen = if a == 255 {
+                    Color::rgba(r, g, b, 255)
+                } else {
+                    // `background.blend(ink, alpha)` = `background * (1 - alpha) + ink * alpha`,
+                    // which is the source-over composite: the dominant layer drawn on the surface.
+                    background.blend(&Color::rgba(r, g, b, a), a as f32 / 255.0)
+                };
+                (seen.r, seen.g, seen.b) != (background.r, background.g, background.b)
+            }
             None => false,
         }
     }
@@ -148,9 +167,22 @@ impl ControlCensus {
 /// `background` is the colour the frame was filled with before drawing, so
 /// "painted" is exactly "differs from the fill". Alpha-zero pixels are skipped:
 /// they are holes, not ink.
+///
+/// # Why the histogram key is RGBA and not RGB
+///
+/// The frame buffer carries the backend's own pixels, **not** a composite: a fill at
+/// `fill_alpha` lands as `(r, g, b, alpha)` with the RGB still the fill's. Keying on RGB alone
+/// therefore collapses every translucent layer of the same hue into one entry — a modal scrim at
+/// `rgba(0, 0, 0, 0.32)` and the same scrim at `rgba(0, 0, 0, 0.51)` were both recorded as
+/// `0,0,0`, so the light/dark comparison in [`crate::widget::census::ControlCensus::differs_between_appearances`]
+/// reported a themed scrim as theme-blind. That is a measurement artifact, not a finding: the two
+/// SVG documents for the control differ in exactly the way the theme intended. Including alpha is
+/// what makes "the drawing changed" mean something for a value a theme varies in its alpha
+/// channel, which is how every platform expresses a scrim.
 fn count_ink(frame: &[u8], background: Color) -> AppearanceCensus {
     let bg = (background.r, background.g, background.b);
-    let mut histogram: crate::compat::HashMap<(u8, u8, u8), u32> = crate::compat::HashMap::new();
+    let mut histogram: crate::compat::HashMap<(u8, u8, u8, u8), u32> =
+        crate::compat::HashMap::new();
     let mut non_background = 0u32;
 
     for px in frame.chunks_exact(4) {
@@ -158,14 +190,18 @@ fn count_ink(frame: &[u8], background: Color) -> AppearanceCensus {
         if a == 0 {
             continue;
         }
-        if (r, g, b) != bg {
+        // A translucent pixel is over the fill, so it is "ink" even when its stored RGB equals the
+        // fill's: the user sees the blended result, which differs from the fill. Opaque pixels keep
+        // the original test.
+        let painted = if a == 255 { (r, g, b) != bg } else { true };
+        if painted {
             non_background += 1;
-            *histogram.entry((r, g, b)).or_insert(0) += 1;
+            *histogram.entry((r, g, b, a)).or_insert(0) += 1;
         }
     }
 
-    let dominant = histogram.iter().max_by_key(|(_, count)| **count).map(|(rgb, _)| *rgb);
-    let dominant_count = dominant.map(|rgb| histogram[&rgb]).unwrap_or(0);
+    let dominant = histogram.iter().max_by_key(|(_, count)| **count).map(|(rgba, _)| *rgba);
+    let dominant_count = dominant.map(|rgba| histogram[&rgba]).unwrap_or(0);
 
     AppearanceCensus {
         non_background,
@@ -265,13 +301,9 @@ pub fn census_all_controls() -> Vec<ControlCensus> {
             }
         };
 
-        select(AppearanceMode::Light);
-        let light_background = active_background();
-        crate::theme::apply_active_theme(&mut *widget);
-
-        // Give the data-bearing controls their content, exactly as the SVG export does.
+        // Give the data-bearing controls their content **before** the theme is applied.
         //
-        // # Why the census wants this too
+        // # Why the census wants the content at all
         //
         // `AppearanceCensus::detail` is documented as "text/border/icon presence" — a *proxy* for
         // "this control has something in it". An empty table satisfies P1 (its frame is paint) and
@@ -279,11 +311,23 @@ pub fn census_all_controls() -> Vec<ControlCensus> {
         // distinguish "the table drew its rows" from "the table drew its frame". Filling the sample
         // data makes that column measure the thing it is named after.
         //
-        // The control is filled **after** the theme is applied and **before** the first render, so both
-        // appearances see the same content — which is what keeps the light/dark comparison a comparison
-        // of the theme rather than of two different datasets.
+        // # Why the order is content-then-theme and not theme-then-content
+        //
+        // `apply_active_theme` asks the control for its `widget_state()` and resolves
+        // `"<kind>:<state>"`, so the state has to be the state that will be *drawn*. Filling the
+        // content afterward (the previous order) left a `check_box` themed as `Normal` while it was
+        // then drawn `Checked`: the light pass therefore painted the unchecked `Input` field
+        // (`180,180,180`) and the dark pass painted the checked `primary` (`100,181,246`), so P3's
+        // "light ≠ dark" comparison was actually comparing *unchecked* against *checked* and could
+        // not see the theme at all. The two passes now differ only by appearance, which is the
+        // property the judgement is named after. Exactly the ordering `theme::apply` documents for
+        // the SVG exporter (see the note beside it): a state the theme keys on must be set first.
         #[cfg(full_widgets)]
         crate::widget::sample_fill::apply(name, widget.as_mut());
+
+        select(AppearanceMode::Light);
+        let light_background = active_background();
+        crate::theme::apply_active_theme(&mut *widget);
 
         let light = render_one(&mut *widget, CENSUS_PROBE_BACKGROUND);
         // Second reading of the same theme/instance, composited over the surface the
@@ -329,10 +373,16 @@ pub fn format_row(row: &ControlCensus) -> crate::compat::String {
     )
 }
 
-/// Formats an optional RGB triple as `r,g,b`, or `none` when nothing was painted.
-pub fn format_rgb(rgb: Option<(u8, u8, u8)>) -> crate::compat::String {
-    match rgb {
-        Some((r, g, b)) => crate::compat::format!("{r},{g},{b}"),
+/// Formats an optional RGBA quadruple, or `none` when nothing was painted.
+///
+/// The alpha is printed only when it is not opaque, so an ordinary control's column reads exactly
+/// as it always did (`r,g,b`) and a translucent layer shows the channel that distinguishes it
+/// (`r,g,b@a`). Printing the alpha unconditionally would change every line of the baseline file for
+/// a value that is 255 almost everywhere, which would hide the lines that really moved.
+pub fn format_rgb(rgba: Option<(u8, u8, u8, u8)>) -> crate::compat::String {
+    match rgba {
+        Some((r, g, b, 255)) => crate::compat::format!("{r},{g},{b}"),
+        Some((r, g, b, a)) => crate::compat::format!("{r},{g},{b}@{a}"),
         None => crate::compat::String::from("none"),
     }
 }

@@ -384,12 +384,44 @@ fn key_code_to_name(key: u32) -> String {
 impl Draw for KeySequenceEdit {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        let bg = if self.recording { Color::rgb(255, 240, 240) } else { Color::rgb(255, 255, 255) };
+        // # Why every colour here is resolved rather than literal
+        //
+        // The field was painted from four literals and read the theme nowhere: a
+        // `rgb(255,255,255)` surface, a `rgb(150,150,150)` frame, a `rgb(180,180,180)` hint and a
+        // `rgb(0,0,0)` value, plus a fixed pale red for the recording state. On the dark appearance
+        // that is a **white field with black ink**, and the recording state is a fixed wash rather
+        // than the semantic colour the appearance defines. All of them now come from the active
+        // theme, with the literals kept only as the rung for a build that has no theme.
+        let themed = {
+            let manager = crate::style::theme_manager();
+            manager.current_theme().map(|active| {
+                (
+                    active.colors.surface_container,
+                    active.colors.outline_variant,
+                    active.colors.foreground,
+                    active.colors.secondary,
+                    active.colors.error,
+                )
+            })
+        };
+        let (surface, divider, ink, muted, error) = themed.unwrap_or((
+            Color::rgb(255, 255, 255),
+            Color::rgb(150, 150, 150),
+            Color::rgb(0, 0, 0),
+            Color::rgb(180, 180, 180),
+            Color::rgb(200, 0, 0),
+        ));
+        let style = self.base.style();
+        let surface = style.background_color.unwrap_or(surface);
+        let ink = style.text_color.unwrap_or(ink);
+        let divider = style.border_color.unwrap_or(divider);
+
+        // Recording is a *state*, so it is expressed as a tint of the surface toward the semantic
+        // error colour rather than as a second literal — the same derivation the preset theme's
+        // state overlays use, and what keeps the two appearances in step when the palette moves.
+        let bg = if self.recording { surface.blend(&error, 0.12) } else { surface };
         context.fill_rect(rect, bg);
-        context.draw_rect(
-            rect,
-            if self.recording { Color::rgb(200, 0, 0) } else { Color::rgb(150, 150, 150) },
-        );
+        context.draw_rect(rect, if self.recording { error } else { divider });
         let display = if self.recording {
             "Recording...".to_string()
         } else if self.key_sequence.is_empty() {
@@ -397,11 +429,8 @@ impl Draw for KeySequenceEdit {
         } else {
             self.key_sequence.to_display_string()
         };
-        let text_color = if self.key_sequence.is_empty() && !self.recording {
-            Color::rgb(180, 180, 180)
-        } else {
-            Color::rgb(0, 0, 0)
-        };
+        // The hint is the weak ink; a recorded value is the field's own ink.
+        let text_color = if self.key_sequence.is_empty() && !self.recording { muted } else { ink };
         // Vertically centred through the shared primitive, and bounded to the field's own
         // width: the recorded sequence grows without limit (`Ctrl+Shift+Alt+Meta+K`), and the
         // SVG backend emits absolute coordinates, so an unbounded one ran past the field.
@@ -432,6 +461,50 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     // ── 1. Creating default widget ──────────────────────────────────
+
+    /// The field's surface and ink follow the appearance.
+    ///
+    /// # The defect this pins
+    ///
+    /// `Draw` read no style at all: four literals plus a fixed pale red for the recording state, so
+    /// the field painted **white with black ink** on the dark appearance and its recording state was a
+    /// wash rather than the semantic colour the theme defines. `audit_appearance.py` counted it among
+    /// the Draw files reading no style colour.
+    ///
+    /// The assertion reads the surface's own fill out of the document, so it names the element under
+    /// test rather than comparing two whole documents — which any other changed colour would satisfy.
+    #[test]
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn the_field_surface_follows_the_appearance() {
+        let _guard = crate::theme::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+
+        let surface_fill = |appearance| -> String {
+            crate::theme::global_theme_manager().set_appearance(appearance);
+            let mut kse = KeySequenceEdit::new(Rect::new(0, 0, 200, 30));
+            crate::theme::apply_theme_to_widget(&mut kse);
+            let svg = render_to_svg(&mut kse);
+            // The **last** `<rect>` whose fill is a `fill=` (not `fill="none"`, which is the frame
+            // stroke) is the field's own surface. Taking the first was tried and rejected: the
+            // document opens with the renderer's backdrop rectangle, so the first match is white in
+            // both appearances and the assertion passed with the literals restored (measured).
+            let mut surface = None;
+            for element in svg.split("/>") {
+                let Some(open) = element.find("<rect ") else { continue };
+                let element = &element[open + "<rect ".len()..];
+                let Some(from) = element.find("fill=\"rgba(") else { continue };
+                let from = from + "fill=\"rgba(".len();
+                let Some(to) = element[from..].find(')') else { continue };
+                surface = Some(format!("rgba({})", &element[from..from + to]));
+            }
+            surface.expect("the field fills a surface")
+        };
+
+        let dark = surface_fill(crate::theme::AppearanceMode::Dark);
+        let light = surface_fill(crate::theme::AppearanceMode::Light);
+        assert_ne!(dark, light, "the field surface must follow the appearance; both were {dark}");
+        assert_ne!(dark, "rgba(255,255,255,1)", "the surface must not be the fixed white");
+    }
 
     #[test]
     fn test_default_creation() {

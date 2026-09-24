@@ -626,6 +626,13 @@ mod tests {
     /// theme-blindness the resolved colours exist to remove.
     #[test]
     fn collapsible_pane_draw_produces_svg() {
+        // The expectation below is derived from the active theme, so the test has to pin the
+        // appearance and hold the registry guard: otherwise a concurrently-running test can switch
+        // the theme between the derivation and the draw, and the two halves of this one assertion
+        // would be comparing different appearances.
+        let _guard = crate::theme::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
         let mut cp = make_pane();
 
         // The colour each region resolves to under the active theme, computed from the same

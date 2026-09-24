@@ -31,6 +31,13 @@ const TABLE_INSET: u32 = 2;
 /// row is always one header below the frame rather than pinned to the top edge.
 const HEADER_ROW_HEIGHT: u32 = 20;
 
+/// The height of a content row: 20, the same as the header's.
+///
+/// Extracted because it was a `let row_h = 20;` in **two** places — the paint loop and the press
+/// arm — and they did not even measure from the same origin. [`TableWidget::row_rect`] is now the
+/// one derivation, which is what makes the row a click selects the row a hover highlights.
+const TABLE_ROW_HEIGHT: u32 = 20;
+
 /// Table model abstraction for table-like views.
 pub trait TableModel: Send + Sync {
     /// Number of rows exposed by model.
@@ -69,6 +76,13 @@ pub struct TableWidget {
     selection: crate::widget::view_widgets::list_view::SelectionModel,
     /// View-side focused row.
     focused_row: Option<usize>,
+    /// The content row under the pointer, or `None` when the pointer is elsewhere.
+    ///
+    /// The same reasoning as `ListView::hovered_row`: a table is a stack of independent rows, so
+    /// the hover has to name a row rather than the control, and the row it names is the one a click
+    /// would affect. Held here rather than derived from `focused_row` because a focus row is
+    /// persistent while this is transient pointer position.
+    hovered_row: Option<usize>,
     /// Explicit column width overrides in logical pixels.
     column_widths: HashMap<usize, u32>,
     /// Explicit row height overrides in logical pixels.
@@ -89,6 +103,7 @@ impl TableWidget {
             model_connection_scope: ConnectionScope::new(),
             selection: crate::widget::view_widgets::list_view::SelectionModel::new(),
             focused_row: None,
+            hovered_row: None,
             column_widths: HashMap::new(),
             row_heights: HashMap::new(),
             delegate: None,
@@ -131,6 +146,49 @@ impl TableWidget {
     /// Returns item text by row and column index.
     pub fn item(&self, row: usize, column: usize) -> Option<String> {
         self.model.as_ref().and_then(|m| m.data(row, column))
+    }
+
+    /// The content box the rows live in: the control inset, less the header band.
+    ///
+    /// The one derivation both the paint loop and the hit test read. They used to disagree: the loop
+    /// measured from the content box while the press arm measured from `rect.y`, so a press on the
+    /// first content row selected the row **above** it — the same defect `ListView::row_rect` was
+    /// extracted to fix, which this control's sibling had kept.
+    fn rows_band(&self) -> Rect {
+        let content = ControlMetrics::band_inset(self.base.geometry(), TABLE_INSET);
+        let header = ControlMetrics::top_band(content, HEADER_ROW_HEIGHT);
+        Rect::new(
+            content.x,
+            content.y + header.height as i32,
+            content.width,
+            content.height.saturating_sub(header.height),
+        )
+    }
+
+    /// The rectangle of content row `index`, or `None` when it is not fully visible.
+    fn row_rect(&self, index: usize) -> Option<Rect> {
+        let band = self.rows_band();
+        let y = band.y + (TABLE_ROW_HEIGHT * index as u32) as i32;
+        // A row that would extend past the content box is not painted at all rather than painted
+        // truncated: a half-height row reads as a rendering error.
+        if y + TABLE_ROW_HEIGHT as i32 > band.y + band.height as i32 {
+            return None;
+        }
+        Some(Rect::new(band.x, y, band.width, TABLE_ROW_HEIGHT))
+    }
+
+    /// The content row a point falls on, if it falls on a visible one.
+    ///
+    /// The inverse of [`Self::row_rect`] and built on it, so the row a click selects and the row a
+    /// hover highlights cannot disagree about where a row begins.
+    fn row_at_point(&self, point: crate::core::Point) -> Option<usize> {
+        let band = self.rows_band();
+        if !band.contains_point(point) {
+            return None;
+        }
+        let index = ((point.y - band.y) / TABLE_ROW_HEIGHT as i32) as usize;
+        // The last partial row is not a target, matching `row_rect`'s refusal to paint it.
+        (index < self.row_count() && self.row_rect(index).is_some()).then_some(index)
     }
     /// Select one row in the current view projection.
     pub fn select_row(&mut self, row: usize) -> bool {
@@ -403,11 +461,12 @@ impl Draw for TableWidget {
         }
         // The rows begin at the header's bottom edge, which is what keeps the first content
         // row off y=0 (the defect the inset exists to fix).
-        let rows_top = content.y + header.height as i32;
-        let rows_height = (content.height - header.height) as i32;
+        // A hovered row reads the same accent at a **lighter** weight than the focused row: it is
+        // pointer position rather than a committed selection, so it must not compete with the row
+        // that is actually selected.
+        let hovered_bg = surface.blend(&accent, 0.12);
         // Draw grid from model
         if let Some(ref model) = self.model {
-            let row_h = 20;
             let col_w = if model.column_count() > 0 {
                 (content.width / model.column_count() as u32).max(40)
             } else {
@@ -417,15 +476,15 @@ impl Draw for TableWidget {
             let col_count = model.column_count();
             let current_row = self.focused_row;
             for r in 0..row_count {
-                let y = rows_top + row_h * r as i32;
-                if y + row_h > rows_top + rows_height {
-                    break;
-                }
+                // The row box comes from `row_rect`, the same derivation the hit test reads. It was
+                // a local `let row_h = 20` here and a second one in the press arm, measured from
+                // `rect.y`, so the row drawn and the row clicked were off by the header.
+                let Some(row_box) = self.row_rect(r) else { break };
+                let (y, row_h) = (row_box.y, row_box.height as i32);
                 if Some(r) == current_row {
-                    context.fill_rect(
-                        crate::core::Rect::new(content.x, y, content.width, row_h as u32),
-                        focused_bg,
-                    );
+                    context.fill_rect(row_box, focused_bg);
+                } else if Some(r) == self.hovered_row {
+                    context.fill_rect(row_box, hovered_bg);
                 }
                 for c in 0..col_count {
                     let x = content.x + (col_w as i32) * c as i32;
@@ -469,20 +528,36 @@ impl Draw for TableWidget {
 }
 impl crate::event::EventHandler for TableWidget {
     fn handle_event(&mut self, event: &crate::event::Event) {
+        // The base keeps the control-level hover/press facts and answers `widget_state()`. This
+        // handler did not forward to it, so `"table:hover"` could never fire.
+        self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }
-        if let crate::event::Event::MousePress { pos, button } = event {
-            if *button == 1 {
-                let rect = self.base.geometry();
-                let row_h = 20;
-                if pos.y >= rect.y {
-                    let index = ((pos.y - rect.y) / row_h) as usize;
-                    if index < self.row_count() {
-                        self.select_row(index);
-                    }
+        match event {
+            crate::event::Event::MousePress { pos, button } if *button == 1 => {
+                // The row is read from `row_at_point`, the same derivation the paint loop uses.
+                // The press arm used to compute its own `(pos.y - rect.y) / 20`, which measured from
+                // the control instead of from the content box below the header, so a click on the
+                // first content row selected the row above it.
+                if let Some(index) = self.row_at_point(*pos) {
+                    self.select_row(index);
                 }
             }
+            crate::event::Event::MouseMove { pos } => {
+                let hovered = self.row_at_point(*pos);
+                if hovered != self.hovered_row {
+                    self.hovered_row = hovered;
+                    self.base.request_redraw();
+                }
+            }
+            crate::event::Event::MouseLeave { .. } => {
+                let had_hover = self.hovered_row.take().is_some();
+                if had_hover {
+                    self.base.request_redraw();
+                }
+            }
+            _ => { /* Other events are not relevant */ }
         }
     }
 }
@@ -859,26 +934,103 @@ mod tests {
             }
         });
 
-        // Mouse press inside widget should not trigger selection when disabled
-        tv.handle_event(&crate::event::Event::MousePress {
-            pos: crate::core::Point::new(10, 15),
-            button: 1,
-        });
+        // Mouse press inside widget should not trigger selection when disabled.
+        //
+        // The point is on the **first content row**, which is what makes this a press "inside the
+        // widget" that a table is expected to act on. It used to be `(10, 15)` — inside the
+        // *header* band under the corrected geometry — and it selected row 0 only because the press
+        // arm measured rows from the control's top edge instead of from below the header. Fixing
+        // that derivation is what turned this into a real pointer on a real row.
+        let on_first_row = crate::core::Point::new(10, 30);
+        tv.handle_event(&crate::event::Event::MousePress { pos: on_first_row, button: 1 });
         assert!(captured.lock().unwrap().is_none());
 
         // Re-enable and verify it works
         tv.set_enabled(true);
-        tv.handle_event(&crate::event::Event::MousePress {
-            pos: crate::core::Point::new(10, 15),
-            button: 1,
-        });
+        tv.handle_event(&crate::event::Event::MousePress { pos: on_first_row, button: 1 });
         assert_eq!(*captured.lock().unwrap(), Some(0));
+    }
+
+    /// A press selects the row the paint loop draws at that point, and a hover highlights it.
+    ///
+    /// # The defect this pins
+    ///
+    /// The paint loop measured rows from the content box (below the header) and the press arm
+    /// measured from the control's top edge, with `20` written out twice. A click therefore selected
+    /// the row **above** the one under the pointer — the exact defect `ListView::row_rect` was
+    /// extracted to fix, still present in this sibling. Both directions now read `row_rect`.
+    ///
+    /// # What makes this a real assertion
+    ///
+    /// It is written as the **inverse pair**: the point taken from `row_rect`'s midpoint must
+    /// resolve, through `row_at_point`, back to the same index — and the drawn row's fill at that
+    /// point must be the one that changed. A click that selects "some row" would pass the first half
+    /// and fail the second.
+    #[test]
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn a_click_selects_the_row_that_is_painted_there() {
+        // Same guard and pin as the hover test: both reads of a row's fill have to come from one
+        // appearance for the comparison to be about selection.
+        let _guard = crate::theme::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
+        let model = Arc::new(TestTableModel::new(5, 3));
+        let mut tv = TableWidget::new(Rect::new(0, 0, 400, 300));
+        tv.set_model(model);
+
+        // Row 1, not row 0: row 0 is the one a top-edge-relative hit test would also land on for a
+        // point near the header, so it cannot distinguish the two derivations.
+        let row = 1usize;
+        let box1 = tv.row_rect(row).expect("the row must be visible");
+        let point = crate::core::Point::new(box1.x + 10, box1.y + box1.height as i32 / 2);
+        assert_eq!(tv.row_at_point(point), Some(row), "the point must name its own row");
+
+        let before = row_fill(&mut tv, row).expect("the row paints a fill");
+        tv.handle_event(&crate::event::Event::MousePress { pos: point, button: 1 });
+        assert_eq!(tv.focused_row(), Some(row), "the press must select the row it is on");
+        let after = row_fill(&mut tv, row).expect("the row still paints a fill");
+        assert_ne!(before, after, "the selected row must be visibly selected");
+    }
+
+    /// The fill of the SVG `<rect>` at the midpoint of content row `index`.
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn row_fill(tv: &mut TableWidget, index: usize) -> Option<String> {
+        let rect = tv.geometry();
+        let row = tv.row_rect(index)?;
+        let at = crate::core::Point::new(row.x + 10, row.y + row.height as i32 / 2);
+        let svg = crate::widget::svg::render_widget_to_svg(tv, rect);
+        let mut best: Option<(u32, String)> = None;
+        for element in svg.split("/>") {
+            let Some(open) = element.find("<rect ") else { continue };
+            let element = &element[open + "<rect ".len()..];
+            let attr = |name: &str| -> Option<i32> {
+                let key = format!("{name}=\"");
+                let at = element.find(&key)? + key.len();
+                let to = element[at..].find('"')? + at;
+                element[at..to].parse().ok()
+            };
+            let (Some(x), Some(y), Some(w), Some(h)) =
+                (attr("x"), attr("y"), attr("width"), attr("height"))
+            else {
+                continue;
+            };
+            if at.x < x || at.x >= x + w || at.y < y || at.y >= y + h {
+                continue;
+            }
+            let Some(fill_at) = element.find("fill=\"") else { continue };
+            let from = fill_at + "fill=\"".len();
+            let Some(to) = element[from..].find('"') else { continue };
+            let area = (w as u32).saturating_mul(h as u32);
+            if best.as_ref().map(|(a, _)| area < *a).unwrap_or(true) {
+                best = Some((area, element[from..from + to].to_string()));
+            }
+        }
+        best.map(|(_, fill)| fill)
     }
 
     #[test]
     fn test_row_height_overrides() {
         let mut tv = TableWidget::new(Rect::new(0, 0, 400, 300));
-
         assert_eq!(tv.row_height(0), None);
         assert_eq!(tv.row_height(99), None);
 

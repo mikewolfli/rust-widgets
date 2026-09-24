@@ -660,6 +660,12 @@ impl Draw for Mention {
 
         // Completed mentions are underlined, so the user can see which spans the
         // control recognises — including the ones typed by hand rather than chosen.
+        // The underline is the theme's `primary`, the hue a theme varies most, rather than a
+        // literal blue that stayed put on both appearances.
+        let mention_ink = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.primary)
+            .unwrap_or(Color::rgb(66, 133, 244));
         for mention in &self.completed {
             let before = self.text.get(..mention.start).unwrap_or("");
             let span = self.text.get(mention.start..mention.end).unwrap_or("");
@@ -670,7 +676,7 @@ impl Draw for Mention {
             context.draw_line_stroke(
                 Point::new(start_x, underline_y),
                 Point::new(start_x + width, underline_y),
-                Color::rgb(66, 133, 244),
+                mention_ink,
                 1,
             );
         }
@@ -690,6 +696,16 @@ impl Draw for Mention {
 
 impl Mention {
     /// Draws the candidate popup below the field.
+    ///
+    /// # Why the popup reads the theme and the field's fallbacks do not
+    ///
+    /// The field's literals are *fallbacks*: `apply_active_theme` fills `style.background_color` and
+    /// friends before this runs, so on a themed build the `unwrap_or` arms are unreachable. The popup
+    /// is different — it painted `Color::WHITE`, a fixed grey border and two fixed inks
+    /// unconditionally, so a dark build opened a white list under a dark field. It is fixed the same
+    /// way `dropdown`'s list and `cascader`'s columns were: a popup is one step above the page
+    /// (`surface_container`), its border is the weak separator (`outline_variant`), a highlighted row
+    /// is a *selection* (the accent pair), and the secondary description is the theme's weak ink.
     fn draw_popup(&self, context: &mut RenderContext) {
         let rows = self.filtered.len().min(MAX_VISIBLE);
         if rows == 0 {
@@ -702,8 +718,31 @@ impl Mention {
             rect.width,
             (rows as u32 * ROW_HEIGHT).max(ROW_HEIGHT),
         );
-        context.fill_rounded_rect(popup, 4, Color::WHITE);
-        context.draw_rounded_rect_stroke(popup, 4, Color::rgb(190, 192, 198), 1);
+        // One guard over the theme reads, released before drawing: `theme_manager()` is a
+        // non-reentrant mutex and the context's accessors cannot take it.
+        let (popup_surface, separator, highlight, on_highlight, row_ink, weak_ink) = {
+            let manager = crate::style::theme_manager();
+            match manager.current_theme() {
+                Some(active) => (
+                    active.colors.surface_container,
+                    active.colors.outline_variant,
+                    active.colors.primary,
+                    active.colors.primary.contrast_color(),
+                    active.colors.foreground,
+                    active.colors.secondary,
+                ),
+                None => (
+                    Color::WHITE,
+                    Color::rgb(190, 192, 198),
+                    Color::rgb(232, 240, 254),
+                    Color::rgb(40, 44, 52),
+                    Color::rgb(40, 44, 52),
+                    Color::rgb(140, 144, 152),
+                ),
+            }
+        };
+        context.fill_rounded_rect(popup, 4, popup_surface);
+        context.draw_rounded_rect_stroke(popup, 4, separator, 1);
 
         for index in 0..rows {
             let Some(row) = self.row_rect(index) else {
@@ -713,14 +752,16 @@ impl Mention {
             else {
                 continue;
             };
-            if self.highlighted == Some(index) {
-                context.fill_rect(row, Color::rgb(232, 240, 254));
+            let highlighted = self.highlighted == Some(index);
+            if highlighted {
+                context.fill_rect(row, highlight);
             }
+            let ink = if highlighted { on_highlight } else { row_ink };
             context.draw_text(
                 Point::new(row.x + 8, row.y + 16),
                 &candidate.display,
                 &Font::simple("Sans", 11.0),
-                Color::rgb(40, 44, 52),
+                ink,
                 HorizontalAlignment::Left,
             );
             if !candidate.description.is_empty() {
@@ -728,7 +769,9 @@ impl Mention {
                     Point::new(row.x + 120, row.y + 16),
                     &candidate.description,
                     &Font::simple("Sans", 10.0),
-                    Color::rgb(140, 144, 152),
+                    // The description is a hint beside a value, so on a highlighted row it damps
+                    // toward that row's fill rather than staying the page's weak ink.
+                    if highlighted { on_highlight.blend(&highlight, 0.3) } else { weak_ink },
                     HorizontalAlignment::Left,
                 );
             }
@@ -816,13 +859,29 @@ mod tests {
     }
 
     /// Renders and returns the RGBA frame.
+    ///
+    /// Gated like its consumer: the software backend and `Size` only exist behind a device
+    /// profile with `software`, so an ungated helper is a dead-code warning (or a hard error in a
+    /// `no_std` profile) for a build that never calls it.
     fn render(m: &mut Mention, size: Size) -> Vec<u8> {
+        render_on(m, size, Color::WHITE)
+    }
+
+    /// Renders over an explicit backdrop, which is the surface the control would sit on.
+    fn render_on(m: &mut Mention, size: Size, backdrop: Color) -> Vec<u8> {
         let mut backend = SoftwarePaintBackend::new(size, 1.0);
-        backend.begin_frame(Color::WHITE);
+        backend.begin_frame(backdrop);
         let mut context = RenderContext::new(&mut backend);
         m.draw(&mut context);
         backend.end_frame();
         backend.frame_rgba().to_vec()
+    }
+
+    /// The RGBA pixel at `(x, y)` of a `size`-wide frame.
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn pixel(frame: &[u8], size: Size, x: u32, y: u32) -> [u8; 4] {
+        let index = ((y * size.width + x) * 4) as usize;
+        [frame[index], frame[index + 1], frame[index + 2], frame[index + 3]]
     }
 
     /// Types `text` one character at a time, as a keyboard would.
@@ -851,6 +910,57 @@ mod tests {
         assert!(m.is_popup_open(), "the trigger must open the popup");
         assert_eq!(m.query(), Some(""));
         assert_eq!(m.visible_candidates().len(), 3);
+    }
+
+    /// The candidate popup follows the appearance, not just the field.
+    ///
+    /// # The defect this pins
+    ///
+    /// `draw_popup` painted `Color::WHITE`, a fixed grey border, a fixed pale highlight and two
+    /// fixed inks — none of which moved with the theme — while the field above it read `style.*`.
+    /// So a dark build showed a white suggestion list hanging off a dark field, the same
+    /// "half themed" shape `dropdown` had.
+    ///
+    /// # Why the assertion names the popup's own pixel
+    ///
+    /// A frame-wide comparison passes even with the literals restored, because the field and the
+    /// backdrop differ between appearances too. The sample point is inside the popup band, on a row
+    /// with no glyph there, so the pixel it reads is the popup surface and nothing else.
+    #[test]
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn the_candidate_popup_follows_the_appearance() {
+        let _guard = crate::theme::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        let size = Size::new(240, 160);
+
+        let popup_pixel = |appearance| -> [u8; 4] {
+            crate::theme::global_theme_manager().set_appearance(appearance);
+            let backdrop = crate::style::theme_manager()
+                .current_theme()
+                .map(|active| active.colors.background)
+                .expect("a preset is active");
+            let mut m = mention();
+            type_text(&mut m, "@");
+            crate::theme::apply_theme_to_widget(&mut m);
+            let frame = render_on(&mut m, size, backdrop);
+            // The field is 30 tall, so the popup starts below it. Half the popup's width and a y
+            // near its bottom edge are clear of any glyph — the row text is drawn from `y + 16`.
+            let x = 240 / 2;
+            let y = 30 + 3 * ROW_HEIGHT - 3;
+            pixel(&frame, size, x, y)
+        };
+
+        let dark = popup_pixel(crate::theme::AppearanceMode::Dark);
+        let light = popup_pixel(crate::theme::AppearanceMode::Light);
+        assert_ne!(
+            dark, light,
+            "the candidate popup must follow the appearance; both were {dark:?}"
+        );
+        assert_ne!(
+            dark,
+            [255, 255, 255, 255],
+            "the candidate popup must not be the fixed white the defect used"
+        );
     }
 
     #[test]

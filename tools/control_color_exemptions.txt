@@ -35,7 +35,13 @@
 # only the dominant colour moved, which is the judgement this table encodes.
 bar_chart series-palette true A series colour identifies which bar group is which; the value it encodes is the data.
 pie_chart series-palette true A pie slice colour identifies the category, and the category is the data.
-radar_chart series-palette true A series colour identifies which axis polygon is which; it is data.
+# `radar_chart` is **absent** from this table as of round 75, although its series palette is still
+# data. The table is keyed on the **dominant colour** the census measures, and that is no longer the
+# palette: the chart's *chrome* — the plotting surface, frame, grid and both inks — was moved off five
+# literals and onto the theme, so the dominant colour is now the themed surface. A licence keyed on
+# the dominant colour therefore no longer applies. What must not regress is the chrome, and that is
+# asserted directly by `radar_chart::tests::the_plotting_surface_follows_the_appearance`; the palette
+# itself is unchanged and still data.
 
 # ── Removed on evidence (BLUE20 round 60) ─────────────────────────────────────
 # `mini_chart` and `meter` were listed here in round 59. Both were re-measured and
@@ -95,11 +101,33 @@ color_picker hue-wheel true The hue wheel's colours are the value being picked; 
 #
 # `map_view` is deliberately absent from this section even though a map *is* content:
 # the control draws no map content, only the frame around where it would go.
-audio_visualizer signal-gradient true The visualiser's colours encode the signal being played; recolouring by appearance would misrepresent it.
-video_player video-surface true The video surface is the decoded frame, not chrome; it is content.
+#
+# `audio_visualizer`, `video_player` and `font_preview` stood here until round 74. Their
+# *subjects* are still content — a signal gradient, a decoded frame, a glyph sample — but
+# the exemption is keyed on the **dominant** colour, and that is no longer their content in
+# each case:
+#
+#   * `audio_visualizer`'s default panel is now the active theme's surface, so an
+#     un-configured visualiser is dominated by the page surface rather than by a fixed
+#     near-black (the gradient is unchanged and still data);
+#   * `video_player`'s empty state is now `surface_container` rather than a fixed
+#     `rgb(30,30,30)`, so an unloaded player is dominated by a placeholder panel — the same
+#     judgement `image_gallery`'s removal records below;
+#   * `font_preview` reads the theme's roles at all now, so the panel it fills dominates the
+#     render instead of the near-white literal that used to.
+#
+# In every case the exempted colour is still present and still invariant; it is simply no
+# longer what the measurement sees. Leaving the entries in place would have licensed one of
+# the three to regress to a fixed literal without the gate noticing, which is exactly the
+# "stale exemption" direction `check_control_rendering.sh` refuses.
 camera_preview video-surface true The preview surface is the camera frame, not chrome; it is content.
-media_player video-surface true The player surface shows the media being played; that is content.
-font_preview glyph-samples true The glyph samples show the font's own appearance; that is the datum.
+# `media_player` was listed here as `video-surface` until round 75. The **media the player shows** is
+# still content, but this control paints none of it: its `draw` is a title line, a status line and a
+# transport rule — chrome. The exemption never covered those six literals; it covered a decoded frame
+# the control does not draw. Since the chrome now follows the theme, the licence excuses nothing and,
+# left in place, it would wave through a regression back to a fixed panel. (Its sibling `video_player`
+# keeps the exemption: that control *does* play into the rectangle, and its empty state was moved off a
+# fixed near-black separately.)
 
 # ── Removed on evidence (BLUE20 round 62) ───────────────────────────────────────
 # `image_gallery` was listed here as `bitmap-content`. It was re-measured and its

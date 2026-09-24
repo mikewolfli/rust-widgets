@@ -405,13 +405,51 @@ impl Draw for Dropdown {
         }
 
         // ── style-derived colours ───────────────────────────────────────
+        //
+        // # The five literals that used to be here
+        //
+        // `bg`/`border`/`text_color` already read `style`, but the other five were constants:
+        // `placeholder_color`, `highlight_bg`, `highlight_text`, `list_border`, and the list row's
+        // own `rgb(248,248,248)`. So the *collapsed field* followed the appearance while everything
+        // **inside the popup** did not — the list kept a pale blue highlight and a near-white row on
+        // a dark palette, which is exactly the "drawn but unreachable by the theme" shape the census
+        // reports. They now read roles:
+        //
+        //   placeholder  -> the theme's weak ink, so it recedes on both appearances
+        //   highlight    -> the accent pair (an emphasised row is a *selection*, not a lighter grey)
+        //   list border  -> `outline_variant`, the weak separator, so it is visibly weaker than the
+        //                   field's own focus ring
+        //   list row     -> `surface_container`, one step above the page, which is what a popup *is*
+        //
+        // The guard is released before drawing: `theme_manager()` is a non-reentrant mutex and the
+        // accessors below take the same one — the rule `slider.rs` documents.
+        let (weak_ink, accent, on_accent, separator, popup_surface) = {
+            let manager = crate::style::theme_manager();
+            match manager.current_theme() {
+                Some(active) => {
+                    let accent = active.colors.primary;
+                    (
+                        Some(active.colors.secondary),
+                        Some(accent),
+                        Some(accent.contrast_color()),
+                        Some(active.colors.outline_variant),
+                        Some(active.colors.surface_container),
+                    )
+                }
+                None => (None, None, None, None, None),
+            }
+        };
         let bg = self.style().background_color.unwrap_or(Color::rgb(255, 255, 255));
         let border = self.style().border_color.unwrap_or(Color::rgb(180, 180, 180));
         let text_color = self.style().text_color.unwrap_or(Color::rgb(0, 0, 0));
-        let placeholder_color = Color::rgb(160, 160, 160);
-        let highlight_bg = Color::rgb(200, 220, 255);
-        let highlight_text = Color::rgb(0, 0, 0);
-        let list_border = Color::rgb(150, 150, 150);
+        let placeholder_color = weak_ink.unwrap_or(Color::rgb(160, 160, 160));
+        let highlight_bg = accent.unwrap_or(Color::rgb(200, 220, 255));
+        // The highlighted row's ink is the accent's contrast colour rather than the field's ink: a
+        // selected row is filled *with the accent*, so the ink has to be legible on that, not on the
+        // page. Reading `text_color` here was legible only while the fill happened to be pale.
+        let highlight_text = on_accent.unwrap_or(Color::rgb(0, 0, 0));
+        let list_border = separator.unwrap_or(Color::rgb(150, 150, 150));
+        let list_row = popup_surface.unwrap_or(Color::rgb(248, 248, 248));
 
         // ── Collapsed / button area ─────────────────────────────────────
         // Background
@@ -474,7 +512,7 @@ impl Draw for Dropdown {
             if is_selected {
                 context.fill_rect(item_geo, highlight_bg);
             } else {
-                context.fill_rect(item_geo, Color::rgb(248, 248, 248));
+                context.fill_rect(item_geo, list_row);
             }
 
             // Border (bottom line)
@@ -798,5 +836,104 @@ mod tests {
         assert_eq!(band.height, dimensions::TEXT_FIELD_MIN_HEIGHT);
         assert_eq!(dd.size_hint().height, band.height);
         assert_eq!(band.y, (120 - dimensions::TEXT_FIELD_MIN_HEIGHT as i32) / 2);
+    }
+
+    /// The **expanded list** follows the appearance, not just the collapsed field.
+    ///
+    /// # The defect this pins
+    ///
+    /// `bg` / `border` / `text_color` read `style`, but the five colours *inside the popup* were
+    /// constants: a pale-blue highlight, a near-white row, a grey placeholder and two greys for the
+    /// list's border. So the field tracked the theme while the thing it opened did not — a dark
+    /// build showed a near-white list under a dark field.
+    ///
+    /// # Why the assertion is about one specific row, and not the whole document
+    ///
+    /// A first version compared the *set of every fill* in the two documents. It passed even with
+    /// the literals restored — measured — because the field's own background still differs between
+    /// appearances, so a document-wide comparison is satisfied by a colour this test is not about.
+    /// The assertion has to name the element: the popup's **first unselected row** is the
+    /// `surface_container` fill, and that is the one that must move.
+    #[test]
+    #[cfg(device_profile)]
+    fn the_expanded_list_follows_the_appearance() {
+        let _guard = crate::theme::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        let rect = Rect::new(0, 0, 200, 60);
+
+        let sample = |appearance| -> (String, String) {
+            crate::theme::global_theme_manager().set_appearance(appearance);
+            let mut dd = Dropdown::new(vec!["One".to_string(), "Two".to_string()], rect);
+            dd.set_expanded(true);
+            crate::theme::apply_theme_to_widget(&mut dd);
+            let backdrop = crate::style::theme_manager()
+                .current_theme()
+                .map(|active| active.colors.background)
+                .expect("a preset is active");
+            let svg = crate::widget::svg::render_widget_to_svg_on(&mut dd, rect, backdrop);
+            // The rows live below the field's own band, so a fill whose `y` is past it belongs to
+            // the popup. Reading the geometry rather than counting elements is what keeps this from
+            // depending on how many surfaces the field happens to paint.
+            let field_bottom = crate::widget::metrics::dimensions::TEXT_FIELD_MIN_HEIGHT as i32;
+            let rows = row_fill(&svg, field_bottom);
+            (rows[0].clone(), rows[1].clone())
+        };
+
+        // `sample` returns (first row, second row). The first row is the **selected** one — a fresh
+        // dropdown with items selects index 0 — so the pair is (selected, unselected) rather than
+        // the other way round. Reading them by position is what the helper documents; getting the
+        // order wrong is what the first draft of this test did, and what the panic message made
+        // obvious.
+        let (dark_sel, dark_row) = sample(crate::theme::AppearanceMode::Dark);
+        let (light_sel, light_row) = sample(crate::theme::AppearanceMode::Light);
+        assert_ne!(
+            dark_row, light_row,
+            "an unselected popup row must follow the appearance; both were {dark_row}"
+        );
+        assert_ne!(
+            dark_sel, light_sel,
+            "a selected popup row must follow the appearance; both were {dark_sel}"
+        );
+        // And the highlighted row must differ from the plain one in each appearance, or the
+        // selection is not visible at all.
+        assert_ne!(dark_sel, dark_row, "the selected row must stand out on the dark appearance");
+        assert_ne!(light_sel, light_row, "the selected row must stand out on the light one");
+    }
+
+    /// The fills of the first two popup rows below `field_bottom`, in document order.
+    ///
+    /// Rows are emitted in order and the first one is the configured selection, so the pair is
+    /// `(selected, unselected)`. Walking the rects rather than guessing an index is what keeps this
+    /// independent of how many surfaces the collapsed field paints — the count differs between the
+    /// two appearances, which is exactly the kind of thing an index would silently track.
+    #[cfg(device_profile)]
+    fn row_fill(svg: &str, field_bottom: i32) -> Vec<String> {
+        let mut rows = Vec::new();
+        let mut rest = svg;
+        while let Some(rect_at) = rest.find("<rect ") {
+            let rect = &rest[rect_at..];
+            let end = rect.find("/>").map(|e| e + 2).unwrap_or(rect.len());
+            let element = &rect[..end];
+            let attr = |name: &str| -> Option<i32> {
+                let key = format!(" {name}=\"");
+                let at = element.find(&key)? + key.len();
+                let to = element[at..].find('"')? + at;
+                element[at..to].parse().ok()
+            };
+            if let (Some(y), Some(key)) = (
+                attr("y"),
+                element.find("fill=\"rgba(").map(|i| i + "fill=\"rgba(".len()),
+            ) {
+                if y >= field_bottom {
+                    let to = element[key..].find(')').map(|e| e + key).unwrap_or(key);
+                    rows.push(element[key..to].to_string());
+                    if rows.len() == 2 {
+                        return rows;
+                    }
+                }
+            }
+            rest = &rect[end..];
+        }
+        panic!("fewer than two popup rows at or below y={field_bottom}");
     }
 }

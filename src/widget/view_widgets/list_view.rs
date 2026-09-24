@@ -230,6 +230,20 @@ pub struct ListView {
     selection: SelectionModel,
     /// View-side focused row.
     focused_row: Option<usize>,
+    /// The row under the pointer, or `None` when the pointer is elsewhere.
+    ///
+    /// # Why the focus row does not cover this
+    ///
+    /// `BaseWidget` records that the **control** is hovered, not which of its rows is, and a list
+    /// is a column of independent rows: a hover that lit the whole view would point at nothing.
+    /// Before this field existed a list row gave the user no feedback until they had already
+    /// committed to it by clicking — the one affordance a list most needs, because the row under the
+    /// pointer is the row a click will affect.
+    ///
+    /// Kept as its own field rather than folded into `focused_row`: a focus row is a *persistent*
+    /// fact the keyboard moves, while this is transient pointer position. The draw gives them
+    /// different weights for exactly that reason.
+    hovered_row: Option<usize>,
     /// View mode for rendering items.
     view_mode: ViewMode,
     /// Emitted when selected row changes.
@@ -246,6 +260,7 @@ impl ListView {
             model_connection_scope: ConnectionScope::new(),
             selection: SelectionModel::new(),
             focused_row: None,
+            hovered_row: None,
             view_mode: ViewMode::default(),
             selection_changed: Signal1::new(),
             focused_row_changed: Signal1::new(),
@@ -551,6 +566,11 @@ impl Draw for ListView {
             .map(|active| active.colors.primary)
             .unwrap_or(Color::PRIMARY);
         let focused_bg = surface.blend(&accent, 0.30);
+        // A hovered row is the same accent at a **lighter** weight than the focused row: it is a
+        // pointer position rather than a committed selection, so it has to read as "this is the row a
+        // click will affect" without competing with the row that is actually selected. Deriving it
+        // from the same accent keeps the two in step when a theme changes hue.
+        let hovered_bg = surface.blend(&accent, 0.12);
 
         context.fill_rect(rect, surface);
         context.draw_rect(rect, border);
@@ -569,8 +589,13 @@ impl Draw for ListView {
             let font = crate::core::Font::default();
             for i in 0..row_count {
                 let Some(row) = self.row_rect(i) else { break };
+                // Hover is painted *under* focus: a row that is both hovered and focused keeps the
+                // focused weight, so the persistent fact is not visually displaced by the pointer
+                // merely passing over it.
                 if Some(i) == current_row {
                     context.fill_rect(row, focused_bg);
+                } else if Some(i) == self.hovered_row {
+                    context.fill_rect(row, hovered_bg);
                 }
                 if let Some(text) = self.model.as_ref().and_then(|model| model.data(i)) {
                     if !text.is_empty() {
@@ -595,12 +620,33 @@ impl Draw for ListView {
 }
 impl crate::event::EventHandler for ListView {
     fn handle_event(&mut self, event: &crate::event::Event) {
+        // The base keeps the control-level facts (`hovered`, `pressed`, `focus_reason`), and its
+        // `MouseEnter`/`MouseLeave` arms are what make `widget_state()` answer `Hover` for this
+        // control. This handler did not forward to it at all, so the theme's `"list_view:hover"`
+        // override could never fire and the control-level hover was always false.
+        self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }
         match event {
             crate::event::Event::MousePress { pos, button } if *button == 1 => {
                 self.select_row_at_point(*pos);
+            }
+            // Row hover, derived from the same `row_at_point` the click uses, so the row that is
+            // highlighted is the row a click would affect. A pointer that leaves the rows entirely
+            // (below the last one, or outside the content box) clears it rather than latching the
+            // last row it happened to cross.
+            crate::event::Event::MouseMove { pos } => {
+                let hovered = self.row_at_point(*pos);
+                if hovered != self.hovered_row {
+                    self.hovered_row = hovered;
+                    self.base.request_redraw();
+                }
+            }
+            crate::event::Event::MouseLeave { .. } => {
+                if self.hovered_row.take().is_some() {
+                    self.base.request_redraw();
+                }
             }
             #[cfg(feature = "touch")]
             crate::event::Event::Tap { pos } => {
@@ -614,6 +660,8 @@ impl crate::event::EventHandler for ListView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(all(device_profile, feature = "desktop"))]
+    use crate::event::EventHandler as _;
     use std::sync::Arc;
 
     struct StaticListModel;
@@ -654,6 +702,95 @@ mod tests {
         // `OutOfRange` from `UnsupportedOnWidget`.
         assert_eq!(view.set("focused_row", CapabilityValue::UInt(1)), Ok(()));
         assert_eq!(view.focused_row(), Some(1));
+    }
+
+    /// Moving over a row highlights **that** row, and leaving the rows clears it.
+    ///
+    /// # The defect this pins
+    ///
+    /// The list had no row hover at all: `handle_event` did not even forward to `BaseWidget`, so the
+    /// control-level hover was permanently false and `"list_view:hover"` could never fire. A list is
+    /// a column of independent rows, so the hover has to name a row — the row a click would affect —
+    /// rather than the control.
+    ///
+    /// # Why the assertion reads the row's own fill
+    ///
+    /// "The document changed" would pass for a hover on any row; the helper reads the fill of the
+    /// rectangle at a **named row's** centre, so the assertion is about the row the pointer is over.
+    #[test]
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn hovering_a_row_highlights_that_row_only() {
+        // The row fills come from the active theme, so pin the appearance and hold the registry
+        // guard: otherwise a concurrent theme switch between the resting and hovered reads makes
+        // this compare two different appearances rather than two states.
+        let _guard = crate::theme::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
+        let mut view = ListView::new(Rect::new(0, 0, 200, 120));
+        view.set_model(Arc::new(StaticListModel));
+        let resting = row_fill(&mut view, 1).expect("row 1 paints a fill");
+
+        let over_row_1 = row_midpoint(&view, 1).expect("row 1 is visible");
+        view.handle_event(&crate::event::Event::MouseMove { pos: over_row_1 });
+        let hovered = row_fill(&mut view, 1).expect("row 1 still paints a fill");
+        assert_ne!(
+            hovered, resting,
+            "the row under the pointer must be visible as hovered; both fills were {resting}"
+        );
+        // And the *other* row must not have changed, or the highlight points at nothing.
+        let other = row_fill(&mut view, 0).expect("row 0 paints a fill");
+        let other_resting = {
+            let mut fresh = ListView::new(Rect::new(0, 0, 200, 120));
+            fresh.set_model(Arc::new(StaticListModel));
+            row_fill(&mut fresh, 0).expect("row 0 paints a fill")
+        };
+        assert_eq!(other, other_resting, "a hover on row 1 must not restyle row 0");
+
+        view.handle_event(&crate::event::Event::MouseLeave { pos: over_row_1 });
+        let left = row_fill(&mut view, 1).expect("row 1 still paints a fill");
+        assert_eq!(left, resting, "leaving must clear the hover, not latch it");
+    }
+
+    /// A visible row's midpoint, from the control's own row geometry.
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn row_midpoint(view: &ListView, index: usize) -> Option<crate::core::Point> {
+        let row = view.row_rect(index)?;
+        Some(crate::core::Point::new(row.x + row.width as i32 / 2, row.y + row.height as i32 / 2))
+    }
+
+    /// The fill of the SVG `<rect>` at `index`'s row midpoint.
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn row_fill(view: &mut ListView, index: usize) -> Option<String> {
+        let rect = view.geometry();
+        let at = row_midpoint(view, index)?;
+        let svg = crate::widget::svg::render_widget_to_svg(view, rect);
+        let mut best: Option<(u32, String)> = None;
+        for element in svg.split("/>") {
+            let Some(open) = element.find("<rect ") else { continue };
+            let element = &element[open + "<rect ".len()..];
+            let attr = |name: &str| -> Option<i32> {
+                let key = format!("{name}=\"");
+                let at = element.find(&key)? + key.len();
+                let to = element[at..].find('"')? + at;
+                element[at..to].parse().ok()
+            };
+            let (Some(x), Some(y), Some(w), Some(h)) =
+                (attr("x"), attr("y"), attr("width"), attr("height"))
+            else {
+                continue;
+            };
+            if at.x < x || at.x >= x + w || at.y < y || at.y >= y + h {
+                continue;
+            }
+            let Some(fill_at) = element.find("fill=\"") else { continue };
+            let from = fill_at + "fill=\"".len();
+            let Some(to) = element[from..].find('"') else { continue };
+            let area = (w as u32).saturating_mul(h as u32);
+            if best.as_ref().map(|(a, _)| area < *a).unwrap_or(true) {
+                best = Some((area, element[from..from + to].to_string()));
+            }
+        }
+        best.map(|(_, fill)| fill)
     }
 
     #[test]

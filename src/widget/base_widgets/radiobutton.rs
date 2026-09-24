@@ -500,6 +500,24 @@ impl Draw for RadioButton {
 
         if !self.text.is_empty() {
             let label_x = center.x + radius as i32 + self.label_gap();
+            // The **label** sits on the page, while the ring and dot are this control's own chrome,
+            // so the label does not necessarily want the same ink. Under `"radio_button:checked"`
+            // the theme's `foreground` is the ink for a mark on the primary fill — the pair that
+            // describes the ring — and reusing it for the label painted the word beside a checked
+            // radio in `primary.contrast_color()`, which is black on the dark page. The page is read
+            // from the theme because the checked override also replaces `style.background_color`
+            // with that primary fill, so the control's own resolved background is not the surface
+            // the label is drawn on. `legible_on` keeps a theme's own label ink when it already
+            // clears the AA floor and repairs it when it does not.
+            let page = crate::style::theme_manager()
+                .current_theme()
+                .map(|active| active.colors.background)
+                .unwrap_or_else(|| style.background_color.unwrap_or(Color::WHITE));
+            let label_ink = if enabled {
+                ink.legible_on(page, 4.5)
+            } else {
+                ink.legible_on(page, 4.5).with_alpha(150)
+            };
             context.draw_text_fitted(
                 Rect::new(
                     label_x,
@@ -509,7 +527,7 @@ impl Draw for RadioButton {
                 ),
                 &self.text,
                 &font,
-                ink,
+                label_ink,
                 HorizontalAlignment::Left,
             );
         }
@@ -555,6 +573,66 @@ mod tests {
         assert_eq!(rb.text(), "", "new radio button text should be empty");
         assert_eq!(rb.group_id(), None, "new radio button should have no group_id");
         assert_eq!(rb.geometry(), rect, "geometry should match");
+    }
+
+    /// A checked radio's **label** stays legible on the page, on both appearances.
+    ///
+    /// # The defect this pins
+    ///
+    /// The same shape as `check_box`'s: the theme's `"radio_button:checked"` override sets
+    /// `foreground` to `primary.contrast_color()` — the ink for a mark on the primary fill — and
+    /// this control used that one field for the ring, the dot **and** the label beside them. On the
+    /// dark appearance `primary.contrast_color()` is black, so a checked radio drew a legible dot
+    /// next to a word that had gone black on a dark page.
+    ///
+    /// The label now resolves against the page, so the assertion is its contrast ratio against the
+    /// active theme's background — the surface the user reads it on.
+    #[test]
+    #[cfg(device_profile)]
+    fn a_checked_radio_keeps_its_label_legible_on_the_page() {
+        let _guard = crate::theme::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+
+        for appearance in [crate::theme::AppearanceMode::Light, crate::theme::AppearanceMode::Dark]
+        {
+            crate::theme::global_theme_manager().set_appearance(appearance);
+            let mut rb = RadioButton::new(Rect::new(0, 0, 200, 24));
+            rb.set_text("Option".to_string());
+            rb.set_checked(true);
+            crate::theme::apply_active_theme(&mut rb);
+
+            let page = crate::style::theme_manager()
+                .current_theme()
+                .map(|active| active.colors.background)
+                .expect("a preset is active");
+            let svg = crate::widget::svg::render_widget_to_svg(&mut rb, Rect::new(0, 0, 200, 24));
+            let ink = label_ink(&svg).unwrap_or_else(|| {
+                panic!("a checked radio with text must paint its label; svg was {svg}")
+            });
+            let ratio = ink.contrast_ratio(page);
+            assert!(
+                ratio >= 4.5,
+                "the label of a checked radio must clear the AA floor on the page it sits on: \
+                 {appearance:?} painted {ink:?} on {page:?}, a ratio of {ratio:.2}:1"
+            );
+        }
+    }
+
+    /// The fill of the SVG `<path>` element that carries the label's glyph geometry.
+    #[cfg(device_profile)]
+    fn label_ink(svg: &str) -> Option<Color> {
+        let at = svg.find("<path d=\"")?;
+        let rest = &svg[at..];
+        let end = rest.find("/>")? + 2;
+        let element = &rest[..end];
+        let key = "fill=\"rgba(";
+        let from = element.find(key)? + key.len();
+        let to = element[from..].find(')')? + from;
+        let mut parts = element[from..to].split(',');
+        let r = parts.next()?.trim().parse().ok()?;
+        let g = parts.next()?.trim().parse().ok()?;
+        let b = parts.next()?.trim().parse().ok()?;
+        Some(Color::rgb(r, g, b))
     }
 
     // -----------------------------------------------------------------------
