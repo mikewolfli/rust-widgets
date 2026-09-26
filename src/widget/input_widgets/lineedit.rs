@@ -568,29 +568,23 @@ impl Widget for LineEdit {
         self.focused && !self.read_only
     }
 
-    /// Reports `Error` while the field carries a refusal message, `Disabled` when it is inert.
+    /// Reports the **interaction** state: `Disabled` when inert, else pressed / hovered / focused.
     ///
-    /// # Why this is the control's own answer
+    /// # Why the refusal is no longer reported here
     ///
-    /// The preset themes declare ten `"<kind>:error"` overrides — `line_edit:error` among them —
-    /// and **no control in the crate reported `WidgetState::Error`**, so every one of those keys was
-    /// unreachable: a theme author could write the override, the manager would resolve it correctly
-    /// when asked, and no control would ever ask. This is the `:checked` defect recorded for
-    /// `CheckBox`/`Switch` in another state, and `line_edit` is the control that owns the fact that
-    /// makes it reachable: it already carries `error_text`, so "this field is invalid" is a question
-    /// it can answer rather than one a caller has to keep in step.
+    /// This used to return `Error` while the field carried a refusal message. That made the
+    /// refusal and the interaction compete for one value, and the interaction won whenever the
+    /// pointer was over the field — so `"line_edit:error"` stopped applying exactly when the user
+    /// moved the pointer onto the field to see what was wrong. The meaning moved to
+    /// [`Self::semantic_state`], which is orthogonal and so holds at the same time as `Hover`.
     ///
-    /// `Error` outranks `Hover`/`Focused` because the refusal is what the reader has to notice; it
-    /// does not outrank `Disabled`, since an inert field cannot be invalid in a way the user can act
-    /// on. The order matches `Switch`'s `Checked` branch and the trait default's documented
-    /// precedence.
+    /// `Disabled` still outranks everything: an inert field cannot be interacted with, so the
+    /// interaction channel is what describes it, and the meaning channel reports the refusal
+    /// separately.
     fn widget_state(&self) -> crate::style::WidgetState {
         use crate::style::WidgetState;
         if !self.base.is_enabled() {
             return WidgetState::Disabled;
-        }
-        if !self.decorations.error.is_empty() || self.is_over_limit() {
-            return WidgetState::Error;
         }
         if self.base.is_pressed() {
             WidgetState::Pressed
@@ -601,6 +595,18 @@ impl Widget for LineEdit {
         } else {
             WidgetState::Normal
         }
+    }
+
+    /// Reports the field's **meaning**: `Error` while it carries a refusal or is over its limit.
+    ///
+    /// The other half of the split [`Widget::widget_state`] documents. The two are independent, so
+    /// a hovered refusal keeps the hover fill **and** the error border — which is what the plan's
+    /// criterion asks for and what a single-valued chain could not express.
+    fn semantic_state(&self) -> crate::style::SemanticState {
+        if !self.decorations.error.is_empty() || self.is_over_limit() {
+            return crate::style::SemanticState::Error;
+        }
+        crate::style::SemanticState::None
     }
 }
 
@@ -917,7 +923,15 @@ impl Draw for LineEdit {
         let bg = style.background_color.unwrap_or(Color::rgb(255, 255, 255));
         context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), bg);
         // Draw border
-        if let Some(border_color) = style.border_color {
+        //
+        // The **border** answers to the meaning channel, the fill above to the interaction one.
+        // A refusal therefore keeps its outline while the pointer is over the field, which is the
+        // one moment the outline is what the user is looking for. When the control carries no
+        // meaning the border falls back to the interaction style's own colour, so a control with
+        // `semantic_state() == None` draws exactly as it did before the two channels were split.
+        let semantic_border =
+            crate::theme::resolved_semantic_border("line_edit", self.semantic_state());
+        if let Some(border_color) = semantic_border.or(style.border_color) {
             let bw = style.border_width.unwrap_or(0);
             if bw > 0 {
                 context.draw_rect_stroke(
@@ -1791,14 +1805,16 @@ mod tests {
         assert_eq!(read_only.text(), "secret");
     }
 
-    /// A field carrying a refusal message reports `Error`, and the preset's override reaches it.
+    /// A refusal travels the **meaning** channel, so it never competes with the interaction one.
     ///
     /// # The defect this pins
     ///
-    /// The preset themes declare ten `"<kind>:error"` overrides and **no control in the crate
-    /// reported `WidgetState::Error`** — so every one of those keys was a rule nothing could match.
-    /// The assertion is the state contract *and* the resulting style: the first half proves the
-    /// control asks the right question, the second proves the theme's answer arrives on the field.
+    /// The preset themes declare ten `"<kind>:error"` overrides, and the meaning used to be
+    /// reported from `widget_state()` — a single-valued chain the interaction also wanted. The
+    /// interaction won whenever the pointer was over the field, so `"line_edit:error"` stopped
+    /// applying exactly when the user moved onto the field to read the refusal. The meaning is now
+    /// orthogonal (`semantic_state`), so the first half of this test proves the control still asks
+    /// the question, and the second proves the theme's answer arrives on a border.
     ///
     /// # Why this is gated on `full_widgets`
     ///
@@ -1808,38 +1824,85 @@ mod tests {
     /// subject of the test does not exist there, which is what a profile gate has to say.
     #[cfg(full_widgets)]
     #[test]
-    fn a_refused_field_reports_error_and_takes_the_error_override() {
-        use crate::style::WidgetState;
+    fn a_refused_field_reports_the_error_meaning_and_takes_the_override() {
+        use crate::style::{SemanticState, WidgetState};
 
         let _theme_guard = crate::style::theme_test_guard();
         crate::widget::census::install_preset_appearances();
         let mut field = LineEdit::new(Rect::new(0, 0, 200, 24));
 
         assert_eq!(field.widget_state(), WidgetState::Normal, "a fresh field is at rest");
+        assert_eq!(field.semantic_state(), SemanticState::None, "and carries no meaning");
 
         field.set_error_text("Too long");
         assert_eq!(
-            field.widget_state(),
-            WidgetState::Error,
+            field.semantic_state(),
+            SemanticState::Error,
             "a field with a refusal message must say so, or the `:error` override is unreachable"
         );
-
-        // The theme resolves `line_edit:error` for that state — the whole point of reporting it.
-        let error_style = crate::style::resolved_theme_style_for("line_edit", Some("error"));
-        assert!(
-            error_style.is_some(),
-            "the preset must define `line_edit:error` for this to have a subject"
+        assert_eq!(
+            field.widget_state(),
+            WidgetState::Normal,
+            "but the interaction channel stays at rest: the refusal is not an interaction"
         );
 
-        // Clearing the message returns the field to rest, so the state is not latched.
+        // The theme resolves a border for that meaning — the whole point of reporting it.
+        let border = crate::theme::resolved_semantic_border("line_edit", field.semantic_state());
+        assert!(border.is_some(), "the preset must define a border on `line_edit:error`");
+
+        // Clearing the message returns the field to no meaning, so it is not latched.
         field.set_error_text("");
-        assert_eq!(field.widget_state(), WidgetState::Normal, "clearing the error restores rest");
+        assert_eq!(
+            field.semantic_state(),
+            SemanticState::None,
+            "clearing the error restores no meaning"
+        );
     }
 
-    /// Disabled outranks error: an inert field is not reportable as invalid.
+    /// BLUE24 §3.3 criterion 1: a hovered refusal keeps **both** channels at once.
+    ///
+    /// This is the assertion the single-valued chain could not satisfy: `widget_state()` was the
+    /// only way to say "error", so a hovered field could report either the hover or the error but
+    /// never both. With the channels split, the fill follows the hover and the border follows the
+    /// meaning in the same frame.
+    #[cfg(full_widgets)]
+    #[test]
+    fn a_hovered_refusal_keeps_hover_fill_and_error_border() {
+        use crate::event::Event;
+        use crate::style::{SemanticState, WidgetState};
+
+        let _theme_guard = crate::style::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        let mut field = LineEdit::new(Rect::new(0, 0, 200, 24));
+        field.set_error_text("Too long");
+
+        field.handle_event(&Event::MouseEnter { pos: crate::core::Point::new(10, 10) });
+
+        assert_eq!(
+            field.widget_state(),
+            WidgetState::Hover,
+            "the fill answers to the interaction, so a hovered field reports hover"
+        );
+        assert_eq!(
+            field.semantic_state(),
+            SemanticState::Error,
+            "and the meaning survives the hover, which is the defect being pinned"
+        );
+
+        // Both channels reach the theme in the same frame: the hover fill and the error border.
+        let hover_style =
+            crate::theme::resolved_theme_style_for_state("line_edit", WidgetState::Hover);
+        assert!(hover_style.is_some(), "the preset defines `line_edit:hover`");
+        assert!(
+            crate::theme::resolved_semantic_border("line_edit", field.semantic_state()).is_some(),
+            "and a border for `line_edit:error` at the same time"
+        );
+    }
+
+    /// The interaction channel still reports `Disabled` for an inert field, refusal or not.
     #[test]
     fn a_disabled_field_reports_disabled_even_with_a_refusal_message() {
-        use crate::style::WidgetState;
+        use crate::style::{SemanticState, WidgetState};
 
         let mut field = LineEdit::new(Rect::new(0, 0, 200, 24));
         field.set_error_text("Too long");
@@ -1848,6 +1911,11 @@ mod tests {
             field.widget_state(),
             WidgetState::Disabled,
             "a disabled field cannot be acted on, so its state must say disabled"
+        );
+        assert_eq!(
+            field.semantic_state(),
+            SemanticState::Error,
+            "while the meaning is still reported on its own channel"
         );
     }
 }

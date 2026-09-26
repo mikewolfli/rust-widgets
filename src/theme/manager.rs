@@ -297,6 +297,18 @@ impl ThemeManager {
     ///
     /// `None` means "no state-specific treatment", which is the resting state.
     ///
+    /// # The three semantic variants do not arrive here from a control's interaction
+    ///
+    /// [`WidgetState::Error`], [`WidgetState::Warning`] and [`WidgetState::Success`] keep their
+    /// entries in the `"<kind>:<state>"` table, but no control returns them from
+    /// [`crate::widget::Widget::widget_state`] any more (its default and every override report an
+    /// interaction). A control that carries a meaning reports it through
+    /// [`crate::widget::Widget::semantic_state`] instead, and the meaning resolves to a border
+    /// via [`resolved_semantic_border`] rather than to a whole style through this method. So a
+    /// caller that reaches here through the interaction path never matches those three keys; the
+    /// keys remain so the theme files that name them keep loading, and the tooling gate
+    /// `check_semantic_state_is_not_in_the_interaction_chain` is what keeps it that way.
+    ///
     /// Precedence is deliberate: a forced high-contrast pair is applied **last**, so
     /// neither a theme override nor a state variant can reintroduce a low-contrast
     /// colour. A user who has asked for maximum contrast must get it.
@@ -673,6 +685,36 @@ pub fn resolved_theme_style_for_state(
     let manager = global_theme_manager();
     manager.current_theme()?;
     Some(manager.resolve_style_for_state(kind_name, Some(state)))
+}
+
+/// The border colour a control's [`SemanticState`](crate::style::SemanticState) asks for, or
+/// `None` when it carries no meaning.
+///
+/// # Why the meaning resolves to a colour rather than to a whole style
+///
+/// This is the border half of the split [`SemanticState`](crate::style::SemanticState) documents:
+/// a theme may name `"line_edit:error"` and that key carries a **border**, but the control's
+/// **fill** must keep answering to the interaction (`Hover`, `Pressed`, …). Returning one colour
+/// rather than a merged style is what keeps the two channels from overwriting each other: a
+/// caller takes the fill from [`resolved_theme_style_for_state`] and this colour for the outline.
+///
+/// The name is resolved through the same `"<kind>:<state>"` vocabulary as every other state key
+/// (`SemanticState::state_suffix`), so a theme author writes one form of override and the three
+/// semantic meanings are reachable without a second key convention.
+///
+/// `None` when no theme is active, when the semantic state is `None`, or when the theme's
+/// override does not name a border colour — in every case the caller keeps the border its
+/// interaction style already gave it.
+pub fn resolved_semantic_border(
+    kind_name: &str,
+    semantic: crate::style::SemanticState,
+) -> Option<Color> {
+    let suffix = semantic.state_suffix()?;
+    let manager = global_theme_manager();
+    let theme = manager.current_theme()?;
+    let key = format!("{kind_name}:{suffix}");
+    let token = theme.overrides.styles.get(&key)?;
+    token.border
 }
 
 /// A semantic state a control can be in, mapped 1:1 onto `theme.colors`.

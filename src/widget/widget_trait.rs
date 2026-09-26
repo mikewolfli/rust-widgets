@@ -411,8 +411,22 @@ pub trait Widget: EventHandler + Any {
         }
     }
 
-    /// Advances this control's self-driven animation by `delta_ms`, reporting whether
-    /// another frame is needed.
+    /// The [`SemanticState`] this control carries, independent of its interaction state.
+    ///
+    /// # Why this is a second method rather than more `widget_state` variants
+    ///
+    /// A refusal and a hover are not alternatives — a field can be both at once, and it must look
+    /// like both. [`Self::widget_state`] is a single value because it selects one colour set; a
+    /// meaning has to **overlay** an interaction rather than replace it, which is the same reason
+    /// [`StateOverlay`](crate::style::StateOverlay) exists for the fill. This is that split for
+    /// the border: the fill answers to the interaction, the border to the meaning.
+    ///
+    /// Defaults to [`SemanticState::None`], so the 188 controls need not change at once — the
+    /// same additive step [`Self::widget_state`] took (principle #21). A control whose result is
+    /// `None` draws exactly as it did before this method existed.
+    fn semantic_state(&self) -> crate::style::SemanticState {
+        crate::style::SemanticState::None
+    }
     ///
     /// # Why this is on the trait
     ///

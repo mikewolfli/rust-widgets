@@ -116,9 +116,9 @@ pub use crate::style::HighContrastMode;
 /// race against, and holding this would only couple unrelated code.
 pub use manager::theme_test_guard;
 pub use manager::{
-    global_high_contrast, global_theme_manager, resolved_theme_style, resolved_theme_style_for,
-    resolved_theme_style_for_state, semantic_color, set_global_high_contrast, SemanticColor,
-    ThemeManager,
+    global_high_contrast, global_theme_manager, resolved_semantic_border, resolved_theme_style,
+    resolved_theme_style_for, resolved_theme_style_for_state, semantic_color,
+    set_global_high_contrast, SemanticColor, ThemeManager,
 };
 pub use preset_states::preset_state_key_count;
 pub use types::{

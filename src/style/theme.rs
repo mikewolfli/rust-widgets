@@ -80,7 +80,7 @@ pub fn resolved_theme_style_for(
 /// a fabricated lock that would serialise tests for no reason.
 #[cfg(device_profile)]
 pub fn theme_test_guard() -> crate::compat::MutexGuard<'static, ()> {
-    crate::style::theme_test_guard()
+    crate::theme::theme_test_guard()
 }
 
 /// No theme registry in this profile, so there is nothing for a rendering test to serialise
