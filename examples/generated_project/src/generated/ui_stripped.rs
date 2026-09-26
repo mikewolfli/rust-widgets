@@ -13,14 +13,14 @@ use rust_widgets::widget::Widget;
 
 pub fn build_ui() {
     let mut root = rust_widgets::widget::Window::new(String::from("Generated Demo"), Rect::new(0, 0, 640, 480));
-    let mut n_0 = rust_widgets::widget::Label::new(String::from("Generated from a project document"), Rect::new(0, 0, 640, 156));
-    let mut n_1 = {
+    let n_0 = rust_widgets::widget::Label::new(String::from("Generated from a project document"), Rect::new(0, 0, 640, 156));
+    let n_1 = {
         let mut n_1 = rust_widgets::widget::Button::new(String::from("Go"), Rect::new(0, 162, 640, 156));
         // enabled
         n_1.set_enabled(false);
         n_1
     };
-    let mut n_2 = {
+    let n_2 = {
         let mut n_2 = rust_widgets::widget::Slider::new(Rect::new(0, 324, 640, 156));
         // value
         n_2.set_value(40);

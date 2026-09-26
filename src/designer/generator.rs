@@ -591,7 +591,7 @@ fn emit_stripped_mode(
     // because `base_mut()` *does* need it. Both halves are pinned by
     // `tests/generated_artifacts_are_lint_clean_test.rs`.)
     for (path, expr, _setters) in nodes.iter().skip(1) {
-        body.push_str(&format!("    let mut {} = {expr};\n", binding_name(path)));
+        body.push_str(&format!("    let {} = {expr};\n", binding_name(path)));
     }
     body.push('\n');
 
