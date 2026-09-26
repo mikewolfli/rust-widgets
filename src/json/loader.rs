@@ -2423,7 +2423,7 @@ mod tests {
     #[test]
     fn a_loaded_node_is_styled_from_the_active_theme() {
         use crate::theme::{global_theme_manager, AppearanceMode, Theme};
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
 
         // Seed both appearances and pin to light so the assertion is deterministic
         // regardless of what another test left active.
@@ -2452,7 +2452,7 @@ mod tests {
     #[test]
     fn switching_appearance_changes_the_resolved_style() {
         use crate::theme::{global_theme_manager, resolved_theme_style, AppearanceMode, Theme};
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         {
             let mut manager = global_theme_manager();
             manager.register_theme(Theme::default());
@@ -2486,7 +2486,7 @@ mod tests {
     #[test]
     fn the_resolved_style_carries_the_theme_font() {
         use crate::theme::{global_theme_manager, resolved_theme_style, AppearanceMode, Theme};
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         {
             let mut manager = global_theme_manager();
             manager.register_theme(Theme::default());
@@ -2508,7 +2508,7 @@ mod tests {
     #[test]
     fn an_explicit_json_key_wins_over_the_theme() {
         use crate::style::global_stylesheet_manager;
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         let _sheet_guard = crate::style::stylesheet_test_guard();
         global_stylesheet_manager().clear();
         let theme_front = {
@@ -2538,7 +2538,7 @@ mod tests {
         use crate::theme::{
             resolved_theme_style, Theme, ThemeOverrides, ThemeStyleToken, WidgetRole,
         };
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         let _sheet_guard = crate::style::stylesheet_test_guard();
         global_stylesheet_manager().clear();
 

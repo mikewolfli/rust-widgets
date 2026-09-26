@@ -910,7 +910,7 @@ mod tests {
     #[test]
     #[cfg(device_profile)]
     fn a_panels_fill_moves_with_the_appearance() {
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         crate::widget::census::install_preset_appearances();
         let rect = Rect::new(0, 0, 100, 50);
 

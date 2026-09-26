@@ -929,7 +929,7 @@ mod tests {
     #[test]
     fn a_new_image_arrives_rather_than_swapping_between_frames() {
         use crate::widget::svg::render_to_svg;
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
 
         let mut g = make_gallery(Rect::new(0, 0, 400, 300));
         assert_eq!(g.reveal_progress(), 1.0, "a seeded gallery is already settled");

@@ -529,7 +529,7 @@ mod tests {
                 .collect()
         }
 
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         // The presets must exist before an appearance can be selected. `set_appearance` reports
         // whether it found a theme of that appearance and returns `false` when it did not — and
         // this test used to ignore that return value, so both renders happened under whatever

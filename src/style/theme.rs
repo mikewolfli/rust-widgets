@@ -62,6 +62,42 @@ pub fn resolved_theme_style_for(
     None
 }
 
+/// Serialises a **rendering test** against every other one in the process, and is a no-op value
+/// where the build has no theme.
+///
+/// # Why the guard lives here and not only in `crate::theme`
+///
+/// The rendering tests take this to stop a concurrent test that switches the appearance from
+/// changing a frame underneath them, and it has to exist in **every** profile those tests compile
+/// in. It lived only in `crate::theme`, which is gated on `device_profile` — so on `mini`/`embedded`
+/// every call site failed to compile with `cannot find theme in crate`, which is the same
+/// module-gate mismatch [`resolved_theme_style`] exists to remove, and the reason
+/// `tools/check_profiles.sh` / `check_behavior_matrix.sh` reported 22 errors at HEAD.
+///
+/// On a device profile it forwards to the theme's own guard, so there is exactly one lock and no
+/// chance of two tests serialising against different mutexes. Off one there is no theme registry to
+/// race over, so the returned guard is a value that does nothing — which is the truthful answer, not
+/// a fabricated lock that would serialise tests for no reason.
+#[cfg(device_profile)]
+pub fn theme_test_guard() -> crate::compat::MutexGuard<'static, ()> {
+    crate::style::theme_test_guard()
+}
+
+/// No theme registry in this profile, so there is nothing for a rendering test to serialise
+/// against; see [`theme_test_guard`].
+///
+/// Still returns a real guard on a real mutex rather than a fabricated no-op type, so the return
+/// type is identical in every profile and a test file needs no `cfg` of its own. The mutex comes
+/// from [`crate::compat`], which is the crate's own answer to "the same type in every profile" --
+/// `std`'s where there is one and a spin lock under `alloc_frugal` -- and it is a `static` built
+/// with `compat`'s own const-constructible `OnceLock`, so no `Box`, no `std::sync`, and no `cfg`
+/// reaches the callers.
+#[cfg(not(device_profile))]
+pub fn theme_test_guard() -> crate::compat::MutexGuard<'static, ()> {
+    static GUARD: crate::compat::LazyMutex = crate::compat::LazyMutex::new();
+    GUARD.lock()
+}
+
 // ── The theme-facing types and lookups a control may name ───────────────────────
 //
 // A control that paints a *state* (a banner severity, a validation message, a completed

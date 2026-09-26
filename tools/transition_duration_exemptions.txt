@@ -71,3 +71,19 @@ src/widget/draw_bridge.rs    the per-frame sample step of the paint path, not a 
 # accessor, and both accessors are reached from that control's own `tick`.
 src/widget/display_widgets/progress_circle.rs    no-theme fallback for a looping animation; the themed path reads theme.motion.slow
 src/widget/display_widgets/skeleton_loader.rs    no-theme fallback for a looping animation; the themed path reads theme.motion.slow
+
+# ─────────────────────────────────────────────────────────────────────────────
+# This entry is an IDLE DWELL, not a transition duration.
+#
+# `SCROLLBAR_IDLE_DELAY_MS` is how long the bar stays fully opaque after the last interaction
+# before it *begins* to fade. It is the same distinction as the tooltip entry above: a delay before
+# a state change, not the duration of one. The fade itself is priced by the theme — the driver's
+# `MotionSlot` supplies the transition, and its value flows through `theme.motion` the way every
+# other control's does — so the motion still follows a reduced-motion preference or a re-tempoed
+# theme. What the theme does not price, and should not, is how long the user's hand may rest before
+# the bar considers itself idle; folding that into `motion` would make "the animation is fast" and
+# "the bar hides promptly" the same setting.
+#
+# Verified: the constant is read only in the idleness accumulator that decides *when* to aim the
+# opacity driver down; the driver's own duration comes from its `MotionSlot`.
+src/widget/display_widgets/scrollbar.rs    an idle dwell before the fade begins, not the fade's duration

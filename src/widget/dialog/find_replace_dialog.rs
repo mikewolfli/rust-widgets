@@ -1095,7 +1095,7 @@ mod tests {
     /// every other reader.
     #[test]
     fn a_shown_find_bar_renders_differently_in_light_and_dark() {
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         {
             let mut manager = crate::style::theme_manager();
             manager.register_theme(crate::theme::Theme::default());

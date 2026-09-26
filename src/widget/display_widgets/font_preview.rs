@@ -366,7 +366,7 @@ mod tests {
     #[test]
     #[cfg(all(device_profile, feature = "desktop"))]
     fn the_panel_follows_the_appearance() {
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         crate::widget::census::install_preset_appearances();
         let rect = Rect::new(0, 0, 300, 200);
         let size = Size::new(300, 200);

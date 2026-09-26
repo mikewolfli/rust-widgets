@@ -1432,7 +1432,7 @@ mod tests {
     fn the_fade_reaches_the_painted_ink() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         use crate::core::Size;
         use crate::render::{PaintBackend, RenderContext, SvgPaintBackend};
 

@@ -1770,7 +1770,7 @@ mod tests {
     fn tabwidget_svg_output_via_render_to_svg() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
         tw.add_tab("Home".to_string(), None);
         tw.add_tab("Settings".to_string(), None);

@@ -676,7 +676,7 @@ mod tests {
     fn a_half_rated_star_is_painted_with_a_clip() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let mut r = Rating::new(Rect::new(0, 0, 200, 40));
         r.set_rating_exact(2.5);
         let svg = crate::widget::svg::render_to_svg(&mut r);
@@ -914,7 +914,7 @@ mod tests {
     fn the_rating_paints_a_row_rather_than_a_panel() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let mut r = Rating::new(crate::widget::census::CENSUS_RECT);
         let svg = crate::widget::svg::render_to_svg(&mut r);
         let row = r.star_row();

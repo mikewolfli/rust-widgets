@@ -800,7 +800,7 @@ mod tests {
     /// the resting and interactive colours, and at the end it has settled on the interactive one.
     #[test]
     fn the_interaction_transition_moves_the_fill_across_three_frames() {
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         // The presets carry the `toggle_button:hover` / `:pressed` overrides, so a build with no
         // theme would have nothing to move the fill *toward* — and this test would be asserting a
         // property of a palette that is not installed.

@@ -1055,7 +1055,7 @@ mod tests {
     fn the_arrow_glyph_is_centred_in_the_column_the_layout_reported() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let mut split = SplitButton::new("Run", Rect::new(0, 0, 240, 120));
         let svg = crate::widget::svg::render_to_svg(&mut split);
         let boxes = text_run_boxes(&svg);

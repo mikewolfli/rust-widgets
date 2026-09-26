@@ -771,7 +771,7 @@ mod tests {
     fn the_reveal_strip_is_a_fixed_band_at_the_top_edge() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let mut rc = make_refresh_control();
         rc.set_pull_distance(dimensions::REFRESH_INDICATOR_HEIGHT as f32);
         let rect = rc.geometry();

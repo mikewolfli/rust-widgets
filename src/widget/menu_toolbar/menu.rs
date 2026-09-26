@@ -1164,7 +1164,7 @@ mod tests {
     fn a_menu_row_is_centred_on_its_own_line_box() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let mut menu = Menu::new("File", Rect::new(0, 0, 200, 120));
         menu.add_action("Open");
         menu.add_action("Save");
@@ -1591,7 +1591,7 @@ mod tests {
         // The two renders are compared to each other, so the appearance has to be the same for both
         // halves: a concurrent theme switch between them would make this fail for a reason that has
         // nothing to do with direction.
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         let mut untouched = context_menu();
         untouched.open_at(Point::new(0, 0), Rect::new(0, 0, 400, 400));
         let mut ltr = context_menu();

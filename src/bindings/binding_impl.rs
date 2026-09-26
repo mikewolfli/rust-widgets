@@ -3330,7 +3330,7 @@ mod tests {
     fn c_abi_theme_entry_points_round_trip() {
         use std::ffi::{CStr, CString};
 
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         let c = |s: &str| CString::new(s).expect("no interior NUL");
 
         unsafe {
@@ -3366,7 +3366,7 @@ mod tests {
     fn c_abi_high_contrast_reaches_a_new_control() {
         use std::ffi::CString;
 
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         crate::theme::set_global_high_contrast(crate::style::HighContrastMode::None);
 
         let c = |s: &str| CString::new(s).expect("no interior NUL");

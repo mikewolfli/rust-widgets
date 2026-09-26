@@ -619,7 +619,7 @@ fn the_syntax_palette_has_a_dark_counterpart_that_reads_on_its_own_ground() {
 /// near-white editor inside a dark window.
 #[test]
 fn a_fresh_editor_picks_the_palette_that_matches_the_active_appearance() {
-    let _guard = crate::theme::theme_test_guard();
+    let _guard = crate::style::theme_test_guard();
     {
         let mut manager = crate::theme::global_theme_manager();
         manager.register_theme(crate::theme::Theme::default());

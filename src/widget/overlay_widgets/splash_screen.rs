@@ -573,7 +573,7 @@ mod tests {
     #[test]
     fn fade_out_diminishes_the_screen_and_a_default_one_is_untouched() {
         use crate::widget::svg::render_to_svg;
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
 
         // A screen that was never asked to fade is fully opaque and owes no frames.
         let mut fresh = screen(320, 240);

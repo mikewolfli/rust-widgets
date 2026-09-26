@@ -635,7 +635,7 @@ mod tests {
     #[test]
     #[cfg(all(device_profile, feature = "desktop"))]
     fn the_empty_state_follows_the_appearance() {
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         crate::widget::census::install_preset_appearances();
         let rect = Rect::new(0, 0, 320, 240);
         let size = crate::core::Size::new(320, 240);

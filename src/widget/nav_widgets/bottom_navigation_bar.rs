@@ -562,7 +562,7 @@ mod tests {
     fn the_selected_tab_is_marked_by_a_pill_not_an_underline() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let mut bar = make_bar();
         bar.set_selected_index(1);
         let svg = render_to_svg(&mut bar);

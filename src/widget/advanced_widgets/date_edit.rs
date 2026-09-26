@@ -1104,7 +1104,7 @@ mod tests {
     #[test]
     fn the_display_format_pattern_is_applied_to_the_painted_value() {
         use crate::widget::svg::{render_to_svg, text_subpath_count};
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
 
         let make = |format: &str| {
             let mut editor = DateEdit::new(Rect::new(0, 0, 200, 30));
@@ -1257,7 +1257,7 @@ mod tests {
     #[test]
     fn the_calendar_popup_is_actually_painted() {
         use crate::widget::svg::{render_to_svg, text_subpath_count};
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
 
         let make = |popup: bool| {
             let mut editor = DateEdit::new(Rect::new(0, 0, 200, 30));

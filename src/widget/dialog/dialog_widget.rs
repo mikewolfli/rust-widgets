@@ -542,7 +542,7 @@ mod tests {
     fn dialog_with_a_title_paints_chrome() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         // Both are opened and settled first: a dialog that has not been shown has not begun to
         // reveal, and paints nothing at all -- so an unopened pair would compare two empty
         // documents and the title difference would be invisible for the wrong reason.
@@ -586,7 +586,7 @@ mod tests {
     fn a_modal_dialog_dims_the_page_behind_it() {
         use crate::style::LayerColor;
 
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         crate::widget::census::install_preset_appearances();
 
         for appearance in [crate::theme::AppearanceMode::Light, crate::theme::AppearanceMode::Dark]

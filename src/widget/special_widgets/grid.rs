@@ -546,7 +546,7 @@ mod tests {
     #[test]
     fn a_caller_can_ask_for_the_separator_colour_that_used_to_be_the_sentinel() {
         use crate::widget::svg::render_to_svg;
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
 
         // The sentinel's own value, in both the accessor and the property route.
         use crate::widget::capability::types::CapabilityValue as V;

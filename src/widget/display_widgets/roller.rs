@@ -679,7 +679,7 @@ mod tests {
     fn the_roller_paints_a_wheel_rather_than_a_panel() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         // A 400 px control with a 140 px wheel: the fill must be the wheel, so the
         // band's own rectangle is what the snapshot starts from rather than the cell.
         let mut roller =

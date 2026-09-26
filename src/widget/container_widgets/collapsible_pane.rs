@@ -727,7 +727,7 @@ mod tests {
         // appearance and hold the registry guard: otherwise a concurrently-running test can switch
         // the theme between the derivation and the draw, and the two halves of this one assertion
         // would be comparing different appearances.
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         crate::widget::census::install_preset_appearances();
         crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
         let mut cp = make_pane();

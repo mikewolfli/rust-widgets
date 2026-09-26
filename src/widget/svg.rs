@@ -405,7 +405,7 @@ mod tests {
     fn the_emitted_path_reproduces_the_glyph_box_exactly() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         use crate::render::text::estimate_cluster_advance;
         for size in [11.0f32, 12.0, 13.0, 14.0, 20.0, 48.0] {
             let font = Font::new("Arial", size, false, false);
@@ -458,7 +458,7 @@ mod tests {
     fn text_subpath_count_separates_a_drawn_string_from_an_empty_one() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let font = Font::new("Arial", 14.0, false, false);
         let paint = |text: &str| {
             let mut backend = crate::render::SvgPaintBackend::new(Size::new(200, 60));

@@ -1512,7 +1512,7 @@ mod tests {
     /// from overlapping when a default button is also focused.
     #[test]
     fn a_default_button_is_drawn_with_an_emphasis_ring() {
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let mut plain = make_button();
         let plain_svg = crate::widget::svg::render_to_svg(&mut plain);
 
@@ -1893,7 +1893,7 @@ mod tests {
     fn the_progress_changes_what_is_painted() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let rect = Rect::new(0, 0, 120, 32);
         let mut resting = Button::new("Go".to_string(), rect);
         let rest_svg = crate::widget::svg::render_to_svg(&mut resting);

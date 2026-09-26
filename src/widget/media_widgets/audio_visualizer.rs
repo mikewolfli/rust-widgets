@@ -439,7 +439,7 @@ mod tests {
     #[test]
     #[cfg(all(device_profile, feature = "desktop"))]
     fn the_background_defaults_to_the_theme_and_still_honours_an_override() {
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         crate::widget::census::install_preset_appearances();
 
         let themed = |appearance| -> Color {

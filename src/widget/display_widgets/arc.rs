@@ -511,7 +511,7 @@ mod tests {
     fn arc_value_is_drawn_only_when_it_fits_in_the_ring_hole() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         /// The ink the reading leaves, as `(subpaths, ink box)`.
         fn reading_ink(arc: &mut Arc, side: u32) -> (usize, Option<(i32, i32, i32, i32)>) {
             let mut backend = SoftwarePaintBackend::new(Size::new(side, side), 1.0);

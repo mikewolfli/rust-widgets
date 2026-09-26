@@ -738,7 +738,7 @@ mod tests {
     fn tracking_widens_a_measurement_by_one_gap_per_cluster_boundary() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let mut backend = crate::render::SvgPaintBackend::new(crate::core::Size::new(200, 40));
         let context = crate::render::RenderContext::new(&mut backend);
         let plain = Font::default();

@@ -1104,7 +1104,7 @@ mod tests {
     fn drawing_produces_svg() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         use crate::widget::svg::render_to_svg;
 
         let mut otp = otp();

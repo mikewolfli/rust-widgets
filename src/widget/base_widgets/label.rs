@@ -666,7 +666,7 @@ mod tests {
     fn the_vertical_fix_leaves_the_horizontal_alignment_alone() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let rect = Rect::new(0, 0, 200, 40);
         let ink_left_of = |alignment: Alignment| -> i32 {
             let mut label = Label::new("Sample".to_string(), rect);
@@ -703,7 +703,7 @@ mod tests {
     #[test]
     #[cfg(device_profile)]
     fn the_ink_is_legible_on_each_appearance() {
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         crate::widget::census::install_preset_appearances();
 
         for appearance in [AppearanceMode::Dark, AppearanceMode::Light] {
@@ -752,7 +752,7 @@ mod tests {
     #[test]
     #[cfg(device_profile)]
     fn the_disabled_veil_recedes_toward_the_surface_on_either_appearance() {
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         crate::widget::census::install_preset_appearances();
 
         for appearance in [AppearanceMode::Dark, AppearanceMode::Light] {

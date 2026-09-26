@@ -1200,7 +1200,7 @@ mod tests {
     fn the_slots_are_drawn_on_either_side_of_the_value() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let mut sb = SpinBox::new(Rect::new(0, 0, 200, 24));
         sb.set_value(7);
         sb.set_prefix("$".to_string());
@@ -1244,7 +1244,7 @@ mod tests {
     fn a_prefix_wide_enough_to_fill_the_field_leaves_the_value_no_room() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let mut sb = SpinBox::new(Rect::new(0, 0, 200, 24));
         sb.set_value(7);
         assert_eq!(sb.value_text(), "7");
@@ -1693,7 +1693,7 @@ mod tests {
     fn an_rtl_spin_box_mirrors_its_step_column_and_its_value() {
         use crate::core::TextDirection;
         use crate::widget::svg::render_to_svg;
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
 
         let band = |sb: &SpinBox| sb.row_band();
         let mut ltr = SpinBox::new(Rect::new(0, 0, 240, 120));

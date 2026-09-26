@@ -563,7 +563,7 @@ mod tests {
     fn a_tab_caption_sits_on_its_tabs_line_box() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let mut tv = make_tab_view();
         tv.add_tab("Alpha", None, None::<&str>);
         tv.add_tab("Beta", None, None::<&str>);

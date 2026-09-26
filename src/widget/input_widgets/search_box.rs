@@ -761,7 +761,7 @@ mod tests {
     fn the_search_box_paints_a_field_rather_than_a_panel() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let mut sb = SearchBox::new(crate::widget::census::CENSUS_RECT);
         let svg = crate::widget::svg::render_to_svg(&mut sb);
         let field = sb.field_rect();

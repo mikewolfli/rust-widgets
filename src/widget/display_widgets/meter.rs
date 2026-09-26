@@ -1021,7 +1021,7 @@ mod tests {
         // the two renders and the label pixels would match neither. It failed roughly one run in
         // sixteen before this line existed, which is the same class of defect the guard was added for
         // across the rendering tests -- one of them was simply missed.
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         let size = Size::new(200, 200);
         let mut without = Meter::new(Rect::new(0, 0, 200, 200));
         without.set_tick_count(5);
@@ -1145,7 +1145,7 @@ mod tests {
         // profiles have `theme_manager()` as a placeholder, so there is nothing to serialise against and
         // no guard to take.
         #[cfg(device_profile)]
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         let mut meter = Meter::new(Rect::new(0, 0, 200, 200));
         meter.set_value(72);
         meter.set_unit("°C");

@@ -529,7 +529,7 @@ mod tests {
     fn cupertino_segmented_control_disabled_renders_differently() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let mut sc = CupertinoSegmentedControl::new(Rect::new(0, 0, 300, 32));
         sc.set_segments(vec!["A".to_string(), "B".to_string()]);
         let enabled_svg = render_to_svg(&mut sc);

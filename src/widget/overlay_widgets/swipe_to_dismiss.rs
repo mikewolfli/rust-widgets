@@ -559,7 +559,7 @@ mod tests {
     #[test]
     #[cfg(device_profile)]
     fn a_dismiss_slides_out_across_three_frames() {
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         crate::widget::census::install_preset_appearances();
         let rect = Rect::new(0, 0, 200, 50);
         let mut sw = SwipeToDismiss::new(rect);

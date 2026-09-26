@@ -590,7 +590,7 @@ mod tests {
     #[test]
     #[cfg(device_profile)]
     fn a_checked_radio_keeps_its_label_legible_on_the_page() {
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         crate::widget::census::install_preset_appearances();
 
         for appearance in [crate::theme::AppearanceMode::Light, crate::theme::AppearanceMode::Dark]

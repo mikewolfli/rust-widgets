@@ -964,7 +964,7 @@ mod tests {
     #[test]
     #[cfg(all(device_profile, feature = "desktop"))]
     fn a_selected_cell_is_painted_as_selected() {
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         crate::widget::census::install_preset_appearances();
         crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
 

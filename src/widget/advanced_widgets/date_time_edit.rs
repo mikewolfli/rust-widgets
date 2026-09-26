@@ -929,7 +929,7 @@ mod tests {
     #[test]
     fn the_calendar_popup_is_actually_painted() {
         use crate::widget::svg::{render_to_svg, text_subpath_count};
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
 
         let make = |popup: bool| {
             let mut editor = DateTimeEdit::new(Rect::new(0, 0, 280, 30));

@@ -681,7 +681,7 @@ mod tests {
     #[test]
     #[cfg(device_profile)]
     fn the_scrim_composites_darker_than_the_backdrop() {
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         for appearance in [crate::theme::AppearanceMode::Dark, crate::theme::AppearanceMode::Light]
         {
             crate::theme::global_theme_manager().set_appearance(appearance);
@@ -710,7 +710,7 @@ mod tests {
     #[test]
     #[cfg(device_profile)]
     fn the_two_appearances_do_not_share_one_scrim_number() {
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         let scrim_of = |appearance| {
             crate::theme::global_theme_manager().set_appearance(appearance);
             crate::style::theme_manager()

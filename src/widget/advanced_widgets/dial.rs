@@ -644,7 +644,7 @@ mod tests {
     fn dial_notch_ring_is_drawn_and_follows_the_target() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         fn line_count(visible: bool, target: f64) -> usize {
             let mut d = Dial::new(Rect::new(0, 0, 240, 120));
             d.set_notches_visible(visible);

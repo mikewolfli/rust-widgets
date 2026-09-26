@@ -702,7 +702,7 @@ mod tests {
     fn a_right_to_left_bar_mirrors_both_affordances() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         fn glyph_xs(svg: &str) -> (i32, i32) {
             let mut min = i32::MAX;
             let mut max = i32::MIN;
@@ -810,7 +810,7 @@ mod tests {
         // Both halves are rendered and compared, so pin the appearance across them as every other
         // two-render comparison in the crate does; otherwise a concurrent theme switch between the
         // two renders fails this for a reason unrelated to direction.
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         let mut untouched = make_app_bar();
         untouched.set_show_back(true);
         untouched.set_action_text("Save");

@@ -677,7 +677,7 @@ mod tests {
     fn bar_chart_renders_axis_value_labels_from_the_shared_engine() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let mut bc = BarChart::new(Rect::new(0, 0, 300, 200));
         bc.set_bars(vec![BarEntry::new("A", 0.0), BarEntry::new("B", 100.0)]);
         bc.set_value_range(Some(0.0), Some(100.0));

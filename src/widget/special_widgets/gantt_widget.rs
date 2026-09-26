@@ -760,7 +760,7 @@ mod tests {
     #[test]
     fn a_milestone_is_a_diamond_rather_than_a_bar() {
         use crate::widget::svg::render_to_svg;
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
 
         let milestone = GanttTask::milestone("m1", "Sign-off", 10);
         assert!(milestone.milestone, "the constructor marks it");
@@ -849,7 +849,7 @@ mod tests {
     #[test]
     fn the_now_line_is_drawn_only_where_it_belongs() {
         use crate::widget::svg::render_to_svg;
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
 
         let tasks = || vec![GanttTask::new("t1", "Design", 0, 10, 100)];
 
@@ -892,7 +892,7 @@ mod tests {
     #[test]
     fn a_dependency_draws_an_elbow_and_a_dangling_one_is_skipped() {
         use crate::widget::svg::render_to_svg;
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
 
         let linked = || {
             vec![

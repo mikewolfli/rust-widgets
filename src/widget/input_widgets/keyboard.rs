@@ -785,7 +785,7 @@ mod tests {
         // The key fills are derived from the active theme, so pin the appearance and hold the
         // registry guard; otherwise a concurrently-running test can switch the theme between the
         // resting and pressed reads and the comparison is of two different appearances.
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         crate::widget::census::install_preset_appearances();
         crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
         let rect = Rect::new(0, 0, 320, 160);

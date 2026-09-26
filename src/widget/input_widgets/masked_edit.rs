@@ -1077,7 +1077,7 @@ mod tests {
     fn the_ink_is_vertically_centred_in_the_field() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let mut me = MaskedEdit::new(Rect::new(0, 0, 240, 120));
         me.set_mask("000-0000");
         me.set_text("5551234");
@@ -1139,7 +1139,7 @@ mod tests {
     /// starts failing for a reason that has nothing to do with it.
     #[test]
     fn masked_edit_body_ink_is_legible_on_its_own_field() {
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         // Whatever this test does, the process goes back to the light default on the way out.
         struct RestoreOnDrop;
         impl Drop for RestoreOnDrop {

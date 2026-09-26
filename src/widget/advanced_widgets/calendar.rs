@@ -1122,7 +1122,7 @@ mod tests {
     #[test]
     fn the_vertical_header_paints_week_numbers_and_yields_its_room() {
         use crate::widget::svg::{render_to_svg, text_subpath_count};
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
 
         let make = |vertical: bool| {
             let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
@@ -1514,7 +1514,7 @@ mod tests {
     fn a_weekday_heading_is_centred_in_its_column() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let rect = Rect::new(0, 0, 240, 120);
         let mut cal = Calendar::new(rect);
         let hdr = cal.day_header_rect();

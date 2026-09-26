@@ -1535,7 +1535,7 @@ mod tests {
     fn cupertino_switch_carries_the_ios_geometry() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let material = Switch::new(Rect::new(0, 0, 240, 120));
         let mut cupertino = CupertinoSwitch::new(Rect::new(0, 0, 240, 120));
 

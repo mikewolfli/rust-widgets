@@ -835,7 +835,7 @@ mod tests {
         // whichever test runs next, and a test that compares two appearances can observe this one's
         // leftover as its own. That is the failure mode that made `display_widgets`'s slider halo
         // assertion fail only in a batch (see its own note).
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         // Theming is what installs the touch target, so the test installs and applies one the way
         // the runtime does before registering a control. Reading it off an un-themed control would
         // assert the wrong precondition — the point of the mechanism is that the *platform* supplies
@@ -888,7 +888,7 @@ mod tests {
     #[test]
     #[cfg(device_profile)]
     fn a_checked_box_keeps_its_label_legible_on_the_page() {
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         crate::widget::census::install_preset_appearances();
 
         for appearance in [crate::theme::AppearanceMode::Light, crate::theme::AppearanceMode::Dark]

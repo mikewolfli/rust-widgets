@@ -1396,7 +1396,7 @@ mod tests {
     fn the_value_sits_on_the_fields_middle_line() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let mut le = LineEdit::new(Rect::new(0, 0, 240, 120));
         le.set_text("Sample");
         let svg = crate::widget::svg::render_to_svg(&mut le);
@@ -1444,7 +1444,7 @@ mod tests {
     fn the_value_starts_at_the_fields_horizontal_padding() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let mut le = LineEdit::new(Rect::new(0, 0, 240, 120));
         le.set_text("Sample");
         let svg = crate::widget::svg::render_to_svg(&mut le);
@@ -1472,7 +1472,7 @@ mod tests {
     fn a_field_with_no_slots_is_unchanged() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let mut le = LineEdit::new(Rect::new(0, 0, 240, 120));
         le.set_text("Sample");
         assert!(le.decorations().is_empty());
@@ -1498,7 +1498,7 @@ mod tests {
     fn a_prefix_is_drawn_before_the_value_and_shifts_it() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let mut plain = LineEdit::new(Rect::new(0, 0, 240, 120));
         plain.set_text("12");
         let plain_svg = crate::widget::svg::render_to_svg(&mut plain);
@@ -1699,7 +1699,7 @@ mod tests {
     fn the_caret_is_drawn_at_cursor_position_not_at_the_end() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         // The caret used to be measured against the **whole** value, so it was always drawn
         // after the last glyph however the control was positioned: with `cursor_position = 0` it
         // still sat past the `e` of "Sample". The field answers `cursor_position`, clamps it on
@@ -1799,11 +1799,19 @@ mod tests {
     /// reported `WidgetState::Error`** — so every one of those keys was a rule nothing could match.
     /// The assertion is the state contract *and* the resulting style: the first half proves the
     /// control asks the right question, the second proves the theme's answer arrives on the field.
+    ///
+    /// # Why this is gated on `full_widgets`
+    ///
+    /// It installs the preset appearances through `widget::census`, which is the module that owns
+    /// them and exists only where the widget set is unstripped. On a stripped profile the theme is
+    /// absent entirely, so there is no preset to install and no `:error` override to read — the
+    /// subject of the test does not exist there, which is what a profile gate has to say.
+    #[cfg(full_widgets)]
     #[test]
     fn a_refused_field_reports_error_and_takes_the_error_override() {
         use crate::style::WidgetState;
 
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         crate::widget::census::install_preset_appearances();
         let mut field = LineEdit::new(Rect::new(0, 0, 200, 24));
 

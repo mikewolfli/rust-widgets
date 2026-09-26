@@ -195,7 +195,7 @@ fn svg_snapshot_line_chart_stable() {
     // hash against whichever theme happened to be active while it ran, and it failed
     // intermittently whenever a concurrently-running test had switched to dark — a real
     // "observe another test's state" failure, not a defect in the chart.
-    let _guard = crate::theme::theme_test_guard();
+    let _guard = crate::style::theme_test_guard();
     crate::widget::census::install_preset_appearances();
     crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
     let mut chart = LineChart::new();
@@ -220,7 +220,7 @@ fn svg_snapshot_line_chart_stable() {
 #[test]
 fn svg_snapshot_bar_chart_stable() {
     // Same guard and pin as the line chart's snapshot, for the same reason.
-    let _guard = crate::theme::theme_test_guard();
+    let _guard = crate::style::theme_test_guard();
     crate::widget::census::install_preset_appearances();
     crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
     let mut chart = BarChart::new();

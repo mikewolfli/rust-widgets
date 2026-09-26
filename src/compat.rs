@@ -235,6 +235,37 @@ pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     }
 }
 
+/// A `static`-constructible mutex, for a lock that has to live for the process without a
+/// profile-specific initialiser.
+///
+/// # Why this exists rather than a bare `static Mutex`
+///
+/// `std::sync::Mutex::new` is `const`, but `spin::Mutex::new` under `alloc_frugal` is not usable in
+/// a `static` initialiser in the same way, and `OnceLock` itself differs between the profiles. A
+/// caller that needs "one lock for the whole crate, built on first use" would otherwise carry a
+/// `#[cfg]` -- which is exactly the thing [`crate::compat`] exists to remove. This is the same
+/// contract [`OnceLock`] gives, narrowed to the one use.
+#[derive(Default)]
+pub struct LazyMutex {
+    cell: OnceLock<Mutex<()>>,
+}
+
+impl LazyMutex {
+    /// Creates an uninitialised cell. `const`, so it can initialise a `static` directly.
+    pub const fn new() -> Self {
+        Self { cell: OnceLock::new() }
+    }
+
+    /// Acquires the lock, initialising it on first use.
+    ///
+    /// Poison recovery matches [`lock`]'s: a poisoned lock still holds usable data, so the guard is
+    /// taken rather than the panic propagated.
+    pub fn lock(&'static self) -> MutexGuard<'static, ()> {
+        let mutex = self.cell.get_or_init(|| Mutex::new(()));
+        lock(mutex)
+    }
+}
+
 /// Try to acquire a [`Mutex`], propagating poisoning instead of recovering.
 ///
 /// The fallible counterpart of [`lock`], for call sites that already return

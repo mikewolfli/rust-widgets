@@ -840,7 +840,7 @@ mod tests {
     fn theme_guard() -> Option<crate::compat::MutexGuard<'static, ()>> {
         #[cfg(device_profile)]
         {
-            Some(crate::theme::theme_test_guard())
+            Some(crate::style::theme_test_guard())
         }
         #[cfg(not(device_profile))]
         {

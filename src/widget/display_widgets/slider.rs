@@ -1781,7 +1781,7 @@ mod tests {
         // happened to be active mid-run: measured, it failed 5 runs out of 5 when another test in
         // the same binary had switched to dark, and passed when run alone. The assertion is about a
         // *relation between the two states*, so both colours and the fill must come from one theme.
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         crate::widget::census::install_preset_appearances();
         crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
 

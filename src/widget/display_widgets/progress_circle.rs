@@ -594,7 +594,7 @@ mod tests {
     fn the_indeterminate_ring_turns_on_the_ticks_it_is_given() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let mut pc = ProgressCircle::new(Rect::new(0, 0, 48, 48));
         pc.set_indeterminate(true);
         let first = crate::widget::svg::render_to_svg(&mut pc);
@@ -618,7 +618,7 @@ mod tests {
     fn a_determinate_ring_owes_no_frames() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let mut pc = ProgressCircle::new(Rect::new(0, 0, 48, 48));
         pc.set_value(0.5);
         assert!(!pc.tick(100), "a determinate ring must not request another frame");

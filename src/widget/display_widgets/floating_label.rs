@@ -936,7 +936,7 @@ mod tests {
     fn floating_label_behavior_changes_the_drawn_label_position() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         /// The ink box `(left, top, right, bottom)` of the caption when the policy allows it
         /// above the input line, and of the label resting **inline** otherwise.
         ///

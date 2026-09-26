@@ -891,7 +891,7 @@ mod tests {
     #[test]
     fn the_tick_is_the_contrast_of_the_box_it_sits_in() {
         #[cfg(device_profile)]
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         #[cfg(device_profile)]
         crate::widget::census::install_preset_appearances();
         let frame = Rect::new(0, 0, 200, 100);

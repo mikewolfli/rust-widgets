@@ -869,7 +869,7 @@ mod tests {
     #[test]
     fn a_column_width_the_caller_set_pushes_its_neighbours() {
         use crate::widget::svg::render_to_svg;
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
 
         let build = |width: Option<u32>| {
             let model = Arc::new(TestTableModel::new(3, 3));
@@ -1214,7 +1214,7 @@ mod tests {
     fn a_click_selects_the_row_that_is_painted_there() {
         // Same guard and pin as the hover test: both reads of a row's fill have to come from one
         // appearance for the comparison to be about selection.
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         crate::widget::census::install_preset_appearances();
         crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
         let model = Arc::new(TestTableModel::new(5, 3));

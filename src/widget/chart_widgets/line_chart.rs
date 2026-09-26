@@ -706,7 +706,7 @@ mod tests {
     fn line_chart_renders_axis_tick_labels_from_the_shared_engine() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
-        let _theme_guard = crate::theme::theme_test_guard();
+        let _theme_guard = crate::style::theme_test_guard();
         let mut lc = LineChart::new(Rect::new(0, 0, 300, 200));
         lc.set_data(vec![(0.0, 0.0), (10.0, 50.0)]);
         lc.set_axis_range(Some(0.0), Some(10.0), Some(0.0), Some(50.0));

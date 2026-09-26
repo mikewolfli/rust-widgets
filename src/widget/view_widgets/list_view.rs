@@ -723,7 +723,7 @@ mod tests {
         // The row fills come from the active theme, so pin the appearance and hold the registry
         // guard: otherwise a concurrent theme switch between the resting and hovered reads makes
         // this compare two different appearances rather than two states.
-        let _guard = crate::theme::theme_test_guard();
+        let _guard = crate::style::theme_test_guard();
         crate::widget::census::install_preset_appearances();
         crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Light);
         let mut view = ListView::new(Rect::new(0, 0, 200, 120));
