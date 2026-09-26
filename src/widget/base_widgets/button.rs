@@ -22,6 +22,14 @@ use crate::widget::metrics::{
 use crate::widget::Image;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// Stroke width of the emphasis ring on a **default** button, in pixels.
+///
+/// Wider than the ordinary border so the emphasis reads as an emphasis rather than as a second
+/// hairline next to the first, and drawn on the same inset as the focus ring so the two cannot
+/// overlap. Named rather than inlined because the draw and its test both read it.
+const DEFAULT_EMPHASIS_WIDTH: u32 = 2;
+
 /// Button interaction state.
 ///
 /// Derived from the enabled and pressed flags, never stored. Pressed and
@@ -899,6 +907,31 @@ impl Draw for Button {
             );
         }
 
+        // ── Default-button emphasis ──
+        //
+        // A default button is the one Enter activates, and every desktop convention says so *on
+        // screen* -- a heavier outline, or the accent. The flag was stored, published and toggled by
+        // the schema while `draw` never read it, so `set_default(true)` redrew an identical button
+        // and the user had no way to see which one Enter would press.
+        //
+        // It is drawn **between** the border and the focus ring, and inside the control's own
+        // rectangle, for the same reason the focus ring is: a ring outside the rect is the
+        // "drawing leaves the control and only the raster clip hides it" defect the census catches.
+        // The colour is the theme's accent -- the emphasis has to be visible on a button whose
+        // surface and border the host may have styled arbitrarily, and `style.background_color` is
+        // exactly the resolved value the accent already lands in for an active/primary button.
+        if self.default_button {
+            let ring = FocusRing::for_control(rect, br);
+            if ring.is_drawable() {
+                context.draw_rounded_rect_stroke(
+                    ring.rect,
+                    ring.radius,
+                    bg.contrast_color(),
+                    DEFAULT_EMPHASIS_WIDTH,
+                );
+            }
+        }
+
         // ── Focus ring ──
         //
         // Drawn strictly inside the control's rectangle (see `ControlMetrics::focus_ring_rect`)
@@ -1463,6 +1496,46 @@ mod tests {
         }
     }
 
+    /// A **default** button is drawn differently, and a normal one is untouched.
+    ///
+    /// # The defect this pins
+    ///
+    /// `default_button` was stored, published in the schema and toggled by the constructor while
+    /// `draw` never read it, so `set_default(true)` redrew the same square. On desktop the default
+    /// button is the one Enter activates, and every convention says so on screen -- without it the
+    /// user cannot tell which button the key will press. The sibling `focus_ring` tests could not
+    /// cover this: a default button need not be focused, and a focused one need not be default.
+    ///
+    /// Both halves are asserted, and the second is the load-bearing one: a document that merely
+    /// *differs* is satisfied by any extra ink, so the emphasis is pinned to a **heavier stroke on
+    /// the ring's own inset** -- the same rectangle the focus ring uses, which is what keeps the two
+    /// from overlapping when a default button is also focused.
+    #[test]
+    fn a_default_button_is_drawn_with_an_emphasis_ring() {
+        let _theme_guard = crate::theme::theme_test_guard();
+        let mut plain = make_button();
+        let plain_svg = crate::widget::svg::render_to_svg(&mut plain);
+
+        let mut default = make_button();
+        assert!(!default.is_default(), "a button is not the default unless it says so");
+        default.set_default(true);
+        assert!(default.is_default(), "and it reports what was set");
+        let default_svg = crate::widget::svg::render_to_svg(&mut default);
+
+        assert_ne!(
+            plain_svg, default_svg,
+            "a default button must not paint the same as an ordinary one"
+        );
+        assert!(
+            default_svg.contains(&format!("stroke-width=\"{DEFAULT_EMPHASIS_WIDTH}\"")),
+            "the emphasis is a stroke of its own width, not a shifted border: {default_svg}"
+        );
+        assert!(
+            !plain_svg.contains(&format!("stroke-width=\"{DEFAULT_EMPHASIS_WIDTH}\"")),
+            "an ordinary button has no such stroke: {plain_svg}"
+        );
+    }
+
     #[test]
     fn a_keyboard_activation_keeps_the_ring() {
         let mut b = make_button();
@@ -1818,6 +1891,9 @@ mod tests {
     /// The transition is visible: a fully-progressed hover paints a different fill.
     #[test]
     fn the_progress_changes_what_is_painted() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         let rect = Rect::new(0, 0, 120, 32);
         let mut resting = Button::new("Go".to_string(), rect);
         let rest_svg = crate::widget::svg::render_to_svg(&mut resting);

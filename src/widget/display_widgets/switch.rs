@@ -22,7 +22,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{
-    dimensions, focus_ring_color, ControlMetrics, FocusRing, FOCUS_RING_WIDTH,
+    focus_ring_color, ControlMetrics, FocusRing, SwitchGeometry, FOCUS_RING_WIDTH,
 };
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -43,7 +43,6 @@ pub struct Switch {
     pressed: bool,
     /// The **drawn** state: how far the thumb has travelled, `0.0` at the off end and
     /// `1.0` at the on end.
-    ///
     /// # Why this is not `checked`
     ///
     /// `checked` is the logical state, and a toggle must be answered immediately: a
@@ -57,6 +56,23 @@ pub struct Switch {
     /// drawn position. `travel = 0` renders exactly the old off-end appearance, so a
     /// snapshot taken without a `tick` is unchanged.
     travel: PropertyDriver,
+    /// The shape the track and thumb are drawn in.
+    ///
+    /// Defaults to Material's `52x32`; `cupertino_switch` is this same control carrying
+    /// `SwitchGeometry::CUPERTINO`. One control, one gesture, one animation — and the two
+    /// presets cannot drift on the parts that are not about size, because there is only
+    /// one implementation of those parts.
+    geometry: SwitchGeometry,
+    /// The ON track's colour, when the caller wants to name it rather than take the
+    /// theme's accent.
+    ///
+    /// # Why this is separate from `background_color`
+    ///
+    /// `style.background_color` is the **off** track (the chrome the control sits on);
+    /// writing the active colour there paints an off switch in the on colour, which is
+    /// exactly the bug `cupertino_switch` had — its iOS green landed on the resting track.
+    /// The two ends are two facts and now have two fields.
+    on_track: Option<Color>,
     /// Emitted when the checked state changes.
     pub toggled: Signal1<bool>,
 }
@@ -74,6 +90,8 @@ impl Switch {
             // Starting at rest (0.0) keeps a freshly built switch at the off end instead
             // of fading *out* on its first frame.
             travel: PropertyDriver::at(0.0, MotionSlot::Slow),
+            geometry: SwitchGeometry::MATERIAL,
+            on_track: None,
             toggled: Signal1::new(),
         }
     }
@@ -177,6 +195,54 @@ impl Switch {
         self.travel.value()
     }
 
+    /// The shape this switch's track and thumb are drawn in.
+    ///
+    /// Named `drawn_shape` rather than `geometry` because `Widget::geometry()` already
+    /// answers a different question (the control's rectangle), and a same-named accessor
+    /// would silently shadow it at every call site.
+    pub fn drawn_shape(&self) -> SwitchGeometry {
+        self.geometry
+    }
+
+    /// Replaces the drawn shape.
+    ///
+    /// # What this is for
+    ///
+    /// `cupertino_switch` uses it to carry `SwitchGeometry::CUPERTINO`. It is public
+    /// rather than crate-private because a host that wants an iOS-shaped switch under
+    /// its own name — or a third preset — should not have to reimplement the gesture and
+    /// the animation to get it.
+    ///
+    /// It also reports the change as paint-worthy: the thumb's rectangle and the
+    /// control's `size_hint` both read this field, so a silent assignment would leave a
+    /// laid-out switch painted at the old size.
+    pub fn set_geometry(&mut self, geometry: SwitchGeometry) {
+        if self.geometry == geometry {
+            return;
+        }
+        self.geometry = geometry;
+        self.base.request_redraw();
+        self.base.request_layout();
+    }
+
+    /// The ON track's explicitly named colour, if the caller named one.
+    pub fn on_track_color(&self) -> Option<Color> {
+        self.on_track
+    }
+
+    /// Names the ON track's colour, overriding the theme's accent.
+    ///
+    /// `None` restores the theme-resolved behaviour. This is the *only* way to say
+    /// "this switch's active end is this colour": `set_style` with a `background_color`
+    /// sets the **off** track, because that field is the control's chrome.
+    pub fn set_on_track_color(&mut self, color: Option<Color>) {
+        if self.on_track == color {
+            return;
+        }
+        self.on_track = color;
+        self.base.request_redraw();
+    }
+
     /// The thumb's rectangle for the current travel, or `None` when the track is too
     /// small to hold a disc.
     ///
@@ -191,9 +257,9 @@ impl Switch {
     /// smaller than its own track has no thumb to point at, and the caller must be able to
     /// tell that from a thumb at the origin.
     pub fn thumb_rect(&self, rect: Rect) -> Option<Rect> {
-        let track_rect = ControlMetrics::center_in(rect, dimensions::SWITCH_TRACK);
-        let thumb_size = dimensions::SWITCH_THUMB_RADIUS * 2;
-        let thumb_inset = dimensions::SWITCH_THUMB_INSET;
+        let track_rect = ControlMetrics::center_in(rect, self.geometry.track);
+        let thumb_size = self.geometry.thumb_size();
+        let thumb_inset = self.geometry.thumb_inset;
         let thumb_size = thumb_size.min(track_rect.height.saturating_sub(thumb_inset * 2));
         if thumb_size == 0 {
             return None;
@@ -207,10 +273,25 @@ impl Switch {
         } else {
             0.0
         };
-        let travel_span = track_rect.width.saturating_sub(thumb_size + thumb_inset * 2);
-        let thumb_x = track_rect.x + thumb_inset as i32 + (travel_span as f32 * travel) as i32;
+        // A resting thumb is a disc; a held one stretches sideways into a capsule where
+        // the shape asks for it. The stretch is applied to the *span* the thumb travels
+        // over as well as to the thumb itself, so a stretched thumb still stops at the
+        // track's inner edge instead of overhanging it.
+        let held = self.base.is_pressed() && self.geometry.press_stretch > 0;
+        let stretch = if held { self.geometry.press_stretch } else { 0 };
+        let drawn_width = thumb_size + stretch * 2;
+        let travel_span = track_rect
+            .width
+            .saturating_sub(drawn_width + thumb_inset * 2)
+            .max(thumb_size.saturating_sub(drawn_width));
+        let travel_x = thumb_inset as i32 + (travel_span as f32 * travel) as i32;
+        // The centre travels; the rectangle grows around it. Placing the *left edge* at
+        // the travel offset would make a held thumb jump left by its own stretch, which
+        // reads as the control twitching on touch-down rather than responding.
+        let centre_x = track_rect.x + travel_x + thumb_size as i32 / 2;
+        let thumb_x = centre_x - drawn_width as i32 / 2;
         let thumb_y = track_rect.y + thumb_inset as i32;
-        Some(Rect::new(thumb_x, thumb_y, thumb_size, thumb_size))
+        Some(Rect::new(thumb_x, thumb_y, drawn_width, thumb_size))
     }
 
     /// Advances the thumb's travel by `delta_ms` and reports whether another frame is
@@ -261,13 +342,13 @@ impl Widget for Switch {
 
     fn size_hint(&self) -> crate::core::Size {
         // The hint describes the control's own floor rather than the drawn track: the track
-        // is `SWITCH_TRACK`, but a switch that can show a focus ring needs room for the
+        // is `self.geometry.track`, but a switch that can show a focus ring needs room for the
         // ring's inset on both sides. `SWITCH_TRACK.width` alone made the hint *narrower*
         // than the width at which the ring is drawable, so `size_hint` described a control
         // whose focus state could not be rendered. The height stays the track's own.
         crate::core::Size::new(
-            dimensions::SWITCH_TRACK.width + FOCUS_RING_WIDTH * 2,
-            dimensions::SWITCH_TRACK.height,
+            self.geometry.track.width + FOCUS_RING_WIDTH * 2,
+            self.geometry.track.height,
         )
     }
     impl_draw_bridge!();
@@ -377,7 +458,7 @@ impl Draw for Switch {
         // centred in the area I was given", and it clamps *down* rather than up: a control
         // laid out smaller than the nominal track must not paint outside the rectangle it
         // was given, since nothing clips a widget at this layer.
-        let track_rect = ControlMetrics::center_in(rect, dimensions::SWITCH_TRACK);
+        let track_rect = ControlMetrics::center_in(rect, self.geometry.track);
         // The track's corner radius is half its height: a stadium. The thumb's own size and
         // position come from `Switch::thumb_rect`, so the two derivations cannot disagree.
         let track_height = track_rect.height;
@@ -433,12 +514,14 @@ impl Draw for Switch {
 
         let off_track =
             caller_background.or(themed_track).unwrap_or(Color::rgba(180, 180, 180, 200));
-        let on_track = caller_background.or(themed_accent).unwrap_or(Color::rgba(52, 199, 89, 200)); // iOS green
-                                                                                                     // The track's colour is a function of the *travel*, not of two discrete states.
-                                                                                                     // Blending the two endpoint colours by `travel.value()` is what makes the track
-                                                                                                     // change colour on the same frame as the thumb moves: a track that switched colour
-                                                                                                     // on `checked` while the thumb was still crossing would read as two separate
-                                                                                                     // actions, which is exactly the bug this control's `travel` exists to remove.
+        // The ON end resolves **caller-named colour first**, then the theme's accent. The
+        // literal is iOS's own on-tint, which is also what a stripped build falls back to.
+        let on_track = self.on_track.or(themed_accent).unwrap_or(Color::rgba(52, 199, 89, 200)); // iOS green
+                                                                                                 // The track's colour is a function of the *travel*, not of two discrete states.
+                                                                                                 // Blending the two endpoint colours by `travel.value()` is what makes the track
+                                                                                                 // change colour on the same frame as the thumb moves: a track that switched colour
+                                                                                                 // on `checked` while the thumb was still crossing would read as two separate
+                                                                                                 // actions, which is exactly the bug this control's `travel` exists to remove.
         let travel = if is_enabled {
             self.travel.value()
         } else {
@@ -510,7 +593,7 @@ impl Draw for Switch {
         // drawing a ring, Tab and Shortcut draw one. The reason is recorded by [`BaseWidget`] for
         // every control, which is why the answer cannot differ between controls.
         if self.visual_focus() {
-            let ring = FocusRing::for_control(rect, dimensions::SWITCH_THUMB_RADIUS);
+            let ring = FocusRing::for_control(rect, self.geometry.thumb_radius);
             if ring.is_drawable() {
                 // The ring's colour is the contrast of the track it sits beside, so it reads
                 // on both the on and the off state rather than on one of them.

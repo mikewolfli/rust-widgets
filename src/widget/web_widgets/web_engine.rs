@@ -1013,6 +1013,9 @@ mod tests {
 
     #[test]
     fn web_engine_wrappers_delegate_widget_draw_and_event_handler() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         fn assert_wrapper_behaves(mut wrapper: impl Widget + Draw) {
             assert_eq!(wrapper.base().kind(), WidgetKind::WebEngineView);
             let svg = crate::widget::svg::render_to_svg(&mut wrapper);
@@ -1046,6 +1049,9 @@ mod tests {
 
 #[test]
 fn web_engine_evaluate_javascript_is_real_when_feature_enabled() {
+    // Holds the crate-wide theme guard: this test renders, and a concurrent
+    // test that switches the appearance would otherwise change a later frame.
+    let _theme_guard = crate::theme::theme_test_guard();
     let mut wv = WebEngineView::new(Rect::new(0, 0, 300, 200));
     #[cfg(feature = "js-engine")]
     {

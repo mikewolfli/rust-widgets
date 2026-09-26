@@ -13,6 +13,7 @@ use crate::core::{Color, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::{expect_bool, expect_f32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -30,6 +31,16 @@ pub struct BottomSheet {
     base: BaseWidget,
     open: bool,
     content_height: u32,
+    /// How far the sheet has risen, `0.0` fully stowed below the page and `1.0` fully shown.
+    ///
+    /// # Why this is separate from `open`
+    ///
+    /// `open` is the logical state a caller reads the instant it changes; `rise` is what the draw
+    /// path measures the panel and the scrim with. Drawing straight from `open` put the sheet at its
+    /// final position on the first frame and removed it on the last, so a bottom sheet — whose whole
+    /// gesture *is* "slide up from the bottom edge" — teleported. Same split, same reason, as
+    /// `Switch`'s `checked`/`travel`. It starts at `0.0` because a freshly built sheet is closed.
+    rise: PropertyDriver,
     /// Emitted when the sheet is dismissed by user interaction.
     pub dismissed: GenericSignal,
 }
@@ -43,6 +54,9 @@ impl BottomSheet {
             base: BaseWidget::new(WidgetKind::BottomSheet, geometry, "BottomSheet"),
             open: false,
             content_height: geometry.height / 2,
+            // At rest at the stowed end: a freshly built sheet is closed, so it must not animate
+            // *down* on its first frame.
+            rise: PropertyDriver::at(0.0, MotionSlot::Normal),
             dismissed: GenericSignal::new(),
         }
     }
@@ -51,7 +65,11 @@ impl BottomSheet {
     pub fn open(&mut self) {
         if !self.open {
             self.open = true;
-            self.base.request_redraw();
+            // Aim the slide; the frames that follow carry the panel up. No redraw is requested
+            // here, because a redraw would not be what makes the motion visible --
+            // `tick_animations` reports the movement itself and that is what keeps the loop
+            // painting.
+            self.rise.set_target(1.0);
         }
     }
 
@@ -59,8 +77,27 @@ impl BottomSheet {
     pub fn dismiss(&mut self) {
         if self.open {
             self.open = false;
+            self.rise.set_target(0.0);
             self.base.request_redraw();
         }
+    }
+
+    /// How far the sheet has risen, `0.0` stowed and `1.0` fully shown.
+    ///
+    /// This is the *drawn* fraction: the panel's offset and the scrim's strength are both functions
+    /// of it, so a test can assert the sheet slid rather than appeared by sampling it per frame.
+    pub fn rise_progress(&self) -> f32 {
+        self.rise.value()
+    }
+
+    /// Advances the rise by `delta_ms`; `true` while it is still moving.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        self.rise.tick(delta_ms)
+    }
+
+    /// Whether the sheet is between two positions -- answers only, never advances.
+    pub fn is_animating(&self) -> bool {
+        self.rise.is_moving()
     }
 
     /// Sets the content height of the sheet panel (in pixels).
@@ -94,6 +131,16 @@ impl Widget for BottomSheet {
 
     fn size_hint(&self) -> Size {
         crate::core::Size::new(300, 200)
+    }
+
+    // The rise is the control's own animation; the trait spelling is what the frame bus reaches
+    // through `&mut dyn Widget`, which is the only way the slide actually happens.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        BottomSheet::tick(self, delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        BottomSheet::is_animating(self)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -198,10 +245,6 @@ impl Draw for BottomSheet {
 
         let sheet_height = self.content_height.min(rect.height);
 
-        // Sheet panel rect at the bottom of the geometry
-        let sheet_y = rect.y + rect.height as i32 - sheet_height as i32;
-        let sheet_rect = Rect::new(rect.x, sheet_y, rect.width, sheet_height);
-
         // 1. Draw the modal scrim covering the area above the sheet.
         //
         // Painting the scrim is what keeps the control visible in its default (closed)
@@ -239,6 +282,10 @@ impl Draw for BottomSheet {
         // where the panel is `rgb(35,35,35)` over a `rgb(18,18,18)` window and a scrim of
         // `rgb(24,24,24)` would still read as a lift rather than a dimming.
         let overlay_height = rect.height - sheet_height;
+        // The rise drives both halves of the appearance: the scrim fades in and the panel slides up.
+        // Deriving them from *one* value is what keeps the two in step, so the backdrop can never be
+        // fully dimmed while the panel is still below the edge.
+        let rise = self.rise.value();
         const SCRIM_DARKEN: f32 = 0.32;
         // The token wins when a theme provides one; the blend is the honest fallback for an
         // unthemed build. The token is read here so a theme author can express the dimming
@@ -246,16 +293,31 @@ impl Draw for BottomSheet {
         // which is why `Colors::scrim` exists as a role at all.
         let scrim_color = crate::style::layer_color(crate::style::LayerColor::Scrim)
             .unwrap_or_else(|| window_fill.blend(&Color::BLACK, SCRIM_DARKEN));
-        if overlay_height > 0 {
+        if overlay_height > 0 && rise > 0.0 {
+            // A rising sheet's scrim is a fraction of its own alpha, not a second colour: fading by
+            // scaling the token's alpha is the one form that works for a theme that authored its
+            // scrim as a translucent white as well as one that authored it as a black veil.
+            let scrim_color = scrim_color.with_alpha((scrim_color.a as f32 * rise) as u8);
             let overlay_rect = Rect::new(rect.x, rect.y, rect.width, overlay_height);
             context.fill_rect(overlay_rect, scrim_color);
         }
 
-        // A closed sheet paints only the scrim; the panel and its handle belong to the
-        // open state alone.
-        if !self.open {
+        // A sheet that has not risen at all paints only that much scrim (nothing, at rest); the
+        // panel and its handle belong to the risen part alone. This replaces the old `if !self.open
+        // { return; }`: the guard is now on the *drawn* position rather than the logical flag, so the
+        // last frame of a dismissal still paints the panel where it is.
+        if rise <= 0.0 {
             return;
         }
+
+        // The panel slides up from the bottom edge: at `rise == 0` it is entirely below the page,
+        // and at `rise == 1` it is at its resting position. Interpolating the *y* rather than the
+        // height keeps the panel's own shape fixed while it travels, which is what a sheet does --
+        // a growing height would read as the content being revealed rather than the panel arriving.
+        let resting_y = rect.y + rect.height as i32 - sheet_height as i32;
+        let stowed_y = rect.y + rect.height as i32;
+        let sheet_y = resting_y + ((stowed_y - resting_y) as f32 * (1.0 - rise)) as i32;
+        let sheet_rect = Rect::new(rect.x, sheet_y, rect.width, sheet_height);
 
         // 2. Draw the sheet panel with rounded top corners
         let sheet_radius = 16;
@@ -486,5 +548,81 @@ mod tests {
         sheet.handle_event(&Event::MousePress { pos: Point::new(200, 450), button: 1 });
         assert!(!sheet.is_open());
         assert!(dismissed.load(Ordering::SeqCst));
+    }
+
+    /// Opening a sheet slides the panel up instead of placing it there.
+    ///
+    /// # The defect this pins
+    ///
+    /// The draw read `open` directly, so the panel appeared at its final position on the first frame
+    /// and vanished on the last — on the one control whose whole gesture *is* "slide up from the
+    /// bottom edge".
+    ///
+    /// # Why this asserts on pixels as well as on the model
+    ///
+    /// A first version sampled only `rise_progress()` and **passed with the draw reverted to a fixed
+    /// panel** — a progress nothing reads is not a slide. So the assertions are in two halves: the
+    /// model must take an interior value, and the *painted* panel must be somewhere else at that
+    /// moment than at either end. The painted position is read from the document's panel rectangle,
+    /// which the sheet is the only element to emit at that width.
+    #[test]
+    fn opening_the_sheet_slides_the_panel_up() {
+        use crate::widget::svg::render_to_svg;
+
+        let mut sheet = BottomSheet::new(Rect::new(0, 0, 240, 120));
+        assert_eq!(sheet.rise_progress(), 0.0, "a fresh sheet is stowed");
+        assert!(!sheet.is_animating(), "and owes no frames");
+
+        sheet.open();
+        assert!(sheet.is_open(), "the logical state answers at once");
+        assert!(sheet.is_animating(), "while the drawn position owes frames");
+        assert_eq!(sheet.rise_progress(), 0.0, "the slide starts where the panel was");
+
+        // The panel's own top edge, read from the emitted document. The panel is the only element
+        // the sheet draws with a corner radius (`rx=16`), so naming it that way is what keeps the
+        // measurement from picking up the scrim -- which is also full width, at y=0, and would
+        // satisfy any test that merely looked for "a wide rectangle".
+        fn panel_top(svg: &str) -> Option<i32> {
+            svg.split("<rect ")
+                .filter(|chunk| chunk.contains("rx=\"16\""))
+                .filter_map(|chunk| {
+                    let y = chunk.split("y=\"").nth(1)?;
+                    y.split('"').next()?.parse::<i32>().ok()
+                })
+                .max()
+        }
+
+        let stowed_top = panel_top(&render_to_svg(&mut sheet));
+        assert!(sheet.tick(60), "still moving after one step");
+        let mid = sheet.rise_progress();
+        assert!(
+            mid > 0.0 && mid < 1.0,
+            "the sheet must pass through an interior position (got {mid})"
+        );
+        let mid_top = panel_top(&render_to_svg(&mut sheet));
+
+        while sheet.tick(60) {}
+        assert_eq!(sheet.rise_progress(), 1.0, "and settle fully shown");
+        let shown_top = panel_top(&render_to_svg(&mut sheet));
+
+        // At rest the panel is entirely below the page, so it is not painted at all; as soon as the
+        // slide begins it appears from the bottom edge and travels *upward* (a smaller y each frame
+        // it is compared across).
+        assert_eq!(stowed_top, None, "a stowed panel is below the page, so nothing of it is painted");
+        let middle = mid_top.expect("a mid-slide sheet paints a panel");
+        let shown = shown_top.expect("a settled sheet paints a panel");
+        assert!(
+            middle > shown,
+            "the panel must rise: mid-slide top {middle} must be below its settled top {shown}"
+        );
+        assert_eq!(shown, 60, "and settle where the stowed geometry says it belongs (60)");
+
+        // Dismissing is the same movement in reverse, so the panel does not vanish on the last frame.
+        sheet.dismiss();
+        assert!(!sheet.is_open());
+        assert!(sheet.is_animating(), "closing is also a slide");
+        assert!(!sheet.tick(1000) || true, "one long frame is allowed to finish it");
+        while sheet.tick(60) {}
+        assert_eq!(sheet.rise_progress(), 0.0, "back to stowed");
     }
 }

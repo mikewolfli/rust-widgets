@@ -19,30 +19,49 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::display_widgets::switch::Switch;
+use crate::widget::metrics::SwitchGeometry;
 use crate::widget::numeric::ordered_clamp;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
+/// `UISwitch.onTintColor`: the track colour of an on iOS switch.
+///
+/// The default value of Apple's own property, spelled once here rather than inline at the
+/// construction site so the assertion in this module's tests and the control itself cannot
+/// disagree about which green "iOS green" is.
+pub const CUPERTINO_ON_TRACK: Color = Color::rgb(52, 199, 89);
+
 // ── CupertinoSwitch ──────────────────────────────────────────────────────────
 
-/// iOS-style switch (alias for [`Switch`] with iOS coloring).
+/// iOS-style switch: one [`Switch`] carrying the iOS drawn shape and colours.
 ///
-/// `CupertinoSwitch` wraps a [`Switch`] and configures it with iOS design
-/// language — green track when checked with `rgb(52, 199, 89)`. All widget
-/// behavior (toggling, signals, event handling) is delegated to the inner
-/// switch.
+/// # Why this is a `Switch` and not a second control
+///
+/// A Material switch and an iOS switch are the same *control* — one boolean, one gesture,
+/// one `checked` signal, one `travel` animation — drawn at two different sizes. This used
+/// to be a bare newtype: it inherited Material's `52x32` track and Material-green track
+/// colour, so the iOS name promised a shape the control did not have. It now carries
+/// [`SwitchGeometry::CUPERTINO`] (a `51x31` track with a 13 px thumb radius and iOS's
+/// own press stretch) and the iOS active colour `rgb(52, 199, 89)`
+/// (`UISwitch.onTintColor`), so the two names describe two shapes from one implementation
+/// rather than two names for one shape.
+///
+/// All behaviour — toggling, signals, event handling, the travel animation — stays
+/// delegated to the inner switch, which is why there is no second gesture to keep in step.
 pub struct CupertinoSwitch(pub Switch);
 
 impl CupertinoSwitch {
     /// Creates a new Cupertino-styled switch with the given geometry.
     ///
-    /// The underlying [`Switch`] is initialized with iOS green
-    /// (`Color::rgba(52, 199, 89, 255)`) as the active track color.
+    /// The inner [`Switch`] is put into the iOS drawn shape and given iOS green
+    /// (`rgb(52, 199, 89)`, `UISwitch.onTintColor`) as its active track colour.
     pub fn new(geometry: Rect) -> Self {
-        let sw = Switch::new(geometry);
-        // Set iOS green via the switch's drawing — the Switch already
-        // uses Color::rgba(52, 199, 89, 200) internally when checked.
-        // This wrapper ensures the Cupertino branding is explicit.
+        let mut sw = Switch::new(geometry);
+        sw.set_geometry(SwitchGeometry::CUPERTINO);
+        // `UISwitch.onTintColor`'s default. It is set as the switch's *named on-track* colour
+        // rather than as its `background_color`: the latter is the **off** track, so writing
+        // the green there painted a resting switch green — the defect this replaced.
+        sw.set_on_track_color(Some(CUPERTINO_ON_TRACK));
         Self(sw)
     }
 
@@ -67,7 +86,11 @@ impl Widget for CupertinoSwitch {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(50, 30)
+        // The inner switch's own hint already reads the geometry it carries, so this
+        // forward is what keeps the hint and the ink describing the same shape. It used
+        // to be a hardcoded `50x30` — a third size, matching neither the `52x32` it was
+        // drawn at nor the `51x31` iOS uses.
+        self.0.size_hint()
     }
 
     fn kind(&self) -> WidgetKind {
@@ -1457,6 +1480,7 @@ impl EventHandler for MaterialNavigationRail {
 mod tests {
     use super::*;
     use crate::core::Point;
+    use crate::widget::metrics::dimensions;
     use crate::widget::svg::render_to_svg;
     use std::sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -1499,6 +1523,92 @@ mod tests {
         let mut cs = CupertinoSwitch::new(Rect::new(0, 0, 60, 30));
         let svg = render_to_svg(&mut cs);
         assert!(svg.starts_with("<svg"));
+    }
+
+    /// The iOS name has to mean an iOS *shape*, or it is a second spelling for one control.
+    ///
+    /// `cupertino_switch` used to be a bare newtype over `Switch`: it inherited Material's
+    /// `52x32` track, so the only thing "iOS" about it was the word. The assertion is the
+    /// geometry the control reports, not a rendered string, so it cannot be satisfied by
+    /// the shape happening to look similar.
+    #[test]
+    fn cupertino_switch_carries_the_ios_geometry() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
+        let material = Switch::new(Rect::new(0, 0, 240, 120));
+        let mut cupertino = CupertinoSwitch::new(Rect::new(0, 0, 240, 120));
+
+        assert_eq!(cupertino.inner().drawn_shape(), SwitchGeometry::CUPERTINO);
+        assert_ne!(
+            cupertino.inner().drawn_shape(),
+            material.drawn_shape(),
+            "an iOS switch must not be drawn in the Material shape"
+        );
+        // The hint follows the shape rather than being a third, hardcoded size.
+        assert_eq!(cupertino.size_hint(), cupertino.inner().size_hint());
+
+        // The thumb's own rectangle is the iOS one: a 26 px disc, not Material's 28.
+        let rect = Rect::new(0, 0, 240, 120);
+        let thumb = cupertino.inner().thumb_rect(rect).expect("a roomy rect has a thumb");
+        assert_eq!(thumb.width, dimensions::CUPERTINO_SWITCH_THUMB_RADIUS * 2);
+
+        // On, the track is iOS green — and that green is the *on* end only. Writing it to
+        // `background_color` (the off track) is the defect this replaced, so the off frame
+        // has to be checked too.
+        let off = render_to_svg(&mut cupertino);
+        assert!(
+            !off.contains("rgba(52,199,89"),
+            "an off iOS switch must not be painted in the on colour"
+        );
+        cupertino.inner_mut().set_checked(true);
+        // The track is a blend of the two ends by `travel`, so an on switch that has not been
+        // ticked is still drawn at the off end. That is deliberate (a freshly built switch must
+        // not fade *out* on its first frame), so the test drives the travel to completion the
+        // same way the frame bus would before reading the on colour.
+        while cupertino.inner_mut().tick(1000) {}
+        let on = render_to_svg(&mut cupertino);
+        assert!(
+            on.contains("rgba(52,199,89"),
+            "an on iOS switch must be painted in UISwitch.onTintColor"
+        );
+    }
+
+    /// Held down, an iOS thumb stretches sideways into a capsule; at rest it is a disc.
+    ///
+    /// `UISwitch` widens its thumb on touch-down so the gesture is visible. Asserted on the
+    /// geometry the draw path reads, so a stretch that is declared but not applied fails.
+    #[test]
+    fn the_held_ios_thumb_stretches_sideways() {
+        use crate::style::WidgetState;
+
+        let rect = Rect::new(0, 0, 240, 120);
+        let mut cupertino = CupertinoSwitch::new(rect);
+        let resting = cupertino.inner().thumb_rect(rect).expect("a roomy rect has a thumb");
+
+        let centre =
+            Point::new(resting.x + resting.width as i32 / 2, resting.y + resting.height as i32 / 2);
+        cupertino.handle_event(&Event::MouseEnter { pos: centre });
+        cupertino.handle_event(&Event::MousePress { pos: centre, button: 1 });
+        assert_eq!(cupertino.widget_state(), WidgetState::Pressed);
+
+        let held = cupertino.inner().thumb_rect(rect).expect("a roomy rect has a thumb");
+        assert_eq!(
+            held.width,
+            resting.width + dimensions::CUPERTINO_SWITCH_PRESS_STRETCH * 2,
+            "a held thumb must widen by the documented stretch"
+        );
+        assert_eq!(held.height, resting.height, "the stretch is sideways only");
+        // It grows around its own centre, so it does not jump left on touch-down.
+        assert_eq!(
+            held.x + held.width as i32 / 2,
+            resting.x + resting.width as i32 / 2,
+            "a stretch must not move the thumb's centre"
+        );
+
+        cupertino.handle_event(&Event::MouseRelease { pos: centre, button: 1 });
+        let released = cupertino.inner().thumb_rect(rect).expect("a roomy rect has a thumb");
+        assert_eq!(released.width, resting.width, "releasing must restore the disc");
     }
 
     // ── MaterialSnackbar tests ──

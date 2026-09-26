@@ -1612,10 +1612,10 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 | `quote_board` | `finance/quote_board.rs` | 9 | 同 `order_book`；**涨跌红绿是数据色**（BLUE21 §七 明确**不判为缺陷**） | **M1** **M3**（价格变化高亮淡出） | P1 |
 | `radar_chart` | `radar_chart.rs` | **14** | ✅ **第 75 轮已修**（实测见 `log-20260924-1.md` §71）：五个字面量、**零主题读取** ⇒ 暗色下是**白板 + 近黑字** ⇒ 新增 `chrome_colors()` 一处解析五色（面 `surface_container` / 框 `outline_variant` / 网格**派生** / 标签 `foreground` / 空态 `secondary`）。**系列调色板不动**（数据身份）。断言采样点选错**两次**（圆角描边 → 网格）才承重 | **M4 完成** | ✅ **P1 完成** |
 | `heatmap` | `heatmap.rs` | **12** | 12 字面量；**色阶是数据色**（豁免，不判） | **M4**（仅 chrome 部分：轴/网格/刻度） | P1 |
-| `chart`（ChartWidget） | `chart.rs` | 10 | BLUE21 D6（**至今未修**）：**完全没有值轴**（`PlotArea` 无左槽）；最高柱**贴顶零余量** | ① 补左刻度列（4 档）+ 值标签 ② **M12** ③ 数据变化过渡（M3） | **M10** **M12** **M3** | **P0** |
-| `gantt_widget` | `gantt_widget.rs` | 2 | BLUE21 D15：行标签**无宽度约束**（轨道起于 `x+150` 而标签无 bound） | ① 标签改 `draw_text_fitted`（BLUE22 R-7 已部分）② 今日线/依赖箭头（M6） | **M10** **M6** | P1 |
+| `chart`（ChartWidget） | `chart.rs` | 10 | ✅ **值轴已落地**（实测复核）：`PlotArea::axis_margin_left` + `draw_value_axis` 在 `Bar` 与**空态**两处调用；`chart.svg` 左列 `x=25..29` 为刻度标签、基线 `y=97`。BLUE21 D6 关闭；空态也已带轴（不再是裸提示） | 数据变化过渡（M3）—— **裁定为独立议题**（需先定图表的数据域映射，见台账） | **M3** | P2 |
+| `gantt_widget` | `gantt_widget.rs` | 2 | ✅ 标签已用 `draw_text_line` 居中于自己的 lane（有宽度约束）；✅ **今日线 / 依赖箭头 / 里程碑三项已落地**（轮 24，见台账） | — | ✅ **P1 完成** |
 | `timeline_widget` | `timeline_widget.rs` | 0 | 同 `gantt_widget`（同 `Chart` kind） | **M10** | P2 |
-| `grid` | `special_widgets/grid.rs` | 5 | 5 字面量；BLUE21 A.7 #8 记 ``:394` 的 `== rgb(220,220,220)` 哨兵是**潜在**问题（无证据不判） | **M4**（哨兵本就是主题比较，改读 token 更稳） | P2 |
+| `grid` | `special_widgets/grid.rs` | 5 | ✅ 哨兵**已除**（轮 23）：`#DCDCDC` 从「不可请求」变为可请求，`line_color` 改为 `Option<Option<Color>>` | — | ✅ **P2 完成** |
 | `canvas` | `canvas.rs` | 1 | ✅ 1 字面量 | **M4** **M5**（画布底色读 `surface_container`） | P2 |
 | `kanban_board` | `kanban_board.rs` | 0 | 0 字面量；卡片拖动**无落点指示** | **M3**（拖影 + 插入线）**M5**（列背景层级） | P1 |
 | `freeform_shape` | `freeform_shape/shape.rs` | 2 | 2 字面量 | **M1** **M4** | P2 |
@@ -1798,6 +1798,41 @@ M7/M8/M9/M10 是 4/6/8/25 个控件的逐条。
 > **本表的批号与 §7 的批号不是同一套**：§7 是**计划主体的推进顺序**（状态→动效→层级→门禁），
 > 本表是**按控件组/按工作类型的归堆**。两者覆盖的**控件**互不重叠，但**批号数字会撞**。
 > §5A 的两批在本表里是 **批 9/批 10**，在 §7 里是 **批 7/批 8** —— 引用时请以**章节号**为准。
+
+### A.11.1 进度台账（每轮更新，**以本表为准**）
+
+| 批 | 状态 | 已交付 | 未完成 |
+|---|---|---|---|
+| **批 1** M1+M11 | ✅ **完成** | `BaseWidget` 三字段 + `widget_state` 上提；`state_source_scan` 267/0 | — |
+| **批 2** M2 | ✅ **完成** | 预设写入 6 个状态键；静止快照不变；`declared_tokens_scan` 17/0 | — |
+| **批 3** M3 总线 | ✅ **完成** | `Widget::tick` 上提 + `tick_animations`；`animation_driver_scan` 268/0 | — |
+| **批 4** M3 新增动效 | ✅ **完成** | 11 个控件有到达量（见 `log-20260924-1.md` §128 的表）。**本轮补齐最后三个**：`dialog`（中心放大 + 遮罩淡入 + 未显示即不画）、`popover`（上缘向下展开 + 关闭态不画内饰）、`message_box`（与 `dialog` 同形式，目标从继承的 `visible` 采样） | — |
+| **批 5** M5+M6 层级 | ✅ **完成** | `scrim` 收进 `dialog::draw_modal_scrim`（8 个模态共用）；`outline` 焦点环 3 处 | 剩下的 `surface_container*` / `inverse_*` 属**批 6**（「有没有消费者」是字面量问题）|
+| **批 6** M4 字面量 | ✅ **完成** | `audit_appearance.py` 681 → **671**。实改：`image_gallery` 13→4（4 处全为 `unwrap_or`/`if` 兜底）、`grid` 哨兵值 1→0（`#DCDCDC` 现在可请求）。四个快照逐字节不变 | **退出本批且已逐条记录理由**（见 `log-20260924-1.md` §129）：`camera_preview`(16) / `video_player`(11) / 六个图表(29) 是**内容色**；`splash_screen`(4) 已是**兜底形态** |
+| **批 7** 各组 P0 单点 | ✅ **完成** | 12 项全部落地（`group_box` 勾 / `meter` 刻度 / `dial` 刻度环 / `tab_widget` 零 tab / `tooltip` 层级 / `bottom_sheet` 遮罩 / `fab` 契约 / `drop_zone` 面 / `calendar` 行高 / `app_bar` clamp / `switch` 滑动 / `camera_preview` 判为内容色）。**`tab_bar` 两项（D9 三形状 / D10 溢出）也在§4.4 完成**，选「均分」路 —— 见 §4.4 的复核 | — |
+| **批 8** M7/M8/M9/M10/M12 长尾 | ✅ **完成** | `tree_view`/`tree_table`/`virtual_list` 行 hover + base 转发；`range_slider` 双柄 a11y；`calendar` a11y 播报选中日；`combo_box` RTL 指示符；`segmented_control` a11y；`:error` 状态通道；`gantt_widget` 里程碑/今日线/依赖箭头；`date_edit` 日历弹层（含 `Date::weekday`）；`spinbox` RTL；`splash_screen` 淡出（opt-in）；`image_gallery` 切图到达；**`chart` 值动画**（0..=1 进度映射到各自区间，Bar/Line/Area 共用）；**`FlexLayout::arrange` 反向轴**（轮 26 发现，真 bug）| — |
+
+### A.11.2 **死状态普查**（轮 30，系统扫描一次）
+
+**方法与判据**见 `log-20260924-1.md` §155。已修：
+`calendar.vertical_header_visible`（→ ISO 周号栏）、
+`find_replace_dialog.wrap_around`（→ 信号携带 `SearchOptions`）、
+`button.default_button`（→ 强调环）、
+`refresh_control.content`（结构性：子控件从未登记 ⇒ 从未绘制）。
+另修一处**真 flaky**（`drive_frame_drains_*` 的「修了一半的修补」）。
+
+**尚未关闭（各自需要一个新功能，已登记为独立议题，不假装是接线）**：
+
+| 项 | 性质 | 所需工作 |
+| `list_view.view_mode` / `mdiarea.view_mode` | 死状态 | `Icon`/`Details`/`Thumbnails`、`TabbedView` 三/一种布局 |
+| `scrollarea.alignment`/`widget_resizable`、`dockwidget.docked`/`dock_location` | 死状态 | 滚动区对中/尺寸策略；dock 方向要重排 chrome |
+| `lcd_number.small_decimal_point`、`avatar.image_source`、`tool_button.icon`、`textedit.max_length`/`line_wrap`、`combobox.max_visible_items`、`inplace_editor.padding`、`audio_visualizer.peak_hold_duration` | 死状态 | 各自一条小功能（小数点绘制 / 图像加载 / 图标加载 / 长度上限 + 换行 / 下拉列表 / 内边距 / 峰值计时）|
+
+> 这一表是**扫描产出**，不是计划原有条目。它们与 §A.8 的「字面量」不同：
+> 字面量是**画错了颜色**，这些是**承诺了一件没做的事**。
+> 每条都记了「所需工作」，所以下一轮可以从任一条接续，不需要重新扫描。
+| **批 10** §5A（二） | ✅ **完成** | 上下文传播 + `children_if` 裁定；`View::build` 签名变更后全量绿 | — |
+| **收尾** | ⏳ **未开始** | 按用户指令**放到最后**：单次全量 + 5 profile + `run_all_gates.sh` + 快照再生 | — |
 
 ---
 

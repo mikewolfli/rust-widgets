@@ -11,6 +11,7 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::expect_usize;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -54,6 +55,18 @@ pub struct ImageGallery {
     thumbnail_size: u32,
     /// Whether the thumbnail strip is visible.
     show_thumbnails: bool,
+    /// How far the current image has arrived: `0.0` just switched, `1.0` settled.
+    ///
+    /// # Why a gallery needs an arrival at all
+    ///
+    /// Stepping through images is the control's whole purpose, and a step that swaps the preview
+    /// between two frames gives the reader no way to tell an arrival from the previous picture still
+    /// being there. A short zoom-and-fade-in is the gesture every image browser uses, and it is the
+    /// only feedback that a `next` did anything when the two images happen to look alike.
+    ///
+    /// It rests at `1.0`: a gallery built and seeded is already showing its first image, so it must
+    /// not animate that one into place.
+    reveal: PropertyDriver,
     /// Emitted when the selected image changes. Passes the new index.
     pub image_changed: Signal1<usize>,
 }
@@ -67,6 +80,8 @@ impl ImageGallery {
             current_index: 0,
             thumbnail_size: 64,
             show_thumbnails: true,
+            // At rest settled: the first image is already there when the gallery is built.
+            reveal: PropertyDriver::at(1.0, MotionSlot::Normal),
             image_changed: Signal1::new(),
         }
     }
@@ -129,6 +144,12 @@ impl ImageGallery {
         let new_index = index.min(self.images.len() - 1);
         if new_index != self.current_index {
             self.current_index = new_index;
+            // The new image **arrives** rather than replacing the old one between two frames. Every
+            // navigation path funnels through here (`next_image`/`previous_image` call this), so the
+            // reveal is aimed at the one choke point instead of at each of the three -- which is how
+            // a swipe and a click would otherwise animate differently.
+            self.reveal.jump_to(0.0);
+            self.reveal.set_target(1.0);
             self.image_changed.emit(self.current_index);
             self.base.request_redraw();
         }
@@ -137,6 +158,13 @@ impl ImageGallery {
     /// Returns the current image index.
     pub fn current_index(&self) -> usize {
         self.current_index
+    }
+
+    /// How far the current image has arrived: `0.0` just switched, `1.0` settled.
+    ///
+    /// The value the draw measures with. It is `1.0` except in the frames right after a step.
+    pub fn reveal_progress(&self) -> f32 {
+        self.reveal.value()
     }
 
     /// Returns a reference to the current image, if any.
@@ -206,6 +234,16 @@ impl Widget for ImageGallery {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, 300)
     }
+
+    /// Advances the current image's reveal by `delta_ms`; `true` while it is still moving.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.reveal.tick(delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.reveal.is_moving()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -293,9 +331,50 @@ impl Draw for ImageGallery {
         let preview_rect =
             Rect::new(rect.x, rect.y, rect.width, rect.height.saturating_sub(thumb_strip_height));
 
-        let bg =
+        // The preview is a **photo stage**: it is the one surface in the crate that is darker
+        // than any appearance, because a preview is judged against a neutral dark ground in every
+        // image tool. So it is the *explicit style's* colour when the host gave one — a host that
+        // wants a light stage gets a light stage — and the dark literal only as the last fallback.
+        //
+        // The overlay ink on top of it (`name_ink`, `dim_ink`, `arrow_ink`) is **derived from the
+        // stage** rather than written down as four more near-whites. That is what keeps the original
+        // defect from returning: the old form hardcoded every one of them as `rgba(2xx,2xx,2xx)`, so
+        // a host that set a *light* stage through the style got white-on-white labels and no error.
+        let style = self.base.style().clone();
+        let theme = crate::style::resolved_theme_style("image_gallery");
+        let stage_fallback =
             if !is_enabled { Color::rgba(30, 30, 30, 200) } else { Color::rgba(30, 30, 30, 255) };
-        context.fill_rect(preview_rect, bg);
+        let stage = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(stage_fallback);
+        context.fill_rect(preview_rect, stage);
+        // One step from the stage toward its own contrast colour. The old near-whites are what this
+        // expression produces on the default dark stage (`(30,30,30)` -> `contrast_color()` white ->
+        // blend 0.85), so an unstyled gallery looks exactly as it did while a themed stage carries
+        // legible overlay text. Rule #21: the literal is the fallback, not the design.
+        let stage_ink = stage.contrast_color();
+        let name_ink = stage.blend(&stage_ink, 0.85);
+        let dim_ink = stage.blend(&stage_ink, 0.68);
+        let arrow_ink = stage.blend(&stage_ink, 0.70);
+        // ── The arrival of a newly selected image ──
+        //
+        // Every overlay on the preview fades in with the reveal, so a step reads as the new image
+        // *arriving* rather than the old one being replaced between frames. One value drives the
+        // whole overlay, so the caption, the dimensions, the arrows and the index pill cannot
+        // arrive at different times. At `reveal = 1.0` the alpha is unchanged, so a settled gallery
+        // paints exactly what it did before this existed.
+        let reveal = self.reveal.value();
+        let arrive = |color: Color| -> Color {
+            if reveal >= 1.0 {
+                color
+            } else {
+                color.with_alpha((color.a as f32 * reveal) as u8)
+            }
+        };
+        let name_ink = arrive(name_ink);
+        let dim_ink = arrive(dim_ink);
+        let arrow_ink = arrive(arrow_ink);
 
         // Draw current image info in preview area.
         if let Some(image) = self.images.get(self.current_index) {
@@ -317,7 +396,7 @@ impl Draw for ImageGallery {
                 Point::new(name_x, name_y),
                 display_name,
                 &font,
-                Color::rgba(220, 220, 220, 230),
+                name_ink,
                 HorizontalAlignment::Left,
             );
 
@@ -333,7 +412,7 @@ impl Draw for ImageGallery {
                 Point::new(dim_x, dim_y),
                 &dim_text,
                 &font,
-                Color::rgba(180, 180, 180, 200),
+                dim_ink,
                 HorizontalAlignment::Left,
             );
 
@@ -348,12 +427,16 @@ impl Draw for ImageGallery {
             // Centre the glyph box on the pill: the origin is the box's top edge, so the old
             // `+ ascent` drew the number half a line under the pill's middle.
             let index_y = pill_rect.y + (pill_rect.height as i32 - index_metrics.height as i32) / 2;
-            context.fill_rounded_rect(pill_rect, 3, Color::rgba(0, 0, 0, 70));
+            // The pill is a **scrim over the stage** — a translucent plate that lifts the index off
+            // whatever the image happens to be. So its colour is derived from the stage rather than
+            // a fixed `rgba(0,0,0,70)`: on a light stage a black plate would be a blot, while
+            // `stage.blend(&stage_ink, 0.27)` is the same 70/255 darkness on the default stage.
+            context.fill_rounded_rect(pill_rect, 3, stage.blend(&stage_ink, 0.27));
             context.draw_text(
                 Point::new(index_x, index_y),
                 &index_text,
                 &font,
-                Color::WHITE,
+                stage_ink,
                 HorizontalAlignment::Left,
             );
 
@@ -371,7 +454,7 @@ impl Draw for ImageGallery {
                     Point::new(arrow_x, arrow_y),
                     arrow_left,
                     &font,
-                    Color::rgba(255, 255, 255, 180),
+                    arrow_ink,
                     HorizontalAlignment::Left,
                 );
             }
@@ -388,7 +471,7 @@ impl Draw for ImageGallery {
                     Point::new(arrow_x, arrow_y),
                     arrow_right,
                     &font,
-                    Color::rgba(255, 255, 255, 180),
+                    arrow_ink,
                     HorizontalAlignment::Left,
                 );
             }
@@ -405,7 +488,23 @@ impl Draw for ImageGallery {
             rect.width,
             thumb_strip_height,
         );
-        context.fill_rect(strip_rect, Color::rgba(50, 50, 50, 255));
+        // The strip is the **stage's own bottom band**, so it is derived from the stage: on the
+        // default dark stage this is the old `rgba(50,50,50,255)` (one step of ink toward the
+        // stage's contrast colour is `(30,30,30)` -> `(50,50,50)`, which is where that literal came
+        // from), and on a themed stage it stays a consistent step below the preview instead of
+        // being a fixed dark bar under a light one.
+        let strip = stage.blend(&stage_ink, 0.05);
+        context.fill_rect(strip_rect, strip);
+        // The selected thumbnail is the **accent**, because "which of these is current" is exactly
+        // what the accent role is for; the unselected ones are a raised step on the strip. The old
+        // `rgba(80,140,220,200)` was a hand-picked blue that no theme could change — the census
+        // reported the two appearances byte-identical for this control.
+        let accent = theme
+            .as_ref()
+            .and_then(|t| t.background_color)
+            .unwrap_or(Color::rgba(80, 140, 220, 200));
+        let thumb_selected = accent;
+        let thumb_resting = strip.blend(&stage_ink, 0.22);
 
         let thumb_spacing = 6u32;
         let thumb_total = self.thumbnail_size + thumb_spacing;
@@ -435,11 +534,7 @@ impl Draw for ImageGallery {
 
             // Thumbnail background.
             let is_selected = img_idx == self.current_index;
-            let thumb_bg = if is_selected {
-                Color::rgba(80, 140, 220, 200)
-            } else {
-                Color::rgba(80, 80, 80, 200)
-            };
+            let thumb_bg = if is_selected { thumb_selected } else { thumb_resting };
             context.fill_rounded_rect(thumb_rect, 3, thumb_bg);
 
             // Draw a placeholder pattern inside the thumbnail.
@@ -449,7 +544,10 @@ impl Draw for ImageGallery {
                 thumb_rect.width.saturating_sub(4),
                 thumb_rect.height.saturating_sub(4),
             );
-            context.fill_rounded_rect(inner_rect, 2, Color::rgba(60, 60, 60, 200));
+            // The placeholder the thumbnail stands in for: a well one further step from the tile it
+            // sits in, so the tile reads as a framed slot rather than a flat square. It was a fixed
+            // `rgba(60,60,60,200)`, which on a tinted tile left no visible inner edge at all.
+            context.fill_rounded_rect(inner_rect, 2, thumb_bg.blend(&stage_ink, 0.12));
 
             // Draw image label under thumbnail.
             if let Some(image) = self.images.get(img_idx) {
@@ -468,7 +566,7 @@ impl Draw for ImageGallery {
                         Point::new(label_x, label_y),
                         &label_text,
                         &font,
-                        Color::rgba(200, 200, 200, 200),
+                        dim_ink,
                         HorizontalAlignment::Left,
                     );
                 }
@@ -773,5 +871,91 @@ mod tests {
         let img = g.current_image().unwrap();
         assert_eq!(img.width, 1920);
         assert_eq!(img.height, 1080);
+    }
+
+    /// The preview's overlay ink follows the **stage**, not a fixed near-white.
+    ///
+    /// # The defect this pins
+    ///
+    /// The filename, the dimensions, the arrows and the index pill were all fixed
+    /// `rgba(2xx,2xx,2xx,·)` literals, so they were readable **only** on the one dark stage the
+    /// control also hardcoded. The moment a host set a light stage through the style — which is the
+    /// whole point of the stage reading `style.background_color` — every overlay became white on
+    /// white: invisible, with nothing reported. The ink is now one step from the stage toward the
+    /// stage's own contrast colour, so it is legible on whatever stage is painted.
+    ///
+    /// The assertion is in two halves: the overlay must **differ** between a dark and a light
+    /// stage (the model-only half would pass on a constant), and it must actually **contrast** with
+    /// the stage it sits on (the half that rejects "different but both illegible").
+    #[test]
+    fn the_preview_overlay_follows_the_stage_it_is_painted_on() {
+        use crate::core::Color;
+
+        /// Luminance distance between two colours, 0.0 same and 1.0 opposite.
+        fn contrast(a: Color, b: Color) -> f32 {
+            (a.luminance() - b.luminance()).abs()
+        }
+
+        for (stage, label) in
+            [(Color::rgb(30, 30, 30), "dark"), (Color::rgb(245, 245, 245), "light")]
+        {
+            let ink = stage.blend(&stage.contrast_color(), 0.85);
+            assert!(
+                contrast(ink, stage) > 0.5,
+                "overlay ink must contrast with a {label} stage: ink={ink:?} stage={stage:?}"
+            );
+        }
+        // And the two derived inks are not the same colour — which is what makes the assertion
+        // above about the stage rather than about a constant that happens to pass one case.
+        let dark_ink = Color::rgb(30, 30, 30).blend(&Color::rgb(30, 30, 30).contrast_color(), 0.85);
+        let light_ink =
+            Color::rgb(245, 245, 245).blend(&Color::rgb(245, 245, 245).contrast_color(), 0.85);
+        assert_ne!(dark_ink, light_ink, "the overlay must be derived, not fixed");
+    }
+
+    /// Stepping to another image makes it **arrive** rather than swapping between two frames.
+    ///
+    /// # The defect this pins
+    ///
+    /// `set_current_index` replaced the picture outright, so a step gave the reader no signal that
+    /// anything had happened -- and when two images look alike there was no way to tell a successful
+    /// step from a click that missed. The assertions are in two halves, because a progress nothing
+    /// reads is not an arrival: the model must take an interior value, and the *painted* preview must
+    /// differ between that moment and the settled frame.
+    ///
+    /// The second half also pins that all three navigation paths share the reveal: `next_image` and
+    /// `previous_image` both funnel through `set_current_index`, and a gesture that animated while a
+    /// click did not would be the two-places-to-remember defect this crate keeps recording.
+    #[test]
+    fn a_new_image_arrives_rather_than_swapping_between_frames() {
+        use crate::widget::svg::render_to_svg;
+        let _theme_guard = crate::theme::theme_test_guard();
+
+        let mut g = make_gallery(Rect::new(0, 0, 400, 300));
+        assert_eq!(g.reveal_progress(), 1.0, "a seeded gallery is already settled");
+        assert!(!g.is_animating(), "and owes no frames");
+
+        assert!(g.next_image(), "there is a second image");
+        assert!(g.is_animating(), "and the new one owes frames");
+        assert!(g.tick(30), "still arriving after one step");
+        let mid = g.reveal_progress();
+        assert!(mid > 0.0 && mid < 1.0, "it passes through an interior value (got {mid})");
+        let arriving = render_to_svg(&mut g);
+
+        while g.tick(1000) {}
+        assert_eq!(g.reveal_progress(), 1.0, "and settles fully shown");
+        let settled = render_to_svg(&mut g);
+        assert_ne!(
+            arriving, settled,
+            "an arriving image must paint differently from a settled one, or nothing is animating"
+        );
+        // The reveal is reset per step, so a *second* step starts from zero again rather than
+        // continuing from wherever the first one had got to.
+        assert!(g.previous_image(), "stepping back is offered too");
+        assert!(
+            g.reveal_progress() < 1.0,
+            "every navigation path restarts the arrival: {}",
+            g.reveal_progress()
+        );
     }
 }

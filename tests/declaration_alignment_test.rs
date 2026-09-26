@@ -239,6 +239,18 @@ fn q2_every_control_draws_something() {
         let Some(mut widget) = factory.create(name, Rect::new(0, 0, 240, 120), "Sample") else {
             continue;
         };
+        // Seeded the same way the rendering census seeds it, because a control's designed
+        // resting state is allowed to paint nothing: a dialog, a message box and a bottom
+        // sheet are all created **hidden** and shown by the runtime, so rendering the
+        // factory's bare instance asks a question the control never answers in practice.
+        //
+        // Without this line the three of them were reported as "an empty `impl Draw`",
+        // which they are not -- `dialog` paints a scrim, a frame and a title bar the moment
+        // something opens it. Sharing the seeder rather than naming the three here is what
+        // keeps this test and the census from disagreeing about which controls need opening.
+        if !rust_widgets::widget::sample_fill::apply(name, widget.as_mut()) {
+            // No data concept, or already seeded by its own constructor. Nothing to do.
+        }
         let Some(drawable) = draw_of(widget.as_mut()) else {
             failures.push(name);
             continue;

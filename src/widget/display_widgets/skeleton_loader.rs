@@ -457,6 +457,9 @@ mod tests {
     /// the one thing a caller can predict from the shape.
     #[test]
     fn a_text_line_skeleton_stacks_fixed_rows() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         let total = 3 * dimensions::SKELETON_ROW_HEIGHT + 2 * dimensions::SKELETON_ROW_GAP;
         // The stack cannot outgrow the cell a control is measured in, or the census
         // would be reporting a clipped placeholder rather than a drawn one.

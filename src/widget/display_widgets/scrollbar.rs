@@ -7,6 +7,7 @@ use crate::core::{Color, Orientation, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::{
     expect_i64, expect_orientation, expect_text_direction, orientation_to_str,
     text_direction_to_str,
@@ -18,6 +19,22 @@ use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::numeric::ordered_clamp_i32;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// How long the bar stays fully opaque after the last interaction, in milliseconds.
+///
+/// Material's scrollbar waits **600 ms** of inactivity before it begins to fade. The value is a
+/// duration the theme does not price (it is a *delay*, not a transition), so it is a named
+/// constant rather than a `Motion` slot — the same distinction `ReferenceToolkit`'s scrollbar
+/// draws between its hide-delay and its hide animation.
+const SCROLLBAR_IDLE_DELAY_MS: u32 = 600;
+
+/// What the bar fades *to* while it is idle, as a fraction of its drawn opacity.
+///
+/// Not zero: a scrollbar that vanishes entirely gives no hint that the region scrolls, and a
+/// pointer returning to the bar has nothing to aim at. A faint trough that stays is what every
+/// toolkit settles on — the bar dims, it does not disappear.
+const SCROLLBAR_IDLE_OPACITY: f32 = 0.35;
+
 /// Scroll bar widget.
 pub struct ScrollBar {
     base: BaseWidget,
@@ -56,6 +73,23 @@ pub struct ScrollBar {
     /// widget before releasing, since the widget tracks its own press state.
     pub slider_released: GenericSignal,
     mouse_pressed: bool,
+    /// Milliseconds since the last interaction that should keep the bar fully opaque.
+    ///
+    /// # Why the bar needs an idle clock at all
+    ///
+    /// A scrollbar is chrome the reader only needs *while scrolling*: left fully opaque it is a
+    /// permanent stripe competing with the content it frames. Every toolkit that has solved this
+    /// fades it — Material after 600 ms idle, Qt through the scroll bar's own hide-delay — and
+    /// the mechanism has two halves that must both exist: a clock that notices the quiet, and an
+    /// opacity the draw path reads. Without them the bar is either always loud or (if simply
+    /// hidden) undiscoverable.
+    idle_ms: u32,
+    /// The bar's drawn opacity, `1.0` while active and [`SCROLLBAR_IDLE_OPACITY`] once idle.
+    ///
+    /// A driver rather than a bare float so the fade is a **transition** that can be seen rather
+    /// than a step, and so its resting end is expressible: the driver is built at `1.0` because a
+    /// freshly laid-out bar has just appeared and must not fade *from* invisibility.
+    opacity: PropertyDriver,
 }
 impl ScrollBar {
     /// Creates a scroll bar with default range 0-100.
@@ -74,6 +108,8 @@ impl ScrollBar {
             slider_pressed: GenericSignal::new(),
             slider_released: GenericSignal::new(),
             mouse_pressed: false,
+            idle_ms: 0,
+            opacity: PropertyDriver::at(1.0, MotionSlot::Normal),
         }
     }
     /// Returns minimum value.
@@ -121,6 +157,10 @@ impl ScrollBar {
             return;
         }
         self.value = clamped;
+        // A moving thumb is the reader scrolling: the bar comes back to full opacity and its idle
+        // clock restarts, which is what keeps the fade from fighting the scroll it is meant to
+        // accompany.
+        self.touch_activity();
         self.value_changed.emit(self.value);
     }
     /// Returns single step value.
@@ -376,6 +416,81 @@ impl ScrollBar {
             }
         }
     }
+
+    /// The bar's drawn opacity, `1.0` while active and dimmed once idle.
+    ///
+    /// The draw path multiplies every colour it paints by this, so the two halves of the
+    /// behaviour — "notice the quiet" and "paint quieter" — are read from one value.
+    pub fn opacity(&self) -> f32 {
+        self.opacity.value()
+    }
+
+    /// Marks the bar as newly interacted with, waking it back to full opacity.
+    ///
+    /// Called from every path that changes what the reader is looking at: the value moving, the
+    /// thumb being grabbed, the pointer arriving. It re-aims the driver and restarts the idle
+    /// clock, and it deliberately does **not** request a frame: while the bar is already opaque
+    /// there is nothing to animate, and while it is dimmed `tick_animations` reports the movement
+    /// itself.
+    fn touch_activity(&mut self) {
+        self.idle_ms = 0;
+        self.opacity.set_target(1.0);
+    }
+
+    /// Advances the idle clock and the opacity fade by `delta_ms`.
+    ///
+    /// # The two-phase shape, and why the delta is *split*
+    ///
+    /// The opacity holds at `1.0` for [`SCROLLBAR_IDLE_DELAY_MS`], and only then begins to fade
+    /// toward [`SCROLLBAR_IDLE_OPACITY`]. That ordering is what makes the bar feel *responsive*
+    /// rather than twitchy: fading on the first idle millisecond would dim the bar while the
+    /// reader is still reading what they just scrolled to.
+    ///
+    /// A single `Transition` cannot express the delay, so there are two fields — but they must not
+    /// both consume the whole delta. Feeding the entire `delta_ms` to the fade on the frame that
+    /// *crosses* the delay made a single `tick(600)` drop straight to the floor: the delay is a
+    /// duration the fade has not yet started for, so only the part of the delta **past** the
+    /// threshold belongs to the fade. A long frame therefore still arrives at the right place, and
+    /// a frame that lands exactly on the boundary leaves the bar untouched.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        // The aim is derived from the idle clock on **every** frame rather than only on the frame
+        // that crosses the threshold. Two failure modes made that necessary, and they point the
+        // same way: a frame landing *exactly* on the boundary never crossed it (so the bar held
+        // at full opacity forever), and a `touch_activity` that woke the bar was immediately
+        // over-written by a crossing check (so the wake never took). One derivation, read every
+        // frame, has neither. `set_target` is idempotent, so re-stating it costs nothing.
+        //
+        // The delta is **split** at the threshold rather than handed whole to the fade: the delay
+        // is a duration the fade has not started for, so a frame that crosses the boundary gives
+        // the fade only the part past it. Handing over the whole delta made a single `tick(600)`
+        // drop straight to the floor, and gave the hold nothing to hold.
+        let fade_delta = if self.idle_ms < SCROLLBAR_IDLE_DELAY_MS {
+            let until_idle = SCROLLBAR_IDLE_DELAY_MS - self.idle_ms;
+            self.idle_ms = self.idle_ms.saturating_add(delta_ms);
+            if self.idle_ms >= SCROLLBAR_IDLE_DELAY_MS {
+                self.opacity.set_target(SCROLLBAR_IDLE_OPACITY);
+                delta_ms.saturating_sub(until_idle)
+            } else {
+                // Inside the hold. The clock is what the delay consumes, but the fade-in after a
+                // wake also happens here: a bar whose opacity is below full is climbing toward it
+                // and must be advanced, or a wake would stall at whatever the fade left behind.
+                self.opacity.set_target(1.0);
+                delta_ms
+            }
+        } else {
+            self.opacity.set_target(SCROLLBAR_IDLE_OPACITY);
+            delta_ms
+        };
+        if fade_delta == 0 {
+            return false;
+        }
+        self.opacity.tick(fade_delta)
+    }
+
+    /// Whether the bar is between two opacities -- answers only, never advances.
+    pub fn is_animating(&self) -> bool {
+        self.opacity.is_moving()
+    }
 }
 /// Scroll bar actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -413,6 +528,16 @@ impl Widget for ScrollBar {
             crate::layout::Orientation::Horizontal => crate::core::Size::new(100, 16),
             crate::layout::Orientation::Vertical => crate::core::Size::new(16, 100),
         }
+    }
+
+    // The idle fade is the control's own animation; the trait spelling is what the frame bus
+    // reaches through `&mut dyn Widget`, which is the only way the fade actually happens.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        ScrollBar::tick(self, delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        ScrollBar::is_animating(self)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -516,6 +641,13 @@ impl EventHandler for ScrollBar {
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
+        }
+        // The pointer arriving over the bar wakes it, because a reader whose pointer is on a
+        // scrollbar is about to grab it. Read from the base's own hover fact rather than from a
+        // second copy of the enter/leave arms, so this cannot drift from what `widget_state()`
+        // reports. Value changes wake it too, through `set_value`.
+        if self.base.is_hovered() {
+            self.touch_activity();
         }
         match event {
             Event::MousePress { pos, button } if *button == 1 => {
@@ -648,6 +780,22 @@ impl Draw for ScrollBar {
             .unwrap_or_else(|| trough.blend(&trough.contrast_color(), 0.32));
         let slider_border_color = trough.blend(&slider_color, 0.5);
         let arrow_color = style.text_color.unwrap_or_else(|| trough.contrast_color());
+        // The idle fade is applied as one multiply over every colour the bar paints, so the two
+        // halves of the behaviour read from one value and no paint site can forget the fade. The
+        // alpha is scaled rather than the colour *replaced*, so a colour that was already
+        // translucent (a themed trough with its own alpha) keeps its own transparency.
+        let fade = self.opacity.value();
+        let faded = |color: Color| -> Color {
+            if fade >= 1.0 {
+                color
+            } else {
+                color.with_alpha((color.a as f32 * fade) as u8)
+            }
+        };
+        let trough = faded(trough);
+        let slider_color = faded(slider_color);
+        let slider_border_color = faded(slider_border_color);
+        let arrow_color = faded(arrow_color);
         // Draw background (the trough)
         context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), trough);
         // Draw border
@@ -1204,5 +1352,137 @@ mod tests {
         sb.set("direction", CapabilityValue::String("rtl".to_string())).unwrap();
         assert_eq!(sb.direction(), crate::core::TextDirection::RightToLeft);
         assert_eq!(sb.get("direction").unwrap().as_str(), Some("rtl"));
+    }
+
+    /// An untouched bar is fully opaque and owes no frames.
+    ///
+    /// The resting end, asserted rather than inferred: a bar built at the *idle* opacity would
+    /// fade *in* on its first frame, and a bar whose idle clock started mid-way would begin
+    /// dimming before the reader had done anything. This is the crate's single answer to
+    /// "what is the first value", and it is also what keeps `scroll_bar.svg` unchanged. Note that
+    /// "owes no frames" is about the *first* moment: after the idle delay the bar does begin to
+    /// fade, which is the whole point — the delay starts when the bar appears.
+    #[test]
+    fn a_freshly_built_bar_is_opaque_and_still() {
+        let mut sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        assert_eq!(sb.opacity(), 1.0, "a bar that has just appeared must not be dimmed");
+        assert!(!sb.is_animating(), "so it owes no frames");
+        assert!(!sb.tick(16), "nor on its first frame");
+        assert_eq!(sb.opacity(), 1.0, "and it is still opaque well inside the delay");
+    }
+
+    /// The bar holds full opacity through the idle delay, then fades to a visible floor.
+    ///
+    /// # The defect this pins
+    ///
+    /// The bar had no idle behaviour at all: it was permanently opaque chrome competing with the
+    /// content it frames. The assertion is the two-phase shape itself, because both halves are
+    /// load-bearing and they fail differently — a fade with no delay dims the bar while the reader
+    /// is still looking at what they scrolled to, and a delay with no fade never gets out of the
+    /// way. The middle sample ("still opaque once the delay has just elapsed") is what separates
+    /// them: it is a value a fade-on-first-idle-millisecond cannot produce.
+    #[test]
+    fn the_bar_holds_then_fades_after_the_idle_delay() {
+        let mut sb = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        // Scrolling wakes it, and it is already at full opacity, so there is nothing to see yet.
+        sb.set_value(50);
+        assert_eq!(sb.opacity(), 1.0);
+        assert!(!sb.is_animating(), "waking an opaque bar is not an animation");
+
+        // Still fully opaque at the moment the delay elapses — this is the sample a fade with no
+        // delay fails, because it would already be part-way down.
+        assert!(!sb.tick(SCROLLBAR_IDLE_DELAY_MS), "the hold is not an animation");
+        assert_eq!(sb.opacity(), 1.0, "the bar must hold through the whole idle delay");
+
+        // Past the delay it starts to move, and it moves *downward* toward the floor.
+        assert!(sb.tick(60), "past the delay the bar owes frames");
+        let mid = sb.opacity();
+        assert!(
+            mid < 1.0 && mid > SCROLLBAR_IDLE_OPACITY,
+            "the fade must pass through interior opacities (got {mid})"
+        );
+        while sb.tick(60) {}
+        assert_eq!(sb.opacity(), SCROLLBAR_IDLE_OPACITY, "and settle at the visible floor");
+        assert!(sb.opacity() > 0.0, "an invisible scrollbar gives no hint the region scrolls");
+
+        // Interacting again wakes the bar: the idle clock restarts immediately and the opacity
+        // animates back up from wherever the fade got to. Note the two are separate facts — the
+        // clock restarts at once (so the bar stops fading), while the opacity *rises* over the
+        // frames that follow, which is a fade-in rather than a snap.
+        sb.set_value(60);
+        assert!(sb.is_animating(), "a wake starts fading back up");
+        while sb.tick(60) {}
+        assert_eq!(sb.opacity(), 1.0, "and it returns to full opacity");
+        // The wake restarted the clock, so the bar is opaque for a *fresh* delay rather than
+        // resuming the old one. Sampled inside that window: after a full delay and a bit, it will
+        // have started fading again, which is the cycle working rather than a defect.
+        sb.set_value(70);
+        assert_eq!(sb.opacity(), 1.0);
+        assert!(!sb.tick(SCROLLBAR_IDLE_DELAY_MS - 1), "a fresh delay begins from the wake");
+        assert_eq!(sb.opacity(), 1.0, "so it is opaque throughout that delay");
+    }
+
+    /// The fade reaches the pixels: a dimmed bar paints translucent ink, not opaque ink.
+    ///
+    /// This is the assertion that separates "the opacity is stored" from "the opacity is drawn"
+    /// — the defect shape this crate has hit repeatedly (`audio_visualizer`, `data_grid`, the
+    /// bezier handles). It reads the emitted SVG for a partial alpha rather than comparing whole
+    /// documents, so a bar that renders differently for some unrelated reason cannot satisfy it.
+    #[test]
+    fn the_fade_reaches_the_painted_ink() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
+        use crate::core::Size;
+        use crate::render::{PaintBackend, RenderContext, SvgPaintBackend};
+
+        let render = |bar: &mut ScrollBar| -> String {
+            let mut backend = SvgPaintBackend::new(Size::new(200, 16));
+            backend.begin_frame(Color::rgb(0, 0, 0));
+            {
+                let mut ctx = RenderContext::new(&mut backend);
+                bar.draw(&mut ctx);
+            }
+            backend.end_frame();
+            backend.finish()
+        };
+
+        let mut bar = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        bar.set_range(0, 1000);
+        bar.set_value(500);
+        let active = render(&mut bar);
+
+        // Drive the fade to its floor and render the same bar again.
+        bar.tick(SCROLLBAR_IDLE_DELAY_MS);
+        while bar.tick(60) {}
+        assert_eq!(bar.opacity(), SCROLLBAR_IDLE_OPACITY);
+        let idle = render(&mut bar);
+
+        assert_ne!(active, idle, "a dimmed bar must not paint like an active one");
+        // The frame background is the first fill the *backend* emits, so the bar's own trough is
+        // the second. Naming the trough rather than "any fill" is what keeps the assertion from
+        // being satisfied by the background the harness paints (the sampling mistake this crate's
+        // log records repeatedly).
+        let nth_fill = |svg: &str, n: usize| -> String {
+            let mut search = 0usize;
+            for _ in 0..=n {
+                let Some(offset) = svg[search..].find("fill=\"") else {
+                    return String::new();
+                };
+                search += offset + 6;
+            }
+            let rest = &svg[search..];
+            rest[..rest.find('"').unwrap_or(0)].to_string()
+        };
+        let active_fill = nth_fill(&active, 1);
+        let idle_fill = nth_fill(&idle, 1);
+        assert!(
+            active_fill.ends_with("1.00)"),
+            "an active bar paints opaque ink (got {active_fill})"
+        );
+        assert!(
+            !idle_fill.ends_with("1.00)"),
+            "an idle bar must paint translucent ink, not the same opaque fill (got {idle_fill})"
+        );
     }
 }

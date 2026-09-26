@@ -130,6 +130,18 @@ pub fn text_ink_box(svg: &str) -> Option<(i32, i32, i32, i32)> {
 /// run it means instead of depending on paint order.
 ///
 /// A control that paints nothing yields an empty list; the caller decides whether that is a failure.
+///
+/// # Non-text paths are excluded
+///
+/// A `font8x8` run is emitted as **one** `<path>` per `draw_text` call whose `d` is a run of
+/// axis-aligned rectangles (`M{x0} {y0}h{w}v{h}h-{w}z`). An icon, an arrow head or an arbitrary
+/// shape is also a `<path>`, and its `d` is a run of `M`/`L`/`C` commands. Both parse as "a path
+/// with bounds", so without a discriminator this function answered "the bounds of the first path in
+/// the document" — which is the arrow head of a popover, or a chevron, whenever one is painted
+/// before the first string. The discriminator is the **command set**: text is built from `h`/`v`
+/// only, so a `d` containing `L`, `C`, `Q` or `A` is not a text run and is skipped. A text path is
+/// additionally required to hold at least one complete `h`/`v` pair, so a one-command `d` cannot
+/// masquerade as a glyph.
 pub fn text_ink_boxes(svg: &str) -> Vec<(i32, i32, i32, i32)> {
     let mut boxes = Vec::new();
     for line in svg.lines() {
@@ -139,11 +151,38 @@ pub fn text_ink_boxes(svg: &str) -> Vec<(i32, i32, i32, i32)> {
         let Some(d) = attribute_str(line, "d") else {
             continue;
         };
+        if !is_text_path(d) {
+            continue;
+        }
         if let Some(bounds) = path_bounds(d) {
             boxes.push(bounds);
         }
     }
     boxes
+}
+
+/// Whether a `<path d>` is a texture of `font8x8` glyph rectangles rather than a drawn shape.
+///
+/// See [`text_ink_boxes`] for why the distinction has to exist. Glyph rectangles close with `z` and
+/// step with `h`/`v`, in absolute or relative form; every other command (`L`, `l`, `C`, `c`, `Q`,
+/// `q`, `A`, `a`, `S`, `s`, `T`, `t`, `H`, `V`) means the path is a picture, not a run of text.
+fn is_text_path(d: &str) -> bool {
+    let mut closed = 0usize;
+    let mut stepped = 0usize;
+    for byte in d.bytes() {
+        match byte {
+            b'h' | b'v' | b'H' | b'V' => stepped += 1,
+            b'z' | b'Z' => closed += 1,
+            // Any of these is a vertex command, which a glyph bitmap never emits.
+            b'L' | b'l' | b'C' | b'c' | b'Q' | b'q' | b'A' | b'a' | b'S' | b's' | b'T' | b't' => {
+                return false
+            }
+            _ => {}
+        }
+    }
+    // A glyph rectangle is `h` then `v`; every subpath closes. Requiring both makes an empty or
+    // single-command `d` answer "not text" rather than "a run with one pixel of ink".
+    stepped >= 2 && closed >= 1
 }
 
 /// The number of **subpaths** in the document's text paths.
@@ -160,6 +199,28 @@ pub fn text_subpath_count(svg: &str) -> usize {
         .filter_map(|line| attribute_str(line, "d"))
         .map(|d| d.matches('M').count())
         .sum()
+}
+
+/// The bounds `(left, top, right, bottom)` of the document's first **shape** path, or `None`.
+///
+/// # Why this is public and `path_bounds` is not
+///
+/// [`text_ink_box`] answers "where is the ink of the first *text run*". A control that draws a
+/// **shape** as a path — a triangle, a diamond, an elbow — has no way to ask where that shape landed,
+/// so a test for it could only assert that the document *contains* a `<path>`, which is satisfied by
+/// a path of any size at any position, including one that paints nothing. Knocking the shape out
+/// left exactly such a test green.
+///
+/// "The first shape path" is the counterpart of "the first text path", and the two are disjoint by
+/// [`is_text_path`], so a document cannot answer both for the same element. The raw parser stays
+/// private: this is the narrow, named question, and it hands back the shape's bounds rather than an
+/// unparsed `d`.
+pub fn first_shape_bounds(svg: &str) -> Option<(i32, i32, i32, i32)> {
+    svg.lines()
+        .filter(|line| line.contains("<path"))
+        .filter_map(|line| attribute_str(line, "d"))
+        .filter(|d| !is_text_path(d))
+        .find_map(path_bounds)
 }
 
 /// The bounds of an axis-aligned `<path d>` made of `M x y h w v h h -w z` subpaths.
@@ -342,6 +403,9 @@ mod tests {
     /// top-left, and the box is asserted to be `line_height` tall with `"Sample"`'s own width.
     #[test]
     fn the_emitted_path_reproduces_the_glyph_box_exactly() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         use crate::render::text::estimate_cluster_advance;
         for size in [11.0f32, 12.0, 13.0, 14.0, 20.0, 48.0] {
             let font = Font::new("Arial", size, false, false);
@@ -392,6 +456,9 @@ mod tests {
     /// to make, before text stopped being a `<text>` element.
     #[test]
     fn text_subpath_count_separates_a_drawn_string_from_an_empty_one() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         let font = Font::new("Arial", 14.0, false, false);
         let paint = |text: &str| {
             let mut backend = crate::render::SvgPaintBackend::new(Size::new(200, 60));

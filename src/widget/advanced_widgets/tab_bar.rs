@@ -1177,6 +1177,9 @@ mod tests {
     /// **panicked**. Both setters must keep `min <= max`.
     #[test]
     fn tabbar_min_width_above_max_does_not_invert_pair() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         let mut tb = TabBar::new(Rect::new(0, 0, 400, 24));
         assert!(tb.tab_min_width() <= tb.tab_max_width());
 
@@ -1344,6 +1347,9 @@ mod tests {
     /// ignoring the setting entirely.
     #[test]
     fn setting_the_strip_direction_moves_the_tabs_and_defaults_unchanged() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         fn render(direction: Option<crate::core::TextDirection>) -> String {
             let mut tb = TabBar::new(Rect::new(0, 0, 300, 120));
             tb.add_tab("One".to_string());
@@ -1414,6 +1420,9 @@ mod tests {
     /// screen. Each shape must now produce a different drawing.
     #[test]
     fn tabbar_tab_shapes_are_distinct() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         fn render(shape: TabShape) -> String {
             let mut tb = TabBar::new(Rect::new(0, 0, 240, 120));
             tb.add_tab("One".to_string());

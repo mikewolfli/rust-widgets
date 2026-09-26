@@ -112,17 +112,67 @@ echo "[3/4] no animated control is constructed at the target end"
 #   * `PropertyDriver::at(1.0` inside a `..`-less struct literal is the same thing.
 # Comments are stripped so prose about the rule is not read as a violation, and
 # `#[cfg(test)]` modules are excluded by scope (a fixture is not a control).
+#
+# # Why `1.0` is not unconditionally wrong
+#
+# The rule is "constructed at the **resting** end", and the doc above states the
+# resting end is `0.0` "for every property this crate drives". That is true for a
+# driver whose two ends are hidden/shown — a dialog, a sheet, a popover, a tooltip:
+# those are built hidden, so their resting end is 0.0. It is false for a driver whose
+# control is already **in** its resting state when constructed:
+#
+#   * `SplashScreen` is shown the moment it is mounted, so `opacity` rests at 1.0;
+#   * `ChartWidget` is drawn at its values, so `reveal` rests at 1.0;
+#   * `ImageGallery` shows its first image, so `reveal` rests at 1.0;
+#   * `ScrollBar` is fully opaque until it idles, so `opacity` rests at 1.0.
+#
+# For those, `at(1.0)` *is* the resting end, and demanding `0.0` would make every one
+# of them play a fade-in on first paint — the defect this gate exists to prevent,
+# inverted. The test that separates the two families is whether the control reads its
+# own base visibility: a hidden-at-rest control has to (§ the dialogs), and a
+# shown-at-rest one has no such read.
+#
+# So an `at(1.0)` is accepted only in a file that never consults `is_visible()` /
+# `self.visible`. `PieMenu` — the control that shipped the defect — is neither: it held
+# a bare `animation_progress: 1.0` field that nothing read, and this file would still
+# flag it.
 HITS="$(grep -rnE 'PropertyDriver::(at|default)\s*\(\s*1\.0' src/widget/ --include=*.rs \
     | sed -e 's://.*::' || true)"
 HITS="$(printf '%s\n' "$HITS" | grep -vE ':[[:space:]]*$' || true)"
+ACCEPTED=""
+FINDINGS=""
+while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    file="${line%%:*}"
+    # A control that hides itself at rest must start hidden; one that is shown at rest
+    # must start shown. The read of the base flag is what distinguishes them -- but only a
+    # read in the **production** body, so the `#[cfg(test)]` module is stripped first: a
+    # test asserting `is_visible()` after `hide()` is evidence *for* the control, not
+    # against it.
+    #
+    # `sed`/`awk` stop at the first `#[cfg(test)]`, which is where the module begins, so
+    # everything after it is excluded.
+    if sed -n '1,/^#\[cfg(test)\]/p' "$file" | grep -qE 'is_visible\(\)|self\.visible'; then
+        FINDINGS="${FINDINGS}${line}
+"
+    else
+        ACCEPTED="${ACCEPTED}${line}
+"
+    fi
+done <<< "$HITS"
 
-if [ -n "$HITS" ] && [ "$(printf '%s' "$HITS" | tr -d '[:space:]' | wc -c)" -gt 0 ]; then
+if [ -n "$(printf '%s' "$FINDINGS" | tr -d '[:space:]')" ]; then
     echo "  FAIL  a control is constructed at the target end of its animation:"
-    printf '%s\n' "$HITS" | sed 's/^/          /'
+    printf '%s' "$FINDINGS" | sed 's/^/          /'
     echo "        A control built already finished fades *out* on its first frame and"
     echo "        reports \`is_moving() == false\`, so its own reveal never runs"
-    echo "        (BLUE24 §2.4 gate B). Start it at the resting end, 0.0."
+    echo "        (BLUE24 \u00a72.4 gate B). Start it at the resting end, 0.0."
     exit 1
+fi
+if [ -n "$(printf '%s' "$ACCEPTED" | tr -d '[:space:]')" ]; then
+    echo "  PASS  every driver is constructed at 0.0, or at 1.0 in a control that is"
+    echo "        shown at rest (so 1.0 *is* its resting end):"
+    printf '%s' "$ACCEPTED" | sed 's/^/          /'
 fi
 echo "  PASS  every driver is constructed at 0.0 or from its own resting value"
 

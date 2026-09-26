@@ -243,6 +243,10 @@ impl ControlBackend for NativeControlBackend {
     fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
         get_platform().poll_widget_trigger_event()
     }
+    /// Forwards the targeted pop to the platform's own queue.
+    fn pop_widget_trigger_event_for(&self, widget_id: ObjectId) -> Option<WidgetTriggerEvent> {
+        get_platform().pop_widget_trigger_event_for(widget_id)
+    }
     fn inject_widget_trigger_event(&self, widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
         get_platform().inject_widget_trigger_event(widget_id, kind)
     }

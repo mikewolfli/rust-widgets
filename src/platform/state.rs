@@ -810,6 +810,26 @@ where
     pub fn pop_widget_event(&self) -> Option<WidgetTriggerEvent> {
         lock(&self.widget_events).pop_front()
     }
+
+    /// Remove and return the **oldest** queued event for `widget_id`, if there is one.
+    ///
+    /// # Why a targeted pop has to exist alongside the FIFO drain
+    ///
+    /// The queue is process-wide (see [`BackendState`]'s own documentation on the widget maps), so
+    /// a drain that takes the front of it gets whatever any producer put there -- and a consumer that
+    /// wants *its own* widget's events has no way to ask for them. In a single-threaded host that is
+    /// invisible, because the only producer is the same host. Under a test runner with a shared thread
+    /// pool it is not: several tests inject for their own widgets and each drains the front of one
+    /// common queue, so a test can dispatch dozens of other tests' events and never reach its own.
+    ///
+    /// This returns the oldest event belonging to `widget_id` and **leaves the rest queued**, so a
+    /// caller that knows which widget it is driving can consume exactly its own work without disturbing
+    /// (or discarding) anyone else's. Ordering among a single widget's own events is preserved.
+    pub fn pop_widget_event_for(&self, widget_id: ObjectId) -> Option<WidgetTriggerEvent> {
+        let mut queue = lock(&self.widget_events);
+        let at = queue.iter().position(|event| event.widget_id == widget_id)?;
+        queue.remove(at)
+    }
     /// Set clipboard text.
     pub fn set_clipboard_text(&self, text: &str) -> bool {
         *lock(&self.clipboard_text) = text.to_string();
@@ -941,5 +961,58 @@ mod tests {
 
         let state = BackendState::<TestKind>::new();
         assert!(!state.is_kind(999, TestKind::Widget));
+    }
+
+    /// The targeted pop takes **one widget's** oldest event and leaves every other widget's queued.
+    ///
+    /// # The defect this pins
+    ///
+    /// The queue is process-wide and `pop_widget_event` takes its front unconditionally, so a consumer
+    /// that wants its *own* widget's events has no way to ask for them -- it gets whatever any producer
+    /// put there. In a single-threaded host that is invisible; under a test runner with a shared thread
+    /// pool it is not, which is why `drive_frame_drains_input_before_advancing` was flaky: several tests
+    /// inject for their own widgets and each frame drains the front of one common queue, so a test could
+    /// dispatch dozens of other tests' events and never reach its own.
+    ///
+    /// This is the property that makes the targeted drain usable, and it is asserted here -- on the queue
+    /// itself, with no frames and no threads -- because it cannot be asserted reliably through the frame
+    /// loop: a concurrent drain of the same queue can always take an event first.
+    #[test]
+    fn the_targeted_pop_takes_only_its_own_widgets_oldest_event() {
+        use crate::platform::types::WidgetTriggerKind;
+
+        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+        #[cfg_attr(all(feature = "serde", widgets_unstripped), derive(Serialize, Deserialize))]
+        enum TestKind {
+            Widget,
+        }
+        let state = BackendState::<TestKind>::new();
+        state.push_widget_event(WidgetTriggerEvent {
+            widget_id: 1,
+            kind: WidgetTriggerKind::ValueChanged,
+        });
+        state.push_widget_event(WidgetTriggerEvent {
+            widget_id: 2,
+            kind: WidgetTriggerKind::Clicked,
+        });
+        state.push_widget_event(WidgetTriggerEvent {
+            widget_id: 1,
+            kind: WidgetTriggerKind::Clicked,
+        });
+
+        // Widget 1's *oldest* event, not the front of the queue (which is also widget 1 here, so the
+        // next assertion is the one that proves it skipped widget 2 rather than draining in order).
+        let first = state.pop_widget_event_for(1).expect("widget 1 has a queued event");
+        assert_eq!(first.kind, WidgetTriggerKind::ValueChanged, "the oldest comes first");
+        // Widget 1's second event is now the one it gets; widget 2's was **not** consumed on the way.
+        let second = state.pop_widget_event_for(1).expect("widget 1 has a second event");
+        assert_eq!(second.kind, WidgetTriggerKind::Clicked);
+        assert_eq!(state.pop_widget_event_for(1), None, "and then nothing of widget 1's is left");
+
+        // Widget 2's event survived both pops: the targeted drain neither consumed nor discarded it.
+        let other = state.pop_widget_event().expect("widget 2's event is still queued");
+        assert_eq!(other.widget_id, 2, "and it is the one that was queued for widget 2");
+        assert_eq!(other.kind, WidgetTriggerKind::Clicked);
+        assert!(state.pop_widget_event().is_none(), "the queue is now empty");
     }
 }

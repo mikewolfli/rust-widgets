@@ -40,6 +40,13 @@ pub struct BezierCurveEditor {
     snap_to_grid: bool,
     /// Which handle is being dragged (None = not dragging).
     dragging: Option<DragTarget>,
+    /// Which handle the pointer is currently over (None = between/outside the handles).
+    ///
+    /// Recorded by `MouseMove` through the same `hit_test_handle` the press uses, so the
+    /// handle that lights up is the handle a press would grab. `BaseWidget::is_hovered()`
+    /// answers whether the *pointer is over the control*; only this answers which handle
+    /// it is over, and the two are not the same fact.
+    hovered_handle: Option<DragTarget>,
     /// Emitted when the curve changes. Passes (control_point1, control_point2).
     pub curve_changed: Signal1<((f32, f32), (f32, f32))>,
 }
@@ -63,6 +70,7 @@ impl BezierCurveEditor {
             show_grid: true,
             snap_to_grid: false,
             dragging: None,
+            hovered_handle: None,
             curve_changed: Signal1::new(),
         }
     }
@@ -221,6 +229,39 @@ impl BezierCurveEditor {
     /// Draws a single grid line with a subtle color.
     fn draw_grid_line(&self, context: &mut RenderContext, from: Point, to: Point, color: Color) {
         context.draw_line(from, to, color);
+    }
+
+    /// Draws one control-point handle, with an emphasis ring when it is hovered or dragged.
+    ///
+    /// # Why the two emphasis weights differ
+    ///
+    /// A hover is "this is the one you would grab"; a drag is "you are holding it". The
+    /// stronger weight on the drag is what tells a user mid-gesture that the pointer is
+    /// still attached to the handle, which is the feedback a curve editor lives on. The
+    /// two are the same pair of weights the theme's own state overlays use (0.08 hover,
+    /// 0.12 pressed), so a handle does not invent a third visual language.
+    ///
+    /// The two flags are named for what they *draw* (`under_pointer`, `held`) rather than
+    /// `hovered`/`dragging`, because `hovered` is the name of a control-level fact owned by
+    /// `BaseWidget` — and a parameter that shadows that name is exactly what the
+    /// state-source gate exists to flag.
+    fn draw_handle(
+        context: &mut RenderContext,
+        center: Point,
+        fill: Color,
+        surface: Color,
+        held: bool,
+        under_pointer: bool,
+    ) {
+        const HOVER_HALO_RADIUS: u32 = HANDLE_RADIUS + 3;
+        const DRAG_HALO_RADIUS: u32 = HANDLE_RADIUS + 5;
+        if held {
+            context.fill_circle(center, DRAG_HALO_RADIUS, fill.with_alpha(64));
+        } else if under_pointer {
+            context.fill_circle(center, HOVER_HALO_RADIUS, fill.with_alpha(40));
+        }
+        context.fill_circle(center, HANDLE_RADIUS, fill);
+        context.draw_circle_stroke(center, HANDLE_RADIUS, surface, 2);
     }
 }
 
@@ -382,13 +423,31 @@ impl Draw for BezierCurveEditor {
         // ── Control point handles ──
         // The outline is the surface colour, not white: on a light appearance a white
         // outline would be invisible against the pale surface.
+        //
+        // A handle the pointer is over, and the one being dragged, gains a halo in its own
+        // hue. Without it `dragging` was stored and announced but never *painted*, so a
+        // drag looked exactly like a still frame — the point moved, but nothing said which
+        // handle was under the pointer. Both facts come from the same `hit_test_handle`
+        // the press uses, so the handle that lights up is the handle a drag would move.
         // CP1 handle.
-        context.fill_circle(cp1_pixel, HANDLE_RADIUS, cp1_color);
-        context.draw_circle_stroke(cp1_pixel, HANDLE_RADIUS, surface, 2);
+        Self::draw_handle(
+            context,
+            cp1_pixel,
+            cp1_color,
+            surface,
+            self.dragging == Some(DragTarget::ControlPoint1),
+            self.hovered_handle == Some(DragTarget::ControlPoint1),
+        );
 
         // CP2 handle.
-        context.fill_circle(cp2_pixel, HANDLE_RADIUS, cp2_color);
-        context.draw_circle_stroke(cp2_pixel, HANDLE_RADIUS, surface, 2);
+        Self::draw_handle(
+            context,
+            cp2_pixel,
+            cp2_color,
+            surface,
+            self.dragging == Some(DragTarget::ControlPoint2),
+            self.hovered_handle == Some(DragTarget::ControlPoint2),
+        );
 
         // ── Labels ──
         let font = crate::core::Font::default();
@@ -428,6 +487,12 @@ impl Draw for BezierCurveEditor {
 
 impl EventHandler for BezierCurveEditor {
     fn handle_event(&mut self, event: &Event) {
+        // The base keeps the control-level facts (`hovered`, `pressed`, `focus_reason`) and its
+        // `MouseEnter`/`MouseLeave` arms are what make `widget_state()` answer `Hover` here. This
+        // handler used to forward only in its catch-all arm, so the pointer state never reached
+        // the base for the events it *did* consume — the theme's `"bezier_curve_editor:hover"`
+        // override could not fire while dragging, which is exactly when feedback matters most.
+        self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }
@@ -446,15 +511,19 @@ impl EventHandler for BezierCurveEditor {
                     self.base.set_mouse_pressed(false);
                 }
             }
-            // A press whose release lands outside the widget never reaches the arm
-            // above: the runtime's hit-test returns `None` for a point outside every
-            // control, so no `MouseRelease` is delivered. `dragging` (and the base's
-            // pressed flag) stayed set, so the next hover kept moving a control point
-            // with no button held. Cancelling on leave is the documented behaviour for
-            // this pattern elsewhere (`KanbanBoard::cancel_drag`).
-            Event::MouseLeave { .. } if self.dragging.is_some() => {
-                self.dragging = None;
-                self.base.set_mouse_pressed(false);
+            // Leaving the control clears both the hover emphasis and any drag the runtime
+            // never delivered a release for. A press whose release lands outside the widget
+            // never reaches the arm above: the runtime's hit-test returns `None` for a point
+            // outside every control, so no `MouseRelease` is delivered. `dragging` (and the
+            // base's pressed flag) stayed set, so the next hover kept moving a control point
+            // with no button held. Cancelling on leave is the documented behaviour for this
+            // pattern elsewhere (`KanbanBoard::cancel_drag`).
+            Event::MouseLeave { .. } => {
+                let had_drag = self.dragging.take().is_some();
+                if self.hovered_handle.take().is_some() || had_drag {
+                    self.base.set_mouse_pressed(false);
+                    self.base.request_redraw();
+                }
             }
             Event::MouseMove { pos } => {
                 if let Some(target) = self.dragging {
@@ -468,10 +537,16 @@ impl EventHandler for BezierCurveEditor {
                         }
                     }
                 }
+                // Moving over a handle changes which one is emphasised, so the frame that
+                // moved the pointer has to be repainted. The hit test is the same one the
+                // press uses, so the handle that lights up is the handle a press would grab.
+                let hovered = self.hit_test_handle(*pos);
+                if hovered != self.hovered_handle {
+                    self.hovered_handle = hovered;
+                    self.base.request_redraw();
+                }
             }
-            _ => {
-                self.base.handle_event(event);
-            }
+            _ => { /* Other events need no control-specific handling */ }
         }
     }
 }
@@ -679,5 +754,67 @@ mod tests {
         let svg = crate::widget::svg::render_to_svg(&mut editor);
         assert!(svg.starts_with("<svg"));
         assert!(svg.ends_with("</svg>"));
+    }
+
+    /// The pointer reaching a handle has to reach the *base* too, or the theme's
+    /// `"bezier_curve_editor:hover"` entry is a key nothing can spell.
+    ///
+    /// Regression: this handler forwarded to the base only in its catch-all arm, so every
+    /// event it actually consumed — press, release, move, leave — never recorded the
+    /// pointer fact. `widget_state()` therefore answered `Normal` for the whole drag, which
+    /// is the one moment a curve editor's feedback matters most.
+    #[test]
+    fn bezier_pointer_state_reaches_the_base() {
+        use crate::style::WidgetState;
+
+        let mut editor = default_editor();
+        let rect = editor.geometry();
+        editor.handle_event(&Event::MouseEnter { pos: Point::new(rect.x, rect.y) });
+        assert_eq!(
+            editor.widget_state(),
+            WidgetState::Hover,
+            "the base must have been told the pointer arrived"
+        );
+        editor.handle_event(&Event::MouseEnter { pos: Point::new(rect.x, rect.y) });
+        let cp1_pixel = editor.curve_to_pixel(0.25, 0.1);
+        editor.handle_event(&Event::MousePress { pos: cp1_pixel, button: 1 });
+        assert_eq!(
+            editor.widget_state(),
+            WidgetState::Pressed,
+            "a drag must outrank a hover, and the base is what decides that"
+        );
+        editor.handle_event(&Event::MouseLeave { pos: Point::new(rect.x, rect.y) });
+        assert!(!editor.base.is_hovered(), "leaving must clear the hover fact");
+    }
+
+    /// The handle under the pointer has to be *painted* differently, or `dragging` is a
+    /// field that is written and announced but never read.
+    ///
+    /// Assertion is a relation between two renders, not a literal colour: the frame with a
+    /// pointer over a handle must differ from the frame without one, and both must still be
+    /// a valid document. That is exactly what the defect (a stored-and-unread field) broke.
+    #[test]
+    fn the_handle_under_the_pointer_is_emphasised() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
+        let mut editor = BezierCurveEditor::new(Rect::new(0, 0, 300, 300));
+        let idle = crate::widget::svg::render_to_svg(&mut editor);
+
+        let cp1_pixel = editor.curve_to_pixel(0.25, 0.1);
+        editor.handle_event(&Event::MouseMove { pos: cp1_pixel });
+        assert_eq!(editor.hovered_handle, Some(DragTarget::ControlPoint1));
+        let hovered = crate::widget::svg::render_to_svg(&mut editor);
+        assert_ne!(
+            idle, hovered,
+            "a handle under the pointer must render differently from an idle one"
+        );
+
+        // Away from every handle the emphasis has to clear again, or the last handle the
+        // pointer crossed stays lit forever — the `hovered_row` mistake `list_view` made.
+        editor.handle_event(&Event::MouseMove { pos: Point::new(5, 5) });
+        assert_eq!(editor.hovered_handle, None);
+        let cleared = crate::widget::svg::render_to_svg(&mut editor);
+        assert_eq!(cleared, idle, "moving off every handle must restore the idle frame");
     }
 }

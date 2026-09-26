@@ -30,7 +30,9 @@ use crate::layout::{
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::style::EdgeOffsets;
-use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
+use crate::widget::capability::coercion::{
+    expect_bool, expect_string, expect_text_direction, expect_usize, text_direction_to_str,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -66,9 +68,36 @@ struct IndicatorGeometry {
     box_rect: Rect,
     /// The rectangle the value text may occupy.
     text_box: Rect,
+    /// The wide indicator column the triangle is the leading slice of.
+    ///
+    /// Kept so a right-to-left mirror can reflect the **column** rather than the slice: the column
+    /// carries the field's trailing inset, and reflecting only the narrow box would drop the inset
+    /// on the wrong side of it. Private because it is a derivation detail — callers want the two
+    /// boxes, and publishing the middle value would invite a second way to compute them.
+    column: Rect,
 }
 
 impl IndicatorGeometry {
+    /// Re-slices the triangle's box out of the current column, on the side that faces the inside.
+    ///
+    /// # Why the side is a parameter
+    ///
+    /// In a left-to-right field the triangle is the column's **leading** slice, so the field's
+    /// trailing inset ends up outside it against the band's right edge. A right-to-left field is the
+    /// mirror: the triangle is the column's **trailing** slice, and the same inset ends up outside it
+    /// against the band's left edge. Picking the wrong slice puts the icon hard against the band's
+    /// edge with the inset on its inner side — a visible asymmetry that only shows up in one
+    /// direction.
+    fn recompute_box(&mut self, mirror: bool) {
+        let width = self.box_rect.width.min(self.column.width);
+        let x = if mirror {
+            self.column.x + self.column.width as i32 - width as i32
+        } else {
+            self.column.x
+        };
+        self.box_rect.x = x;
+        self.box_rect.width = width;
+    }
     /// Assembles the field's three columns and reports the two boxes.
     ///
     /// `line_height` is a parameter rather than measured here, for the same reason
@@ -91,7 +120,43 @@ impl IndicatorGeometry {
     /// Two children rather than three: the leading gap rides on the value column's trailing
     /// margin, which is how [`LayoutParams`] expresses inter-element space — a third child holding
     /// a fixed gap would be a column whose only job is to be empty.
-    fn for_band(band: Rect, line_height: u32) -> Self {
+    /// [`Self::for_band_in`] for an explicit writing direction.
+    ///
+    /// # How the mirror is expressed
+    ///
+    /// The boxes are derived **once**, left-to-right, and then reflected within the band when the
+    /// direction is right-to-left. Deriving a second set of rectangles for RTL is what makes the two
+    /// directions drift — BLUE21 §4.3's lesson is that both directions must share **one inset** — so
+    /// the reflection is applied to the finished boxes rather than to the arithmetic that produced
+    /// them.
+    ///
+    /// A horizontal reflection of a box inside the band is exact: `x' = band.right - (x - band.x) -
+    /// width`. Because the two boxes tile the band's width, the reflected pair tiles it too, and the
+    /// values that were adjacent inward stay adjacent inward — which is the relation the row exists
+    /// to state.
+    fn for_band_in(band: Rect, line_height: u32, direction: crate::core::TextDirection) -> Self {
+        let mut placed = Self::for_band_ltr(band, line_height);
+        if !direction.is_right_to_left() {
+            return placed;
+        }
+        // Mirror the two **columns**, not the finished boxes. The narrow triangle box is the
+        // *leading slice* of the wide indicator column (which also carries the field's trailing
+        // inset), so reflecting only the slice would place it at a third position: the inset has to
+        // travel with the column it belongs to. That is the "both directions share one inset" rule
+        // BLUE21 §4.3 records, expressed as one reflection of the pair.
+        let band_right = band.x + band.width as i32;
+        let reflect = |rect: Rect| -> Rect {
+            let x = band_right - (rect.x - band.x) - rect.width as i32;
+            Rect::new(x, rect.y, rect.width, rect.height)
+        };
+        placed.text_box = reflect(placed.text_box);
+        placed.column = reflect(placed.column);
+        placed.recompute_box(true);
+        placed
+    }
+
+    /// The left-to-right derivation, which is the only one written out.
+    fn for_band_ltr(band: Rect, line_height: u32) -> Self {
         let indicator_width = dimensions::BUTTON_ICON_SIZE.min(band.width);
         let height = line_height.min(band.height);
         // # Why the stripped profiles take the direct route
@@ -193,7 +258,7 @@ impl IndicatorGeometry {
             column.width.min(indicator_width),
             height,
         );
-        Self { box_rect, text_box }
+        Self { box_rect, text_box, column }
     }
 
     /// The triangle's three points, derived from its own box.
@@ -219,6 +284,20 @@ pub struct ComboBox {
     current_index: Option<usize>,
     editable: bool,
     max_visible_items: usize,
+    /// The writing direction the field runs in.
+    ///
+    /// # Why a combo box needs this
+    ///
+    /// A combo box is a field with an **indicator at its trailing edge**, and "trailing" is a fact
+    /// about the writing direction: in a right-to-left interface the arrow belongs on the left, just
+    /// as `AppBar`'s action does. The row was assembled `[value, indicator]` for every caller, so an
+    /// RTL host got its arrow on the wrong side — and, worse, the value's box yielded to an
+    /// indicator that was no longer between it and the page edge.
+    ///
+    /// Only the **horizontal** axis is affected, so this is scoped exactly like
+    /// [`crate::core::TextDirection`] documents: a vertical control ignores it. Defaults to
+    /// left-to-right, so a caller that never asks behaves exactly as it did.
+    direction: crate::core::TextDirection,
     /// Emitted with the new index after `current_index` changes, including when
     /// it is cleared to `None`. An out-of-range index is ignored (and emits
     /// nothing); re-applying the same value emits nothing.
@@ -248,7 +327,26 @@ impl ComboBox {
 
     /// The indicator's box and the value's box, derived from the band and one line height.
     fn indicator_geometry(&self, line_height: u32) -> IndicatorGeometry {
-        IndicatorGeometry::for_band(self.field_band(), line_height)
+        IndicatorGeometry::for_band_in(self.field_band(), line_height, self.direction)
+    }
+
+    /// The writing direction the field runs in.
+    pub fn direction(&self) -> crate::core::TextDirection {
+        self.direction
+    }
+
+    /// Sets the writing direction.
+    ///
+    /// The indicator moves to the other edge and the value's box yields to it there, which is the
+    /// whole effect — spelled through the shared derivation so the paint, the hit test and the
+    /// published geometry all follow one reflection.
+    pub fn set_direction(&mut self, direction: crate::core::TextDirection) {
+        if self.direction == direction {
+            return;
+        }
+        self.direction = direction;
+        self.base.request_redraw();
+        self.base.request_layout();
     }
 
     /// Creates an empty combo box with geometry.
@@ -259,6 +357,7 @@ impl ComboBox {
             current_index: None,
             editable: false,
             max_visible_items: 10,
+            direction: crate::core::TextDirection::default(),
             current_index_changed: Signal1::new(),
             current_text_changed: Signal1::new(),
             activated: Signal1::new(),
@@ -466,6 +565,9 @@ impl WidgetProperties for ComboBox {
             },
             "current_text" => Ok(CapabilityValue::String(self.current_text().to_string())),
             "editable" => Ok(CapabilityValue::Bool(self.is_editable())),
+            "direction" => {
+                Ok(CapabilityValue::String(text_direction_to_str(self.direction()).to_string()))
+            }
             "max_visible_items" => Ok(CapabilityValue::UInt(self.max_visible_items() as u64)),
             _ => base_property_get(self, name),
         }
@@ -488,6 +590,10 @@ impl WidgetProperties for ComboBox {
                 self.set_editable(expect_bool(value)?);
                 Ok(())
             }
+            "direction" => {
+                self.set_direction(expect_text_direction(value)?);
+                Ok(())
+            }
             "max_visible_items" => {
                 self.set_max_visible_items(expect_usize(value)?);
                 Ok(())
@@ -506,6 +612,7 @@ impl WidgetProperties for ComboBox {
             "current_text",
             "editable",
             "max_visible_items",
+            "direction",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -992,5 +1099,83 @@ mod tests {
                 "{point:?} escaped the indicator box {b:?}"
             );
         }
+    }
+
+    /// A right-to-left field puts its indicator on the other edge, and its value yields to it there.
+    ///
+    /// # The defect this pins
+    ///
+    /// The row was assembled `[value, indicator]` for every caller, so an RTL host got its arrow on
+    /// the wrong side — and the value's box yielded to an indicator that was no longer between it and
+    /// the page edge. `AppBar` states the same rule for its own two affordances; a combo box is that
+    /// shape on a field.
+    ///
+    /// The assertion is a relation between the two directions, not a literal x: the indicator must
+    /// keep its trailing inset in both, and both boxes must stay inside the band, so a mirror that
+    /// pushed something out of the field fails.
+    #[test]
+    fn a_right_to_left_field_mirrors_the_indicator() {
+        use crate::core::TextDirection;
+        use crate::widget::capability::WidgetProperties;
+
+        let mut ltr = ComboBox::new(Rect::new(0, 0, 200, 30));
+        ltr.set_direction(TextDirection::LeftToRight);
+        let mut rtl = ComboBox::new(Rect::new(0, 0, 200, 30));
+        rtl.set_direction(TextDirection::RightToLeft);
+
+        let band = ltr.field_band();
+        let left = ltr.indicator_geometry(0);
+        let right = rtl.indicator_geometry(0);
+
+        // The indicator keeps its trailing inset and hugs the other edge. In a reflection it is the
+        // *insets* that correspond, not the right edges: the LTR box ends `inset` from the band's
+        // right edge, and the RTL box must end `inset` from the band's **left** edge.
+        let band_left_inset = left.box_rect.x - band.x;
+        let band_right_inset =
+            (band.x + band.width as i32) - (left.box_rect.x + left.box_rect.width as i32);
+        assert_eq!(
+            right.box_rect.x - band.x,
+            band_right_inset,
+            "the RTL inset must equal the LTR trailing inset, or the two directions are not mirrors"
+        );
+        assert_eq!(
+            (band.x + band.width as i32) - (right.box_rect.x + right.box_rect.width as i32),
+            band_left_inset,
+            "and the RTL trailing inset must equal the LTR leading inset"
+        );
+        // The two are reflections of each other across the band's centre, so each one is on the edge
+        // the *other* direction leaves free. (An LTR field's arrow is already on the right, which is
+        // what makes "RTL moves it left" the correct reading rather than the reverse.)
+        assert_eq!(
+            left.box_rect.x + right.box_rect.x + right.box_rect.width as i32,
+            band.x + band.x + band.width as i32,
+            "the two boxes must be mirror images about the band's centre"
+        );
+        assert!(
+            right.box_rect.x < left.box_rect.x,
+            "an RTL field's indicator belongs on the other edge: ltr x={}, rtl x={}",
+            left.box_rect.x,
+            right.box_rect.x
+        );
+
+        // The whole row still tiles the band, so nothing was pushed out by the mirror.
+        for (label, geom) in [("ltr", left), ("rtl", right)] {
+            let band_right = band.x + band.width as i32;
+            assert!(
+                geom.text_box.x >= band.x
+                    && geom.text_box.x + geom.text_box.width as i32 <= band_right,
+                "{label}: the value box left the band: {:?}",
+                geom.text_box
+            );
+            assert!(
+                geom.box_rect.x >= band.x
+                    && geom.box_rect.x + geom.box_rect.width as i32 <= band_right,
+                "{label}: the indicator box left the band: {:?}",
+                geom.box_rect
+            );
+        }
+
+        // And the direction round-trips through the property API, so a host can read what it set.
+        assert_eq!(rtl.get("direction").expect("direction is published").as_str(), Some("rtl"));
     }
 }

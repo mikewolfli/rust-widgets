@@ -567,6 +567,41 @@ impl Widget for LineEdit {
     fn is_animating(&self) -> bool {
         self.focused && !self.read_only
     }
+
+    /// Reports `Error` while the field carries a refusal message, `Disabled` when it is inert.
+    ///
+    /// # Why this is the control's own answer
+    ///
+    /// The preset themes declare ten `"<kind>:error"` overrides — `line_edit:error` among them —
+    /// and **no control in the crate reported `WidgetState::Error`**, so every one of those keys was
+    /// unreachable: a theme author could write the override, the manager would resolve it correctly
+    /// when asked, and no control would ever ask. This is the `:checked` defect recorded for
+    /// `CheckBox`/`Switch` in another state, and `line_edit` is the control that owns the fact that
+    /// makes it reachable: it already carries `error_text`, so "this field is invalid" is a question
+    /// it can answer rather than one a caller has to keep in step.
+    ///
+    /// `Error` outranks `Hover`/`Focused` because the refusal is what the reader has to notice; it
+    /// does not outrank `Disabled`, since an inert field cannot be invalid in a way the user can act
+    /// on. The order matches `Switch`'s `Checked` branch and the trait default's documented
+    /// precedence.
+    fn widget_state(&self) -> crate::style::WidgetState {
+        use crate::style::WidgetState;
+        if !self.base.is_enabled() {
+            return WidgetState::Disabled;
+        }
+        if !self.decorations.error.is_empty() || self.is_over_limit() {
+            return WidgetState::Error;
+        }
+        if self.base.is_pressed() {
+            WidgetState::Pressed
+        } else if self.base.is_hovered() {
+            WidgetState::Hover
+        } else if self.base.draws_focus_ring() {
+            WidgetState::Focused
+        } else {
+            WidgetState::Normal
+        }
+    }
 }
 
 /// `LineEdit`'s property contract.
@@ -1359,6 +1394,9 @@ mod tests {
     #[cfg(not(alloc_frugal))]
     #[test]
     fn the_value_sits_on_the_fields_middle_line() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         let mut le = LineEdit::new(Rect::new(0, 0, 240, 120));
         le.set_text("Sample");
         let svg = crate::widget::svg::render_to_svg(&mut le);
@@ -1404,6 +1442,9 @@ mod tests {
     #[cfg(not(alloc_frugal))]
     #[test]
     fn the_value_starts_at_the_fields_horizontal_padding() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         let mut le = LineEdit::new(Rect::new(0, 0, 240, 120));
         le.set_text("Sample");
         let svg = crate::widget::svg::render_to_svg(&mut le);
@@ -1429,6 +1470,9 @@ mod tests {
     /// pixels and its height.
     #[test]
     fn a_field_with_no_slots_is_unchanged() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         let mut le = LineEdit::new(Rect::new(0, 0, 240, 120));
         le.set_text("Sample");
         assert!(le.decorations().is_empty());
@@ -1452,6 +1496,9 @@ mod tests {
     /// runs and orders them rather than trusting which one was painted first.
     #[test]
     fn a_prefix_is_drawn_before_the_value_and_shifts_it() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         let mut plain = LineEdit::new(Rect::new(0, 0, 240, 120));
         plain.set_text("12");
         let plain_svg = crate::widget::svg::render_to_svg(&mut plain);
@@ -1650,6 +1697,9 @@ mod tests {
     #[cfg(not(alloc_frugal))]
     #[test]
     fn the_caret_is_drawn_at_cursor_position_not_at_the_end() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         // The caret used to be measured against the **whole** value, so it was always drawn
         // after the last glyph however the control was positioned: with `cursor_position = 0` it
         // still sat past the `e` of "Sample". The field answers `cursor_position`, clamps it on
@@ -1739,5 +1789,57 @@ mod tests {
         assert_eq!(crate::get_clipboard_text(), "secret");
         // …but editing stays blocked.
         assert_eq!(read_only.text(), "secret");
+    }
+
+    /// A field carrying a refusal message reports `Error`, and the preset's override reaches it.
+    ///
+    /// # The defect this pins
+    ///
+    /// The preset themes declare ten `"<kind>:error"` overrides and **no control in the crate
+    /// reported `WidgetState::Error`** — so every one of those keys was a rule nothing could match.
+    /// The assertion is the state contract *and* the resulting style: the first half proves the
+    /// control asks the right question, the second proves the theme's answer arrives on the field.
+    #[test]
+    fn a_refused_field_reports_error_and_takes_the_error_override() {
+        use crate::style::WidgetState;
+
+        let _theme_guard = crate::theme::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        let mut field = LineEdit::new(Rect::new(0, 0, 200, 24));
+
+        assert_eq!(field.widget_state(), WidgetState::Normal, "a fresh field is at rest");
+
+        field.set_error_text("Too long");
+        assert_eq!(
+            field.widget_state(),
+            WidgetState::Error,
+            "a field with a refusal message must say so, or the `:error` override is unreachable"
+        );
+
+        // The theme resolves `line_edit:error` for that state — the whole point of reporting it.
+        let error_style = crate::style::resolved_theme_style_for("line_edit", Some("error"));
+        assert!(
+            error_style.is_some(),
+            "the preset must define `line_edit:error` for this to have a subject"
+        );
+
+        // Clearing the message returns the field to rest, so the state is not latched.
+        field.set_error_text("");
+        assert_eq!(field.widget_state(), WidgetState::Normal, "clearing the error restores rest");
+    }
+
+    /// Disabled outranks error: an inert field is not reportable as invalid.
+    #[test]
+    fn a_disabled_field_reports_disabled_even_with_a_refusal_message() {
+        use crate::style::WidgetState;
+
+        let mut field = LineEdit::new(Rect::new(0, 0, 200, 24));
+        field.set_error_text("Too long");
+        field.set_enabled(false);
+        assert_eq!(
+            field.widget_state(),
+            WidgetState::Disabled,
+            "a disabled field cannot be acted on, so its state must say disabled"
+        );
     }
 }

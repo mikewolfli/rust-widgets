@@ -1,11 +1,30 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! QRCode widget — displays a simple QR code pattern generated from a data string.
+//! QRCode widget — displays a QR-code-*like* pattern generated from a data string.
 //!
-//! This widget renders a deterministic black/white matrix by hashing the input
-//! data string to produce a 21×21 QR-code-like minimatrix. Each cell is drawn
-//! as a small filled rectangle.
+//! # What this control is, precisely
+//!
+//! It renders a **deterministic decorative matrix**: the data string is hashed, the hash seeds an
+//! LCG, and the bits fill a 21×21 grid around three finder patterns. The same input always gives
+//! the same picture, which is what makes it useful for a mock-up, a placeholder or a visual test
+//! fixture.
+//!
+//! **It is not a QR encoder.** The matrix carries no Reed–Solomon codewords, no format or version
+//! information and no mode encoding, so a camera cannot decode it — the symbol is a picture *of* a
+//! QR code, not a QR code. Two consequences a caller must know:
+//!
+//! * There is **no error-correction level to configure**, because there is no error correction. A
+//!   property for one would be a control that accepts a setting and ignores it, which is the
+//!   "reported success for something that did not happen" this crate refuses. A real EC level is a
+//!   property of an *encoder*, and adding one means adding an encoder (see below), not a field.
+//! * A host that needs a **scannable** symbol must encode it itself and hand the control the
+//!   module grid — or use a QR crate — because no amount of drawing here can make this matrix
+//!   decodable. That is stated here rather than discovered by a user pointing a phone at it.
+//!
+//! The plan (`blue23.md` A.8.4) lists "error-correction level" as an M10 gap for this control. It is
+//! **withdrawn** for the reason above, not deferred: implementing it would mean writing a QR
+//! encoder, which is a new capability rather than a thicker contract on an existing one.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};

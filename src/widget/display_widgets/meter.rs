@@ -1016,6 +1016,12 @@ mod tests {
 
     #[test]
     fn meter_tick_labels_add_text_pixels() {
+        // Holds the crate-wide theme guard: this test **derives a colour from the active theme** and
+        // then renders, so a concurrent test switching the appearance would change `tick_rgb` between
+        // the two renders and the label pixels would match neither. It failed roughly one run in
+        // sixteen before this line existed, which is the same class of defect the guard was added for
+        // across the rendering tests -- one of them was simply missed.
+        let _guard = crate::theme::theme_test_guard();
         let size = Size::new(200, 200);
         let mut without = Meter::new(Rect::new(0, 0, 200, 200));
         without.set_tick_count(5);

@@ -824,7 +824,10 @@ impl JsonLoader {
                 }
                 if let Some(color_str) = obj.get("line_color").and_then(|v| v.as_str()) {
                     if let Some(color) = Color::parse_hex(color_str) {
-                        grid.set_line_color(Some(color));
+                        // A `line_color` in the document is an explicit caller choice, so it is the
+                        // `Some(Some(..))` shape: "the caller picked this colour". An absent key
+                        // leaves the control at `Some(None)`, "follow the theme".
+                        grid.set_line_color(Some(Some(color)));
                     }
                 }
                 Ok(Box::new(grid))

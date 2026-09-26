@@ -551,7 +551,17 @@ impl Draw for TimeEdit {
 
         context.fill_rect(rect, surface);
         context.draw_rect(rect, border);
-        let text = self.time.to_string();
+        let text = super::date_edit::format_with_pattern(
+            &self.display_format,
+            super::date_edit::DateTimeComponents {
+                hour: Some(self.time.hour()),
+                minute: Some(self.time.minute()),
+                second: Some(self.time.second()),
+                millisecond: Some(self.time.msec()),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|| self.time.to_string());
         // Vertically centred through the shared primitive: `rect.y + height / 2` puts the
         // glyph box's top edge on the field's middle line, so the value sat half a line low.
         // The line box is also what a caller reading this field's text position would need,

@@ -11,6 +11,7 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::expect_usize;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -28,6 +29,21 @@ pub struct CupertinoSegmentedControl {
     base: BaseWidget,
     segments: Vec<String>,
     selected_index: usize,
+    /// How far the highlight has travelled, `0.0` just after leaving its segment and `1.0` arrived.
+    ///
+    /// # Why the doc and the code disagreed for a while
+    ///
+    /// The module doc has always said "a **sliding** highlight", and the draw path computed the
+    /// indicator's x straight from `selected_index` — so the promise was in the prose and the
+    /// teleport was in the pixels. The indicator now interpolates between the segment it left and
+    /// the one it is heading for, which is what the doc claimed all along.
+    ///
+    /// A 0..=1 fraction rather than a pixel offset, because a `PropertyDriver` interpolates a
+    /// progress (it clamps its target to that range), and because a fraction survives a relayout
+    /// that moves every segment.
+    slide: PropertyDriver,
+    /// The segment the current slide started from, so `slide`'s fraction has a left endpoint.
+    slide_from: usize,
     /// Emitted when the selected segment changes with the new index.
     pub value_changed: Signal1<usize>,
 }
@@ -40,7 +56,15 @@ impl CupertinoSegmentedControl {
             geometry,
             "CupertinoSegmentedControl",
         );
-        Self { base, segments: Vec::new(), selected_index: 0, value_changed: Signal1::new() }
+        Self {
+            base,
+            segments: Vec::new(),
+            selected_index: 0,
+            // At rest on segment 0: `slide == 1.0` means "arrived", not "just left".
+            slide: PropertyDriver::at(1.0, MotionSlot::Normal),
+            slide_from: 0,
+            value_changed: Signal1::new(),
+        }
     }
 
     /// Sets the segment labels, replacing all existing segments.
@@ -54,6 +78,10 @@ impl CupertinoSegmentedControl {
                 self.selected_index.min(self.segments.len() - 1)
             };
         }
+        // A rebuilt segment set is a reset, not a selection change: the highlight starts on the
+        // segment it is on rather than animating out of the old set.
+        self.slide_from = self.selected_index;
+        self.slide.jump_to(1.0);
         self.base.request_redraw();
     }
 
@@ -70,7 +98,21 @@ impl CupertinoSegmentedControl {
         }
         let clamped = index.min(self.segments.len() - 1);
         if clamped != self.selected_index {
+            // Re-aim from the highlight's **fractional** position, not from a rounded segment: a tap
+            // that lands while the pill is still travelling must resume from where it is, or the
+            // highlight visibly jumps backwards first.
+            let position = self.indicator_position();
+            self.slide_from = position.floor().max(0.0) as usize;
+            let from = self.slide_from as f32;
+            let to = clamped as f32;
+            let fraction = if (to - from).abs() < f32::EPSILON {
+                1.0
+            } else {
+                ((position - from) / (to - from)).clamp(0.0, 1.0)
+            };
             self.selected_index = clamped;
+            self.slide.jump_to(fraction);
+            self.slide.set_target(1.0);
             self.value_changed.emit(clamped);
             self.base.request_redraw();
         }
@@ -83,6 +125,26 @@ impl CupertinoSegmentedControl {
         } else {
             self.selected_index.min(self.segments.len() - 1)
         }
+    }
+
+    /// The segment index the highlight is currently drawn at, as a **fractional** value.
+    ///
+    /// Strictly between two whole indices while the highlight is travelling, which is exactly what
+    /// "the indicator slid rather than jumped" means; an animation test samples it per frame.
+    pub fn indicator_position(&self) -> f32 {
+        let from = self.slide_from as f32;
+        let to = self.selected_index as f32;
+        from + (to - from) * self.slide.value()
+    }
+
+    /// Advances the highlight's slide by `delta_ms`; `true` while it is still moving.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        self.slide.tick(delta_ms)
+    }
+
+    /// Whether the highlight is between two segments -- answers only, never advances.
+    pub fn is_animating(&self) -> bool {
+        self.slide.is_moving()
     }
 
     /// Returns the number of segments.
@@ -118,6 +180,16 @@ impl Widget for CupertinoSegmentedControl {
 
     fn kind(&self) -> WidgetKind {
         WidgetKind::CupertinoSegmentedControl
+    }
+
+    // The highlight slide is the control's own animation; the trait spelling is what the frame bus
+    // reaches through `&mut dyn Widget`, which is the only way the slide actually happens.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        CupertinoSegmentedControl::tick(self, delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        CupertinoSegmentedControl::is_animating(self)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -247,7 +319,11 @@ impl Draw for CupertinoSegmentedControl {
         } else {
             highlight_color.blend(&track_color, 0.50)
         };
-        let sel_x = track_rect.x + (self.selected_index as i32) * seg_w;
+        // The highlight interpolates between the segment it left and the one it is heading for, so
+        // the movement itself carries the information that the value changed. Derived through the
+        // one accessor the animation test also samples, so the two cannot disagree.
+        let position = self.indicator_position();
+        let sel_x = track_rect.x + (position * seg_w as f32) as i32;
         let sel_rect = Rect::new(
             sel_x + 2,
             track_rect.y + 2,
@@ -451,6 +527,9 @@ mod tests {
     /// still looked fully interactive — the user taps and nothing happens.
     #[test]
     fn cupertino_segmented_control_disabled_renders_differently() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         let mut sc = CupertinoSegmentedControl::new(Rect::new(0, 0, 300, 32));
         sc.set_segments(vec!["A".to_string(), "B".to_string()]);
         let enabled_svg = render_to_svg(&mut sc);
@@ -480,5 +559,62 @@ mod tests {
                 "at control height {height}"
             );
         }
+    }
+
+    /// The highlight slides between segments rather than teleporting.
+    ///
+    /// # The defect this pins
+    ///
+    /// The module doc has always said "a **sliding** white indicator" while the draw path
+    /// computed the highlight's x straight from `selected_index` — the promise was in the prose and
+    /// the teleport was in the pixels. The three-frame shape (§0.3) is the assertion: the middle
+    /// sample must be strictly between the two ends, which a teleporting highlight cannot produce.
+    #[test]
+    fn the_highlight_slides_rather_than_teleporting() {
+        let mut sc = CupertinoSegmentedControl::new(Rect::new(0, 0, 240, 32));
+        sc.set_segments(vec!["One".to_string(), "Two".to_string(), "Three".to_string()]);
+        assert_eq!(sc.indicator_position(), 0.0, "a fresh control rests on the first segment");
+        assert!(!sc.is_animating(), "and owes no frames");
+
+        sc.set_selected_index(2);
+        assert!(sc.is_animating(), "changing the selection owes frames");
+        assert_eq!(sc.indicator_position(), 0.0, "the slide starts where the highlight was");
+
+        assert!(sc.tick(60), "still moving after one step");
+        let mid = sc.indicator_position();
+        assert!(mid > 0.0 && mid < 2.0, "the highlight must take an interior position (got {mid})");
+        while sc.tick(60) {}
+        assert_eq!(sc.indicator_position(), 2.0, "and settle on the selected segment");
+        assert!(!sc.is_animating(), "a settled control owes no more frames");
+    }
+
+    /// The slide reaches the **pixels**, not only the model.
+    ///
+    /// # Why the position assertion above is not enough
+    ///
+    /// A first version of this test asserted only on `indicator_position()` and passed even with the
+    /// draw path reverted to `selected_index * seg_w` — a stored value that no paint site reads is
+    /// the defect this crate has hit repeatedly (`audio_visualizer`, `data_grid`, the bezier
+    /// handles). This one renders the *same* control at three points of the slide and requires the
+    /// frames to differ, so a draw path that ignores the slide fails whatever the model says.
+    #[test]
+    fn the_slide_reaches_the_painted_highlight() {
+        use crate::widget::svg::render_to_svg;
+
+        let mut sc = CupertinoSegmentedControl::new(Rect::new(0, 0, 240, 32));
+        sc.set_segments(vec!["One".to_string(), "Two".to_string(), "Three".to_string()]);
+        sc.set_selected_index(2);
+
+        let at_start = render_to_svg(&mut sc);
+        assert!(sc.tick(60), "the highlight is travelling");
+        let midway = render_to_svg(&mut sc);
+        assert_ne!(
+            at_start, midway,
+            "a highlight that is mid-slide must not paint like one still at the start"
+        );
+
+        while sc.tick(60) {}
+        let arrived = render_to_svg(&mut sc);
+        assert_ne!(midway, arrived, "nor must the arrival paint like the midpoint");
     }
 }

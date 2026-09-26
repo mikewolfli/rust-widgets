@@ -1684,6 +1684,78 @@ pub fn poll_widget_trigger_event() -> Option<WidgetTriggerEvent> {
 /// consumed them would starve its own loop, which is why the queue is drained to empty
 /// rather than to a fixed count: "drained" is the only state from which the next tick's
 /// backlog is knowable.
+/// Dispatches **every** queued trigger belonging to `widget_id`, and leaves other widgets' queued.
+///
+/// # Why this exists next to [`drain_triggers`]
+///
+/// [`drain_triggers`] is the host's drain: it takes the front of the **process-wide** queue until it is
+/// empty, which is what a single-threaded event loop wants. A test wants something narrower -- it
+/// drives one widget and needs that widget's events delivered without its result depending on what
+/// another test queued first. The queue is process-wide and the test runner shares a thread pool, so
+/// `drain_triggers` gives no such guarantee: a test can dispatch dozens of other tests' events and
+/// never reach its own.
+///
+/// This removes and dispatches only the events whose `widget_id` matches, so it neither consumes nor
+/// discards anyone else's work, and it preserves the order among one widget's own events. It is one
+/// widget's share of the same drain, not a second implementation of it: the dispatch call is the one
+/// [`drain_triggers`] makes, and the queue operation is the targeted pop beside the FIFO one.
+///
+/// Returns how many events it dispatched.
+#[cfg(not(alloc_frugal))]
+pub fn drain_widget_triggers_for(widget_id: crate::core::ObjectId) -> usize {
+    let mut dispatched = 0usize;
+    while let Some(event) =
+        control_backend::get_control_backend().pop_widget_trigger_event_for(widget_id)
+    {
+        #[cfg(full_widgets)]
+        {
+            app::dispatch_trigger(event.widget_id, event.kind);
+        }
+        #[cfg(not(full_widgets))]
+        {
+            // No router in this profile. Popping it above is what removes it from the queue; naming
+            // it keeps the binding exercised in every build.
+            let _ = (event.widget_id, event.kind);
+        }
+        dispatched += 1;
+    }
+    dispatched
+}
+
+/// Drain the whole trigger queue, dispatching each event to its widget.
+///
+/// This is the host's entry point for step 1 of a frame: everything the backend has
+/// reported since the last call is delivered, and the return value is how many events
+/// that was.
+///
+/// # Why this is in the crate root rather than in `app`
+///
+/// It used to live in `app`, which is gated on `full_widgets`. A backend that
+/// called `crate::app::drain_triggers` therefore compiled on `desktop` and failed on
+/// `mini` with `cannot find 'app' in 'crate'`, which is the same class of defect as a call
+/// into a gated `create_*`: one unpicked profile hides it completely
+/// (`tools/check_profiles.sh` runs the profile matrix; a `desktop` build never sees it).
+///
+/// The trigger queue is not a widget-set feature — it is how a backend reports "the user
+/// resized the window" — so the drain sits beside the queue it drains, at the widest gate
+/// its dependency has.
+///
+/// # Why it is defined in every profile, not gated
+///
+/// The queue exists in every profile except `alloc_frugal` (`mini`). Gating the function
+/// would mean gating each of the **eleven** backend call sites, and a gate that has to be
+/// repeated eleven times is a gate that will be forgotten in one of them — which is
+/// exactly how this function came to be missing from the crate root in the first place.
+/// Defining it unconditionally moves the condition to one place, and `alloc_frugal`
+/// answers `0` because there is genuinely nothing to drain there.
+///
+/// # Termination
+///
+/// Drains until the queue reports empty, so a tick's cost is bounded by the number of
+/// events that arrived since the last tick. A backend that produced events faster than it
+/// consumed them would starve its own loop, which is why the queue is drained to empty
+/// rather than to a fixed count: "drained" is the only state from which the next tick's
+/// backlog is knowable.
 pub fn drain_triggers() -> usize {
     #[cfg(alloc_frugal)]
     {

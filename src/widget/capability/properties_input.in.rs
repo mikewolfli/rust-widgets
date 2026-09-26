@@ -112,6 +112,11 @@ macro_rules! impl_properties_input {
             PropertySchema::new("value_text", PropertyValueKind::String, true, false),
             PropertySchema::new("special_value_text", PropertyValueKind::String, true, true),
             PropertySchema::new("wrapping", PropertyValueKind::Bool, true, true),
+            // The direction the field runs in. It moves the step column to the leading edge and
+            // anchors the value to that same edge, so a caller in an RTL locale gets a spin box
+            // whose number sits beside the buttons that change it. Declared in both directions so
+            // it can be read back as well as written.
+            PropertySchema::enumerated("direction", true, true, &["ltr", "rtl"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -124,6 +129,10 @@ macro_rules! impl_properties_input {
             PropertySchema::new("current_text", PropertyValueKind::String, true, true),
             PropertySchema::new("editable", PropertyValueKind::Bool, true, true),
             PropertySchema::new("max_visible_items", PropertyValueKind::UInt, true, true),
+            // The writing direction the field runs in. Published because it moves the indicator to
+            // the other edge — a fact a host and a designer panel have to be able to read and set
+            // rather than infer from the drawing.
+            PropertySchema::new("direction", PropertyValueKind::String, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

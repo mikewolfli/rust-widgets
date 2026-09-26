@@ -26,6 +26,7 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::{expect_bool, expect_f32, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -64,6 +65,19 @@ pub struct SplashScreen {
     /// *skipped* requires this to be enabled, and it is off by default because
     /// most splash screens are not skippable.
     skippable: bool,
+    /// How far the screen has faded out: `1.0` fully present, `0.0` gone.
+    ///
+    /// # Why the fade is opt-in and starts settled
+    ///
+    /// The host owns the dismissal -- [`Self::finish`] deliberately does not hide the control, so a
+    /// host may unmount it, keep it, or fade it. What was missing was the *means*: there was no way
+    /// to express "fade out" at all, so a host that wanted the smooth exit every platform uses had
+    /// to build it out of raw opacity itself. [`Self::fade_out`] aims this driver at zero and the
+    /// draw scales with it, so the transition is the control's and the decision stays the host's.
+    ///
+    /// It rests at `1.0` because a splash screen is **shown the moment it is mounted** -- unlike a
+    /// dialog, which is created hidden. A control born mid-fade would flash into existence.
+    opacity: PropertyDriver,
     /// Emitted when the screen is finished, with the title.
     pub finished: Signal1<String>,
     /// Emitted when the user skips, with the title.
@@ -79,6 +93,9 @@ impl SplashScreen {
             subtitle: String::new(),
             progress: None,
             skippable: false,
+            // At rest fully present: a splash screen is shown the moment it is mounted, so it must
+            // not animate itself into existence.
+            opacity: PropertyDriver::at(1.0, MotionSlot::Normal),
             finished: Signal1::new(),
             skipped: Signal1::new(),
         }
@@ -136,9 +153,34 @@ impl SplashScreen {
     ///
     /// The screen does not hide itself: whether to unmount, fade, or keep the
     /// control mounted is the host's decision, and a control that removed itself
-    /// from the tree could not be reused for a restart.
+    /// from the tree could not be reused for a restart. A host that wants the fade calls
+    /// [`Self::fade_out`] as well -- see that method for why the two are separate.
     pub fn finish(&mut self) {
         self.finished.emit(self.title.clone());
+    }
+
+    /// How far the screen has faded: `1.0` fully present, `0.0` gone.
+    pub fn opacity(&self) -> f32 {
+        self.opacity.value()
+    }
+
+    /// Begins fading the screen out, for a host that wants a smooth exit.
+    ///
+    /// # Why this is separate from [`Self::finish`]
+    ///
+    /// `finish` **announces** that initialisation is done and leaves the dismissal to the host,
+    /// which is right: a host may want to unmount immediately, keep the splash up for a beat, or
+    /// fade it. Those are three different policies and none is the control's to pick. But only two
+    /// of the three were expressible -- the fade had no spelling at all, so "smooth exit" meant the
+    /// host reaching past this control into the raw opacity channel. `fade_out` gives the third
+    /// policy a name while leaving the choice where it belongs: a host that calls only `finish`
+    /// still gets exactly the abrupt exit it always had.
+    ///
+    /// The frames that follow come from [`Widget::tick`], so the host must run a frame loop for the
+    /// fade to progress -- the same requirement every animated control in the crate has.
+    pub fn fade_out(&mut self) {
+        self.opacity.set_target(0.0);
+        self.base.request_redraw();
     }
 
     /// The skip hint rectangle, when the screen is skippable.
@@ -199,6 +241,18 @@ impl Widget for SplashScreen {
     /// than a content-sized box: this control fills whatever it is given.
     fn size_hint(&self) -> Size {
         Size::new(480, 320)
+    }
+
+    /// Advances the fade by `delta_ms`; `true` while there is still movement.
+    ///
+    /// A settled screen costs no frames: the driver reports false the step it reaches its target, so
+    /// a splash that was never faded owes nothing and one that has finished fading stops.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.opacity.tick(delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.opacity.is_moving()
     }
 
     impl_draw_bridge!();
@@ -346,6 +400,34 @@ impl Draw for SplashScreen {
         let muted_ink = ink.blend(&surface, 0.4);
         let track = surface.blend(&ink, 0.16);
 
+        // ── The fade ──
+        //
+        // One value applied to every colour this control paints, at the single point where they are
+        // all in hand. Scaling each `fill_*` call instead would be eight places to remember and seven
+        // ways to leave a part of the screen behind at full strength -- which is what a "fade" that
+        // misses the logo or the progress bar looks like. `opacity()` is 1.0 unless a host called
+        // `fade_out`, so an unfaded screen multiplies by an identity and is byte-identical.
+        let opacity = self.opacity.value();
+        if opacity <= 0.0 {
+            // Fully faded: nothing left to paint. Stated as an early return rather than as
+            // multiply-by-zero on each colour, because a zero-alpha plane is still an element in the
+            // document and the census reads elements.
+            return;
+        }
+        let fade = |color: Color| -> Color {
+            if opacity >= 1.0 {
+                color
+            } else {
+                color.with_alpha((color.a as f32 * opacity) as u8)
+            }
+        };
+        let surface = fade(surface);
+        let ink = fade(ink);
+        let border = fade(border);
+        let accent = fade(accent);
+        let muted_ink = fade(muted_ink);
+        let track = fade(track);
+
         context.fill_rect(rect, surface);
 
         let centre_x = rect.x + (rect.width / 2) as i32;
@@ -475,6 +557,63 @@ mod tests {
         splash.finish();
         assert_eq!(seen.lock().expect("lock").as_slice(), ["Booting"]);
         assert!(splash.base.is_visible(), "finishing must not hide the control itself");
+    }
+
+    /// `fade_out` fades the screen, and a screen that was never asked to is untouched.
+    ///
+    /// # The defect this pins
+    ///
+    /// The control had no way to express a fade at all. `finish` announced that initialisation was
+    /// done and left the dismissal to the host -- which is right -- but "fade it out" was one of the
+    /// three policies a host might pick and the only one with no spelling, so a host wanting the
+    /// smooth exit every platform uses had to reach past this control into the raw opacity channel.
+    /// The assertions keep that boundary: a default screen paints at full strength (**the first half
+    /// is what makes this a test of an opt-in feature rather than of a global dimming**), and a faded
+    /// one paints less -- at each step, not just at the end.
+    #[test]
+    fn fade_out_diminishes_the_screen_and_a_default_one_is_untouched() {
+        use crate::widget::svg::render_to_svg;
+        let _theme_guard = crate::theme::theme_test_guard();
+
+        // A screen that was never asked to fade is fully opaque and owes no frames.
+        let mut fresh = screen(320, 240);
+        assert_eq!(fresh.opacity(), 1.0, "a fresh splash is fully present");
+        assert!(!fresh.is_animating(), "and owes no frames");
+        let full = render_to_svg(&mut fresh);
+        assert!(full.contains("rgba("), "a fresh screen paints its panel: {full}");
+
+        // A faded one: the same geometry, less opacity.
+        let mut fading = screen(320, 240);
+        let untouched = render_to_svg(&mut fading);
+        fading.fade_out();
+        assert!(fading.is_animating(), "fading owes frames");
+        assert!(fading.tick(30), "still fading after one step");
+        let mid = fading.opacity();
+        assert!(mid > 0.0 && mid < 1.0, "it passes through an interior value (got {mid})");
+        let dimmed = render_to_svg(&mut fading);
+        assert_ne!(dimmed, untouched, "a fading screen must not paint the same picture");
+
+        // And it settles gone, painting **nothing of its own**. The renderer always emits the canvas
+        // fill, so "paints nothing" is asserted against what a control with no panel produces -- a
+        // stricter spelling than "no colour follows", which a transparent-but-present panel passes.
+        while fading.tick(1000) {}
+        assert_eq!(fading.opacity(), 0.0, "and settles fully faded");
+        assert!(!fading.is_animating(), "owing no further frames");
+        let gone = render_to_svg(&mut fading);
+        // The gap between the partial and the settled frame is the assertion: the fade kept
+        // progressing after the mid-step sample rather than stalling at a dim panel. The canvas fill
+        // the renderer always emits is why this is stated as "fewer lines than the mid frame" and not
+        // as "no colour at all" -- the latter is satisfied by a transparent panel, which is the very
+        // thing the early return exists to avoid emitting.
+        assert!(
+            gone.lines().count() < dimmed.lines().count(),
+            "the fade must keep going after the mid step, so the settled frame paints less:\n\
+             mid={dimmed}\ngone={gone}"
+        );
+        assert!(
+            gone.lines().count() < full.lines().count(),
+            "and less than the unfaded screen:\nfull={full}\ngone={gone}"
+        );
     }
 
     #[test]

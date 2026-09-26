@@ -6,10 +6,12 @@ use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size}
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::dimensions;
 use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -19,13 +21,27 @@ use std::rc::Rc;
 ///
 /// The header displays a title and an arrow indicator (▶ when collapsed, ▼ when expanded).
 /// When collapsed, the content area is hidden; when expanded, the content area is visible
-/// below the header bar.
+/// below the header bar. The disclosure is **animated**: `open` runs from `0.0` (collapsed)
+/// to `1.0` (expanded) and the content band is a function of it, so the pane opens rather
+/// than hard-cutting between two frames.
 pub struct CollapsiblePane {
     base: BaseWidget,
     title: String,
     collapsed: bool,
     content_child: Option<ObjectId>,
     header_height: u32,
+    /// How far the pane is open, `0.0` fully collapsed and `1.0` fully expanded.
+    ///
+    /// # Why this is separate from `collapsed`
+    ///
+    /// `collapsed` is the logical state a caller reads the instant it changes; `open` is what
+    /// the draw path measures the content band with. Drawing the band straight from `collapsed`
+    /// made the content appear and disappear between two adjacent frames, which is the
+    /// hard-cut this field exists to remove -- the same split, for the same reason, as
+    /// `Switch`'s `checked` versus `travel`. It starts at `1.0` because a freshly built pane is
+    /// **expanded**, so a pane that has never been toggled draws at rest rather than fading open
+    /// on its first frame.
+    open: PropertyDriver,
     /// Emitted when the collapsed state changes (parameter: new collapsed state).
     pub toggled: Signal1<bool>,
     registry: Option<Rc<RefCell<SimpleRegistry>>>,
@@ -40,7 +56,9 @@ impl CollapsiblePane {
             title,
             collapsed: false,
             content_child: None,
-            header_height: 24,
+            header_height: dimensions::COLLAPSIBLE_HEADER_HEIGHT,
+            // Expanded at rest, so an untouched pane pays no frames and shows its content.
+            open: PropertyDriver::at(1.0, MotionSlot::Normal),
             toggled: Signal1::new(),
             registry: None,
         }
@@ -63,13 +81,52 @@ impl CollapsiblePane {
     }
 
     /// Sets the collapsed state, emits the `toggled` signal, and requests a redraw.
+    ///
+    /// The drawn band follows `open`, which the frame bus advances; this only re-aims it. The
+    /// logical state is answered immediately, so a caller reading `is_collapsed()` after a click
+    /// sees the new value the moment the click happened — the same split as `Switch::set_checked`.
+    /// No frame is requested here, because it would not be the thing that makes the motion
+    /// visible: `tick_animations` reports `true` while any control is in flight, and that is what
+    /// keeps the loop painting.
     pub fn set_collapsed(&mut self, collapsed: bool) {
         if self.collapsed == collapsed {
             return;
         }
         self.collapsed = collapsed;
+        self.open.set_target(self.open_target());
         self.toggled.emit(collapsed);
         self.base.request_redraw();
+    }
+
+    /// How far open the logical `collapsed` flag calls for.
+    ///
+    /// One place states which end `collapsed` means, so the tick and the "am I moving?" query
+    /// cannot disagree about it (the same reason `Switch::travel_target` exists).
+    fn open_target(&self) -> f32 {
+        if self.collapsed {
+            0.0
+        } else {
+            1.0
+        }
+    }
+
+    /// How far the pane is currently open, `0.0` collapsed and `1.0` expanded.
+    ///
+    /// This is the *drawn* fraction: the content band's height is a function of it, so a test
+    /// can assert the disclosure slid rather than jumped by sampling it at successive frames.
+    pub fn open_progress(&self) -> f32 {
+        self.open.value()
+    }
+
+    /// Advances the open/close animation by `delta_ms`; `true` while it is still moving.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        self.open.set_target(self.open_target());
+        self.open.tick(delta_ms)
+    }
+
+    /// Whether the pane is between two open fractions -- answers only, never advances.
+    pub fn is_animating(&self) -> bool {
+        self.open.is_moving()
     }
 
     /// Toggles the collapsed state.
@@ -116,16 +173,29 @@ impl CollapsiblePane {
         Rect::new(rect.x, rect.y, rect.width, self.header_height)
     }
 
-    /// Returns the geometry of the content area (below the header).
+    /// Returns the geometry of the content area, as far open as the pane currently is.
+    ///
+    /// The band is `header_height + fullContentHeight * open`, so the content is revealed by
+    /// growing rather than by appearing. A fully open pane therefore reports exactly the same
+    /// rectangle it always did (`open == 1.0`), which is what keeps the resting appearance and
+    /// every existing geometry assertion unchanged.
     fn content_rect(&self) -> Rect {
         let rect = self.geometry();
         let y_offset = rect.y + self.header_height as i32;
-        let height = rect.height.saturating_sub(self.header_height);
+        let full_height = rect.height.saturating_sub(self.header_height);
+        // A closed pane reserves nothing; a half-open one reserves half. Rounding toward zero
+        // rather than nearest keeps `open == 0.0` at exactly zero, which is the value the
+        // "collapsed reserves no band" assertion reads.
+        let height = (full_height as f32 * self.open.value()) as u32;
         Rect::new(rect.x, y_offset, rect.width, height)
     }
 
     fn sync_content_geometry(&mut self) {
-        if self.collapsed {
+        // A band with no height has nothing to lay a child out in, and a zero-height rectangle
+        // is not "a hidden child" — it is a child that gets drawn into a sliver. The child's
+        // geometry is left at the last open band instead, which is also the rectangle it will
+        // animate back into as the pane reopens.
+        if self.content_rect().height == 0 {
             return;
         }
         if let Some(content) = self.content_child {
@@ -155,6 +225,16 @@ impl Widget for CollapsiblePane {
         if self.content_child == Some(child) {
             self.content_child = None;
         }
+    }
+
+    // The disclosure animation is the control's own; the trait spelling is what the bus reaches
+    // through `&mut dyn Widget`, which is the only way the opening actually happens.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        CollapsiblePane::tick(self, delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.open.is_moving()
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -229,13 +309,17 @@ impl EventHandler for CollapsiblePane {
             _ => {}
         }
 
-        if self.collapsed {
+        // Events reach the content only while there is a band to reach into. A closing pane
+        // shrinks that band, so the moment it reaches nothing the content stops receiving
+        // pointer events — which is the same rule the draw path applies, read from the same
+        // `content_rect` rather than from the logical flag, so the two cannot disagree.
+        let content_rect = self.content_rect();
+        if content_rect.height == 0 {
             return;
         }
 
         if let Some(content) = self.content_child {
             if let Some(ref reg) = self.registry {
-                let content_rect = self.content_rect();
                 reg.borrow_mut().set_widget_geometry(content, content_rect);
                 match event {
                     Event::MousePress { pos, .. }
@@ -378,9 +462,14 @@ impl Draw for CollapsiblePane {
             );
         }
 
-        // --- Draw content area (only when expanded) ---
-        if !self.collapsed {
-            let content_rect = self.content_rect();
+        // --- Draw content area (only while the pane is at all open) ---
+        //
+        // Guarded on the *band*, not on `collapsed`: the band shrinks to nothing as the pane
+        // closes, so a frame mid-close draws a shorter content area rather than snapping it away
+        // on the first frame of the animation. A band at zero draws nothing, which is what a
+        // fully collapsed pane is.
+        let content_rect = self.content_rect();
+        if content_rect.height > 0 {
             self.sync_content_geometry();
             context.fill_rect(content_rect, content_bg);
             context.draw_line(
@@ -449,8 +538,16 @@ mod tests {
         let cp = CollapsiblePane::new(Rect::new(0, 0, 200, 100), "Title".to_string());
         assert_eq!(cp.title(), "Title");
         assert!(!cp.is_collapsed(), "pane should start expanded");
-        assert_eq!(cp.header_height(), 24, "default header height should be 24");
+        assert_eq!(
+            cp.header_height(),
+            dimensions::COLLAPSIBLE_HEADER_HEIGHT,
+            "the header is the touch target, so it takes Material's 44 floor"
+        );
         assert!(cp.content().is_none(), "no content child by default");
+        // A freshly built pane is expanded *and* drawn expanded: the driver starts at its
+        // resting end, so an untouched pane owes no frames and its content is visible.
+        assert_eq!(cp.open_progress(), 1.0, "a new pane is open, not mid-reveal");
+        assert!(!cp.is_animating(), "and therefore owes no frames");
     }
 
     // ── 2. Title get / set ──────────────────────────────────────────────
@@ -532,7 +629,7 @@ mod tests {
     #[test]
     fn collapsible_pane_header_height() {
         let mut cp = make_pane();
-        assert_eq!(cp.header_height(), 24);
+        assert_eq!(cp.header_height(), dimensions::COLLAPSIBLE_HEADER_HEIGHT);
 
         cp.set_header_height(32);
         assert_eq!(cp.header_height(), 32);
@@ -684,6 +781,12 @@ mod tests {
         // Now collapsed.
         let mut cp2 = CollapsiblePane::new(Rect::new(0, 0, 200, 100), "Collapsed".to_string());
         cp2.set_collapsed(true);
+        // The band is a function of `open`, and `set_collapsed` only *re-aims* it: a pane that has
+        // just been told to collapse is still drawn open until the frame bus advances it. That is
+        // the point of the animation rather than a gap in it, so the test drives the slide the way
+        // the bus would before reading the settled frame — the same thing `Switch`'s travel tests
+        // do. What a real user sees is the band shrinking over these frames, not the two endpoints.
+        while cp2.tick(1000) {}
 
         let mut svg_backend2 = SvgPaintBackend::new(Size::new(200, 100));
         svg_backend2.begin_frame(Color::rgb(255, 255, 255));
@@ -697,7 +800,7 @@ mod tests {
         // Collapsed state should NOT contain content area background.
         assert!(
             !svg_collapsed.contains(&rgb(content_expected)),
-            "collapsed pane must not draw content area"
+            "a settled collapsed pane must not draw the content area"
         );
         // But the header should still be visible.
         assert!(
@@ -714,7 +817,7 @@ mod tests {
         assert!(!cp.is_collapsed());
 
         // MousePress on the header area (button 1 = left click).
-        // Header rect is at (0,0,200,24) — y=12 is well inside.
+        // Header rect is at (0,0,200,44) — y=12 is well inside.
         let click_event = Event::MousePress { pos: Point { x: 10, y: 12 }, button: 1 };
         cp.handle_event(&click_event);
         assert!(cp.is_collapsed(), "click on header should collapse the pane");
@@ -727,7 +830,7 @@ mod tests {
         cp.handle_event(&click_event); // collapse again
         assert!(cp.is_collapsed());
         let outside_event = Event::MousePress {
-            pos: Point { x: 10, y: 50 }, // content area, y=50 > header_height=24
+            pos: Point { x: 10, y: 80 }, // content area, well below header_height
             button: 1,
         };
         cp.handle_event(&outside_event);
@@ -758,5 +861,57 @@ mod tests {
         // Other keys should not toggle
         cp.handle_event(&Event::KeyPress { key: 65, modifiers: 0 }); // 'A'
         assert!(!cp.is_collapsed(), "'A' key must not toggle");
+    }
+
+    // ── 15. The disclosure is an animation, not a hard cut (§0.3 three-frame judgement) ──
+
+    /// Collapsing and expanding runs the content band between two heights over frames.
+    ///
+    /// # The defect this pins
+    ///
+    /// The pane used to draw its content band straight from `collapsed`, so the band was either
+    /// the full height or absent, on adjacent frames, with nothing in between: the content
+    /// popped out of existence rather than sliding shut. The assertion is the same shape every
+    /// animation in this crate uses (BLUE23 §0.3): sample the drawn geometry at three times and
+    /// require the middle one to lie **strictly between** the two ends, and require the whole
+    /// sequence to be **monotonic**. A hard cut fails both halves — the middle sample equals one
+    /// end, and the sequence never takes an interior value.
+    #[test]
+    fn the_disclosure_slides_rather_than_cutting() {
+        let mut cp = make_pane();
+        assert!(!cp.tick(0), "an open pane at rest owes no frame");
+        let open_height = cp.content_rect().height;
+        assert!(open_height > 0, "an expanded pane reserves a content band");
+
+        cp.set_collapsed(true);
+        assert!(cp.is_animating(), "collapsing owes frames, which is what the bus reads");
+
+        // Frame 0 is still the open band: the slide has not happened yet, which is what makes
+        // the first frame of the animation continuous with the last frame before it.
+        assert_eq!(cp.content_rect().height, open_height, "the slide starts where the pane was");
+
+        // Two half-step frames, then settle. `MotionSlot::Normal` is well under 2 ticks of
+        // 60 ms, so the midpoint is a genuine interior sample rather than a snapped endpoint.
+        assert!(cp.tick(60), "still moving after the first step");
+        let mid = cp.content_rect().height;
+        assert!(
+            mid < open_height && mid > 0,
+            "the band must take an interior height, not jump to either end (got {mid})"
+        );
+        while cp.tick(60) {}
+        assert_eq!(cp.content_rect().height, 0, "and settle at exactly zero");
+        assert!(!cp.is_animating(), "a settled pane owes no more frames");
+
+        // Reopening takes the same interior values in the other direction.
+        cp.set_collapsed(false);
+        assert!(cp.is_animating());
+        assert!(cp.tick(60));
+        let mid_reopen = cp.content_rect().height;
+        assert!(
+            mid_reopen > 0 && mid_reopen < open_height,
+            "reopening must also pass through interior heights (got {mid_reopen})"
+        );
+        while cp.tick(60) {}
+        assert_eq!(cp.content_rect().height, open_height, "and return to the full band");
     }
 }

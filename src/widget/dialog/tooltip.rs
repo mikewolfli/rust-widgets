@@ -780,6 +780,9 @@ mod tests {
 
     #[test]
     fn tooltip_svg_output_hidden() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         let mut tooltip = Tooltip::new("Hidden", Rect::new(0, 0, 100, 30));
         // A tooltip that is not showing is dimmed, not omitted: `draw` used to `return`
         // early here, so a tooltip that had been created but not hovered painted nothing at

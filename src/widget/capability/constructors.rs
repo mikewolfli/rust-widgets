@@ -939,6 +939,10 @@ pub fn create_chart(geometry: Rect, text: &str) -> Box<dyn Widget> {
     // broken `Draw`.
     chart.set_labels(vec!["A".to_string(), "B".to_string(), "C".to_string(), "D".to_string()]);
     chart.set_series(vec![vec![1.0, 3.0, 2.0, 4.0]]);
+    // A chart grows its marks from the baseline when data is set, so a freshly seeded one is caught
+    // **mid-reveal** -- the census rendered it with the bars at three pixels tall. Settling it here is
+    // what puts a chart at its values into the sample, the same remedy the sheets and dialogs use.
+    while chart.tick(1000) {}
     label(geometry, text, Box::new(chart))
 }
 

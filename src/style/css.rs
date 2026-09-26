@@ -417,12 +417,23 @@ impl CssParser {
 
     fn parse_pseudo_state(name: &str) -> Option<PseudoState> {
         match name {
+            // `:normal` is the selector the enum documents for "the resting state, matching only
+            // when no other state is set", and it was the one state the parser could not spell —
+            // `WidgetState` has no `Normal` suffix problem (it is `"normal"`), so a sheet was
+            // unable to target the resting control that everything else is written against.
+            "normal" => Some(PseudoState::Normal),
             "hover" => Some(PseudoState::Hover),
             "pressed" | "active" => Some(PseudoState::Pressed),
             "disabled" => Some(PseudoState::Disabled),
             "focused" | "focus" => Some(PseudoState::Focused),
             "checked" => Some(PseudoState::Checked),
             "selected" => Some(PseudoState::Selected),
+            // The three validation states the theme's own `"<kind>:<state>"` keys already accept. A
+            // sheet that spells `line_edit:error` must resolve to the same state the JSON path
+            // does, or the two ways of describing a style would disagree about what `error` means.
+            "error" | "invalid" => Some(PseudoState::Error),
+            "warning" => Some(PseudoState::Warning),
+            "success" | "valid" => Some(PseudoState::Success),
             _ => None,
         }
     }
@@ -1091,6 +1102,51 @@ mod tests {
         let css = "Button:hover { background: blue; }";
         let rules = CssParser::parse_rules(css).unwrap();
         assert_eq!(rules[0].selector_text, "Button:hover");
+    }
+
+    /// The three validation states parse, and they alias their natural spellings.
+    ///
+    /// # The gap this pins
+    ///
+    /// `WidgetState::Error`/`Warning`/`Success` and the theme's `"<kind>:error"` override keys have
+    /// existed for as long as those states have. The CSS path understood six pseudo-classes and
+    /// none of the three, so a sheet targeting `line_edit:error` could not be written — and inline
+    /// validation is the most common state a form has. The assertion is the parsed selector, so a
+    /// name that stops parsing fails rather than silently matching nothing.
+    #[test]
+    fn the_validation_states_parse_as_pseudo_classes() {
+        for (name, expected) in [
+            ("error", PseudoState::Error),
+            ("invalid", PseudoState::Error),
+            ("warning", PseudoState::Warning),
+            ("success", PseudoState::Success),
+            ("valid", PseudoState::Success),
+        ] {
+            assert_eq!(
+                CssParser::parse_pseudo_state(name),
+                Some(expected),
+                "`{name}` must resolve to the state the theme's `\"<kind>:<state>\"` keys use"
+            );
+            // And a full rule carrying it parses, so the alias is reachable from source text and
+            // not merely from the helper.
+            let css = format!("LineEdit:{name} {{ background: blue; }}");
+            let rules = CssParser::parse_rules(&css)
+                .unwrap_or_else(|e| panic!("LineEdit:{name} failed to parse: {e:?}"));
+            assert_eq!(rules.len(), 1, "LineEdit:{name}");
+            assert_eq!(rules[0].selector_text, format!("LineEdit:{name}"));
+        }
+    }
+
+    /// An unknown pseudo-class is not silently normal.
+    ///
+    /// The negative half is what separates "the state parsed" from "the state means something":
+    /// a parser that returned `Some(PseudoState::Normal)` for an unrecognised name would satisfy
+    /// the test above and make a typo'd `:erorr` paint every resting control.
+    #[test]
+    fn an_unknown_pseudo_class_is_rejected_rather_than_normal() {
+        assert_eq!(CssParser::parse_pseudo_state("erorr"), None);
+        assert_eq!(CssParser::parse_pseudo_state("normal"), Some(PseudoState::Normal));
+        assert_ne!(CssParser::parse_pseudo_state("erorr"), Some(PseudoState::Normal));
     }
 
     #[test]

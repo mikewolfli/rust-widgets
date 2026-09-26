@@ -954,7 +954,26 @@ impl Layout for FlexLayout {
             _ => 0,
         };
 
-        let mut cursor = origin_main + first_offset;
+        // ── The reverse axis packs from the far edge ──
+        //
+        // `arrange` used to ignore `is_reverse()` entirely: the loop below always packed from
+        // `origin_main` upward, so a `RowReverse`/`ColumnReverse` layout was placed exactly as if it
+        // were forward. `justify_positions` (the other entry point) has always handled it, so the two
+        // paths disagreed about what a reverse direction means -- and `arrange` is the path
+        // `CompositeBuilder` takes, which is why every assembled row in the crate was silently
+        // forward-only. This is the same form `justify_positions` uses: the cursor starts at the far
+        // edge and each item is placed by *subtracting* its extent, so the first child ends at the
+        // band's end and the last child lands nearest the start.
+        //
+        // The first child's `first_offset` is mirrored too: `FlexEnd` puts its gutter at the
+        // *leading* edge on a reversed axis, which is what keeps the justification meaning "from the
+        // end the children are packed toward" rather than "from the left, always".
+        let reverse = self.is_reverse();
+        let mut cursor = if reverse {
+            origin_main + available_main - first_offset
+        } else {
+            origin_main + first_offset
+        };
         for index in 0..sizes.len() {
             let (left, top, right, bottom) = inset(index);
             // The solver reports the *whole* box, margins included, so the child's drawn extent
@@ -998,9 +1017,14 @@ impl Layout for FlexLayout {
             // The child's box sits at its cursor plus its own leading margin, so a margin is
             // space the child does not draw in — which is what makes it a *gap* rather than a
             // padding of the child's own chrome.
+            // The cursor is the trailing edge in a reverse layout, so the child is placed *behind*
+            // it by its own extent plus the margin on that side. `main_len + left + right` is the
+            // solved box, so subtracting it and adding back the leading margin gives the child's
+            // drawn origin -- the mirror of `cursor + left` below.
+            let main_start = if reverse { cursor - solved + left } else { cursor + left };
             let child_rect = if is_row {
                 Rect::new(
-                    cursor + left,
+                    main_start,
                     cross_origin + cross_start + top,
                     main_len.max(0) as u32,
                     cross_len.max(0) as u32,
@@ -1008,7 +1032,7 @@ impl Layout for FlexLayout {
             } else {
                 Rect::new(
                     cross_origin + cross_start + left,
-                    cursor + top,
+                    main_start,
                     cross_len.max(0) as u32,
                     main_len.max(0) as u32,
                 )
@@ -1016,7 +1040,13 @@ impl Layout for FlexLayout {
             if let Some(widget_id) = self.items[index].widget_id {
                 out(widget_id, child_rect);
             }
-            cursor += solved + self.gap + inter_extra;
+            // Backward on a reversed axis, forward otherwise -- so the next child is always placed
+            // against the one just emitted.
+            if reverse {
+                cursor -= solved + self.gap + inter_extra;
+            } else {
+                cursor += solved + self.gap + inter_extra;
+            }
         }
     }
 
@@ -1523,6 +1553,70 @@ mod tests {
         // RowReverse: item1 at x=100, item2 at x=0 (reversed order)
         assert_eq!(rects.get(&1).map(|r| r.x), Some(100));
         assert_eq!(rects.get(&2).map(|r| r.x), Some(0));
+    }
+
+    /// `arrange` — the path `CompositeBuilder` takes — honours the reverse axis too.
+    ///
+    /// # The defect this pins
+    ///
+    /// `update` and `arrange` are two entry points onto one layout, and only `update` routed the
+    /// main-axis positions through `justify_positions`, which is where `is_reverse()` is handled.
+    /// `arrange` packed from `origin_main` upward unconditionally, so a `RowReverse` layout came
+    /// back **identical to a forward one**: the direction was read by one path and ignored by the
+    /// other. The test above could not catch it because it calls `update`.
+    ///
+    /// The assertion is the *mirror* relation, not two hardcoded numbers: in a reverse row the first
+    /// child ends where the last child would have ended forward, and the children appear in the
+    /// opposite order, so the two layouts' x-positions are a reflection of one another. Stating it
+    /// that way means a change to the band, the gaps or the sizes cannot make the test agree with a
+    /// bug.
+    #[test]
+    fn arrange_honours_the_reverse_axis() {
+        let rect_of = |direction: FlexDirection| -> HashMap<u64, Rect> {
+            let mut layout = FlexLayout::with_params(
+                direction,
+                FlexWrap::NoWrap,
+                JustifyContent::FlexStart,
+                AlignItems::Stretch,
+                0,
+                0,
+            );
+            layout.add_widget(1, 1);
+            layout.add_widget(2, 1);
+            let children = vec![
+                ChildInfo { id: 1, hints: Hints::default(), params: LayoutParams::default() },
+                ChildInfo { id: 2, hints: Hints::default(), params: LayoutParams::default() },
+            ];
+            let mut rects = HashMap::new();
+            // Both children ask for half the band, so the forward and reverse placements are exact
+            // reflections and no rounding can make a wrong answer look right.
+            layout.set_child_sizes(vec![Size::new(100, 50), Size::new(100, 50)]);
+            layout.arrange(Rect::new(0, 0, 200, 50), &children, &mut |id, rect| {
+                rects.insert(id, rect);
+            });
+            rects
+        };
+
+        let forward = rect_of(FlexDirection::Row);
+        let reverse = rect_of(FlexDirection::RowReverse);
+
+        assert_eq!(forward.get(&1).map(|r| r.x), Some(0), "forward packs from the leading edge");
+        assert_eq!(forward.get(&2).map(|r| r.x), Some(100), "and the second follows it");
+        assert_eq!(
+            reverse.get(&1).map(|r| r.x),
+            Some(100),
+            "reversed, the first child is packed against the far edge"
+        );
+        assert_eq!(reverse.get(&2).map(|r| r.x), Some(0), "and the second lands beside it");
+        // Spelled as the reflection, so the assertion is the property rather than the four numbers.
+        for id in [1u64, 2] {
+            assert_eq!(
+                forward.get(&id).map(|r| r.x),
+                reverse.get(&id).map(|r| 200 - r.x - r.width as i32),
+                "the reverse placement of child {id} is the forward one reflected about the band's \
+                 centre"
+            );
+        }
     }
 
     // ── The hints channel (BLUE22 §B.5.2) ───────────────────────────────

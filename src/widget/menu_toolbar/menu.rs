@@ -1162,6 +1162,9 @@ mod tests {
     /// through the rendered SVG so the assertion is about what a person sees.
     #[test]
     fn a_menu_row_is_centred_on_its_own_line_box() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         let mut menu = Menu::new("File", Rect::new(0, 0, 200, 120));
         menu.add_action("Open");
         menu.add_action("Save");

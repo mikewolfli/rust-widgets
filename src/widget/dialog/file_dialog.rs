@@ -395,6 +395,12 @@ impl FileDialog {
 
 impl Draw for FileDialog {
     fn draw(&mut self, context: &mut RenderContext) {
+        // A modal dialog dims the page behind it: that dimming is the whole visual difference
+        // between "this dialog is up and the page is inert" and "a panel was drawn on the page".
+        // The `modal` flag was recorded and enforced by the modal stack, and nothing painted it.
+        if self.modal {
+            super::draw_modal_scrim(context, self.geometry());
+        }
         // The **frame**, not the control's rectangle: see `frame_rect`.
         let rect = self.frame_rect();
         let style = self.style().clone();

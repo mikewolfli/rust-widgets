@@ -491,6 +491,38 @@ pub mod dimensions {
     /// Inset of the switch thumb from the track edge: 2.
     pub const SWITCH_THUMB_INSET: u32 = 2;
 
+    /// An iOS (Cupertino) switch's track: `51x31`.
+    ///
+    /// Apple's `UISwitch` measures `51x31` at 1x, which is the geometry
+    /// `cupertino_switch` draws. It is deliberately *narrower* than
+    /// [`SWITCH_TRACK`](Self::SWITCH_TRACK) rather than a scaled copy of it: a
+    /// Material switch and an iOS switch are two different shapes, and rendering
+    /// the iOS name with the Material proportions is what made `cupertino_switch`
+    /// a second spelling of `switch` rather than a control of its own.
+    pub const CUPERTINO_SWITCH_TRACK: Size = Size { width: 51, height: 31 };
+
+    /// An iOS switch thumb's radius: 13, i.e. a 26 px disc in a 31 px track.
+    ///
+    /// `UISwitch`'s thumb is a 27 pt disc; a 26 px one keeps the track's own
+    /// `2` px inset arithmetic ([`SWITCH_THUMB_INSET`](Self::SWITCH_THUMB_INSET))
+    /// exact at integer pixels, which is what a bitmap renderer needs.
+    pub const CUPERTINO_SWITCH_THUMB_RADIUS: u32 = 13;
+
+    /// How far an iOS switch thumb stretches sideways while it is held: 7.
+    ///
+    /// `UISwitch` widens its thumb into a capsule on touch-down so the user can
+    /// see the control has taken the gesture. Expressed as a horizontal *delta*
+    /// the thumb's radius grows by, so the thumb becomes `26 + 7` px wide.
+    pub const CUPERTINO_SWITCH_PRESS_STRETCH: u32 = 7;
+
+    /// A collapsible pane's header bar height: 44.
+    ///
+    /// Material's minimum touch-target height, which is what an expander's own bar has to be
+    /// to be tappable on a phone. It was `24` — a desktop-strip height that makes the one
+    /// control the user touches hardest to hit, and half the 44/48 that
+    /// Material's `ExpansionTile` and `ListTile` both use.
+    pub const COLLAPSIBLE_HEADER_HEIGHT: u32 = 44;
+
     /// A checkbox indicator's box: `18x18` (Material's checkbox sizing).
     pub const CHECKBOX_BOX: u32 = 18;
 
@@ -1037,6 +1069,67 @@ pub mod dimensions {
     /// a button.
     pub fn density_scale(vertical_density: i32) -> i32 {
         vertical_density.saturating_mul(DENSITY_STEP as i32)
+    }
+}
+
+/// The drawn shape of a [`Switch`](crate::widget::display_widgets::switch::Switch)'s track
+/// and thumb.
+///
+/// # Why this is a value and not two separate controls
+///
+/// A Material switch and an iOS switch are the same *control* — one boolean, one gesture,
+/// one `checked` signal, one `travel` animation — drawn at two different sizes. Splitting
+/// them into two `Widget` implementations would duplicate the gesture, the animation and
+/// the contract to change three numbers (principle #28), and the two copies would then be
+/// free to drift on the parts that are *not* about size.
+///
+/// So the size lives here, one field on the one implementation, and
+/// `cupertino_switch` is that implementation carrying this preset instead of the default
+/// one. The mechanism is the crate's own: `CodeEditor` carries a `SyntaxPalette`, this
+/// carries a shape.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SwitchGeometry {
+    /// The track's drawn size, centred inside the control's rectangle.
+    pub track: Size,
+    /// The thumb's radius at rest.
+    pub thumb_radius: u32,
+    /// The thumb's inset from the track's edge.
+    pub thumb_inset: u32,
+    /// How much wider the thumb becomes while it is held, on each side.
+    ///
+    /// `0` for a shape that does not stretch. iOS's `UISwitch` widens its thumb into a
+    /// capsule on touch-down; Material's does not, and that difference is exactly the
+    /// kind of thing a single shared implementation must be able to express rather than
+    /// ignore.
+    pub press_stretch: u32,
+}
+
+impl SwitchGeometry {
+    /// Material's shape: a `52x32` track with a 14 px thumb radius and no stretch.
+    pub const MATERIAL: Self = Self {
+        track: dimensions::SWITCH_TRACK,
+        thumb_radius: dimensions::SWITCH_THUMB_RADIUS,
+        thumb_inset: dimensions::SWITCH_THUMB_INSET,
+        press_stretch: 0,
+    };
+
+    /// iOS's shape: a `51x31` track, a 13 px thumb radius, and a 7 px press stretch.
+    pub const CUPERTINO: Self = Self {
+        track: dimensions::CUPERTINO_SWITCH_TRACK,
+        thumb_radius: dimensions::CUPERTINO_SWITCH_THUMB_RADIUS,
+        thumb_inset: dimensions::SWITCH_THUMB_INSET,
+        press_stretch: dimensions::CUPERTINO_SWITCH_PRESS_STRETCH,
+    };
+
+    /// The thumb's drawn size at rest, as a diameter.
+    pub const fn thumb_size(&self) -> u32 {
+        self.thumb_radius * 2
+    }
+}
+
+impl Default for SwitchGeometry {
+    fn default() -> Self {
+        Self::MATERIAL
     }
 }
 

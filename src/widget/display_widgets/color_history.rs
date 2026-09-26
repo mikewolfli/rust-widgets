@@ -461,6 +461,9 @@ mod tests {
     /// surrounding panel's chrome rather than a literal black.
     #[test]
     fn the_selection_mark_follows_the_theme() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         let mut ch = ColorHistory::new(Rect::new(0, 0, 200, 100));
         ch.add_color(Color::RED);
         ch.add_color(Color::GREEN);

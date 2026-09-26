@@ -47,7 +47,15 @@ pub struct GridWidget {
     /// Spacing between cells in pixels.
     spacing: u32,
     /// Color of grid separator lines (`None` = no lines drawn).
-    line_color: Option<Color>,
+    ///
+    /// A caller that never sets this gets the **themed** separator, derived from the resolved border
+    /// so it moves with the appearance. That used to be expressed as `Some(Color::rgb(220,220,220))`
+    /// plus a sentinel comparison in the draw (`if line_color == that literal`), which had two
+    /// defects: the value `#DCDCDC` was **impossible to ask for** — a caller who wanted exactly that
+    /// grey silently got the themed border — and the getter reported `Some(…)` for a control whose
+    /// caller had set nothing, so the property round-trip could not tell "unset" from "set to the
+    /// default". `None` here means "follow the theme", and `Explicit` means the caller chose.
+    line_color: Option<Option<Color>>,
     /// Cached cell dimensions computed during the last draw pass.
     cell_width: u32,
     cell_height: u32,
@@ -66,7 +74,9 @@ impl GridWidget {
             rows: 1,
             columns: 1,
             spacing: 0,
-            line_color: Some(Color::rgb(220, 220, 220)),
+            // `Some(None)` is "follow the theme": the caller has not chosen a separator colour,
+            // and the draw derives one from the resolved border. `None` would mean "draw no lines".
+            line_color: Some(None),
             cell_width: geometry.width,
             cell_height: geometry.height,
             hovered_cell: None,
@@ -82,7 +92,9 @@ impl GridWidget {
             rows: rows.max(1),
             columns: columns.max(1),
             spacing: 0,
-            line_color: Some(Color::rgb(220, 220, 220)),
+            // `Some(None)` is "follow the theme": the caller has not chosen a separator colour,
+            // and the draw derives one from the resolved border. `None` would mean "draw no lines".
+            line_color: Some(None),
             cell_width: geometry.width / columns.max(1),
             cell_height: geometry.height / rows.max(1),
             hovered_cell: None,
@@ -129,12 +141,18 @@ impl GridWidget {
 
     // ── Grid line color ────────────────────────────────────
 
-    /// Returns the grid line color, or `None` if grid lines are disabled.
-    pub fn line_color(&self) -> Option<Color> {
+    /// Returns the grid line color, `None` if lines are disabled, or `Some(None)` when the caller
+    /// has not chosen one and the separator follows the theme.
+    ///
+    /// The outer option is the enabled/disabled question and the inner is "did the caller pick a
+    /// colour". Collapsing the two is what made the old default indistinguishable from an explicit
+    /// `#DCDCDC`.
+    pub fn line_color(&self) -> Option<Option<Color>> {
         self.line_color
     }
-    /// Sets the grid line color. Pass `None` to disable grid lines.
-    pub fn set_line_color(&mut self, color: Option<Color>) {
+    /// Sets the grid line color. Pass `None` to disable grid lines, or `Some(None)` to follow the
+    /// theme's border colour.
+    pub fn set_line_color(&mut self, color: Option<Option<Color>>) {
         self.line_color = color;
         self.base.request_redraw();
     }
@@ -248,8 +266,14 @@ impl WidgetProperties for GridWidget {
             "columns" => Ok(CapabilityValue::UInt(self.columns() as u64)),
             "spacing" => Ok(CapabilityValue::UInt(self.spacing() as u64)),
             "line_color" => Ok(match self.line_color() {
-                Some(color) => CapabilityValue::String(color.to_hex_rgba()),
+                // No lines at all: the property reports null, which is the documented spelling for
+                // "disabled".
                 None => CapabilityValue::Null,
+                // "Follow the theme": there is no caller-chosen colour to report, so this is null
+                // as well. Reporting a concrete hex here was the old defect -- it made "unset"
+                // read back as a specific colour a caller could then fail to reproduce.
+                Some(None) => CapabilityValue::Null,
+                Some(Some(color)) => CapabilityValue::String(color.to_hex_rgba()),
             }),
             "cell_width" => Ok(CapabilityValue::UInt(self.cell_width() as u64)),
             "cell_height" => Ok(CapabilityValue::UInt(self.cell_height() as u64)),
@@ -278,7 +302,7 @@ impl WidgetProperties for GridWidget {
                         let Some(color) = crate::core::Color::parse_hex(&raw) else {
                             return Err(CapabilityAccessError::TypeMismatch);
                         };
-                        self.set_line_color(Some(color));
+                        self.set_line_color(Some(Some(color)));
                     }
                     _ => return Err(CapabilityAccessError::TypeMismatch),
                 }
@@ -386,12 +410,13 @@ impl Draw for GridWidget {
         context.draw_rect(rect, border_color);
 
         // Grid lines (skip for 1×1, also skip if color is None). A caller-set line colour still
-        // wins; otherwise the separators are derived from the themed border so they move with it.
-        let Some(line_color) = self.line_color else {
+        // wins; `Some(None)` means the caller chose nothing, so the separators are derived from the
+        // themed border and move with it. There is no sentinel value here: the old form compared
+        // against `Color::rgb(220,220,220)`, which made that exact grey impossible to request.
+        let Some(chosen) = self.line_color else {
             return;
         };
-        let line_color =
-            if line_color == Color::rgb(220, 220, 220) { border_color } else { line_color };
+        let line_color = chosen.unwrap_or(border_color);
         if self.rows <= 1 && self.columns <= 1 {
             return;
         }
@@ -502,5 +527,74 @@ mod tests {
 
         assert_eq!(hovered_values, vec![(0, 1)]);
         assert_eq!(clicked_values, vec![(0, 1)]);
+    }
+
+    /// `#DCDCDC` is a colour a caller can actually ask for.
+    ///
+    /// # The defect this pins
+    ///
+    /// The separator colour was `Some(Color::rgb(220,220,220))` and the draw compared against that
+    /// exact value as a **sentinel**: `if line_color == Color::rgb(220,220,220) { themed }`. Two
+    /// consequences, and the first is the one that is a correctness problem rather than a smell —
+    /// an application that wanted its grid lines in `#DCDCDC` asked for them and got the theme's
+    /// border colour instead, with no error and nothing to report. The second is that the property
+    /// route could not distinguish "the caller set nothing" from "the caller set that grey".
+    ///
+    /// The assertions cover both: the requested grey is painted as requested, and it is *different*
+    /// from what an unset grid paints. The second half is what makes this a test of the sentinel
+    /// rather than of a single value.
+    #[test]
+    fn a_caller_can_ask_for_the_separator_colour_that_used_to_be_the_sentinel() {
+        use crate::widget::svg::render_to_svg;
+        let _theme_guard = crate::theme::theme_test_guard();
+
+        // The sentinel's own value, in both the accessor and the property route.
+        use crate::widget::capability::types::CapabilityValue as V;
+        use crate::widget::capability::write_widget_property_by_name;
+        let sentinel_hex = Color::rgb(220, 220, 220).to_hex_rgba();
+        let mut asked = GridWidget::with_dimensions(Rect::new(0, 0, 120, 120), 2, 2);
+        write_widget_property_by_name(&mut asked, "line_color", V::String(sentinel_hex.clone()))
+            .expect("an explicit separator colour is a valid write");
+        assert_eq!(
+            asked.line_color(),
+            Some(Some(Color::rgb(220, 220, 220))),
+            "the caller's colour is stored as an explicit choice, not collapsed into the default"
+        );
+
+        // A grid that was never given a colour follows the theme.
+        let unset = GridWidget::with_dimensions(Rect::new(0, 0, 120, 120), 2, 2);
+        assert_eq!(
+            unset.line_color(),
+            Some(None),
+            "an unset separator is \"follow the theme\", which is distinct from any colour"
+        );
+
+        // And the two paint differently -- which is the whole point: the old code made them paint
+        // the same, so the requested grey was unreachable.
+        let asked_svg = render_to_svg(&mut asked);
+        let mut unset = unset;
+        let unset_svg = render_to_svg(&mut unset);
+        assert_ne!(
+            asked_svg, unset_svg,
+            "a requested separator colour must change the picture, or it was silently ignored"
+        );
+    }
+
+    /// Disabling the separators is still expressible, and is distinct from "follow the theme".
+    #[test]
+    fn no_separators_is_still_the_null_write() {
+        use crate::widget::capability::types::CapabilityValue as V;
+        use crate::widget::capability::{
+            read_widget_property_by_name, write_widget_property_by_name,
+        };
+        let mut grid = GridWidget::with_dimensions(Rect::new(0, 0, 120, 120), 2, 2);
+        write_widget_property_by_name(&mut grid, "line_color", V::Null)
+            .expect("null disables the lines");
+        assert_eq!(grid.line_color(), None, "disabled is the outer none");
+        assert_eq!(
+            read_widget_property_by_name(&grid, "line_color").expect("publishable"),
+            V::Null,
+            "and it reads back as null"
+        );
     }
 }

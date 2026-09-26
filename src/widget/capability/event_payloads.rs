@@ -192,7 +192,7 @@ pub(crate) static EVENT_SCHEMAS: &[EventSchema] = &[
     EventSchema { name: "find_next", payload: Some(K::String), shape: Some(S::Scalar) },
     EventSchema { name: "find_previous", payload: Some(K::String), shape: Some(S::Scalar) },
     EventSchema { name: "replace", payload: Some(K::String), shape: Some(S::Scalar) },
-    EventSchema { name: "replace_all", payload: Some(K::String), shape: Some(S::Tuple2) },
+    EventSchema { name: "replace_all", payload: Some(K::String), shape: Some(S::Tuple3) },
     EventSchema { name: "text_changed", payload: Some(K::String), shape: Some(S::Scalar) },
     EventSchema { name: "activated", payload: Some(K::Int), shape: Some(S::Scalar) },
     EventSchema { name: "current_font_changed", payload: Some(K::String), shape: Some(S::Scalar) },

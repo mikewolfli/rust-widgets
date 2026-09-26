@@ -88,7 +88,12 @@ pub struct TableWidget {
     /// Explicit row height overrides in logical pixels.
     row_heights: HashMap<usize, u32>,
     /// Optional display/editor delegate.
+    ///
+    /// Driven by [`TableWidget::begin_edit`] / [`TableWidget::commit_edit`]; see those for why the
+    /// three-method trait is an operation rather than a rendering hook.
     delegate: Option<Arc<dyn ItemDelegate>>,
+    /// The cell an in-place edit is currently open on, if any.
+    editing: Option<(usize, usize)>,
     /// Emitted when selected row changes.
     pub selection_changed: Signal1<usize>,
     /// Emitted when focused row changes.
@@ -107,6 +112,7 @@ impl TableWidget {
             column_widths: HashMap::new(),
             row_heights: HashMap::new(),
             delegate: None,
+            editing: None,
             selection_changed: Signal1::new(),
             focused_row_changed: Signal1::new(),
         }
@@ -165,16 +171,86 @@ impl TableWidget {
         )
     }
 
+    /// The height of content row `index`: its override, or the default.
+    ///
+    /// # Why a row's height is resolved per row rather than per table
+    ///
+    /// `row_heights` is an override map, so a table may have a tall header row, a set of normal ones
+    /// and a tall summary row. The `TABLE_ROW_HEIGHT` constant is the *default*, and a table with no
+    /// overrides must lay out exactly as it did before this existed — which is the property its
+    /// snapshot and the hit-test tests pin.
+    fn resolved_row_height(&self, index: usize) -> u32 {
+        self.row_heights.get(&index).copied().unwrap_or(TABLE_ROW_HEIGHT)
+    }
+
+    /// The y offset of content row `index` from the top of the rows band.
+    ///
+    /// # Why the rows are accumulated rather than multiplied
+    ///
+    /// `TABLE_ROW_HEIGHT * index` is the same thing only while every row is the default height. With
+    /// per-row overrides the rows **compose**: row `n` starts where rows `0..n` end, and multiplying
+    /// would overlap a tall row with its successors. The accumulation is over the overrides that are
+    /// actually set, so a table with none takes the same arithmetic as before (`default * index`) and
+    /// cannot drift from it.
+    fn row_offset(&self, index: usize) -> u32 {
+        if self.row_heights.is_empty() {
+            return TABLE_ROW_HEIGHT * index as u32;
+        }
+        (0..index).map(|i| self.resolved_row_height(i)).sum()
+    }
+
+    /// The width of column `index`: its override, or an equal share of the content box.
+    ///
+    /// # Why the override replaces the share rather than trimming it
+    ///
+    /// A host that sets a column width is saying how wide it wants that column. Clamping the result
+    /// back into the box would make `set_column_width(0, 400)` on a 240-wide table give neither 400
+    /// nor a sensible share, and the table must not silently disagree with the value it stored -- the
+    /// same defect `grid`'s sentinel had, in a different form.
+    fn resolved_column_width(&self, index: usize, content_width: u32) -> u32 {
+        if let Some(width) = self.column_widths.get(&index) {
+            return *width;
+        }
+        if self.column_count() == 0 {
+            return content_width;
+        }
+        (content_width / self.column_count() as u32).max(40)
+    }
+
+    /// The x offset of column `index` from the content box's left edge.
+    ///
+    /// # Why the columns are accumulated rather than multiplied
+    ///
+    /// `col_w * index` is the same thing only while every column is the same width. With overrides the
+    /// columns **compose**: column `n` starts where columns `0..n` end. The multiplication was also
+    /// the reason a wide column could overlap its neighbour rather than push it, which is the same
+    /// defect the crate records for the footer's button row.
+    ///
+    /// The fast path keeps a table with no overrides on the original arithmetic, so its snapshot and
+    /// every geometry assertion are unchanged.
+    fn column_offset(&self, index: usize, content_width: u32) -> u32 {
+        if self.column_widths.is_empty() {
+            let col_w = if self.column_count() > 0 {
+                (content_width / self.column_count() as u32).max(40)
+            } else {
+                content_width
+            };
+            return col_w * index as u32;
+        }
+        (0..index).map(|c| self.resolved_column_width(c, content_width)).sum()
+    }
+
     /// The rectangle of content row `index`, or `None` when it is not fully visible.
     fn row_rect(&self, index: usize) -> Option<Rect> {
         let band = self.rows_band();
-        let y = band.y + (TABLE_ROW_HEIGHT * index as u32) as i32;
+        let height = self.resolved_row_height(index);
+        let y = band.y + self.row_offset(index) as i32;
         // A row that would extend past the content box is not painted at all rather than painted
         // truncated: a half-height row reads as a rendering error.
-        if y + TABLE_ROW_HEIGHT as i32 > band.y + band.height as i32 {
+        if y + height as i32 > band.y + band.height as i32 {
             return None;
         }
-        Some(Rect::new(band.x, y, band.width, TABLE_ROW_HEIGHT))
+        Some(Rect::new(band.x, y, band.width, height))
     }
 
     /// The content row a point falls on, if it falls on a visible one.
@@ -186,7 +262,21 @@ impl TableWidget {
         if !band.contains_point(point) {
             return None;
         }
-        let index = ((point.y - band.y) / TABLE_ROW_HEIGHT as i32) as usize;
+        let offset = (point.y - band.y) as u32;
+        // Walk the rows rather than dividing: with per-row heights the row a y belongs to is the one
+        // whose offset range contains it, and a division by the *default* height would be wrong from
+        // the first overridden row down. The walk is over the rows the band can show, which is bounded
+        // by the band's height, so it cannot run away on a long table.
+        let mut y = 0u32;
+        let mut index = 0usize;
+        while index < self.row_count() {
+            let height = self.resolved_row_height(index);
+            if offset < y + height {
+                break;
+            }
+            y += height;
+            index += 1;
+        }
         // The last partial row is not a target, matching `row_rect`'s refusal to paint it.
         (index < self.row_count() && self.row_rect(index).is_some()).then_some(index)
     }
@@ -269,6 +359,66 @@ impl TableWidget {
     /// Sets item delegate.
     pub fn set_delegate(&mut self, delegate: Arc<dyn ItemDelegate>) {
         self.delegate = Some(delegate);
+    }
+
+    /// Begins an in-place edit of cell `(row, column)`, returning the editor the delegate built.
+    ///
+    /// # Why this is the delegate's *only* entry point
+    ///
+    /// `ItemDelegate` declares three methods -- `create_editor`, `set_editor_data`,
+    /// `get_editor_data` -- and **none of them was ever called**. The delegate was stored, published
+    /// (`has_delegate`), reachable through `delegate_ref`, covered by a test that set one and read it
+    /// back, and had no effect on anything: a host that supplied a delegate to get custom editing got
+    /// exactly the read-only table it would have had without one.
+    ///
+    /// The three methods are one operation, so they are driven from one place and in order:
+    /// create, then seed from the model. `begin_edit` is that place, and it is public because the
+    /// host decides *when* an edit starts (a double click, a key, a toolbar command) -- the widget has
+    /// no opinion about the gesture, only about the sequence.
+    ///
+    /// Returns `None` when there is no delegate, no model, or the cell is out of range; those are
+    /// three ways for the request to be meaningless rather than errors.
+    pub fn begin_edit(&mut self, row: usize, column: usize) -> Option<Box<dyn Widget>> {
+        let delegate = self.delegate.clone()?;
+        let model = self.model.clone()?;
+        if row >= model.row_count() || column >= model.column_count() {
+            return None;
+        }
+        let mut editor = delegate.create_editor(&mut self.base, row, column)?;
+        // Seeded from the delegate rather than from the model: the delegate owns the mapping between
+        // a cell value and an editor's own text form (a number's units, a date's spelling), and asking
+        // the model for a `String` here would bypass exactly the customisation the delegate exists for.
+        delegate.set_editor_data(editor.as_mut(), row, column);
+        self.editing = Some((row, column));
+        self.base.request_redraw();
+        Some(editor)
+    }
+
+    /// Reads the current text back out of an editor and commits it.
+    ///
+    /// The counterpart to [`Self::begin_edit`], and the reason `get_editor_data` exists: the editor's
+    /// own representation is the delegate's business, so the value is read back through the delegate
+    /// rather than by downcasting the editor to a known control. Returns the text that was committed,
+    /// or `None` when there is no edit in progress or the delegate declines the cell.
+    pub fn commit_edit(&mut self, editor: &dyn Widget) -> Option<String> {
+        let delegate = self.delegate.clone()?;
+        let (row, column) = self.editing?;
+        let text = delegate.get_editor_data(editor, row, column);
+        self.editing = None;
+        self.base.request_redraw();
+        text
+    }
+
+    /// The cell currently being edited, if any.
+    pub fn editing_cell(&self) -> Option<(usize, usize)> {
+        self.editing
+    }
+
+    /// Abandons an in-place edit without committing it.
+    pub fn cancel_edit(&mut self) {
+        if self.editing.take().is_some() {
+            self.base.request_redraw();
+        }
     }
     /// Returns whether a delegate is currently bound.
     pub fn has_delegate(&self) -> bool {
@@ -467,11 +617,6 @@ impl Draw for TableWidget {
         let hovered_bg = surface.blend(&accent, 0.12);
         // Draw grid from model
         if let Some(ref model) = self.model {
-            let col_w = if model.column_count() > 0 {
-                (content.width / model.column_count() as u32).max(40)
-            } else {
-                content.width
-            };
             let row_count = model.row_count();
             let col_count = model.column_count();
             let current_row = self.focused_row;
@@ -487,7 +632,11 @@ impl Draw for TableWidget {
                     context.fill_rect(row_box, hovered_bg);
                 }
                 for c in 0..col_count {
-                    let x = content.x + (col_w as i32) * c as i32;
+                    // The column's box comes from the same two derivations the hit test and the header
+                    // read, so a click, the heading and the cell cannot disagree about which column
+                    // an x belongs to.
+                    let col_w = self.resolved_column_width(c, content.width);
+                    let x = content.x + self.column_offset(c, content.width) as i32;
                     if let Some(text) = model.data(r, c) {
                         // The cell is the band: a text origin of `y + row_h / 2` would put the
                         // glyph box's *top* edge on the row's middle line and draw every label
@@ -703,6 +852,100 @@ mod tests {
         tv.set_column_width(0, 120);
         assert_eq!(tv.column_width(0), Some(120));
         assert_eq!(tv.column_width(99), None);
+    }
+
+    /// A column width the caller set actually **narrows the neighbours**.
+    ///
+    /// # The defect this pins
+    ///
+    /// `column_widths` was stored, published, and never read by the layout: the draw computed an
+    /// equal share per column and multiplied it by the index, so a wide column **overlapped** its
+    /// neighbour instead of pushing it. `set_column_width(0, 180)` on a three-column table therefore
+    /// drew column 1 at the same x as before, on top of column 0's last 60 pixels.
+    ///
+    /// The assertion is on the **composited geometry**: column 1 must start where column 0 ends, and
+    /// the table without an override must still share equally -- the second half is what makes this
+    /// about the override rather than about any layout change.
+    #[test]
+    fn a_column_width_the_caller_set_pushes_its_neighbours() {
+        use crate::widget::svg::render_to_svg;
+        let _theme_guard = crate::theme::theme_test_guard();
+
+        let build = |width: Option<u32>| {
+            let model = Arc::new(TestTableModel::new(3, 3));
+            let mut tv = TableWidget::new(Rect::new(0, 0, 400, 200));
+            tv.set_model(model);
+            if let Some(width) = width {
+                tv.set_column_width(0, width);
+            }
+            tv
+        };
+
+        // With no override the three columns share equally, which is the pre-existing layout.
+        let plain = build(None);
+        let content = plain.rows_band();
+        assert_eq!(
+            plain.column_offset(1, content.width),
+            plain.resolved_column_width(0, content.width),
+            "an even share still tiles"
+        );
+
+        // With an override the first column takes exactly what it asked for, and the second starts
+        // where it ends -- the property the multiplication could not express.
+        let wide = build(Some(180));
+        assert_eq!(wide.resolved_column_width(0, content.width), 180, "the request is honoured");
+        assert_eq!(
+            wide.column_offset(1, content.width),
+            180,
+            "and column 1 begins where column 0 ends, rather than overlapping it"
+        );
+        assert_eq!(
+            wide.column_offset(2, content.width),
+            180 + wide.resolved_column_width(1, content.width),
+            "the offsets accumulate"
+        );
+
+        // And it is visible: the two tables must not paint the same cells.
+        let mut plain = plain;
+        let mut wide = wide;
+        assert_ne!(
+            render_to_svg(&mut plain),
+            render_to_svg(&mut wide),
+            "a column width that is read must move the grid"
+        );
+    }
+
+    /// A row height the caller set moves every row below it.
+    ///
+    /// The same defect as the column widths, on the other axis: `row_heights` was stored and never
+    /// consulted, so `set_row_height(0, 40)` drew row 0 at 20 px and then overlapped it with row 1.
+    /// The click must follow the paint, which is why this asserts the hit test too.
+    #[test]
+    fn a_row_height_the_caller_set_moves_the_rows_below_it() {
+        let model = Arc::new(TestTableModel::new(6, 2));
+        let mut tv = TableWidget::new(Rect::new(0, 0, 300, 300));
+        tv.set_model(model);
+
+        // No override: the rows tile at the default height, which is what the arithmetic path gives.
+        let first = tv.row_rect(0).expect("row 0 is visible");
+        let second = tv.row_rect(1).expect("row 1 is visible");
+        assert_eq!(second.y, first.y + TABLE_ROW_HEIGHT as i32, "the default rows tile");
+
+        // Overriding row 0's height pushes row 1 down by exactly that height.
+        tv.set_row_height(0, 44);
+        let tall = tv.row_rect(0).expect("row 0 is still visible");
+        let pushed = tv.row_rect(1).expect("row 1 is still visible");
+        assert_eq!(tall.height, 44, "the request is honoured");
+        assert_eq!(pushed.y, tall.y + 44, "row 1 begins where row 0 ends");
+
+        // And the hit test agrees with the paint: a point in the middle of row 1 selects row 1, not
+        // whichever row the default-height division would have named.
+        let probe = crate::core::Point::new(pushed.x + 2, pushed.y + pushed.height as i32 / 2);
+        assert_eq!(
+            tv.row_at_point(probe),
+            Some(1),
+            "the row under the pointer is the row that was drawn there"
+        );
     }
 
     #[test]
@@ -1075,5 +1318,95 @@ mod tests {
         tv.set_delegate(Arc::new(TestDelegate));
         assert!(tv.has_delegate());
         assert!(tv.delegate_ref().is_some());
+    }
+
+    /// The delegate's three methods are **called**, in order, by one entry point.
+    ///
+    /// # The defect this pins
+    ///
+    /// `ItemDelegate` declared `create_editor` / `set_editor_data` / `get_editor_data` and the widget
+    /// called **none** of them: the delegate was stored, published as `has_delegate`, reachable through
+    /// `delegate_ref`, and had no effect on anything. The test above could not see that, because
+    /// setting a delegate and reading it back is exactly what the broken version already supported --
+    /// the same blind spot the `calendar_popup` round-trip test had.
+    ///
+    /// The assertion is a **call log**: the delegate records the order it was asked to do things in, so
+    /// a `begin_edit` that created an editor without seeding it, or a `commit_edit` that read a cell the
+    /// edit was not on, fails here rather than silently returning the wrong text.
+    #[test]
+    fn the_delegate_is_driven_through_begin_and_commit() {
+        use std::sync::Mutex;
+
+        #[derive(Default)]
+        struct LoggingDelegate {
+            calls: Mutex<Vec<String>>,
+        }
+        impl ItemDelegate for LoggingDelegate {
+            fn create_editor(
+                &self,
+                _parent: &mut BaseWidget,
+                row: usize,
+                column: usize,
+            ) -> Option<Box<dyn Widget>> {
+                self.calls.lock().expect("lock").push(format!("create:{row},{column}"));
+                // A real editor: the parent's own label, which the delegate then seeds.
+                Some(Box::new(crate::widget::base_widgets::label::Label::new(
+                    String::new(),
+                    Rect::new(0, 0, 40, 16),
+                )))
+            }
+            fn set_editor_data(&self, _editor: &mut dyn Widget, row: usize, column: usize) {
+                self.calls.lock().expect("lock").push(format!("seed:{row},{column}"));
+            }
+            fn get_editor_data(
+                &self,
+                _editor: &dyn Widget,
+                row: usize,
+                column: usize,
+            ) -> Option<String> {
+                self.calls.lock().expect("lock").push(format!("read:{row},{column}"));
+                Some(format!("{row}/{column}"))
+            }
+        }
+
+        let delegate = Arc::new(LoggingDelegate::default());
+        let mut tv = TableWidget::new(Rect::new(0, 0, 400, 200));
+        tv.set_model(Arc::new(TestTableModel::new(4, 3)));
+
+        // No delegate: the request is meaningless and answers `None` rather than panicking.
+        assert!(tv.begin_edit(1, 2).is_none(), "no delegate, no editor");
+        assert_eq!(tv.editing_cell(), None);
+
+        tv.set_delegate(delegate.clone());
+        let editor = tv.begin_edit(1, 2).expect("the delegate builds an editor");
+        assert_eq!(tv.editing_cell(), Some((1, 2)), "the edit is tracked");
+        assert_eq!(
+            delegate.calls.lock().expect("lock").as_slice(),
+            ["create:1,2", "seed:1,2"],
+            "the editor is created and then seeded, in that order"
+        );
+
+        let committed = tv.commit_edit(editor.as_ref()).expect("the delegate reads it back");
+        assert_eq!(committed, "1/2", "the value comes from the delegate, not a downcast");
+        assert_eq!(tv.editing_cell(), None, "and the edit is closed");
+        assert_eq!(
+            delegate.calls.lock().expect("lock").as_slice(),
+            ["create:1,2", "seed:1,2", "read:1,2"],
+            "and the read is of the cell the edit was on"
+        );
+
+        // An out-of-range cell is refused before the delegate is troubled.
+        let before = delegate.calls.lock().expect("lock").len();
+        assert!(tv.begin_edit(99, 99).is_none(), "the cell must exist");
+        assert_eq!(
+            delegate.calls.lock().expect("lock").len(),
+            before,
+            "and the delegate was not asked"
+        );
+
+        // Cancelling drops the tracking without reading anything back.
+        let _editor = tv.begin_edit(0, 0).expect("a second edit opens");
+        tv.cancel_edit();
+        assert_eq!(tv.editing_cell(), None, "cancelling closes it");
     }
 }

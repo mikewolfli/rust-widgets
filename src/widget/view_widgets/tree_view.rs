@@ -23,6 +23,18 @@ use std::sync::Arc;
 /// stroke.
 const TREE_INSET: u32 = 2;
 
+/// A tree row's height: 20 px.
+///
+/// One fact for the three readers that place a row: the draw loop, the hit test and the hover test.
+/// It was the literal `20` written in the draw loop *and* again in each press arm — two copies of
+/// one number describing one band. This is the same defect `table_widget` records (it counted rows
+/// from the content box while hit-testing from the control's top edge), and it is fixed the same
+/// way: the offset lives in one function and all three readers call it.
+const TREE_ROW_HEIGHT: i32 = 20;
+
+/// A child node's indent, in pixels: 15.
+const TREE_INDENT: i32 = 15;
+
 /// Tree model abstraction for tree-like views.
 pub trait TreeModel: Send + Sync {
     /// Number of nodes exposed by model.
@@ -91,6 +103,11 @@ pub struct TreeView {
     selected_node: Option<usize>,
     /// View-side focused node index.
     focused_node: Option<usize>,
+    /// The row the pointer is currently over, or `None` when it is between/outside the rows.
+    ///
+    /// Filled by `MouseMove` through the same [`Self::node_at`] the click uses, so the highlighted
+    /// row is the row a click would affect.
+    hovered_node: Option<usize>,
     /// Emitted when selected node changes.
     pub selection_changed: Signal1<usize>,
     /// Emitted when focused node changes.
@@ -105,6 +122,7 @@ impl TreeView {
             model_connection_scope: ConnectionScope::new(),
             selected_node: None,
             focused_node: None,
+            hovered_node: None,
             selection_changed: Signal1::new(),
             focused_node_changed: Signal1::new(),
         }
@@ -179,6 +197,35 @@ impl TreeView {
     /// Returns focused node index when present.
     pub fn focused_node(&self) -> Option<usize> {
         self.focused_node.filter(|index| *index < self.node_count())
+    }
+
+    /// The rectangle a node's own row occupies, or `None` when the index is not shown.
+    ///
+    /// # Why this is one derivation
+    ///
+    /// Three readers ask "where is node N": the draw loop, the press handler and the hover test.
+    /// They used to derive it separately — the draw from the inset content box, the press from the
+    /// control's literal top edge — so a click landed one row off whenever the inset was non-zero,
+    /// which is exactly the defect `table_widget` records. One function, three readers.
+    pub fn node_row_rect(&self, index: usize) -> Option<Rect> {
+        let content = ControlMetrics::band_inset(self.base.geometry(), TREE_INSET);
+        let y = content.y + TREE_ROW_HEIGHT * index as i32;
+        // A row that would extend past the content box is not shown, matching the draw loop's own
+        // bound so the row the pointer can hit is exactly the row that was painted.
+        if y + TREE_ROW_HEIGHT > content.y + content.height as i32 {
+            return None;
+        }
+        Some(Rect::new(content.x, y, content.width, TREE_ROW_HEIGHT as u32))
+    }
+
+    /// The node at a screen point, or `None` when the point is not over a painted row.
+    pub fn node_at(&self, pos: crate::core::Point) -> Option<usize> {
+        let content = ControlMetrics::band_inset(self.base.geometry(), TREE_INSET);
+        if pos.y < content.y || pos.y >= content.y + content.height as i32 {
+            return None;
+        }
+        let index = ((pos.y - content.y) / TREE_ROW_HEIGHT).max(0) as usize;
+        (index < self.node_count()).then_some(index)
     }
     /// Returns selected node index if present.
     pub fn selected_node(&self) -> Option<usize> {
@@ -290,9 +337,8 @@ impl Draw for TreeView {
         // Rows are laid out from the control's inset content box rather than from its
         // literal top edge. Every node used to start at `rect.y` and draw its label at
         // `y + item_height / 2` with a top-left origin, so the first node's glyph box began on
-        // the frame's own stroke. `band_inset` reserves the margin and `text_line` centres
-        // each label on its row's own band.
-        let content = ControlMetrics::band_inset(rect, TREE_INSET);
+        // the frame's own stroke. The inset is now applied by `node_row_rect`, which the hit test
+        // reads too, so the drawn row and the clickable row are one derivation.
         // Chrome colours resolve explicit style first, then the theme's resolved style for
         // this control, and only then a literal. The theme step is what makes an appearance
         // switch visible; the surface, the border, the focused-node highlight and the text
@@ -334,18 +380,21 @@ impl Draw for TreeView {
         // `y + item_height / 2` — which put the glyph box's top edge on the row's middle
         // line and left the first node pinned to y=0.
         if let Some(ref model) = self.model {
-            let item_height = 20;
-            let indent = 15;
+            let indent = TREE_INDENT;
             let node_count = model.node_count();
             let font = crate::core::Font::default();
             for i in 0..node_count {
-                let y = content.y + item_height * i as i32;
-                if y + item_height > content.y + content.height as i32 {
+                // The row's own rectangle comes from the same derivation the hit test uses, so a
+                // click cannot land on a row other than the one that was painted.
+                let Some(row) = self.node_row_rect(i) else {
                     break;
-                }
-                let row = crate::core::Rect::new(content.x, y, content.width, item_height as u32);
+                };
                 if Some(i) == self.focused_node {
                     context.fill_rect(row, focused_bg);
+                } else if Some(i) == self.hovered_node {
+                    // A weaker wash than the focus, from the same accent: a row the pointer is over
+                    // is a *preview* of the row a click would focus.
+                    context.fill_rect(row, surface.blend(&accent, 0.12));
                 }
                 if let Some(path) = model.node_path(i) {
                     if !path.is_empty() {
@@ -370,29 +419,38 @@ impl Draw for TreeView {
 }
 impl crate::event::EventHandler for TreeView {
     fn handle_event(&mut self, event: &crate::event::Event) {
+        // The base keeps the control-level facts (`hovered`, `pressed`, `focus_reason`) and its
+        // `MouseEnter`/`MouseLeave` arms are what make `widget_state()` answer `Hover` here. This
+        // handler did not forward to it at all, so the theme's `"tree_view:hover"` override could
+        // never fire — the same defect `list_view` records, in the sibling that never inherited it.
+        self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }
         match event {
             crate::event::Event::MousePress { pos, button } if *button == 1 => {
-                let rect = self.base.geometry();
-                let item_height = 20;
-                if pos.y >= rect.y {
-                    let index = ((pos.y - rect.y) / item_height) as usize;
-                    if index < self.node_count() {
-                        self.select_node(index);
-                    }
+                // The same index derivation the draw uses, so the row a click selects is the row
+                // the user pointed at.
+                if let Some(index) = self.node_at(*pos) {
+                    self.select_node(index);
+                }
+            }
+            crate::event::Event::MouseMove { pos } => {
+                let hovered = self.node_at(*pos);
+                if hovered != self.hovered_node {
+                    self.hovered_node = hovered;
+                    self.base.request_redraw();
+                }
+            }
+            crate::event::Event::MouseLeave { .. } => {
+                if self.hovered_node.take().is_some() {
+                    self.base.request_redraw();
                 }
             }
             #[cfg(feature = "touch")]
             crate::event::Event::Tap { pos } => {
-                let rect = self.base.geometry();
-                let item_height = 20;
-                if pos.y >= rect.y {
-                    let index = ((pos.y - rect.y) / item_height) as usize;
-                    if index < self.node_count() {
-                        self.select_node(index);
-                    }
+                if let Some(index) = self.node_at(*pos) {
+                    self.select_node(index);
                 }
             }
             _ => { /* Other events are not relevant */ }
@@ -454,5 +512,72 @@ mod tests {
         assert!(view.model_ref().is_some());
         assert_eq!(view.node_count(), 2);
         assert_eq!(view.node_path(99), None);
+    }
+
+    /// A click selects the node it landed on, and the frame's inset margin is not a row.
+    ///
+    /// # The defect this pins
+    ///
+    /// The draw loop laid rows out from the inset content box (`rect` shrunk by `TREE_INSET` on
+    /// every edge) while the press handler computed the index from the control's literal top edge.
+    /// The two agree for most points — which is why the defect could survive — and diverge exactly
+    /// in the inset margins: a click on the 2 px frame counted as row 0, so clicking the border
+    /// *selected the first node*, and a click in the bottom margin could address a row that was
+    /// never painted. The same family as `table_widget`'s one-row offset, with a different surface.
+    ///
+    /// A first version of this test only clicked the *centre* of a row, where both derivations
+    /// agree; reverse injection therefore passed. The assertion that carries the defect is the one
+    /// in the margin, which is what a real user hits when they click near the edge of a list.
+    #[test]
+    fn a_click_selects_the_node_it_landed_on() {
+        use crate::event::{Event, EventHandler};
+
+        let mut view = TreeView::new(Rect::new(0, 0, 120, 100));
+        view.set_model(Arc::new(StaticTreeModel));
+
+        let row = view.node_row_rect(1).expect("a roomy view paints node 1");
+        let centre = crate::core::Point::new(row.x + 4, row.y + row.height as i32 / 2);
+        view.handle_event(&Event::MousePress { pos: centre, button: 1 });
+        assert_eq!(
+            view.selected_node(),
+            Some(1),
+            "a click inside node 1's own painted band must select node 1"
+        );
+
+        // And a click in the frame's own inset margin selects nothing rather than clamping to the
+        // first node — the assertion that actually carries the defect (see the doc comment).
+        let mut fresh = TreeView::new(Rect::new(0, 0, 120, 100));
+        fresh.set_model(Arc::new(StaticTreeModel));
+        fresh.handle_event(&Event::MousePress { pos: crate::core::Point::new(4, 0), button: 1 });
+        assert_eq!(fresh.selected_node(), None, "the inset margin is not a row");
+    }
+
+    /// The pointer reaching a row highlights it, and the base learns the pointer arrived.
+    ///
+    /// Two facts in one gesture, because they were two different omissions: the handler never
+    /// forwarded to the base (so `"tree_view:hover"` was a dead key) and it never tracked a row
+    /// (so a list of rows gave no feedback about which one a click would act on).
+    #[test]
+    fn hovering_a_row_highlights_it_and_reaches_the_base() {
+        use crate::event::{Event, EventHandler};
+        use crate::style::WidgetState;
+
+        let mut view = TreeView::new(Rect::new(0, 0, 120, 100));
+        view.set_model(Arc::new(StaticTreeModel));
+
+        let row = view.node_row_rect(1).expect("a roomy view paints node 1");
+        let centre = crate::core::Point::new(row.x + 4, row.y + row.height as i32 / 2);
+        view.handle_event(&Event::MouseEnter { pos: centre });
+        view.handle_event(&Event::MouseMove { pos: centre });
+        assert_eq!(view.hovered_node, Some(1), "the row under the pointer is the one lit");
+        assert_eq!(
+            view.widget_state(),
+            WidgetState::Hover,
+            "the base must have been told the pointer arrived"
+        );
+
+        view.handle_event(&Event::MouseLeave { pos: crate::core::Point::new(500, 500) });
+        assert_eq!(view.hovered_node, None, "leaving clears the row rather than latching it");
+        assert_eq!(view.widget_state(), WidgetState::Normal);
     }
 }

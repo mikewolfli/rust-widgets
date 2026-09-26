@@ -1103,6 +1103,13 @@ pub trait ControlBackend: Send + Sync {
     fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
         None
     }
+    /// Remove and return the next typed trigger event belonging to `widget_id`.
+    ///
+    /// The default is `None` -- a backend that keeps no addressable queue has nothing to offer here,
+    /// which is truthful rather than a failure, and it is what the profiles with no queue rely on.
+    fn pop_widget_trigger_event_for(&self, _widget_id: ObjectId) -> Option<WidgetTriggerEvent> {
+        None
+    }
     /// Inject a typed widget trigger event.
     fn inject_widget_trigger_event(&self, _widget_id: ObjectId, _kind: WidgetTriggerKind) -> bool {
         false

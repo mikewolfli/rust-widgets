@@ -49,8 +49,13 @@ use crate::widget::sample_data as sample;
 use crate::widget::Widget;
 
 use crate::compat::{String, Vec};
+use crate::widget::advanced_widgets::calendar::Calendar;
 use crate::widget::advanced_widgets::tab_bar::TabBar;
 use crate::widget::container_widgets::groupbox::GroupBox;
+use crate::widget::dialog::bottom_sheet::BottomSheet;
+use crate::widget::dialog::dialog_widget::Dialog;
+use crate::widget::dialog::message_box::MessageBox;
+use crate::widget::dialog::modal_bottom_sheet::ModalBottomSheet;
 use crate::widget::display_widgets::slider::{Slider, TickPosition};
 use crate::widget::display_widgets::switch::Switch;
 use crate::widget::input_widgets::cascader::{Cascader, CascaderOption};
@@ -63,6 +68,7 @@ use crate::widget::input_widgets::multi_select_combo_box::{MultiSelectComboBox, 
 use crate::widget::menu_toolbar::menu::Menu;
 use crate::widget::menu_toolbar::menu_button::{MenuButton, MenuItem};
 use crate::widget::special_widgets::command_palette::{CommandEntry, CommandPalette};
+use crate::widget::special_widgets::segmented_control::{SegmentItem, SegmentedControl};
 use crate::widget::view_widgets::data_grid::DataGrid;
 use crate::widget::view_widgets::data_source::IncrementalTableDataSource;
 use crate::widget::view_widgets::grid_table::GridTableWidget;
@@ -137,6 +143,42 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
                 slider.set_tick_position(TickPosition::TicksBelow);
                 slider.set_tick_interval(25);
                 true
+            }
+            None => false,
+        },
+
+        // ── Controls whose *default* is read from the wall clock ──
+        //
+        // `Calendar::new` seeds `selected_date` and `display_month` from
+        // `chrono::Local::now()`, which is right for a control (a calendar should open on
+        // today) and wrong for a **snapshot** (a committed file must be reproducible on any
+        // machine, on any day). Without this arm `snapshots/svg/calendar.svg` changed every
+        // midnight: the selection highlight is a function of the date, so the file committed
+        // on one day did not regenerate on the next and `check_svg_snapshots.sh` reported a
+        // diff no edit could explain. It also meant the artifact could only ever be made green
+        // by re-committing it — the false-green direction, where a gate passes because the
+        // fixture was overwritten rather than because nothing changed.
+        //
+        // Pinning the date here rather than in the control keeps both halves honest: a host
+        // still gets today's date from `create`, and the picture names a fixed day. The date
+        // chosen is a Wednesday in a 31-day month shown from a Monday first-day, so the grid's
+        // leading blank cells and its full last week are both in the picture.
+        "calendar" => match widget_as_mut::<Calendar>(widget) {
+            Some(calendar) => {
+                match chrono::NaiveDate::from_ymd_opt(2026, 9, 16) {
+                    Some(sample_day) => {
+                        calendar.set_selected_date(sample_day);
+                        // The week-number gutter is turned on for the sample: it is the one of the
+                        // four visibility flags that is off by default, so leaving it off means the
+                        // census never sees it painted at all -- and a feature no snapshot covers
+                        // is a feature nothing can regress.
+                        calendar.set_vertical_header_visible(true);
+                        true
+                    }
+                    // The literal is a valid Gregorian date, so this arm is unreachable; it
+                    // reports the failure instead of silently leaving the sample date-dependent.
+                    None => false,
+                }
             }
             None => false,
         },
@@ -349,6 +391,74 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
             None => false,
         },
 
+        // `segmented_control` is a segmented *set*, so an itemless one paints only its empty bar —
+        // which is what its snapshot was: a stadium with no divisions and no selection, i.e. a
+        // picture that could not show whether the divider, the label inset or the selection
+        // indicator were right. Filling it is what makes the control's own feature reviewable.
+        "segmented_control" => match widget_as_mut::<SegmentedControl>(widget) {
+            Some(control) => {
+                control.set_items(vec![
+                    SegmentItem::new("overview", "Overview"),
+                    SegmentItem::new("details", "Details"),
+                    SegmentItem::new("history", "History"),
+                ]);
+                true
+            }
+            None => false,
+        },
+
+        // ── Controls whose *closed* state is deliberately blank ──
+        //
+        // `bottom_sheet`, `modal_bottom_sheet` and `dialog` paint nothing at all while closed: the
+        // first two show only a scrim, and a dialog shows a scrim, a frame and a title bar, all of
+        // which fade and grow in with its reveal — so a closed sample produces a bare page, which
+        // the census reports as "this control painted nothing". That is not what a user sees: a
+        // bottom sheet exists *in order to be* opened and a dialog *in order to be* shown, and the
+        // state that shows the panel, the handle, the frame and the title strip at full strength is
+        // the open one. Opening the sample is what puts the control's own feature into its own
+        // picture, exactly as filling the table puts its rows there.
+        "bottom_sheet" => match widget_as_mut::<BottomSheet>(widget) {
+            Some(sheet) => {
+                sheet.open();
+                // The rise is what the draw reads, so the sample must be *settled* open rather than
+                // merely aimed open — a sheet mid-slide would put a half-arrived panel in the
+                // snapshot and make every geometry assertion depend on the frame count.
+                while sheet.tick(1000) {}
+                true
+            }
+            None => false,
+        },
+        "modal_bottom_sheet" => match widget_as_mut::<ModalBottomSheet>(widget) {
+            Some(sheet) => {
+                sheet.show();
+                true
+            }
+            None => false,
+        },
+        "dialog" => match widget_as_mut::<Dialog>(widget) {
+            Some(dialog) => {
+                dialog.open();
+                // Same reasoning as the sheet above: the reveal is what the draw reads, so the
+                // sample is settled fully shown and not merely aimed there.
+                while dialog.tick(1000) {}
+                true
+            }
+            None => false,
+        },
+        "message_box" => match widget_as_mut::<MessageBox>(widget) {
+            Some(message_box) => {
+                // A message box is *created hidden* and shown by the runtime
+                // (`MessageBoxHandle::show_modal` -> `show_widget`), and a hidden box now paints
+                // nothing at all. Showing the sample is what puts a prompt in its own picture, the
+                // same remedy as `dialog` above -- the state a message box exists to be seen in is
+                // the shown one.
+                message_box.show();
+                while message_box.tick(1000) {}
+                true
+            }
+            None => false,
+        },
+
         // Everything else has no data concept, or is already seeded by its own constructor (the charts).
         _ => false,
     }
@@ -466,6 +576,8 @@ mod tests {
             "menu_button",
             "command_palette",
             "tab_bar",
+            "segmented_control",
+            "calendar",
         ];
         for name in claimed {
             let Some(mut widget) =
@@ -545,6 +657,40 @@ mod tests {
         assert!(!switch.is_checked(), "the constructor default");
         assert!(apply("switch", &mut switch));
         assert!(switch.is_checked(), "and the fill turned it on");
+    }
+
+    /// The calendar's snapshot is reproducible: its date comes from the fill, not the clock.
+    ///
+    /// # The defect this pins
+    ///
+    /// `Calendar::new` seeds `selected_date`/`display_month` from `chrono::Local::now()`. That is
+    /// right for the control and fatal for a committed artifact: the selection highlight is a
+    /// function of the date, so `snapshots/svg/calendar.svg` changed at every midnight and
+    /// `check_svg_snapshots.sh` reported a diff on the day after it was committed — a red gate no
+    /// edit could explain, which the only available repair (re-commit the regenerated file)
+    /// turned into the false-green direction.
+    ///
+    /// The assertion is what a *snapshot* needs rather than what a *control* needs: the fill must
+    /// land on a fixed day, and it must land there from every starting date. The control's own
+    /// today-default is asserted alongside, so a fix that pinned the constructor instead of the
+    /// sample cannot pass this.
+    #[test]
+    fn the_calendar_sample_is_pinned_to_a_fixed_day() {
+        let rect = crate::core::Rect::new(0, 0, 240, 120);
+        let mut calendar = Calendar::new(rect);
+        assert_eq!(
+            calendar.selected_date(),
+            chrono::Local::now().date_naive(),
+            "the constructor still opens on today, which a host depends on"
+        );
+        assert!(apply("calendar", &mut calendar), "the calendar owns a clock-derived default");
+        assert_eq!(
+            calendar.selected_date(),
+            chrono::NaiveDate::from_ymd_opt(2026, 9, 16).expect("a valid literal date"),
+            "the sample must name a fixed day or the snapshot changes every midnight"
+        );
+        // The displayed month follows the selection, so the grid shows the pinned month too.
+        assert_eq!(calendar.display_month(), calendar.selected_date());
     }
 
     /// The table's two routes expose the same data, so `data_grid.svg` and `table_widget.svg` differ only

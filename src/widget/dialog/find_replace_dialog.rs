@@ -42,6 +42,36 @@ const LABEL_WIDTH: u32 = 46;
 /// Gap between adjacent widgets on a row.
 const GAP: i32 = 6;
 
+/// The four search flags the dialog exposes, as one value.
+///
+/// Grouped because they are always read together: a host running a search needs every one of them or
+/// nobody's search is reproducible, and four separate payload fields would let a caller drop one on
+/// the floor without noticing. [`Copy`] so a handler can stow it in a closure without a clone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SearchOptions {
+    /// Whether the match is case-sensitive.
+    pub case_sensitive: bool,
+    /// Whether a match must be a whole word.
+    pub whole_word: bool,
+    /// Whether the pattern is a regular expression.
+    pub use_regex: bool,
+    /// Whether reaching the end of the document continues from the top.
+    ///
+    /// Defaults to `true`, matching [`FindReplaceDialog::new`] -- a search that stops at the end
+    /// without saying so is what "wrap around = off" already means, so the default is the permissive
+    /// one and the host must opt into the stop.
+    pub wrap_around: bool,
+}
+
+/// One find request: the text to look for plus the flags to look for it with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchRequest {
+    /// The text the user typed into the find field.
+    pub text: String,
+    /// The options in force when the button was pressed.
+    pub options: SearchOptions,
+}
+
 /// FindReplaceDialog widget — a find/replace panel for text search and replace.
 pub struct FindReplaceDialog {
     base: BaseWidget,
@@ -63,14 +93,22 @@ pub struct FindReplaceDialog {
     visible: bool,
 
     // -- Signals --
-    /// Emitted when find next is requested, provides the find text.
-    pub find_next_signal: Signal1<String>,
-    /// Emitted when find previous is requested, provides the find text.
-    pub find_previous_signal: Signal1<String>,
-    /// Emitted when replace is requested, provides the replace text.
-    pub replace_signal: Signal1<String>,
-    /// Emitted when replace all is requested, provides (find_text, replace_text).
-    pub replace_all_signal: Signal1<(String, String)>,
+    /// Emitted when find next is requested, with the find text and the dialog's search options.
+    ///
+    /// The payload is [`SearchRequest`] rather than a bare `String` because the dialog **has no
+    /// document to search**: it reports what the user asked for and the host runs it. That makes
+    /// every option a piece of information the host needs and cannot derive -- and this dialog
+    /// declares four of them (`case_sensitive`, `whole_word`, `use_regex`, `wrap_around`), of which
+    /// the old payload carried none. A host could read them back off the getters, but only by
+    /// reaching for the widget again from inside a signal handler that had just been handed
+    /// everything else it needs.
+    pub find_next_signal: Signal1<SearchRequest>,
+    /// Emitted when find previous is requested, with the find text and the search options.
+    pub find_previous_signal: Signal1<SearchRequest>,
+    /// Emitted when replace is requested, with the replace text and the search options.
+    pub replace_signal: Signal1<SearchRequest>,
+    /// Emitted when replace all is requested, with (find_text, replace_text) and the options.
+    pub replace_all_signal: Signal1<(String, String, SearchOptions)>,
     /// Emitted when the dialog is closed.
     pub close_signal: Signal1<()>,
 
@@ -189,6 +227,19 @@ impl FindReplaceDialog {
         self.wrap_around
     }
 
+    /// The four search flags as one value, which is what the signals carry.
+    ///
+    /// Built here rather than at each of the four emit sites, so a fifth flag added later cannot be
+    /// added to one payload and forgotten in the other three.
+    fn search_options(&self) -> SearchOptions {
+        SearchOptions {
+            case_sensitive: self.match_case,
+            whole_word: self.whole_word,
+            use_regex: self.use_regex,
+            wrap_around: self.wrap_around,
+        }
+    }
+
     /// Sets the wrap-around toggle.
     pub fn set_wrap_around(&mut self, value: bool) {
         self.wrap_around = value;
@@ -216,31 +267,45 @@ impl FindReplaceDialog {
 
     // ── Actions ──
 
-    /// Emits `find_next_signal` with the current find text.
+    /// Emits `find_next_signal` with the find text and the options in force.
+    ///
+    /// The options travel with the text because the host is the one that searches -- see the signal's
+    /// own documentation for why a bare `String` was not enough.
     pub fn find_next(&mut self) {
         if !self.find_text.is_empty() {
-            self.find_next_signal.emit(self.find_text.clone());
+            let request =
+                SearchRequest { text: self.find_text.clone(), options: self.search_options() };
+            self.find_next_signal.emit(request);
         }
     }
 
-    /// Emits `find_previous_signal` with the current find text.
+    /// Emits `find_previous_signal` with the find text and the options in force.
     pub fn find_previous(&mut self) {
         if !self.find_text.is_empty() {
-            self.find_previous_signal.emit(self.find_text.clone());
+            let request =
+                SearchRequest { text: self.find_text.clone(), options: self.search_options() };
+            self.find_previous_signal.emit(request);
         }
     }
 
-    /// Emits `replace_signal` with the current replace text.
+    /// Emits `replace_signal` with the replacement text and the options in force.
     pub fn replace(&mut self) {
         if !self.find_text.is_empty() {
-            self.replace_signal.emit(self.replace_text.clone());
+            let request =
+                SearchRequest { text: self.replace_text.clone(), options: self.search_options() };
+            self.replace_signal.emit(request);
         }
     }
 
-    /// Emits `replace_all_signal` with (find_text, replace_text).
+    /// Emits `replace_all_signal` with (find_text, replace_text) and the options in force.
     pub fn replace_all(&mut self) {
         if !self.find_text.is_empty() {
-            self.replace_all_signal.emit((self.find_text.clone(), self.replace_text.clone()));
+            let options = self.search_options();
+            self.replace_all_signal.emit((
+                self.find_text.clone(),
+                self.replace_text.clone(),
+                options,
+            ));
         }
     }
 
@@ -931,14 +996,60 @@ mod tests {
 
         let fired = Arc::new(AtomicBool::new(false));
         let fired_clone = Arc::clone(&fired);
-        dialog.find_next_signal.connect(move |text: Arc<String>| {
-            if *text == "search" {
+        dialog.find_next_signal.connect(move |request: Arc<SearchRequest>| {
+            if request.text == "search" {
                 fired_clone.store(true, Ordering::SeqCst);
             }
         });
 
         dialog.find_next();
         assert!(fired.load(Ordering::SeqCst), "find_next_signal should fire with the find text");
+    }
+
+    /// The find signal carries the **options**, not only the text.
+    ///
+    /// # The defect this pins
+    ///
+    /// The dialog declares four search flags and its signals carried none of them, so a host could
+    /// not run the search the user asked for: it received a bare string and had to reach back into
+    /// the widget for the mode. `wrap_around` was the sharpest case -- it was stored, published, and
+    /// **read by nothing at all**, not even by the dialog, because the dialog does not search.
+    ///
+    /// The assertion is on the payload's *contents*, and it flips a flag first, because a payload
+    /// that always carried the defaults would satisfy "the options arrived" while being useless.
+    #[test]
+    fn a_find_request_carries_the_options_in_force() {
+        let mut dialog = FindReplaceDialog::new(Rect::new(0, 0, 400, 80));
+        dialog.set_find_text("needle");
+        dialog.set_wrap_around(false);
+        dialog.show();
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<SearchOptions>::new()));
+        let sink = Arc::clone(&seen);
+        dialog.find_next_signal.connect(move |request: Arc<SearchRequest>| {
+            sink.lock().expect("sink poisoned").push(request.options);
+        });
+
+        dialog.find_next();
+        let captured = seen.lock().expect("lock").clone();
+        assert_eq!(captured.len(), 1, "the signal fired once");
+        let options = captured[0];
+        assert!(
+            !options.wrap_around,
+            "the wrap-around toggle must travel with the request, or the host cannot honour it: \
+             {options:?}"
+        );
+        // The other three travel with it too -- one grouped value is the point of `SearchOptions`.
+        assert_eq!(
+            options,
+            SearchOptions {
+                case_sensitive: dialog.is_match_case(),
+                whole_word: dialog.is_whole_word(),
+                use_regex: dialog.is_use_regex(),
+                wrap_around: false,
+            },
+            "every flag must match the dialog's own state"
+        );
     }
 
     #[test]
@@ -950,8 +1061,8 @@ mod tests {
 
         let fired = Arc::new(AtomicBool::new(false));
         let fired_clone = Arc::clone(&fired);
-        dialog.replace_all_signal.connect(move |pair: Arc<(String, String)>| {
-            if pair.0 == "foo" && pair.1 == "bar" {
+        dialog.replace_all_signal.connect(move |payload: Arc<(String, String, SearchOptions)>| {
+            if payload.0 == "foo" && payload.1 == "bar" {
                 fired_clone.store(true, Ordering::SeqCst);
             }
         });
@@ -1053,7 +1164,7 @@ mod tests {
         // The find action must not run either.
         let find_fired = Arc::new(AtomicBool::new(false));
         let ff = Arc::clone(&find_fired);
-        dialog.find_next_signal.connect(move |_: Arc<String>| {
+        dialog.find_next_signal.connect(move |_: Arc<SearchRequest>| {
             ff.store(true, Ordering::SeqCst);
         });
         dialog.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });

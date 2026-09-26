@@ -242,6 +242,15 @@ impl Platform for StubPlatform {
         self.state.pop_widget_event()
     }
 
+    /// Removes the oldest queued trigger belonging to `widget_id`, leaving the rest queued.
+    ///
+    /// See [`crate::drain_widget_triggers_for`] for why a targeted pop has to exist beside the FIFO
+    /// one: the queue is process-wide, and a consumer that knows which widget it is driving must be
+    /// able to take its own events without dispatching -- or discarding -- another consumer's.
+    fn pop_widget_trigger_event_for(&self, widget_id: ObjectId) -> Option<WidgetTriggerEvent> {
+        self.state.pop_widget_event_for(widget_id)
+    }
+
     fn inject_widget_trigger_event(&self, widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
         // Accept only known widget ids to keep queue semantics deterministic.
         if !self.state.contains_widget(widget_id) {

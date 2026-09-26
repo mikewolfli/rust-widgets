@@ -35,6 +35,12 @@ pub struct VirtualList {
     row_height: u32,
     overscan: usize,
     selected_row: Option<usize>,
+    /// The row the pointer is currently over, or `None` when it is between/outside the rows.
+    ///
+    /// Filled by `MouseMove` through the same [`Self::row_at`] the click uses, so the highlighted
+    /// row is the row a click would affect. Held here rather than re-derived in `draw`, because
+    /// the draw path does not see the pointer.
+    hovered_row: Option<usize>,
     window_cache: Option<WindowCache>,
     /// Emitted when selected row changes.
     pub selection_changed: Signal1<Option<usize>>,
@@ -53,6 +59,7 @@ impl VirtualList {
             row_height: 20,
             overscan: 2,
             selected_row: None,
+            hovered_row: None,
             window_cache: None,
             selection_changed: Signal1::new(),
             visible_window_changed: Signal1::new(),
@@ -173,6 +180,25 @@ impl VirtualList {
     /// Returns selected row when present.
     pub fn selected_row(&self) -> Option<usize> {
         self.selected_row.filter(|row| *row < self.row_count())
+    }
+
+    /// The row at a screen point, or `None` when the point is not over a real row.
+    ///
+    /// # Why this is one derivation
+    ///
+    /// Two readers ask "which row is here": the press handler decides what to select, and the
+    /// move handler decides what to highlight. Deriving it twice is how `table_widget` came to
+    /// select the row *above* the one the user clicked (it counted rows from the content box while
+    /// hit-testing from the control's top edge, with the offset written in two places). Both now
+    /// call this, so a rect that changes moves both answers together.
+    pub fn row_at(&self, pos: Point) -> Option<usize> {
+        let rect = self.base.geometry();
+        if pos.y < rect.y || pos.y >= rect.y + rect.height as i32 {
+            return None;
+        }
+        let local_row = ((pos.y - rect.y) / self.row_height.max(1) as i32).max(0) as usize;
+        let row = self.scroll_row.saturating_add(local_row);
+        (row < self.row_count()).then_some(row)
     }
 
     /// Selects a row.
@@ -439,6 +465,14 @@ impl Draw for VirtualList {
 
             if self.selected_row == Some(row_index) {
                 context.fill_rect(Rect::new(rect.x, y, rect.width, self.row_height), selected_bg);
+            } else if self.hovered_row == Some(row_index) {
+                // A weaker wash than the selection, from the same accent: a row the pointer is over
+                // is a *preview* of the row a click would select, so it must read as the same
+                // affordance at lower weight rather than as a second, unrelated highlight.
+                context.fill_rect(
+                    Rect::new(rect.x, y, rect.width, self.row_height),
+                    surface.blend(&accent, 0.12),
+                );
             }
 
             context.draw_text(
@@ -454,6 +488,12 @@ impl Draw for VirtualList {
 
 impl crate::event::EventHandler for VirtualList {
     fn handle_event(&mut self, event: &Event) {
+        // The base keeps the control-level facts (`hovered`, `pressed`, `focus_reason`) and its
+        // `MouseEnter`/`MouseLeave` arms are what make `widget_state()` answer `Hover` here. This
+        // handler did not forward to it at all, so the theme's `"data_view:hover"` override could
+        // never fire and the control-level hover was always false — the same defect `list_view`
+        // records, in the sibling control that never inherited its fix.
+        self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }
@@ -462,13 +502,26 @@ impl crate::event::EventHandler for VirtualList {
 
         match event {
             Event::MousePress { pos, button } if *button == 1 => {
-                let rect = self.base.geometry();
-                if pos.y < rect.y || pos.y >= rect.y + rect.height as i32 {
-                    return;
+                // The same derivation the hover uses, so the row a click selects and the row the
+                // pointer highlights cannot disagree.
+                if let Some(row) = self.row_at(*pos) {
+                    let _ = self.select_row(row);
                 }
-                let local_row = ((pos.y - rect.y) / self.row_height as i32).max(0) as usize;
-                let row = self.scroll_row.saturating_add(local_row);
-                let _ = self.select_row(row);
+            }
+            // Row hover, derived from the same `row_at` the click uses, so the row that is
+            // highlighted is the row a click would affect. A pointer that leaves the rows entirely
+            // clears it rather than latching the last row it crossed.
+            Event::MouseMove { pos } => {
+                let hovered = self.row_at(*pos);
+                if hovered != self.hovered_row {
+                    self.hovered_row = hovered;
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseLeave { .. } => {
+                if self.hovered_row.take().is_some() {
+                    self.base.request_redraw();
+                }
             }
             Event::Wheel { delta, .. } => {
                 let lines = ((delta.y.abs() / 120).max(1)) as isize;
@@ -772,5 +825,53 @@ mod tests {
         // Scrolling does nothing on empty source
         list.set_scroll_row(10);
         assert_eq!(list.scroll_row(), 0);
+    }
+
+    /// The row under the pointer is the row a click would select, and its hover reaches the base.
+    ///
+    /// # The two defects this pins
+    ///
+    /// This handler never forwarded to the base at all, so `widget_state()` answered `Normal` for
+    /// the whole interaction and the theme's `"data_view:hover"` override could never fire — the
+    /// same defect `list_view` records, in the sibling control that never inherited its fix. It also
+    /// kept no row hover, so a virtual list gave no feedback about which row a click would affect.
+    ///
+    /// The round trip is asserted through the *same* derivation the click uses, so the two cannot
+    /// drift apart: ask [`VirtualList::row_at`] which row a point is over, then click that point and
+    /// require the same row to be selected.
+    #[test]
+    fn the_row_under_the_pointer_is_the_row_a_click_selects() {
+        use crate::style::WidgetState;
+
+        let mut list = VirtualList::new(Rect::new(0, 0, 120, 60));
+        list.set_data_source(Arc::new(StaticSource { rows: 20 }));
+
+        let probe = Point::new(4, 22);
+        let row = list.row_at(probe).expect("the second row is under this point");
+        assert_eq!(row, 1);
+
+        list.handle_event(&Event::MouseEnter { pos: probe });
+        list.handle_event(&Event::MouseMove { pos: probe });
+        assert_eq!(list.hovered_row, Some(row), "the row under the pointer is the one lit");
+        assert_eq!(
+            list.widget_state(),
+            WidgetState::Hover,
+            "the base must have been told the pointer arrived"
+        );
+
+        list.handle_event(&Event::mouse_press(4, 22, 1));
+        assert_eq!(
+            list.selected_row(),
+            Some(row),
+            "the highlighted row must be the row a click selects"
+        );
+        list.handle_event(&Event::mouse_release(4, 22, 1));
+
+        // A point past the last row is over nothing, on both readings.
+        let below = Point::new(4, 1000);
+        assert_eq!(list.row_at(below), None);
+        list.handle_event(&Event::MouseLeave { pos: below });
+        assert_eq!(list.hovered_row, None, "leaving clears the row rather than latching it");
+        assert_eq!(list.widget_state(), WidgetState::Normal);
     }
 }

@@ -928,6 +928,9 @@ mod tests {
 
     #[test]
     fn svg_backend_honours_horizontal_alignment() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         // Rule: the two backends must put the ink in the same place. The software rasteriser
         // shifts the pen before the first glyph by the alignment (half an advance for
         // `Center`, a whole one for `Right`); this backend used to drop the field entirely,

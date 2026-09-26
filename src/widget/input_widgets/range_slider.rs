@@ -125,6 +125,18 @@ impl RangeSlider {
         self.upper_value
     }
 
+    /// Returns whether a handle is currently being dragged.
+    ///
+    /// # Why this is public
+    ///
+    /// It is the fact the draw path emphasises a handle with, and a host that owns its own input
+    /// layer — a touch backend, a test, a designer previewing a state — needs to ask it the same way
+    /// it can ask a [`Slider`](crate::widget::display_widgets::slider::Slider). Without it the
+    /// dragged appearance was reachable only by synthesising a press.
+    pub fn is_dragging(&self) -> bool {
+        self.dragging.is_some()
+    }
+
     /// Sets the upper value, clamping it to be within bounds and respecting min_range.
     /// Emits `range_changed` if the value changes.
     pub fn set_upper_value(&mut self, value: f64) {
@@ -389,6 +401,30 @@ impl Widget for RangeSlider {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(200, 28)
     }
+
+    /// Announces **both** handles, because a range has two values.
+    ///
+    /// # Why this control needs its own answer
+    ///
+    /// The trait default reads a property from a fixed list — `value` / `progress` / `rating` /
+    /// `level` — and this control publishes neither handle under any of those names, so a screen
+    /// reader was told nothing about where the range sits. It cannot be fixed by renaming a
+    /// property: `lower` and `upper` *are* the contract, and picking one to announce would be worse
+    /// than silence, because a reader would then report half a range as if it were the value.
+    ///
+    /// Each half is announced through [`CapabilityValue::to_announcement_string`], which is the one
+    /// place that decides how a float is spoken (an integral value is announced as its integer).
+    /// Spelling that rule again here would let the two drift. The ends are joined with an en dash,
+    /// matching how a range is written wherever one is printed, so the announcement reads as one
+    /// quantity rather than two sentences.
+    fn accessible_value(&self) -> String {
+        let lower = CapabilityValue::Float(self.lower_value()).to_announcement_string();
+        let upper = CapabilityValue::Float(self.upper_value()).to_announcement_string();
+        let mut text = lower;
+        text.push('–');
+        text.push_str(&upper);
+        text
+    }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -595,11 +631,17 @@ impl Draw for RangeSlider {
             // Draw handles
             let center_y = rect.y + rect.height as i32 / 2;
 
-            for &value in &[self.lower_value, self.upper_value] {
+            for (index, &value) in [self.lower_value, self.upper_value].iter().enumerate() {
                 let cx = self.value_to_pixel(value, &rect);
-                let handle_center = Point::new(cx, center_y);
-                context.fill_circle(handle_center, handle_radius, handle_color);
-                context.draw_circle_stroke(handle_center, handle_radius, handle_border, 2);
+                let is_lower = index == 0;
+                Self::draw_handle(
+                    context,
+                    Point::new(cx, center_y),
+                    self.handle_state(is_lower),
+                    handle_radius,
+                    handle_color,
+                    handle_border,
+                );
             }
         } else {
             // Vertical
@@ -624,11 +666,86 @@ impl Draw for RangeSlider {
             // Draw handles
             let center_x = rect.x + rect.width as i32 / 2;
 
-            for &value in &[self.lower_value, self.upper_value] {
+            for (index, &value) in [self.lower_value, self.upper_value].iter().enumerate() {
                 let cy = self.value_to_pixel(value, &rect);
-                let handle_center = Point::new(center_x, cy);
-                context.fill_circle(handle_center, handle_radius, handle_color);
-                context.draw_circle_stroke(handle_center, handle_radius, handle_border, 2);
+                let is_lower = index == 0;
+                Self::draw_handle(
+                    context,
+                    Point::new(center_x, cy),
+                    self.handle_state(is_lower),
+                    handle_radius,
+                    handle_color,
+                    handle_border,
+                );
+            }
+        }
+    }
+}
+
+/// How a range handle is being interacted with, which is the whole of what its emphasis encodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HandleInteraction {
+    /// The pointer is not on this handle.
+    Resting,
+    /// The pointer is over the control, but not on this handle.
+    Idle,
+    /// This handle is the one being dragged.
+    Dragging,
+}
+
+impl RangeSlider {
+    /// Which emphasis one of the two handles is drawn with.
+    ///
+    /// # The defect this pins
+    ///
+    /// `dragging` was stored, set and cleared correctly — and **never drawn**. A user who grabbed a
+    /// handle saw exactly the frame they saw before they touched it, so the only feedback about
+    /// "which of these two overlapping discs am I holding" was the value moving afterwards. The
+    /// same shape as the bezier handles, `audio_visualizer` and `data_grid`; the reading is derived
+    /// from the same field the hit-routing uses, so the two cannot disagree about which is held.
+    fn handle_state(&self, is_lower: bool) -> HandleInteraction {
+        if self.dragging == Some(is_lower) {
+            HandleInteraction::Dragging
+        } else if self.base.is_hovered() {
+            // The pointer being over the control at all is enough to say "these are grabbable":
+            // which of the two it is over is already answered by the hover value, and making the
+            // emphasis depend on that would make it flicker as the pointer crosses the gap between
+            // two handles that are near each other.
+            HandleInteraction::Idle
+        } else {
+            HandleInteraction::Resting
+        }
+    }
+
+    /// Draws one handle, emphasising the one being dragged.
+    ///
+    /// The two weights are the pair the theme's own state overlays use (a hover step and a press
+    /// step of the same accent), so a handle does not invent a third visual language, and the drag
+    /// weight is the stronger of the two because "you are holding this" is a stronger statement
+    /// than "the pointer is somewhere over this control".
+    fn draw_handle(
+        context: &mut RenderContext,
+        center: Point,
+        interaction: HandleInteraction,
+        radius: u32,
+        fill: Color,
+        border: Color,
+    ) {
+        match interaction {
+            HandleInteraction::Dragging => {
+                // A halo *and* a larger disc: the halo says "held", the size says "this is the one".
+                context.fill_circle(center, radius + 4, fill.with_alpha(56));
+                context.fill_circle(center, radius + 2, fill);
+                context.draw_circle_stroke(center, radius + 2, border, 2);
+            }
+            HandleInteraction::Idle => {
+                context.fill_circle(center, radius + 1, fill.with_alpha(28));
+                context.fill_circle(center, radius, fill);
+                context.draw_circle_stroke(center, radius, border, 2);
+            }
+            HandleInteraction::Resting => {
+                context.fill_circle(center, radius, fill);
+                context.draw_circle_stroke(center, radius, border, 2);
             }
         }
     }
@@ -908,5 +1025,79 @@ mod tests {
             assert!(!rs.is_handle_hit(lower_centre, &rect, false));
             assert!(!rs.is_handle_hit(upper_centre, &rect, true));
         }
+    }
+
+    /// A screen reader is told the range, not silence and not half of it.
+    ///
+    /// # The defect this pins
+    ///
+    /// `Widget::accessible_value`'s default reads a value property from a fixed list -- `value` /
+    /// `progress` / `rating` / `level` -- and `range_slider` publishes `lower` / `upper` instead, so
+    /// it announced **nothing** about where the range sat. Renaming a property is not the fix: two
+    /// handles are the contract, and announcing one would report half a range as if it were the
+    /// value.
+    ///
+    /// The assertion names both ends, so an implementation that silently announced only `lower`
+    /// (the tempting shortcut) fails.
+    #[test]
+    fn the_range_is_announced_with_both_handles() {
+        let mut rs = RangeSlider::new(Rect::new(0, 0, 200, 28));
+        rs.set_range(0.0, 100.0);
+        rs.set_lower_value(20.0);
+        rs.set_upper_value(70.0);
+
+        let announced = rs.accessible_value();
+        assert!(announced.contains("20"), "the lower handle must be announced, got {announced:?}");
+        assert!(announced.contains("70"), "and the upper handle too, got {announced:?}");
+        assert!(
+            announced.contains('\u{2013}'),
+            "the two ends must read as one range rather than two sentences, got {announced:?}"
+        );
+
+        // An integral float is announced as its integer, which is the one formatting rule the
+        // capability layer already owns -- asserted here so this control cannot grow a second one.
+        assert_eq!(announced, "20\u{2013}70");
+    }
+
+    /// The handle being dragged is drawn larger than a resting one.
+    ///
+    /// # The defect this pins
+    ///
+    /// `dragging` was stored, set and cleared correctly, and **never painted**: grabbing a handle
+    /// showed the frame the user had seen before touching it, so the only feedback about which of
+    /// two overlapping discs was held came from the value moving afterwards. The assertion compares
+    /// two *renders* driven through the real event path, so a draw that ignores the drag fails
+    /// however correct the field is — the model-versus-pixels pair this crate keeps re-learning.
+    #[test]
+    fn the_dragged_handle_is_drawn_larger() {
+        let mut rs = RangeSlider::new(Rect::new(0, 0, 200, 28));
+        rs.set_range(0.0, 100.0);
+        rs.set_lower_value(20.0);
+        rs.set_upper_value(70.0);
+
+        let resting = crate::widget::svg::render_to_svg(&mut rs);
+        assert!(!rs.is_dragging());
+
+        // Press on the lower handle's own centre. `value_to_pixel` is the same mapping the draw
+        // uses, so the press lands exactly where that handle was painted.
+        let rect = rs.geometry();
+        let lower_centre = crate::core::Point::new(
+            rs.value_to_pixel(rs.lower_value(), &rect),
+            rect.y + rect.height as i32 / 2,
+        );
+        rs.handle_event(&Event::MousePress { pos: lower_centre, button: 1 });
+        assert!(rs.is_dragging(), "a press on a handle must arm the drag");
+
+        let dragged = crate::widget::svg::render_to_svg(&mut rs);
+        assert_ne!(
+            resting, dragged,
+            "a held handle must not paint like a resting one"
+        );
+
+        // Releasing returns the handle to its resting size, so the emphasis is not latched.
+        rs.handle_event(&Event::MouseRelease { pos: lower_centre, button: 1 });
+        assert!(!rs.is_dragging());
+        let released = crate::widget::svg::render_to_svg(&mut rs);
+        assert_eq!(released, resting, "releasing must restore the resting frame");
     }
 }

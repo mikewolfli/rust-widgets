@@ -700,6 +700,9 @@ mod tests {
     /// the two apart without inventing a text layout.
     #[test]
     fn a_right_to_left_bar_mirrors_both_affordances() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         fn glyph_xs(svg: &str) -> (i32, i32) {
             let mut min = i32::MAX;
             let mut max = i32::MIN;

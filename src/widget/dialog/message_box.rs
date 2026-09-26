@@ -10,7 +10,7 @@ use crate::layout::{FlexLayout, JustifyContent, Layout};
 use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
-use crate::style::{EdgeOffsets, SemanticColor};
+use crate::style::{EdgeOffsets, MotionSlot, PropertyDriver, SemanticColor};
 use crate::tr;
 use crate::widget::capability::coercion::{
     expect_bool, expect_message_box_icon, expect_string, message_box_icon_to_str,
@@ -142,6 +142,25 @@ pub struct MessageBox {
     buttons: Vec<StandardButton>,
     default_button: Option<StandardButton>,
     modal: bool,
+    /// How far the box has revealed, `0.0` hidden and `1.0` fully shown.
+    ///
+    /// # Why this box needs a driver while `Dialog` reads its own flag
+    ///
+    /// A `MessageBox` has no `show`/`hide` of its own: the box is created hidden and
+    /// [`crate::app::handle::MessageBoxHandle::show_modal`] calls the crate-level
+    /// `show_widget`, which sets the *base* visibility. So the transition this driver follows is
+    /// the **inherited** `visible` flag, read once per [`Widget::tick`] and once per draw. That is
+    /// the only place the box can learn that it has appeared, and deriving the target from it means
+    /// no new API is needed for the animation to exist.
+    ///
+    /// The driver starts at `0.0` because a freshly built box is hidden, and `new_visible` starts
+    /// at `false` so the first tick of a hidden box is not mistaken for a reveal.
+    reveal: PropertyDriver,
+    /// The base visibility the driver was last aimed from.
+    ///
+    /// Clocked in [`Widget::tick`], which is the one place both the frame bus and the tests reach.
+    /// Kept so a `show_widget` that arrives between two ticks is picked up on the next one.
+    new_visible: bool,
     /// Emitted for every button activation, including ones that also trigger
     /// [`Self::accepted`] or [`Self::rejected`]. Carries the button that was
     /// activated.
@@ -167,6 +186,10 @@ impl MessageBox {
             buttons: vec![StandardButton::Ok],
             default_button: Some(StandardButton::Ok),
             modal: true,
+            // At rest at the hidden end: a freshly built box is not shown, so it must not animate
+            // itself away on its first frame.
+            reveal: PropertyDriver::at(0.0, MotionSlot::Normal),
+            new_visible: false,
             button_clicked: Signal1::new(),
             accepted: GenericSignal::new(),
             rejected: GenericSignal::new(),
@@ -266,6 +289,14 @@ impl MessageBox {
         self.default_button = Some(btn);
         self.base.request_redraw();
     }
+    /// How far the box has revealed: `0.0` hidden, `1.0` fully shown.
+    ///
+    /// The value the draw measures with, as distinct from the inherited [`Widget::is_visible`],
+    /// which answers the logical state the instant it changes.
+    pub fn reveal_progress(&self) -> f32 {
+        self.reveal.value()
+    }
+
     /// Whether the box is marked modal. Defaults to `true`.
     ///
     /// This records the intent; enforcement is the modal stack in
@@ -365,6 +396,25 @@ impl Widget for MessageBox {
     /// wrong.
     fn as_draw_mut(&mut self) -> Option<&mut dyn crate::widget::Draw> {
         Some(self)
+    }
+
+    /// Advances the reveal by `delta_ms`; `true` while it is still moving.
+    ///
+    /// The base visibility is sampled here rather than in the draw, because this is the one point
+    /// both the frame bus and the caller reach with `&mut self` and a delta — a target derived in
+    /// the draw would be re-derived on every repaint and could never "arrive".
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        let visible = self.base.is_visible();
+        if visible != self.new_visible {
+            self.new_visible = visible;
+            self.reveal.set_target(if visible { 1.0 } else { 0.0 });
+        }
+        self.reveal.tick(delta_ms)
+    }
+
+    /// Whether the box is between two reveal states -- answers only, never advances.
+    fn is_animating(&self) -> bool {
+        self.reveal.is_moving()
     }
 
     impl_widget_property_hooks!();
@@ -617,8 +667,40 @@ impl MessageBox {
 
 impl Draw for MessageBox {
     fn draw(&mut self, context: &mut RenderContext) {
+        // How far the box has revealed. A hidden box paints **nothing at all**: a message box is
+        // created hidden and then shown, so painting a full frame while it is not shown would put a
+        // prompt on the page the runtime is not routing input to. Before this it drew the scrim and
+        // the whole frame unconditionally from the moment it was constructed.
+        let reveal = self.reveal.value();
+        if reveal <= 0.0 {
+            return;
+        }
+
+        // ── The modal scrim ──
+        //
+        // Same backdrop as `Dialog`'s, for the same reason: a modal prompt's whole meaning is
+        // that the page behind it is inert, and that is only visible if the page is dimmed. The
+        // `modal` flag already existed and was enforced by the modal stack, so the intent was
+        // recorded and the *appearance* of it was not. The scrim fades in with the reveal, and
+        // both are driven by the one value, so they cannot get out of step.
+        if self.modal {
+            super::draw_modal_scrim_scaled(context, self.geometry(), reveal);
+        }
+
         // The **frame**, not the control's rectangle: see `frame_rect`.
         let rect = self.frame_rect(context);
+        // The frame **scales up** from its own centre as the reveal progresses, so the appear reads
+        // as a growth rather than a fade-in of a static box. At `reveal = 1.0` the scale is exactly
+        // 1.0, so a settled box is pixel-identical to the pre-animation one — which is what keeps
+        // the resting snapshot valid. Shared arithmetic with `Dialog`'s reveal, so the two modal
+        // families settle the same way.
+        let rect = super::scale_about_centre(
+            rect,
+            super::REVEAL_MIN_SCALE + (1.0 - super::REVEAL_MIN_SCALE) * reveal,
+        );
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
         // Chrome colours resolve explicit style first, then the theme's resolved style for
         // this control, and only then a literal. The surface already read the style, but the
         // title bar and the buttons were literals, so a light/dark switch left them
@@ -1518,6 +1600,11 @@ mod tests {
     #[test]
     fn test_svg_output() {
         let mut mb = MessageBox::new(Rect::new(0, 0, 300, 150));
+        // A message box is created hidden and shown by the runtime; a hidden one paints nothing,
+        // so a box under test is shown and settled first. An unshown box would make every
+        // assertion below pass on an empty document.
+        mb.show();
+        while mb.tick(1000) {}
 
         // Default output
         let svg = render_to_svg(&mut mb);
@@ -1525,14 +1612,80 @@ mod tests {
         assert!(svg.contains("xmlns=\"http://www.w3.org/2000/svg\""));
         assert!(svg.contains("width=\"300\""));
         assert!(svg.contains("height=\"150\""));
+        // And it actually painted its chrome: the frame is a rounded rect and the default OK
+        // button leaves a glyph run.
+        assert!(svg.contains("rx=\""), "the shown box paints its frame: {svg}");
+        assert!(
+            crate::widget::svg::text_ink_box(&svg).is_some(),
+            "the default OK button paints its label: {svg}"
+        );
 
         // With title and text set
         let mut mb2 = MessageBox::new(Rect::new(0, 0, 400, 200));
         mb2.set_title("Test Title");
         mb2.set_text("Hello");
         mb2.set_icon(MessageBoxIcon::Warning);
+        mb2.show();
+        while mb2.tick(1000) {}
         let svg2 = render_to_svg(&mut mb2);
         assert!(svg2.starts_with("<svg"));
+    }
+
+    /// A hidden message box paints nothing, and showing it reveals the box rather than
+    /// placing it there at full size.
+    ///
+    /// # The defect this pins
+    ///
+    /// The box has no `show`/`hide` of its own — the runtime's `show_widget` sets the *base*
+    /// visibility — and the draw ignored both that flag and any notion of arrival, so a box that
+    /// had been constructed but not yet shown painted a full frame with buttons on it, and a shown
+    /// one appeared whole on a single frame. The assertions are in three parts, because a progress
+    /// nothing reads is not a reveal: the model must take an interior value, the *painted* frame
+    /// must be smaller at that moment, and a hidden box must paint nothing.
+    #[test]
+    fn showing_a_message_box_reveals_it() {
+        let mut mb = MessageBox::new(Rect::new(0, 0, 300, 150));
+        assert_eq!(mb.reveal_progress(), 0.0, "a fresh box is hidden");
+        assert!(!mb.is_animating(), "and owes no frames");
+        let hidden = render_to_svg(&mut mb);
+        assert!(
+            !hidden.contains("rx=\"") && crate::widget::svg::text_ink_box(&hidden).is_none(),
+            "a hidden box paints nothing: {hidden}"
+        );
+
+        // The runtime's show: the base flag, then the frames that follow it.
+        mb.show();
+        assert!(mb.tick(20), "still revealing after one step");
+        let mid = mb.reveal_progress();
+        assert!(mid > 0.0 && mid < 1.0, "the box must pass through an interior reveal (got {mid})");
+        let mid_width = frame_width(&render_to_svg(&mut mb));
+
+        while mb.tick(1000) {}
+        assert_eq!(mb.reveal_progress(), 1.0, "and settle fully shown");
+        let settled_width = frame_width(&render_to_svg(&mut mb));
+
+        assert!(
+            mid_width > 0 && mid_width < settled_width,
+            "a revealing frame must be smaller than a settled one: mid={mid_width} settled={settled_width}"
+        );
+
+        // And hiding aims it back, so the box does not stay latched open.
+        mb.hide();
+        assert!(mb.tick(20), "hiding owes frames too");
+        while mb.tick(1000) {}
+        assert_eq!(mb.reveal_progress(), 0.0, "a hidden box settles closed");
+    }
+
+    /// The widest rounded rectangle in the document — the box's frame.
+    fn frame_width(svg: &str) -> u32 {
+        svg.split("<rect ")
+            .filter(|chunk| chunk.contains("rx=\""))
+            .filter_map(|chunk| {
+                let w = chunk.split("width=\"").nth(1)?;
+                w.split('"').next()?.parse::<u32>().ok()
+            })
+            .max()
+            .unwrap_or(0)
     }
 
     // ── 12. Modality setting ────────────────────────────────────────

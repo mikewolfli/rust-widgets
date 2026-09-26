@@ -305,8 +305,14 @@ impl Draw for NavigationStack {
             let back_text = "< Back";
             let back_font = Font::simple("sans-serif", 13.0);
             let back_color = if is_enabled { accent } else { accent.blend(&surface, 0.5) };
+            // The line box is derived from the *font in use*, not from a literal. `+ 14` was shared
+            // by this 13 pt label and the 15 pt title below, so it was the correct descent for
+            // neither: a glyph origin is the top edge of its box, so an offset that does not come
+            // from the font puts one of the two rows off its own middle line. `text_line` is the
+            // crate's one derivation for "where does this font's line sit in this band".
+            let back_line = context.text_line(nav_rect, &back_font);
             context.draw_text(
-                Point::new(nav_rect.x + 8, nav_rect.y + 14),
+                Point::new(nav_rect.x + 8, back_line.y),
                 back_text,
                 &back_font,
                 back_color,
@@ -320,9 +326,9 @@ impl Draw for NavigationStack {
         let text_color = if is_enabled { ink } else { ink.blend(&surface, 0.5) };
         let metrics = context.measure_text(&title, &title_font);
         let title_x = nav_rect.x + (nav_rect.width as i32 - metrics.width as i32) / 2;
-        let title_y = nav_rect.y + 14;
+        let title_line = context.text_line(nav_rect, &title_font);
         context.draw_text(
-            Point::new(title_x.max(nav_rect.x + 4), title_y),
+            Point::new(title_x.max(nav_rect.x + 4), title_line.y),
             &title,
             &title_font,
             text_color,

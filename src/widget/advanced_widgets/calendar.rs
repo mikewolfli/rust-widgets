@@ -231,6 +231,12 @@ impl Calendar {
     /// Layout constants.
     const NAV_H: u32 = 30;
     const DAY_HEADER_H: u32 = 24;
+    /// Width of the week-number gutter, in pixels.
+    ///
+    /// Two digits at the day-number font plus the column's own padding. Wider than a day column
+    /// needs to be for its own text, because the number here is a whole month's ordinal rather than
+    /// a day, and a two-digit value that does not fit would be elided to `1…`.
+    const WEEK_GUTTER_W: u32 = 26;
 
     /// Returns the navigation bar rectangle, or zero-sized if hidden.
     ///
@@ -253,13 +259,34 @@ impl Calendar {
     }
 
     /// Returns the weekday-header rectangle, or zero-sized if hidden.
+    ///
+    /// # Why the header starts at the grid's left edge, not the control's
+    ///
+    /// The vertical header (when shown) owns a strip down the left, and the seven day columns begin
+    /// to the right of it. The header must start where the columns do, or the eight labels and the
+    /// seven columns underneath them disagree about which column is which — which is exactly the
+    /// defect a week-number gutter introduces if it is bolted on without moving the sibling.
     fn day_header_rect(&self) -> Rect {
         let r = self.geometry();
         let nav_h = if self.navigation_bar_visible { Self::NAV_H as i32 } else { 0 };
         if self.horizontal_header_visible {
-            Rect::new(r.x, r.y + nav_h, r.width, Self::DAY_HEADER_H)
+            let grid = self.grid_rect();
+            Rect::new(grid.x, r.y + nav_h, grid.width, Self::DAY_HEADER_H)
         } else {
-            Rect::new(r.x, r.y + nav_h, 0, 0)
+            Rect::new(r.x + self.vertical_header_width() as i32, r.y + nav_h, 0, 0)
+        }
+    }
+
+    /// The width of the week-number strip: the gutter when the vertical header is shown, else zero.
+    ///
+    /// One function, read by the header, the grid and the hit test, so the three cannot disagree
+    /// about how much room the gutter took. A second `if self.vertical_header_visible` in each of
+    /// them is how the eight labels end up one column off from the thirty-one cells.
+    fn vertical_header_width(&self) -> u32 {
+        if self.vertical_header_visible {
+            Self::WEEK_GUTTER_W
+        } else {
+            0
         }
     }
 
@@ -269,7 +296,14 @@ impl Calendar {
         let top = (if self.navigation_bar_visible { Self::NAV_H } else { 0 })
             + (if self.horizontal_header_visible { Self::DAY_HEADER_H } else { 0 });
         let h = r.height.saturating_sub(top);
-        Rect::new(r.x, r.y + top as i32, r.width, h)
+        let gutter = self.vertical_header_width();
+        Rect::new(r.x + gutter as i32, r.y + top as i32, r.width.saturating_sub(gutter), h)
+    }
+
+    /// Returns the week-number strip's rectangle, or zero-sized if the header is hidden.
+    fn week_gutter_rect(&self) -> Rect {
+        let grid = self.grid_rect();
+        Rect::new(self.geometry().x, grid.y, self.vertical_header_width(), grid.height)
     }
 
     /// Compute the number of leading blank cells before day 1 of the displayed month.
@@ -283,6 +317,43 @@ impl Calendar {
             chrono::Weekday::Sun => (from_mon + 1) % 7,
             _ => from_mon, // fallback
         }
+    }
+
+    /// The ISO-8601 week number of `date`, as the vertical header's label.
+    ///
+    /// ISO week 1 is the week containing the year's first Thursday, which is what makes a week's
+    /// number depend on the **Thursday** it contains rather than on its Monday — the reason this is
+    /// not simply "the day of the year divided by seven". Weeks that straddle a year boundary
+    /// therefore report `52`/`53` of the old year or `1` of the new one, and `chrono` answers that
+    /// directly, so the rule lives in one place rather than being re-derived here.
+    fn iso_week_of(date: chrono::NaiveDate) -> u32 {
+        use chrono::Datelike;
+        date.iso_week().week()
+    }
+
+    /// The first date of the row-th week of the displayed month, which is what a week number labels.
+    ///
+    /// `None` when the whole row falls outside the month, because a week label on an empty row would
+    /// name a week that the calendar is not showing.
+    fn week_row_start(&self, row: u32) -> Option<chrono::NaiveDate> {
+        let blanks = self.leading_blank_count();
+        let days_in_month =
+            max_days_in_month(self.display_month.year(), self.display_month.month());
+        // The row's first *in-month* day: everything before the blanks belongs to the previous month
+        // and is not drawn, so the label must key off the first cell the grid actually paints.
+        let first_slot = row * 7;
+        let first_day = if first_slot < blanks { blanks - first_slot } else { 1 };
+        if first_day > days_in_month {
+            return None;
+        }
+        let last_slot = first_slot + 6;
+        if last_slot > blanks + days_in_month - 1 {
+            // The row starts past the month's last day: nothing is painted in it at all.
+            if first_slot > blanks + days_in_month - 1 {
+                return None;
+            }
+        }
+        self.display_month.with_day(first_day)
     }
 
     /// Returns the date at a given pixel position, or `None` if outside the grid.
@@ -322,6 +393,25 @@ impl Widget for Calendar {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(260, 240)
+    }
+
+    /// Announces the selected date, because that is the calendar's value.
+    ///
+    /// # Why the trait default cannot answer here
+    ///
+    /// It looks the value up under `value` / `progress` / `rating` / `level`, and a calendar
+    /// publishes none of those — its value is called `selected_date` and is a `%Y-%m-%d` string. So
+    /// a screen reader was told nothing about which day was chosen, on the one control whose entire
+    /// state *is* the chosen day.
+    ///
+    /// The name is read back through the property contract rather than formatted here, so the
+    /// announced text and the published `selected_date` are the same string by construction — a
+    /// reader and a caller cannot be told two different dates.
+    fn accessible_value(&self) -> String {
+        crate::widget::capability::types::CapabilityValue::String(naive_date_to_string(
+            self.selected_date(),
+        ))
+        .to_announcement_string()
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -732,6 +822,46 @@ impl Draw for Calendar {
             let grid = self.grid_rect();
             let cell_w = (grid.width / 7).max(1);
             let cell_h = (grid.height / 6).max(1);
+
+            // ── 3a. The week-number gutter ──
+            //
+            // The ISO week number of each row, in the strip the grid left on its own left. Drawn
+            // from the grid's own `cell_h` and rows, so a label sits beside the row it names even
+            // when the control is shorter than six rows' worth and the rows are compressed.
+            let gutter = self.week_gutter_rect();
+            if gutter.width > 0 {
+                let font = Font::simple("Sans", 10.0);
+                for row in 0..6u32 {
+                    let Some(start) = self.week_row_start(row) else {
+                        continue;
+                    };
+                    let band =
+                        Rect::new(gutter.x, grid.y + (row * cell_h) as i32, gutter.width, cell_h);
+                    if band.y + band.height as i32 > rect.y + rect.height as i32 {
+                        break;
+                    }
+                    // A step quieter than the day numbers: a week number is an index into the
+                    // calendar, not a selectable day, and drawing it at full strength made it read
+                    // as one more date in the row.
+                    context.draw_text_line(
+                        band,
+                        &Self::iso_week_of(start).to_string(),
+                        &font,
+                        text_color.blend(&calendar_bg, 0.45),
+                        HorizontalAlignment::Center,
+                    );
+                }
+                // The gutter's right rule is what separates the index from the dates, and it is the
+                // grid's own line so the two cannot drift apart in a light or dark appearance.
+                if style.border_width.unwrap_or(1) > 0 {
+                    context.draw_line(
+                        Point::new(gutter.x + gutter.width as i32 - 1, grid.y),
+                        Point::new(gutter.x + gutter.width as i32 - 1, grid.y + grid.height as i32),
+                        border_color,
+                    );
+                }
+            }
+
             let days_in_month =
                 max_days_in_month(self.display_month.year(), self.display_month.month());
             let blanks = self.leading_blank_count();
@@ -973,6 +1103,72 @@ mod tests {
         cal.show_today();
         let today = chrono::Local::now().date_naive();
         assert_eq!(cal.selected_date(), today);
+    }
+
+    /// Turning on the vertical header paints a week-number gutter, and shifts the grid right.
+    ///
+    /// # The defect this pins
+    ///
+    /// `vertical_header_visible` was the one of four sibling visibility flags with **no reader in
+    /// `draw` at all**: `grid_visible`, `navigation_bar_visible` and `horizontal_header_visible` each
+    /// gate real chrome, while this one had only its getter, its setter, its schema row and a
+    /// round-trip test. Setting it redrew an identical calendar, so a host asking for week numbers
+    /// got a silent no-op.
+    ///
+    /// The assertions cover both halves of the feature, because either alone is satisfiable by a
+    /// wrong implementation: the document must gain ink (the gutter is painted), **and** the day grid
+    /// must start further right (the gutter *took* room rather than overlaying the first column --
+    /// an overlay would corrupt column 0, which is a worse defect than the one being fixed).
+    #[test]
+    fn the_vertical_header_paints_week_numbers_and_yields_its_room() {
+        use crate::widget::svg::{render_to_svg, text_subpath_count};
+        let _theme_guard = crate::theme::theme_test_guard();
+
+        let make = |vertical: bool| {
+            let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+            cal.set_grid_visible(true);
+            cal.set_vertical_header_visible(vertical);
+            cal
+        };
+
+        let mut off = make(false);
+        let plain_grid = off.grid_rect();
+        let off_svg = render_to_svg(&mut off);
+
+        let mut on = make(true);
+        let guttered_grid = on.grid_rect();
+        let on_svg = render_to_svg(&mut on);
+
+        assert_ne!(off_svg, on_svg, "the week-number gutter must be painted");
+        assert!(
+            text_subpath_count(&on_svg) > text_subpath_count(&off_svg),
+            "the gutter paints week numbers, so it must add glyph ink"
+        );
+        assert_eq!(
+            guttered_grid.x,
+            plain_grid.x + Calendar::WEEK_GUTTER_W as i32,
+            "the seven day columns must start past the gutter, not underneath it"
+        );
+        assert_eq!(
+            guttered_grid.width,
+            plain_grid.width - Calendar::WEEK_GUTTER_W,
+            "and the grid gives up exactly the gutter's width"
+        );
+    }
+
+    /// ISO week numbers are the Thursday-based ones, including at a year boundary.
+    ///
+    /// The rule is what makes a week's number depend on the Thursday it contains, so a naive
+    /// "day of year / 7" is wrong twice a year. `2026-01-01` is a Thursday, so it starts ISO week 1;
+    /// `2026-12-31` is a Thursday, so it *starts* week 53 of 2026 rather than belonging to 2027.
+    #[test]
+    fn week_numbers_follow_the_iso_thursday_rule() {
+        assert_eq!(Calendar::iso_week_of(NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()), 1);
+        assert_eq!(Calendar::iso_week_of(NaiveDate::from_ymd_opt(2026, 12, 31).unwrap()), 53);
+        assert_eq!(Calendar::iso_week_of(NaiveDate::from_ymd_opt(2026, 6, 8).unwrap()), 24);
+        // The two days either side of a year boundary that a naive rule gets wrong.
+        assert_eq!(Calendar::iso_week_of(NaiveDate::from_ymd_opt(2024, 12, 30).unwrap()), 1);
+        assert_eq!(Calendar::iso_week_of(NaiveDate::from_ymd_opt(2025, 1, 1).unwrap()), 1);
     }
 
     #[test]
@@ -1316,6 +1512,9 @@ mod tests {
     /// statement about the layout and not about the bitmap.
     #[test]
     fn a_weekday_heading_is_centred_in_its_column() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         let rect = Rect::new(0, 0, 240, 120);
         let mut cal = Calendar::new(rect);
         let hdr = cal.day_header_rect();
@@ -1349,5 +1548,39 @@ mod tests {
             );
             assert_eq!(found.1, label_top, "column {i}: the heading starts on its line box top");
         }
+    }
+
+    /// A screen reader is told which day is selected.
+    ///
+    /// # The defect this pins
+    ///
+    /// The trait default looks the value up under `value` / `progress` / `rating` / `level`, and a
+    /// calendar's value is called `selected_date` -- so the one control whose entire state is the
+    /// chosen day announced nothing about it.
+    ///
+    /// The assertion reads the *date the control reports* and requires the announcement to contain
+    /// it, so the two cannot be told two different days.
+    #[test]
+    fn the_selected_day_is_announced() {
+        use crate::widget::capability::WidgetProperties;
+        use crate::widget::Widget;
+
+        let mut calendar = Calendar::new(Rect::new(0, 0, 260, 240));
+        let day = match chrono::NaiveDate::from_ymd_opt(2026, 3, 9) {
+            Some(date) => date,
+            None => panic!("a valid literal date"),
+        };
+        calendar.set_selected_date(day);
+
+        let announced = calendar.accessible_value();
+        let reported = match calendar.get("selected_date") {
+            Ok(value) => value.to_announcement_string(),
+            Err(e) => panic!("the calendar publishes selected_date: {e:?}"),
+        };
+        assert_eq!(announced, reported, "the announcement and the published property must agree");
+        assert!(
+            announced.contains("2026-03-09"),
+            "and it must be the date that was set, got {announced:?}"
+        );
     }
 }

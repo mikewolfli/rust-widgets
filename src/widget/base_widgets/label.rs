@@ -664,6 +664,9 @@ mod tests {
     #[cfg(not(alloc_frugal))]
     #[test]
     fn the_vertical_fix_leaves_the_horizontal_alignment_alone() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         let rect = Rect::new(0, 0, 200, 40);
         let ink_left_of = |alignment: Alignment| -> i32 {
             let mut label = Label::new("Sample".to_string(), rect);

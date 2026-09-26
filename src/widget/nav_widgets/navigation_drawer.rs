@@ -11,6 +11,7 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::{expect_bool, expect_f32};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -43,6 +44,16 @@ pub struct NavigationDrawer {
     selected_index: usize,
     /// Panel width in pixels.
     panel_width: u32,
+    /// How far the panel has slid in, `0.0` fully closed and `1.0` fully open.
+    ///
+    /// # Why this is separate from `open`
+    ///
+    /// `open` is the logical state a caller reads the instant it changes; `slide` is what the draw
+    /// path positions the panel with. Drawing straight from `open` put the panel at its final place
+    /// on the first frame and removed it on the last, so a navigation drawer — which on every
+    /// platform that has one *slides* — appeared and vanished. Same split, same reason, as
+    /// `Switch`'s `checked`/`travel` and `BottomSheet`'s `open`/`rise`.
+    slide: PropertyDriver,
     /// Emitted when the drawer opens.
     pub opened: GenericSignal,
     /// Emitted when the drawer closes.
@@ -63,6 +74,9 @@ impl NavigationDrawer {
             items: Vec::new(),
             selected_index: 0,
             panel_width: 280,
+            // At rest at the closed end: a freshly built drawer is closed, so it must not animate
+            // its panel away on the first frame.
+            slide: PropertyDriver::at(0.0, MotionSlot::Normal),
             opened: GenericSignal::new(),
             closed: GenericSignal::new(),
             item_selected: Signal1::new(),
@@ -73,8 +87,11 @@ impl NavigationDrawer {
     pub fn open(&mut self) {
         if !self.open {
             self.open = true;
+            // Aim the slide; the frames that follow carry the panel in. No redraw is requested,
+            // because a redraw is not what makes the motion visible -- `tick_animations` reports the
+            // movement itself, which is what keeps the loop painting.
+            self.slide.set_target(1.0);
             self.opened.emit();
-            self.base.request_redraw();
         }
     }
 
@@ -82,9 +99,28 @@ impl NavigationDrawer {
     pub fn close(&mut self) {
         if self.open {
             self.open = false;
+            self.slide.set_target(0.0);
             self.closed.emit();
             self.base.request_redraw();
         }
+    }
+
+    /// How far the panel has slid in, `0.0` closed and `1.0` fully open.
+    ///
+    /// This is the *drawn* fraction: the panel's width and offset are both functions of it, so a
+    /// test can assert the drawer slid rather than appeared by sampling it per frame.
+    pub fn slide_progress(&self) -> f32 {
+        self.slide.value()
+    }
+
+    /// Advances the slide by `delta_ms`; `true` while it is still moving.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        self.slide.tick(delta_ms)
+    }
+
+    /// Whether the panel is between two positions -- answers only, never advances.
+    pub fn is_animating(&self) -> bool {
+        self.slide.is_moving()
     }
 
     /// Toggles the open/close state of the drawer.
@@ -151,6 +187,16 @@ impl Widget for NavigationDrawer {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(300, 400)
+    }
+
+    // The slide is the control's own animation; the trait spelling is what the frame bus reaches
+    // through `&mut dyn Widget`, which is the only way the panel actually travels.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        NavigationDrawer::tick(self, delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        NavigationDrawer::is_animating(self)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -246,12 +292,20 @@ impl Draw for NavigationDrawer {
         let highlight_color = panel.blend(&accent, 0.2);
         let divider_color = ink.with_alpha_f32(0.1);
 
-        // Draw the closed-state affordance and stop: a closed drawer has no panel and no
-        // scrim to paint. It used to return before painting anything at all, so a drawer in
-        // its default state was entirely invisible — the host had no way to show that the
-        // control was there or that anything could be opened.
-        if !self.open {
-            let handle_width = self.panel_width.min(rect.width).max(1);
+        // Draw the closed-state affordance and the sliding panel.
+        //
+        // # The two states, and why the closing state needs the panel too
+        //
+        // A fully closed drawer paints only its edge affordance — a drawer in its default state has
+        // to be visible, or the host cannot show that anything can be opened. Once the slide begins
+        // the panel is *partially* in, so the panel is drawn for every non-zero `slide`, at the width
+        // the slide calls for. The old code branched on the boolean, so the panel was either absent
+        // or complete and the closing animation would have had nothing to draw.
+        let slide = self.slide.value();
+        let full_width = self.panel_width.min(rect.width);
+        let panel_width = (full_width as f32 * slide) as u32;
+        if panel_width == 0 {
+            let handle_width = full_width.max(1);
             let handle_rect = Rect::new(rect.x, rect.y, handle_width, rect.height);
             context.fill_rect(handle_rect, panel.blend(&ink, 0.04));
             // Leading edge stripe: the affordance that says "this opens".
@@ -260,13 +314,21 @@ impl Draw for NavigationDrawer {
             return;
         }
 
-        // Draw semi-transparent overlay covering the full geometry. The scrim is the accent
-        // at low alpha rather than a fixed black, so it reads as part of the same palette.
-        let overlay_color = Color::rgba(accent.r, accent.g, accent.b, 100);
-        context.fill_rect(rect, overlay_color);
+        // Draw the modal scrim covering the full geometry, fading in with the panel. Read from the
+        // `Scrim` role rather than built from the accent at a literal alpha: the role is what lets a
+        // theme express the dimming once (and what keeps a dark appearance from being *lit* by a
+        // scrim), which is the same reason every other modal in this crate reads it.
+        //
+        // A partially-open drawer dims partially, so the scrim's alpha scales with the slide — one
+        // form that works whether the theme authored a black veil or a translucent white wash.
+        let scrim = crate::style::layer_color(crate::style::LayerColor::Scrim)
+            .unwrap_or_else(|| ink.with_alpha(82));
+        if slide > 0.0 {
+            let scrim = scrim.with_alpha((scrim.a as f32 * slide) as u8);
+            context.fill_rect(rect, scrim);
+        }
 
-        // Draw side panel on the left
-        let panel_width = self.panel_width.min(rect.width);
+        // Draw side panel on the left, at the width the slide calls for.
         let panel_rect = Rect::new(rect.x, rect.y, panel_width, rect.height);
         context.fill_rect(panel_rect, panel);
 
@@ -666,5 +728,76 @@ mod tests {
         let item = DrawerItem { icon: "📁".to_string(), label: "Documents".to_string() };
         assert_eq!(item.icon, "📁");
         assert_eq!(item.label, "Documents");
+    }
+
+    /// Opening the drawer slides the panel in rather than placing it there.
+    ///
+    /// # The defect this pins
+    ///
+    /// The draw branched on the boolean `open`, so the panel was either absent or complete: a drawer
+    /// — which slides on every platform that has one — appeared and vanished. The assertions are in
+    /// two halves, because a progress nothing reads is not a slide: the model must take an interior
+    /// value, and the *painted* panel must be narrower at that moment than when settled.
+    #[test]
+    fn opening_the_drawer_slides_the_panel_in() {
+        use crate::widget::svg::render_to_svg;
+
+        let mut drawer = NavigationDrawer::new(Rect::new(0, 0, 300, 400));
+        assert_eq!(drawer.slide_progress(), 0.0, "a fresh drawer is closed");
+        assert!(!drawer.is_animating(), "and owes no frames");
+
+        drawer.open();
+        assert!(drawer.is_open(), "the logical state answers at once");
+        assert!(drawer.is_animating(), "while the drawn position owes frames");
+        assert_eq!(drawer.slide_progress(), 0.0, "the slide starts where the panel was");
+
+        assert!(drawer.tick(60), "still moving after one step");
+        let mid = drawer.slide_progress();
+        assert!(
+            mid > 0.0 && mid < 1.0,
+            "the drawer must pass through an interior position (got {mid})"
+        );
+        while drawer.tick(60) {}
+        assert_eq!(drawer.slide_progress(), 1.0, "and settle fully open");
+        assert!(!drawer.is_animating(), "a settled drawer owes no more frames");
+
+        // The painted panel's width, read from the emitted document: the panel and the scrim are both
+        // full height, so the *widest* rectangle narrower than the control is the panel.
+        fn panel_width(svg: &str) -> u32 {
+            svg.split("<rect ")
+                .filter_map(|chunk| {
+                    let w = chunk.split("width=\"").nth(1)?;
+                    w.split('"').next()?.parse::<u32>().ok()
+                })
+                .filter(|w| *w < 300)
+                .max()
+                .unwrap_or(0)
+        }
+
+        let closed = NavigationDrawer::new(Rect::new(0, 0, 300, 400));
+        let closed_width = panel_width(&render_to_svg(&mut { closed }));
+
+        let mut mid_drawer = NavigationDrawer::new(Rect::new(0, 0, 300, 400));
+        mid_drawer.open();
+        assert!(mid_drawer.tick(60));
+        let mid_width = panel_width(&render_to_svg(&mut mid_drawer));
+
+        let mut open_drawer = NavigationDrawer::new(Rect::new(0, 0, 300, 400));
+        open_drawer.open();
+        while open_drawer.tick(60) {}
+        let open_width = panel_width(&render_to_svg(&mut open_drawer));
+
+        assert!(
+            mid_width > 0 && mid_width < open_width,
+            "a mid-slide panel must be narrower than a settled one: closed={closed_width} \
+             mid={mid_width} open={open_width}"
+        );
+
+        // Closing is the same movement in reverse, so the panel does not vanish on the last frame.
+        drawer.close();
+        assert!(!drawer.is_open());
+        assert!(drawer.is_animating(), "closing is also a slide");
+        while drawer.tick(60) {}
+        assert_eq!(drawer.slide_progress(), 0.0, "back to closed");
     }
 }

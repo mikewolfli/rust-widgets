@@ -183,6 +183,44 @@ impl Date {
     pub fn is_valid(&self) -> bool {
         self.month >= 1 && self.month <= 12 && self.day >= 1 && self.day <= self.days_in_month()
     }
+
+    /// The day of the week, `0` = Sunday through `6` = Saturday.
+    ///
+    /// # Why this exists
+    ///
+    /// A month grid cannot be laid out without it: the first week of a month starts at the column
+    /// of its first day, and that column is a weekday. Without it a calendar popup could only print
+    /// the days in a run, which is not a calendar.
+    ///
+    /// # The algorithm
+    ///
+    /// Sakamoto's, which needs no tables and no era arithmetic: it is exact for every Gregorian
+    /// date, including the `1752-09-14` floor this widget accepts and leap years. It is applied to an
+    /// invalid combination (a day of `32`) without checking, the same way every other accessor here
+    /// does — validation is [`Date::is_valid`]'s job.
+    ///
+    /// A month outside `1..=12` (possible after [`Date::new`] or a direct field assignment) yields a
+    /// clamped month rather than indexing out of bounds: this is an accessor on a value that is
+    /// allowed to be invalid, so it must not be the thing that panics.
+    pub fn weekday(&self) -> u8 {
+        // Offsets `t` for each month, in **calendar order** (January first). Sakamoto's form: the
+        // table folds January and February into the previous year's tail, which is why their offsets
+        // are non-monotonic — that is the table, not a mistake.
+        //
+        //     t = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4]
+        //
+        // The year term adds a day for each leap year, so it must be taken on the *shifted* year:
+        // January and February belong to the year before theirs for that purpose, which is the `-1`
+        // below. Using the unshifted year here is the classic way this formula goes wrong once per
+        // leap year.
+        let month = self.month.clamp(1, 12) as usize;
+        const T: [i32; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+        let t = T[month - 1];
+        let year = if self.month < 3 { self.year - 1 } else { self.year };
+        // `rem_euclid` rather than `%`: a pre-epoch year gives a negative sum, and `%` would return a
+        // negative weekday instead of one in `0..=6`.
+        ((year + year / 4 - year / 100 + year / 400 + t + self.day as i32).rem_euclid(7)) as u8
+    }
 }
 /// Formats the date as `YYYY-MM-DD`.
 ///
@@ -194,6 +232,137 @@ impl std::fmt::Display for Date {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:04}-{:02}-{:02}", self.year, self.month, self.day)
     }
+}
+
+/// Substitutes a `display_format` pattern with the given component values.
+///
+/// # Why one formatter and not three
+///
+/// `date_edit`, `date_time_edit` and `time_edit` each hold a pattern that they used to store and
+/// round-trip without ever applying — their own documentation said so. Three implementations of
+/// "replace `yyyy` with the year" would be three chances for the same pattern to render differently
+/// in the three controls, which is how the eight dialogs acquired four title-bar heights (rule #101).
+/// The pattern is the same idea in all three, so the substitution is one function.
+///
+/// # The tokens
+///
+/// Longest-first, because `MM` and `mm` and `M` all start with `M` and a left-to-right scan that
+/// tried `M` first would turn `MM` into two months and `yyyy` into four years. The set is the subset
+/// of the usual pattern letters that these three controls can supply:
+///
+/// | token | meaning |
+/// |---|---|
+/// | `yyyy` | four-digit year (zero-padded, and sign-preserving) |
+/// | `yy` | two-digit year |
+/// | `MM` | two-digit month, `01`–`12` |
+/// | `M` | month without padding |
+/// | `dd` | two-digit day, `01`–`31` |
+/// | `d` | day without padding |
+/// | `HH` | two-digit 24-hour, `00`–`23` |
+/// | `H` | hour without padding |
+/// | `mm` | two-digit minute |
+/// | `ss` | two-digit second |
+/// | `SSS` | milliseconds, three digits |
+///
+/// Longest-first is **not enough on its own**. A single-letter token still matches inside a word, and a
+/// scan with no lookaround turned the literal `"Today: yyyy"` into `"To8ay: 2026"` — the `d` of
+/// `Today` became the day of the month. So a token is only recognised where it can be a **token**:
+/// at the start of the pattern, or after a character that is not a letter. That rule is what the
+/// usual pattern languages mean by a literal, and it is why `"Today: yyyy"` now passes "Today"
+/// through untouched while `"dd/MM/yyyy"` still substitutes every field.
+///
+/// Anything else — a separator, a literal word — is copied through unchanged, so a pattern that is
+/// not understood degrades to more literal text rather than to an empty field.
+///
+/// The unused components are passed as `None` by the caller: a date-only control has no hour, so
+/// `HH` in its pattern expands to nothing rather than to a plausible `00`.
+///
+/// It returns `None` when the pattern contains **no recognised token at all**, which is the signal a
+/// caller uses to fall back to its own fixed spelling: a pattern of `"today"` should not replace the
+/// value's display with the word "today".
+pub(crate) fn format_with_pattern(pattern: &str, components: DateTimeComponents) -> Option<String> {
+    /// One pattern token and the way it renders itself from the components.
+    ///
+    /// Named so the table below is an array of pairs rather than an array of a type whose shape has to
+    /// be read off the literal.
+    type Token = (&'static str, fn(&DateTimeComponents) -> Option<String>);
+    // Longest first, so a two-character token is never eaten by its one-character prefix.
+    const TOKENS: [Token; 11] = [
+        ("yyyy", |c| c.year.map(|y| format!("{y:04}"))),
+        ("SSS", |c| c.millisecond.map(|ms| format!("{ms:03}"))),
+        ("yy", |c| c.year.map(|y| format!("{:02}", y.rem_euclid(100)))),
+        ("MM", |c| c.month.map(|m| format!("{m:02}"))),
+        ("dd", |c| c.day.map(|d| format!("{d:02}"))),
+        ("HH", |c| c.hour.map(|h| format!("{h:02}"))),
+        ("mm", |c| c.minute.map(|m| format!("{m:02}"))),
+        ("ss", |c| c.second.map(|s| format!("{s:02}"))),
+        ("M", |c| c.month.map(|m| m.to_string())),
+        ("d", |c| c.day.map(|d| d.to_string())),
+        ("H", |c| c.hour.map(|h| h.to_string())),
+    ];
+
+    let mut out = crate::compat::String::new();
+    let mut rest = pattern;
+    let mut substituted = false;
+    // Whether a token may start here: only at the beginning or after a non-letter. See the doc
+    // comment above for the `"Today"` case this exists to fix.
+    let mut at_token_start = true;
+    'scan: while !rest.is_empty() {
+        if at_token_start {
+            for (token, render) in TOKENS {
+                if let Some(after) = rest.strip_prefix(token) {
+                    // A token with no value behind it is dropped rather than passed through: the
+                    // caller chose the pattern and knows which components it has, so `HH` in a
+                    // date-only pattern is a mistake to swallow, not a literal to display.
+                    if let Some(text) = render(&components) {
+                        out.push_str(&text);
+                        substituted = true;
+                    }
+                    rest = after;
+                    // A token's own last character is a letter, so the run continues: `yyyyMM` must
+                    // be two tokens, not a year followed by a literal `MM`.
+                    at_token_start = true;
+                    continue 'scan;
+                }
+            }
+        }
+        // No token matched, so this character is literal text (a separator, a word, a stray letter).
+        // Advancing by one **char**, not one byte: a multi-byte character in a label would otherwise
+        // be split and produce invalid text.
+        let ch = rest.chars().next().expect("rest is non-empty, so there is a next char");
+        out.push(ch);
+        rest = &rest[ch.len_utf8()..];
+        at_token_start = !ch.is_alphabetic();
+    }
+
+    if substituted {
+        Some(out)
+    } else {
+        None
+    }
+}
+
+/// The values [`format_with_pattern`] substitutes, each optional.
+///
+/// `None` means "this control has no such component": a date-only pattern sees no hour, a time-only
+/// one sees no day. Stated as a struct rather than eleven arguments because the call sites differ
+/// only in which three or four of them they fill in.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct DateTimeComponents {
+    /// Four-digit year.
+    pub year: Option<i32>,
+    /// Month, `1`–`12`.
+    pub month: Option<u8>,
+    /// Day of month, `1`–`31`.
+    pub day: Option<u8>,
+    /// Hour, `0`–`23`.
+    pub hour: Option<u8>,
+    /// Minute, `0`–`59`.
+    pub minute: Option<u8>,
+    /// Second, `0`–`59`.
+    pub second: Option<u8>,
+    /// Millisecond, `0`–`999`.
+    pub millisecond: Option<u16>,
 }
 /// Date editor widget.
 ///
@@ -218,6 +387,11 @@ pub struct DateEdit {
     minimum: Date,
     maximum: Date,
     display_format: String,
+    /// Whether the field draws its month grid under itself.
+    ///
+    /// A date field with a calendar affordance and no calendar is a field that lies about what it
+    /// offers. The flag was stored, published and round-tripped from the day it was added, and the
+    /// draw never read it -- so `calendar_popup: true` changed nothing on screen.
     calendar_popup: bool,
     /// Emitted with the new date after every accepted change, including changes
     /// produced by [`DateEdit::undo`] and [`DateEdit::redo`]. Not emitted when a
@@ -273,8 +447,8 @@ impl DateEdit {
     }
     /// Returns whether the calendar popup is enabled.
     ///
-    /// Defaults to `false`. This is a stored flag; the widget's own `draw` does
-    /// not yet render a popup.
+    /// Defaults to `false`. With it set, the draw paints the month grid for the current date's
+    /// month below the field; see [`DateEdit::set_calendar_popup`].
     pub fn calendar_popup(&self) -> bool {
         self.calendar_popup
     }
@@ -357,9 +531,17 @@ impl DateEdit {
         self.display_format = fmt;
         self.base.request_redraw();
     }
-    /// Enables or disables the calendar popup flag.
+    /// Enables or disables the calendar popup.
     ///
-    /// Purely stored state; changing it only triggers a redraw.
+    /// # What it actually does
+    ///
+    /// With the flag set, [`Draw`] paints the **month grid for the current date's month** directly
+    /// below the field: a row of day-of-week initials and six weeks of day cells, with the selected
+    /// day marked. Cells outside the accepted range are drawn muted rather than hidden, so the
+    /// reader can see *why* a day is not selectable.
+    ///
+    /// This used to be "purely stored state; changing it only triggers a redraw", which is exactly
+    /// what it did -- a redraw of the same field.
     pub fn set_calendar_popup(&mut self, popup: bool) {
         self.calendar_popup = popup;
         self.base.request_redraw();
@@ -593,7 +775,19 @@ impl Draw for DateEdit {
 
         context.fill_rect(rect, surface);
         context.draw_rect(rect, border);
-        let text = self.date.to_string();
+        // The value is spelled by the caller's `display_format` when that pattern is one this control
+        // can render, and by `Date`'s own `YYYY-MM-DD` otherwise. The fallback is what keeps an
+        // unrecognised pattern showing the value rather than the pattern's literal words.
+        let text = super::date_edit::format_with_pattern(
+            &self.display_format,
+            super::date_edit::DateTimeComponents {
+                year: Some(self.date.year()),
+                month: Some(self.date.month()),
+                day: Some(self.date.day()),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|| self.date.to_string());
         // Vertically centred through the shared primitive: `rect.y + height / 2` puts the
         // glyph box's top edge on the field's middle line, so the value sat half a line low.
         // The line box is also what a caller reading this field's text position would need,
@@ -612,6 +806,121 @@ impl Draw for DateEdit {
             ink,
             HorizontalAlignment::Left,
         );
+
+        if self.calendar_popup {
+            self.draw_calendar_popup(context, rect, surface, border, ink);
+        }
+    }
+}
+
+/// How wide one cell of the calendar popup's grid is, in pixels.
+const POPUP_CELL_W: u32 = 20;
+/// How tall one cell of the calendar popup's grid is, in pixels.
+const POPUP_CELL_H: u32 = 16;
+/// The space between the field and the popup it opens.
+const POPUP_GAP: i32 = 4;
+/// The initials of the days of the week, Sunday first, matching [`Date::weekday`].
+const WEEKDAY_INITIALS: [&str; 7] = ["S", "M", "T", "W", "T", "F", "S"];
+
+impl DateEdit {
+    /// Paints the month grid for the current date's month, below the field.
+    ///
+    /// # Why it is drawn rather than held as a child widget
+    //n
+    /// It is a **function of the field's own state**: the month comes from `self.date`, the muted
+    /// cells from `self.minimum`/`self.maximum`, and the marked cell from `self.date.day`. A child
+    /// widget would have to be kept in step with all three on every mutation, which is three places
+    /// to forget -- and the flag is published as a boolean, so there is nothing for a caller to hold
+    /// anyway.
+    ///
+    /// Six weeks are always laid out, so the popup's height does not change as months come and go:
+    /// a popup that grew and shrank by a row as the user stepped through the calendar would make
+    /// every row below it jump.
+    fn draw_calendar_popup(
+        &self,
+        context: &mut RenderContext,
+        field: Rect,
+        surface: Color,
+        border: Color,
+        ink: Color,
+    ) {
+        let grid_w = POPUP_CELL_W * 7;
+        let grid_h = POPUP_CELL_H * 7;
+        let popup = Rect::new(
+            field.x,
+            field.y + field.height as i32 + POPUP_GAP,
+            grid_w.max(field.width),
+            grid_h,
+        );
+        // The popup gets its own plate and edge, because at this size a bare grid over the page is
+        // indistinguishable from a table that happens to be there. It is the *field's* surface one
+        // step further from the field, so the two read as one control opening rather than two.
+        let plate = surface.blend(&ink, 0.10);
+        context.fill_rect(popup, plate);
+        context.draw_rect(popup, border);
+
+        let font = Font::default();
+        let muted = plate.blend(&ink, 0.45);
+        // The day-of-week row, so the grid's columns mean something. Drawn from the same table
+        // `weekday()` indexes, so the column that a date lands in is the initial above it.
+        for (col, initial) in WEEKDAY_INITIALS.iter().enumerate() {
+            let cell = Rect::new(
+                popup.x + (col as u32 * POPUP_CELL_W) as i32,
+                popup.y,
+                POPUP_CELL_W,
+                POPUP_CELL_H,
+            );
+            context.draw_text_line(cell, initial, &font, muted, HorizontalAlignment::Center);
+        }
+
+        let first = Date::new(self.date.year(), self.date.month(), 1);
+        let leading = first.weekday() as u32;
+        let days = first.days_in_month() as u32;
+        for day in 1..=days {
+            let slot = leading + day - 1;
+            let col = slot % 7;
+            let row = slot / 7;
+            // Six weeks is the most a month can need (a 31-day month starting on Saturday ends in
+            // row 5), so anything past that cannot be produced and is skipped rather than clamped
+            // onto a cell that belongs to another day.
+            if row > 5 {
+                break;
+            }
+            let cell = Rect::new(
+                popup.x + (col * POPUP_CELL_W) as i32,
+                popup.y + POPUP_CELL_H as i32 + (row * POPUP_CELL_H) as i32,
+                POPUP_CELL_W,
+                POPUP_CELL_H,
+            );
+            let date = Date::new(self.date.year(), self.date.month(), day as u8);
+            let in_range = date >= self.minimum && date <= self.maximum;
+            if day == self.date.day() as u32 {
+                // The selected day is the accent plate the rest of the crate marks a selection
+                // with, so "this is the value" reads the same here as everywhere else.
+                let accent = crate::style::resolved_theme_style("slider")
+                    .and_then(|style| style.background_color)
+                    .unwrap_or_else(|| plate.blend(&ink, 0.55));
+                context.fill_rect(cell, accent);
+                context.draw_text_line(
+                    cell,
+                    &day.to_string(),
+                    &font,
+                    accent.contrast_color(),
+                    HorizontalAlignment::Center,
+                );
+            } else {
+                // Out-of-range days stay visible but muted: hiding them would leave the reader
+                // unable to see *why* a day cannot be picked.
+                let day_ink = if in_range { ink } else { muted };
+                context.draw_text_line(
+                    cell,
+                    &day.to_string(),
+                    &font,
+                    day_ink,
+                    HorizontalAlignment::Center,
+                );
+            }
+        }
     }
 }
 
@@ -781,12 +1090,203 @@ mod tests {
         assert_eq!(editor.display_format(), "dd/MM/yyyy");
     }
 
+    /// The `display_format` pattern is **applied**, not merely stored.
+    ///
+    /// # The defect this pins
+    ///
+    /// `display_format` was stored, round-tripped through the property contract and documented as
+    /// "stored and round-tripped, not yet applied when painting" -- which was honest, and was still a
+    /// gap: a host that set `dd/MM/yyyy` got `2026-06-08`. The assertion reads the **document**, since
+    /// a model-only check (set then get) passes on the old code.
+    ///
+    /// Two halves: the requested pattern must lay its own ink, and the default must be unchanged.
+    /// The second is what makes this "the pattern works" rather than "the field got longer".
+    #[test]
+    fn the_display_format_pattern_is_applied_to_the_painted_value() {
+        use crate::widget::svg::{render_to_svg, text_subpath_count};
+        let _theme_guard = crate::theme::theme_test_guard();
+
+        let make = |format: &str| {
+            let mut editor = DateEdit::new(Rect::new(0, 0, 200, 30));
+            editor.set_date(Date::new(2026, 6, 8));
+            editor.set_display_format(format.to_string());
+            editor
+        };
+
+        // The default pattern spells the same seventeen characters as `Date`'s own Display, so it must
+        // produce exactly the ink it always did -- which is why the snapshots are unchanged.
+        let mut plain = make("yyyy-MM-dd");
+        let plain_svg = render_to_svg(&mut plain);
+        let mut explicit = make("yyyy-MM-dd");
+        assert_eq!(
+            render_to_svg(&mut explicit),
+            plain_svg,
+            "the default pattern must reproduce the pre-pattern spelling"
+        );
+
+        // A reordered pattern must **move** the ink: a pattern that did nothing would produce a
+        // byte-identical file. And the only difference between the two spellings is the order, so the
+        // *number of glyph runs* (one per set bitmap bit) is close but not equal -- `08-06-2026` and
+        // `2026-06-08` contain the same characters in a different order, and `font8x8`'s glyphs have
+        // different bit counts. An earlier version of this test compared the counts for equality and
+        // failed by 14 pixels, which measurement says is the glyph-set difference and not a lost field.
+        // The field-preservation claim is therefore made where it can be made exactly: on the
+        // substituter's own output, one test above.
+        let mut reordered = make("dd/MM/yyyy");
+        let reordered_svg = render_to_svg(&mut reordered);
+        assert_ne!(
+            reordered_svg, plain_svg,
+            "a reordered pattern must move the ink, or the pattern was ignored"
+        );
+        // Same magnitude, so no field was duplicated or dropped. The band is a fifth of the total,
+        // which is far tighter than a wrong pattern could pass and far looser than the glyph-set
+        // difference measured here (14 of 246).
+        let (a, b) = (text_subpath_count(&reordered_svg), text_subpath_count(&plain_svg));
+        assert!(
+            a.abs_diff(b) < b / 5,
+            "both spell the same date, so neither may gain or lose a field: reordered={a} plain={b}"
+        );
+
+        // A pattern with no usable token falls back to the fixed spelling rather than printing its
+        // own literal words -- a field reading \"today\" would be worse than one ignoring the pattern.
+        let mut nonsense = make("today");
+        assert_eq!(
+            render_to_svg(&mut nonsense),
+            plain_svg,
+            "an unrecognised pattern must fall back to the value, not print the pattern"
+        );
+    }
+
+    /// The substituter's token table, longest-first, and its literal pass-through.
+    ///
+    /// The ordering is the whole of the correctness here: a scan that tried `M` before `MM` would turn
+    /// `MM` into two months and `yyyy` into four years, and both would still look like a date.
+    #[test]
+    fn the_pattern_substituter_prefers_the_longest_token() {
+        let c = DateTimeComponents {
+            year: Some(2026),
+            month: Some(6),
+            day: Some(8),
+            hour: Some(9),
+            minute: Some(5),
+            second: Some(7),
+            millisecond: Some(42),
+        };
+        let render = |pattern: &str| format_with_pattern(pattern, c);
+
+        assert_eq!(render("yyyy-MM-dd"), Some("2026-06-08".to_string()));
+        assert_eq!(render("dd/MM/yyyy"), Some("08/06/2026".to_string()));
+        // A single letter is unpadded, which is what makes `M` different from `MM`.
+        assert_eq!(render("d/M/yyyy"), Some("8/6/2026".to_string()));
+        assert_eq!(render("HH:mm:ss"), Some("09:05:07".to_string()));
+        assert_eq!(render("H:mm"), Some("9:05".to_string()));
+        assert_eq!(render("SSS"), Some("042".to_string()));
+        assert_eq!(render("yy"), Some("26".to_string()));
+        // Literal text survives around the tokens.
+        assert_eq!(render("Today: yyyy"), Some("Today: 2026".to_string()));
+        // A component the caller did not supply is dropped, not invented.
+        let date_only = DateTimeComponents { year: Some(2026), ..Default::default() };
+        assert_eq!(format_with_pattern("yyyy HH", date_only), Some("2026 ".to_string()));
+        // And a pattern with nothing usable reports that, so the caller can fall back.
+        assert_eq!(render("nope"), None);
+        assert_eq!(render(""), None);
+    }
+
     #[test]
     fn date_edit_set_calendar_popup() {
         let mut editor = DateEdit::new(Rect::new(0, 0, 200, 30));
         assert!(!editor.calendar_popup());
         editor.set_calendar_popup(true);
         assert!(editor.calendar_popup());
+    }
+
+    /// `weekday()` agrees with known dates and is always in `0..=6`.
+    ///
+    /// # The defect this pins
+    ///
+    /// `Date` had no weekday at all, so a month grid could not be laid out: the first week of a
+    /// month starts at the column of its first day, and that column *is* a weekday. The anchors are
+    /// real calendar dates with externally-known weekdays, and the leap/century cases are included
+    /// because a formula that drops either returns a plausible wrong answer rather than failing.
+    #[test]
+    fn weekday_agrees_with_known_dates() {
+        // 0 = Sunday.
+        assert_eq!(Date::new(2026, 6, 8).weekday(), 1, "2026-06-08 is a Monday");
+        assert_eq!(Date::new(2000, 1, 1).weekday(), 6, "2000-01-01 is a Saturday");
+        assert_eq!(Date::new(2024, 2, 29).weekday(), 4, "2024-02-29 is a Thursday");
+        assert_eq!(Date::new(1900, 1, 1).weekday(), 1, "1900-01-01 is a Monday");
+        assert_eq!(Date::new(2024, 3, 1).weekday(), 5, "2024-03-01 is a Friday");
+        assert_eq!(Date::new(1752, 9, 14).weekday(), 4, "the accepted floor is a Thursday");
+        // Every date in a run of consecutive days lands in `0..=6`, and consecutive days advance by
+        // exactly one -- which a formula with a wrong constant would break without failing the
+        // anchors above. The run crosses a month end and a leap day on purpose.
+        let mut date = Date::new(2024, 2, 26);
+        let mut expected = 1; // 2024-02-26 is a Monday
+        for _ in 0..8 {
+            assert_eq!(date.weekday(), expected, "{date}");
+            expected = (expected + 1) % 7;
+            date = next_day(date);
+        }
+    }
+
+    /// The next calendar day, by the real month lengths rather than by arithmetic on the day field.
+    fn next_day(mut date: Date) -> Date {
+        if date.day < date.days_in_month() {
+            date.day += 1;
+            return date;
+        }
+        date.day = 1;
+        if date.month < 12 {
+            date.month += 1;
+        } else {
+            date.month = 1;
+            date.year += 1;
+        }
+        date
+    }
+
+    /// The calendar popup is **painted**, not merely stored.
+    ///
+    /// # The defect this pins
+    ///
+    /// `calendar_popup` was a stored boolean that `draw` never read: the getter, the setter, the
+    /// schema row and the round-trip test all existed, and setting it changed nothing on screen. A
+    /// model-only assertion (`assert!(editor.calendar_popup())`) passes on that code, which is why
+    /// this one reads the **document**: the popup must add ink, and it must add the *days of the
+    /// month* -- not just any ink, which is what "the documents differ" alone would accept.
+    #[test]
+    fn the_calendar_popup_is_actually_painted() {
+        use crate::widget::svg::{render_to_svg, text_subpath_count};
+        let _theme_guard = crate::theme::theme_test_guard();
+
+        let make = |popup: bool| {
+            let mut editor = DateEdit::new(Rect::new(0, 0, 200, 30));
+            editor.set_date(Date::new(2026, 6, 8));
+            editor.set_calendar_popup(popup);
+            editor
+        };
+
+        let mut closed = make(false);
+        let closed_svg = render_to_svg(&mut closed);
+        let mut open = make(true);
+        let open_svg = render_to_svg(&mut open);
+
+        assert_ne!(closed_svg, open_svg, "opening the popup must change the picture");
+        // The grid is seven weekday initials plus the days of the month. Six weeks of 31-day
+        // coverage needs at least the 31 day numbers, so the ink goes up by far more than one glyph
+        // run -- and the date field alone contributes exactly one run (`2026-06-08`).
+        let closed_ink = text_subpath_count(&closed_svg);
+        let open_ink = text_subpath_count(&open_svg);
+        assert!(
+            open_ink > closed_ink * 4,
+            "the popup must paint the grid and the month's days: closed={closed_ink} open={open_ink}"
+        );
+        // And the popup's plate is a rectangle below the field, which is what makes it a popup
+        // rather than extra glyphs floating on the page.
+        assert!(
+            open_svg.matches("<rect").count() > closed_svg.matches("<rect").count(),
+            "the popup paints its own plate: {open_svg}"
+        );
     }
 
     #[test]

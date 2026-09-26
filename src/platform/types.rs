@@ -1140,6 +1140,15 @@ pub trait Platform: Send + Sync {
     fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
         None
     }
+    /// Removes the oldest queued activation belonging to `widget_id`, leaving other widgets' queued.
+    ///
+    /// Default: none, which is truthful for a platform that keeps no addressable queue -- the same
+    /// reason [`Self::poll_widget_trigger_event`] defaults to none. See
+    /// [`crate::drain_widget_triggers_for`] for why the targeted pop exists beside the FIFO one.
+    fn pop_widget_trigger_event_for(&self, widget_id: ObjectId) -> Option<WidgetTriggerEvent> {
+        let _ = widget_id;
+        None
+    }
     /// Queues a typed widget activation. Default: no queue.
     fn inject_widget_trigger_event(&self, widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
         let _ = (widget_id, kind);

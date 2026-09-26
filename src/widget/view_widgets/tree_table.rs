@@ -49,6 +49,11 @@ pub struct TreeTable {
     row_height: u32,
     column_width: u32,
     selected_row: Option<usize>,
+    /// The row the pointer is currently over, or `None` when it is between/outside the rows.
+    ///
+    /// Filled by `MouseMove` through the same [`Self::row_at`] the clicks use, so the highlighted
+    /// row is the row a click would affect.
+    hovered_row: Option<usize>,
     /// Emits visible row count changes.
     pub projection_changed: Signal1<usize>,
     /// Emits selected visible row index changes.
@@ -67,6 +72,7 @@ impl TreeTable {
             row_height: 20,
             column_width: 140,
             selected_row: None,
+            hovered_row: None,
             projection_changed: Signal1::new(),
             selection_changed: Signal1::new(),
         }
@@ -477,6 +483,13 @@ impl Draw for TreeTable {
 
             if self.selected_row == Some(row) {
                 context.fill_rect(Rect::new(rect.x, y, rect.width, self.row_height), selected_bg);
+            } else if self.hovered_row == Some(row) {
+                // A weaker wash than the selection, from the same accent: a row the pointer is over
+                // is a *preview* of the row a click would select.
+                context.fill_rect(
+                    Rect::new(rect.x, y, rect.width, self.row_height),
+                    surface.blend(&accent, 0.12),
+                );
             }
 
             for col in 0..columns {
@@ -513,6 +526,11 @@ impl Draw for TreeTable {
 
 impl crate::event::EventHandler for TreeTable {
     fn handle_event(&mut self, event: &Event) {
+        // The base keeps the control-level facts (`hovered`, `pressed`, `focus_reason`) and its
+        // `MouseEnter`/`MouseLeave` arms are what make `widget_state()` answer `Hover` here. This
+        // handler did not forward to it at all, so the theme's `"tree_table:hover"` override could
+        // never fire — the same defect `list_view` records, in the sibling that never inherited it.
+        self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }
@@ -528,6 +546,23 @@ impl crate::event::EventHandler for TreeTable {
                     let _ = self.toggle_row_expanded(row);
                 }
             }
+            // Row hover, derived from the same `row_at` the clicks use, so the row that is
+            // highlighted is the row a click would affect.
+            Event::MouseMove { pos } => {
+                let hovered = self.row_at(pos.y);
+                if hovered != self.hovered_row {
+                    self.hovered_row = hovered;
+                    self.base.request_redraw();
+                }
+            }
+            // The leave is tested in the arm's **pattern**: `take()` both clears the row and tells
+            // whether there was one to clear, so "leaving a highlighted row" is one condition.
+            Event::MouseLeave { .. } if self.hovered_row.take().is_some() => {
+                self.base.request_redraw();
+            }
+            // A leave with nothing highlighted still runs `take()`, which is what the bare arm is
+            // for: it must not fall through to the catch-all and leave a stale row set.
+            Event::MouseLeave { .. } => {}
             _ => { /* Other events are not relevant */ }
         }
     }
@@ -832,5 +867,41 @@ mod tests {
         assert_eq!(tree.row_count(), 2);
         assert_eq!(tree.row_path(0), Some([0].as_slice()));
         assert_eq!(tree.row_path(1), Some([1].as_slice()));
+    }
+
+    /// The row under the pointer is highlighted, and its hover reaches the base.
+    ///
+    /// This handler never forwarded to the base, so `widget_state()` answered `Normal` throughout
+    /// and the theme's `"tree_table:hover"` override could never fire — the same defect
+    /// `list_view` records, in a sibling control that never inherited its fix. It also kept no row
+    /// hover, so a hierarchical table gave no feedback about which row a click would act on.
+    #[test]
+    fn the_row_under_the_pointer_is_highlighted_and_reaches_the_base() {
+        use crate::core::Point;
+        use crate::event::{Event, EventHandler};
+        use crate::style::WidgetState;
+
+        let mut tree = TreeTable::new(Rect::new(0, 0, 320, 120));
+        tree.set_model(Arc::new(SampleTreeTableModel));
+
+        // The fixture's rows are 20 px tall, so y = 22 is inside the second row.
+        let probe = Point::new(8, 22);
+        let row = tree.row_at(probe.y).expect("the second row is under this point");
+        assert_eq!(row, 1);
+
+        tree.handle_event(&Event::MouseEnter { pos: probe });
+        tree.handle_event(&Event::MouseMove { pos: probe });
+        assert_eq!(tree.hovered_row, Some(row), "the row under the pointer is the one lit");
+        assert_eq!(
+            tree.widget_state(),
+            WidgetState::Hover,
+            "the base must have been told the pointer arrived"
+        );
+
+        let below = Point::new(8, 1000);
+        assert_eq!(tree.row_at(below.y), None);
+        tree.handle_event(&Event::MouseLeave { pos: below });
+        assert_eq!(tree.hovered_row, None, "leaving clears the row rather than latching it");
+        assert_eq!(tree.widget_state(), WidgetState::Normal);
     }
 }

@@ -568,6 +568,9 @@ mod tests {
     /// The emitted fills are the row band and its buttons, not a full-canvas slab.
     #[test]
     fn the_stepper_paints_a_row_rather_than_a_panel() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         let mut s = Stepper::new(crate::widget::census::CENSUS_RECT);
         let svg = crate::widget::svg::render_to_svg(&mut s);
         let band = s.row_band();

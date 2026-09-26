@@ -348,6 +348,9 @@ mod tests {
     /// future refactor of the chrome.
     #[test]
     fn popup_with_a_title_paints_chrome_the_titleless_one_does_not() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         let mut titleless = PopupWindow::new(Rect::new(0, 0, 160, 100));
         let mut titled = PopupWindow::with_title("Details".to_string(), Rect::new(0, 0, 160, 100));
 
@@ -387,6 +390,9 @@ mod tests {
     /// A popup shorter than its own title bar must still render inside itself.
     #[test]
     fn popup_title_bar_clamps_to_a_short_popup() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         let mut tiny = PopupWindow::with_title("T".to_string(), Rect::new(0, 0, 60, 8));
         // The assertion is that drawing does not panic and does not escape the rect;
         // the clamp is what makes the second half true.

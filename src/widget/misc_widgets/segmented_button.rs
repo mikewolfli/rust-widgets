@@ -437,35 +437,45 @@ impl Draw for SegmentedButton {
 
 impl EventHandler for SegmentedButton {
     fn handle_event(&mut self, event: &Event) {
+        // The base keeps the control-level facts (`hovered`, `pressed`, `focus_reason`) and its
+        // `MouseEnter`/`MouseLeave` arms are what make `widget_state()` answer `Hover` here. This
+        // handler forwarded only in its catch-all arm, so every event it consumed left the base
+        // untold — the theme's `"segmented_button:hover"` entry could never fire. Same shape as
+        // `bezier_curve_editor` / `refresh_control` / the three view controls.
+        self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }
         match event {
-            Event::MousePress { pos, button } => {
-                if *button == 1 {
-                    if let Some(index) = self.hit_segment(*pos) {
-                        if index < self.segments.len() && self.segments[index].enabled {
-                            if self.allows_multiple {
-                                // In multi-select, toggle the selection
-                                if self.selected_index == Some(index) {
-                                    self.selected_index = None;
-                                } else {
-                                    self.selected_index = Some(index);
-                                }
-                                self.selected_changed.emit(index);
-                            } else {
-                                // Single-select: always set to clicked segment
-                                self.selected_index = Some(index);
-                                self.selected_changed.emit(index);
-                            }
-                            self.base.request_redraw();
+            // The button and the segment are tested in the arm's **pattern**, not as nested `if`s,
+            // so "a left press on an enabled segment" reads as one condition and clippy's
+            // collapsible-match lint has nothing left to collapse.
+            Event::MousePress { pos, button: 1 }
+                if self.hit_segment(*pos).is_some_and(|index| {
+                    self.segments.get(index).is_some_and(|segment| segment.enabled)
+                }) =>
+            {
+                // The guard above proved the hit is a live segment, so the unwrap is total; it is
+                // written as a `let Some` rather than `expect` so a future change to the guard
+                // cannot turn into a panic in an event handler.
+                if let Some(index) = self.hit_segment(*pos) {
+                    if self.allows_multiple {
+                        // In multi-select, toggle the selection
+                        if self.selected_index == Some(index) {
+                            self.selected_index = None;
+                        } else {
+                            self.selected_index = Some(index);
                         }
+                        self.selected_changed.emit(index);
+                    } else {
+                        // Single-select: always set to clicked segment
+                        self.selected_index = Some(index);
+                        self.selected_changed.emit(index);
                     }
+                    self.base.request_redraw();
                 }
             }
-            _ => {
-                self.base.handle_event(event);
-            }
+            _ => { /* Other events need no control-specific handling */ }
         }
     }
 }
@@ -590,5 +600,26 @@ mod tests {
                 "at control height {height}"
             );
         }
+    }
+
+    /// The pointer reaching the control has to reach the *base* too.
+    ///
+    /// Regression: this handler forwarded only in its catch-all arm, so the events it consumed
+    /// never recorded the pointer fact and `widget_state()` answered `Normal` for the whole
+    /// interaction — the theme's `"segmented_button:hover"` entry was a key nothing could spell.
+    #[test]
+    fn pointer_state_reaches_the_base() {
+        use crate::style::WidgetState;
+
+        let mut btn = SegmentedButton::new(Rect::new(0, 0, 300, 36));
+        assert_eq!(btn.widget_state(), WidgetState::Normal);
+        btn.handle_event(&Event::MouseEnter { pos: Point::new(10, 10) });
+        assert_eq!(
+            btn.widget_state(),
+            WidgetState::Hover,
+            "the base must have been told the pointer arrived"
+        );
+        btn.handle_event(&Event::MouseLeave { pos: Point::new(500, 500) });
+        assert_eq!(btn.widget_state(), WidgetState::Normal, "and that it left");
     }
 }

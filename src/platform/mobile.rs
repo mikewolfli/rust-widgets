@@ -300,6 +300,10 @@ impl Platform for AndroidMobilePlatform {
     fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
         self.state.pop_widget_event()
     }
+    /// See [`crate::drain_widget_triggers_for`] for why the targeted pop exists.
+    fn pop_widget_trigger_event_for(&self, widget_id: ObjectId) -> Option<WidgetTriggerEvent> {
+        self.state.pop_widget_event_for(widget_id)
+    }
     fn inject_widget_trigger_event(&self, widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
         if !self.state.contains_widget(widget_id) {
             return false;

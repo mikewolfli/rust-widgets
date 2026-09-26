@@ -364,6 +364,9 @@ mod tests {
     /// the same object in a form row and in a full-screen cell.
     #[test]
     fn the_well_is_a_fixed_square_in_any_rectangle() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         for rect in [Rect::new(0, 0, 240, 120), Rect::new(0, 0, 300, 300)] {
             let mut cw = ColorWell::new(Color::RED, rect);
             let svg = crate::widget::svg::render_to_svg(&mut cw);

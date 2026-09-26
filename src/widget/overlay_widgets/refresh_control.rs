@@ -8,10 +8,11 @@
 //! distance exceeds the configured threshold. Supports embedding child content
 //! below the indicator area.
 
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -43,10 +44,34 @@ pub struct RefreshControl {
     pull_distance: f32,
     threshold: f32,
     state: RefreshState,
-    content: Option<Box<dyn Widget>>,
+    /// The child widget this control wraps, by id.
+    ///
+    /// # Why an `ObjectId` rather than a stored `Box<dyn Widget>`
+    ///
+    /// This was a `Box<dyn Widget>` that the draw **never composited**: the child was allocated,
+    /// stored, reachable through `content()`, and never painted, because the only way a child reaches
+    /// the screen in this crate is by being registered with [`BaseWidget::add_child`] — the compositor
+    /// walks the tree, and a box nobody registered is a box nobody draws. The module doc claimed
+    /// "Supports embedding child content", so a host that embedded a list got a blank panel.
+    ///
+    /// `PopupWindow` and `Dialog` hold their content the same way for the same reason, and this is
+    /// that pattern rather than a second one.
+    content: Option<ObjectId>,
     /// Screen position where the in-progress pull gesture started. `None` when
     /// no pull is being tracked.
     drag_origin_y: Option<f32>,
+    /// The pull distance the control is *drawing*, which is `pull_distance` while the gesture is
+    /// in flight and then animates back to zero once it ends.
+    ///
+    /// # Why the drawn distance is not `pull_distance`
+    ///
+    /// `pull_distance` is the gesture's own measurement: a caller reads it, `update_pull` writes
+    /// it, and it must reach `0.0` the instant the finger lifts because the gesture is over. The
+    /// *drawn* distance is what the reader sees, and it must not do that — releasing a pull below
+    /// the threshold used to zero it on the same statement, so the band snapped shut rather than
+    /// springing back. This is the same split as `Switch`'s `checked` versus `travel`, and the same
+    /// defect `swipe_to_dismiss` records: a gesture that ends with a jump instead of a settle.
+    settle: PropertyDriver,
     /// Emitted when the pull distance exceeds the threshold and the user releases.
     pub refresh_triggered: GenericSignal,
 }
@@ -64,24 +89,76 @@ impl RefreshControl {
             state: RefreshState::Idle,
             content: None,
             drag_origin_y: None,
+            // At the resting end: a freshly built control shows no reveal band, and must not
+            // animate one *away* on its first frame.
+            settle: PropertyDriver::at(0.0, MotionSlot::Normal),
             refresh_triggered: GenericSignal::new(),
         }
     }
 
-    /// Sets the child content widget.
-    pub fn set_content(&mut self, widget: Box<dyn Widget>) {
+    /// The height of the pull indicator band, zero when nothing is showing.
+    ///
+    /// # Why this is a method and not a local in `draw`
+    ///
+    /// The content area starts below this band, and two callers need to agree on where that is: the
+    /// draw (which fills the region) and a host (which lays its child out inside it). It was a local
+    /// in `draw` with the content rectangle recomputed from it inline, which is how the child would
+    /// have been positioned against a second derivation of the same number.
+    fn indicator_height(&self) -> u32 {
+        if self.is_refreshing || self.settle_distance() > 5.0 {
+            dimensions::REFRESH_INDICATOR_HEIGHT
+        } else {
+            0
+        }
+    }
+
+    /// Sets the child content widget, taking ownership into the widget tree.
+    ///
+    /// # Why this *registers* the child instead of storing it
+    ///
+    /// Storing a `Box<dyn Widget>` is not enough for it to be drawn: the compositor paints what the
+    /// tree owns, so a child that is not registered is invisible no matter how many accessors point at
+    /// it. Registering it here is what makes [`Self::content_rect`] the region it actually paints into.
+    ///
+    /// An object id that this control does not own (a stale one, or another widget's) is refused by
+    /// `add_child` and left unset, rather than stored and silently never painted -- which is the
+    /// defect this method used to have in a different form.
+    pub fn set_content(&mut self, widget: ObjectId) {
+        if let Some(old) = self.content {
+            self.base.remove_child(old);
+        }
         self.content = Some(widget);
+        self.base.add_child(widget);
         self.base.request_redraw();
     }
 
-    /// Returns a reference to the child content, if any.
-    pub fn content(&self) -> Option<&dyn Widget> {
-        self.content.as_deref()
+    /// Clears the child, detaching it from the tree.
+    pub fn clear_content(&mut self) {
+        if let Some(old) = self.content.take() {
+            self.base.remove_child(old);
+            self.base.request_redraw();
+        }
     }
 
-    /// Returns a mutable reference to the child content, if any.
-    pub fn content_mut(&mut self) -> Option<&mut dyn Widget> {
-        self.content.as_deref_mut()
+    /// Returns the id of the child content widget, if any.
+    pub fn content(&self) -> Option<ObjectId> {
+        self.content
+    }
+
+    /// The rectangle the child content paints into: the whole control below the pull indicator.
+    ///
+    /// Derived here rather than re-derived at each call site, so a host positioning the child and the
+    /// draw filling the region cannot disagree about where the content area is. Public because the
+    /// host is the one who lays the child out.
+    pub fn content_rect(&self) -> Rect {
+        let rect = self.geometry();
+        let indicator = self.indicator_height();
+        Rect::new(
+            rect.x,
+            rect.y + indicator as i32,
+            rect.width,
+            rect.height.saturating_sub(indicator),
+        )
     }
 
     /// Sets the refreshing state.
@@ -91,6 +168,8 @@ impl RefreshControl {
             if !refreshing {
                 self.pull_distance = 0.0;
                 self.state = RefreshState::Idle;
+                // The refresh finished, so the reveal band closes — over frames, not instantly.
+                self.settle.set_target(0.0);
             }
             self.base.request_redraw();
         }
@@ -105,6 +184,8 @@ impl RefreshControl {
     pub fn set_pull_distance(&mut self, distance: f32) {
         let clamped = distance.max(0.0);
         self.pull_distance = clamped;
+        // A programmatic set is a gesture substitute, so the drawn distance follows it at once.
+        self.settle.jump_to(self.pull_distance);
         if clamped > 0.0 && self.state == RefreshState::Idle {
             self.state = RefreshState::Dragging;
         } else if clamped == 0.0 && self.state == RefreshState::Dragging {
@@ -145,11 +226,19 @@ impl RefreshControl {
             self.state = RefreshState::Dragging;
         }
         self.pull_distance = (self.pull_distance + delta).max(0.0).min(self.threshold * 2.0);
+        // The gesture is live, so the drawn distance follows it exactly and any leftover settle
+        // from the previous pull is adopted rather than replayed.
+        self.settle.jump_to(self.pull_distance);
         self.base.request_redraw();
     }
 
     /// Called when the user releases the pull.
     /// Triggers refresh if above threshold.
+    ///
+    /// The measured distance returns to zero at once — the gesture is over, and a caller polling
+    /// `pull_distance()` must not see a value that belongs to a finger that has lifted. The
+    /// *drawn* distance is left where the gesture put it and [`Self::tick`] springs it back, so
+    /// releasing below the threshold is a visible return rather than the band snapping shut.
     pub fn end_pull(&mut self) {
         if self.state == RefreshState::Dragging {
             if self.pull_distance >= self.threshold && !self.is_refreshing {
@@ -160,8 +249,26 @@ impl RefreshControl {
                 self.state = RefreshState::Idle;
             }
             self.pull_distance = 0.0;
+            // Aim the drawn distance at zero; the band springs back over the frames that follow.
+            self.settle.set_target(0.0);
             self.base.request_redraw();
         }
+    }
+
+    /// The pull distance currently being *drawn*, which lags the measured distance while the
+    /// control springs back after a release.
+    pub fn settle_distance(&self) -> f32 {
+        self.settle.value()
+    }
+
+    /// Advances the spring-back by `delta_ms`; `true` while it is still moving.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        self.settle.tick(delta_ms)
+    }
+
+    /// Whether the reveal band is between two distances -- answers only, never advances.
+    pub fn is_animating(&self) -> bool {
+        self.settle.is_moving()
     }
 
     /// Returns the current refresh state.
@@ -180,6 +287,16 @@ impl Widget for RefreshControl {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, 400)
+    }
+
+    // The spring-back is the control's own animation; the trait spelling is what the frame bus
+    // reaches through `&mut dyn Widget`, which is the only way the settle actually happens.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        RefreshControl::tick(self, delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        RefreshControl::is_animating(self)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -226,11 +343,7 @@ impl Draw for RefreshControl {
         // below it are both read from this one band, so they cannot overlap or leave a
         // gap. The content area beneath it is what a scrolled list paints into, so it
         // legitimately spans the rest of the control.
-        let indicator_height = if self.is_refreshing || self.pull_distance > 5.0 {
-            dimensions::REFRESH_INDICATOR_HEIGHT
-        } else {
-            0
-        };
+        let indicator_height = self.indicator_height();
 
         // Chrome colours resolve explicit style first, then the theme's resolved
         // style for this control, and only then a literal. The theme step is what
@@ -323,7 +436,11 @@ impl Draw for RefreshControl {
                 );
             } else {
                 // Draw pull indicator (arrow + progress)
-                let progress = (self.pull_distance / self.threshold).min(1.0);
+                //
+                // The progress reads the *drawn* distance, so the arrow's colour and the release
+                // label follow the band's visible position as it springs back rather than flipping
+                // the instant the finger lifted.
+                let progress = (self.settle_distance() / self.threshold).min(1.0);
                 // Past the threshold the release is actionable, so the arrow picks up
                 // the accent colour; below it stays muted chrome.
                 let arrow_color = if progress >= 1.0 { accent } else { idle_arrow };
@@ -367,10 +484,8 @@ impl Draw for RefreshControl {
         }
 
         // Draw content area below indicator
-        let content_y = rect.y + indicator_height as i32;
-        let content_height = rect.height.saturating_sub(indicator_height);
-        if content_height > 0 {
-            let content_rect = Rect::new(rect.x, content_y, rect.width, content_height);
+        let content_rect = self.content_rect();
+        if content_rect.height > 0 {
             context.fill_rect(content_rect, background);
         }
     }
@@ -378,6 +493,11 @@ impl Draw for RefreshControl {
 
 impl EventHandler for RefreshControl {
     fn handle_event(&mut self, event: &Event) {
+        // The base keeps the control-level facts (`hovered`, `pressed`, `focus_reason`) and its
+        // `MouseEnter`/`MouseLeave` arms are what make `widget_state()` answer `Hover` here. This
+        // handler used to forward only in its catch-all arm, so every event it consumed left the
+        // base untold — the theme's `"refresh_control:hover"` override could not fire.
+        self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }
@@ -424,9 +544,7 @@ impl EventHandler for RefreshControl {
                 self.drag_origin_y = None;
                 self.end_pull();
             }
-            _ => {
-                self.base.handle_event(event);
-            }
+            _ => { /* Other events need no control-specific handling */ }
         }
     }
 }
@@ -567,6 +685,70 @@ mod tests {
         assert_eq!(rc.threshold(), 100.0);
     }
 
+    /// The child content is **registered with the tree**, which is what makes it paint.
+    ///
+    /// # The defect this pins
+    ///
+    /// `set_content` stored a `Box<dyn Widget>` that `draw` never composited and never registered
+    /// with `base.add_child`, so an embedded child was allocated, reachable through the accessor, and
+    /// **never painted** — while the module doc claimed "Supports embedding child content". A host
+    /// that embedded a list got a blank panel and no error.
+    ///
+    /// The assertion is on the **tree**, not on the accessor: reading the id back is exactly what
+    /// the old code already supported, so a round-trip check passes on the broken version. What
+    /// distinguishes the two is whether the base lists the child, because the compositor paints what
+    /// the tree owns.
+    #[test]
+    fn the_child_content_is_registered_so_it_actually_paints() {
+        use crate::widget::base_widgets::label::Label;
+
+        let mut rc = make_refresh_control();
+        assert!(rc.content().is_none(), "no child until one is set");
+        assert!(rc.children().is_empty(), "and none in the tree");
+
+        // A child mounted the way a host mounts one: through the registry, which is the path that
+        // hands out an id the parent can adopt.
+        let child = crate::runtime::register(Box::new(Label::new(
+            "Item".to_string(),
+            Rect::new(0, 0, 100, 20),
+        )))
+        .expect("the registry accepts a label");
+        rc.set_content(child);
+
+        assert_eq!(rc.content(), Some(child), "the id is remembered");
+        assert!(
+            rc.children().contains(&child),
+            "and the child is in the tree, which is the only thing the compositor paints: {:?}",
+            rc.children()
+        );
+
+        // Clearing detaches it, so a host that swaps its content does not leak a painted child.
+        rc.clear_content();
+        assert!(rc.content().is_none());
+        assert!(!rc.children().contains(&child), "clearing detaches the child");
+        let _ = crate::runtime::unregister(child);
+    }
+
+    /// The content region is derived from the same band the draw fills.
+    ///
+    /// A host lays its child out in `content_rect`, so the two must be one derivation — otherwise
+    /// the child is positioned against a second reading of the indicator's height. The assertion
+    /// compares against the *drawn* band, so a change to either alone fails here.
+    #[test]
+    fn the_content_region_sits_below_the_indicator_band() {
+        let mut rc = make_refresh_control();
+        let rect = rc.geometry();
+        let idle = rc.content_rect();
+        assert_eq!(idle.y, rect.y, "with no band showing the content starts at the top edge");
+        assert_eq!(idle.height, rect.height);
+
+        // With the indicator up, the content yields exactly the band's height.
+        rc.set_is_refreshing(true);
+        let busy = rc.content_rect();
+        assert_eq!(busy.y, rect.y + dimensions::REFRESH_INDICATOR_HEIGHT as i32);
+        assert_eq!(busy.height, rect.height - dimensions::REFRESH_INDICATOR_HEIGHT);
+    }
+
     #[test]
     fn refresh_control_svg_output() {
         let mut rc = make_refresh_control();
@@ -587,6 +769,9 @@ mod tests {
     /// the edge the gesture starts at.
     #[test]
     fn the_reveal_strip_is_a_fixed_band_at_the_top_edge() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         let mut rc = make_refresh_control();
         rc.set_pull_distance(dimensions::REFRESH_INDICATOR_HEIGHT as f32);
         let rect = rc.geometry();
@@ -628,5 +813,77 @@ mod tests {
         rc.start_pull();
         // Should stay in Idle since refreshing blocks new pulls
         assert!(rc.is_refreshing());
+    }
+
+    /// A released pull springs back over frames instead of snapping shut.
+    ///
+    /// # The defect this pins
+    ///
+    /// `end_pull` wrote `pull_distance = 0.0` on the same statement that ended the gesture, so
+    /// releasing below the threshold collapsed the reveal band between two adjacent frames. A pull
+    /// that goes nowhere is still a gesture the user performed, and it has to be *answered* — the
+    /// band returning to rest is that answer. The assertion uses the three-frame shape (§0.3): the
+    /// drawn distance must take an interior value on the way down, which a hard cut cannot.
+    #[test]
+    fn a_released_pull_springs_back_rather_than_snapping() {
+        let mut rc = make_refresh_control();
+        rc.start_pull();
+        rc.update_pull(30.0);
+        let pulled = rc.settle_distance();
+        assert!(pulled > 0.0, "the band follows the live gesture");
+
+        rc.end_pull();
+        assert_eq!(rc.pull_distance(), 0.0, "the gesture measurement ends at once");
+        assert!(rc.is_animating(), "but the drawn band owes frames");
+        assert_eq!(rc.settle_distance(), pulled, "the spring starts where the gesture left it");
+
+        assert!(rc.tick(60), "still moving after one step");
+        let mid = rc.settle_distance();
+        assert!(
+            mid < pulled && mid > 0.0,
+            "the band must take an interior distance rather than jumping shut (got {mid})"
+        );
+        while rc.tick(60) {}
+        assert_eq!(rc.settle_distance(), 0.0, "and settle at rest");
+        assert!(!rc.is_animating(), "a settled control owes no more frames");
+    }
+
+    /// A live gesture replaces any leftover spring rather than being fought by it.
+    #[test]
+    fn a_new_pull_adopts_the_band_where_it_is() {
+        let mut rc = make_refresh_control();
+        rc.start_pull();
+        rc.update_pull(30.0);
+        rc.end_pull();
+        assert!(rc.is_animating(), "the previous pull is springing back");
+
+        // A second gesture begins before the first has settled: the band must jump to the new
+        // gesture's position, not continue its old journey underneath it.
+        rc.start_pull();
+        rc.update_pull(0.0);
+        assert_eq!(rc.settle_distance(), 0.0, "the drag owns the band again");
+        rc.update_pull(20.0);
+        assert_eq!(rc.settle_distance(), 20.0, "and it tracks the finger exactly");
+    }
+
+    /// The pointer reaching the control has to reach the *base* too.
+    ///
+    /// Regression: this handler forwarded only in its catch-all arm, so the events it consumed
+    /// never recorded the pointer fact and `widget_state()` answered `Normal` for the whole
+    /// gesture — the same shape as the `bezier_curve_editor` defect.
+    #[test]
+    fn pointer_state_reaches_the_base() {
+        use crate::style::WidgetState;
+
+        let mut rc = make_refresh_control();
+        assert_eq!(rc.widget_state(), WidgetState::Normal);
+        rc.handle_event(&Event::MouseEnter { pos: Point::new(10, 10) });
+        assert_eq!(
+            rc.widget_state(),
+            WidgetState::Hover,
+            "the base must have been told the pointer arrived"
+        );
+        rc.handle_event(&Event::MouseLeave { pos: Point::new(500, 500) });
+        assert_eq!(rc.widget_state(), WidgetState::Normal, "and that it left");
     }
 }

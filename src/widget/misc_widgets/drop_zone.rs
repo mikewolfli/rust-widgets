@@ -511,6 +511,9 @@ mod tests {
     /// specific blue.
     #[test]
     fn every_feedback_state_paints_differently() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         use crate::widget::svg::render_to_svg;
 
         let mut rendered = Vec::new();

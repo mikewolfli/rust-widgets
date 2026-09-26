@@ -145,6 +145,13 @@ DOMAIN_AS_STRING: frozenset[str] = frozenset(
         # A finance enum with a handful of variants and no data. Its name is the whole value, which
         # is the same contract `PropertyValueKind::Enum` gives the property side.
         "BookSide",
+        # The find/replace dialog's search request and its four flags. Both are plain structs with
+        # public fields and no nested representation, so they travel as their own spelling -- the
+        # same contract as `DragPayload` and `BarcodeResult` above. They were added so the dialog's
+        # signals could carry the options the host needs to run the search (BLUE23 §A.11.2); before
+        # that the signals carried a bare `String` and every flag was dropped on the floor.
+        "SearchRequest",
+        "SearchOptions",
     }
 )
 

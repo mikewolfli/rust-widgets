@@ -6,6 +6,7 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -132,6 +133,20 @@ pub struct ChartWidget {
     series: Vec<Vec<f64>>,
     labels: Vec<String>,
     hovered_index: Option<usize>,
+    /// How far the marks have grown from the baseline: `0.0` flat, `1.0` at their values.
+    ///
+    /// # Why this is a 0..=1 fraction and not a value
+    ///
+    /// [`PropertyDriver`] interpolates between `0.0` and `1.0` and **clamps its target**, so a
+    /// driver aimed at a datum would silently sit at `1.0` for every bar whose value is below one --
+    /// a chart that looks right for small integers and wrong for everything else, with no error.
+    /// The driver therefore carries the *progress* and each mark maps it onto its own span (see
+    /// [`Self::grown_from_baseline`]), which is also what makes one driver able to animate marks
+    /// with different heights, signs and magnitudes at once.
+    ///
+    /// It rests at `1.0`: a chart is shown at its values the moment it is built, so it must not
+    /// animate a seeded series into place on first paint.
+    reveal: PropertyDriver,
     /// Emitted when a data point is clicked.
     pub data_point_clicked: Signal1<usize>,
     /// Emitted when pointer hover enters a data point bucket.
@@ -154,6 +169,8 @@ impl ChartWidget {
             series: Vec::new(),
             labels: Vec::new(),
             hovered_index: None,
+            // At rest grown: a chart is shown at its values the moment it is built.
+            reveal: PropertyDriver::at(1.0, MotionSlot::Normal),
             data_point_clicked: Signal1::new(),
             data_point_hovered: Signal1::new(),
             data_point_unhovered: Signal1::new(),
@@ -210,6 +227,7 @@ impl ChartWidget {
     /// Sets the chart data as a single series.
     pub fn set_data(&mut self, data: Vec<f64>) {
         self.series = if data.is_empty() { Vec::new() } else { vec![data] };
+        self.restart_reveal();
         self.revalidate_hover();
         self.base.request_redraw();
     }
@@ -221,6 +239,7 @@ impl ChartWidget {
     /// `set_data`.
     pub fn set_series(&mut self, series: Vec<Vec<f64>>) {
         self.series = series;
+        self.restart_reveal();
         self.revalidate_hover();
         self.base.request_redraw();
     }
@@ -264,6 +283,46 @@ impl ChartWidget {
             idx = point_count - 1;
         }
         Some(idx)
+    }
+
+    /// Restarts the value reveal, for a newly supplied series.
+    ///
+    /// Both data setters call this, so a caller that replaces the whole series and one that replaces
+    /// a single series animate identically -- the two-places-to-remember defect this crate keeps
+    /// recording. `jump_to` rather than `set_target`, so a second replacement restarts from flat
+    /// instead of continuing from wherever the first reveal had reached.
+    fn restart_reveal(&mut self) {
+        self.reveal.jump_to(0.0);
+        self.reveal.set_target(1.0);
+    }
+
+    /// How far the marks have grown from the baseline: `0.0` flat, `1.0` at their values.
+    ///
+    /// The value the draw measures with. It is `1.0` except in the frames right after a data set.
+    pub fn reveal_progress(&self) -> f32 {
+        self.reveal.value()
+    }
+
+    /// Maps the reveal onto one mark's own span: `baseline` at progress 0 and `value` at 1.
+    ///
+    /// # Why the mapping is here and not in the driver
+    ///
+    /// [`PropertyDriver`] carries a `0.0..=1.0` *fraction* and clamps its target. One driver drives
+    /// every mark on the chart, and those marks have different values, different signs and different
+    /// magnitudes -- so the driver cannot carry any of them. Each mark asks this question instead:
+    /// "given how far along the whole reveal is, where is *my* top edge?".
+    ///
+    /// `baseline` is the value each mark starts from, which is the axis minimum for a bar (a bar
+    /// grows up the axis) -- a mark that started from zero on an axis spanning `-50..50` would grow
+    /// *downward* through the axis and cross every other mark on the way.
+    fn grown_from_baseline(&self, value: f64, baseline: f64) -> f64 {
+        let progress = self.reveal.value() as f64;
+        if progress >= 1.0 {
+            // The identity path: a settled chart is untouched to the last bit, so the resting
+            // snapshot and every value assertion are exactly what they were before this existed.
+            return value;
+        }
+        baseline + (value - baseline) * progress
     }
 
     /// The `(x, y)` extremes across every series, for the styles that share one
@@ -310,6 +369,16 @@ impl Widget for ChartWidget {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, 300)
     }
+
+    /// Advances the value reveal by `delta_ms`; `true` while the marks are still growing.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.reveal.tick(delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.reveal.is_moving()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -768,6 +837,12 @@ impl ChartWidget {
         for (i, &val) in data.iter().enumerate() {
             let slot_x = area.left + (i as i32) * slot;
             let x = slot_x + (series_index as i32) * bar_width;
+            // The bar grows from the **baseline** toward its value, which is the one
+            // interpolation a value chart can express: the axis does not move, only the mark
+            // climbs it. `grown_from_baseline` maps the 0..=1 progress onto this bar's own
+            // `min..val` span, so the driver never has to know the data range -- it clamps to
+            // 0..=1, and handing it a raw value would have it snap to 0.0 for every bar below 1.
+            let val = self.grown_from_baseline(val, min);
             let top = area.y_for(val, min, max);
             let color = Self::series_color(series_index);
             context.fill_rect(
@@ -810,7 +885,11 @@ impl ChartWidget {
             .enumerate()
             .map(|(i, &val)| Point {
                 x: area.x_for(i, data.len(), 0),
-                y: area.y_for(val, min, max),
+                // Same reveal as the bars: every vertex climbs from the **axis minimum**, so a line
+                // grows out of the baseline instead of sliding in from wherever the series happened
+                // to start. A series that starts away from `min` would otherwise drop a flat segment
+                // onto the axis on the first frame and lift it off again.
+                y: area.y_for(self.grown_from_baseline(val, min), min, max),
             })
             .collect();
 
@@ -854,7 +933,9 @@ impl ChartWidget {
             .enumerate()
             .map(|(i, &val)| Point {
                 x: area.x_for(i, data.len(), 0),
-                y: area.y_for(val, min, max),
+                // Same reveal as the line: the fill tracks the polyline, so the two share the
+                // mapping rather than each computing its own height.
+                y: area.y_for(self.grown_from_baseline(val, min), min, max),
             })
             .collect();
 
@@ -1549,6 +1630,66 @@ mod tests {
         let rgba = render(&mut chart, 200, 120);
         assert!(painted_pixels(&rgba) > 0);
         assert_eq!(chart.chart_type(), ChartType::Bar);
+    }
+
+    /// Counts pixels drawn in the **first series' colour**, which is the data ink and nothing else.
+    ///
+    /// [`painted_pixels`] answers "did the control draw at all", and it counts the panel fill -- so
+    /// it saturates at the panel's own area and cannot see a mark change height. A test about a mark's
+    /// size has to count the mark, which means naming its colour: the series palette is the one part
+    /// of this control that is deliberately data rather than chrome.
+    fn series_pixels(rgba: &[u8], series: usize) -> usize {
+        let color = ChartWidget::series_color(series);
+        rgba.chunks_exact(4)
+            .filter(|px| px[0] == color.r && px[1] == color.g && px[2] == color.b)
+            .count()
+    }
+
+    /// Setting data makes the marks **grow** from the baseline rather than appearing at their
+    /// heights between two frames.
+    ///
+    /// # The defect this pins
+    ///
+    /// Every style drew its marks at their final positions on the first frame after a `set_data`,
+    /// so a chart whose values changed looked identical to one whose values had always been there --
+    /// the reader had no way to tell an update from a repaint. The assertions are in three parts,
+    /// because a driver nothing reads is not an animation: the progress must take an interior value,
+    /// the *painted* frame must differ at that moment, and the pixels must be **shorter** (a chart
+    /// that merely redrew at a different moment would satisfy "differs").
+    ///
+    /// The height comparison is the half that cannot be faked: with the reveal at `1.0` the mapping
+    /// is the identity, so a settled chart paints exactly what it always did, and every pixel
+    /// assertion in this module keeps its previous meaning.
+    #[test]
+    fn setting_data_grows_the_marks_from_the_baseline() {
+        let mut chart = ChartWidget::new(Rect::new(0, 0, 200, 120));
+        chart.set_chart_type(ChartType::Bar);
+        chart.set_data(vec![10.0, 20.0, 30.0, 40.0]);
+        assert!(chart.is_animating(), "freshly set data owes frames");
+
+        assert!(chart.tick(20), "still growing after one step");
+        let mid = chart.reveal_progress();
+        assert!(mid > 0.0 && mid < 1.0, "it passes through an interior value (got {mid})");
+        let mid_pixels = series_pixels(&render(&mut chart, 200, 120), 0);
+
+        while chart.tick(1000) {}
+        assert_eq!(chart.reveal_progress(), 1.0, "and settles fully grown");
+        assert!(!chart.is_animating(), "owing no further frames");
+        let settled_pixels = series_pixels(&render(&mut chart, 200, 120), 0);
+
+        assert!(
+            mid_pixels > 0 && mid_pixels < settled_pixels,
+            "a half-grown chart must paint fewer pixels than a settled one: \
+             mid={mid_pixels} settled={settled_pixels}"
+        );
+
+        // A second set restarts the growth rather than continuing from the settled end.
+        chart.set_data(vec![5.0, 5.0, 5.0, 5.0]);
+        assert!(
+            chart.reveal_progress() < 1.0,
+            "replacing the data restarts the reveal: {}",
+            chart.reveal_progress()
+        );
     }
     /// Hover is observable through the accessor the module doc promises.
     ///

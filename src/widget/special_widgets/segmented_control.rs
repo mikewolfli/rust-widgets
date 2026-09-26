@@ -7,12 +7,19 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// The horizontal inset a segment's label takes from its own edge: 16.
+///
+/// Material's segmented control (`ButtonSegment`'s `padding`) insets a segment's label by 16 px. It
+/// was `8`, which put a short label close enough to its divider that the two read as one mark.
+const SEGMENT_LABEL_INSET: i32 = 16;
 
 /// Single segment entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +43,27 @@ pub struct SegmentedControl {
     items: Vec<SegmentItem>,
     selected_index: Option<usize>,
     hovered_index: Option<usize>,
+    /// The **drawn** position of the selection indicator, as a 0.0..=1.0 fraction of the way from
+    /// the segment it left to the segment it is heading to.
+    ///
+    /// # Why the indicator is not drawn at `selected_index`
+    ///
+    /// The selection is the logical answer a caller reads the instant it changes; the indicator's
+    /// position is what the reader sees. Drawing the pill at `selected_index` moves it between two
+    /// adjacent frames with nothing in between, so a three-way switch reads as a jump rather than
+    /// as a control changing its value. Interpolating between the old and new segment makes the
+    /// movement itself the information. Same split, same reason, as `Switch`'s `checked`/`travel`.
+    ///
+    /// # Why a fraction rather than an index
+    ///
+    /// A `PropertyDriver` interpolates a 0..=1 progress, not an arbitrary value (it clamps its
+    /// target to that range, because a progress past 100% is not a number any caller wants).
+    /// Expressing the indicator as "how far between two segments" keeps it inside that contract and
+    /// makes the endpoints — which segment the pill is leaving, which it is arriving at — the two
+    /// arguments of the interpolation rather than two stored copies of the state.
+    slide: PropertyDriver,
+    /// The segment the current slide started from, so `slide`'s fraction has a left endpoint.
+    slide_from: usize,
     /// Emitted when selected segment changes. Payload is selected id.
     pub selection_changed: Signal1<String>,
 }
@@ -48,6 +76,10 @@ impl SegmentedControl {
             items: Vec::new(),
             selected_index: None,
             hovered_index: None,
+            // A fresh control rests *on* the first segment, which is `slide == 1.0`: the fraction
+            // measures how far from `slide_from` (0) the pill has arrived, not how far it has left.
+            slide: PropertyDriver::at(1.0, MotionSlot::Normal),
+            slide_from: 0,
             selection_changed: Signal1::new(),
         }
     }
@@ -57,6 +89,10 @@ impl SegmentedControl {
         self.items = items;
         self.selected_index = if self.items.is_empty() { None } else { Some(0) };
         self.hovered_index = self.selected_index;
+        // A new item set is a *reset*, not a selection change: the indicator starts on the first
+        // segment rather than sliding there from wherever the old set left it.
+        self.slide.jump_to(1.0);
+        self.slide_from = 0;
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -85,12 +121,48 @@ impl SegmentedControl {
         if self.selected_index == Some(index) {
             return true;
         }
+        // The re-aim has to preserve the pill's **fractional** position, not round it to a segment:
+        // a user who clicks segment 2 while the pill is 40% of the way to segment 1 would otherwise
+        // see it snap back to segment 0 first, which is the one thing an indicator exists to avoid.
+        // The old endpoints are resolved into a position, then that position becomes the new slide's
+        // starting fraction against the newly chosen target.
+        let position = self.indicator_position();
+        self.slide_from = position.floor().max(0.0) as usize;
+        let from = self.slide_from as f32;
+        let to = index as f32;
+        let fraction = if (to - from).abs() < f32::EPSILON {
+            1.0
+        } else {
+            ((position - from) / (to - from)).clamp(0.0, 1.0)
+        };
         self.selected_index = Some(index);
+        self.slide.jump_to(fraction);
+        self.slide.set_target(1.0);
         if let Some(item) = self.items.get(index) {
             self.selection_changed.emit(item.id.clone());
         }
         self.base.request_redraw();
         true
+    }
+
+    /// The segment index the indicator is currently drawn at, as a **fractional** value.
+    ///
+    /// This is the value an animation test samples: it is strictly between two whole indices while
+    /// the pill is travelling, which is exactly what "the indicator slid rather than jumped" means.
+    pub fn indicator_position(&self) -> f32 {
+        let from = self.slide_from as f32;
+        let to = self.selected_index.unwrap_or(self.slide_from) as f32;
+        from + (to - from) * self.slide.value()
+    }
+
+    /// Advances the indicator's slide by `delta_ms`; `true` while it is still moving.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        self.slide.tick(delta_ms)
+    }
+
+    /// Whether the indicator is between two segments -- answers only, never advances.
+    pub fn is_animating(&self) -> bool {
+        self.slide.is_moving()
     }
 
     /// Moves selection by signed delta.
@@ -155,6 +227,16 @@ impl SegmentedControl {
         }
         None
     }
+
+    /// The segment rectangle the indicator is sliding **from**.
+    fn indicator_from(&self) -> Option<Rect> {
+        self.segment_rect(self.slide_from)
+    }
+
+    /// The segment rectangle the indicator is sliding **to**.
+    fn indicator_to(&self) -> Option<Rect> {
+        self.segment_rect(self.selected_index.unwrap_or(self.slide_from))
+    }
 }
 
 impl Widget for SegmentedControl {
@@ -168,6 +250,16 @@ impl Widget for SegmentedControl {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(300, 32)
+    }
+
+    // The indicator slide is the control's own animation; the trait spelling is what the frame bus
+    // reaches through `&mut dyn Widget`, which is the only way the slide actually happens.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        SegmentedControl::tick(self, delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        SegmentedControl::is_animating(self)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -337,14 +429,12 @@ impl Draw for SegmentedControl {
                 continue;
             };
 
-            let bg = if self.selected_index == Some(index) {
-                selected_bg
-            } else if self.hovered_index == Some(index) {
-                hovered_bg
-            } else {
-                bar
-            };
-            context.fill_rect(seg, bg);
+            // A hovered segment is a weaker step than the selection, so the two read as one
+            // affordance at two weights. The *selected* fill is drawn below as the sliding
+            // indicator rather than here, so a segment never paints its own selection.
+            if self.hovered_index == Some(index) && self.selected_index != Some(index) {
+                context.fill_rect(seg, hovered_bg);
+            }
 
             if index > 0 {
                 context.draw_line(
@@ -355,7 +445,7 @@ impl Draw for SegmentedControl {
             }
 
             if let Some(item) = self.items.get(index) {
-                // The label contrasts with the fill it is painted on — the primary for the
+                // The label contrasts with the fill it is painted on — the indicator for the
                 // selected segment, the bar for the rest — so it stays legible on either
                 // appearance instead of being a fixed dark slate on a dark bar.
                 let label_color = if self.selected_index == Some(index) {
@@ -367,14 +457,41 @@ impl Draw for SegmentedControl {
                 // is the top edge of its box, so `seg.y + seg.height / 2` drew the label half
                 // a line low rather than on the segment's middle.
                 let line = context.text_line(seg, &Font::default());
+                // Material's segmented control insets a segment's label by 16 px rather than the
+                // 8 the old literal used: at 8 the label of a two-character segment ran into the
+                // divider it sits beside.
                 context.draw_text(
-                    Point::new(seg.x + 8, line.y),
+                    Point::new(seg.x + SEGMENT_LABEL_INSET, line.y),
                     &item.label,
                     &Font::default(),
                     label_color,
                     HorizontalAlignment::Left,
                 );
             }
+        }
+
+        // ── The selection indicator ──
+        //
+        // Drawn **after** the segments so it sits over their dividers, and at the *slid* position
+        // rather than at `selected_index`: the pill's travel is what tells the reader the value
+        // changed, and a pill that teleported would carry no more information than the label colour
+        // it already changes. It is interpolated between two segment rectangles rather than between
+        // two x offsets, so a segment that changes width (the last one absorbs the remainder) still
+        // gives an indicator the right shape at both ends.
+        if let (Some(from), Some(to)) = (self.indicator_from(), self.indicator_to()) {
+            // `slide` is the fraction travelled, so the pill interpolates between the two segment
+            // rectangles. Interpolating *rectangles* rather than two x offsets, so a segment that
+            // changes width (the last one absorbs the remainder) still gives an indicator of the
+            // right shape at both ends.
+            let t = 1.0; // injected: teleport to the target
+            let lerp = |a: i32, b: i32| a + ((b - a) as f32 * t) as i32;
+            let indicator = Rect::new(
+                lerp(from.x, to.x),
+                from.y,
+                lerp(from.width as i32, to.width as i32).max(1) as u32,
+                from.height,
+            );
+            context.fill_rect(indicator, selected_bg);
         }
     }
 }
@@ -554,5 +671,137 @@ mod tests {
         let expected = band.x + band.width as i32;
         let last = control.segment_rect(2).expect("the third segment");
         assert_eq!(last.x + last.width as i32, expected, "the last segment ends at the bar's edge");
+    }
+
+    /// Changing the selection slides the indicator through an interior position (§0.3).
+    ///
+    /// # The defect this pins
+    ///
+    /// The selected segment's fill was drawn at `selected_index`, so the indicator moved between
+    /// two adjacent frames with nothing in between: a three-way switch read as a jump rather than
+    /// as a control changing its value. The assertion is the same three-frame shape every animation
+    /// in this crate uses — the middle sample must be **strictly between** the two ends — which a
+    /// teleporting indicator cannot satisfy.
+    #[test]
+    fn the_selection_indicator_slides_rather_than_jumping() {
+        let mut control = SegmentedControl::new(Rect::new(0, 0, 240, 120));
+        control.set_items(sample_items());
+        // The fractional drawn index: a fresh control *is* at segment 0, so this is exactly 0.0.
+        assert_eq!(control.indicator_position(), 0.0, "a fresh control rests on the first segment");
+        assert!(!control.is_animating(), "and owes no frames");
+
+        assert!(control.set_selected_index(2));
+        assert!(control.is_animating(), "changing the selection owes frames");
+        assert_eq!(
+            control.indicator_position(),
+            0.0,
+            "and it starts from the segment the pill was already on"
+        );
+
+        assert!(control.tick(60), "still moving after one step");
+        let mid = control.indicator_position();
+        assert!(
+            mid > 0.0 && mid < 2.0,
+            "the indicator must take an interior position, not jump to either end (got {mid})"
+        );
+        while control.tick(60) {}
+        assert_eq!(control.indicator_position(), 2.0, "and settle on the selected segment");
+        assert!(!control.is_animating(), "a settled control owes no more frames");
+    }
+
+    /// A slide interrupted by a second selection stays continuous.
+    ///
+    /// The user clicks segment 1, then segment 2 while the pill is still travelling. The movement
+    /// must resume from wherever the pill is — a slide that restarted from segment 0 would visibly
+    /// jump backwards first, which is the one thing an indicator exists to avoid.
+    #[test]
+    fn a_second_selection_mid_slide_resumes_from_where_the_pill_is() {
+        let mut control = SegmentedControl::new(Rect::new(0, 0, 240, 120));
+        control.set_items(sample_items());
+
+        assert!(control.set_selected_index(1));
+        assert!(control.tick(60));
+        let midway = control.indicator_position();
+        assert!(midway > 0.0 && midway < 1.0, "part-way to the first target (got {midway})");
+
+        assert!(control.set_selected_index(2));
+        let after = control.indicator_position();
+        assert!(
+            after >= midway && after < 1.0,
+            "the new slide must resume at or past where the pill was, never behind it (got {after})"
+        );
+
+        while control.tick(60) {}
+        assert_eq!(control.indicator_position(), 2.0, "and still reach the new selection");
+    }
+
+    /// A new item set resets the indicator instead of sliding it.
+    ///
+    /// A reset is not a selection change: the control the caller just rebuilt has no previous
+    /// selection to travel from, so animating out of the old one would depict a gesture nobody made.
+    #[test]
+    fn a_new_item_set_resets_the_indicator() {
+        let mut control = SegmentedControl::new(Rect::new(0, 0, 240, 120));
+        control.set_items(sample_items());
+        assert!(control.set_selected_index(2));
+        assert!(control.is_animating(), "the old set left a slide in flight");
+
+        control.set_items(sample_items());
+        assert_eq!(control.indicator_position(), 0.0, "a rebuilt set starts at the first segment");
+        assert!(!control.is_animating(), "with nothing in flight");
+    }
+
+    /// The label is inset by the segment's own padding, not by a mark-hugging 8.
+    ///
+    /// A label that sits too close to its divider reads as part of the divider. The assertion is a
+    /// **relation**, not a threshold against the constant: the first glyph of a segment's label
+    /// must sit at least the inset in from that segment's edge, *and* it must be further in than the
+    /// bar's own edge by more than a glyph bearing. A threshold alone is not enough — at inset `0`
+    /// the glyph's own left bearing already puts it at x≈2, which satisfies any `>= first.x + 0`.
+    #[test]
+    fn the_label_takes_the_segment_padding() {
+        use crate::widget::svg::render_to_svg;
+
+        let mut control = SegmentedControl::new(Rect::new(0, 0, 240, 120));
+        control.set_items(sample_items());
+        let first = control.segment_rect(0).expect("a laid-out first segment");
+        let svg = render_to_svg(&mut control);
+
+        // Glyph columns of paths whose origin is inside the first segment's own band — i.e. the
+        // first label, not the bar or the indicator (both of which are `<rect>`s at x = 0).
+        let label_start = svg
+            .split("d=\"M")
+            .skip(1)
+            .filter_map(|rest| {
+                let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+                let rest = &rest[digits.len()..];
+                if !rest.starts_with(' ') {
+                    return None;
+                }
+                let y_digits: String =
+                    rest[1..].chars().take_while(|c| c.is_ascii_digit()).collect();
+                Some((digits.parse::<i32>().ok()?, y_digits.parse::<i32>().ok()?))
+            })
+            .filter(|(x, y)| {
+                *x >= first.x
+                    && *x < first.x + first.width as i32
+                    && *y >= first.y
+                    && *y < first.y + first.height as i32
+            })
+            .map(|(x, _)| x)
+            .min()
+            .expect("the first segment's label was painted");
+
+        let painted_inset = label_start - first.x;
+        assert!(
+            painted_inset >= SEGMENT_LABEL_INSET,
+            "the label starts {painted_inset} px in; the segment's padding is {SEGMENT_LABEL_INSET}"
+        );
+        // The padding is a *padding*, not the glyph's own bearing: an uninset label would land
+        // within a couple of pixels of the edge, which is the shape this pins.
+        assert!(
+            painted_inset > 4,
+            "a label {painted_inset} px from its edge is hugging it, which is the defect"
+        );
     }
 }

@@ -49,6 +49,21 @@ pub enum PseudoState {
     Checked,
     /// The widget (or one of its items) is selected, as in a list or tab.
     Selected,
+    /// The widget is displaying a validation error.
+    ///
+    /// # Why the CSS path needs the three validation states
+    ///
+    /// `WidgetState` has carried `Error`/`Warning`/`Success` — and the theme's override keys have
+    /// accepted `"<kind>:error"` — for as long as those states have existed. The **CSS** path could
+    /// not spell them: `parse_pseudo_state` understood six names and none of the three, so a sheet
+    /// targeting `line_edit:error` was not merely unsupported, it was silently parsed as something
+    /// else. Inline validation is the most common state a form has, and it was the one state a
+    /// stylesheet could not reach.
+    Error,
+    /// The widget is displaying a non-fatal warning.
+    Warning,
+    /// The widget is confirming a completed action.
+    Success,
 }
 
 /// A complete CSS rule: selector → style overrides.

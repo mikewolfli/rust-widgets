@@ -379,6 +379,11 @@ pub fn default_widget_property_default_value(
             "display_text" | "value_text" => CapabilityValue::String("0".to_string()),
             "special_value_text" => CapabilityValue::Null,
             "wrapping" => CapabilityValue::Bool(false),
+            // A fresh spin box is left-to-right, the same default `SpinBox::new` sets. Declared here as
+            // well as in the schema because `schema_defaults_are_readable_and_writable_when_declared`
+            // requires every declared property to answer its own default — a name the designer offers
+            // and the control cannot answer is the defect that gate exists to find.
+            "direction" => CapabilityValue::String("ltr".to_string()),
             _ => return None,
         },
         WidgetKind::ComboBox => match property_name {
@@ -387,6 +392,10 @@ pub fn default_widget_property_default_value(
             "current_text" => CapabilityValue::String(String::new()),
             "editable" => CapabilityValue::Bool(false),
             "max_visible_items" => CapabilityValue::UInt(10),
+            // The direction the field runs in. `ComboBox::new` starts left-to-right, so the schema's
+            // default has to say the same thing or a manifest reset would silently mirror a field
+            // the caller had never asked to change.
+            "direction" => CapabilityValue::String("ltr".to_string()),
             _ => return None,
         },
         WidgetKind::Dial => match property_name {

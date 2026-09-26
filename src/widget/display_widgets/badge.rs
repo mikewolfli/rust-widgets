@@ -559,6 +559,9 @@ mod tests {
 
     #[test]
     fn badge_svg_hidden_when_zero() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         let mut badge = Badge::new(Rect::new(0, 0, 40, 24));
         // count is 0, no text, not dot mode → should be hidden → only background fill
         let svg = render_to_svg(&mut badge);

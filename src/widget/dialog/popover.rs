@@ -11,6 +11,7 @@
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -22,6 +23,17 @@ use crate::{impl_widget_property_hooks, property_names_of};
 const ARROW_SIZE: i32 = 10;
 /// Corner radius of the popover body.
 const CORNER_RADIUS: u32 = 8;
+/// How tall the card is at the instant it appears, as a fraction of its settled height.
+///
+/// A popover unfolds **downward from the anchor**: the arrow and the anchor edge stay put and the
+/// card grows along the axis the arrow points down. Growing from a corner or from the centre would
+/// read as a dialog or a tooltip arriving, which are different affordances; the card's own origin is
+/// what makes it read as "this thing belongs to that button". The floor is not zero, so the first
+/// visible frame already has the card's width and a visible sliver of its body.
+const REVEAL_MIN_SCALE: f32 = 0.06;
+/// The alpha of the shadow under the card, out of 255. A constant rather than a literal in the draw
+/// so the reveal can scale it without a second magic number.
+const SHADOW_ALPHA: u8 = 40;
 
 /// Popover widget — a floating bubble card with an anchor arrow.
 ///
@@ -36,6 +48,15 @@ pub struct Popover {
     visible: bool,
     /// Cached popover body rectangle (computed during draw).
     body_rect: Rect,
+    /// How far the card has unfolded, `0.0` closed and `1.0` fully open.
+    ///
+    /// # Why this is separate from `visible`
+    ///
+    /// `visible` is the *logical* state and answers the instant it changes — `is_visible` tells
+    /// whether the popover is up, not how far through appearing it is. The draw reads this, so the
+    /// card unfolds rather than appearing whole on one frame and vanishing on the next. Same split,
+    /// same reason, as `Switch`'s `checked`/`travel` and `Dialog`'s `visible`/`reveal`.
+    reveal: PropertyDriver,
 }
 
 impl Popover {
@@ -49,6 +70,9 @@ impl Popover {
             anchor_rect: Rect::default(),
             visible: false,
             body_rect: Rect::default(),
+            // At rest at the closed end: a freshly built popover is hidden, so it must not
+            // animate itself away on its first frame.
+            reveal: PropertyDriver::at(0.0, MotionSlot::Normal),
         }
     }
 
@@ -56,13 +80,22 @@ impl Popover {
     pub fn show(&mut self, anchor: Rect) {
         self.anchor_rect = anchor;
         self.visible = true;
+        self.reveal.set_target(1.0);
         self.base.request_redraw();
     }
 
     /// Hides the popover.
     pub fn hide(&mut self) {
         self.visible = false;
+        self.reveal.set_target(0.0);
         self.base.request_redraw();
+    }
+
+    /// Returns how far the card has unfolded, `0.0` closed and `1.0` fully open.
+    ///
+    /// The value the draw measures with, as distinct from the logical [`is_visible`](Self::is_visible).
+    pub fn reveal_progress(&self) -> f32 {
+        self.reveal.value()
     }
 
     /// Returns whether the popover is currently visible.
@@ -188,6 +221,20 @@ impl Widget for Popover {
     fn size_hint(&self) -> Size {
         crate::core::Size::new(200, 150)
     }
+
+    /// Advances the unfold by `delta_ms`, returning whether another frame is owed.
+    ///
+    /// The driver is what decides "settled": it reports false the step it reaches its target, so a
+    /// settled popover costs no frames and the idle screen repaints nothing.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.reveal.tick(delta_ms)
+    }
+
+    /// Whether the popover is mid-unfold and owes the driver another frame.
+    fn is_animating(&self) -> bool {
+        self.reveal.is_moving()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -294,6 +341,10 @@ impl Draw for Popover {
         // the two states stay distinguishable.
         let visible = self.visible;
 
+        // How far the card has unfolded. At rest (0.0) it is the thin closed strip below; at 1.0
+        // every dimension below is exactly what it was before this animation existed.
+        let reveal = self.reveal.value();
+
         let (body_rect, arrow_tip, arrow_dir) = self.compute_layout();
         self.body_rect = body_rect;
         let (body_rect, arrow_tip) = if visible {
@@ -311,6 +362,26 @@ impl Draw for Popover {
                 arrow_tip,
             )
         };
+        // The body **unfolds downward from its own top edge**: the anchor-facing edge is the fixed
+        // one, and that is what makes a popover read as belonging to the button it points at. At
+        // `reveal = 1.0` the multiplication is an identity, so the settled card is unchanged to the
+        // pixel — which is what keeps the resting snapshot valid.
+        //
+        // The floor is the *closed* height: a fully hidden card is a thin strip behind its own top
+        // edge rather than a zero-height rectangle, so the control still has a shape when its
+        // content is not up. It is a fraction of the **control**, not of the body, because the
+        // body's own height is derived from the anchor and would make the closed strip's size
+        // anchor-dependent.
+        let closed_height = ((rect.height as f32 * REVEAL_MIN_SCALE) + 0.5) as u32;
+        let revealed_height = ((body_rect.height as f32 * reveal) + 0.5) as u32;
+        let body_rect = Rect::new(
+            body_rect.x,
+            body_rect.y,
+            body_rect.width,
+            revealed_height.max(closed_height),
+        );
+        // One value drives the body, the shadow, the arrow and the ink alike, so they cannot get
+        // out of step: a half-open card with a full-strength shadow would read as a rendering fault.
         let card = if visible { card } else { window_fill.blend(&card, 0.45) };
         let border = if visible { border } else { window_fill.blend(&border, 0.45) };
 
@@ -326,22 +397,34 @@ impl Draw for Popover {
         let shadow_fits = body_rect.x + shadow_offset + body_rect.width as i32
             <= rect.x + rect.width as i32
             && body_rect.y + shadow_offset + body_rect.height as i32 <= rect.y + rect.height as i32;
-        if shadow_fits {
+        if shadow_fits && body_rect.height > 0 {
             let shadow_rect = Rect::new(
                 body_rect.x + shadow_offset,
                 body_rect.y + shadow_offset,
                 body_rect.width,
                 body_rect.height,
             );
-            context.fill_rounded_rect(shadow_rect, CORNER_RADIUS, Color::rgba(0, 0, 0, 40));
+            // The shadow fades in with the unfold and is gone at `reveal = 0`, where the card is a
+            // closed strip: a shadow under a strip that has not opened yet is a smudge on the page.
+            context.fill_rounded_rect(
+                shadow_rect,
+                CORNER_RADIUS,
+                Color::rgba(0, 0, 0, (SHADOW_ALPHA as f32 * reveal) as u8),
+            );
         }
 
         // ── Draw popover body ──
-        context.fill_rounded_rect(body_rect, CORNER_RADIUS, card);
-        context.draw_rounded_rect_stroke(body_rect, CORNER_RADIUS, border, 1);
+        if body_rect.height > 0 {
+            context.fill_rounded_rect(body_rect, CORNER_RADIUS, card);
+            context.draw_rounded_rect_stroke(body_rect, CORNER_RADIUS, border, 1);
+        }
 
         // ── Draw arrow ──
-        if visible {
+        //
+        // The arrow exists **only once the card is open**. While closed it would be a free-floating
+        // triangle on the page with nothing behind it, which is what the census's closed-state
+        // figure used to show; a closed popover *is* the thin strip, and nothing else.
+        if visible && reveal > 0.0 {
             self.draw_arrow(context, arrow_tip, arrow_dir, card, border);
         }
 
@@ -349,12 +432,19 @@ impl Draw for Popover {
         // The label reads the theme rather than the previous fixed grey, so a dark card does
         // not carry light-theme text.
         let content_padding = 8i32;
-        let content_rect = Rect::new(
+        // The label lives inside the card, so it is clipped to what has **unfolded so far** rather
+        // than to the settled body: an unclipped label in a half-open card paints below the card's
+        // own bottom edge, which is the one thing that would make the unfold visibly wrong. At
+        // `reveal = 1.0` this box is exactly the padded body, so a settled label is unchanged.
+        let content_rect = crate::core::Rect::new(
             body_rect.x + content_padding,
             body_rect.y + content_padding,
             body_rect.width.saturating_sub((content_padding as u32) * 2),
             body_rect.height.saturating_sub((content_padding as u32) * 2),
         );
+        if content_rect.height == 0 {
+            return;
+        }
         let font = Font::simple("sans-serif", 13.0);
         let label = if self.content.is_some() { "Popover" } else { "Popover (empty)" };
         // The label is centred on the content box — **both ways**. `draw_text_fitted` aligns
@@ -472,6 +562,21 @@ mod tests {
     /// absorb that rounding while still rejecting a top-edge origin, which is half the card
     /// away.
     const LINE_TOLERANCE: i32 = 8;
+
+    /// The `(y, height)` of the document's first **rounded** rectangle.
+    ///
+    /// The card is the popover's only rounded rectangle, and it is what both the placeholder's
+    /// centring and its containment are measured against — the control's own rectangle is not,
+    /// because the card tracks the anchor and need not be inside the control at all. Shared rather
+    /// than repeated so the two assertions cannot drift onto different rectangles.
+    fn first_rounded_rect(svg: &str) -> Option<(i32, i32)> {
+        svg.split("<rect ").filter(|chunk| chunk.contains("rx=\"")).find_map(|chunk| {
+            let y = chunk.split("y=\"").nth(1)?.split('"').next()?.parse::<i32>().ok()?;
+            let h = chunk.split("height=\"").nth(1)?.split('"').next()?.parse::<i32>().ok()?;
+            Some((y, h))
+        })
+    }
+
     /// A simple test widget used as content inside popover tests.
     struct TestContent {
         base: BaseWidget,
@@ -614,39 +719,101 @@ mod tests {
         assert!(svg.ends_with("</svg>"), "SVG should end with </svg>");
     }
 
+    /// Opening a popover unfolds it rather than placing it there at full height.
+    ///
+    /// # The defect this pins
+    ///
+    /// `show`/`hide` carried only the logical state and the draw read it directly, so the card
+    /// appeared whole on the frame it was shown and vanished on the frame it was hidden. The
+    /// assertions are in two halves, because a progress nothing reads is not an unfold: the model
+    /// must take an interior value, and the *painted* card must be shorter at that moment.
+    #[test]
+    fn opening_a_popover_unfolds_it() {
+        let mut popover = Popover::new(Rect::new(0, 0, 300, 200));
+        assert_eq!(popover.reveal_progress(), 0.0, "a fresh popover is closed");
+        assert!(!popover.is_animating(), "and owes no frames");
+
+        popover.show(Rect::new(100, 100, 50, 20));
+        assert!(popover.is_visible(), "the logical state answers at once");
+        assert!(popover.is_animating(), "while the drawn card owes frames");
+
+        // The painted card's height, read from the document: the card is the only rounded
+        // rectangle the *open* popover paints that is at least as wide as the arrow gap.
+        fn card_height(svg: &str) -> u32 {
+            svg.split("<rect ")
+                .filter(|chunk| chunk.contains("rx=\""))
+                .filter_map(|chunk| {
+                    let h = chunk.split("height=\"").nth(1)?;
+                    h.split('"').next()?.parse::<u32>().ok()
+                })
+                .max()
+                .unwrap_or(0)
+        }
+
+        assert!(popover.tick(20), "still unfolding after one step");
+        let mid = popover.reveal_progress();
+        assert!(
+            mid > 0.0 && mid < 1.0,
+            "the popover must pass through an interior reveal (got {mid})"
+        );
+        let mid_height = card_height(&render_to_svg(&mut popover));
+
+        while popover.tick(1000) {}
+        assert_eq!(popover.reveal_progress(), 1.0, "and settle fully open");
+        let open_height = card_height(&render_to_svg(&mut popover));
+
+        assert!(
+            mid_height > 0 && mid_height < open_height,
+            "an unfolding card must be shorter than a settled one: mid={mid_height} open={open_height}"
+        );
+    }
+
     #[test]
     fn popover_svg_output_hidden() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         let mut popover = Popover::new(Rect::new(0, 0, 300, 200));
         let svg = render_to_svg(&mut popover);
         assert!(svg.starts_with("<svg"));
         assert!(svg.ends_with("</svg>"));
-        // A hidden popover is laid out, not blank: the card it will occupy is painted at
-        // reduced opacity, so a control that has been created but not opened still has a
-        // rendered extent instead of vanishing. `draw` used to `return` early here, which
-        // made the control invisible at rest — the defect the rendering census reported as
-        // `ink = 0`.
-        let fill_count = svg.matches("fill=").count();
+        // A closed popover is a **thin strip**, not a blank page: the card it will occupy is
+        // already there at its closed height, so a control that has been created but not opened
+        // still has a rendered extent instead of vanishing. `draw` used to `return` early here,
+        // which made the control invisible at rest — the defect the rendering census reported as
+        // `ink = 0`. The card is a rounded rect, so it is read as the rounded `fill` elements.
+        let rounded = svg.matches("rx=\"").count();
+        assert!(rounded > 0, "a closed popover must still paint its card: {svg}");
+        // The placeholder label is **not** painted while the popover is closed: it lives inside
+        // the card, which has no interior at that height, so painting it would put ink outside
+        // the card's own bottom edge.
         assert!(
-            fill_count > 1,
-            "a hidden popover must still paint its card, got only the background fill: {svg}"
-        );
-        // The placeholder label is painted while the popover is hidden. It is `font8x8` glyph
-        // geometry rather than a `<text>` element, so it is checked as ink on the card rather
-        // than as a string in the document.
-        let (left, top, right, bottom) = crate::widget::svg::text_ink_box(&svg)
-            .unwrap_or_else(|| panic!("the placeholder label must be painted: {svg}"));
-        assert!(right > left, "the placeholder laid down ink: {left}..{right}");
-        assert!(
-            (0..Rect::new(0, 0, 300, 200).height as i32).contains(&top) && bottom <= 200,
-            "the label sits inside the control, got {top}..{bottom}"
+            crate::widget::svg::text_ink_box(&svg).is_none(),
+            "a closed popover paints no interior label: {svg}"
         );
 
-        // A hidden popover and a shown one must still differ: the shown card is opaque and
-        // carries its anchor arrow, the hidden one is dimmed and does not.
-        let mut open = Popover::new(Rect::new(0, 0, 300, 200));
-        open.show(Rect::new(100, 100, 50, 20));
+        // A closed popover and an open one must differ: the open card is opaque, is at its full
+        // height, carries the placeholder and carries its anchor arrow; the closed one is a strip.
+        //
+        // This geometry deliberately positions the control so the whole anchored card fits inside
+        // it: the card tracks the anchor, so at an anchor near the top edge the settled card sits
+        // *below* the control's bottom — which is where the census-and-gate-relevant form of the
+        // assertion, "the label is inside the card", belongs. It is asserted against the card's own
+        // rectangle below rather than against the control's, because that is what is true.
+        let mut open = Popover::new(Rect::new(0, 0, 300, 400));
+        open.show(Rect::new(100, 20, 50, 20));
+        while open.tick(1000) {}
         let shown = render_to_svg(&mut open);
         assert_ne!(svg, shown, "showing the popover must change what is painted");
+        let (left, top, right, bottom) = crate::widget::svg::text_ink_box(&shown)
+            .unwrap_or_else(|| panic!("the placeholder label must be painted when open: {shown}"));
+        assert!(right > left, "the placeholder laid down ink: {left}..{right}");
+        let (card_y, card_h) = first_rounded_rect(&shown).expect("the open popover paints a card");
+        assert!(
+            top >= card_y && bottom <= card_y + card_h,
+            "the label must sit inside the card: ink {top}..{bottom}, card {card_y}..{}",
+            card_y + card_h
+        );
     }
 
     /// The empty-state placeholder is centred in the card on **both** axes.
@@ -662,28 +829,36 @@ mod tests {
     /// no baseline to undo — the document holds a picture of the run. That is the stronger
     /// check, because the old form verified the coordinate the backend had written down rather
     /// than where the ink actually landed.
+    ///
+    /// The centre is read from the **card's own** rectangle in the document, not from the
+    /// control's: the card is positioned against the anchor, so it need not be the control's
+    /// middle (at this anchor it sits at `y = 130` inside a 120-tall control). Measuring against
+    /// the control would have been asserting the anchor, not the centring.
     #[test]
     fn popover_empty_placeholder_is_centred_in_the_card() {
         let rect = Rect::new(0, 0, 240, 120);
         let mut popover = Popover::new(rect);
+        // The placeholder lives inside the card, so it is only painted once the card is open.
+        popover.show(Rect::new(100, 100, 50, 20));
+        while popover.tick(1000) {}
         let svg = render_to_svg(&mut popover);
-
         let (left, top, right, bottom) = crate::widget::svg::text_ink_box(&svg)
             .expect("the empty-state placeholder must be drawn");
         assert!(right > left && bottom > top, "the placeholder laid down ink: {svg}");
 
-        // The card is inset by the arrow on the left and fills the control vertically, so
-        // the placeholder's line box should be near the control's vertical middle — not at
-        // its top edge. `top` is the run's glyph-box top edge, i.e. the line-box `y` the
-        // shown form used, because a glyph bitmap is stretched across the whole box height.
-        // Half the control's height is the tolerance centre; a top-edge origin would be
-        // around the content padding (8), which this bound rejects.
-        let middle = rect.height as i32 / 2;
+        // The card: the rounded rectangle that is not the control's background. It is the one
+        // the label is centred in, so it is the one the centre is measured against.
+        let (card_y, card_h) = first_rounded_rect(&svg).expect("the open popover paints a card");
+        let middle = card_y + card_h / 2;
         assert!(
             (top - middle).abs() <= LINE_TOLERANCE,
-            "the empty-state placeholder must be vertically centred: top={top}, centre={middle}"
+            "the empty-state placeholder must be vertically centred in the card: top={top}, \
+             card centre={middle} (card y={card_y} h={card_h})"
         );
-        // And it must sit *below* the padding, which a top-edge origin would not.
-        assert!(top > 8, "a top-edge origin would pin the placeholder at y=8, got {top}");
+        // And it must sit *below* the card's padding, which a top-edge origin would not.
+        assert!(
+            top >= card_y + 8,
+            "a top-edge origin would pin the placeholder at the padding, got {top} in card y={card_y}"
+        );
     }
 }

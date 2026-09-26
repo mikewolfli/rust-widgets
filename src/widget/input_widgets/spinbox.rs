@@ -37,7 +37,10 @@ use crate::widget::decorations::{
 };
 use crate::widget::metrics::{dimensions, ControlMetrics};
 
-use crate::widget::capability::coercion::{expect_bool, expect_f64, expect_i64, expect_string};
+use crate::widget::capability::coercion::{
+    expect_bool, expect_f64, expect_i64, expect_string, expect_text_direction,
+    text_direction_to_str,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -116,6 +119,20 @@ pub struct SpinBox {
     /// instead of clamping. Affects only the step buttons / keyboard stepping,
     /// not `set_value`.
     wrapping: bool,
+    /// The writing direction the field is laid out in.
+    ///
+    /// # What the direction moves, and why the buttons are the whole of it
+    ///
+    /// In a right-to-left field the **value is read from the right**, so the step column belongs on
+    /// the *leading* edge (the right) rather than the trailing one (the left) — the same edge the
+    /// value starts from, which is what keeps the number next to the buttons that change it. Before
+    /// this, a spin box under an RTL locale drew its value in the right-hand two thirds and its
+    /// steppers on the left, so the two halves were in different reading orders.
+    ///
+    /// The value's own text alignment follows the same field: `Left` in LTR, `Right` in RTL. Both
+    /// are properties of **one** value read by every box below, so the column and the text cannot
+    /// disagree about which edge they are anchored to.
+    direction: crate::core::TextDirection,
     /// Emitted with the new value after any change, including clamping by
     /// `minimum` / `maximum`. Not emitted when the value is set to the value it
     /// already had.
@@ -215,6 +232,17 @@ impl SpinBox {
     fn assemble_row(&self) -> (Rect, Rect) {
         let band = self.row_band();
         let column_width = self.step_column_width();
+        // # Why the direction is resolved to two edges, once
+        //
+        // The step column sits at the **leading** edge of the band and the value fills from the
+        // other side. In LTR that is the right edge; in RTL the reading order is reversed and it is
+        // the left one, so the number stays next to the buttons that change it. Both arms below are
+        // written against these two values rather than against `band.x` / `band.right()`, so the
+        // layout and the fallback cannot disagree about which edge is which.
+        let rtl = self.direction.is_right_to_left();
+        let column_x =
+            if rtl { band.x } else { band.x + band.width.saturating_sub(column_width) as i32 };
+        let value_x = if rtl { band.x + column_width as i32 } else { band.x };
         // # Why the stripped profiles take the direct route
         //
         // `mini`/`embedded` have neither `WidgetFactory` nor `Box` under `alloc_frugal`
@@ -226,21 +254,22 @@ impl SpinBox {
         #[cfg(not(full_widgets))]
         {
             (
-                Rect::new(band.x, band.y, band.width.saturating_sub(column_width), band.height),
-                Rect::new(
-                    band.x + band.width.saturating_sub(column_width) as i32,
-                    band.y,
-                    column_width,
-                    band.height,
-                ),
+                Rect::new(value_x, band.y, band.width.saturating_sub(column_width), band.height),
+                Rect::new(column_x, band.y, column_width, band.height),
             )
         }
         #[cfg(full_widgets)]
         {
             let factory = WidgetFactory::new_with_defaults();
+            // The row reads right-to-left when the field does, which is what puts the *first* child
+            // (the value) on the right and the step column on the left without either child knowing
+            // the direction. Reversing the children's order instead would have made the value the
+            // second child and every index below depend on the direction — the kind of two-place
+            // agreement that the comment this replaces records as the cause of the value running
+            // under the buttons.
             let mut row = CompositeBuilder::new(
                 Box::new(FlexLayout::with_params(
-                    FlexDirection::Row,
+                    if rtl { FlexDirection::RowReverse } else { FlexDirection::Row },
                     FlexWrap::NoWrap,
                     JustifyContent::FlexStart,
                     AlignItems::Stretch,
@@ -283,17 +312,12 @@ impl SpinBox {
                     let column_width = column_width.min(band.width);
                     (
                         Rect::new(
-                            band.x,
+                            value_x,
                             band.y,
                             band.width.saturating_sub(column_width),
                             band.height,
                         ),
-                        Rect::new(
-                            band.x + band.width.saturating_sub(column_width) as i32,
-                            band.y,
-                            column_width,
-                            band.height,
-                        ),
+                        Rect::new(column_x, band.y, column_width, band.height),
                     )
                 }
             }
@@ -310,6 +334,26 @@ impl SpinBox {
             .min(self.row_band().width)
     }
 
+    /// The writing direction the field runs in.
+    pub fn direction(&self) -> crate::core::TextDirection {
+        self.direction
+    }
+
+    /// Sets the writing direction.
+    ///
+    /// The step column moves to the other edge and the value's box yields to it there, and the value
+    /// is anchored to the leading edge — the whole effect, spelled through the one `direction` the
+    /// layout, the paint and the hit test read, so the three cannot disagree about which side the
+    /// buttons are on.
+    pub fn set_direction(&mut self, direction: crate::core::TextDirection) {
+        if self.direction == direction {
+            return;
+        }
+        self.direction = direction;
+        self.base.request_redraw();
+        self.base.request_layout();
+    }
+
     /// Creates a spin box with default range 0-99 and integer precision.
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -323,6 +367,9 @@ impl SpinBox {
             suffix: String::new(),
             special_value_text: None,
             wrapping: false,
+            // Left-to-right is the default because the crate's default locale is; a host in an RTL
+            // locale sets it, and every box below follows.
+            direction: crate::core::TextDirection::LeftToRight,
             value_changed: Signal1::new(),
             editing_finished: GenericSignal::new(),
         }
@@ -729,6 +776,9 @@ impl WidgetProperties for SpinBox {
                 None => Ok(CapabilityValue::Null),
             },
             "wrapping" => Ok(CapabilityValue::Bool(self.wrapping())),
+            "direction" => {
+                Ok(CapabilityValue::String(text_direction_to_str(self.direction()).to_string()))
+            }
             _ => base_property_get(self, name),
         }
     }
@@ -791,6 +841,10 @@ impl WidgetProperties for SpinBox {
                 self.set_wrapping(expect_bool(value)?);
                 Ok(())
             }
+            "direction" => {
+                self.set_direction(expect_text_direction(value)?);
+                Ok(())
+            }
             // Both are derived from the value and the two slots, so a writer would be a second way to
             // say something the control already answers — and one of the two could disagree.
             "display_text" | "value_text" => Err(CapabilityAccessError::ReadOnlyProperty),
@@ -810,6 +864,7 @@ impl WidgetProperties for SpinBox {
             "suffix",
             "special_value_text",
             "wrapping",
+            "direction",
             "display_text",
             "value_text",
             BASE_PROPERTY_NAMES
@@ -985,12 +1040,20 @@ impl Draw for SpinBox {
         let value_text = self.value_text();
         if !value_text.is_empty() {
             let line = context.text_line(editable, font);
+            // The value is anchored to the **leading** edge of its own box, which is the right in an
+            // RTL field. Reading it off the same `direction` the layout used is what keeps the text
+            // and the step column on the same side of the field.
+            let align = if self.direction.is_right_to_left() {
+                HorizontalAlignment::Right
+            } else {
+                HorizontalAlignment::Left
+            };
             context.draw_text_fitted(
                 Rect::new(layout.value.x, line.y, layout.value.width, line.height),
                 &value_text,
                 font,
                 text_color,
-                HorizontalAlignment::Left,
+                align,
             );
         }
         // The slots are chrome, not content, so they are drawn a step toward the field's own fill —
@@ -1135,6 +1198,9 @@ mod tests {
     /// separate `draw_text` calls produce three paths, and their order on the x axis is the layout.
     #[test]
     fn the_slots_are_drawn_on_either_side_of_the_value() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         let mut sb = SpinBox::new(Rect::new(0, 0, 200, 24));
         sb.set_value(7);
         sb.set_prefix("$".to_string());
@@ -1176,6 +1242,9 @@ mod tests {
     /// that the value was painted on top of the prefix.
     #[test]
     fn a_prefix_wide_enough_to_fill_the_field_leaves_the_value_no_room() {
+        // Holds the crate-wide theme guard: this test renders, and a concurrent
+        // test that switches the appearance would otherwise change a later frame.
+        let _theme_guard = crate::theme::theme_test_guard();
         let mut sb = SpinBox::new(Rect::new(0, 0, 200, 24));
         sb.set_value(7);
         assert_eq!(sb.value_text(), "7");
@@ -1606,6 +1675,80 @@ mod tests {
                 "the button column must stay inside the band at control width {width}"
             );
         }
+    }
+
+    /// An RTL spin box mirrors its assembly: the step column moves to the other edge and the value
+    /// yields to it there.
+    ///
+    /// # The defect this pins
+    ///
+    /// The field had no direction at all. Every placement was derived from `band.x` and
+    /// `band.right()`, so under an RTL locale the value was written from the field's *left* padding
+    /// and the steppers stayed on the right: the number and the buttons that change it were at
+    /// opposite ends in the wrong reading order. The assertion is **geometric** (which edge the
+    /// column is at, and that the two boxes still tile) **and** in the document (the value's ink moves
+    /// to the other side), because a layout-only assertion would not notice a draw that asked for the
+    /// mirrored boxes and then ignored them.
+    #[test]
+    fn an_rtl_spin_box_mirrors_its_step_column_and_its_value() {
+        use crate::core::TextDirection;
+        use crate::widget::svg::render_to_svg;
+        let _theme_guard = crate::theme::theme_test_guard();
+
+        let band = |sb: &SpinBox| sb.row_band();
+        let mut ltr = SpinBox::new(Rect::new(0, 0, 240, 120));
+        ltr.set_value(12);
+        let mut rtl = SpinBox::new(Rect::new(0, 0, 240, 120));
+        rtl.set_value(12);
+        rtl.set_direction(TextDirection::RightToLeft);
+
+        assert_eq!(ltr.direction(), TextDirection::LeftToRight, "left-to-right by default");
+        assert_eq!(rtl.direction(), TextDirection::RightToLeft, "and it reports what was set");
+
+        // The column is at the trailing edge in LTR and the leading one in RTL.
+        let ltr_band = band(&ltr);
+        let rtl_band = band(&rtl);
+        assert_eq!(
+            ltr.button_column().x + ltr.button_column().width as i32,
+            ltr_band.x + ltr_band.width as i32,
+            "in LTR the column ends at the band's right edge"
+        );
+        assert_eq!(rtl.button_column().x, rtl_band.x, "in RTL it starts at the band's left edge");
+
+        // And the two boxes tile the band either way, so mirroring did not lose a column.
+        for (sb, label) in [(&ltr, "ltr"), (&rtl, "rtl")] {
+            let editable = sb.editable_rect();
+            let column = sb.button_column();
+            assert_eq!(
+                editable.width + column.width,
+                sb.row_band().width,
+                "the two boxes must tile the band in {label}"
+            );
+            let (left, right) =
+                if editable.x < column.x { (editable, column) } else { (column, editable) };
+            assert_eq!(
+                left.x + left.width as i32,
+                right.x,
+                "the two boxes must share an edge in {label}"
+            );
+        }
+
+        // The value's own box moved to the other side, which is the half a layout assertion misses.
+        assert!(
+            rtl.editable_rect().x > ltr.editable_rect().x,
+            "the value yields to the column, so in RTL its box starts further right: ltr={} rtl={}",
+            ltr.editable_rect().x,
+            rtl.editable_rect().x
+        );
+
+        // And it is *painted* that way: the two documents differ, which a mirrored layout that the
+        // draw then ignored would not achieve.
+        let ltr_svg = render_to_svg(&mut ltr);
+        let rtl_svg = render_to_svg(&mut rtl);
+        assert_ne!(
+            ltr_svg, rtl_svg,
+            "an RTL spin box must not paint the same picture as an LTR one"
+        );
     }
 
     /// A band narrower than the step column keeps both columns inside it.
