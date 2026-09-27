@@ -193,7 +193,9 @@ impl Switch {
             return;
         }
         self.base.set_hovered(hovered);
-        self.base.request_redraw();
+        // Delegates to the trait default, which also re-resolves the theme for `switch:hover`.
+        // See `Button::set_hovered` for why an inherent method must delegate through the trait object.
+        <dyn Widget>::set_hovered(self, hovered);
     }
 
     /// How far the thumb has travelled, `0.0` at the off end and `1.0` at the on end.

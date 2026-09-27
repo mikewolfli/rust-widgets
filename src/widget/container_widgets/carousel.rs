@@ -1000,7 +1000,9 @@ impl Carousel {
             if let Some(page) = self.pages.get_mut(index) {
                 if let Some(content) = page.content_mut() {
                     content.set_geometry(page_rect);
-                    content.set_enabled(is_enabled);
+                    // Through the `Widget` supertrait, because the re-resolving `set_enabled`
+                    // carries a `where Self: Sized` bound that a `dyn WidgetAndDraw` cannot meet.
+                    <dyn Widget>::set_enabled(content, is_enabled);
                     context.push_clip(page_rect.x, page_rect.y, page_rect.width, page_rect.height);
                     content.draw_widget(context);
                     context.pop_clip();

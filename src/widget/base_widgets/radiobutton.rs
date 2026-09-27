@@ -262,7 +262,10 @@ impl RadioButton {
             return;
         }
         self.base.set_hovered(hovered);
-        self.base.request_redraw();
+        // Delegates to the trait default, which also re-resolves the theme for
+        // `radio_button:hover`. See `Button::set_hovered` for why an inherent method must delegate
+        // through the trait object rather than writing the field itself.
+        <dyn Widget>::set_hovered(self, hovered);
     }
 }
 // Implement Widget trait

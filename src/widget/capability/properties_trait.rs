@@ -80,7 +80,10 @@ pub fn base_property_set(
     match name {
         "enabled" => match value {
             CapabilityValue::Bool(enabled) => {
-                widget.set_enabled(enabled);
+                // Through the trait object, because the `where Self: Sized` default is not
+                // callable on `dyn Widget` by its short name, and the base write would skip the
+                // theme re-resolution that default performs.
+                <dyn Widget>::set_enabled(widget, enabled);
                 Ok(())
             }
             _ => Err(CapabilityAccessError::TypeMismatch),

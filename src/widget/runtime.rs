@@ -1858,6 +1858,12 @@ pub fn report_state(id: ObjectId, fact: StateFact) -> bool {
     // backend that forgot one would make its control the only one whose hover neither painted
     // nor announced.
     if changed {
+        // A backend reports into `BaseWidget` directly, which bypasses the `Widget::set_enabled`
+        // default that re-resolves the theme — so the `"<kind>:disabled"` key would be reachable
+        // for a self-painted control and unreachable for a native one, from the same fact. This
+        // makes the native path go through the same door the self-painted path does, rather than
+        // relying on a backend to remember a second call.
+        with_widget_mut(id, |widget| crate::style::reapply_active_theme_state(widget));
         request_repaint_because(id, RepaintReason::State);
         crate::widget::a11y_submit::submit_state_changed(id);
     }

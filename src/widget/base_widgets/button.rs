@@ -316,7 +316,13 @@ impl Button {
             return;
         }
         self.base.set_hovered(hovered);
-        self.base.request_redraw();
+        // Delegate to the trait default, which also re-resolves the theme for `button:hover`.
+        // This inherent method shadows the trait's default implementation, so a plain field write
+        // would make the key unreachable for this control while the trait default covered the other
+        // 187 — the exact drift the shared default exists to prevent. The fully qualified `<dyn
+        // Widget>` names the default through the trait object, where it carries no `where
+        // Self: Sized` bound and so is callable.
+        <dyn Widget>::set_hovered(self, hovered);
     }
     /// Advances the interaction transition by `delta_ms` and reports whether another frame is needed.
     ///
@@ -376,6 +382,9 @@ impl Button {
         // Write the paint flag first, so the draw path and `widget_state` see the new value
         // even if the signal below is never connected.
         self.base.set_pressed(pressed);
+        // The trait default carries the theme re-resolution for `button:pressed`; see
+        // `Button::set_hovered` for why an inherent method must delegate through the trait object.
+        <dyn Widget>::set_pressed(self, pressed);
         if self.signaled_pressed == pressed {
             return;
         }

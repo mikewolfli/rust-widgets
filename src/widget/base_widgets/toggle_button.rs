@@ -198,6 +198,9 @@ impl ToggleButton {
     /// redraw.
     pub fn set_pressed(&mut self, pressed: bool) {
         self.base.set_pressed(pressed);
+        // The trait default carries the theme re-resolution for `toggle_button:pressed`; this
+        // inherent method shadows it, so it delegates through the trait object.
+        <dyn Widget>::set_pressed(self, pressed);
         if self.signaled_pressed == pressed {
             return;
         }

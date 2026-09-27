@@ -191,7 +191,11 @@ macro_rules! impl_helpers {
             // accessors degrade rather than fail to compile.
             #[cfg(not(alloc_frugal))]
             {
-                self.with_live_widget(widget_id, |widget| widget.set_enabled(enabled));
+                self.with_live_widget(widget_id, |widget| {
+                    // Through the trait object: the re-resolving `set_enabled` carries a
+                    // `where Self: Sized` bound and is not callable by short name here.
+                    <dyn crate::widget::Widget>::set_enabled(widget, enabled)
+                });
                 crate::widget::runtime::request_repaint(widget_id);
             }
             #[cfg(alloc_frugal)]

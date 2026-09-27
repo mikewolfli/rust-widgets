@@ -160,7 +160,86 @@ pub trait Widget: EventHandler + Any {
     /// Disabling does not hide the widget: it stays painted but is skipped
     /// when events are delivered, and focusable controls remain in the tab
     /// order (see [`Widget::is_focusable`]).
-    fn set_enabled(&mut self, enabled: bool) {
+    ///
+    /// # Why this re-resolves the theme
+    ///
+    /// `enabled` is one of the inputs [`Widget::widget_state`] answers from, so it selects the
+    /// `"<kind>:disabled"` key a theme author may have written. [`crate::style::apply_active_theme`]
+    /// runs only inside the two creation funnels, in the state the constructor produced, and a
+    /// redraw re-runs `draw` rather than the theme application — so without this call a control
+    /// disabled **after** it was themed kept the fill of its creation state and the override was
+    /// unreachable. Wiring the re-resolution here, on the trait, is what gives all 188 controls the
+    /// behaviour from one place: a per-control fix would have had to be repeated 188 times and
+    /// would drift.
+    ///
+    /// The early return is not an optimisation: `set_enabled` is called on every hit test and the
+    /// re-resolution classifies the role and resolves a style, so doing it when nothing changed
+    /// would put that work on the input path for no observable difference.
+    ///
+    /// `where Self: Sized` only restates the bound `Widget: Any` already carries — `Any: 'static`
+    /// implies `Sized` — so it widens nothing and no control is excluded. It is written out because
+    /// the re-resolution takes `&mut dyn Widget`, and the coercion to a trait object is the one place
+    /// the compiler will not infer that the bound holds.
+    fn set_enabled(&mut self, enabled: bool)
+    where
+        Self: Sized,
+    {
+        if self.base().is_enabled() == enabled {
+            return;
+        }
+        self.base_mut().set_enabled(enabled);
+        crate::style::reapply_active_theme_state(self);
+    }
+    /// Sets the hovered flag and requests a repaint.
+    ///
+    /// # Why this is a trait default rather than only a base method
+    ///
+    /// Hover is an input of [`Widget::widget_state`], so it selects `"<kind>:hover"`. The same
+    /// reasoning as [`Widget::set_enabled`] applies — the theme is applied once at creation, and a
+    /// redraw does not re-run it — so the re-resolution belongs on the trait, where all 188 controls
+    /// inherit it from one place.
+    ///
+    /// The early return is load-bearing: `MouseMove` reports a hover on every pointer sample, and
+    /// without it each sample would classify an interaction role and resolve a style.
+    fn set_hovered(&mut self, hovered: bool)
+    where
+        Self: Sized,
+    {
+        if self.base().is_hovered() == hovered {
+            return;
+        }
+        self.base_mut().set_hovered(hovered);
+        crate::style::reapply_active_theme_state(self);
+        crate::widget::runtime::request_repaint(self.id());
+    }
+    /// Sets the pressed flag and requests a repaint.
+    ///
+    /// See [`Widget::set_hovered`]; `pressed` is the other momentary input of
+    /// [`Widget::widget_state`], selecting `"<kind>:pressed"`.
+    fn set_pressed(&mut self, pressed: bool)
+    where
+        Self: Sized,
+    {
+        if self.base().is_pressed() == pressed {
+            return;
+        }
+        self.base_mut().set_pressed(pressed);
+        crate::style::reapply_active_theme_state(self);
+        crate::widget::runtime::request_repaint(self.id());
+    }
+    /// Sets the pressed flag on the base **without** a theme re-resolution or a repaint.
+    ///
+    /// A value-only control still has to reach the base it just wrote, and `set_enabled`'s
+    /// `where Self: Sized` default cannot be called through `&mut dyn Widget`. This is the one
+    /// call a site that has already handled the theme hook uses, rather than naming
+    /// `base_mut().set_*` and relying on the reader to know the difference.
+    fn record_pressed(&mut self, pressed: bool) {
+        self.base_mut().set_pressed(pressed);
+    }
+    /// Sets the enabled flag on the base **without** a theme re-resolution.
+    ///
+    /// See [`Widget::record_pressed`] for why this exists alongside [`Widget::set_enabled`].
+    fn record_enabled(&mut self, enabled: bool) {
         self.base_mut().set_enabled(enabled);
     }
     /// Returns `true` if the widget accepts input (enabled), `false` if not.
