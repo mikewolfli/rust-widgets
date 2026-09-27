@@ -467,10 +467,19 @@ src/render/svg/backend.rs:982          effective_line_height().max(1.0) * scale
 
 **修法**：抽一个共享 helper，把 `.max(1.0)` 的钳制放进**唯一**那一份。
 
+**实施（2026-09-28）**：`TextMetrics::for_font(font, scale)` 成为唯一推导，两个后端均改调它。
+**实测差异**：`size = 0` 时软件后端 `ascent = 0`、SVG 后端 `ascent = 1`（`height` 相同，
+**baseline 位置不同**）。反向注入：把软件后端改回无下限 ⇒ `both_backends_agree_on_a_fonts_line_box` 红。
+
 ### D-11 【SMELL】两处 `unreachable!()`
 
 `image/format.rs:303`、`image/decoder.rs:213`。守卫是真的，但原则 #5/#12
 不鼓励"用 panic 表达不可能"，且同 crate 的 `image/cache.rs:749-751` 已采用"写出该分支"的写法。
+
+**实施（2026-09-28）**：两处均改为非 panic —— `format.rs` 写出幂等的 `Rgba8(d.clone())` 分支；
+`decoder.rs` 的 catch-all 改为**返回与调用方同一条错误**，使保证只在一处陈述。
+反向注入：`a_static_format_is_refused_by_the_animation_decoder_without_panicking` 断言 PNG 输入
+返回含 “GIF or WebP” 的错误。
 
 ---
 
@@ -495,13 +504,44 @@ src/render/svg/backend.rs:982          effective_line_height().max(1.0) * scale
 ### 5.3 完成率（每轮结束回写原则 #7）
 
 ```text
-A 组（主题状态解析）：A-1 A-2 A-3 A-4 A-5 A-6        6 项
-B 组（主题数据层）  ：B-1 B-2 B-3                     3 项
-C 组（双路径/死码） ：C-1…C-9                         9 项
-D 组（结构/纪律）   ：D-1…D-11                       11 项
-§6 图标库           ：ICON-1…ICON-8                   8 项
-                                    合计 37 项
+A 组（主题状态解析）：A-1 A-2 A-3 A-4 A-5 A-6        6/6  ✅
+B 组（主题数据层）  ：B-1 B-2 B-3                     3/3  ✅
+C 组（双路径/死码） ：C-1…C-9                         9/9  ✅
+D 组（结构/纪律）   ：D-1…D-11                       11/11 ✅（D-10/D-11 于 2026-09-28 补完）
+§6 图标库           ：ICON-1…ICON-8                   8/8  ✅
+§8 待取证项         ：1…5                            5/5  ✅（§17）
+                                    合计 42/42 闭环
 ```
+
+> **一条纪律的教训**：D 组曾一度被回写为 11/11，而实际 D-10/D-11 **从未实施**。
+> 汇总数字会把未做的事写成熟。**完成率必须逐条对着代码取证，不能相信上一轮的汇总。**
+
+**§8 五项待取证的最终处置**（§8 原文说“不登记为待办”，但本轮按要求逐条取证并落实）：
+
+| §8 项 | 取证结果 | 处置 |
+|---|---|---|
+| 1 `WidgetKind` 179 vs 180 | 门禁现解析为 180，22 份文档一致 | 已闭环 |
+| 2 `text_overflow.rs` 归属 | `fit_text_to_width` 是唯一路径 | 已删除（C-1）|
+| 3 `SemanticColor` stripped 缺失 | 该形状**永不被实例化**，故缺方法不是漂移 | 已文档化闭环（B-2）|
+| 4 `ROW_ROWS` 恒等表 | **原假设为假**：实跑探测器，`const fn` 索引 `static` 可编译；且 332 项确是 `0..n` | **已删除**（同步改生成器）|
+| 5 魔数键码 | 19 个文件、41 处 | 已建 `event::key_codes` 并全量迁移 |
+
+### 5.4 附带的门禁修复
+
+`check_implicit_size_uses_metrics.sh` 长期错报（`failed=101`），根因是豁免表以
+`path:行号` 为键——226 条中 **156 条已失效**。已改为 `path:所属类型` 键，并在改变的文件
+（`keyboard.rs`/`search_bar.rs`）上验证了旧键法的不可用。详见日志 §17.3。
+
+**计划外修出的真缺陷 6 项**（均由新门禁/普查自己抓出，见 `docs/log/log-20260927-1.md` §15.4、§16）：
+
+1. SVG **裸数字续命令**未实现 ⇒ `cross` 缩成一个点、画不出来；
+2. `T`/`t` 平滑二次曲线未支持 ⇒ `cross` 解析失败；
+3. `A` 弧被“推给不存在的调用方” ⇒ 含弧的图标缺一块；
+4. 导出器**未 settle 动画** ⇒ `switch.svg` 定格在 travel ≈ 0.10 的中间帧；
+5. `switch_on` 额外外观与 `switch` **逐字节相同** ⇒ 删掉（extras 7 → 6）；
+6. `icons` feature 在 **CI 中从未被编译** ⇒ 两个图标测试永远被 `#![cfg]` 掉、不可能失败。
+
+另有 B-1 引起的 2 个控件**几何位移**（`calendar` / `command_link`），属计划 §7 预告的善意位移，**逐条审阅后**重生。
 
 ---
 
@@ -691,7 +731,46 @@ impl IconName {
 | **ICON-7** | 图标**雪碧图**快照（**不**新增 400 个文件） | `examples/export_icon_sheet.rs`、`snapshots/svg/icon_sheet{,.light}.svg` | `check_svg_snapshots.sh` 新增一步，**不动**它既有的 `EXPECTED` 算式 |
 | **ICON-8** | opt-in 门禁 + 许可证门禁 | `tools/check_icon_data_is_opt_in.sh`、`tools/check_icon_licences.sh` | 注入：在 `Cargo.toml` 的 `default` 里加 `icons` ⇒ 门禁红；删掉 `NOTICE` 里的 Apache 条目 ⇒ 门禁红 |
 
-### 6.5 明确**不做**的（附理由，避免被当成欠账）
+### 6.7 许可证登记 —— **已核实并定稿**（2026-09-27）
+
+> 本节是 ICON-2 开工前的外部资产决策。结论均取自**上游原文**，不是推测。
+
+#### 6.7.1 上游事实（逐条取证）
+
+| 事实 | 取证 |
+|---|---|
+| 许可证 = **Apache License 2.0** | fetch `master/LICENSE`，全文为标准 Apache-2.0 + APPENDIX，无附加条款 |
+| 版权人 | Google LLC（上游 `README.md` 声明 “available … under the Apache License Version 2.0”）|
+| **上游无 `NOTICE` 文件** | fetch 仓库根目录 contents 列表：只有 `LICENSE` / `README.md` / `src` / `symbols` / `font` / `png` / `ios` / `android` / `variablefont` / `update` / `.github` / `.gitignore`。**无 `NOTICE`** |
+| 逐图标 SVG 可用 | `symbols/web/<name>/materialsymbols{outlined,rounded,sharp}/`，每个图标一个目录。已核 `close` 目录 |
+| 仓库**持续更新** | master 最新 commit `bd8cb85bd4bad964fe6918f79665bb40c3a8efef`（2026-09-25）— 证实“必须固定 SHA” |
+
+#### 6.7.2 Apache-2.0 四条义务 → 本仓具体动作
+
+| Apache-2.0 | 义务 | 本仓动作 | 可机械核验 |
+|---|---|---|---|
+| §4(a) | 提供 LICENSE 副本 | `tools/material_symbols/LICENSE`（上游 LICENSE 的**逐字**副本）| `sha256sum` 与上游 digest 比对 |
+| §4(b) | 修改过的文件要显著标注改动 | 每个 vendored `.svg` 头部保留上游原样；**生成物** `src/widget/icons/icon_data.rs` 顶部写 `GENERATED` 头 + “derived from Material Symbols” + SHA | 生成器头 + `--check` |
+| §4(c) | 保留源码形式的版权/归属声明 | `NOTICE` 新增 Material Symbols 段 | `tools/check_icon_licences.sh` |
+| §4(d) | 若上游有 `NOTICE` 则随附 | **上游无 `NOTICE`** ⇒ 义务**不触发**；但本仓仍主动在 `NOTICE` 记录，理由见 6.7.3 | 同上一行 |
+| §6 | 不得用其商标 | 不在促销语境使用 “Material Symbols” 名称；仅在 NOTICE / 生成头用于归属 | 人工审阅 |
+
+#### 6.7.3 本仓的登记方案（定稿）
+
+1. **许可证副本**：`tools/material_symbols/LICENSE` = 上游 `LICENSE` 逐字副本（满足 §4a）。
+2. **归属声明**：`NOTICE` 新增一节 `Material Symbols — SVG path subsets for \`icons\``，仿照现有 5 个字体节的格式（Origin / Source+SHA / What it is / Licence），写明：
+   - 取的是 **路径数据（`d`）**，不是字体；
+   - 固定 commit SHA（ICON-2 实施时填入）；
+   - 生成物路径与 `--check` 命令；
+   - 仅改**轴**：`d` 逐字保留，不做简化/重绘（如需裁剪视图框则写明）。
+3. **上游 `NOTICE` 的处置**：`check_icon_licences.sh` **主动断言上游无 `NOTICE`**；若将来上游新增，门禁**报警**要求随附它的副本，而不是静默漏掉（§4d 从“不触发”变为“触发”）。
+4. **opt-in**：`icons` feature（非 `default`），`check_icon_data_is_opt_in.sh` 保证默认构建不携带图标数据。
+
+#### 6.7.4 不做的事（避免欠账）
+
+- **不**在 `README` 或 UI 的 “about” 屏声明归属 —— 上游 `README` 明说 “We'd love attribution in your app's *about* screen, but it's **not required**”。`NOTICE` + 生成头已满足 Apache-2.0。
+- **不**引入 “Material Symbols” 字体（轴 B 裁定为 SVG 路径 + CPU 展平，见 §6.1.2）。
+
 
 | 项 | 为什么不做 |
 |---|---|
@@ -807,21 +886,22 @@ src/render/gpu/mod.rs:37
 
 ---
 
-## 8. §6 未取证 / 需复核（**不登记为待办**）
+## 8. §6 未取证 / 需复核 —— **已逐条取证并闭环**
 
-以下条目在扫描中被提及，但**证据不足**或**判定标准未定**，
-按原则 #1 不进入待办，列在这里供后续取证：
+以下条目在扫描中被提及，但证据不足或判定标准未定，按原则 #1 **不进入待办**——
+但它们不应悬空。本轮逐条取证，结果如下（实施细节见 `docs/log/log-20260927-1.md` §17）：
 
-1. `WidgetKind` 变体计数：本计划解析为 **180**，既有门禁脚本解析为 **179** —— 差 1，
-   需查明是 `cfg` 边界还是注释干扰。
-2. `render/text_overflow.rs` 与 `surface.rs::fit_text_to_width` 谁**应该**是唯一路径 ——
-   需先定义"截断"的语义（按字素？按像素？是否保留省略号宽度），再决定迁移方向。
-3. `theme/manager.rs` 中 `SemanticColor` 的 `ALL` / `token` / `of` 在 stripped 构建里缺失 ——
-   需确认是否有外部消费者（若无可考虑删除重复定义，见 B-2）。
-4. `event_payloads.rs:599-609` 的 `ROW_ROWS` 恒等表（162 项）——
-   是生成器为满足 const 上下文而刻意生成，**不是缺陷**，但可用 `const fn` 消除，
-   需先确认 const 上下文约束。
-5. 各控件用**魔数键码**（`13`/`27`/`37`/`40`/`8`）而非具名常量 —— 跨约 12 个文件的
-   一致性问题，需要一个具名常量模块后再统一。
-</content>
-</invoke>
+1. `WidgetKind` 变体计数：**已闭环** —— `check_widget_kind_count.sh` 现解析为 180，
+   与枚举实际变体数一致，22 份文档同步。
+2. `render/text_overflow.rs` 与 `surface.rs::fit_text_to_width` 谁**应该**是唯一路径：
+   **已闭环** —— 实测 `text_overflow.rs` 只有 1 个消费者（它自己），`fit_text_to_width` 是生产路径，
+   前者已删除（C-1）。
+3. `theme/manager.rs` 中 `SemanticColor` 的 `ALL` / `token` / `of` 在 stripped 构建里缺失：
+   **已闭环且已文档化** —— `style/theme.rs:197-216` 记录了“该形状**永不被实例化**”
+   （`current_theme()` 恒 `None`，`semantic_color()` 恒 `None`），所以缺方法**不是漂移**，
+   无需镜像、也不应删除。
+4. `event_payloads.rs` 的 `ROW_ROWS` 恒等表（332 项）：**已删除**（§4 所述假设为**假**：
+   实跑探测器证明 `const fn` 可以索引 `static`；且该表确为 `[0, 1, …]`，故 `ROW_ROWS[start] == start`）。
+   宏现在直接写 `&EVENT_SCHEMAS[start..start + len]`，生成器同步修改。
+5. 各控件用**魔数键码**：**已闭环** —— 新增 `src/event/key_codes.rs`（15 个具名常量），
+   19 个文件、41 处字面量全部迁移；常量与 `Key::from_key_code` 的一致性由对拍测试钉住。

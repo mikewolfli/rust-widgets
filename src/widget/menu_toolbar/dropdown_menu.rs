@@ -10,6 +10,7 @@
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
+use crate::event::key_codes;
 use crate::render::{RenderCommand, RenderContext};
 use crate::signal::Signal1;
 use crate::widget::capability::coercion::{expect_bool, expect_usize};
@@ -266,6 +267,9 @@ impl DropdownMenu {
 impl Widget for DropdownMenu {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
@@ -552,7 +556,7 @@ impl EventHandler for DropdownMenu {
                 }
             }
             Event::KeyPress { key, modifiers: _ } => {
-                if *key == 27 && self.expanded {
+                if *key == key_codes::ESCAPE && self.expanded {
                     // Escape — collapse
                     self.collapse();
                 }

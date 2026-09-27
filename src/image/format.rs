@@ -237,7 +237,16 @@ impl ImageData {
         }
     }
 
-    /// Converts to RGBA8 if not already. Returns self if already RGBA8.
+    /// Converts to RGBA8. An `Rgba8` buffer is returned **cloned** unchanged.
+    ///
+    /// # Why the `Rgba8` arm is written out rather than `unreachable!()`
+    ///
+    /// The early `return` above makes the `Rgba8` arm here unreachable *today*, so it used to be
+    /// an `unreachable!()`. A panic is the wrong way to express "the code above guarantees this":
+    /// the guard is a `matches!` ten lines up, and a later edit that narrows or moves it turns
+    /// this arm into a crash in a draw path rather than a wrong-coloured pixel. Writing the
+    /// idempotent branch out costs one `clone` that the early return already pays for, and it keeps
+    /// the match exhaustive over [`ImageData`] — so adding a variant is still a compile error.
     pub fn to_rgba8(&self, width: u32, height: u32) -> ImageData {
         if matches!(self, ImageData::Rgba8(_)) {
             return self.clone();
@@ -300,7 +309,9 @@ impl ImageData {
                 }
                 ImageData::Rgba8(rgba)
             }
-            ImageData::Rgba8(_) => unreachable!(), // Caught by matches! check above
+            // The already-RGBA8 case, kept as a real answer rather than a panic: the early return
+            // above handles it, and this keeps the behaviour correct if that guard ever changes.
+            ImageData::Rgba8(d) => ImageData::Rgba8(d.clone()),
         }
     }
 }

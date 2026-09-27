@@ -9,6 +9,7 @@
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
+use crate::event::key_codes;
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::undo::{TextSnapshotCommand, UndoStack};
@@ -322,6 +323,9 @@ impl Widget for AutoCompleteEdit {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
@@ -589,20 +593,20 @@ impl EventHandler for AutoCompleteEdit {
                 }
             }
             Event::KeyPress { key, modifiers } => {
-                if *key == 13 {
+                if *key == key_codes::ENTER {
                     // Enter
                     if self.show_dropdown {
                         self.select_highlighted();
                     }
-                } else if *key == 27 {
+                } else if *key == key_codes::ESCAPE {
                     // Escape
                     if self.show_dropdown {
                         self.hide_dropdown();
                     }
-                } else if *key == 38 && *modifiers == 0 && self.show_dropdown {
+                } else if *key == key_codes::UP && *modifiers == 0 && self.show_dropdown {
                     // Up arrow
                     self.select_previous();
-                } else if *key == 40 && *modifiers == 0 && self.show_dropdown {
+                } else if *key == key_codes::DOWN && *modifiers == 0 && self.show_dropdown {
                     // Down arrow
                     self.select_next();
                 } else if *modifiers == 2 && *key == 90 {
@@ -615,7 +619,7 @@ impl EventHandler for AutoCompleteEdit {
                     let mut new_text = self.text.clone();
                     new_text.push(c);
                     self.set_text(new_text);
-                } else if *key == 8 {
+                } else if *key == key_codes::BACKSPACE {
                     // Backspace
                     if !self.text.is_empty() {
                         let mut new_text = self.text.clone();

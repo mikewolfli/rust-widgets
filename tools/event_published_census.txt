@@ -34,7 +34,7 @@ color_dialog: color_selected, accepted, rejected
 color_history: color_selected, color_hovered
 color_picker: color_changed, hex_changed
 color_well: clicked
-combo_box: current_index_changed, current_text_changed, activated
+combo_box: current_index_changed, current_text_changed, activated, popup_visibility_changed
 command_link: clicked, hovered
 command_palette: command_activated, query_changed
 cupertino_alert_dialog: confirmed, cancelled

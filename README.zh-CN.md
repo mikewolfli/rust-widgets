@@ -26,18 +26,18 @@ PNG 或 SVG。支持桌面、平板、移动、嵌入式，以及最小化的 `m
 
 ```toml
 [dependencies]
-rust_widgets = "2.7.0"
+rust_widgets = "2.8.0"
 ```
 
 设备配置**只能选一个**。它们互斥——`mini` 和 `embedded` 会把 crate 的一部分**编译掉**，所以把
 它们和 `desktop` 叠在一起不是「取最小公分母」，而是构建失败：
 
 ```toml
-rust_widgets = { version = "2.7.0", features = ["desktop"] }                       # 默认
-rust_widgets = { version = "2.7.0", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "2.7.0", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "2.7.0", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "2.7.0", default-features = false, features = ["mini"] }
+rust_widgets = { version = "2.8.0", features = ["desktop"] }                       # 默认
+rust_widgets = { version = "2.8.0", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "2.8.0", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "2.8.0", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "2.8.0", default-features = false, features = ["mini"] }
 ```
 
 > `cargo check --features embedded` 是**错的**：`desktop` 是默认特性，这条命令会同时打开两个互斥
@@ -185,6 +185,25 @@ Snackbar、底部面板）；导航、媒体，以及 Material 没有对应物�
 `supports_custom_widgets()`、`supports_web_engine()`、`has_real_engine()` 给的是真实答案，不是
 编译期桩。
 
+## 图标
+
+`icons` 特性**默认开启**，所以普通的 `cargo build` 会用 **Material Symbols 真实轮廓**画出 31 个
+`IconName`（轮廓固定在某个上游修订）：
+
+```console
+cargo build                                            # 真实轮廓（默认）
+cargo build --no-default-features --features desktop   # 手写几何
+```
+
+打开后其余一切不变：`IconName::as_str` / `from_name` 是同样的 token，颜色走同一套阶梯。
+**不开**该特性的构建渲染的是它一直渲染的样子 —— 这条路径正是为此保留的，也是数据出现之前
+所有快照所依据的。`IconName::data()` 返回 `IconData` 而非 `Option`，所以「新增变体但没补几何」
+是**编译错误**，而不是一个空白图标。路径数据为 Apache-2.0（Google LLC）；许可证副本、归属声明与
+校验门禁见 [`NOTICE`](NOTICE)、`tools/material_symbols/LICENSE` 与 `tools/check_icon_licences.sh`。
+
+该特性**刻意不放进任何 device profile**：`mini` / `embedded` 是按尺寸的配置，调用方没要求的
+载荷在那里是错的。想要图标的 profile 构建请显式要求（`--features mini,icons`）。
+
 ## 语言绑定
 
 `C ABI` 位于 `src/bindings/`，通过 **130 个 `rw_*` 函数**暴露每个控件，并提供基于能力的属性与事件模型。C、C++、
@@ -217,7 +236,7 @@ MIT —— 见 [LICENSE](LICENSE)。
 - 问题反馈：[GitHub Issues](https://github.com/mikewolfli/rust-widgets/issues)
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.7.0-blue)]()
+[![version](https://img.shields.io/badge/version-2.8.0-blue)]()
 [![tests](https://img.shields.io/badge/tests-5600%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 

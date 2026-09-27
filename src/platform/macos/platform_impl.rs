@@ -12,6 +12,7 @@ use crate::platform::clipboard::RichClipboardBackend;
 use crate::platform::ime::ImeBridge;
 use crate::platform::macos::types::*;
 use crate::platform::Platform;
+use crate::platform::PlatformCapabilities;
 use cocoa::appkit::{
     NSApp, NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicyRegular,
     NSBackingStoreBuffered, NSRunningApplication, NSView, NSWindow,
@@ -78,6 +79,22 @@ impl Platform for MacOSPlatform {
     }
     fn family(&self) -> PlatformFamily {
         PlatformFamily::Desktop
+    }
+
+    /// macOS honours all four host integrations, stated explicitly.
+    ///
+    /// The trait default is now an honest all-`false` (see [`Platform::capabilities`]), so each
+    /// backend says what it actually provides instead of inheriting an inference from its family.
+    /// AppKit supplies the screen scale, the input-method client, the accessibility tree and the
+    /// application menu, so all four are `true` here.
+    fn capabilities(&self) -> PlatformCapabilities {
+        PlatformCapabilities {
+            dpi_scaling: true,
+            ime: true,
+            accessibility: true,
+            native_menu: true,
+            typed_widget_trigger: true,
+        }
     }
 
     /// Reads installed physical memory via `sysconf` (`_SC_PHYS_PAGES` x `_SC_PAGESIZE`).

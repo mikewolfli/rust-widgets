@@ -1,0 +1,4 @@
+Upstream google/material-design-icons at the pinned revision ships no NOTICE
+file, so Apache-2.0 §4(d) is not triggered. Verified by
+tools/vendor_material_symbols.py (probe) and tools/check_icon_licences.sh (gate).
+If this file disappears, upstream added one and its text must be vendored.

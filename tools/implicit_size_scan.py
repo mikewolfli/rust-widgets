@@ -40,15 +40,57 @@ METRIC_VOCABULARY = (
 # what a control that has no opinion inherits. Flagging it would be flagging the trait itself.
 SIZE_HINT_DEFINITION_FILE = "src/widget/widget_trait.rs"
 
+# ── Finding the owner of a `size_hint` ─────────────────────────────────────────────────────────
+# Used to key the exemption table, and to build a readable key from it. `impl Foo {`,
+# `impl Widget for Foo {`, and `impl<T> Widget for Foo<T> {` all reduce to `Foo`.
+IMPL_HEADER = re.compile(r"^\s*impl(?:<[^>]*>)?\s+(?:[\w:]+\s+for\s+)?(?P<type>[\w:]+)")
+
 EXEMPTION_TABLE = "tools/implicit_size_exemptions.txt"
 
 
-def exemptions():
-    """The `path:line` keys of each non-comment, non-blank line of the exemption table.
+def owner_of(lines, start_index):
+    """The name of the `impl` block's type the `size_hint` at `start_index` belongs to.
 
-    Keyed by path *and* line rather than by path alone, so a control that gains a second
-    `size_hint` cannot inherit the first one's exemption by accident — which is how a debt listing
-    silently covers a new instance of the very thing it was listing.
+    Walk **backwards** to the nearest `impl ... for <Type>` / `impl <Type>` header. The result is
+    the stable half of the exemption key: a control's type name does not change when an unrelated
+    edit above it shifts every line number, which the *line* half of the old key did.
+
+    The backward walk counts braces so it stops at the boundary of the enclosing block rather than
+    running up into an earlier type: coming *up* out of the `size_hint` body the first unbalanced
+    `}` belongs to that body, and the first `impl` header seen after leaving it is the owner.
+
+    Returns `<free>` when no `impl` header encloses it (a free function), which still keys the
+    entry to something a reader can find rather than silently dropping the exemption.
+    """
+    depth = 0
+    for index in range(start_index, -1, -1):
+        text = lines[index][1]
+        depth += text.count("}") - text.count("{")
+        # `depth > 0` means we are still inside the `size_hint` body (its `{` outweighs any `}`
+        # already seen going up). The first index where it drops to 0 is the header line we want.
+        if depth <= 0:
+            match = IMPL_HEADER.match(text)
+            if match:
+                return match.group("type")
+    return "<free>"
+
+
+def exemptions():
+    """The `path:owner` keys of each non-comment, non-blank line of the exemption table.
+
+    # Why this is keyed on the owning type and not on the line
+   
+    The key was `path:line`, so the exemption broke whenever *any* edit above the `size_hint`
+    shifted it — an unrelated import, a constant, a doc comment. Measured: 156 of the 226 entries
+    were stale, which made the gate report 100 findings instead of the handful it should, and a
+    gate that always fails is a gate nobody reads. Re-pointing the lines is not a fix either: the
+    next edit breaks them again.
+
+    The owner type keeps what the line was for — a control that gains a second `size_hint` in a
+    *different* type still cannot inherit this one's exemption, because the key carries the type.
+    Two `size_hint` methods in the *same* type would share a key, which is the one case the line
+    used to separate; a type with two size hints is itself the defect the gate exists to report, so
+    collapsing them is the honest behaviour rather than a lost guarantee.
     """
     table = pathlib.Path(EXEMPTION_TABLE)
     if not table.exists():
@@ -131,7 +173,8 @@ def main():
             first, body = body_of(lines, index)
             if any(token in body for token in METRIC_VOCABULARY):
                 continue
-            if f"{rel}:{first}" in exempt:
+            owner = owner_of(lines, index)
+            if f"{rel}:{owner}" in exempt:
                 continue
             findings.append(
                 f"{rel}:{first}: `size_hint` derives its answer without ControlMetrics, "

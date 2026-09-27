@@ -494,6 +494,9 @@ fn a_widget_without_a_contract_reports_none_not_empty() {
         fn base(&self) -> &BaseWidget {
             &self.base
         }
+        fn set_state_theme_hook(&mut self) {
+            crate::style::reapply_active_theme_state(self);
+        }
         fn base_mut(&mut self) -> &mut BaseWidget {
             &mut self.base
         }
@@ -1174,5 +1177,62 @@ fn published_commands_are_recognised_by_their_control() {
     log::debug!(
         "published commands recognised: {recognised}/{total}; still unimplemented: {}",
         unknown.len()
+    );
+}
+
+/// D-5: a command spelled with hyphens reaches the same command as its published spelling.
+///
+/// # The defect this pins
+///
+/// `invoke_command` normalised the caller's name for the *validation* lookup but then dispatched
+/// the **raw** argument to the control. A caller using `"clear-selection"` passed validation and
+/// was then refused by the control as an unknown name, so a legitimate spelling produced
+/// [`CapabilityAccessError::UnsupportedOnWidget`] — an error that blames the control for a
+/// registry/implementation disagreement that does not exist.
+///
+/// The equality asserted is between the two spellings of one command, so it holds whatever the
+/// control's own outcome for that command is (executed, or reported as needing a payload).
+#[test]
+fn a_hyphenated_command_reaches_the_same_command_as_its_published_spelling() {
+    let factory = WidgetFactory::new_with_defaults();
+
+    // Find any published command whose spelling contains an underscore, so a hyphenated alias
+    // exists at all. The base controls publish several (`clear_selection`, `select_all`, …).
+    let mut checked = 0usize;
+    for capability in factory.capabilities() {
+        let Some(published) = capability.commands.iter().copied().find(|name| name.contains('_'))
+        else {
+            continue;
+        };
+        let Some(mut first) =
+            factory.create(capability.canonical_name, Rect::new(0, 0, 64, 48), "")
+        else {
+            continue;
+        };
+        let Some(mut second) =
+            factory.create(capability.canonical_name, Rect::new(0, 0, 64, 48), "")
+        else {
+            continue;
+        };
+
+        let hyphenated = published.replace('_', "-");
+        let canonical = factory.invoke_command(first.as_mut(), published);
+        let folded = factory.invoke_command(second.as_mut(), &hyphenated);
+        assert_eq!(
+            canonical, folded,
+            "`{hyphenated}` must reach the same command as `{published}` on `{}`",
+            capability.canonical_name
+        );
+        assert_ne!(
+            folded,
+            Err(CapabilityAccessError::UnsupportedOnWidget),
+            "`{hyphenated}` must not be blamed on a control that does publish `{published}`"
+        );
+        checked += 1;
+    }
+
+    assert!(
+        checked > 0,
+        "no published command contains an underscore, so this test proves nothing"
     );
 }

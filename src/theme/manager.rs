@@ -722,12 +722,6 @@ pub fn global_theme_manager() -> MutexGuard<'static, ThemeManager> {
 ///
 /// The registry is shared state, so two tests that each switch the active theme
 /// would race and see each other's writes. Existing precedent: the embedded
-/// profile's `embedded_test_guard`, added for the same reason. Compiled only for
-/// tests, so it costs a release build nothing.
-/// Serialises tests that mutate the process-wide theme registry.
-///
-/// The registry is shared state, so two tests that each switch the active theme
-/// would race and see each other's writes. Existing precedent: the embedded
 /// profile's `embedded_test_guard`, added for the same reason.
 ///
 /// Public rather than `#[cfg(test)]` because integration tests are separate crates

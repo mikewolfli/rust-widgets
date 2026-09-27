@@ -242,3 +242,57 @@ Reserved Font Name (OFL)
     glyphs), so nothing in the shipped tree presents itself as the original font.
     The name "Noto Sans SC" appears in this NOTICE and in the generated file's
     header for attribution only.
+
+================================================================================
+Material Symbols — SVG path subsets for `icons`
+================================================================================
+
+Included files
+    tools/material_symbols/*.svg                 (the vendored upstream outlines, one per icon)
+    tools/material_symbols/LICENSE               (the upstream licence copy)
+    tools/material_symbols/UPSTREAM_HAS_NO_NOTICE (a probe result, see below)
+    src/widget/icon_data.rs                      (the generated table)
+
+Origin
+    Material Symbols, by Google LLC.
+    Project:  https://github.com/google/material-design-icons
+    Pin:      commit bd8cb85bd4bad964fe6918f79665bb40c3a8efef (master @ 2026-09-25)
+    Style:    symbols/web/<name>/materialsymbolsoutlined/<name>_24px.svg
+    SHA-256 of the upstream LICENSE at the pinned commit:
+        58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd
+
+    The files are vendored, never hand-fetched. Refresh with:
+        python3 tools/vendor_material_symbols.py --refresh
+
+What it is
+    The **SVG path data** (`d`) of one outline per icon this crate names — not the
+    icon font, and not a rendering of it. Each `d` is copied **verbatim**: no outline
+    was redrawn, simplified, re-encoded or otherwise altered, so the shipped geometry
+    is upstream's to the byte. `src/widget/icon_data.rs` is generated from the
+    vendored files and is never hand-edited:
+        python3 tools/gen_icon_data.py            # write the table
+        python3 tools/gen_icon_data.py --check    # verify it is current
+
+    The data is behind the `icons` feature, which is **on by default**: a plain
+    `cargo build` gets these outlines. It is deliberately absent from every device
+    profile, because `mini` and `embedded` are sized builds where a payload the caller
+    did not ask for is wrong; a profile build that wants icons says
+    `--features mini,icons`. A build without the feature draws the hand-written shapes
+    `Icon` carried before this data existed.
+
+Licence
+    Apache License, Version 2.0
+        https://www.apache.org/licenses/LICENSE-2.0
+
+    Obligations, and how each is met:
+        §4(a) licence copy     tools/material_symbols/LICENSE
+        §4(b) mark changes     the generated file carries a GENERATED header naming the
+                               source and the pinned revision; no `d` was modified
+        §4(c) keep notices     this NOTICE section
+        §4(d) upstream NOTICE  upstream at the pinned revision ships **no** NOTICE file,
+                               so this obligation is not triggered. The fact is recorded
+                               in tools/material_symbols/UPSTREAM_HAS_NO_NOTICE and
+                               asserted by tools/check_icon_licences.sh, so an upstream
+                               that later adds one is caught rather than silently dropped.
+        §6    trademarks       "Material Symbols" appears only here and in the generated
+                               header, for attribution; it is not used as a product name.

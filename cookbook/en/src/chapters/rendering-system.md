@@ -451,28 +451,15 @@ for span in rich.spans() {
 
 ## Text Overflow Handling
 
-Three overflow modes control how text behaves when it exceeds its container:
+Truncation is a **render-backend** capability, not a per-control one: `RenderContext::draw_text_fitted`
+measures the text against the band and truncates it, so every control ellipsizes the same way.
+There is exactly **one** truncation path in the crate
+(`render/backend/surface.rs::fit_text_to_width`).
 
-```rust
-use rust_widgets::render::{TextOverflow, apply_text_overflow, TextClamp, apply_text_clamp};
-
-// Clip: text is simply cut at the boundary
-let clipped = apply_text_overflow("Very long text...", 100.0, font_size, TextOverflow::Clip);
-
-// Ellipsis: truncated text ends with "..."
-let ellipsis = apply_text_overflow("Very long text...", 100.0, font_size, TextOverflow::Ellipsis);
-
-// Fade: opacity gradually reduces toward the overflow edge
-let faded = apply_text_overflow("Very long text...", 100.0, font_size, TextOverflow::Fade);
-
-// Multi-line clamp (max N lines)
-let clamped = apply_text_clamp(
-    "Long paragraph text that spans multiple lines...",
-    200.0,     // max width
-    font_size,
-    TextClamp::Lines(3),  // max 3 lines, ellipsis on overflow
-);
-```
+> **About `TextOverflow` / `TextClamp`**: earlier versions also shipped `apply_text_overflow` and
+> `apply_text_clamp`. They had **zero consumers** (no control called them) and were a **second
+> implementation of one concept** alongside `fit_text_to_width`, so they were removed. Draw through
+> the `RenderContext` text primitives instead of calling a parallel function.
 
 ---
 
@@ -503,31 +490,28 @@ for run in &runs {
 
 ## Unicode Grapheme Clustering
 
-The `GraphemeProcessor` handles complex Unicode sequences for correct cursor movement and text selection:
+There is exactly **one** cluster-splitting rule: `render/text/line.rs::for_each_cluster`. It
+splits text into user-perceived characters and recognizes combining marks and variation
+selectors (`is_combining_mark` / `is_variation_selector`). Shaping, rasterisation and the SVG
+backend all go through it.
 
 ```rust
-use rust_widgets::render::{GraphemeCluster, GraphemeProcessor};
+use rust_widgets::render::text::for_each_cluster;
 
-let text = "Hello 👨‍👩‍👧‍👦 World! é";
-let clusters: Vec<GraphemeCluster> = GraphemeProcessor::split_graphemes(text);
-
-for cluster in &clusters {
-    println!("'{}' — {} chars, ~{:.1}px wide",
-        cluster.content, cluster.char_count, cluster.width);
-}
-
-// Output:
-// 'H' — 1 chars, ~8.4px wide
-// 'e' — 1 chars, ~8.4px wide
-// ...
-// '👨‍👩‍👧‍👦' — 7 chars, ~8.4px wide  (ZWJ family emoji — one cluster!)
+let text = "Hello é World!";
+for_each_cluster(text, |cluster, (start, end)| {
+    // `cluster` is the cluster's content; `(start, end)` is its byte range in `text`.
+    let _ = (cluster, start, end);
+});
 ```
 
 **Recognized sequences:**
 - Base character + combining marks (é = e + ́)
-- Emoji + skin tone / hair style modifiers
-- ZWJ (Zero-Width Joiner) multi-emoji sequences
-- Regional indicator pairs (🇺🇸 flags)
+- Variation selectors (U+FE00–U+FE0F)
+
+> **About `GraphemeProcessor`**: earlier versions shipped a standalone `GraphemeProcessor`
+> with its own `split_graphemes`. It disagreed with `for_each_cluster` on the same input
+> (**two implementations of one concept**) and had zero consumers, so it was removed.
 
 ---
 
@@ -781,24 +765,17 @@ fn export_form_to_svg() -> String {
 
 ### Text Truncation for UI Labels
 
+Truncation is the render backend's job, not the control's: inside a `Draw` implementation with a
+`RenderContext`, call `draw_text_fitted` and it measures against the band and appends an ellipsis.
+
 ```rust
-fn render_truncated_label(
-    command_list: &mut Vec<RenderCommand>,
-    text: &str,
-    max_width: f32,
-    font_size: f32,
-    origin: Point,
-) {
-    use rust_widgets::render::{apply_text_overflow, TextOverflow};
+use rust_widgets::render::RenderContext;
+use rust_widgets::core::{Font, Rect, HorizontalAlignment, Color};
 
-    let display_text = apply_text_overflow(text, max_width, font_size, TextOverflow::Ellipsis);
-
-    command_list.push(RenderCommand::DrawText {
-        origin,
-        text: display_text,
-        font: Font::simple("Arial", font_size),
-        color: Color::BLACK,
-        alignment: HorizontalAlignment::Left,
-    });
+fn draw_truncated_label(context: &mut RenderContext, band: Rect, text: &str) {
+    let font = Font::simple("Arial", 14.0);
+    // `text_line` gives the line box; `draw_text_fitted` measures and truncates within it.
+    let line = context.text_line(band, &font);
+    context.draw_text_fitted(line, text, &font, Color::BLACK, HorizontalAlignment::Left);
 }
 ```

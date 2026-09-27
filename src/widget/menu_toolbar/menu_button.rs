@@ -10,6 +10,7 @@
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
+use crate::event::key_codes;
 use crate::render::{RenderCommand, RenderContext};
 use crate::signal::Signal1;
 use crate::widget::capability::coercion::{expect_bool, expect_string};
@@ -243,6 +244,9 @@ impl MenuButton {
 impl Widget for MenuButton {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
@@ -528,7 +532,7 @@ impl EventHandler for MenuButton {
                 }
             }
             Event::KeyPress { key, modifiers: _ } => {
-                if *key == 27 && self.menu_open {
+                if *key == key_codes::ESCAPE && self.menu_open {
                     // Escape — close menu
                     self.close_menu();
                 }

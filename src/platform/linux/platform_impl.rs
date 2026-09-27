@@ -26,6 +26,7 @@ use crate::platform::accessibility::linux::LinuxAccessibilityBridge;
 #[cfg(target_os = "linux")]
 use crate::platform::accessibility::AccessibilityBridge;
 use crate::platform::Platform;
+use crate::platform::PlatformCapabilities;
 #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
 use core::time::Duration;
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
@@ -66,6 +67,24 @@ impl Platform for LinuxPlatform {
     }
     fn family(&self) -> PlatformFamily {
         PlatformFamily::Desktop
+    }
+
+    /// The Linux state backend keeps its widget tree in-process.
+    ///
+    /// Stated explicitly rather than inherited: the trait default is now an honest all-`false`
+    /// (see [`Platform::capabilities`]), and this backend's own name says it "keeps widget state
+    /// in-process and never opens native GTK windows", so it must not claim a host integration it
+    /// does not wire up. `dpi_scaling`, `ime` and `accessibility` are answered by the in-process
+    /// toolkit layer; there is no host menu protocol, so `native_menu` is `false` — the same
+    /// reasoning [`crate::platform::wayland`] records.
+    fn capabilities(&self) -> PlatformCapabilities {
+        PlatformCapabilities {
+            dpi_scaling: true,
+            ime: true,
+            accessibility: true,
+            native_menu: false,
+            typed_widget_trigger: true,
+        }
     }
 
     /// Reads `MemTotal` from `/proc/meminfo` via [`crate::platform::os_probes`].

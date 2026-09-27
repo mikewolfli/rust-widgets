@@ -13,6 +13,7 @@ use crate::core::{Color, Rect};
 // profile checks treat as a defect).
 #[cfg(all(test, full_widgets))]
 use crate::event::FocusReason;
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -189,12 +190,9 @@ impl Switch {
     ///
     /// Setting it also requests a redraw, because the flag changes what is painted.
     pub fn set_hovered(&mut self, hovered: bool) {
-        if self.base.is_hovered() == hovered {
-            return;
-        }
-        self.base.set_hovered(hovered);
-        // Delegates to the trait default, which also re-resolves the theme for `switch:hover`.
-        // See `Button::set_hovered` for why an inherent method must delegate through the trait object.
+        // Delegate to the trait default, which writes the flag **and** re-resolves the theme for
+        // `switch:hover`. See `Button::set_hovered` for why an inherent method must delegate
+        // through the trait object rather than writing the field itself.
         <dyn Widget>::set_hovered(self, hovered);
     }
 
@@ -347,6 +345,9 @@ impl Switch {
 impl Widget for Switch {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
@@ -504,6 +505,20 @@ impl Draw for Switch {
         let themed_accent = crate::style::semantic_color(crate::style::SemanticColor::Success);
         #[cfg(not(device_profile))]
         let themed_accent: Option<Color> = None;
+        // The ON end also honours the theme's **declared** `switch:checked` background, which is
+        // a different fact from the switch's own `Success`-token accent: `Success` is "this is on",
+        // `switch:checked` is "a theme author asked for this fill when on". The declared layer wins
+        // when present, and `Success` stays the fallback — the same ladder `radiobutton.rs` uses.
+        // Previously the resolved `switch:checked` value was computed and then dropped, so a theme
+        // that changed it saw nothing move.
+        #[cfg(device_profile)]
+        let declared_checked = crate::style::resolved_theme_style_for_state(
+            "switch",
+            crate::style::WidgetState::Checked,
+        )
+        .and_then(|resolved| resolved.background_color);
+        #[cfg(not(device_profile))]
+        let declared_checked: Option<Color> = None;
         // The OFF track is *chrome*, so it descends from the theme's own resolved
         // background — the field grey `Choice` resolves to — stepping one shade toward the
         // ink when that colour would be the window's own fill. A track painted in the
@@ -530,14 +545,19 @@ impl Draw for Switch {
 
         let off_track =
             caller_background.or(themed_track).unwrap_or(Color::rgba(180, 180, 180, 200));
-        // The ON end resolves **caller-named colour first**, then the theme's accent. The
-        // literal is iOS's own on-tint, which is also what a stripped build falls back to.
-        let on_track = self.on_track.or(themed_accent).unwrap_or(Color::rgba(52, 199, 89, 200)); // iOS green
-                                                                                                 // The track's colour is a function of the *travel*, not of two discrete states.
-                                                                                                 // Blending the two endpoint colours by `travel.value()` is what makes the track
-                                                                                                 // change colour on the same frame as the thumb moves: a track that switched colour
-                                                                                                 // on `checked` while the thumb was still crossing would read as two separate
-                                                                                                 // actions, which is exactly the bug this control's `travel` exists to remove.
+        // The ON end resolves **caller-named colour first**, then the theme's declared
+        // `switch:checked` fill, then the semantic accent. The literal is iOS's own on-tint, which
+        // is also what a stripped build falls back to.
+        let on_track = self
+            .on_track
+            .or(declared_checked)
+            .or(themed_accent)
+            .unwrap_or(Color::rgba(52, 199, 89, 200)); // iOS green
+                                                       // The track's colour is a function of the *travel*, not of two discrete states.
+                                                       // Blending the two endpoint colours by `travel.value()` is what makes the track
+                                                       // change colour on the same frame as the thumb moves: a track that switched colour
+                                                       // on `checked` while the thumb was still crossing would read as two separate
+                                                       // actions, which is exactly the bug this control's `travel` exists to remove.
         let travel = if is_enabled {
             self.travel.value()
         } else {
@@ -676,7 +696,7 @@ impl EventHandler for Switch {
             Event::Tap { .. } if enabled => {
                 self.toggle();
             }
-            Event::KeyPress { key, .. } if *key == 32 && enabled => {
+            Event::KeyPress { key, .. } if *key == key_codes::SPACE && enabled => {
                 self.toggle();
             }
             // Focus entry carries the *reason*, and the reason is what decides whether a
@@ -741,6 +761,64 @@ mod tests {
         assert!(sw.is_checked());
         sw.toggle();
         assert!(!sw.is_checked());
+    }
+
+    /// A-2: the theme's declared `switch:checked` fill reaches the ON track.
+    ///
+    /// # The defect this pins
+    ///
+    /// `preset_states.rs` declares `switch:checked { background: primary, … }`, and
+    /// `resolve_style_for_state` resolved it — then the resolved value was dropped
+    /// (`caller_background = if theme_derived { None }`), so a theme that changed the key saw
+    /// nothing move. The `Success` accent is a *separate* fact ("this switch is on"), and the
+    /// declared fill is the theme's opinion of that state; both must be reachable, the declared
+    /// one winning.
+    ///
+    /// # Why the assertion is on the rendered SVG
+    ///
+    /// Reading `resolved_theme_style_for_state` back would assert the resolver, not the control.
+    /// The test registers a theme whose `switch:checked` fill is a distinctive colour, paints an
+    /// ON switch, and requires that colour to appear in the emitted picture — the fill a user
+    /// would see. Under the old drop, the track was the `Success` accent and the custom colour
+    /// never reached a pixel.
+    #[test]
+    fn the_declared_checked_fill_reaches_the_on_track() {
+        let _guard = crate::theme::theme_test_guard();
+        let bounds = Rect::new(0, 0, 60, 30);
+
+        // A switch at rest in the ON state: the travel has settled, so the track is the ON fill
+        // and the paint is deterministic.
+        let mut sw = Switch::new(bounds);
+        sw.set_checked(true);
+        while sw.is_animating() {
+            let _ = Widget::tick(&mut sw, 100);
+        }
+        assert_eq!(sw.widget_state(), crate::style::WidgetState::Checked);
+
+        let marker = Color::rgba(1, 2, 3, 255);
+        {
+            let mut manager = crate::theme::global_theme_manager();
+            assert!(manager.set_theme("default"));
+            let mut theme = crate::theme::Theme::default();
+            theme.overrides.styles.insert(
+                "switch:checked".to_string(),
+                crate::theme::ThemeStyleToken {
+                    background: Some(marker),
+                    ..crate::theme::ThemeStyleToken::default()
+                },
+            );
+            manager.register_theme(theme);
+            assert!(manager.set_theme("default"));
+        }
+
+        let svg = crate::widget::svg::render_widget_to_svg(&mut sw, bounds);
+        let expected =
+            format!("rgba({},{},{},{:.2})", marker.r, marker.g, marker.b, marker.a as f32 / 255.0);
+        assert!(
+            svg.contains(&expected),
+            "the theme's declared `switch:checked` fill {expected} must reach the ON track, but \
+             the rendered SVG does not contain it"
+        );
     }
 
     /// A completed pointer activation toggles the switch.

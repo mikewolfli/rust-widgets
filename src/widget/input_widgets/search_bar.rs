@@ -8,6 +8,7 @@
 //! search UX with active state management and a cancel button.
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -182,6 +183,9 @@ impl SearchBar {
 impl Widget for SearchBar {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
@@ -429,10 +433,10 @@ impl EventHandler for SearchBar {
                     let _ = self.redo();
                     return;
                 }
-                if *key == 13 || *key == 10 {
+                if *key == key_codes::ENTER || *key == key_codes::LINE_FEED {
                     // Enter key — submit search
                     self.submit();
-                } else if *key == 8 {
+                } else if *key == key_codes::BACKSPACE {
                     // Backspace — remove last character
                     if !self.text.is_empty() {
                         let mut chars: Vec<char> = self.text.chars().collect();

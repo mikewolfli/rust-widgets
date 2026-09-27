@@ -9,6 +9,7 @@
 
 use crate::compat::{format, vec, String, ToString, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -18,6 +19,19 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+
+/// The key code this board's own layout table gives its Shift key.
+///
+/// Local rather than in `event::key_codes` because Shift is a **board** key: it is the board's
+/// layout that assigns the code, and a host deliver is not obliged to use it. The framework-wide
+/// codes (Enter, Backspace) come from `event::key_codes`, so the board and a dialog agree on those.
+const SHIFT_CODE: u32 = 16;
+
+/// The code a key carries when it produces no character at all.
+///
+///"No key" rather than a key: the board's rows include layout spacers whose whole definition is
+/// that they emit nothing, and they are drawn as special keys for that reason.
+const NO_KEY: u32 = 0;
 
 /// Layout variants for the on-screen keyboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -301,6 +315,9 @@ impl Widget for Keyboard {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
@@ -575,9 +592,17 @@ impl Draw for Keyboard {
                 );
 
                 // Choose key background.
-                let kbg = if key.key_code == 16 {
+                //
+                // `SHIFT_CODE` is local because Shift is **this board's** key, not a framework
+                // convention: the board's own layout table is what gives it code 16. Enter and
+                // Backspace are framework-wide and come from `event::key_codes`, so the board and a
+                // dialog cannot disagree about which code is Enter.
+                let kbg = if key.key_code == SHIFT_CODE {
                     shift_bg
-                } else if key.key_code == 13 || key.key_code == 8 || key.key_code == 0 {
+                } else if key.key_code == key_codes::ENTER
+                    || key.key_code == key_codes::BACKSPACE
+                    || key.key_code == NO_KEY
+                {
                     special_bg
                 } else {
                     key_bg

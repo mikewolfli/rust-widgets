@@ -5,6 +5,7 @@
 use crate::compat::{String, ToString};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
+use crate::event::key_codes;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::{expect_bool, expect_string};
@@ -258,11 +259,7 @@ impl RadioButton {
 
     /// Sets the hovered flag and requests a redraw.
     pub fn set_hovered(&mut self, hovered: bool) {
-        if self.base.is_hovered() == hovered {
-            return;
-        }
-        self.base.set_hovered(hovered);
-        // Delegates to the trait default, which also re-resolves the theme for
+        // Delegates to the trait default, which writes the flag **and** re-resolves the theme for
         // `radio_button:hover`. See `Button::set_hovered` for why an inherent method must delegate
         // through the trait object rather than writing the field itself.
         <dyn Widget>::set_hovered(self, hovered);
@@ -272,6 +269,9 @@ impl RadioButton {
 impl Widget for RadioButton {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
@@ -403,7 +403,7 @@ impl EventHandler for RadioButton {
                 self.set_checked(true);
                 self.base.clicked.emit();
             }
-            Event::KeyPress { key, .. } if *key == 32 || *key == 13 => {
+            Event::KeyPress { key, .. } if *key == key_codes::SPACE || *key == key_codes::ENTER => {
                 // Space or Enter
                 self.set_checked(true);
                 self.base.clicked.emit();

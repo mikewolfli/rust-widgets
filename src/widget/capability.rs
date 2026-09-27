@@ -260,28 +260,53 @@ pub(crate) fn kind_canonical_name_into(
 /// one: 2.4.0 gave `Dialog` its own module and constructor, so both are
 /// independent controls and neither needs the other's entry.
 ///
-/// `alias_factory_name` resolves those variants, which is why this returns a `&str`
-/// rather than `Option`: every kind has a constructor, either directly or through
-/// the variant's own spelling, with the alias table applied, so a build without the
-/// capability registry can still name every kind's constructor.
+/// `alias_factory_name` resolves those variants. The result is an `Option` because a
+/// kind in the `embedded` widget set has no constructor at all, and the one place
+/// that difference matters — `theme::apply_active_theme` — must be able to tell
+/// "this kind has no name" from "this kind is named", rather than acting on the
+/// empty string a `&str` would force it to receive.
+///
+/// No caller treats "no name" as an empty spelling any more: every one matches on
+/// the `Option`, so a kind that cannot be named is reported where it is used
+/// instead of being styled as nothing.
 #[cfg(widgets_unstripped)]
-pub fn factory_name_for_kind(kind: crate::widget::WidgetKind) -> &'static str {
-    #[cfg(not(full_widgets))]
-    {
-        factory_name_for_kind_without_registry(kind)
-    }
-    #[cfg(full_widgets)]
-    {
-        let factory = WidgetFactory::new_with_defaults();
-        if let Some(capability) = factory.capability_by_kind(kind) {
-            return capability.canonical_name;
+pub fn factory_name_for_kind(kind: crate::widget::WidgetKind) -> Option<&'static str> {
+    let name = {
+        #[cfg(not(full_widgets))]
+        {
+            factory_name_for_kind_without_registry(kind)
         }
-        alias_factory_name(kind)
+        #[cfg(full_widgets)]
+        {
+            let factory = WidgetFactory::new_with_defaults();
+            if let Some(capability) = factory.capability_by_kind(kind) {
+                return Some(capability.canonical_name);
+            }
+            alias_factory_name(kind)
+        }
+    };
+    // `""` is not a name: the alias tables below answer it for a kind their profile
+    // does not ship. Converting here keeps that single sentinel from leaking into
+    // every caller as a special case.
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
     }
 }
 
 /// The alias table, shared by the registry-backed lookup above and the
-/// registry-free lookup below so the two cannot disagree about the fallback.
+/// registry-free lookup below.
+///
+/// # Why there are two spellings of one table, and how they are kept in step
+///
+/// This `match` is on **variants** and needs the full widget set (it names `ActivityIndicator`,
+/// `ColumnView`, … which `embedded` compiles out). [`alias_for_name`] does the same lookup keyed
+/// on the **canonical spelling**, and is the one that compiles where the variants are gated out.
+/// A `cfg` boundary separates them, so no single build can see both — which is exactly how such a
+/// pair drifts. The guard is therefore a **gate**, not a test: `check_alias_tables_agree.py`
+/// parses both tables from this file and asserts every `(spelling, target)` pair in one is in the
+/// other. Adding a row to one table alone fails that gate.
 ///
 /// # Why `DockPanel` is here
 ///
@@ -292,10 +317,6 @@ pub fn factory_name_for_kind(kind: crate::widget::WidgetKind) -> &'static str {
 /// and the lookup falls through to here. Omitting this row made
 /// `factory_name_for_kind(DockPanel)` return `""`, so `create_dock_panel(..)`
 /// silently produced id `0`.
-///
-/// Gated with the full widget set because it names variants `embedded` compiles
-/// out (`ActivityIndicator`, `ColumnView`, …). The registry-free path resolves the
-/// same names from the variant's spelling, so nothing is lost there.
 ///
 /// # Why `Panel` and `MenuItem` are here
 ///
@@ -314,6 +335,9 @@ pub fn factory_name_for_kind(kind: crate::widget::WidgetKind) -> &'static str {
 /// a `Panel`- or `MenuItem`-kinded widget silently received no theme role (the
 /// diagnostic was only `debug!`). Both rows were missing, which is the same class of
 /// bug the `DockPanel` note above records.
+///
+/// Returns `None` for a kind with neither a capability nor an alias row, which the
+/// caller surfaces as "this kind has no name" rather than as an empty spelling.
 #[cfg(full_widgets)]
 fn alias_factory_name(kind: crate::widget::WidgetKind) -> &'static str {
     // Alias variants resolve to the name their target type is registered under.
@@ -375,6 +399,10 @@ fn factory_name_for_kind_without_registry(kind: crate::widget::WidgetKind) -> &'
 }
 
 /// The alias table keyed by canonical name, for the registry-free path.
+///
+/// See [`alias_factory_name`] for why the same eleven pairs appear twice and how
+/// `check_alias_tables_agree.py` keeps the two spellings in step across the `cfg` boundary that
+/// stops a single build from seeing both.
 #[cfg(all(widgets_unstripped, not(full_widgets)))]
 fn alias_for_name(name: &str) -> Option<&'static str> {
     Some(match name {
@@ -422,6 +450,10 @@ fn canonical_name_for_kind(kind: crate::widget::WidgetKind) -> &'static str {
         crate::widget::WidgetKind::StatusBar => "status_bar",
         crate::widget::WidgetKind::ToolBar => "tool_bar",
         crate::widget::WidgetKind::MenuBar => "menu_bar",
+        // A menu row is constructible but created only as a child of a `Menu`, so it publishes no
+        // capability row. It must still be nameable for the theme layer to classify it; the
+        // spelling is its own, so it belongs here rather than in the alias table above.
+        crate::widget::WidgetKind::MenuItem => "menu_item",
         _ => "",
     }
 }
@@ -899,10 +931,16 @@ impl WidgetFactory {
         // both normalise. A caller using `"clear-selection"` must reach the same
         // command as one using `"clear_selection"`.
         let normalized = normalize_key(command_name);
-        let published = capability.commands.iter().any(|name| normalize_key(name) == normalized);
-        if !published {
+        // Resolve the caller's spelling to the **published** one and dispatch that. Passing the
+        // raw argument through (as this did) meant `"clear-selection"` passed validation and then
+        // reached the control as an unknown name, so a legitimate spelling produced the
+        // misleading `UnsupportedOnWidget` ("the control was expected to have it") instead of
+        // succeeding. The published spelling is what the control's own `command` matches on.
+        let Some(canonical) =
+            capability.commands.iter().copied().find(|name| normalize_key(name) == normalized)
+        else {
             return Err(CapabilityAccessError::UnknownCommand);
-        }
+        };
 
         // Route through the control's declared `WidgetProperties` contract, the same
         // way `read_property` / `write_property` do: `command` lives there so a
@@ -916,14 +954,14 @@ impl WidgetFactory {
             return Err(CapabilityAccessError::UnsupportedOnWidget);
         };
 
-        match properties.command(command_name) {
+        match properties.command(canonical) {
             Ok(()) => Ok(()),
             // The capability published the name but the control refused it. Reporting
             // the caller's name as unknown would send them to look for a different
             // control; `UnsupportedOnWidget` says the control was expected to have it.
             Err(CapabilityAccessError::UnknownCommand) => {
                 log::warn!(
-                    "widget {command_name:?} is published by capability {:?} but the control \
+                    "widget {canonical:?} is published by capability {:?} but the control \
                      does not implement it",
                     capability.canonical_name
                 );

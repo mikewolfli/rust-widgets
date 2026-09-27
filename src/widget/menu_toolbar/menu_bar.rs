@@ -4,6 +4,7 @@
 //! Menu bar widget.
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
+use crate::event::key_codes;
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -209,6 +210,9 @@ impl Widget for MenuBar {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
@@ -308,7 +312,7 @@ impl EventHandler for MenuBar {
                     }
                 }
             }
-            Event::KeyPress { key, .. } if *key == 27 => {
+            Event::KeyPress { key, .. } if *key == key_codes::ESCAPE => {
                 self.active_index = None;
             }
             _ => { /* Other events are not relevant */ }

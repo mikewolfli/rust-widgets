@@ -4,6 +4,7 @@
 //! File dialog widget.
 use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
+use crate::event::key_codes;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::tr;
@@ -286,6 +287,9 @@ impl Widget for FileDialog {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
@@ -363,9 +367,9 @@ impl EventHandler for FileDialog {
             return;
         }
         if let Event::KeyPress { key, .. } = event {
-            if *key == 13 {
+            if *key == key_codes::ENTER {
                 self.accept();
-            } else if *key == 27 {
+            } else if *key == key_codes::ESCAPE {
                 self.reject();
             }
         }

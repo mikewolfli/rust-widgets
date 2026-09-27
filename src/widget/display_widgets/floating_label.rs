@@ -90,7 +90,6 @@ pub struct FloatingLabel {
     text: String,
     label: String,
     placeholder: String,
-    is_focused: bool,
     /// Whether the label currently floats, as resolved from `behavior`, focus and the
     /// text content. Derived state: every write that can change one of those three
     /// re-derives it through [`FloatingLabel::update_label_state`], so it cannot be
@@ -123,7 +122,6 @@ impl FloatingLabel {
             text: String::new(),
             label: String::new(),
             placeholder: String::new(),
-            is_focused: false,
             show_label_above: false,
             behavior: FloatingLabelBehavior::Auto,
             // The label rising out of a field is a direct reaction to focus, which is
@@ -171,8 +169,16 @@ impl FloatingLabel {
     }
 
     /// Returns whether the input field is currently focused.
+    ///
+    /// Reads [`BaseWidget::focus_reason`] — the crate's single focus fact — rather than a field of
+    /// its own. This control used to keep a private `is_focused` bool, which the trait's
+    /// `widget_state` knew nothing about: the two could disagree, and a theme key for
+    /// `floating_label:focused` would have resolved from one while the label floated from the
+    /// other (BLUE25 D-8). `BaseWidget` states the rule the field broke: *the presence of focus is
+    /// `focus_reason` being `Some`; there is no separate boolean, because the two could then
+    /// disagree.*
     pub fn is_focused(&self) -> bool {
-        self.is_focused
+        self.base.focus_reason().is_some()
     }
 
     /// Returns whether the label is currently drawn floating above the field.
@@ -203,9 +209,21 @@ impl FloatingLabel {
     }
 
     /// Sets the focused state. When focused, the label floats above.
+    ///
+    /// Writes through [`BaseWidget::set_focus_reason`], so the flag the trait derives
+    /// `widget_state` from and the fact this control reads are **one** value. `Programmatic` is
+    /// the reason because no ring should be drawn for a host that is *asserting* focus rather
+    /// than reporting where it arrived from.
     pub fn set_focused(&mut self, focused: bool) {
-        if self.is_focused != focused {
-            self.is_focused = focused;
+        let currently = self.is_focused();
+        if currently != focused {
+            self.base.set_focus_reason(if focused {
+                Some(crate::event::FocusReason::Programmatic)
+            } else {
+                None
+            });
+            // The float state is *derived* from focus, so the write above is not complete until it
+            // is re-derived — `update_label_state` is what turns focus into the animated target.
             self.update_label_state();
             self.base.request_redraw();
         }
@@ -217,10 +235,11 @@ impl FloatingLabel {
     /// focus/content rule entirely: `Never` pins the label inline, `Always` pins it above.
     /// Only `Auto` falls through to the focus/content test.
     fn update_label_state(&mut self) {
+        let focused = self.is_focused();
         let should_float = match self.behavior {
             FloatingLabelBehavior::Always => true,
             FloatingLabelBehavior::Never => false,
-            FloatingLabelBehavior::Auto => self.is_focused || !self.text.is_empty(),
+            FloatingLabelBehavior::Auto => focused || !self.text.is_empty(),
         };
         if should_float != self.show_label_above {
             self.show_label_above = should_float;
@@ -296,7 +315,7 @@ impl FloatingLabel {
     /// Shared by both label placements in `draw_label` so the inline and floating forms of
     /// the same label cannot drift apart in colour as the state changes around them.
     fn label_color(&self, ink: Color, field_background: Color, is_enabled: bool) -> Color {
-        if self.is_focused {
+        if self.is_focused() {
             ink
         } else if is_enabled {
             ink.blend(&field_background, 0.3)
@@ -369,6 +388,9 @@ impl FloatingLabel {
 impl Widget for FloatingLabel {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
@@ -508,7 +530,7 @@ impl Draw for FloatingLabel {
 
         // Draw the underline/border. Focused is the resolved ink, undamped so it reads as
         // active; resting is the same ink damped toward the field it sits on.
-        let underline_color = if self.is_focused { ink } else { border_color };
+        let underline_color = if self.is_focused() { ink } else { border_color };
         let underline_y = rect.y + rect.height as i32 - 2;
         let underline_rect = Rect::new(rect.x + 2, underline_y, rect.width.saturating_sub(4), 2);
         context.fill_rounded_rect(underline_rect, 1, underline_color);
@@ -535,7 +557,7 @@ impl Draw for FloatingLabel {
         // Show placeholder when empty, unfocused, and the label is not occupying the input
         // line itself — otherwise the two strings would be drawn on top of each other.
         let show_placeholder =
-            self.text.is_empty() && !self.is_focused && (!has_label || self.show_label_above);
+            self.text.is_empty() && !self.is_focused() && (!has_label || self.show_label_above);
         if show_placeholder && !self.placeholder.is_empty() {
             context.draw_text(
                 Point::new(rect.x + LABEL_PADDING, input_line.y),
@@ -621,14 +643,14 @@ impl EventHandler for FloatingLabel {
                 } else if *key >= 32 && *key <= 126 {
                     // Printable ASCII — append to text
                     let c = char::from_u32(*key).unwrap_or(' ');
-                    if self.is_focused {
+                    if self.is_focused() {
                         let mut new_text = self.text.clone();
                         new_text.push(c);
                         self.set_text(new_text);
                     }
                 } else if *key == KEYCODE_BACKSPACE {
                     // Backspace
-                    if self.is_focused && !self.text.is_empty() {
+                    if self.is_focused() && !self.text.is_empty() {
                         let mut new_text = self.text.clone();
                         new_text.pop();
                         self.set_text(new_text);
@@ -907,6 +929,65 @@ mod tests {
         // travel and reports that it has no more work once it arrives.
         assert!(!fl.tick(1000), "a long frame completes the travel in one step");
         assert_eq!(fl.animation_progress(), 1.0);
+    }
+
+    /// The focus flag and the trait's `widget_state` must be **one** fact (BLUE25 D-8).
+    ///
+    /// # The defect this pins
+    ///
+    /// This control used to keep a private `is_focused: bool` that `set_focused` wrote, while
+    /// `Widget::widget_state` (the trait default) read `base.focus_reason`. Two focus concepts lived
+    /// in one control: `is_focused()` answered one and a theme lookup answered the other, so a
+    /// `floating_label:focused` key would have resolved from a state the control never reported.
+    /// Nothing painted a wrong pixel *yet* because no such theme key exists — which is exactly what
+    /// made it a latent trap rather than a visible bug.
+    ///
+    /// The assertion is on the **derived** state, not on the field: `node.widget_state()` is what a
+    /// theme is looked up by, so it is the user-visible consequence of the two agreeing.
+    #[test]
+    fn the_focus_flag_and_the_widget_state_are_one_fact() {
+        use crate::style::WidgetState;
+        use crate::widget::Widget;
+
+        let mut fl = FloatingLabel::new(Rect::new(0, 0, 200, 50));
+        assert!(!fl.is_focused());
+        assert_ne!(
+            fl.widget_state(),
+            WidgetState::Focused,
+            "an unfocused label must not report the focused state"
+        );
+
+        fl.set_focused(true);
+        assert!(fl.is_focused(), "the setter must be readable back");
+        assert_eq!(
+            fl.widget_state(),
+            WidgetState::Focused,
+            "`is_focused()` and the trait's derived state must agree — two focus facts is the defect"
+        );
+
+        fl.set_focused(false);
+        assert!(!fl.is_focused());
+        assert_ne!(fl.widget_state(), WidgetState::Focused);
+    }
+
+    /// Focus drives the float, so setting it must re-derive the label state.
+    ///
+    /// The flag and the float are not independent: `Auto` says "float when focused or non-empty".
+    /// A setter that wrote the flag without re-deriving would leave a focused, empty label drawn
+    /// inline — the write would have happened and nothing visible would have changed.
+    #[test]
+    fn focusing_an_empty_label_floats_it_under_the_auto_policy() {
+        let mut fl = FloatingLabel::new(Rect::new(0, 0, 200, 50));
+        fl.set_label("Email".to_string());
+        assert!(!fl.show_label_above, "an unfocused, empty label sits inline");
+
+        fl.set_focused(true);
+        assert!(fl.show_label_above, "focus must reach the drawn state, not only the flag");
+        assert!(!fl.tick(1000), "and the travel completes");
+        assert_eq!(fl.animation_progress(), 1.0);
+
+        fl.set_focused(false);
+        assert!(!fl.show_label_above, "blurring an empty label returns it inline");
     }
 
     #[test]

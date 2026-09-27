@@ -5,6 +5,7 @@
 use crate::compat::{format, String, ToString};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
+use crate::event::key_codes;
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::capability::coercion::{
@@ -319,13 +320,22 @@ impl Widget for CheckBox {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
     }
 
     fn set_enabled(&mut self, enabled: bool) {
-        self.base.set_enabled(enabled);
+        // Reached from `Widget::set_enabled`'s default only through the field write below,
+        // because this override shadows it. The hook is the same one the default calls, so a
+        // checkbox disabled after theming still resolves `check_box:disabled`.
+        if self.base.is_enabled() != enabled {
+            self.base.set_enabled(enabled);
+            self.set_state_theme_hook();
+        }
         self.base.request_redraw();
     }
 
@@ -483,7 +493,7 @@ impl EventHandler for CheckBox {
                     self.toggle();
                 }
             }
-            Event::KeyPress { key, .. } if *key == 32 && self.base.is_enabled() => {
+            Event::KeyPress { key, .. } if *key == key_codes::SPACE && self.base.is_enabled() => {
                 self.toggle();
             }
             // Other events are not relevant for this widget

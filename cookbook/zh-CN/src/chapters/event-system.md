@@ -388,21 +388,26 @@ drain_tasks();  // posts Custom events for completed tasks
 
 ## 通用队列原语
 
-`queue` 模块提供了基础数据结构：
+`queue` 模块提供两个原语，都是**生产在用**的：
 
 ```rust
-use rust_widgets::event::queue::{FixedSizeQueue, QueueError, DEFAULT_QUEUE_CAPACITY};
+use rust_widgets::event::{EventQueue, EventSender};
 
-let mut queue = FixedSizeQueue::<Event>::with_capacity(DEFAULT_QUEUE_CAPACITY);
-
-queue.push(Event::Paint).map_err(|QueueError::Full| {
-    eprintln!("Event queue overflow!");
-})?;
-
+// 单线程事件队列：应用主循环从它取事件。
+let queue = EventQueue::new();
+let sender = queue.sender();
+sender.send(Event::Paint);
 while let Some(event) = queue.pop() {
-    process(event);
+    let _ = event;
 }
 ```
+
+`event::queue::BlockingQueue` 是 `view/reactive.rs` 内部的线程安全阻塞队列，
+不作为公共 API 推荐使用。
+
+> **关于 `FixedSizeQueue` / `PriorityQueue` / `BoundedQueue`**：早期版本还提供这三个
+> 队列类型。它们**零消费者**（没有任何生产路径使用），与 `EventQueue` 构成同一概念的
+> 多条实现，因此已被删除。需要队列时用 `EventQueue`。
 
 这些原语由 `EventQueue` 内部使用，也可复用于自定义事件缓冲。
 

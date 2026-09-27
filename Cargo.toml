@@ -1,6 +1,6 @@
 [package]
 name = "rust_widgets"
-version = "2.7.0"
+version = "2.8.0"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 180 widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
@@ -61,8 +61,18 @@ crate-type = ["lib", "cdylib"]
 # ═══════════════════════════════════════════════════════════════════════
 
 [features]
-# ── Default is full desktop ──
-default = ["desktop"]
+# ── Default is full desktop, with the icon data ──
+#
+# `icons` is in `default` because an icon that is only a name is not useful to a caller who
+# never heard of the feature: a plain `cargo build` gets the real Material Symbols outlines.
+#
+# It is deliberately **not** in any device profile. A profile answers "what kind of machine is
+# this", and `mini`/`embedded` are *sized* — a payload the caller did not ask for is exactly
+# wrong there. So `default` (the convenience axis) carries it and the profiles (the sizing axis)
+# do not; a profile build that wants icons asks: `--features mini,icons`.
+#
+# `tools/check_icon_data_is_opt_in.sh` asserts both halves of that split.
+default = ["desktop", "icons"]
 
 # ── Axis 1: DEVICE PROFILES (mutually exclusive) ──
 
@@ -375,6 +385,41 @@ fonts-cjk = ["text-shaping"]
 ## every combination of them builds (the reference-count matrix in `docs/plans/blue23.md` §0A.4
 ## lists them).
 fonts-emoji-color = ["dep:ttf-parser"]
+
+## `icons` adds the Material Symbols icon data: one SVG path per `IconName` token.
+##
+## # Why this is a default, and why it is not in a profile
+##
+## The payload is upstream's outlines copied verbatim (see `NOTICE` and
+## `tools/material_symbols/`). It is **data**, and the two axes it sits between are different
+## questions:
+##
+##   * `default` answers "what does a plain `cargo build` give me?". An icon name with only
+##     hand-drawn approximations behind it is a worse answer than the real outlines, so `icons`
+##     is in `default`.
+##   * a **device profile** answers "what kind of machine is this?". `mini` and `embedded` are
+##     *sized*, so a payload the caller did not ask for is exactly wrong there. No profile lists
+##     `icons`; a profile build that wants them says `--features mini,icons`.
+##
+## A caller who does not want the payload builds without it — `--no-default-features`, or a
+## profile — which is the path `tools/check_icon_data_is_opt_in.sh` asserts still works.
+##
+## # What it changes
+##
+## With the feature on, each `IconName` resolves to its Material Symbols outline. Without it,
+## `Icon::draw` uses the crate's hand-written geometric shapes, so a build with no icon data
+## renders the icons it always did — that path is kept for exactly this reason, and it is what
+## every snapshot taken before the data existed was drawn against.
+##
+## `tools/check_icon_data_is_opt_in.sh` asserts all three facts: `icons` is in `default`,
+## `icons` is absent from every device profile, and the crate builds with it off and with it on.
+##
+## # Licensing
+##
+## Apache-2.0 (Google LLC); the licence copy ships at `tools/material_symbols/LICENSE` and the
+## attribution is recorded in the repository-root `NOTICE`. `tools/check_icon_licences.sh`
+## asserts both, because a feature gate is not a licence gate.
+icons = []
 
 
 # ── INTERNAL FEATURES (used by profiles, not user-facing) ──
@@ -740,6 +785,23 @@ required-features = ["desktop"]
 name = "export_control_svgs"
 path = "examples/export_control_svgs.rs"
 required-features = ["desktop"]
+
+# BLUE25 ICON-6 — renders every `IconName` and prints its contour count, ink and a
+# digest of the picture, so `tools/icon_census.txt` has a reproducible producer and
+# `tests/icon_census_test.rs` can assert every icon draws ink and no two draw one
+# picture. Requires `icons` (the data it censuses) and a device profile (the SVG
+# backend and the text layer).
+[[example]]
+name = "icon_census"
+path = "examples/icon_census.rs"
+required-features = ["desktop", "icons"]
+
+# BLUE25 ICON-7 — the reviewable picture of the whole icon set, one sheet per
+# appearance. Gated like the census probe: it needs the icon data and the SVG backend.
+[[example]]
+name = "export_icon_sheet"
+path = "examples/export_icon_sheet.rs"
+required-features = ["desktop", "icons"]
 
 # Compile-time probe for the declarative-layer platform gate.
 #

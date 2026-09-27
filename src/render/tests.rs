@@ -21,6 +21,49 @@ fn text_metrics_scale_with_dpi() {
     assert!(m2.width > m1.width);
     assert!(m2.height > m1.height);
 }
+
+/// The software surface and the SVG backend must agree about a font's line box.
+///
+/// # The defect this pins (BLUE25 D-10)
+///
+/// Both backends derived the line-box triple inline, and they had drifted: the SVG backend applied
+/// a `.max(1.0)` to the font's effective leading that the software surface did not. Because the
+/// ascent is `leading * 0.8`, a small leading made them place the **baseline** differently while
+/// agreeing on the height — a control sized against one backend's line box rendered a line off
+/// centre in the other. Both files' own comments claimed "the two backends must agree", which is
+/// exactly what nothing checked.
+///
+/// The table below includes the divergence case (`size = 0`, where the unfloored derivation gives
+/// ascent `0` and the floored one `1`), so a regression that re-inlines either derivation fails
+/// here rather than only in the other backend's output.
+#[test]
+fn both_backends_agree_on_a_fonts_line_box() {
+    use crate::render::SvgPaintBackend;
+
+    let fonts = [
+        Font::simple("Sans", 14.0),
+        Font::simple("Sans", 0.0), // the divergence case: no size, so the floor is load-bearing
+        Font::simple("Sans", 1.0),
+        Font::simple("Sans", 40.0),
+    ];
+
+    for font in &fonts {
+        for scale in [1.0_f32, 2.0] {
+            let software = SoftwareSurface::new(Size { width: 200, height: 60 }, scale);
+            let mut svg = SvgPaintBackend::new(Size { width: 200, height: 60 });
+            svg.set_dpi_scale(scale);
+
+            let a = software.measure_text("Ag", font);
+            let b = svg.measure_text("Ag", font);
+            assert_eq!(
+                (a.height, a.ascent, a.descent),
+                (b.height, b.ascent, b.descent),
+                "the software and SVG backends disagree about the line box for {font:?} at {scale}x"
+            );
+            assert_eq!(a.width, b.width, "and about the advance for {font:?} at {scale}x");
+        }
+    }
+}
 #[test]
 fn double_buffer_present_swaps_frame() {
     let mut surface = SoftwareSurface::new(Size { width: 4, height: 4 }, 1.0);

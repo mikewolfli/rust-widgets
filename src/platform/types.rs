@@ -347,14 +347,20 @@ pub enum CapabilityContract {
 /// *trait default* is a pure function of the family, and that is the half of the
 /// answer a reader of the matrix is least able to verify.
 ///
-/// Pair it with the backend's own `fn capabilities` when one exists.
-pub fn default_capabilities_for(family: PlatformFamily) -> PlatformCapabilities {
-    let desktop = matches!(family, PlatformFamily::Desktop);
+/// # Why this is no longer derived from the family
+///
+/// It used to answer `true` for the four host integrations on `Desktop` — an
+/// **inference from a classification to a capability** (see [`Platform::capabilities`],
+/// which now defaults to an honest all-`false`). The function still takes a family so
+/// the matrix test can name the case it is describing, but the answer no longer varies
+/// with it: an undeclared capability is absent, whichever class of machine the backend
+/// runs on. Pair it with the backend's own `fn capabilities` when one exists.
+pub fn default_capabilities_for(_family: PlatformFamily) -> PlatformCapabilities {
     PlatformCapabilities {
-        dpi_scaling: desktop,
-        ime: desktop,
-        accessibility: desktop,
-        native_menu: desktop,
+        dpi_scaling: false,
+        ime: false,
+        accessibility: false,
+        native_menu: false,
         typed_widget_trigger: true,
     }
 }
@@ -389,28 +395,32 @@ pub trait Platform: Send + Sync {
     fn family(&self) -> PlatformFamily;
     /// Runtime capabilities exposed by the current backend.
     ///
-    /// # What the default answers, and why the family decides it
+    /// # What the default answers, and why it is not inferred
     ///
-    /// A backend that does not override this reports `true` for `dpi_scaling`, `ime`,
-    /// `accessibility` and `native_menu` **iff it reports the `Desktop` family**.
-    /// Those four are host integrations, and a backend that classifies itself as a
-    /// desktop is asserting the host has them. `typed_widget_trigger` is always
-    /// `true` because it is implemented by the library, not the host.
+    /// The honest default is **no host integration at all**: a backend that does not override
+    /// this reports `false` for `dpi_scaling`, `ime`, `accessibility` and `native_menu`, and
+    /// `true` only for `typed_widget_trigger` — which is implemented by the library, not the
+    /// host, so it cannot be absent.
     ///
-    /// The practical consequence: **overriding matters for the desktop family.**
-    /// Wayland, HarmonyOS and Android-style backends classify as `Desktop` (or a
-    /// mobile analogue) yet do not honour a native menu, so each must override and
-    /// say so. A backend that forgets inherits `true`, which is a silent
-    /// over-claim — see [`default_capabilities_for`], which spells out what an
-    /// untouched backend would report, and the capability-matrix gate, which
-    /// compares that against what each backend actually claims.
+    /// # Why the family no longer decides it
+    ///
+    /// It used to report the four host integrations as `true` iff `self.family()` was
+    /// `PlatformFamily::Desktop`. That is an **inference from a classification to a capability**:
+    /// a family says what kind of machine this is, not which integrations the build actually
+    /// wired up. A backend that forgot to override inherited `true` and silently claimed a
+    /// native menu it does not honour — the exact "plausible fake value" rule #37 forbids. Each
+    /// backend already states its own answer where it is true; a default of `false` makes a
+    /// forgotten override **under-claim** (a missing feature) instead of **over-claiming** (a
+    /// feature that fails at runtime), which is the direction a default must err.
+    ///
+    /// The capability-matrix gate compares what each backend claims against this default, so a
+    /// backend that reports `false` here on purpose is visible rather than merely quiet.
     fn capabilities(&self) -> PlatformCapabilities {
-        let desktop = matches!(self.family(), PlatformFamily::Desktop);
         PlatformCapabilities {
-            dpi_scaling: desktop,
-            ime: desktop,
-            accessibility: desktop,
-            native_menu: desktop,
+            dpi_scaling: false,
+            ime: false,
+            accessibility: false,
+            native_menu: false,
             typed_widget_trigger: true,
         }
     }
@@ -425,11 +435,15 @@ pub trait Platform: Send + Sync {
         }
     }
     /// Embedded capability contract published by constrained runtimes.
+    ///
+    /// `low_memory_mode` is `false` by default — the same rule [`Self::capabilities`] states: the
+    /// default must not claim a mode this backend has not declared. An embedded backend that
+    /// really runs under a memory budget overrides and says so.
     fn embedded_capability_contract(&self) -> Option<EmbeddedCapabilityContract> {
         if matches!(self.family(), PlatformFamily::Embedded) {
             Some(EmbeddedCapabilityContract {
                 fixed_dpi: self.dpi_scale_factor() == 1.0,
-                low_memory_mode: true,
+                low_memory_mode: false,
                 typed_widget_trigger: self.capabilities().typed_widget_trigger,
             })
         } else {

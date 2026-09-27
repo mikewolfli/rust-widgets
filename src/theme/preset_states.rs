@@ -146,18 +146,29 @@ pub(super) fn preset_state_overrides(colors: &Colors) -> BTreeMap<String, ThemeS
     // Validation. This is the one place the `error` role reaches a control's own style,
     // which is why it is a border rather than a fill: an invalid field keeps its
     // editable surface and marks itself out.
-    for kind in [
-        "line_edit",
-        "text_edit",
-        "text_area",
-        "combo_box",
-        "editable_combo_box",
-        "spin_box",
-        "date_edit",
-        "time_edit",
-        "date_time_edit",
-        "masked_edit",
-    ] {
+    //
+    // # Why there is exactly one kind here
+    //
+    // The rule this table follows is "a control has a `:error` key if and only if it
+    // implements `Widget::semantic_state`". A key is only reachable if some control both
+    // *reports* the state and *reads* `resolved_semantic_border` while drawing; declaring one
+    // for a kind that can never report it produces data no theme author can observe, which is
+    // the defect that had ten kinds listed here and one consumer.
+    //
+    // `line_edit` is the only control in the crate with a reachable refusal state: it carries an
+    // explicit caller report (`set_error_text`), derives an over-limit flag from
+    // `max_length`, and paints the resolved border while drawing. The nine other kinds that used
+    // to be listed cannot reach an invalid value at all — `set_date` / `set_time` reject the
+    // invalid one instead of storing it, `spin_box` and `text_area` clamp and truncate, and
+    // `combo_box` / `editable_combo_box` have no validation to report — so a key for them would
+    // be a promise nothing keeps.
+    //
+    // Adding a control back is deliberate: implement `semantic_state()` and have `draw` read
+    // `resolved_semantic_border`, then add the kind to the list below.
+    // `tools/check_semantic_state_has_a_consumer.sh` enforces both directions of that rule, and it
+    // reads the list in exactly this shape, so the list stays an array even with one entry.
+    #[allow(clippy::single_element_loop)]
+    for kind in ["line_edit"] {
         styles.insert(
             format!("{kind}:error"),
             ThemeStyleToken {
@@ -208,14 +219,18 @@ pub fn preset_state_key_count() -> usize {
     // 4 push-button kinds x 3 states, 3 latching kinds x 1 `checked` + 1 chip `selected`,
     // 1 `toggle_button:checked` (a **different** key shape from the three above — see the
     // long note beside it: a checked toggle needs a deeper step of its own accent, not the
-    // plain `primary` the others take), 10 editable kinds x 1.
+    // plain `primary` the others take), 1 editable kind x 1 `error`.
     //
     // The `toggle_button` term was missing when its key was added, and this number is what
     // `every_preset_family_carries_its_states` compares against — so the count said 26 while
     // the table held 27, and the test that exists to catch a missing group **failed on a
     // surplus one instead**. The `+ 1` is the fix, and the comment now names the key so the
     // next addition has an obvious place to count itself.
-    4 * 3 + 3 + 1 + 1 + 10
+    //
+    // The error term fell from 10 to 1 in BLUE25 A-3: nine of the ten kinds declared a
+    // refusal state no control could report, so their keys were removed rather than left as
+    // data no theme author could observe. See the table's own comment for the rule.
+    4 * 3 + 3 + 1 + 1 + 1
 }
 
 #[cfg(test)]

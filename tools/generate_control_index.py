@@ -305,12 +305,19 @@ def registry_names() -> list[str]:
     The **extra state appearances are excluded**: `group_box_checked.svg` is not a nineteenth
     control, it is `group_box` in a state, and listing it as its own row would both inflate the
     count and present a state as a control. They are reported separately in the extras section.
+
+    The **icon sheets are excluded** for the same reason, one level further: `icon_sheet.svg` is
+    not a control at all — it is the whole icon set drawn as a grid (BLUE25 ICON-7), produced by
+    `examples/export_icon_sheet.rs` rather than by the control registry. Listing it would invent a
+    control named `icon_sheet` that no factory can construct.
     """
     extras = extra_appearances()
     names = sorted(
         path.name[: -len(".svg")]
         for path in SNAPSHOTS.glob("*.svg")
-        if not path.name.endswith(".light.svg") and path.name[: -len(".svg")] not in extras
+        if not path.name.endswith(".light.svg")
+        and path.name[: -len(".svg")] not in extras
+        and not path.name.startswith("icon_sheet")
     )
     return names
 

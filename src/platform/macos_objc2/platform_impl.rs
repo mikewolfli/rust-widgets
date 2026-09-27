@@ -16,7 +16,7 @@ use crate::compat::atomic::Ordering;
 use crate::compat::String;
 use crate::core::ObjectId;
 use crate::core::PlatformFamily;
-use crate::platform::{DropEvent, Platform};
+use crate::platform::{DropEvent, Platform, PlatformCapabilities};
 use core::time::Duration;
 use std::thread;
 
@@ -39,6 +39,21 @@ impl Platform for MacOSObjc2Platform {
     }
     fn family(&self) -> PlatformFamily {
         PlatformFamily::Desktop
+    }
+
+    /// The objc2 preview honours the same four host integrations as the legacy macOS backend,
+    /// stated explicitly.
+    ///
+    /// The trait default is now an honest all-`false` (see [`Platform::capabilities`]); a backend
+    /// that provides a capability must say so rather than inherit it from its family.
+    fn capabilities(&self) -> PlatformCapabilities {
+        PlatformCapabilities {
+            dpi_scaling: true,
+            ime: true,
+            accessibility: true,
+            native_menu: true,
+            typed_widget_trigger: true,
+        }
     }
 
     /// Reads installed physical memory via `sysconf(_SC_PHYS_PAGES)` in

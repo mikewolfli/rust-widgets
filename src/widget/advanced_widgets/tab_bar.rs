@@ -37,12 +37,14 @@ const TAB_TEXT_PADDING: u32 = TAB_TEXT_INSET * 2;
 
 /// The advance the renderer will give a label before the first `draw` has measured it.
 ///
-/// Mirrors `RenderContext`'s own clustered-advance heuristic — one cluster per `char`,
-/// each advancing by the font size — so layout and painting agree even on the very first
-/// frame. Counting bytes here instead is what made a CJK title measure four times its
-/// drawn width.
+/// Delegates to the crate's one width estimate ([`crate::widget::metrics::estimate_text_width`])
+/// rather than carrying a private one. The private copy counted `chars() * font_size`, which
+/// disagrees with the shared estimate on every input that estimate cares about — a wide cluster,
+/// a cluster that is not one `char` (combining marks, ZWJ emoji), or a font with `letter_spacing`
+/// — so a tab's reserved width and its painted width could differ before the first measurement.
+/// This is the same "one metric, not two" rule the shared estimate exists for (BLUE24 U-14).
 fn estimate_text_width(text: &str, font_size: f32) -> u32 {
-    (text.chars().count() as f32 * font_size).round() as u32
+    crate::widget::metrics::estimate_text_width(text, &Font::simple("", font_size), 1.0)
 }
 
 /// A single tab in a `TabBar`.
@@ -774,6 +776,9 @@ impl TabBar {
 impl Widget for TabBar {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {

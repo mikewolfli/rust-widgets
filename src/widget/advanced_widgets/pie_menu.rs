@@ -10,6 +10,7 @@ use std::f32::consts::TAU;
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
+use crate::event::key_codes;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::{MotionSlot, PropertyDriver};
@@ -601,6 +602,9 @@ impl Widget for PieMenu {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
@@ -723,7 +727,7 @@ impl EventHandler for PieMenu {
                     }
                 }
             }
-            Event::KeyPress { key, .. } if *key == 27 => {
+            Event::KeyPress { key, .. } if *key == key_codes::ESCAPE => {
                 // Escape
                 self.hide();
             }

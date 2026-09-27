@@ -1863,7 +1863,7 @@ pub fn report_state(id: ObjectId, fact: StateFact) -> bool {
         // for a self-painted control and unreachable for a native one, from the same fact. This
         // makes the native path go through the same door the self-painted path does, rather than
         // relying on a backend to remember a second call.
-        with_widget_mut(id, |widget| crate::style::reapply_active_theme_state(widget));
+        with_widget_mut(id, crate::style::reapply_active_theme_state);
         request_repaint_because(id, RepaintReason::State);
         crate::widget::a11y_submit::submit_state_changed(id);
     }

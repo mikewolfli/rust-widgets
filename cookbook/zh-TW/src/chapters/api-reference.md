@@ -2,7 +2,7 @@
 
 本章提供完整的、按模組劃分的 `rust_widgets` 公開 API 參考文件。當您需要為任務查找正確的型別、函式或特徵時，可將其用作快速查閱手冊。
 
-此處記載的函式庫版本為 **2.7.0**。程式碼範例假設使用 `use rust_widgets::*;` 或如所示使用顯式路徑。
+此處記載的函式庫版本為 **2.8.0**。程式碼範例假設使用 `use rust_widgets::*;` 或如所示使用顯式路徑。
 
 ---
 
@@ -998,8 +998,6 @@ pub enum Event {
 
 ```rust
 pub type TouchId = u64;
-pub type MouseEvent = (Point, u32);
-pub type KeyEvent = (u32, u32);
 
 pub enum EventPriority { High, Normal, Idle }
 pub enum GestureClass { Single, Multi, Holographic }
@@ -1113,20 +1111,22 @@ impl TimerManager {
 ### 佇列工具函式
 
 ```rust
-pub struct FixedSizeQueue<T> { /* ... */ }
-impl<T> FixedSizeQueue<T> {
-    pub fn new(capacity: usize) -> Self;
-    pub fn push(&mut self, item: T) -> Result<(), QueueError>;
-    pub fn pop(&mut self) -> Option<T>;
-    pub fn is_empty(&self) -> bool;
-    pub fn is_full(&self) -> bool;
-    pub fn len(&self) -> usize;
-    pub fn clear(&mut self);
+pub struct EventQueue { /* ... */ }
+impl EventQueue {
+    pub fn new() -> Self;
+    pub fn sender(&self) -> EventSender;
+    pub fn pop(&self) -> Option<Event>;
 }
 
-pub enum QueueError { Full, Empty }
-pub const DEFAULT_QUEUE_CAPACITY: usize = 1024;
+impl EventSender {
+    pub fn send(&self, event: Event);
+}
+
+pub enum QueueError { Full, Empty, Closed }
 ```
+
+> `FixedSizeQueue` / `PriorityQueue` / `BoundedQueue` 及 `DEFAULT_QUEUE_CAPACITY`
+> 已刪除（零消費者，與 `EventQueue` 重複）。
 
 ### 動畫幀請求
 
@@ -1293,21 +1293,37 @@ pub struct TextStyle {
 
 ### 文字溢出
 
+文字截斷是渲染後端的能力（`RenderContext::draw_text_fitted`），不是獨立函式。
+`TextOverflow` / `TextClamp` / `apply_text_overflow` / `apply_text_clamp` 已刪除
+（零消費者，與 `fit_text_to_width` 重複）。
+
+### 字素叢集
+
 ```rust
-pub enum TextOverflow { Clip, Ellipsis, Fade }
-pub enum TextClamp { None, Lines(u32), Pixels(f32) }
-pub fn apply_text_overflow(text: &str, max_width: f32, font: &Font, overflow: TextOverflow) -> String;
-pub fn apply_text_clamp(text: &str, max_lines: u32, font: &Font, width: f32, clamp: TextClamp) -> String;
+/// 遍歷文字的叢集（「使用者感知的一個字元」），回呼得到內容與位元組範圍。
+pub fn for_each_cluster(text: &str, visit: impl FnMut(&str, (usize, usize)));
 ```
 
-### 字簇支援
+`GraphemeCluster` / `GraphemeProcessor` 已刪除（與 `for_each_cluster` 重複）。
+`is_combining_mark` / `is_variation_selector` 保留在 `render::grapheme`。
+
+### 路徑幾何
 
 ```rust
-pub struct GraphemeCluster { /* ... */ }
-pub struct GraphemeProcessor { /* ... */ }
-impl GraphemeProcessor {
-    pub fn new() -> Self;
+/// 解析 SVG path data（`d`）為曲線段。支援 `M/L/H/V/C/Q/A/Z` 及全部相對形式。
+/// 畸形輸入回傳 `Err`，不 panic。展平由 `render::text::raster` 負責。
+pub fn parse(input: &str) -> Result<Vec<Subpath>, PathError>;
+
+pub struct Point { pub x: f32, pub y: f32 }
+pub enum Segment {
+    Line(Point),
+    Quad { ctrl: Point, to: Point },
+    Cubic { ctrl1: Point, ctrl2: Point, to: Point },
+    Arc { rx: f32, ry: f32, x_rotation: f32, large_arc: bool, sweep: bool, to: Point },
 }
+pub struct Subpath { pub start: Point, pub segments: Vec<Segment>, pub closed: bool }
+pub enum PathError { UnknownCommand(char), ExpectedNumber, SegmentsBeforeMove, TooManyPoints }
+pub const MAX_PATH_POINTS: usize = 1024;
 ```
 
 ### SVG 渲染

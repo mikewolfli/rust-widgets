@@ -4,6 +4,7 @@
 //! Progress dialog widget.
 use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
+use crate::event::key_codes;
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
@@ -228,6 +229,9 @@ impl Widget for ProgressDialog {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
 
     /// Mutable access to the shared base-widget state.
     fn base_mut(&mut self) -> &mut BaseWidget {
@@ -303,7 +307,7 @@ impl EventHandler for ProgressDialog {
             return;
         }
         match event {
-            Event::KeyPress { key, .. } if *key == 27 => self.cancel(),
+            Event::KeyPress { key, .. } if *key == key_codes::ESCAPE => self.cancel(),
             _ => { /* Other events are not relevant */ }
         }
     }

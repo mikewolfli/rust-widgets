@@ -226,20 +226,20 @@ impl LCDNumber {
     /// three modes in two ways: it produces a decimal point the seven-segment renderer has no
     /// glyph for (so `3.5` drew as `35`), and it produces an exponent for large magnitudes (so
     /// `1e20` drew as the literal characters `1`, `e`, `2`, `0`). The value field is an `f64`
-    ///      because the property is published as `Float`, but an LCD readout shows integers; truncating
+    /// because the property is published as `Float`, but an LCD readout shows integers; truncating
     /// toward zero makes `Dec` agree with `Hex`/`Oct`/`Bin` about what a value looks like.
     ///
-    ///      # The decimal point
+    /// # The decimal point
     ///
-    ///      Truncating was the right call for a panel with no glyph for a point, and that was the
-    ///      state this file recorded: `3.5` drew as `35`, which is not a rounding choice a reader can
-    ///      see. [`Self::draw_decimal_point`] is now that glyph, so a fractional value in `Dec` mode
-    ///      shows its point rather than dropping it, and [`Self::small_decimal_point`] chooses the
-    ///      point's size -- which is the whole reason the property exists.
+    /// Truncating was the right call for a panel with no glyph for a point, and that was the
+    /// state this file recorded: `3.5` drew as `35`, which is not a rounding choice a reader can
+    /// see. [`Self::draw_decimal_point`] is now that glyph, so a fractional value in `Dec` mode
+    /// shows its point rather than dropping it, and [`Self::small_decimal_point`] chooses the
+    /// point's size -- which is the whole reason the property exists.
     ///
-    ///      The point is a *position*, not a digit: it is charged against the digit budget the same
-    ///      way a sign is, and the integer part keeps pad-to-the-left so the panel's shape still
-    ///      follows `num_digits`.
+    /// The point is a *position*, not a digit: it is charged against the digit budget the same
+    /// way a sign is, and the integer part keeps pad-to-the-left so the panel's shape still
+    /// follows `num_digits`.
     pub fn display_text(&self) -> String {
         let magnitude = self.value.abs() as i64;
         let sign = if self.value < 0.0 { "-" } else { "" };
@@ -276,6 +276,9 @@ impl LCDNumber {
 impl Widget for LCDNumber {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base

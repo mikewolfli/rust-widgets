@@ -197,9 +197,9 @@ impl ToggleButton {
     /// `released_signal`. Unlike the checked flag, this does not request a
     /// redraw.
     pub fn set_pressed(&mut self, pressed: bool) {
-        self.base.set_pressed(pressed);
-        // The trait default carries the theme re-resolution for `toggle_button:pressed`; this
-        // inherent method shadows it, so it delegates through the trait object.
+        // The trait default carries both the field write and the theme re-resolution for
+        // `toggle_button:pressed`; this inherent method shadows it, so it delegates through the
+        // trait object rather than writing the field itself.
         <dyn Widget>::set_pressed(self, pressed);
         if self.signaled_pressed == pressed {
             return;
@@ -260,6 +260,9 @@ impl ToggleButton {
 impl Widget for ToggleButton {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base

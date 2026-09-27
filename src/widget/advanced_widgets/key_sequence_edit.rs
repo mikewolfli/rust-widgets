@@ -4,6 +4,7 @@
 //! Key sequence editor widget for capturing keyboard shortcuts.
 use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
+use crate::event::key_codes;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
@@ -300,6 +301,9 @@ impl Widget for KeySequenceEdit {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
@@ -325,7 +329,7 @@ impl EventHandler for KeySequenceEdit {
             }
             Event::KeyPress { key, modifiers } if self.recording => {
                 // Escape clears recording without saving
-                if *key == 27 {
+                if *key == key_codes::ESCAPE {
                     self.recording = false;
                     return;
                 }

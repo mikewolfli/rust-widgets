@@ -453,28 +453,14 @@ for span in rich.spans() {
 
 ## 文字溢出處理
 
-三種溢出模式控制文字超出其容器時的行為：
+控制項的文字溢出處理由**渲染後端**統一完成：`RenderContext::draw_text_fitted`
+會依容器寬度測量並截斷文字，控制項不自行實作溢出邏輯。函式庫內只有**一條**截斷路徑
+（`render/backend/surface.rs::fit_text_to_width`），因此每個控制項的省略行為一致。
 
-```rust
-use rust_widgets::render::{TextOverflow, apply_text_overflow, TextClamp, apply_text_clamp};
-
-// Clip: text is simply cut at the boundary
-let clipped = apply_text_overflow("Very long text...", 100.0, font_size, TextOverflow::Clip);
-
-// Ellipsis: truncated text ends with "..."
-let ellipsis = apply_text_overflow("Very long text...", 100.0, font_size, TextOverflow::Ellipsis);
-
-// Fade: opacity gradually reduces toward the overflow edge
-let faded = apply_text_overflow("Very long text...", 100.0, font_size, TextOverflow::Fade);
-
-// Multi-line clamp (max N lines)
-let clamped = apply_text_clamp(
-    "Long paragraph text that spans multiple lines...",
-    200.0,     // max width
-    font_size,
-    TextClamp::Lines(3),  // max 3 lines, ellipsis on overflow
-);
-```
+> **關於 `TextOverflow` / `TextClamp`**：早期版本另提供 `apply_text_overflow` /
+> `apply_text_clamp` 兩個獨立函式。它們**零消費者**（沒有任何控制項呼叫），與共用的
+> `fit_text_to_width` 構成同一概念的**兩條實作**，因此已被刪除。需要截斷時，請透過
+> `RenderContext` 的文字繪製原語完成。
 
 ---
 
@@ -505,29 +491,27 @@ for run in &runs {
 
 ## Unicode 字素叢集
 
-`GraphemeProcessor` 處理複雜的 Unicode 序列，以實現正確的游標移動與文字選取：
+叢集切分只有**一條**規則：`render/text/line.rs::for_each_cluster`。它把文字切成
+「使用者感知的一個字元」單元，並辨識組合標記與變體選擇符（`is_combining_mark` /
+`is_variation_selector`）。文字塑形、光柵化與 SVG 後端都走這一條路徑。
 
 ```rust
-use rust_widgets::render::{GraphemeCluster, GraphemeProcessor};
+use rust_widgets::render::text::for_each_cluster;
 
-let text = "Hello 👨‍👩‍👧‍👦 World! é";
-let clusters: Vec<GraphemeCluster> = GraphemeProcessor::split_graphemes(text);
-
-for cluster in &clusters {
-    println!("'{}' — {} chars, ~{:.1}px wide",
-        cluster.content, cluster.char_count, cluster.width);
-}
-
-// Output:
-// 'H' — 1 chars, ~8.4px wide
-// 'e' — 1 chars, ~8.4px wide
-// ...
-// '👨‍👩‍👧‍👦' — 7 chars, ~8.4px wide  (ZWJ family emoji — one cluster!)
+let text = "Hello é World!";
+for_each_cluster(text, |cluster, (start, end)| {
+    // `cluster` 是一個叢集的內容，`(start, end)` 是它在 `text` 中的位元組範圍。
+    let _ = (cluster, start, end);
+});
 ```
 
 **可辨識的序列：**
 - 基底字元 + 組合標記（é = e + ́）
-- 表情符號 + 膚色／髮型修飾符
+- 變體選擇符（U+FE00–U+FE0F）
+
+> **關於 `GraphemeProcessor`**：早期版本提供一個獨立的 `GraphemeProcessor`，
+> 自帶一套 `split_graphemes`。它與 `for_each_cluster` 對同一輸入給出不同答案
+> （同一概念的**兩條實作**），且零消費者，已被刪除。
 - ZWJ（零寬連接符）多表情符號序列
 - 區域指示符配對（🇺🇸 國旗）
 
@@ -784,24 +768,17 @@ fn export_form_to_svg() -> String {
 
 ### UI 標籤的文字截斷
 
+截斷是渲染後端的能力，不是控制項的：在一個帶 `RenderContext` 的 `Draw` 實作裡呼叫
+`draw_text_fitted`，它會依容器寬度測量並在末端加上省略號。
+
 ```rust
-fn render_truncated_label(
-    command_list: &mut Vec<RenderCommand>,
-    text: &str,
-    max_width: f32,
-    font_size: f32,
-    origin: Point,
-) {
-    use rust_widgets::render::{apply_text_overflow, TextOverflow};
+use rust_widgets::render::RenderContext;
+use rust_widgets::core::Font;
 
-    let display_text = apply_text_overflow(text, max_width, font_size, TextOverflow::Ellipsis);
-
-    command_list.push(RenderCommand::DrawText {
-        origin,
-        text: display_text,
-        font: Font::simple("Arial", font_size),
-        color: Color::BLACK,
-        alignment: HorizontalAlignment::Left,
-    });
+fn draw_truncated_label(context: &mut RenderContext, band: rust_widgets::core::Rect, text: &str) {
+    let font = Font::simple("Arial", 14.0);
+    // `text_line` 給出該行盒；`draw_text_fitted` 在盒寬內測量並截斷。
+    let line = context.text_line(band, &font);
+    context.draw_text_fitted(line, text, &font, rust_widgets::core::Color::BLACK, rust_widgets::core::HorizontalAlignment::Left);
 }
 ```

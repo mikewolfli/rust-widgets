@@ -1093,7 +1093,7 @@ fn kind_name(kind: widget::WidgetKind) -> alloc::string::String {
     if let Some(capability) = widget::WidgetFactory::new_with_defaults().capability_by_kind(kind) {
         return capability.canonical_name.to_string();
     }
-    widget::capability::factory_name_for_kind(kind).to_string()
+    widget::capability::factory_name_for_kind(kind).unwrap_or_default().to_string()
 }
 
 // A second `kind_name` used to live here, gated `not(full_widgets)` and marked

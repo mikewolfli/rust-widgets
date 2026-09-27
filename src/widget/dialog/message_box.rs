@@ -4,6 +4,7 @@
 //! Message box dialog widget.
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
+use crate::event::key_codes;
 use crate::impl_widget_property_hooks;
 use crate::layout::hints::{ChildInfo, Hints, LayoutParams};
 use crate::layout::{FlexLayout, JustifyContent, Layout};
@@ -381,6 +382,9 @@ impl Widget for MessageBox {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
@@ -530,12 +534,12 @@ impl EventHandler for MessageBox {
                 }
             }
             Event::KeyPress { key, .. } => {
-                if *key == 13 {
+                if *key == key_codes::ENTER {
                     // Enter → default button
                     if let Some(btn) = self.default_button {
                         self.click_button(btn);
                     }
-                } else if *key == 27 {
+                } else if *key == key_codes::ESCAPE {
                     // Escape → Cancel/No
                     if self.buttons.contains(&StandardButton::Cancel) {
                         self.click_button(StandardButton::Cancel);

@@ -26,6 +26,8 @@ pub mod dnd;
 pub mod event_queue;
 /// Focus ownership and traversal order.
 pub mod focus;
+/// Named key codes, so a handler does not compare `Event::KeyPress.key` against a literal.
+pub mod key_codes;
 pub mod r#loop;
 /// A generic, runtime-typed queue used by the event and task plumbing.
 pub mod queue;
@@ -39,6 +41,10 @@ pub use dnd::{DragPayload, DragSession, DropEffect, DropTarget};
 pub use event_queue::{EventQueue, EventSender};
 pub use focus::FocusManager;
 pub use focus::FocusTraversalStrategy;
+pub use key_codes::{
+    BACKSPACE, DELETE, DOWN, END, ENTER, ESCAPE, HOME, LEFT, LINE_FEED, PAGE_DOWN, PAGE_UP, RIGHT,
+    SPACE, TAB, UP,
+};
 pub use r#loop::AnimationFrameRequest;
 pub use r#loop::EventLoop;
 pub use timer::IdleTask;
@@ -47,8 +53,8 @@ pub use timer::TimerManager;
 /// mean "secondary button".
 pub use types::mouse_button;
 pub use types::{Event, EventHandler, EventPriority, FocusReason, GestureClass, TouchId};
-// Re-export queue utilities
-pub use queue::{FixedSizeQueue, QueueError, DEFAULT_QUEUE_CAPACITY};
-pub mod legacy_types;
-
-pub use legacy_types::{KeyEvent, MouseEvent};
+// Re-export queue utilities. `BlockingQueue` needs the mutex/condvar the alloc-frugal profile
+// does not compile, so it is exported only where it exists.
+#[cfg(not(alloc_frugal))]
+pub use queue::BlockingQueue;
+pub use queue::QueueError;

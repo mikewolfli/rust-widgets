@@ -976,16 +976,12 @@ impl PaintBackend for SvgPaintBackend {
         // Same advance heuristic as the software rasteriser, so layout computed
         // against the SVG output agrees with the rasterised frame.
         let scale = self.dpi_scale;
-        // The font's effective leading, not its point size: the software surface derives its line
-        // box the same way, and the two backends must agree about how tall a line is or a control
-        // sized against one renders wrong in the other.
-        let line_height = font.effective_line_height().max(1.0) * scale;
-        let height = line_height.round().max(1.0) as u32;
-        let ascent = (line_height * 0.8).round() as u32;
-        let descent = height.saturating_sub(ascent);
+        // The line box comes from `TextMetrics::for_font`, the one derivation both backends use.
+        // This method used to spell it out with a `.max(1.0)` the software surface did not apply,
+        // which made the two disagree about the ascent for a small leading — see that function.
         let shaped = self.shape_text(text, font);
         let width = shaped.advance().round() as u32;
-        TextMetrics { width, height, ascent, descent }
+        TextMetrics { width, ..TextMetrics::for_font(font, scale) }
     }
 
     fn shape_text(&self, text: &str, font: &Font) -> ShapedText {

@@ -4,7 +4,7 @@ This chapter provides a comprehensive, module-by-module reference for the
 entire `rust_widgets` public API. Use this as a quick lookup when you need to
 find the right type, function, or trait for your task.
 
-The library version documented here is **2.7.0**. Code examples assume
+The library version documented here is **2.8.0**. Code examples assume
 `use rust_widgets::*;` or explicit paths as shown.
 
 ---
@@ -1016,8 +1016,6 @@ pub enum Event {
 
 ```rust
 pub type TouchId = u64;
-pub type MouseEvent = (Point, u32);
-pub type KeyEvent = (u32, u32);
 
 pub enum EventPriority { High, Normal, Idle }
 pub enum GestureClass { Single, Multi, Holographic }
@@ -1131,20 +1129,22 @@ impl TimerManager {
 ### Queue Utilities
 
 ```rust
-pub struct FixedSizeQueue<T> { /* ... */ }
-impl<T> FixedSizeQueue<T> {
-    pub fn new(capacity: usize) -> Self;
-    pub fn push(&mut self, item: T) -> Result<(), QueueError>;
-    pub fn pop(&mut self) -> Option<T>;
-    pub fn is_empty(&self) -> bool;
-    pub fn is_full(&self) -> bool;
-    pub fn len(&self) -> usize;
-    pub fn clear(&mut self);
+pub struct EventQueue { /* ... */ }
+impl EventQueue {
+    pub fn new() -> Self;
+    pub fn sender(&self) -> EventSender;
+    pub fn pop(&self) -> Option<Event>;
 }
 
-pub enum QueueError { Full, Empty }
-pub const DEFAULT_QUEUE_CAPACITY: usize = 1024;
+impl EventSender {
+    pub fn send(&self, event: Event);
+}
+
+pub enum QueueError { Full, Empty, Closed }
 ```
+
+> `FixedSizeQueue` / `PriorityQueue` / `BoundedQueue` and `DEFAULT_QUEUE_CAPACITY` were removed
+> (zero consumers, duplicates of `EventQueue`).
 
 ### Animation Frame Request
 
@@ -1311,21 +1311,38 @@ pub struct TextStyle {
 
 ### Text Overflow
 
+Truncation is a render-backend capability (`RenderContext::draw_text_fitted`), not a free
+function. `TextOverflow` / `TextClamp` / `apply_text_overflow` / `apply_text_clamp` were removed
+(zero consumers, duplicates of `fit_text_to_width`).
+
+### Grapheme Clustering
+
 ```rust
-pub enum TextOverflow { Clip, Ellipsis, Fade }
-pub enum TextClamp { None, Lines(u32), Pixels(f32) }
-pub fn apply_text_overflow(text: &str, max_width: f32, font: &Font, overflow: TextOverflow) -> String;
-pub fn apply_text_clamp(text: &str, max_lines: u32, font: &Font, width: f32, clamp: TextClamp) -> String;
+/// Visit the clusters (user-perceived characters) of `text`, with their byte ranges.
+pub fn for_each_cluster(text: &str, visit: impl FnMut(&str, (usize, usize)));
 ```
 
-### Grapheme Support
+`GraphemeCluster` / `GraphemeProcessor` were removed (duplicates of `for_each_cluster`).
+`is_combining_mark` / `is_variation_selector` stay in `render::grapheme`.
+
+### Path Geometry
 
 ```rust
-pub struct GraphemeCluster { /* ... */ }
-pub struct GraphemeProcessor { /* ... */ }
-impl GraphemeProcessor {
-    pub fn new() -> Self;
+/// Parse SVG path data (`d`) into curve segments. Supports `M/L/H/V/C/Q/A/Z` and every
+/// relative form. Malformed input returns `Err`, never panics. Flattening is done by
+/// `render::text::raster`, not here.
+pub fn parse(input: &str) -> Result<Vec<Subpath>, PathError>;
+
+pub struct Point { pub x: f32, pub y: f32 }
+pub enum Segment {
+    Line(Point),
+    Quad { ctrl: Point, to: Point },
+    Cubic { ctrl1: Point, ctrl2: Point, to: Point },
+    Arc { rx: f32, ry: f32, x_rotation: f32, large_arc: bool, sweep: bool, to: Point },
 }
+pub struct Subpath { pub start: Point, pub segments: Vec<Segment>, pub closed: bool }
+pub enum PathError { UnknownCommand(char), ExpectedNumber, SegmentsBeforeMove, TooManyPoints }
+pub const MAX_PATH_POINTS: usize = 1024;
 ```
 
 ### SVG Rendering

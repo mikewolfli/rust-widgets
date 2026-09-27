@@ -10,6 +10,7 @@
 use crate::compat::{String, ToString, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
+use crate::event::key_codes;
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
 use crate::style::EdgeOffsets;
@@ -222,6 +223,9 @@ impl Widget for Dropdown {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
@@ -359,7 +363,7 @@ impl EventHandler for Dropdown {
             Event::KeyPress { key, modifiers: _ } => {
                 if !self.expanded {
                     // Up / Down arrow keys open the list
-                    if (*key == 40 || *key == 38) && !self.items.is_empty() {
+                    if (*key == key_codes::DOWN || *key == key_codes::UP) && !self.items.is_empty() {
                         self.expanded = true;
                     }
                     return;

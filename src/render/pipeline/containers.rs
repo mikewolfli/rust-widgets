@@ -78,13 +78,13 @@ impl SoftwareSurface {
         // F-10) — actually sets how tall a line of this font is. Deriving it from `size()` alone made
         // the field writable and unread: a caller could set 1.8 em leading and every `text_line` in
         // the crate would still centre on the default, so the field was decoration.
-        let line_height = font.effective_line_height() * scale;
-        let height = line_height.round().max(1.0) as u32;
-        let ascent = (line_height * 0.8).round() as u32;
-        let descent = height.saturating_sub(ascent);
+        //
+        // The height/ascent/descent triple comes from `TextMetrics::for_font` rather than being
+        // derived here, because the SVG backend derives the same triple and the two had drifted
+        // (see that function for the measured difference).
         let shaped = self.shape_text(text, font);
         let width = shaped.advance().round() as u32;
-        TextMetrics { width, height, ascent, descent }
+        TextMetrics { width, ..TextMetrics::for_font(font, scale) }
     }
     /// Shape text into unicode-aware clusters, in **visual** order for painting.
     ///

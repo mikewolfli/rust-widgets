@@ -609,7 +609,13 @@ macro_rules! events_of {
             found
         };
         let (_control, start, len) = CONTROL_STARTS[ROW];
-        &EVENT_SCHEMAS[ROW_ROWS[start]..ROW_ROWS[start + len]]
+        // `start`/`len` are already absolute indices into `EVENT_SCHEMAS`: the table records the
+        // control's own start, and its events occupy the immediately following `len` rows. An
+        // earlier revision also carried a `ROW_ROWS` table to translate "start" into an index,
+        // which was an identity table of 332 entries (`[0, 1, 2, …, 331]`) — a second copy of
+        // `0..n` that had to be regenerated in lockstep and could only ever be wrong. `start` is
+        // already the answer.
+        &EVENT_SCHEMAS[start..start + len]
     }};
 }
 
@@ -651,22 +657,24 @@ pub(crate) static CONTROL_STARTS: &[(&str, usize, usize)] = &[
 '''
 
 MIDDLE = '''];
-
-/// Index into [`EVENT_SCHEMAS`] for each control's start and end, mirroring [`CONTROL_STARTS`].
-///
-/// Plain integers, and one entry longer than [`CONTROL_STARTS`] so the last span's end has a home.
-/// They exist because a macro expansion cannot do arithmetic on a `static`, and a table of integers
-/// is the smallest thing that can be indexed from a `const` context.
-pub(crate) static ROW_ROWS: &[usize] = &[
 '''
 
 
 def render(rows: list[tuple[str, str, str, str]]) -> str:
-    """The generated file: three tables that `events_of!` indexes.
+    """The generated file: two tables that `events_of!` indexes.
 
     Rows are written out one per line rather than produced by a macro so the table stays
     greppable — `("slider", "value_changed", Some(K::Int), Some(S::Scalar))` says what it means
     with no indirection to expand.
+
+    # Why there is no third table
+
+    An earlier revision emitted `ROW_ROWS`, a `[0, 1, 2, …, n]` identity list, because the macro
+    was believed not to be able to do arithmetic on a `static` in a `const` context. That belief
+    was wrong (a `const fn` indexing a `static` compiles, and `CONTROL_STARTS` already carries each
+    control's absolute start), so the table was a second copy of `0..n` that had to be regenerated
+    in lockstep with `CONTROL_STARTS` and could only ever be wrong. `start..start + len` is the
+    whole lookup.
     """
     by_control: dict[str, list[tuple[str, str, str]]] = {}
     for capability, event, kind, shape in rows:
@@ -674,18 +682,13 @@ def render(rows: list[tuple[str, str, str, str]]) -> str:
 
     events: list[str] = []
     starts: list[str] = []
-    offsets: list[str] = []
     for capability in sorted(by_control):
         control_rows = by_control[capability]
         starts.append(f'    ("{capability}", {len(events)}, {len(control_rows)}),\n')
         for event, kind, shape in control_rows:
-            offsets.append(f"    {len(events)},\n")
             events.append(f'    EventSchema {{ name: "{event}", payload: {kind}, shape: {shape} }},\n')
-    offsets.append(f"    {len(events)},\n")
 
-    return (
-        HEADER + "".join(events) + FOOTER + "".join(starts) + MIDDLE + "".join(offsets) + "];\n"
-    )
+    return HEADER + "".join(events) + FOOTER + "".join(starts) + MIDDLE
 
 
 if __name__ == "__main__":

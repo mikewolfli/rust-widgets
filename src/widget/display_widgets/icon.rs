@@ -179,6 +179,129 @@ impl IconName {
             _ => None,
         }
     }
+
+    /// The Material Symbols outline for this icon, when the `icons` feature is on.
+    ///
+    /// # Why this is a method on the enum, and why it is not `Option`
+    ///
+    /// With the feature on, `data()` is **total**: it answers `IconData` (not `Option`), so a
+    /// variant added without a matching entry is a compile error rather than a runtime
+    /// placeholder. That is the crate's strongest completeness guarantee, and it is exactly the
+    /// link `icon.rs` used to lack — a declared name and renderable geometry had nothing
+    /// connecting them.
+    #[cfg(feature = "icons")]
+    pub fn data(self) -> IconData {
+        use crate::widget::icon_data::ICON_DATA;
+        // Indexed by the enum's declaration order, which is also `ICON_DATA`'s order: both come
+        // from the same generated token list. The `debug_assert!` catches a reorder in a debug
+        // build; `tests/icon_data_integrity_test.rs` checks the names in every build.
+        let index = self as usize;
+        debug_assert_eq!(
+            ICON_DATA[index].name,
+            self.as_str(),
+            "ICON_DATA order must match IconName declaration order"
+        );
+        ICON_DATA[index]
+    }
+
+    /// The Material Symbols outline for this icon, or `None` when the build has no icon data.
+    ///
+    /// The always-available spelling, so a draw path compiles in both states without a `cfg` at
+    /// the call site (principle #47: the condition lives here, once).
+    #[cfg(feature = "icons")]
+    pub fn data_opt(self) -> Option<IconData> {
+        Some(self.data())
+    }
+
+    /// No bundled data in this build, so there is nothing to resolve.
+    ///
+    /// Returns `None` rather than naming `IconData`, which is not compiled without the feature.
+    #[cfg(not(feature = "icons"))]
+    pub fn data_opt(self) -> Option<IconData> {
+        None
+    }
+
+    /// Every variant, in declaration order.
+    ///
+    /// # Why a hand-written list and why it is safe to have one
+    ///
+    /// `IconName` has no `#[derive(EnumIter)]` and no `ALL` until now; the list is spelled out
+    /// for the same reason [`IconName::as_str`] is, and it is kept honest by the same tests that
+    /// keep that one honest — `icon_data_integrity_test` and the round-trip test below walk it
+    /// against `data()` and `as_str()`, so a variant missing from this list fails the build's
+    /// tests rather than passing unnoticed.
+    pub const ALL: [IconName; 31] = [
+        Self::Check,
+        Self::Cross,
+        Self::ArrowLeft,
+        Self::ArrowRight,
+        Self::ArrowUp,
+        Self::ArrowDown,
+        Self::Star,
+        Self::Heart,
+        Self::Settings,
+        Self::Home,
+        Self::Search,
+        Self::Menu,
+        Self::Close,
+        Self::Plus,
+        Self::Minus,
+        Self::Info,
+        Self::Warning,
+        Self::Error,
+        Self::User,
+        Self::Mail,
+        Self::Bell,
+        Self::Edit,
+        Self::Trash,
+        Self::Share,
+        Self::Refresh,
+        Self::More,
+        Self::Filter,
+        Self::Lock,
+        Self::Unlock,
+        Self::Download,
+        Self::Upload,
+    ];
+
+    /// The canonical token of every variant, in declaration order.
+    ///
+    /// The table's own view of [`IconName::ALL`], so a test can compare the two lists rather
+    /// than compare each against a third copy.
+    pub fn all_tokens() -> [&'static str; 31] {
+        let mut tokens = [""; 31];
+        let mut index = 0;
+        while index < Self::ALL.len() {
+            tokens[index] = Self::ALL[index].as_str();
+            index += 1;
+        }
+        tokens
+    }
+}
+
+/// One icon's outline, as SVG path data on a square design grid.
+///
+/// # Why this type is defined here and not in the generated file
+///
+/// The table (`crate::widget::icon_data`) is behind the opt-in `icons` feature, but a caller
+/// that wants to *name* an icon's data — a signature, a struct field, `Option<IconData>` —
+/// must compile in a build without it. Defining the type unconditionally and gating only the
+/// table keeps one definition of the shape (`principle #54`) while still compiling the payload
+/// out.
+///
+/// # Coordinates
+///
+/// Material Symbols draws on a 960-unit grid with **negative y upward** (its own `viewBox`
+/// is `0 -960 960 960`). This keeps upstream's numbers verbatim; `Icon` scales and flips the
+/// axis when drawing, so the data stays a copy rather than a re-encoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IconData {
+    /// The canonical token, matching [`IconName::as_str`].
+    pub name: &'static str,
+    /// The design grid: `x` spans `0..grid`, `y` spans `-grid..0`.
+    pub grid: u16,
+    /// The SVG path data (`d`), one entry per `<path>` in the upstream file.
+    pub paths: &'static [&'static str],
 }
 
 /// Icon widget — renders a simple geometric icon.
@@ -713,7 +836,31 @@ impl Icon {
     }
 
     /// Dispatches to the correct draw method based on icon_name.
+    ///
+    /// # Two paths, and why the data path is tried first
+    ///
+    /// With the opt-in `icons` feature on, a known token has a real outline
+    /// ([`IconName::data`]) and it is drawn. With the feature off — and for a name that is not a
+    /// token at all — the hand-drawn method for that name is used instead. That ordering is what
+    /// keeps a default build's output **byte-identical** to what it was before the data existed:
+    /// the hand-drawn shapes were the only shapes, so every committed snapshot was taken against
+    /// them, and the payload only ever adds a path a caller explicitly asked for.
+    ///
+    /// The `draw_*` methods are therefore not dead code in a `icons` build: they remain the
+    /// fallback for the un-tokened case and the only renderer for a build without the data. See
+    /// the module docs for why the fallback is kept rather than removed.
     fn draw_icon(&self, ctx: &mut RenderContext) {
+        #[cfg(feature = "icons")]
+        {
+            if let Some(name) = IconName::from_name(&self.icon_name) {
+                // `Some` because the feature is on: the outline is known to exist, so a `None`
+                // here would mean the gate let a tokened name through without data.
+                if let Some(data) = name.data_opt() {
+                    self.draw_outline(ctx, &data);
+                    return;
+                }
+            }
+        }
         match self.icon_name.as_str() {
             "check" => self.draw_check(ctx),
             "cross" => self.draw_cross(ctx),
@@ -731,7 +878,6 @@ impl Icon {
             "info" => self.draw_info(ctx),
             "warning" => self.draw_warning(ctx),
             "error" => self.draw_error(ctx),
-            // For remaining icons, draw simple representations
             "settings" => self.draw_settings(ctx),
             "home" => self.draw_home(ctx),
             "user" => self.draw_user(ctx),
@@ -748,6 +894,38 @@ impl Icon {
             "download" => self.draw_download(ctx),
             "upload" => self.draw_upload(ctx),
             _ => self.draw_unknown(ctx),
+        }
+    }
+
+    /// Draws an icon from its bundled outline data.
+    ///
+    /// Each contour is filled as a polygon by the non-zero winding rule, so a counter (the hole in
+    /// an outlined shape) fills as empty because its ring runs the opposite way — the same rule the
+    /// glyph rasteriser uses. Data that does not fit the fixed scratch, or that does not parse, is
+    /// **refused**: nothing is drawn for it rather than a truncated shape (a partial icon is a
+    /// wrong icon).
+    #[cfg(feature = "icons")]
+    fn draw_outline(&self, ctx: &mut RenderContext, data: &IconData) {
+        use crate::render::path::{
+            flatten_paths, IconPlacement, MAX_OUTLINE_CONTOURS, MAX_OUTLINE_POINTS,
+        };
+
+        let rect = self.icon_rect();
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
+        let color = self.resolve_color();
+        let placement = IconPlacement::new(rect.x, rect.y, rect.width as f32, data.grid);
+        let mut points = [Point::new(0, 0); MAX_OUTLINE_POINTS];
+        let mut contours = [(0usize, 0usize); MAX_OUTLINE_CONTOURS];
+        let Ok(count) = flatten_paths(data.paths, placement, &mut points, &mut contours) else {
+            return;
+        };
+        for &(start, end) in &contours[..count] {
+            let Some(contour) = points.get(start..end) else {
+                continue;
+            };
+            ctx.draw_path(contour, true, color, true, 1);
         }
     }
 
@@ -1281,6 +1459,9 @@ impl Widget for Icon {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
@@ -1356,15 +1537,21 @@ impl Draw for Icon {
             return;
         }
         if !self.base.is_enabled() {
-            // Render the disabled appearance by temporarily pinning an explicit
-            // colour: a desaturated grey at half the resolved colour's alpha. The
-            // pin is removed afterwards, so the pre-draw resolution (theme or
-            // explicit setter) is unchanged and the next draw recomputes it.
+            // Render the disabled appearance by temporarily pinning an explicit colour: a
+            // desaturated grey at half the resolved colour's alpha. The pin is removed
+            // afterwards, so the pre-draw resolution (theme or explicit setter) is unchanged and
+            // the next draw recomputes it.
+            //
+            // `saved` is the caller's own `color` (which `set_color` may have set), not `None`:
+            // the draw path must never write a control's resolved state. Restoring `None` here
+            // silently dropped a `set_color(red)` the moment the icon was drawn disabled once —
+            // re-enabling it then painted the theme colour, not the caller's.
             let resolved = self.resolve_color();
             let gray = ((resolved.r as u16 + resolved.g as u16 + resolved.b as u16) / 3) as u8;
+            let saved = self.color;
             self.color = Some(Color::rgba(gray, gray, gray, resolved.a / 2));
             self.draw_icon(context);
-            self.color = None;
+            self.color = saved;
             return;
         }
         self.draw_icon(context);
@@ -1441,6 +1628,54 @@ mod tests {
         // An explicit colour still outranks the style.
         icon.set_color(Color::RED);
         assert_eq!(icon.color(), Color::RED);
+    }
+
+    /// Drawing a disabled icon must not destroy the caller's colour.
+    ///
+    /// # The defect this pins
+    ///
+    /// `Icon::draw` pins a grey for the disabled appearance and then restored `self.color = None`
+    /// — not the value it had saved. A `set_color(red)` icon therefore **permanently** lost red
+    /// the first time it was painted disabled: re-enabling it painted the theme colour, not the
+    /// caller's. The draw path may not write a control's resolved state, and the pre-draw value is
+    /// exactly the state that says so.
+    #[test]
+    fn drawing_disabled_does_not_discard_an_explicit_colour() {
+        use crate::render::{PaintBackend, RenderContext, SoftwarePaintBackend};
+        use crate::widget::draw::Draw;
+
+        let bounds = Rect::new(0, 0, 24, 24);
+        let mut icon = Icon::new(bounds);
+        icon.set_icon("heart");
+        icon.set_color(Color::RED);
+
+        let mut surface = SoftwarePaintBackend::new(bounds.size(), 1.0);
+        surface.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut surface);
+            icon.draw(&mut context);
+        }
+
+        assert_eq!(
+            icon.explicit_color(),
+            Some(Color::RED),
+            "a normal draw must leave the caller's colour untouched"
+        );
+
+        // Disable, draw, and re-check: this is the path that used to reset the pin to `None`.
+        icon.set_enabled(false);
+        surface.begin_frame(Color::WHITE);
+        {
+            let mut context = RenderContext::new(&mut surface);
+            icon.draw(&mut context);
+        }
+        assert_eq!(
+            icon.explicit_color(),
+            Some(Color::RED),
+            "a disabled draw must restore the caller's colour, not clear it"
+        );
+        icon.set_enabled(true);
+        assert_eq!(icon.color(), Color::RED, "re-enabling must paint the caller's colour again");
     }
 
     /// The `color` property is readable and writable, and a malformed value is
@@ -1551,5 +1786,54 @@ mod tests {
         let svg = crate::widget::svg::render_to_svg(&mut icon);
         assert!(svg.starts_with("<svg"));
         assert!(svg.ends_with("</svg>"));
+    }
+
+    // ── The bundled outline path (opt-in `icons` feature) ────────────────
+
+    /// Every token draws real ink through the data path, and no two draw the same picture.
+    ///
+    /// # Why this is a rendering test and not only a data test
+    ///
+    /// `tests/icon_data_integrity_test.rs` proves the *data* is complete and distinct. It cannot
+    /// prove the data reaches the screen: a draw path that parsed nothing, or filled nothing, would
+    /// leave that test green while every icon rendered blank. This renders each token through the
+    /// real pipeline and asserts the emitted geometry is non-empty — the "no silent placeholder"
+    /// check ICON-4 asks for, one level below the census gate.
+    #[cfg(all(feature = "icons", not(feature = "mini")))]
+    #[test]
+    fn every_tokened_icon_draws_a_distinct_outline() {
+        use crate::widget::svg::render_to_svg;
+
+        let mut outlines: Vec<String> = Vec::new();
+        for token in IconName::ALL {
+            let mut icon = Icon::new(Rect::new(0, 0, 24, 24));
+            icon.set_icon_enum(token);
+            let svg = render_to_svg(&mut icon);
+            // The data path emits `<path>` fills; the hand-drawn fallback emits `<line>`/`<circle>`.
+            assert!(
+                svg.contains("<path"),
+                "{token:?} rendered no outline path, so the data did not reach the draw: {svg}"
+            );
+            for other in &outlines {
+                assert_ne!(other, &svg, "{token:?} draws the same picture as another icon");
+            }
+            outlines.push(svg);
+        }
+        assert_eq!(outlines.len(), IconName::ALL.len());
+    }
+
+    /// With the feature off, a tokened icon still draws — through the hand-drawn shapes.
+    ///
+    /// This is the property that keeps a default build's snapshots byte-identical: the data path
+    /// must not become the *only* path, or a build without the payload would render nothing.
+    #[cfg(not(feature = "icons"))]
+    #[test]
+    fn a_tokened_icon_still_draws_without_the_data() {
+        use crate::widget::svg::render_to_svg;
+
+        let mut icon = Icon::new(Rect::new(0, 0, 24, 24));
+        icon.set_icon_enum(IconName::Check);
+        let svg = render_to_svg(&mut icon);
+        assert!(svg.contains("<line"), "the hand-drawn fallback must still draw: {svg}");
     }
 }

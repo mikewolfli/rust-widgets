@@ -388,21 +388,26 @@ drain_tasks();  // posts Custom events for completed tasks
 
 ## Generic Queue Primitives
 
-The `queue` module provides foundational data structures:
+The `queue` module provides two primitives, both **in production use**:
 
 ```rust
-use rust_widgets::event::queue::{FixedSizeQueue, QueueError, DEFAULT_QUEUE_CAPACITY};
+use rust_widgets::event::{EventQueue, EventSender};
 
-let mut queue = FixedSizeQueue::<Event>::with_capacity(DEFAULT_QUEUE_CAPACITY);
-
-queue.push(Event::Paint).map_err(|QueueError::Full| {
-    eprintln!("Event queue overflow!");
-})?;
-
+// Single-threaded event queue: the application's main loop drains it.
+let queue = EventQueue::new();
+let sender = queue.sender();
+sender.send(Event::Paint);
 while let Some(event) = queue.pop() {
-    process(event);
+    let _ = event;
 }
 ```
+
+`event::queue::BlockingQueue` is the thread-safe blocking queue that `view/reactive.rs` uses
+internally; it is not part of the recommended public contract.
+
+> **About `FixedSizeQueue` / `PriorityQueue` / `BoundedQueue`**: earlier versions also shipped
+> these three queue types. They had **zero consumers** and were duplicate implementations of one
+> concept alongside `EventQueue`, so they were removed. Use `EventQueue`.
 
 These primitives are used internally by `EventQueue` and can be reused for custom event buffering.
 

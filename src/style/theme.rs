@@ -194,11 +194,30 @@ pub fn theme_test_guard() -> crate::compat::MutexGuard<'static, ()> {
 #[cfg(device_profile)]
 pub use crate::theme::{AppearanceMode, Colors, SemanticColor, Theme};
 
+// ── The stripped-profile shapes ──
+//
+// # Why these are separate definitions and not re-exports (rule #54, and why it holds)
+//
+// `crate::theme` is gated `device_profile`, but the controls below compile in a full widget
+// build with **no** device profile (`--no-default-features --features windows`). Those controls
+// **name** these types at ~120 call sites (`SemanticColor::Warning`, `Option<Theme>`, …), and
+// the names cannot be derived from anything else, so something must exist in this profile.
+//
+// The two shapes differ on purpose, and the difference is bounded by one fact: **no value of
+// `Theme` or `Colors` is ever produced here.** `ThemeManagerPlaceholder::current_theme` answers
+// `None`, `semantic_color` answers `None`, and every call site's own
+// `Some(..) => themed, None => literal` ladder already handles it. So `Theme` carries only the
+// one field a call site can syntactically name (`colors`) and `Colors` carries the palette
+// fields a control might read *if* a value existed — neither is ever inhabited.
+//
+// Adding a method to the real `SemanticColor` (e.g. `ALL`, `token`) therefore does **not** need
+// to be mirrored here: nothing in this profile can call one, because there is no value to call
+// it on. That is what keeps this from being the "two definitions that drift" case rule #54
+// forbids — the stripped shape cannot disagree about *behaviour* because it has none.
+
 /// The four semantic colour tokens `Theme::colors` declares.
 ///
-/// Defined here only where `crate::theme` is absent. A call site that *names* a token must
-/// compile, and [`semantic_color`] then answers `None` regardless — so a control built
-/// against this cannot render a token colour that no theme supplied.
+/// Defined here only where `crate::theme` is absent, and never inhabited: see the note above.
 #[cfg(not(device_profile))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SemanticColor {
@@ -223,10 +242,9 @@ pub enum AppearanceMode {
     Dark,
 }
 
-/// The palette shape a call site may name where `crate::theme` is absent.
+/// The palette holder named by `Option<Theme>` in this profile, and never inhabited.
 ///
-/// It mirrors `Theme::colors` so `active.colors.background` type-checks, but no value of it
-/// is ever produced — see [`ThemeManagerPlaceholder::current_theme`]. It exists so the code
+/// See the note on [`SemanticColor`] for why this carries only `colors`.
 #[cfg(not(device_profile))]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Theme {

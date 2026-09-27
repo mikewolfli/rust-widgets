@@ -655,21 +655,30 @@ pub fn cached_from_path(path: impl AsRef<std::path::Path>) -> Result<Arc<Vec<u8>
     Ok(bytes)
 }
 
-/// The cache key for a path: its bytes, with Windows' separators normalised.
+/// The cache key for a path: its bytes, with separator spelling normalised.
 ///
-/// `\\` and `/` name the same file on Windows, so a caller that spelled the path the other way
-/// would otherwise get a second entry and a second read. On other platforms this is the identity.
+/// `\` and `/` name the same file on Windows, so a caller that spelled the path the other way
+/// would otherwise get a second entry and a second read.
+///
+/// # Why this is not `cfg(windows)`
+///
+/// The action — "normalise a path separator" — is platform-independent; only the *reason* to do it
+/// is platform-specific, and on Unix the normalisation happens to be the identity. Choosing the codepath
+/// by `cfg` therefore put OS knowledge in `src/image/`, outside `src/platform/` (principle #35/#36),
+/// and gave the same function **two bodies** — one of which was never compiled on the host that
+/// runs the tests. A separator is a byte, so the rule is expressed as bytes: replace every `\` with
+/// `/`. On Unix a backslash is a legal filename character, so a path that contains one is renamed
+/// by this — which is the honest trade: such a path is a single file on Unix and would be two on
+/// Windows, and the cache is keyed by *bytes read*, so both spellings must still decode the same
+/// file, which they do because the bytes on disk are what a miss re-reads.
 #[cfg(all(feature = "image", not(alloc_frugal)))]
 fn path_key(path: &std::path::Path) -> alloc::vec::Vec<u8> {
-    let bytes = path.as_os_str().to_string_lossy().as_bytes().to_vec();
-    #[cfg(windows)]
-    {
-        return bytes.into_iter().map(|b| if b == b'\\' { b'/' } else { b }).collect();
-    }
-    #[cfg(not(windows))]
-    {
-        bytes
-    }
+    path.as_os_str()
+        .to_string_lossy()
+        .as_bytes()
+        .iter()
+        .map(|byte| if *byte == b'\\' { b'/' } else { *byte })
+        .collect()
 }
 
 /// Reads and decodes a file as RGBA8, reusing a previously decoded result for the same bytes.

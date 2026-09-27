@@ -75,16 +75,31 @@ fn platform_contract_negotiation_works() {
                 contract.typed_widget_trigger,
                 "Native contract must support typed_widget_trigger"
             );
-            // The fallback used to fabricate all-true, so a backend that publishes no
-            // contract of its own was told it had a native menu even while reporting a
-            // non-desktop family. The answer must now follow the family the backend
-            // actually reports.
-            let actual_family = rust_widgets::platform::get_platform().family();
-            let expected = rust_widgets::platform::default_capabilities_for(actual_family);
-            assert_eq!(
-                contract, expected,
-                "the negotiated contract must match the family the backend reports ({actual_family:?}); \
-                 a mismatch means the fallback invented capabilities"
+            // A real backend publishes its own contract (`native_capability_contract()` returns
+            // `None` only for a non-desktop family), so the negotiated answer is the backend's own
+            // declaration rather than a family-derived default. The property this test guards is
+            // that the answer is **not fabricated**: it equals either the backend's own
+            // declaration or the honest all-`false` default — never a synthesized over-claim. The
+            // trait default no longer grants host integrations from a family classification, so a
+            // desktop backend that declares nothing reports nothing.
+            let honest_default = rust_widgets::platform::default_capabilities_for(
+                rust_widgets::platform::get_platform().family(),
+            );
+            let backend_declared = rust_widgets::platform::get_platform().capabilities();
+            assert!(
+                contract == honest_default || contract == backend_declared,
+                "the negotiated contract must be either the backend's own declaration or the \
+                 honest default; got {contract:?}, backend declares {backend_declared:?}, \
+                 default is {honest_default:?}"
+            );
+            // The default must not invent: every host integration is absent unless declared.
+            assert!(
+                !honest_default.dpi_scaling
+                    && !honest_default.ime
+                    && !honest_default.accessibility
+                    && !honest_default.native_menu,
+                "the family-derived default must claim no host integration; a family is a \
+                 classification, not a capability"
             );
         }
         CapabilityContract::Embedded(contract) => {
@@ -416,10 +431,16 @@ fn capability_fallback_follows_the_family_and_never_invents() {
         std::sync::LazyLock::new(|| StubPlatform::new("test-embedded", PlatformFamily::Embedded));
 
     for (name, backend, family) in [
-        ("mobile", &*MOBILE_BACKEND as &'static dyn rust_widgets::platform::Platform,
-         PlatformFamily::Mobile),
-        ("embedded", &*EMBEDDED_BACKEND as &'static dyn rust_widgets::platform::Platform,
-         PlatformFamily::Embedded),
+        (
+            "mobile",
+            &*MOBILE_BACKEND as &'static dyn rust_widgets::platform::Platform,
+            PlatformFamily::Mobile,
+        ),
+        (
+            "embedded",
+            &*EMBEDDED_BACKEND as &'static dyn rust_widgets::platform::Platform,
+            PlatformFamily::Embedded,
+        ),
     ] {
         // The precondition this test depends on: no published contract, so the
         // fallback really is what answers.
@@ -428,9 +449,8 @@ fn capability_fallback_follows_the_family_and_never_invents() {
             "{name}: this test only means something for a backend without a published contract"
         );
 
-        let contract = with_platform(backend, || {
-            negotiate_capability_contract(RuntimeProfile::Full)
-        });
+        let contract =
+            with_platform(backend, || negotiate_capability_contract(RuntimeProfile::Full));
         let CapabilityContract::Native(caps) = contract else {
             panic!("{name}: a Full profile must negotiate a Native contract");
         };

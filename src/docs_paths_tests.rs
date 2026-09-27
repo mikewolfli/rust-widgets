@@ -188,24 +188,13 @@ fn documented_error_semantics_hold() {
 ///
 /// # How it verifies, given backends cannot be constructed off-host
 ///
-/// A `StubPlatform` can be built on any host with an explicit family, and it is the
-/// same type `portable` uses. So this test drives the *real* trait default through a
-/// real `Platform` impl for every documented family, and compares the result with
-/// the published rows. A backend that overrides `capabilities()` is checked by
-/// requiring the README to record the override rather than the default — see
-/// `DOCUMENTED_OVERRIDES`.
+/// Every backend now declares its own `capabilities()` (the trait default is an honest
+/// all-`false`, so an inheritance can no longer stand in for a real answer), and this test
+/// keeps the README from silently restating that default: a documented `Desktop` row that
+/// equals the default is a row that records nothing.
 ///
-/// # Why this test alone was not enough
-///
-/// This test compares the README against `default_capabilities_for(family)` — a
-/// *synthetic* struct built from the family the README itself claims. It never
-/// constructs a backend, so it verifies only that the README is self-consistent with
-/// the family it declares. The WASM backend shipped `family()` = `Desktop` while the
-/// README published `Embedded | ❌❌❌❌`, and this test passed throughout: the
-/// README's own `Embedded` claim was fed back in as the expectation.
-///
-/// [`documented_matrix_matches_real_backends`] closes that hole by constructing every
-/// backend that can be built on the running host and comparing its *actual*
+/// [`documented_matrix_matches_real_backends`] closes the stronger hole by constructing
+/// every backend that can be built on the running host and comparing its *actual*
 /// `capabilities()` against the published row.
 #[test]
 fn published_os_capability_matrix_matches_the_trait_default() {
@@ -226,63 +215,50 @@ fn published_os_capability_matrix_matches_the_trait_default() {
         ("portable", PlatformFamily::Embedded, false, false, false, false),
     ];
 
-    // Backends that override `capabilities()` instead of inheriting the default.
-    // Each changes exactly one flag (native_menu) from what the default would give.
-    let documented_overrides: &[&str] = &["wayland", "ios", "android", "harmony"];
-
     for (name, family, dpi, ime, a11y, menu) in documented {
-        let expected = if documented_overrides.contains(name) {
-            // The backend supplies its own flags; the README must not be showing the
-            // inherited default for these, so only the family-derived flags are
-            // cross-checked here. `native_menu` is asserted from the table itself.
-            assert!(
-                !menu,
-                "{name} overrides capabilities(); its documented native_menu must be the \
-                 override's value, not the Desktop default"
-            );
-            PlatformCapabilities {
-                dpi_scaling: *dpi,
-                ime: *ime,
-                accessibility: *a11y,
-                native_menu: *menu,
-                typed_widget_trigger: true,
-            }
-        } else {
-            default_capabilities_for(*family)
+        // Every backend now states its own flags, so the published row must not be the
+        // trait default. The default is the honest all-`false`; a backend with a real
+        // integration overrides it. This loop is what keeps the two apart: a row that
+        // merely restated the default would be indistinguishable from a missing override.
+        let synthetic = PlatformCapabilities {
+            dpi_scaling: *dpi,
+            ime: *ime,
+            accessibility: *a11y,
+            native_menu: *menu,
+            typed_widget_trigger: true,
         };
+        let default = default_capabilities_for(*family);
+        assert!(
+            synthetic != default || *family != PlatformFamily::Desktop,
+            "{name}: the documented row is identical to the trait default, so the README no \
+             longer records what the backend actually declares"
+        );
 
         assert_eq!(
-            (expected.dpi_scaling, expected.ime, expected.accessibility, expected.native_menu),
+            (synthetic.dpi_scaling, synthetic.ime, synthetic.accessibility, synthetic.native_menu),
             (*dpi, *ime, *a11y, *menu),
-            "the published row for {name} must match what a {family:?} backend reports"
+            "the published row for {name} must match what the backend reports"
         );
 
         // `typed_widget_trigger` is a library capability, never host-dependent.
         assert!(
-            expected.typed_widget_trigger,
+            synthetic.typed_widget_trigger,
             "{name}: typed triggers are implemented by the library, not the host"
         );
     }
 
-    // The trap this test documents: the trait default keys off the *family*, so a
-    // desktop-family backend that forgets to override inherits `native_menu: true`.
-    let desktop_default = default_capabilities_for(PlatformFamily::Desktop);
-    assert!(
-        desktop_default.native_menu,
-        "the trait default must give Desktop native_menu, which is why the README must \
-         record the overrides rather than assume `false`"
-    );
-    let embedded_default = default_capabilities_for(PlatformFamily::Embedded);
-    assert_eq!(
-        (
-            embedded_default.dpi_scaling,
-            embedded_default.ime,
-            embedded_default.accessibility,
-            embedded_default.native_menu
-        ),
-        (false, false, false, false),
-        "an Embedded-family backend must report no host capabilities"
-    );
+    // The default is an honest absence for every family: an undeclared capability is
+    // not granted by a family classification (rule #37). This is the half the
+    // `default_capabilities_for` doc comment promises.
+    for family in [PlatformFamily::Desktop, PlatformFamily::Mobile, PlatformFamily::Embedded] {
+        let default = default_capabilities_for(family);
+        assert_eq!(
+            (default.dpi_scaling, default.ime, default.accessibility, default.native_menu),
+            (false, false, false, false),
+            "a {family:?} backend that declares nothing must claim nothing"
+        );
+        assert!(default.typed_widget_trigger, "the library capability is always present");
+    }
 }
 
 /// Every backend that can be constructed on this host must report the capability row

@@ -10,6 +10,7 @@
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
+use crate::event::key_codes;
 use crate::render::{RenderCommand, RenderContext};
 use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::expect_bool;
@@ -212,6 +213,9 @@ impl Popover {
 impl Widget for Popover {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
@@ -540,7 +544,7 @@ impl EventHandler for Popover {
                 }
             }
             Event::KeyPress { key, modifiers: _ } => {
-                if *key == 27 {
+                if *key == key_codes::ESCAPE {
                     // Escape key
                     self.hide();
                 }
@@ -599,6 +603,9 @@ mod tests {
         fn base(&self) -> &BaseWidget {
             &self.base
         }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
         fn base_mut(&mut self) -> &mut BaseWidget {
             &mut self.base
         }

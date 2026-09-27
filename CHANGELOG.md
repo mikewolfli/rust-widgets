@@ -5,6 +5,140 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.8.0 (2026-09-28) — Material Symbols icon data, a real SVG-path renderer, and a defect sweep across the theme and capability layers
+
+Backward compatible for every public signature. The release is mostly **defects removed from paths
+that were reachable but untested** — 37 planned items plus 10 found while fixing them — and one new
+default. Where something was removed it had zero consumers, and each removal is listed.
+
+**New, on by default:** `icons` bundles the Material Symbols outlines and is in `default`, so a plain
+`cargo build` draws the real geometry. It is deliberately absent from every device profile (a sized
+`mini`/`embedded` build should not inherit a payload the caller did not ask for), and a build without
+the feature keeps the hand-drawn shapes exactly as before.
+
+**New, default-on:** `event::key_codes` (named key codes), `TextMetrics::for_font` (the one line-box
+derivation both backends now share), and `render::path::{parser, flatten}` (SVG `d` → curves →
+polylines, reusing the glyph flattener).
+
+**Removed (zero consumers, verified by grep and by a new gate):** `render/text_overflow.rs`,
+`event/legacy_types.rs`, `GraphemeProcessor`, three unused queue types, and the `switch_on` snapshot
+(byte-identical to `switch.svg` once animations were settled before export).
+
+---
+
+### 1. Every control can finally show its `:hover` / `:pressed` / `:disabled` state
+
+`WidgetState`, `resolve_style_for_state` and `apply_active_theme` were all implemented and all
+correct, and none of them was reachable: `set_enabled` / `set_hovered` / `set_pressed` wrote the flag
+and stopped, so a theme author's `"button:hover"` was declared and carried nothing.
+
+The fix is at the trait layer, once, for all 188 controls: a new
+`Widget::set_state_theme_hook()` (object-safe, no `where Self: Sized`) that the three setters call, so
+the state key is **re-resolved** whenever the state changes. It is called through `dyn Widget`, which
+is why an object-safe hook was needed rather than a generic method: `Widget` is used as a trait object
+in the routing table, so a `where Self: Sized` bound made the method uncallable from exactly the code
+that had to call it.
+
+Two controls overrode the setters and skipped the hook (`Button`, `CheckBox`); both now delegate to
+the trait default, which is what makes "every control re-resolves" a property of the type rather than
+a list someone maintains.
+
+### 2. The theme's spacing reaches controls
+
+`role_base_style` wrote `padding: Padding::all(theme.spacing.medium)` and
+`margin: Margin::all(theme.spacing.small)`, and neither `merge_theme` nor `merge` copied either field
+— so every themed control kept `Padding::all(0)` and the `touch_target` / spacing tokens were
+write-only. This is a full-control geometry change and **moves control snapshots**
+(`calendar`, `command_link`); both were reviewed line by line and regenerated.
+
+### 3. Material Symbols icon data (`icons`, on by default)
+
+`Icon` declared 31 names and drew 28 hand-written shapes, `Close` and `Cross` shared one method, and
+the module docs admitted "visually distinct names do not always produce distinct output". There was
+**no link between declaring an icon and having geometry for it**.
+
+* `tools/vendor_material_symbols.py` vendors the per-icon SVG outlines at a **pinned commit SHA**
+  (`bd8cb85b…`), with the upstream `LICENSE` copy and an `UPSTREAM_HAS_NO_NOTICE` probe.
+* `tools/gen_icon_data.py` generates `src/widget/icon_data.rs` offline. It refuses to run without
+  `--license=apache-2.0` (exit 2), and **refuses to emit two tokens with byte-identical outlines**, so
+  the `Close == Cross` defect cannot return through an upstream rename.
+* `IconName::data()` is **total** under the feature — it answers `IconData`, not `Option` — so a
+  variant added without data is a compile error rather than a silent placeholder.
+* `render::path::parser` reads the full SVG command set (`M/L/H/V/C/S/Q/T/A/Z` + relative forms),
+  including the **bare-number repeat rule** and the **smooth-curve reflection** (`S`/`T`); arcs are
+  converted to cubics at parse time (SVG F.6.5) so a `Subpath` only carries curves the flattener
+  knows. `render::path::flatten` feeds them to the **existing** `raster.rs` subdivider rather than
+  growing a second one.
+* `tools/check_icon_data_is_opt_in.sh`, `tools/check_icon_licences.sh` and
+  `tests/icon_census_test.rs` assert the gate, the Apache-2.0 chain, and that no two icons draw one
+  picture.
+
+### 4. `ROW_ROWS`, and other generated tables that were their own transcription
+
+`event_payloads.rs` shipped a 332-entry `ROW_ROWS` table that was literally `[0, 1, 2, …, 331]`, on
+the stated belief that "a macro expansion cannot do arithmetic on a `static`". That belief is false —
+a `const fn` indexing a `static` compiles — so the table was a second copy of `0..n` that had to be
+regenerated in lockstep and could only ever be wrong. It is gone, and the generator that emitted it
+was changed too (a first attempt that edited only the output was reverted by the next `--check`).
+
+### 5. Named key codes
+
+19 files compared `Event::KeyPress.key` against the literals `13`, `27`, `8`, `37`, `40`. Those
+numbers say nothing about what they mean and a typo (`37` for `47`) is not a compile error.
+`event::key_codes` names them, and a test asserts each constant equals what
+`shortcut::Key::from_key_code` maps to the matching variant — so the two tables cannot drift.
+
+### 6. The two text backends agreed about nothing, then agreed about the line box
+
+The software surface and the SVG backend each derived the line-box triple inline, and they had
+drifted: the SVG backend applied a `.max(1.0)` to the font's leading that the software surface did
+not. Because the ascent is `leading * 0.8`, a small leading made them place the **baseline**
+differently while agreeing on the height — a control sized against one backend rendered a line
+off-centre in the other. `TextMetrics::for_font` is now the single derivation, and a test exercises
+both backends across the divergence case.
+
+### 7. Honest capability reporting
+
+`platform/types.rs` inferred `native_menu` from `family()` and hard-coded `low_memory_mode: true`, so
+a backend that forgot to override reported a capability it did not have. Both now default to the
+honest "absent" (`false` / `None`) and a backend must state what it supports.
+
+### 8. Disabled icons no longer lose the caller's colour
+
+`Icon::draw` pinned a grey for the disabled appearance and then restored `self.color = None` — not
+the value it saved. A `set_color(red)` icon therefore **permanently** lost red the first time it was
+painted disabled. A draw path may not write a control's resolved state.
+
+### 9. Snapshot export no longer photographs mid-animation
+
+`sample_fill` turns feature states on, which starts a transition; the exporter drew the very next
+frame, so `switch.svg` was a blend of the off and on endpoint colours (`travel ≈ 0.10`) — a frame no
+user rests in. The exporter now settles a transition before drawing, and draws a **perpetual**
+animation (a spinner, a skeleton shimmer) at a fixed phase so its snapshot stays reproducible.
+
+### 10. `data-loss`-class fixes in the image path
+
+`ImageData::to_rgba8` and `decode_animation_codec` used `unreachable!()` to express "the guard above
+makes this impossible". Both are now written out: the first returns the idempotent clone, the second
+returns the same error its caller would have, so the guarantee lives in one place instead of a
+`match` plus a panic that a later edit could turn into a crash on a draw path.
+
+### Gates added or repaired this release
+
+| gate | what it now prevents |
+|---|---|
+| `check_semantic_state_has_a_consumer.sh` | a declared `:error` key no control reads |
+| `check_alias_tables_agree.sh` | `alias_factory_name` and `alias_for_name` drifting |
+| `check_icon_data_is_opt_in.sh` | the icon payload entering `default` or a device profile |
+| `check_icon_licences.sh` | an icon shipping without its licence copy, header or NOTICE section |
+| `tests/icon_census_test.rs` | two icon names drawing one picture; a stale census |
+| `check_implicit_size_uses_metrics.sh` **(repaired)** | was reporting 101 findings because 156 of its 226 `path:line` exemptions had gone stale; re-keyed on the owning type |
+
+Nine dead `:error` theme keys were deleted, and `line_edit:error` — the only one with a consumer —
+stays.
+
+---
+
 ## 2.7.0 (2026-09-24) — From Correct Geometry to Live State: a State Channel, an Animation Bus, and a Layering Language
 
 Backward compatible: no public signature was removed or changed. `Widget` gained three defaulted

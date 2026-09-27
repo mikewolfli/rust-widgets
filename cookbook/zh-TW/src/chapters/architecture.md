@@ -872,6 +872,55 @@ pub trait ControlBackend {
 
 ---
 
+## 圖示資料路徑（`icons`，預設開啟）
+
+`Icon` 透過 `IconName` 命名 31 個圖示。`icons` 特性 —— **預設開啟** —— 每個都按**真實輪廓**繪製，
+輪廓來自固定在某個上游修訂的路徑資料。不開啟該特性時 `Icon` 回退到**手寫幾何**，資料出現之前的所有
+快照都依據那條路徑。
+
+從一個名字到像素經過三個階段，而中間那一階段**刻意不是**任何東西的第二份實作：
+
+```mermaid
+graph LR
+    ENUM["IconName<br/>（31 個變體）"]
+    DATA["IconData<br/>name, grid, paths"]
+    PARSE["render::path::parser<br/>SVG d -> Segment"]
+    FLAT["render::path::flatten<br/>Segment -> 折線"]
+    RAST["render::text::raster<br/>既有的展平器"]
+    FILL["RenderContext::draw_path"]
+
+    ENUM -->|data| DATA
+    DATA --> PARSE
+    PARSE --> FLAT
+    FLAT -.->|重複使用| RAST
+    FLAT --> FILL
+```
+
+| 階段 | 模組 | 做什麼 |
+|---|---|---|
+| 資料 | `widget::icon_data` | 生成表：每個 token 一筆 `IconData` |
+| 解析 | `render::path::parser` | 讀取完整 SVG 命令集，產出曲線段 |
+| 展平 | `render::path::flatten` | 設計單位對應到裝置像素，產出多邊形 |
+| 填色 | `RenderContext::draw_path` | 與其他向量繪製共用同一條路徑填色 |
+
+三條性質是承重的，且每條都由**機械手段**保證，而不是寫在文件裡：
+
+1. **宣告了名字就一定有幾何。** `IconName::data()` 回傳 `IconData` 而非 `Option`，所以「新增變體
+   但沒補條目」是**編譯錯誤**。舊寫法（draw 時按字串比對、比對不到就畫佔位符）已移除。
+2. **兩個名字絕不會畫同一張圖。** `Close` 與 `Cross` 曾共用同一個方法，於是兩個不同的名字產出一模
+   一样的圖形。生成器**拒絕**產出逐位元組相同的輪廓，且普查測試渲染每個 token 並要求 31 張圖兩兩不同。
+3. **只有一條曲線展平規則。** 圖示輪廓與字形是同一種形狀，所以重複使用 `render::text::raster` 的
+   deviation-adaptive 細分，而不是新寫一份。`render::path::parser` 在**解析期**把弧轉成三次貝茲
+   （SVG F.6.5），正是為了讓展平器只見它已經認識的曲線。
+
+此特性**預設開啟，但不在任何 device profile 裡**。`default` 回答「普通 `cargo build` 給我什麼」，
+誠實的答案包含真實輪廓；而 profile 回答「這是哪類機器」，`mini` / `embedded` 是按尺寸的，呼叫方
+沒要求的酬載在那裡是錯的。想要圖示的 profile 建置寫 `--features mini,icons`；完全不要這個酬載的
+呼叫方則建置時不帶該特性。`tools/check_icon_data_is_opt_in.sh` 斷言這個劃分的兩半，快照門禁則匯出
+manifest 的 `default`，所以提交的圖就是真正會交付的圖。
+
+---
+
 ## 編譯期 vs 執行期決策
 
 rust-widgets 廣泛使用編譯期決策來將執行期開銷降到最低：

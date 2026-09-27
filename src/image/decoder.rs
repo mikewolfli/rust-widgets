@@ -210,7 +210,18 @@ fn decode_animation_codec(data: &[u8]) -> Result<DecodedAnimation, String> {
             };
             (decoder.into_frames().collect_frames(), loop_count)
         }
-        _ => unreachable!("decode_animation validates the format before dispatch"),
+        // `decode_animation`, this function's only caller, dispatches here after checking the
+        // format is GIF or WebP. Returning the error rather than `unreachable!()` keeps the
+        // guarantee in **one** place instead of two: the guard above is a `match`, and a later
+        // edit that widens it (or a new caller that skips it) would turn the panic into a crash
+        // on a host-supplied buffer. The message is the same one the outer function produces, so
+        // a caller cannot tell which layer refused — which is the point: there is one refusal.
+        format => {
+            return Err(format!(
+                "animation decoding needs GIF or WebP input, got {format:?} \
+                 (only those two formats carry frame delays)"
+            ))
+        }
     };
     let frames = frames.map_err(|error| {
         format!(
@@ -2513,6 +2524,29 @@ mod tests {
         assert_eq!(animation.frame_count(), 1);
         assert_eq!(animation.delays.len(), 1);
         assert_eq!(animation.frames[0].width, 1);
+    }
+
+    /// A non-animatable format is an **error**, not a panic.
+    ///
+    /// # The defect this pins (BLUE25 D-11)
+    ///
+    /// `decode_animation_codec` used to end in `unreachable!("decode_animation validates the
+    /// format before dispatch")`. The guarantee was real but stated **twice**: once as the caller's
+    /// `match`, once as a panic. A host handing over a PNG asked for an animation gets a
+    /// `Result` — that is this function's contract — so the impossible case must produce an error
+    /// like every other refusal, which is also what makes the guard survive a later edit that
+    /// widens the caller's `match`.
+    #[test]
+    fn a_static_format_is_refused_by_the_animation_decoder_without_panicking() {
+        let image =
+            DecodedImage::new(ImageFormat::Rgba8, ImageData::Rgba8(vec![0, 0, 255, 255]), 1, 1);
+        let png = crate::image::encoder::encode(&image, ImageFormat::Png).unwrap();
+        let error =
+            decode_animation(&png).expect_err("a PNG has no frame delays, so it must be refused");
+        assert!(
+            error.contains("GIF or WebP"),
+            "the refusal must name the formats it accepts, got: {error}"
+        );
     }
 
     #[cfg(feature = "svg-rasterizer")]

@@ -28,7 +28,7 @@ buffer instead. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ```toml
 [dependencies]
-rust_widgets = "2.7.0"
+rust_widgets = "2.8.0"
 ```
 
 Pick **exactly one device profile**. They are mutually exclusive — `mini` and `embedded` compile parts
@@ -36,11 +36,11 @@ of the crate *out*, so combining one with `desktop` is not a lowest common denom
 build:
 
 ```toml
-rust_widgets = { version = "2.7.0", features = ["desktop"] }                       # default
-rust_widgets = { version = "2.7.0", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "2.7.0", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "2.7.0", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "2.7.0", default-features = false, features = ["mini"] }
+rust_widgets = { version = "2.8.0", features = ["desktop"] }                       # default
+rust_widgets = { version = "2.8.0", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "2.8.0", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "2.8.0", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "2.8.0", default-features = false, features = ["mini"] }
 ```
 
 > `cargo check --features embedded` is **wrong**: `desktop` is a default feature, so that command
@@ -238,6 +238,7 @@ appended to the fallback stack and can only answer for characters the base face 
 | `fonts-vector-latin` | 35 896 bytes, OFL subset | real advances and kerning, from a face named by `Font::family` |
 | `fonts-complex` | 70 576 bytes, OFL subset | Arabic joining, so `بيت` shapes to the word rather than three isolated letters |
 | `fonts-emoji-color` | 1 602 492 bytes, OFL subset | colour emoji — 317 codepoints including the 26 regional indicators |
+| `icons` | 11 592 bytes, Apache-2.0 | one **Material Symbols** SVG outline per `IconName` token (**on by default**) |
 
 `fonts-cjk-bitmap` and `fonts-cjk` are two answers to one script, and the difference is size
 against quality: an outline subset at the bitmap's own coverage would weigh 581 KB, roughly 7x, so
@@ -253,6 +254,29 @@ The boundary is asserted from both sides (`render::pipeline::pixel_ops::text_cov
 `render::text::glyph_source`'s tests) — a non-Latin character must resolve to the fallback glyph on
 a default build, and enabling the CJK data must move that boundary by exactly the face it adds — so
 the documentation cannot silently overstate what is drawn.
+
+### Icons
+
+`Icon` draws all 31 `IconName` tokens with hand-written geometry when the `icons` feature is off.
+It is **on by default**, so a plain `cargo build` draws the **real outline** from the Material
+Symbols set vendored at a pinned revision:
+
+```console
+cargo build                              # the real outlines (default)
+cargo build --no-default-features --features desktop   # the hand-written shapes
+```
+
+Nothing else changes with it on: `IconName::as_str` / `from_name` are the same tokens and the
+colour resolves through the same ladder. A build **without** the feature renders the icons it
+always did — that path is kept for exactly this reason, and it is what every snapshot taken before
+the data existed was drawn against. `IconName::data()` answers `IconData` (not `Option`), so adding
+a variant without geometry is a compile error rather than a blank icon. The path data is
+Apache-2.0 (Google LLC); the licence copy, the attribution and the verification gate are in
+[`NOTICE`](NOTICE), `tools/material_symbols/LICENSE` and `tools/check_icon_licences.sh`.
+
+The feature is deliberately **not** in any device profile: `mini` and `embedded` are *sized*, so a
+payload the caller did not ask for is wrong there. A profile build that wants icons asks for them
+(`--features mini,icons`).
 
 ## Language bindings
 
@@ -288,7 +312,7 @@ MIT — see [LICENSE](LICENSE).
 - Issues: [GitHub Issues](https://github.com/mikewolfli/rust-widgets/issues)
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.7.0-blue)]()
+[![version](https://img.shields.io/badge/version-2.8.0-blue)]()
 [![tests](https://img.shields.io/badge/tests-5600%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 

@@ -451,28 +451,14 @@ for span in rich.spans() {
 
 ## 文本溢出处理
 
-三种溢出模式控制文本超出容器时的行为：
+控件的文本溢出处理由**渲染后端**统一完成：`RenderContext::draw_text_fitted`
+对文本按容器宽度测量并截断，控件不自行实现溢出逻辑。库内只有**一条**截断路径
+（`render/backend/surface.rs::fit_text_to_width`），这样每个控件的省略行为一致。
 
-```rust
-use rust_widgets::render::{TextOverflow, apply_text_overflow, TextClamp, apply_text_clamp};
-
-// 裁剪：文本在边界处直接截断
-let clipped = apply_text_overflow("超长文本...", 100.0, font_size, TextOverflow::Clip);
-
-// 省略号：截断文本以"..."结尾
-let ellipsis = apply_text_overflow("超长文本...", 100.0, font_size, TextOverflow::Ellipsis);
-
-// 渐隐：不透明度向溢出边缘逐渐降低
-let faded = apply_text_overflow("超长文本...", 100.0, font_size, TextOverflow::Fade);
-
-// 多行限制（最多 N 行）
-let clamped = apply_text_clamp(
-    "跨越多行的长段落文本...",
-    200.0,     // 最大宽度
-    font_size,
-    TextClamp::Lines(3),  // 最多 3 行，溢出时使用省略号
-);
-```
+> **关于 `TextOverflow` / `TextClamp`**：早期版本另提供 `apply_text_overflow` /
+> `apply_text_clamp` 两个独立函数。它们**零消费者**（没有任何控件调用），与共享的
+> `fit_text_to_width` 构成同一概念的**两条实现**，因此已被删除。需要截断时，通过
+> `RenderContext` 的文本绘制原语完成，而不是调用一个并行函数。
 
 ---
 
@@ -503,31 +489,28 @@ for run in &runs {
 
 ## Unicode 字素聚类
 
-`GraphemeProcessor` 处理复杂的 Unicode 序列，实现正确的光标移动和文本选择：
+聚类切分只有**一条**规则：`render/text/line.rs::for_each_cluster`。它把文本切成
+“用户感知的一个字符”单元，并识别组合标记与变体选择符（`is_combining_mark` /
+`is_variation_selector`）。文本塑形、光栅化与 SVG 后端都走这一条路径。
 
 ```rust
-use rust_widgets::render::{GraphemeCluster, GraphemeProcessor};
+use rust_widgets::render::text::for_each_cluster;
 
-let text = "Hello 👨‍👩‍👧‍👦 World! é";
-let clusters: Vec<GraphemeCluster> = GraphemeProcessor::split_graphemes(text);
-
-for cluster in &clusters {
-    println!("'{}' — {} 个字符, ~{:.1}px 宽",
-        cluster.content, cluster.char_count, cluster.width);
-}
-
-// 输出：
-// 'H' — 1 个字符, ~8.4px 宽
-// 'e' — 1 个字符, ~8.4px 宽
-// ...
-// '👨‍👩‍👧‍👦' — 7 个字符, ~8.4px 宽  (ZWJ 家庭表情 — 一个聚类!)
+let text = "Hello é World!";
+for_each_cluster(text, |cluster, (start, end)| {
+    // `cluster` 是一个聚类的内容，`(start, end)` 是它在 `text` 中的字节范围。
+    let _ = (cluster, start, end);
+});
 ```
 
 **识别的序列：**
 - 基础字符 + 组合标记（é = e + ́）
-- 表情符号 + 肤色/发型修饰符
-- ZWJ（零宽连字）多表情符号序列
-- 区域指示符对（🇺🇸 国旗）
+- 变体选择符（U+FE00–U+FE0F）
+
+> **关于 `GraphemeProcessor`**：早期版本提供一个独立的 `GraphemeProcessor`，
+> 自带一套 `split_graphemes`。它与 `for_each_cluster` 对同一输入给出不同答案
+> （同一概念的**两条实现**），而 `line.rs` 的模块注释已声称自己是“本仓唯一的切分规则”。
+> 它零消费者，已被删除。需要聚类时用 `for_each_cluster`。
 
 ---
 
@@ -779,24 +762,17 @@ fn export_form_to_svg() -> String {
 
 ### UI 标签的文本截断
 
+截断是渲染后端的能力，不是控件的：在一个带 `RenderContext` 的 `Draw` 实现里调用
+`draw_text_fitted`，它会按容器宽度测量并在末尾加省略号。
+
 ```rust
-fn render_truncated_label(
-    command_list: &mut Vec<RenderCommand>,
-    text: &str,
-    max_width: f32,
-    font_size: f32,
-    origin: Point,
-) {
-    use rust_widgets::render::{apply_text_overflow, TextOverflow};
+use rust_widgets::render::RenderContext;
+use rust_widgets::core::Font;
 
-    let display_text = apply_text_overflow(text, max_width, font_size, TextOverflow::Ellipsis);
-
-    command_list.push(RenderCommand::DrawText {
-        origin,
-        text: display_text,
-        font: Font::simple("Arial", font_size),
-        color: Color::BLACK,
-        alignment: HorizontalAlignment::Left,
-    });
+fn draw_truncated_label(context: &mut RenderContext, band: rust_widgets::core::Rect, text: &str) {
+    let font = Font::simple("Arial", 14.0);
+    // `text_line` 给出该行盒；`draw_text_fitted` 在盒宽内测量并截断。
+    let line = context.text_line(band, &font);
+    context.draw_text_fitted(line, text, &font, rust_widgets::core::Color::BLACK, rust_widgets::core::HorizontalAlignment::Left);
 }
 ```

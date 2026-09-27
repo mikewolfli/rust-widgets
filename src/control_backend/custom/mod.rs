@@ -164,14 +164,13 @@ impl CustomPaintControlBackend {
         }
         #[cfg(full_widgets)]
         {
-            let name = kind_factory_name(kind);
-            if name.is_empty() {
+            let Some(name) = kind_factory_name(kind) else {
                 log::warn!(
                     "custom backend: {kind:?} has no resolvable constructor; returning 0 rather \
                      than an id that addresses nothing"
                 );
                 return 0;
-            }
+            };
             self.mount_named_widget(name, parent, text, x, y, width, height)
         }
     }
@@ -331,7 +330,7 @@ impl CustomPaintControlBackend {
 /// strictly wider predicate, so a build with no device profile (e.g.
 /// `--features gpu`) used to compile this function and never call it.
 #[cfg(full_widgets)]
-pub(crate) fn kind_factory_name(kind: crate::widget::WidgetKind) -> &'static str {
+pub(crate) fn kind_factory_name(kind: crate::widget::WidgetKind) -> Option<&'static str> {
     crate::widget::capability::factory_name_for_kind(kind)
 }
 

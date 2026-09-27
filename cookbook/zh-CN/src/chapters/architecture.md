@@ -871,6 +871,55 @@ pub trait ControlBackend {
 
 ---
 
+## 图标数据路径（`icons`，默认开启）
+
+`Icon` 通过 `IconName` 命名 31 个图标。`icons` 特性 —— **默认开启** —— 每个都按**真实轮廓**绘制，
+轮廓来自固定在某个上游修订的路径数据。不开该特性时 `Icon` 回退到**手写几何**，数据出现之前的所有
+快照都依据那条路径。
+
+从一个名字到像素经过三个阶段，而中间那个**刻意不是**任何东西的第二份实现：
+
+```mermaid
+graph LR
+    ENUM["IconName<br/>（31 个变体）"]
+    DATA["IconData<br/>name, grid, paths"]
+    PARSE["render::path::parser<br/>SVG d -> Segment"]
+    FLAT["render::path::flatten<br/>Segment -> 折线"]
+    RAST["render::text::raster<br/>已有的展平器"]
+    FILL["RenderContext::draw_path"]
+
+    ENUM -->|data| DATA
+    DATA --> PARSE
+    PARSE --> FLAT
+    FLAT -.->|复用| RAST
+    FLAT --> FILL
+```
+
+| 阶段 | 模块 | 做什么 |
+|---|---|---|
+| 数据 | `widget::icon_data` | 生成表：每个 token 一条 `IconData` |
+| 解析 | `render::path::parser` | 读完整 SVG 命令集，产出曲线段 |
+| 展平 | `render::path::flatten` | 设计单位映射到设备像素，产出多边形 |
+| 填充 | `RenderContext::draw_path` | 与其他矢量绘制同一条路径填充 |
+
+三条性质是承重的，且每条都由**机械手段**保证，而不是写在文档里：
+
+1. **声明了名字就一定有几何。** `IconName::data()` 返回 `IconData` 而非 `Option`，所以「新增变体
+   但没补条目」是**编译错误**。旧写法（draw 时按字符串匹配、匹配不上就画占位符）已删除。
+2. **两个名字绝不会画同一张图。** `Close` 与 `Cross` 曾共用同一个方法，于是两个不同的名字产出完全
+   相同的图形。生成器**拒绝**产出逐字节相同的轮廓，且普查测试渲染每个 token 并要求 31 张图两两不同。
+3. **只有一条曲线展平规则。** 图标轮廓与字形是同一种形状，所以复用 `render::text::raster` 的
+   deviation-adaptive 细分，而不是新写一份。`render::path::parser` 在**解析期**把弧转成三次贝塞尔
+   （SVG F.6.5），正是为了让展平器只见它已经认识的曲线。
+
+该特性**默认开启，但不在任何 device profile 里**。`default` 回答「普通 `cargo build` 给我什么」，
+诚实的答案包含真实轮廓；而 profile 回答「这是哪类机器」，`mini` / `embedded` 是按尺寸的，调用方
+没要求的载荷在那里是错的。想要图标的 profile 构建写 `--features mini,icons`；完全不要这个载荷的
+调用方则构建时不带该特性。`tools/check_icon_data_is_opt_in.sh` 断言这个划分的两半，快照门禁则导出
+manifest 的 `default`，所以提交的图就是真正会交付的图。
+
+---
+
 ## 编译时 vs 运行时决策
 
 `rust-widgets` 广泛利用编译时决策来保持运行时开销最小：

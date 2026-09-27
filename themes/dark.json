@@ -326,107 +326,7 @@
         "material": null,
         "hairline": null
       },
-      "combo_box:error": {
-        "background": null,
-        "foreground": null,
-        "border": {
-          "r": 239,
-          "g": 83,
-          "b": 80,
-          "a": 255
-        },
-        "border_width": 2,
-        "radius": null,
-        "font": null,
-        "opacity": null,
-        "shadow": "Inherit",
-        "touch_target": null,
-        "elevation": null,
-        "bevel": "inherit",
-        "material": null,
-        "hairline": null
-      },
-      "date_edit:error": {
-        "background": null,
-        "foreground": null,
-        "border": {
-          "r": 239,
-          "g": 83,
-          "b": 80,
-          "a": 255
-        },
-        "border_width": 2,
-        "radius": null,
-        "font": null,
-        "opacity": null,
-        "shadow": "Inherit",
-        "touch_target": null,
-        "elevation": null,
-        "bevel": "inherit",
-        "material": null,
-        "hairline": null
-      },
-      "date_time_edit:error": {
-        "background": null,
-        "foreground": null,
-        "border": {
-          "r": 239,
-          "g": 83,
-          "b": 80,
-          "a": 255
-        },
-        "border_width": 2,
-        "radius": null,
-        "font": null,
-        "opacity": null,
-        "shadow": "Inherit",
-        "touch_target": null,
-        "elevation": null,
-        "bevel": "inherit",
-        "material": null,
-        "hairline": null
-      },
-      "editable_combo_box:error": {
-        "background": null,
-        "foreground": null,
-        "border": {
-          "r": 239,
-          "g": 83,
-          "b": 80,
-          "a": 255
-        },
-        "border_width": 2,
-        "radius": null,
-        "font": null,
-        "opacity": null,
-        "shadow": "Inherit",
-        "touch_target": null,
-        "elevation": null,
-        "bevel": "inherit",
-        "material": null,
-        "hairline": null
-      },
       "line_edit:error": {
-        "background": null,
-        "foreground": null,
-        "border": {
-          "r": 239,
-          "g": 83,
-          "b": 80,
-          "a": 255
-        },
-        "border_width": 2,
-        "radius": null,
-        "font": null,
-        "opacity": null,
-        "shadow": "Inherit",
-        "touch_target": null,
-        "elevation": null,
-        "bevel": "inherit",
-        "material": null,
-        "hairline": null
-      },
-      "masked_edit:error": {
         "background": null,
         "foreground": null,
         "border": {
@@ -461,26 +361,6 @@
         },
         "border": null,
         "border_width": null,
-        "radius": null,
-        "font": null,
-        "opacity": null,
-        "shadow": "Inherit",
-        "touch_target": null,
-        "elevation": null,
-        "bevel": "inherit",
-        "material": null,
-        "hairline": null
-      },
-      "spin_box:error": {
-        "background": null,
-        "foreground": null,
-        "border": {
-          "r": 239,
-          "g": 83,
-          "b": 80,
-          "a": 255
-        },
-        "border_width": 2,
         "radius": null,
         "font": null,
         "opacity": null,
@@ -571,66 +451,6 @@
         },
         "border": null,
         "border_width": null,
-        "radius": null,
-        "font": null,
-        "opacity": null,
-        "shadow": "Inherit",
-        "touch_target": null,
-        "elevation": null,
-        "bevel": "inherit",
-        "material": null,
-        "hairline": null
-      },
-      "text_area:error": {
-        "background": null,
-        "foreground": null,
-        "border": {
-          "r": 239,
-          "g": 83,
-          "b": 80,
-          "a": 255
-        },
-        "border_width": 2,
-        "radius": null,
-        "font": null,
-        "opacity": null,
-        "shadow": "Inherit",
-        "touch_target": null,
-        "elevation": null,
-        "bevel": "inherit",
-        "material": null,
-        "hairline": null
-      },
-      "text_edit:error": {
-        "background": null,
-        "foreground": null,
-        "border": {
-          "r": 239,
-          "g": 83,
-          "b": 80,
-          "a": 255
-        },
-        "border_width": 2,
-        "radius": null,
-        "font": null,
-        "opacity": null,
-        "shadow": "Inherit",
-        "touch_target": null,
-        "elevation": null,
-        "bevel": "inherit",
-        "material": null,
-        "hairline": null
-      },
-      "time_edit:error": {
-        "background": null,
-        "foreground": null,
-        "border": {
-          "r": 239,
-          "g": 83,
-          "b": 80,
-          "a": 255
-        },
-        "border_width": 2,
         "radius": null,
         "font": null,
         "opacity": null,

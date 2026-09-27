@@ -50,8 +50,14 @@ impl FrameTimer {
         if count < 2 {
             return 0.0;
         }
-        let first = self.timestamps.front().unwrap();
-        let last = self.timestamps.back().unwrap();
+        // `front`/`back` answer `None` only on an empty deque, and `count >= 2` above rules that
+        // out — but the guard and the read are two statements, so a later edit to the guard would
+        // turn the pair into a panic on a statistics call. Destructuring the ends once keeps the
+        // read and its proof together, and the `else` returns the documented answer (`0.0`) rather
+        // than inventing a second one.
+        let (Some(first), Some(last)) = (self.timestamps.front(), self.timestamps.back()) else {
+            return 0.0;
+        };
         let total_secs = last.duration_since(*first).as_secs_f64();
         if total_secs <= 0.0 {
             return 0.0;

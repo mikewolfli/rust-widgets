@@ -15,6 +15,21 @@
 > **Status column.** `✔` = verified in this round or a recorded earlier round; `—` = not yet
 > injected. A `—` is an honest gap, not a pass.
 
+## BLUE25 — gates added this round (2026-09-27)
+
+| gate | injected | reported |
+|---|---|---|
+| `check_semantic_state_has_a_consumer.sh` | added `"text_edit"` to the `:error` kind table in `preset_states.rs` (a kind with no `semantic_state`/`resolved_semantic_border` consumer) | `FAIL  a declared \`:error\` kind has no consumer:` / `text_edit: no control reads \`resolved_semantic_border("text_edit", ..)\`` |
+| `check_alias_tables_agree.sh` | deleted the `"wizard" => "wizard_dialog"` row from `alias_for_name` in `capability.rs` | `FAIL  \`wizard\` -> \`wizard_dialog\` is in alias_factory_name but not alias_for_name` |
+
+## BLUE25 ICON — gates added this round (2026-09-28)
+
+| gate | injected | reported |
+|---|---|---|
+| `check_icon_data_is_opt_in.sh` | added `"icons"` to the `default` feature list | `FAIL  \`icons\` is in the \`default\` feature list` |
+| `check_icon_licences.sh` | (a) removed the Material Symbols section from a copy of `NOTICE`; (b) ran `tools/gen_icon_data.py` with no `--license` and with `--license=not-a-real-licence`; (c) hand-edited one `d` in `src/widget/icon_data.rs` | (a) `finding: NOTICE: no section headed 'Material Symbols — SVG path subsets for \`icons\`'` / `checked=31 failed=1` (b) both exit 2 (c) `FAIL: src/widget/icon_data.rs is stale; regenerate with` |
+| `check_implicit_size_uses_metrics.sh` | dropped the `src/widget/advanced_widgets/dial.rs Dial` row from `tools/implicit_size_exemptions.txt` | `src/widget/advanced_widgets/dial.rs:268: \`size_hint\` derives its answer without ControlMetrics, estimate_text_width/estimate_line_height or dimensions::` / `checked=188 failed=1` |
+
 ## BLUE24 — gates added or verified this round (2026-09-24)
 
 | gate | injected | reported |

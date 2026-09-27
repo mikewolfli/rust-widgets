@@ -198,6 +198,9 @@ impl Widget for AdaptiveScaffold {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
@@ -276,8 +279,12 @@ impl Draw for AdaptiveScaffold {
         context.fill_rect(content_rect, background);
 
         // ── Bottom navigation bar ──
-        if self.show_bottom_nav && !self.nav_items.is_empty() {
-            let nav_rect = self.bottom_nav_rect().unwrap();
+        //
+        // The rect is asked for once and the draw is guarded on the answer, so "is the nav bar
+        // shown" is decided in **one** place. The previous form re-tested the same two conditions
+        // in the `if` and then `unwrap()`ed a call that tested them again: two statements of one
+        // fact, where a later edit to either would have turned a draw into a panic.
+        if let Some(nav_rect) = self.bottom_nav_rect() {
             self.draw_bottom_nav(context, nav_rect);
         }
     }

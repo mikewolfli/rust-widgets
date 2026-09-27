@@ -176,19 +176,20 @@ pub trait Widget: EventHandler + Any {
     /// re-resolution classifies the role and resolves a style, so doing it when nothing changed
     /// would put that work on the input path for no observable difference.
     ///
-    /// `where Self: Sized` only restates the bound `Widget: Any` already carries — `Any: 'static`
-    /// implies `Sized` — so it widens nothing and no control is excluded. It is written out because
-    /// the re-resolution takes `&mut dyn Widget`, and the coercion to a trait object is the one place
-    /// the compiler will not infer that the bound holds.
-    fn set_enabled(&mut self, enabled: bool)
-    where
-        Self: Sized,
-    {
+    /// # Why no `where Self: Sized`
+    ///
+    /// A default body cannot turn `&mut Self` into the `&mut dyn Widget` the theme call takes
+    /// without a `Sized` bound, and a bound here would make the method uncallable through the
+    /// `Box<dyn Widget>` this crate hands out everywhere (`draw_bridge`, the mount registry, the
+    /// factory, `CarouselPage::content`). [`Widget::set_state_theme_hook`] is that coercion, made
+    /// by the widget itself where `Self` is concrete, so this default stays free of the bound and
+    /// remains callable as `<dyn Widget>::set_enabled(..)`.
+    fn set_enabled(&mut self, enabled: bool) {
         if self.base().is_enabled() == enabled {
             return;
         }
         self.base_mut().set_enabled(enabled);
-        crate::style::reapply_active_theme_state(self);
+        self.set_state_theme_hook();
     }
     /// Sets the hovered flag and requests a repaint.
     ///
@@ -201,38 +202,51 @@ pub trait Widget: EventHandler + Any {
     ///
     /// The early return is load-bearing: `MouseMove` reports a hover on every pointer sample, and
     /// without it each sample would classify an interaction role and resolve a style.
-    fn set_hovered(&mut self, hovered: bool)
-    where
-        Self: Sized,
-    {
+    fn set_hovered(&mut self, hovered: bool) {
         if self.base().is_hovered() == hovered {
             return;
         }
         self.base_mut().set_hovered(hovered);
-        crate::style::reapply_active_theme_state(self);
-        crate::widget::runtime::request_repaint(self.id());
+        self.set_state_theme_hook();
+        self.base().request_redraw();
     }
     /// Sets the pressed flag and requests a repaint.
     ///
     /// See [`Widget::set_hovered`]; `pressed` is the other momentary input of
     /// [`Widget::widget_state`], selecting `"<kind>:pressed"`.
-    fn set_pressed(&mut self, pressed: bool)
-    where
-        Self: Sized,
-    {
+    fn set_pressed(&mut self, pressed: bool) {
         if self.base().is_pressed() == pressed {
             return;
         }
         self.base_mut().set_pressed(pressed);
-        crate::style::reapply_active_theme_state(self);
-        crate::widget::runtime::request_repaint(self.id());
+        self.set_state_theme_hook();
+        self.base().request_redraw();
     }
+    /// Re-resolves the active theme for this widget's **current** state, through a `&mut dyn
+    /// Widget`.
+    ///
+    /// # Why the re-resolution is split in two
+    ///
+    /// [`Widget::set_enabled`] and its two siblings are trait defaults that hold `&mut Self`.
+    /// Turning that into the `&mut dyn Widget` the theme call needs is a **coercion**, and a
+    /// coercion needs the concrete type to be `Sized` — which is not known inside a default body.
+    /// Writing `where Self: Sized` on the methods is one way out, but it makes the method
+    /// **uncallable through a trait object**, and this crate hands out `Box<dyn Widget>`
+    /// everywhere (`draw_bridge`, the mount registry, the factory, `CarouselPage::content`).
+    ///
+    /// This hook is the other way: a widget does the coercion for **itself**, where `Self` is
+    /// concrete, and the default body above calls it by its short (object-safe) name. That keeps
+    /// `set_enabled` reachable as `<dyn Widget>::set_enabled(..)` while still re-resolving.
+    ///
+    /// The default is a truthful no-op: a widget with no theme to re-resolve keeps the style it
+    /// has. A widget that carries theme-derived state overrides it to call
+    /// [`crate::style::reapply_active_theme_state`].
+    fn set_state_theme_hook(&mut self) {}
     /// Sets the pressed flag on the base **without** a theme re-resolution or a repaint.
     ///
-    /// A value-only control still has to reach the base it just wrote, and `set_enabled`'s
-    /// `where Self: Sized` default cannot be called through `&mut dyn Widget`. This is the one
-    /// call a site that has already handled the theme hook uses, rather than naming
-    /// `base_mut().set_*` and relying on the reader to know the difference.
+    /// A value-only control still has to reach the base it just wrote. This is the one call a
+    /// site that has already handled the theme hook uses, rather than naming `base_mut().set_*`
+    /// and relying on the reader to know the difference.
     fn record_pressed(&mut self, pressed: bool) {
         self.base_mut().set_pressed(pressed);
     }

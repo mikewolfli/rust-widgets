@@ -4,6 +4,7 @@
 //! Color dialog widget.
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
+use crate::event::key_codes;
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::tr;
@@ -259,6 +260,9 @@ impl Widget for ColorDialog {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
@@ -342,17 +346,17 @@ impl EventHandler for ColorDialog {
                 }
             }
             Event::KeyPress { key, .. } => {
-                if *key == 13 {
+                if *key == key_codes::ENTER {
                     self.accept();
-                } else if *key == 27 {
+                } else if *key == key_codes::ESCAPE {
                     self.reject();
-                } else if *key == 37 {
+                } else if *key == key_codes::LEFT {
                     self.nudge_rgb(-5, 0, 0);
-                } else if *key == 39 {
+                } else if *key == key_codes::RIGHT {
                     self.nudge_rgb(5, 0, 0);
-                } else if *key == 38 {
+                } else if *key == key_codes::UP {
                     self.nudge_rgb(0, 5, 0);
-                } else if *key == 40 {
+                } else if *key == key_codes::DOWN {
                     self.nudge_rgb(0, -5, 0);
                 }
             }

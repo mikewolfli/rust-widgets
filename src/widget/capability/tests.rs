@@ -732,20 +732,24 @@ fn every_kind_with_a_constructor_has_a_resolvable_factory_name() {
     // under another name, exactly as `DockPanel` is to `DockWidget`). It therefore fell
     // through to the `other` arm of `alias_factory_name` and returned `""`.
     //
-    // An empty name is not inert: `theme::apply_active_theme` bails out on it, so a
+    // An unresolvable name is not inert: `theme::apply_active_theme` bails out on it, so a
     // `Panel`-kinded widget silently received no theme role. This test pins the
     // resolution so a future kind added without a capability row fails here rather than
     // losing its theme silently.
+    //
+    // The lookup returns `Option` rather than `""`, so "could not be named" is now a
+    // distinct outcome the caller must handle, instead of an empty string it had to
+    // remember to test for.
     let factory = WidgetFactory::new_with_defaults();
     for kind in [WidgetKind::Panel, WidgetKind::DockPanel] {
-        let name = crate::widget::capability::factory_name_for_kind(kind);
-        assert!(
-            !name.is_empty(),
-            "{kind:?} resolves to an empty factory name, so `theme::apply_active_theme` \
-             will silently skip it; add an alias row in `alias_factory_name`"
-        );
-        // A non-empty name the factory rejects would be equally broken, so the
-        // resolved spelling has to be one the factory actually answers to.
+        let name = crate::widget::capability::factory_name_for_kind(kind).unwrap_or_else(|| {
+            panic!(
+                "{kind:?} resolves to no factory name, so `theme::apply_active_theme` \
+                     will skip it; add an alias row in `alias_factory_name`"
+            )
+        });
+        // A name the factory rejects would be equally broken, so the resolved spelling
+        // has to be one the factory actually answers to.
         assert!(
             factory.capability(name).is_some(),
             "factory_name_for_kind({kind:?}) = {name:?}, but the factory has no such name"
@@ -755,11 +759,14 @@ fn every_kind_with_a_constructor_has_a_resolvable_factory_name() {
     // `MenuItem` is the documented exception: `kind.rs` declares it `kind-role: child`
     // ("created by their owning `Menu`, never constructed directly from a factory
     // name"), so it has no capability row *and* no factory name by design. It must
-    // still resolve to a non-empty name, because the theme layer classifies on that
-    // name rather than on the factory lookup — an empty string silently skips theming.
+    // still resolve to a name, because the theme layer classifies on that name rather
+    // than on the factory lookup.
     let menu_item = crate::widget::capability::factory_name_for_kind(WidgetKind::MenuItem);
-    assert!(!menu_item.is_empty(), "MenuItem must still be nameable for theme classification");
-    assert_eq!(menu_item, "menu_item");
+    assert_eq!(
+        menu_item,
+        Some("menu_item"),
+        "MenuItem must still be nameable for theme classification"
+    );
 }
 
 #[test]

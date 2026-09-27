@@ -65,17 +65,18 @@ use crate::widget::Widget;
 /// no-op arm below covers that case.
 #[cfg(all(not(alloc_frugal), widgets_unstripped))]
 pub(crate) fn apply_active_theme(widget: &mut dyn Widget) {
-    let kind_name = crate::widget::capability::factory_name_for_kind(widget.kind());
-    if kind_name.is_empty() {
-        // A kind with no resolvable name cannot be classified into a role, and
-        // guessing one would style the control as something it is not. The honest
-        // answer is to leave its own defaults in place.
+    // A kind with no resolvable name cannot be classified into a role, and guessing one
+    // would style the control as something it is not. The honest answer is to leave its
+    // own defaults in place. This is `None` rather than the `""` the lookup used to
+    // return, so the case is stated once rather than as an empty-string convention every
+    // caller had to remember.
+    let Some(kind_name) = crate::widget::capability::factory_name_for_kind(widget.kind()) else {
         log::debug!(
             "theme: {:?} has no resolvable factory name; leaving its own style in place",
             widget.kind()
         );
         return;
-    }
+    };
 
     // The control's own interaction state, so a theme can describe `"button:hover"` and have it
     // take effect. `resolve_style_for_state` was already implemented and already keyed on
@@ -132,15 +133,25 @@ pub(crate) fn apply_active_theme(widget: &mut dyn Widget) {
 ///
 /// Resolving `"<kind>:<state>"` needs the factory name (to classify the kind into a role) and
 /// the store's resolved style — the same two facts [`apply_active_theme`] needs, and the two
-/// reasons it lives behind the `full_widgets` gate. A control cannot answer either question, so
-/// the setter cannot do this itself; the call has to come from the theme side.
+/// reasons it lives behind the `widgets_unstripped` gate. A control cannot answer either question,
+/// so the setter cannot do this itself; the call has to come from the theme side.
 ///
 /// # Why a state change and not a paint
 ///
 /// This is deliberately **not** wired into `request_redraw`, which would re-resolve on every
 /// frame for every animating control. A state change is the only thing that can make the answer
 /// differ, so it is the only thing that asks.
-#[cfg(full_widgets)]
+///
+/// # Gating
+///
+/// [`apply_active_theme`] and this function carry the **same** gate,
+/// `all(not(alloc_frugal), widgets_unstripped)`. That is deliberate and load-bearing: the two
+/// were previously gated differently (`full_widgets` here, the wider gate there), so a build
+/// with an OS backend but no device profile — `--features windows`, which `build.rs` marks
+/// `widgets_unstripped` but **not** `full_widgets` — compiled the real theme application and a
+/// **no-op** state re-resolution. A state change then silently did nothing while the creation
+/// path styled the control, which is the gate drift rule #47 exists to prevent.
+#[cfg(all(not(alloc_frugal), widgets_unstripped))]
 pub fn reapply_active_theme_state(widget: &mut dyn crate::widget::Widget) {
     apply_active_theme(widget);
 }
@@ -149,8 +160,9 @@ pub fn reapply_active_theme_state(widget: &mut dyn crate::widget::Widget) {
 ///
 /// A separate definition rather than a `cfg` inside one body, for the same reason
 /// [`apply_theme_to_widget`] has one: the widget layer still names this symbol in every profile,
-/// and the truthful answer where there is no theme is that nothing was applied.
-#[cfg(not(full_widgets))]
+/// and the truthful answer where there is no theme is that nothing was applied. It carries the
+/// exact complement of the gate above, so the two agree in every configuration.
+#[cfg(any(alloc_frugal, not(widgets_unstripped)))]
 pub fn reapply_active_theme_state(_widget: &mut dyn crate::widget::Widget) {}
 
 /// Writes the theme's resolution for the control's **current** state into an already-themed
@@ -637,6 +649,132 @@ mod tests {
             )
             .and_then(|resolved| resolved.background_color),
             "a chip selected after theming must resolve `chip:selected`, not the unselected `chip`"
+        );
+    }
+
+    /// A-1: disabling / hovering / pressing a control **after** it was themed re-resolves it.
+    ///
+    /// # The defect this pins
+    ///
+    /// `apply_active_theme` used to run only inside the two creation funnels, and the three
+    /// momentary inputs of [`crate::widget::Widget::widget_state`] — `enabled`, `hovered`,
+    /// `pressed` — were plain field writes. So `button:disabled` / `button:hover` / `button:pressed`
+    /// (and their siblings on `toggle_button` / `tool_button` / `split_button`) were reachable
+    /// **only** when the control happened to be created in that state. Disabling a live button is a
+    /// published, writable property (`properties_base.in.rs` lists `enabled` for all of them), so
+    /// this was user-visible: a form that disabled its submit button changed nothing on screen.
+    ///
+    /// # Why the assertion names the resolved value
+    ///
+    /// The expected fill is read back from the resolver rather than pinned, so the test says "the
+    /// `button:disabled` key was reached" instead of asserting a colour a preset change would
+    /// legitimately move. The size of the change is not the contract; reaching the key is.
+    #[test]
+    fn a_state_change_after_theming_re_resolves_the_state_key() {
+        use crate::widget::{Button, ToolButton, Widget};
+        let _guard = guard();
+        let mut manager = global_theme_manager();
+        assert!(manager.set_theme("default"), "the default preset must be registered");
+        drop(manager);
+        let bounds = Rect::new(0, 0, 120, 40);
+
+        // `enabled` is a published writable property, so this is the JSON / designer path too.
+        let mut button = Button::new("ok".to_string(), bounds);
+        apply_active_theme(&mut button);
+        let enabled_fill = button.style().background_color;
+        button.set_enabled(false);
+        assert_eq!(
+            button.style().background_color,
+            crate::theme::resolved_theme_style_for_state(
+                "button",
+                crate::style::WidgetState::Disabled
+            )
+            .and_then(|resolved| resolved.background_color)
+            .or(enabled_fill),
+            "disabling a themed button must re-resolve `button:disabled`"
+        );
+
+        // The same key family covers `tool_button`; the trait default is what makes it free.
+        let mut tool = ToolButton::new("go".to_string(), bounds);
+        apply_active_theme(&mut tool);
+        let tool_enabled = tool.style().background_color;
+        tool.set_enabled(false);
+        assert_ne!(
+            tool.style().background_color,
+            tool_enabled,
+            "`tool_button:disabled` must reach a tool button disabled after theming"
+        );
+
+        // Hover and press travel the same path, through their own shared defaults.
+        let mut hovered = Button::new("ok".to_string(), bounds);
+        apply_active_theme(&mut hovered);
+        let resting = hovered.style().background_color;
+        hovered.set_hovered(true);
+        assert_eq!(
+            hovered.style().background_color,
+            crate::theme::resolved_theme_style_for_state(
+                "button",
+                crate::style::WidgetState::Hover
+            )
+            .and_then(|resolved| resolved.background_color)
+            .or(resting),
+            "hovering a themed button must re-resolve `button:hover`"
+        );
+        hovered.set_pressed(true);
+        assert_eq!(
+            hovered.style().background_color,
+            crate::theme::resolved_theme_style_for_state(
+                "button",
+                crate::style::WidgetState::Pressed
+            )
+            .and_then(|resolved| resolved.background_color)
+            .or(resting),
+            "pressing a themed button must re-resolve `button:pressed`"
+        );
+    }
+
+    /// B-1: the theme's `spacing` tokens reach a control's `padding` and `margin`.
+    ///
+    /// # The defect this pins
+    ///
+    /// `role_base_style` writes `padding: Padding::all(theme.spacing.medium)` and
+    /// `margin: Margin::all(theme.spacing.small)`, but neither `merge_theme` nor `merge` copied
+    /// those two fields — the resolution produced a value and then dropped it. Every themed
+    /// control kept `Padding::all(0)`, `Widget::padding()` always answered zero, and
+    /// `command_link`'s draw read a constant. Nothing asserted otherwise, which is why a defect
+    /// affecting all 188 controls had no test.
+    #[test]
+    fn the_themes_spacing_tokens_reach_a_controls_padding_and_margin() {
+        let _guard = guard();
+        let mut manager = global_theme_manager();
+        assert!(manager.set_theme("default"), "the default preset must be registered");
+        let spacing = manager.current_theme().expect("the default theme is active").spacing.medium;
+        let small = manager.current_theme().expect("the default theme is active").spacing.small;
+        drop(manager);
+
+        let mut button = crate::widget::Button::new("ok".to_string(), Rect::new(0, 0, 120, 40));
+        assert_eq!(
+            button.style().padding,
+            crate::style::Padding::default(),
+            "the control must start with no padding, so the assertion below is not vacuous"
+        );
+        apply_active_theme(&mut button);
+
+        assert_eq!(
+            button.style().padding,
+            crate::style::Padding::all(spacing),
+            "`theme.spacing.medium` must reach the control's padding"
+        );
+        assert_eq!(
+            button.style().margin,
+            crate::style::Margin::all(small),
+            "`theme.spacing.small` must reach the control's margin"
+        );
+        // The accessor the draw paths read must see it too, not only the raw field.
+        assert_eq!(
+            *crate::widget::Widget::padding(&button),
+            crate::style::Padding::all(spacing),
+            "`Widget::padding()` must agree with the style it reads"
         );
     }
 }

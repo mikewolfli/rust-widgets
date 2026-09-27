@@ -128,6 +128,16 @@ pub mod cupertino;
 #[cfg(full_widgets)]
 pub mod dialog;
 pub mod display_widgets;
+
+/// Material Symbols icon data, compiled only under the opt-in `icons` feature.
+///
+/// Gated here rather than inside the module so a build without the feature does not compile
+/// the table at all: the payload is upstream's outlines (see `NOTICE`), and a sized profile
+/// should not carry data it did not ask for. `Icon::draw` falls back to its hand-drawn shapes
+/// when this is absent, which is what keeps the default build's icon output byte-identical.
+#[cfg(feature = "icons")]
+pub(crate) mod icon_data;
+
 pub mod input_widgets;
 #[cfg(full_widgets)]
 pub mod media_widgets;
@@ -318,7 +328,7 @@ pub use display_widgets::floating_label::FloatingLabel;
 #[cfg(widgets_unstripped)]
 pub use display_widgets::font_preview::FontPreview;
 #[cfg(widgets_unstripped)]
-pub use display_widgets::icon::{Icon, IconName};
+pub use display_widgets::icon::{Icon, IconData, IconName};
 #[cfg(widgets_unstripped)]
 pub use display_widgets::progress_circle::ProgressCircle;
 #[cfg(widgets_unstripped)]

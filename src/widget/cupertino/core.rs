@@ -80,6 +80,9 @@ impl Widget for CupertinoSwitch {
     fn base(&self) -> &BaseWidget {
         self.0.base()
     }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         self.0.base_mut()
@@ -244,6 +247,9 @@ impl MaterialSnackbar {
 impl Widget for MaterialSnackbar {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
@@ -566,6 +572,9 @@ impl CupertinoAlertDialog {
 impl Widget for CupertinoAlertDialog {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
@@ -988,6 +997,9 @@ impl Widget for CupertinoSlider {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
@@ -1278,6 +1290,9 @@ impl MaterialNavigationRail {
 impl Widget for MaterialNavigationRail {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {

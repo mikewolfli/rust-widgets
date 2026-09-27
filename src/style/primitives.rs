@@ -462,6 +462,14 @@ impl WidgetStyle {
             self.border_color = other.border_color;
             self.border_width = other.border_width;
             self.border_radius = other.border_radius;
+            // The metrics the theme authored travel with the colours: `padding` / `margin`
+            // are the theme's `spacing` tokens and `spacing` is a control's
+            // indicator-to-label gap, so a second application replaces them exactly as it
+            // replaces the fill. Omitting them was the defect B-1 documents — every themed
+            // control's padding stayed `Padding::all(0)` no matter what the theme said.
+            self.padding = other.padding;
+            self.margin = other.margin;
+            self.spacing = other.spacing;
             self.shadow = other.shadow.clone();
             self.surface = other.surface;
             self.touch_target = other.touch_target;
@@ -609,6 +617,20 @@ impl WidgetStyle {
         }
         if self.border_radius.is_none() {
             self.border_radius = other.border_radius;
+        }
+        // `padding` and `margin` are not `Option`, so "unset" is their `Default` — an
+        // all-zero box. Filling only that case is what lets a control that chose its own
+        // padding keep it while one that never spoke takes the theme's. Without this the
+        // theme's `spacing.medium` / `spacing.small` (written by `role_base_style`) reached
+        // no control at all: the field is copied nowhere and nothing asserted otherwise.
+        if self.padding == Padding::default() {
+            self.padding = other.padding;
+        }
+        if self.margin == Margin::default() {
+            self.margin = other.margin;
+        }
+        if self.spacing.is_none() {
+            self.spacing = other.spacing;
         }
         if self.shadow.is_none() {
             self.shadow = other.shadow.clone();

@@ -132,19 +132,32 @@ impl GroupBox {
         self.checkable
     }
     /// Sets checkable state.
+    ///
+    /// Requests a redraw because the flag changes what is painted: a checkable box grows an
+    /// indicator column (see [`Self::indicator_reserve`]), so toggling it is visible. Without this
+    /// a programmatic `set_checkable` (and the published `set("checkable", ..)` / JSON path that
+    /// reaches it) left the frame unchanged until some unrelated repaint happened.
     pub fn set_checkable(&mut self, checkable: bool) {
+        if self.checkable == checkable {
+            return;
+        }
         self.checkable = checkable;
+        self.base.request_redraw();
     }
     /// Returns whether group box is checked.
     pub fn is_checked(&self) -> bool {
         self.checked
     }
     /// Sets checked state.
+    ///
+    /// Requests a redraw because the indicator's tick is what `checked` selects. The early return
+    /// keeps a repeated write free; the emit still happens only on a real edge.
     pub fn set_checked(&mut self, checked: bool) {
         if self.checked == checked {
             return;
         }
         self.checked = checked;
+        self.base.request_redraw();
         self.toggled.emit(checked);
     }
     /// Toggles checked state.
@@ -429,6 +442,9 @@ impl GroupBox {
 impl Widget for GroupBox {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
@@ -726,6 +742,43 @@ mod tests {
         assert!(!gb.is_checked());
         gb.toggle();
         assert!(gb.is_checked());
+    }
+
+    /// A-6: `set_checkable` and `set_checked` ask for a repaint.
+    ///
+    /// # The defect this pins
+    ///
+    /// Both flags change what is painted — `checkable` grows the title row an indicator column,
+    /// and `checked` selects the indicator's tick — but neither requested a redraw, so a
+    /// programmatic change (and the published `set(..)` / JSON path that reaches it) was invisible
+    /// until some unrelated repaint happened.
+    ///
+    /// The assertion counts `redraw_requested`, which is the signal the host listens on. It is a
+    /// pointer to the same fact `request_redraw` records, so a control that only set the field
+    /// cannot pass it.
+    #[test]
+    fn groupbox_flag_setters_request_a_repaint() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let mut gb = GroupBox::new(Rect::new(0, 0, 200, 100));
+        let count = Arc::new(AtomicUsize::new(0));
+        let sink = Arc::clone(&count);
+        let subscription = crate::signal::ConnectionScope::new();
+        gb.base().redraw_requested.connect_scoped(&subscription, move || {
+            sink.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // A repeated write is not a change, so it must stay quiet.
+        let initial = gb.is_checkable();
+        gb.set_checkable(initial);
+        assert_eq!(count.load(Ordering::SeqCst), 0, "a no-op write must not repaint");
+
+        gb.set_checkable(!initial);
+        assert_eq!(count.load(Ordering::SeqCst), 1, "`set_checkable` must request a repaint");
+
+        gb.set_checked(!gb.is_checked());
+        assert_eq!(count.load(Ordering::SeqCst), 2, "`set_checked` must request a repaint");
     }
 
     // ── Panel / child management tests ─────────────────────────────────

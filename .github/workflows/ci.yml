@@ -236,6 +236,24 @@ jobs:
             echo "::endgroup::"
           done
 
+      # The opt-in `icons` feature is **not** part of any device profile, so none of the
+      # steps above compiles it — and a test that never runs is not a test. Until this job
+      # existed, `tests/icon_census_test.rs` and `tests/icon_data_integrity_test.rs` were
+      # gated on a feature CI never enabled, so they could not have failed no matter what the
+      # icon data or the draw path did.
+      #
+      # `desktop,icons` is the one combination that reaches both the draw path and the data:
+      # the icons feature alone has no device profile, so the SVG backend and the text layer
+      # the census renders through would be absent. `tools/check_icon_data_is_opt_in.sh`
+      # asserts the same build compiles; this job is what runs the *tests* in it.
+      - name: Cargo test (icons data)
+        run: cargo test --no-default-features --features "desktop,icons" -q
+
+      - name: Cargo clippy with icons (deny warnings)
+        run: >-
+          cargo clippy --all-targets --no-default-features --features "desktop,icons"
+          -- -D warnings
+
       # The two halves of one contract: a text origin is the glyph box's TOP edge, not a
       # baseline. `check_text_origin_is_a_top_edge` forbids an `ascent` term in that origin;
       # `check_text_vertically_centred` forbids a halved band height. They are separate gates

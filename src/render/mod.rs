@@ -70,10 +70,10 @@ pub mod text_shaper;
 // Rich text rendering (multi-span styled text)
 pub mod rich_text;
 
-// Text overflow handling (ellipsis, clip, multi-line clamp)
-pub mod text_overflow;
+// Path geometry (SVG path-data parsing) shared by the vector backends and the icon data.
+pub mod path;
 
-// Unicode grapheme cluster support (emoji, combining marks, ZWJ)
+// Unicode cluster predicates (combining marks, variation selectors) shared with text shaping.
 pub mod grapheme;
 
 // ─── Re-exports ──────────────────────────────────────────────────────────────
@@ -109,12 +109,6 @@ pub use text::RustybuzzShaper;
 
 // Rich text
 pub use rich_text::{RichText, TextSpan, TextStyle};
-
-// Text overflow
-pub use text_overflow::{apply_text_clamp, apply_text_overflow, TextClamp, TextOverflow};
-
-// Grapheme support
-pub use grapheme::{GraphemeCluster, GraphemeProcessor};
 
 // GPU — re-export only when feature is active
 #[cfg(feature = "gpu-wgpu")]

@@ -455,12 +455,13 @@ fn main() {
 
     // The kinds the library can actually build, asked the same way
     // `mount_widget_of_kind` asks: through `factory_name_for_kind`. A kind that
-    // resolves to the empty string has no constructor, so every `create_*` method
+    // resolves to no name has no constructor, so every `create_*` method
     // that names it returns id `0` — see `check_widget_registration_fidelity.py`
-    // for the three defects this caught.
+    // for the three defects this caught. The lookup answers `Option` rather than an
+    // empty string, so "unconstructible" is the `None` case.
     let unconstructible: Vec<String> = all_kinds()
         .into_iter()
-        .filter(|kind| factory_name_for_kind(*kind).is_empty())
+        .filter(|kind| factory_name_for_kind(*kind).is_none())
         .map(kind_name)
         .collect();
 

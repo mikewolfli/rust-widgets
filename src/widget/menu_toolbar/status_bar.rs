@@ -44,9 +44,11 @@ pub struct StatusBar {
     message: String,
     permanent_message: String,
     size_grip_enabled: bool,
-    /// Emitted with the new message text on every message change, including the
-    /// empty string emitted by [`StatusBar::clear_message`]. Changing the
-    /// permanent message does **not** emit it.
+    /// Emitted with the new message text whenever a **visible** message change occurs —
+    /// including the empty string emitted by [`StatusBar::clear_message`]. A disabled status
+    /// bar shows no message, so [`StatusBar::show_message`] stores the value without emitting;
+    /// see that method's "Disabled contract" section. Changing the permanent message does
+    /// **not** emit it.
     pub message_changed: Signal1<String>,
 }
 impl StatusBar {
@@ -72,18 +74,17 @@ impl StatusBar {
     }
     /// Returns whether the resize grip is drawn. Defaults to `true`.
     ///
-    /// Note that `StatusBar::draw` does not currently render a grip, so this
-    /// flag has no visual effect yet.
+    /// The grip is the three diagonals [`StatusBar::draw`] paints in the strip's
+    /// trailing corner, and [`StatusBar::size_grip_rect`] reserves the message's room
+    /// for it. Disabling this flag removes both the ink and the reserve.
     pub fn size_grip_enabled(&self) -> bool {
         self.size_grip_enabled
     }
-    /// Show a temporary status message (timeout_ms is informational; actual timeout managed externally).
     /// Shows a transient message for `_timeout_ms` milliseconds.
     ///
     /// The widget does not schedule clearing, so a message stays until
     /// [`StatusBar::clear_message`] or another `show_message` call. The caller
-    /// owns the timeout. Emits `message_changed` but does not itself request a
-    /// redraw.
+    /// owns the timeout. Emits `message_changed` and requests a redraw.
     ///
     /// # Disabled contract
     ///
@@ -93,6 +94,10 @@ impl StatusBar {
     /// [`StatusBar::message_changed_suppression_reason`].
     pub fn show_message(&mut self, message: impl Into<String>, _timeout_ms: u64) {
         self.message = message.into();
+        // The strip paints the message, so a change to it is visible whether or not a host is
+        // listening on `message_changed`. Request the repaint **before** the enabled check, so a
+        // message stored while disabled still paints when the control is re-enabled.
+        self.base.request_redraw();
         if !self.base.is_enabled() {
             // See `message_changed_suppression_reason`.
             return;
@@ -105,6 +110,7 @@ impl StatusBar {
     /// Gated by `enabled` for the same reason as [`StatusBar::show_message`].
     pub fn clear_message(&mut self) {
         self.message.clear();
+        self.base.request_redraw();
         if !self.base.is_enabled() {
             // See `message_changed_suppression_reason`.
             return;
@@ -261,6 +267,9 @@ impl StatusBar {
 impl Widget for StatusBar {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base

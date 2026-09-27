@@ -255,6 +255,9 @@ macro_rules! impl_web_engine_wrapper_traits {
                 fn base(&self) -> &BaseWidget {
                     self.0.base()
                 }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
 
                 fn base_mut(&mut self) -> &mut BaseWidget {
                     self.0.base_mut()
@@ -627,6 +630,9 @@ impl WebEngineView {
 impl Widget for WebEngineView {
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base

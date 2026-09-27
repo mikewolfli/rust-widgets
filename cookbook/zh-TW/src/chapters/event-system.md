@@ -388,21 +388,25 @@ drain_tasks();  // posts Custom events for completed tasks
 
 ## 通用佇列基礎元件
 
-`queue` 模組提供基礎的資料結構：
+`queue` 模組提供兩個原語，都是**生產在用**的：
 
 ```rust
-use rust_widgets::event::queue::{FixedSizeQueue, QueueError, DEFAULT_QUEUE_CAPACITY};
+use rust_widgets::event::{EventQueue, EventSender};
 
-let mut queue = FixedSizeQueue::<Event>::with_capacity(DEFAULT_QUEUE_CAPACITY);
-
-queue.push(Event::Paint).map_err(|QueueError::Full| {
-    eprintln!("Event queue overflow!");
-})?;
-
+// 單執行緒事件佇列：應用主迴圈從它取事件。
+let queue = EventQueue::new();
+let sender = queue.sender();
+sender.send(Event::Paint);
 while let Some(event) = queue.pop() {
-    process(event);
+    let _ = event;
 }
 ```
+
+`event::queue::BlockingQueue` 是 `view/reactive.rs` 內部的執行緒安全阻塞佇列，
+不作為公共 API 推薦使用。
+
+> **關於 `FixedSizeQueue` / `PriorityQueue` / `BoundedQueue`**：早期版本還提供這三個
+> 佇列型別。它們**零消費者**，與 `EventQueue` 構成同一概念的多條實作，因此已被刪除。
 
 這些基礎元件由 `EventQueue` 內部使用，也可以重複用於自訂的事件緩衝。
 

@@ -109,13 +109,13 @@ graph TD
     SIGNAL["signal::<br/>Signal, GenericSignal<br/>ConnectionScope, ConnectionHandle"]
     SIGNAL --> COMPAT["compat::<br/>HashMap, Mutex, Vec<br/>(std or heapless)"]
 
-    EVENT["event::<br/>Event, EventHandler<br/>Timer, EventQueue, FocusTracker"]
+    EVENT["event::<br/>Event, EventHandler<br/>Timer, EventQueue, FocusTracker<br/>key_codes"]
     EVENT --> CORE
 
     LAYOUT["layout::<br/>BoxLayout, Grid, Stack, Flow<br/>Flex, Absolute, Form, Constraint"]
     LAYOUT --> CORE
 
-    RENDER["render::<br/>RenderContext, RenderPipeline<br/>TextShaper, TextCache<br/>GPU/Software/SVG backends"]
+    RENDER["render::<br/>RenderContext, RenderPipeline<br/>TextShaper, TextCache<br/>GPU/Software/SVG backends<br/>path:: parser + flatten"]
     RENDER --> CORE
 
     STYLE["style::<br/>WidgetStyle, Margin, Padding<br/>CssParser, StyleSheetManager<br/>Theme, ThemeManager"]
@@ -164,9 +164,9 @@ graph TD
 | **widget** | `src/widget/` | Widget trait, BaseWidget, WidgetKind, Draw, 180+ widget implementations |
 | **app** | `src/app/` | Application lifecycle, `App`/`AppConfig`, typed `WidgetHandle`s |
 | **signal** | `src/signal/` | Signal/slot system: `Signal<T>`, `GenericSignal`, `ConnectionScope` |
-| **event** | `src/event/` | Event types, `EventHandler` trait, timer, focus tracking, event queue |
+| **event** | `src/event/` | Event types, `EventHandler` trait, timer, focus tracking, event queue, `key_codes` (named key codes) |
 | **layout** | `src/layout/` | Layout algorithms: Box, Grid, Stack, Flow, Flex, Absolute, Constraint |
-| **render** | `src/render/` | Rendering: `RenderContext`, text shaping, GPU/CPU/SVG backends |
+| **render** | `src/render/` | Rendering: `RenderContext`, text shaping, GPU/CPU/SVG backends, `path` (SVG `d` → curves → polylines) |
 | **style** | `src/style/` | Styling: `WidgetStyle`, CSS parser, themes, margins, padding |
 | **data_binding** | `src/data_binding/` | Reactive bindings: `Binding<T>`, `Computed<T>`, `ObservableList<T>` |
 | **action** | `src/action/` | Action system: `Action`, `ActionManager`, shortcut binding |
@@ -895,6 +895,62 @@ to the appropriate backend based on compile-time feature flags. The routing
 system in `control_backend::routing` covers all 180 widget kinds. Every one is
 custom-painted, so there is no second (platform-held) mechanism left to choose
 between.
+
+---
+
+## The Icon Data Path (`icons`, on by default)
+
+`Icon` names 31 icons through `IconName`. The `icons` feature — **on by default** — draws each one
+from the **real outline**, read from path data vendored at a pinned upstream revision. Without the
+feature `Icon` falls back to hand-written geometry, which is the path every snapshot taken before the
+data existed was drawn against.
+
+The path from a name to pixels has three stages, and the middle one is deliberately not a second
+implementation of anything:
+
+```mermaid
+graph LR
+    ENUM["IconName<br/>(31 variants)"]
+    DATA["IconData<br/>name, grid, paths"]
+    PARSE["render::path::parser<br/>SVG d -> Segment"]
+    FLAT["render::path::flatten<br/>Segment -> polyline"]
+    RAST["render::text::raster<br/>the existing flattener"]
+    FILL["RenderContext::draw_path"]
+
+    ENUM -->|data| DATA
+    DATA --> PARSE
+    PARSE --> FLAT
+    FLAT -.->|reuses| RAST
+    FLAT --> FILL
+```
+
+| Stage | Module | What it does |
+|---|---|---|
+| Data | `widget::icon_data` | the generated table: one `IconData` per token |
+| Parse | `render::path::parser` | reads the full SVG command set into curve segments |
+| Flatten | `render::path::flatten` | maps design units to device pixels and emits polygons |
+| Fill | `RenderContext::draw_path` | the same path fill every other vector draw uses |
+
+Three properties are load-bearing, and each is enforced mechanically rather than documented:
+
+1. **A declared name always has geometry.** `IconName::data()` returns `IconData`, **not** `Option`,
+   so a variant added without an entry is a compile error. The old shape — a name matched against a
+   string at draw time, falling through to a placeholder — is gone.
+2. **Two names never draw one picture.** `Close` and `Cross` shared a method once, so two distinct
+   names produced identical output. The generator refuses to emit byte-identical outlines, and a
+   census test renders every token and requires all 31 pictures to differ.
+3. **There is one curve-flattening rule.** An icon outline is the same kind of shape as a glyph, so
+   it reuses `render::text::raster`'s deviation-adaptive subdivider rather than growing a second one.
+   `render::path::parser` converts arcs to cubics at parse time (SVG F.6.5) precisely so that the
+   flattener only ever sees curves it already knows.
+
+The feature is **on by default but in no device profile**. `default` answers "what does a plain
+`cargo build` give me?" and the honest answer includes the real outlines; a profile answers "what
+kind of machine is this", and `mini` / `embedded` are *sized*, so a payload the caller did not ask
+for is wrong there. A profile build that wants icons says `--features mini,icons`; a caller who does
+not want the payload at all builds without the feature. `tools/check_icon_data_is_opt_in.sh` asserts
+both halves of that split, and the snapshot gate exports the manifest's `default` so the committed
+pictures show what ships.
 
 ---
 

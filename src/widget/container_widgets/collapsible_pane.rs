@@ -4,6 +4,7 @@
 //! CollapsiblePane — a container widget that can be collapsed/expanded.
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
+use crate::event::key_codes;
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::style::{MotionSlot, PropertyDriver};
@@ -211,6 +212,9 @@ impl Widget for CollapsiblePane {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
@@ -305,7 +309,7 @@ impl EventHandler for CollapsiblePane {
                     return;
                 }
             }
-            Event::KeyPress { key, .. } if *key == 32 || *key == 13 => {
+            Event::KeyPress { key, .. } if *key == key_codes::SPACE || *key == key_codes::ENTER => {
                 self.toggle();
                 return;
             }

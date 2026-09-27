@@ -108,15 +108,21 @@ crate::impl_default_via_new!(SwipeGesture);
 #[derive(Debug)]
 pub struct TwoFingerSwipeGesture {
     touches: Vec<(Point, TouchId)>,
-    centroid_start: Option<Point>,
+    /// The centroid baseline and the instant it was taken, as **one** value.
+    ///
+    /// They are set on the same statement and read on the same statement, so two `Option`s
+    /// could only ever disagree by mistake — and the pair was previously read with
+    /// `start_time.unwrap_or(now_ms)`, an unreachable fallback that would have computed
+    /// `elapsed == 0 → max(1)` and an absurd velocity had it ever been taken. Pairing them
+    /// makes "both or neither" a type fact rather than an invariant to remember.
+    baseline: Option<(u64, Point)>,
     last_centroid: Option<Point>,
-    start_time: Option<u64>,
 }
 
 impl TwoFingerSwipeGesture {
     /// Creates a recognizer tracking no fingers and no centroid baseline.
     pub fn new() -> Self {
-        Self { touches: Vec::new(), centroid_start: None, last_centroid: None, start_time: None }
+        Self { touches: Vec::new(), baseline: None, last_centroid: None }
     }
 
     fn compute_centroid(touches: &[(Point, TouchId)]) -> Option<Point> {
@@ -139,9 +145,11 @@ impl GestureRecognizer for TwoFingerSwipeGesture {
                 self.touches.push((*pos, *touch_id));
                 // Start tracking centroid when second finger arrives
                 if self.touches.len() == 2 {
-                    self.centroid_start = Self::compute_centroid(&self.touches);
-                    self.last_centroid = self.centroid_start;
-                    self.start_time = Some(now_ms);
+                    // One write, so the baseline point and its timestamp cannot drift apart.
+                    if let Some(centroid) = Self::compute_centroid(&self.touches) {
+                        self.baseline = Some((now_ms, centroid));
+                        self.last_centroid = Some(centroid);
+                    }
                 }
                 None
             }
@@ -159,14 +167,15 @@ impl GestureRecognizer for TwoFingerSwipeGesture {
                 self.touches.retain(|(_, id)| *id != *touch_id);
                 if self.touches.is_empty() {
                     // Both fingers lifted — evaluate swipe
-                    let result = if let (Some(start), Some(end)) =
-                        (self.centroid_start, self.last_centroid)
+                    let result = if let (Some((started_at, start)), Some(end)) =
+                        (self.baseline, self.last_centroid)
                     {
                         let dx = (end.x - start.x).abs();
                         let dy = (end.y - start.y).abs();
                         let dist = ((dx * dx + dy * dy) as f32).sqrt();
-                        let elapsed =
-                            now_ms.saturating_sub(self.start_time.unwrap_or(now_ms)).max(1) as f32;
+                        // No fallback: the baseline's timestamp is part of the same `Option` as
+                        // the start point, so reaching this arm guarantees it is present.
+                        let elapsed = now_ms.saturating_sub(started_at).max(1) as f32;
                         // Logical pixels per second, matching `Event::TwoFingerSwipe`'s
                         // documented unit and the other swipe recognisers.
                         let velocity = dist / elapsed * 1000.0;
@@ -195,9 +204,8 @@ impl GestureRecognizer for TwoFingerSwipeGesture {
 
     fn reset(&mut self) {
         self.touches.clear();
-        self.centroid_start = None;
+        self.baseline = None;
         self.last_centroid = None;
-        self.start_time = None;
     }
 }
 
@@ -321,3 +329,67 @@ impl GestureRecognizer for FlingGesture {
 }
 
 crate::impl_default_via_new!(FlingGesture);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// D-9: a two-finger swipe that travels far enough reports a sane velocity.
+    ///
+    /// # The defect this pins
+    ///
+    /// The baseline centroid and its start time were two separate `Option`s, read as
+    /// `now_ms.saturating_sub(self.start_time.unwrap_or(now_ms))`. The fallback was unreachable —
+    /// both were set on one statement — but had it ever been taken it would have produced
+    /// `elapsed == 0 → max(1)` and an absurd velocity. Storing the pair as one `Option` makes
+    /// "both or neither" a type fact, and this test is what proves the elapsed time is real:
+    /// the velocity must reflect the 200 ms the gesture actually took, not the `1 ms` floor.
+    #[test]
+    fn a_two_finger_swipe_velocity_uses_the_real_elapsed_time() {
+        let mut gesture = TwoFingerSwipeGesture::new();
+
+        // Two fingers land at t=0, well within the minimum distance from where they end.
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(0, 0), touch_id: 1 }, 0)
+            .is_none());
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(0, 100), touch_id: 2 }, 0)
+            .is_none());
+
+        // They move together to +200 in x over 200 ms.
+        let moved = Point::new(200, 50);
+        assert!(gesture
+            .process(&Event::TouchMove { pos: Point::new(200, 0), touch_id: 1 }, 200)
+            .is_none());
+        assert!(gesture
+            .process(&Event::TouchMove { pos: Point::new(200, 100), touch_id: 2 }, 200)
+            .is_none());
+
+        // The first finger lifts: still one down, so no evaluation yet.
+        assert!(gesture.process(&Event::TouchEnd { pos: moved, touch_id: 1 }, 200).is_none());
+        let Some(Event::TwoFingerSwipe { centroid_start, centroid_end, velocity }) =
+            gesture.process(&Event::TouchEnd { pos: moved, touch_id: 2 }, 200)
+        else {
+            panic!("a 200px two-finger travel must produce a swipe");
+        };
+
+        assert_eq!(centroid_start, Point::new(0, 50));
+        assert_eq!(centroid_end, Point::new(200, 50));
+        // 200 px in 200 ms is 1000 px/s. The `1 ms` floor would have reported 200000 px/s.
+        assert!(
+            (velocity - 1000.0).abs() < 0.5,
+            "the velocity must use the real 200 ms elapsed time, not the clamp; got {velocity}"
+        );
+    }
+
+    /// A release with no second finger ever having landed produces nothing.
+    #[test]
+    fn a_single_finger_never_produces_a_two_finger_swipe() {
+        let mut gesture = TwoFingerSwipeGesture::new();
+        let _ = gesture.process(&Event::TouchBegin { pos: Point::new(0, 0), touch_id: 1 }, 0);
+        let _ = gesture.process(&Event::TouchMove { pos: Point::new(500, 0), touch_id: 1 }, 100);
+        assert!(gesture
+            .process(&Event::TouchEnd { pos: Point::new(500, 0), touch_id: 1 }, 100)
+            .is_none());
+    }
+}

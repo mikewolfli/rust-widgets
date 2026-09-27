@@ -312,16 +312,12 @@ impl Button {
     /// Setting it also requests a redraw, because the flag is now something that changes what is
     /// painted over an animation rather than only at the next event.
     pub fn set_hovered(&mut self, hovered: bool) {
-        if self.base.is_hovered() == hovered {
-            return;
-        }
-        self.base.set_hovered(hovered);
-        // Delegate to the trait default, which also re-resolves the theme for `button:hover`.
-        // This inherent method shadows the trait's default implementation, so a plain field write
-        // would make the key unreachable for this control while the trait default covered the other
-        // 187 — the exact drift the shared default exists to prevent. The fully qualified `<dyn
-        // Widget>` names the default through the trait object, where it carries no `where
-        // Self: Sized` bound and so is callable.
+        // Delegate to the trait default, which writes the flag **and** re-resolves the theme for
+        // `button:hover`. This inherent method shadows the trait's default implementation, so an
+        // early return plus a plain field write would make the key unreachable for this control
+        // while the default covered the other 187 — the exact drift the shared default exists to
+        // prevent. The fully qualified `<dyn Widget>` names the default through the trait object,
+        // and the default's own early return is what keeps a repeated `MouseMove` cheap.
         <dyn Widget>::set_hovered(self, hovered);
     }
     /// Advances the interaction transition by `delta_ms` and reports whether another frame is needed.
@@ -379,11 +375,9 @@ impl Button {
         if !self.base.is_enabled() {
             return;
         }
-        // Write the paint flag first, so the draw path and `widget_state` see the new value
-        // even if the signal below is never connected.
-        self.base.set_pressed(pressed);
-        // The trait default carries the theme re-resolution for `button:pressed`; see
-        // `Button::set_hovered` for why an inherent method must delegate through the trait object.
+        // The trait default carries both the field write and the theme re-resolution for
+        // `button:pressed`; see `Button::set_hovered` for why an inherent method must delegate
+        // through the trait object rather than writing the field itself.
         <dyn Widget>::set_pressed(self, pressed);
         if self.signaled_pressed == pressed {
             return;
@@ -441,9 +435,16 @@ impl Button {
     /// state is cleared at the same moment (`button_style_button.dart:359-362`).
     pub fn set_enabled_state(&mut self, enabled: bool) {
         let previous = self.state();
+        let was_enabled = self.base.is_enabled();
         self.base.set_enabled(enabled);
         if !enabled {
             self.cancel_gesture();
+        }
+        // A disabled button resolves `button:disabled`, which the theme layer can only do
+        // through the control: re-resolve here rather than leaving the fill of the previous
+        // state on screen. Guarded on an actual change, so a repeated call is free.
+        if was_enabled != enabled {
+            self.set_state_theme_hook();
         }
         let current = self.state();
         if previous != current {
@@ -527,6 +528,9 @@ impl Widget for Button {
 
     fn base(&self) -> &BaseWidget {
         &self.base
+    }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
     }
 
     fn base_mut(&mut self) -> &mut BaseWidget {

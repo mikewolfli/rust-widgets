@@ -232,6 +232,9 @@ impl Widget for Chip {
     fn base(&self) -> &BaseWidget {
         &self.base
     }
+    fn set_state_theme_hook(&mut self) {
+        crate::style::reapply_active_theme_state(self);
+    }
 
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
@@ -257,7 +260,15 @@ impl Widget for Chip {
     ///
     /// The preset keys follow the report: `chip:checked` was declared for a state this control
     /// never reaches (see `CheckBox::widget_state` for the same defect), so the keys are now
-    /// `chip:selected` — a declared state with a consumer, in both directions.
+    /// `chip:selected`.
+    ///
+    /// # Where the key is consumed
+    ///
+    /// `draw` reads `chip:selected` for the **selected chip's own box and label** — that one chip's
+    /// fill and ink, not the row. The row band is the base `chip` appearance, so selecting a chip
+    /// changes one chip and leaves the rest of the row as it was. (The key was previously consumed
+    /// at the wrong surface: the whole band took the `primary` fill and every other chip derived
+    /// from it, which is why the documentation here had to be corrected rather than the code.)
     fn widget_state(&self) -> crate::style::WidgetState {
         use crate::style::WidgetState;
         if !self.base.is_enabled() {
@@ -382,20 +393,39 @@ impl Draw for Chip {
         // Each `resolved_theme_style` call takes and releases the global manager's
         // lock internally, so no guard is held across the draw or across another
         // accessor (the mutex is not re-entrant).
+        // `theme` is the theme's **base** `chip` appearance — not the control's own style, which
+        // `reapply_active_theme_state` re-resolves to `chip:selected` as soon as *any* chip is
+        // chosen (the whole control reports `Selected`; see `widget_state`). Reading the row's
+        // base from `style` was the defect: one selected chip turned the entire band into the
+        // declared selected fill and every other chip derived from it. The declared base of the
+        // row is a fact about the theme and the row, so it comes from the theme.
         let style = self.base.style().clone();
         let theme = crate::style::resolved_theme_style("chip");
-        let background = style
-            .background_color
-            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+        let background = theme
+            .as_ref()
+            .and_then(|t| t.background_color)
+            .or(style.background_color)
             .unwrap_or(Color::WHITE);
         let border = style
             .border_color
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))
             .unwrap_or_else(|| crate::core::Color::border_of(background));
-        let text_color = style
-            .text_color
-            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
-            .unwrap_or(Color::BLACK);
+        let text_color =
+            theme.as_ref().and_then(|t| t.text_color).or(style.text_color).unwrap_or(Color::BLACK);
+
+        // `chip:selected` is the theme's **declared** fill for the selected chip, and it applies
+        // to that one chip's box and ink — not to the row. It used to be consumed into the row
+        // band, so selecting a single chip repainted the whole row in `primary` and derived every
+        // other chip's fill from it: the wrong surface, and the module documentation claimed a
+        // consumer "in both directions" that did not exist. The declared layer is read here and
+        // used only inside the `item.selected` arm below.
+        #[cfg(device_profile)]
+        let selected_style = crate::style::resolved_theme_style_for_state(
+            "chip",
+            crate::style::WidgetState::Selected,
+        );
+        #[cfg(not(device_profile))]
+        let selected_style: Option<crate::style::WidgetStyle> = None;
 
         // ── The row band actually painted ──
         //
@@ -422,13 +452,29 @@ impl Draw for Chip {
             // Selection and focus are chrome states, so they are derived from the
             // resolved colours rather than from literals: a selected chip reads as
             // tinted toward the foreground on whatever background the theme picked.
-            let bg = if item.selected {
+            //
+            // A selected chip prefers the theme's **declared** `chip:selected` fill and ink, and
+            // falls back to the same tint derivation the other states use. The fallback keeps the
+            // chip readable on a theme that declares no such key, which is why the derivation is
+            // not replaced outright.
+            let mut bg = if item.selected {
                 background.blend(&text_color, 0.22)
             } else if self.focused_index == Some(index) {
                 background.blend(&text_color, 0.12)
             } else {
                 background.blend(&text_color, 0.06)
             };
+            let mut label_ink = text_color;
+            if item.selected {
+                if let Some(declared) = selected_style.as_ref() {
+                    if let Some(declared_background) = declared.background_color {
+                        bg = declared_background;
+                    }
+                    if let Some(declared_ink) = declared.text_color {
+                        label_ink = declared_ink;
+                    }
+                }
+            }
             context.fill_rect(chip_rect, bg);
             context.draw_rect(chip_rect, border);
             // The chip's label is centred through the shared primitive: `chip_rect.y +
@@ -439,7 +485,7 @@ impl Draw for Chip {
                 Point::new(chip_rect.x + self.chip_padding, line.y),
                 &item.label,
                 &Font::default(),
-                text_color,
+                label_ink,
                 HorizontalAlignment::Left,
             );
         }
@@ -551,6 +597,80 @@ mod tests {
         // Valid toggle works
         assert!(chip.toggle_index(0));
         assert_eq!(chip.selected_ids(), vec!["c1"]);
+    }
+
+    /// A-4: selecting one chip changes **that chip's box**, not the whole row band.
+    ///
+    /// # The defect this pins
+    ///
+    /// The row band took the resolved `chip:selected` fill, because `background` was read from the
+    /// already-selected `style` — so selecting a single chip repainted the entire row in `primary`
+    /// and derived every other chip's fill from it. The theme's declared `chip:selected` value is
+    /// the selected chip's own appearance, and the row is the base `chip` appearance.
+    ///
+    /// # How the assertion isolates the row
+    ///
+    /// Two chips share one row band. The row's leftmost pixel column lies inside the band but
+    /// outside the first chip's own box only if the chip starts inset from it; the band's own fill
+    /// is therefore probed on the band's outer edge, where no chip is drawn. Under the defect that
+    /// pixel took the `primary` tint; with the fix it stays the base `chip` background.
+    #[test]
+    fn selecting_one_chip_does_not_repaint_the_row_band() {
+        use crate::render::{PaintBackend, SoftwarePaintBackend};
+        use crate::widget::draw::Draw;
+
+        let bounds = Rect::new(0, 0, 300, 36);
+        // The declared `chip:selected` key lives in the shipped preset, so the test must select
+        // that theme for the key to resolve at all.
+        let _guard = crate::theme::theme_test_guard();
+        {
+            let mut manager = crate::theme::global_theme_manager();
+            assert!(manager.set_theme("default"));
+        }
+        let mut chip = Chip::new(bounds);
+        chip.set_items(vec![ChipItem::new("a", "A"), ChipItem::new("b", "B")]);
+
+        let read_band_pixel = |chip: &mut Chip| -> crate::core::Color {
+            let mut surface = SoftwarePaintBackend::new(bounds.size(), 1.0);
+            surface.begin_frame(crate::core::Color::WHITE);
+            {
+                let mut context = crate::render::RenderContext::new(&mut surface);
+                chip.draw(&mut context);
+            }
+            surface.end_frame();
+            // The band is a full-width strip centred in the control, and chip boxes begin
+            // `CHIP_PADDING_H` in from its leading edge; the band's own leftmost columns are
+            // therefore never covered by a chip.
+            let band = chip.row_band();
+            let frame = surface.frame_rgba();
+            let probe_x = 2usize;
+            let offset = ((band.y as usize + 2) * bounds.width as usize + probe_x) * 4;
+            let pixel = &frame[offset..offset + 4];
+            crate::core::Color::rgba(pixel[0], pixel[1], pixel[2], pixel[3])
+        };
+
+        let unselected = read_band_pixel(&mut chip);
+        assert!(chip.toggle_index(0), "selecting the first chip must succeed");
+        let selected = read_band_pixel(&mut chip);
+
+        assert_eq!(
+            unselected, selected,
+            "selecting one chip must not change the row band's own fill"
+        );
+
+        // The stronger statement: the band is the **base** `chip` appearance, not the declared
+        // selected fill. Comparing the two readings alone would pass if the band took the
+        // selected colour in *both* (the band read the style before any chip was chosen too).
+        let declared_selected = crate::style::resolved_theme_style_for_state(
+            "chip",
+            crate::style::WidgetState::Selected,
+        )
+        .and_then(|resolved| resolved.background_color)
+        .expect("the shipped preset declares `chip:selected`");
+        assert_ne!(
+            selected, declared_selected,
+            "the row band must not take the selected chip's declared fill"
+        );
     }
 
     #[test]

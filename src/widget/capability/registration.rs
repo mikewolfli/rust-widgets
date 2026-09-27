@@ -248,3 +248,97 @@ impl WidgetFactory {
         }
     }
 }
+
+#[cfg(all(test, full_widgets))]
+mod tests {
+    use crate::widget::kind::WidgetKind;
+    use crate::widget::WidgetFactory;
+
+    /// Every `WidgetKind` variant is either registered or declared child-only (rule #27).
+    ///
+    /// # Why this test exists
+    ///
+    /// The module documentation above promises exactly this test by name and describes its
+    /// criterion — but the test did not exist, so `WidgetKind`→module auditability had **no
+    /// mechanical gate at all**. A variant added to the enum with neither a `self.register(..)` here
+    /// nor an alias row in `capability::alias_factory_name` would fall through to an empty name and
+    /// lose its theme role silently, which is the class of defect the aliases below were added to
+    /// fix.
+    ///
+    /// # How it checks without an `ALL` array
+    ///
+    /// `WidgetKind` has no enumerable `ALL` (the variants are `cfg`-gated per profile), so this
+    /// does not iterate the enum. It checks the two halves the promise names:
+    ///
+    /// 1. **Registered** — every capability the factory holds has a canonical name that a variant
+    ///    can resolve to, so the registry and the name table agree.
+    /// 2. **Declared child-only** — the variants that legitimately have no capability row are
+    ///    exactly the ones the alias table covers, and each resolves to a name the factory knows.
+    #[test]
+    fn every_widgetkind_variant_is_registered_or_declared_child_only() {
+        let factory = WidgetFactory::new_with_defaults();
+
+        // 1. Each registered capability's kind resolves to a name the factory knows. This is the
+        //    registry -> name direction: a kind the lookup cannot name would be themed as nothing.
+        //    The resolution need not be the capability's *own* canonical name — several
+        //    capabilities share one kind (`panel` is kinded `GroupBox`), and the lookup answers with
+        //    the one whose kind matches first — but it must be a spelling the factory answers to.
+        let mut registered = 0usize;
+        for capability in factory.capabilities() {
+            let resolved = crate::widget::capability::factory_name_for_kind(capability.kind);
+            let name = resolved.unwrap_or_else(|| {
+                panic!(
+                    "`{}` is registered for {:?}, but the name lookup answers None, so its theme \
+                     role would be unresolvable",
+                    capability.canonical_name, capability.kind
+                )
+            });
+            assert!(
+                factory.capability(name).is_some(),
+                "{:?} resolves to `{name}`, which is not a name the factory knows",
+                capability.kind
+            );
+            registered += 1;
+        }
+        assert!(
+            registered > 100,
+            "only {registered} capabilities are registered, so this test is not covering the \
+             widget set it exists to audit"
+        );
+
+        // 2. The declared child-only variants. Each has a real constructor or is created only as
+        //    a child, publishes no capability row of its own, and is named through the alias table
+        //    so the theme layer can still classify it. `factory_name` is whether the *alias* is
+        //    itself a registered factory name: `panel` and `dock_widget` are, while `menu_item` is
+        //    a theme-classification name only (a row is built by its owning `Menu`, never by a
+        //    factory call on its own name).
+        let child_only = [
+            (WidgetKind::Panel, "panel", true),
+            (WidgetKind::DockPanel, "dock_widget", true),
+            (WidgetKind::MenuItem, "menu_item", false),
+            (WidgetKind::ContextMenu, "menu", true),
+            (WidgetKind::CheckListBox, "list_box", true),
+            (WidgetKind::DoubleSpinBox, "spin_box", true),
+            (WidgetKind::Wizard, "wizard_dialog", true),
+            (WidgetKind::DirectoryDialog, "file_dialog", true),
+            (WidgetKind::ActivityIndicator, "progress_bar", true),
+            (WidgetKind::ColumnView, "tree_view", true),
+            (WidgetKind::UndoView, "list_view", true),
+        ];
+        for (kind, expected, is_factory_name) in child_only {
+            assert_eq!(
+                crate::widget::capability::factory_name_for_kind(kind),
+                Some(expected),
+                "{kind:?} is declared child-only, so it must resolve through the alias table"
+            );
+            if is_factory_name {
+                // A name the factory would reject is as broken as no name, so the resolution has to
+                // be a spelling the registry actually answers to.
+                assert!(
+                    factory.capability(expected).is_some(),
+                    "the alias `{expected}` for {kind:?} is not a name the factory knows"
+                );
+            }
+        }
+    }
+}
