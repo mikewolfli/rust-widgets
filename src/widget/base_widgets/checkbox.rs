@@ -215,12 +215,26 @@ impl CheckBox {
         self.tristate_enabled
     }
     /// Sets check state and emits signals when changed.
+    /// Sets the checked state.
+    ///
+    /// # Why this re-resolves the theme first
+    ///
+    /// `apply_active_theme` runs once, inside the creation funnels, in whatever state the
+    /// constructor produced. A redraw re-runs `draw`, not the theme application, so the style
+    /// kept the creation state's fill and the new latch painted nothing. See
+    /// [`crate::style::reapply_active_theme_state`] for the measurement.
+    ///
+    /// Reached through `set_checked` and `set_tristate_enabled` alike, so one call covers both
+    /// entry points rather than each caller having to remember.
     pub fn set_state(&mut self, state: CheckState) {
         if self.state == state {
             return;
         }
         let previous = self.state;
         self.state = state;
+        // Before the signals: a handler reading the style back must see the state it is being
+        // told about, not the previous one.
+        crate::style::reapply_active_theme_state(self);
         self.state_changed.emit(state);
         // Emit toggled signal for boolean transitions
         match (previous, state) {

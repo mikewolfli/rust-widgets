@@ -34,6 +34,13 @@ const HOVER_BLEND: f32 = 0.08;
 /// Firmer than [`HOVER_BLEND`], because a press is a committed gesture.
 const PRESSED_BLEND: f32 = 0.12;
 
+/// How far a **latched** toggle's fill steps from the accent's base, toward the foreground.
+///
+/// Stronger than [`PRESSED_BLEND`] and deliberately so: a press is momentary and the user is still
+/// holding the control, whereas a latch persists and has to be readable at a glance from across the
+/// screen — and, unlike a hover or a press, it has no gesture to remind the user it happened.
+const CHECKED_BLEND: f32 = 0.25;
+
 /// Blend factor for taking a control's fill toward its own background when disabled.
 const DISABLED_FADE: f32 = 0.55;
 
@@ -105,6 +112,25 @@ pub(super) fn preset_state_overrides(colors: &Colors) -> BTreeMap<String, ThemeS
             },
         );
     }
+    // `toggle_button` latches too, and needs a **different** key shape from the three above.
+    //
+    // Its unchecked base is already `primary` (its role is `WidgetRole::Primary`), so a checked key
+    // that also asked for `primary` would be a key with no effect — the state would be declared,
+    // reachable, and invisible. What a checked toggle has to say instead is "this one is on **among
+    // its peers**": a deeper step of the same accent, with the contrast ink, so a checked toggle beside
+    // an unchecked one is unambiguous without a second hue entering the palette.
+    //
+    // Before this key existed the control's own `if self.checked` branch was the only thing trying to
+    // express it, and it was unreachable: `draw` reads `style.background_color` first, and the theme
+    // always supplies one, so the branch was dead code and the two states rendered identically.
+    styles.insert(
+        "toggle_button:checked".to_string(),
+        ThemeStyleToken {
+            background: Some(colors.primary.blend(&colors.foreground, CHECKED_BLEND)),
+            foreground: Some(colors.primary.contrast_color()),
+            ..ThemeStyleToken::default()
+        },
+    );
     // A chip list is a collection, not a latch, so it reports `Selected` rather than `Checked`.
     // The key used to be `chip:selected`'s predecessor (`chip:checked`), which the control never
     // reported; see `Chip::widget_state`.
@@ -180,8 +206,16 @@ pub(super) fn preset_surface_overrides() -> BTreeMap<String, ThemeStyleToken> {
 /// preset with fewer keys than this means a state group was dropped.
 pub fn preset_state_key_count() -> usize {
     // 4 push-button kinds x 3 states, 3 latching kinds x 1 `checked` + 1 chip `selected`,
-    // 10 editable kinds x 1.
-    4 * 3 + 3 + 1 + 10
+    // 1 `toggle_button:checked` (a **different** key shape from the three above — see the
+    // long note beside it: a checked toggle needs a deeper step of its own accent, not the
+    // plain `primary` the others take), 10 editable kinds x 1.
+    //
+    // The `toggle_button` term was missing when its key was added, and this number is what
+    // `every_preset_family_carries_its_states` compares against — so the count said 26 while
+    // the table held 27, and the test that exists to catch a missing group **failed on a
+    // surplus one instead**. The `+ 1` is the fix, and the comment now names the key so the
+    // next addition has an obvious place to count itself.
+    4 * 3 + 3 + 1 + 1 + 10
 }
 
 #[cfg(test)]

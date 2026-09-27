@@ -5,7 +5,7 @@
 
 #[cfg(test)]
 use crate::core::Point;
-use crate::core::{Color, Font, HorizontalAlignment, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, MediaClock, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -27,9 +27,25 @@ const MEDIA_PLAYER_PADDING: i32 = 10;
 pub struct MediaPlayer {
     base: BaseWidget,
     source: Option<String>,
-    playing: bool,
+    /// The master timeline (BLUE24 §12 U-2).
+    ///
+    /// # Why the position moved out of this struct
+    ///
+    /// This control used to hold `playing: bool` and `position_ms: u64` of its own, and advance the
+    /// second with `tick` — which is exactly the same fact as a [`MediaClock`]'s state and position,
+    /// written a second time. Two copies of one timeline is the defect principle #54 names: the day
+    /// one of them gained a rate, a seek clamp or an end rule, the other would not. The clock is now
+    /// the single home for the position and the state, and this control reads them through it.
+    ///
+    /// The public API is unchanged — `position_ms()`, `is_playing()`, `play()`, `pause()`, `seek_to()`
+    /// all still answer as before — so a caller sees a refactor rather than a behaviour change.
+    clock: MediaClock,
+    /// The media's duration, in milliseconds.
+    ///
+    /// Kept as the control's own field rather than read from the clock because `duration_ms` is a
+    /// **uint** in the capability contract (`duration_ms`), while the clock works in seconds. The
+    /// clock mirrors it for its clamp; this is the value the property reports.
     duration_ms: u64,
-    position_ms: u64,
     volume: u8,
     muted: bool,
     fullscreen: bool,
@@ -49,9 +65,8 @@ impl MediaPlayer {
         Self {
             base: BaseWidget::new(WidgetKind::WebEngineView, geometry, "MediaPlayer"),
             source: None,
-            playing: false,
+            clock: MediaClock::new(),
             duration_ms: 0,
-            position_ms: 0,
             volume: 80,
             muted: false,
             fullscreen: false,
@@ -60,6 +75,21 @@ impl MediaPlayer {
             volume_changed: Signal1::new(),
             source_changed: Signal1::new(),
         }
+    }
+
+    /// The master timeline, so a caller can read the rate or ask for a frame verdict.
+    pub fn clock(&self) -> &MediaClock {
+        &self.clock
+    }
+
+    /// The master timeline, mutably — for the playback rate.
+    pub fn clock_mut(&mut self) -> &mut MediaClock {
+        &mut self.clock
+    }
+
+    /// Whether playback is running. Named for what the clock reports, so the two cannot disagree.
+    fn is_playing_internal(&self) -> bool {
+        self.clock.state() == crate::core::PlaybackState::Playing
     }
 
     /// Returns current media source.
@@ -72,8 +102,8 @@ impl MediaPlayer {
         let source = source.into();
         self.source = Some(source.clone());
         self.duration_ms = duration_ms;
-        self.position_ms = 0;
-        self.playing = false;
+        self.clock.stop();
+        self.clock.set_duration(duration_ms as f64 / 1000.0);
         self.source_changed.emit(source);
         self.playback_changed.emit(false);
         self.position_changed.emit(0);
@@ -84,8 +114,8 @@ impl MediaPlayer {
     pub fn clear_source(&mut self) {
         self.source = None;
         self.duration_ms = 0;
-        self.position_ms = 0;
-        self.playing = false;
+        self.clock.stop();
+        self.clock.set_duration(0.0);
         self.playback_changed.emit(false);
         self.position_changed.emit(0);
         self.base.request_redraw();
@@ -93,7 +123,7 @@ impl MediaPlayer {
 
     /// Returns whether playback is active.
     pub fn is_playing(&self) -> bool {
-        self.playing
+        self.is_playing_internal()
     }
 
     /// Returns duration in milliseconds.
@@ -102,8 +132,10 @@ impl MediaPlayer {
     }
 
     /// Returns current playback position in milliseconds.
+    ///
+    /// Read through the clock rather than from a field of its own: one timeline, one answer.
     pub fn position_ms(&self) -> u64 {
-        self.position_ms
+        (self.clock.position() * 1000.0).round() as u64
     }
 
     /// Returns volume level [0, 100].
@@ -126,8 +158,8 @@ impl MediaPlayer {
         if self.source.is_none() {
             return false;
         }
-        if !self.playing {
-            self.playing = true;
+        if !self.is_playing_internal() {
+            self.clock.play();
             self.playback_changed.emit(true);
             self.base.request_redraw();
         }
@@ -136,8 +168,8 @@ impl MediaPlayer {
 
     /// Pauses playback.
     pub fn pause(&mut self) {
-        if self.playing {
-            self.playing = false;
+        if self.is_playing_internal() {
+            self.clock.pause();
             self.playback_changed.emit(false);
             self.base.request_redraw();
         }
@@ -145,7 +177,7 @@ impl MediaPlayer {
 
     /// Toggles play/pause.
     pub fn toggle_playback(&mut self) -> bool {
-        if self.playing {
+        if self.is_playing_internal() {
             self.pause();
             true
         } else {
@@ -155,18 +187,17 @@ impl MediaPlayer {
 
     /// Seeks to absolute position.
     pub fn seek_to(&mut self, position_ms: u64) {
-        let max_pos = self.duration_ms;
-        let next = position_ms.min(max_pos);
-        if next != self.position_ms {
-            self.position_ms = next;
-            self.position_changed.emit(self.position_ms);
+        let next = position_ms.min(self.duration_ms);
+        if next != self.position_ms() {
+            self.clock.seek(next as f64 / 1000.0);
+            self.position_changed.emit(self.position_ms());
             self.base.request_redraw();
         }
     }
 
     /// Seeks by signed delta milliseconds.
     pub fn seek_by(&mut self, delta_ms: i64) {
-        let current = self.position_ms as i64;
+        let current = self.position_ms() as i64;
         let max_pos = self.duration_ms as i64;
         let next = (current + delta_ms).clamp(0, max_pos);
         self.seek_to(next as u64);
@@ -208,11 +239,68 @@ impl MediaPlayer {
         self.set_fullscreen(!self.fullscreen);
     }
 
+    /// Advances playback by `delta_secs`, and reports whether it is still running.
+    ///
+    /// # Why this exists (BLUE24 §1: a mechanism with no consumer)
+    ///
+    /// This control had everything a player needs **except the advancing**: a
+    /// `position_ms`, a [`Self::progress_ratio`], a `position_changed` signal, a
+    /// `play`/`pause`, and a progress rule in `draw` that reads the ratio. What it did
+    /// not have was anything that *moved* `position_ms` while `playing` was true — so a
+    /// started player painted a bar frozen at zero for ever, and the progress rule was
+    /// dead code that happened to be reachable. This is the exact shape BLUE24 §0A.1
+    /// measurement 1 recorded one layer up ("the tick has a caller, the caller has
+    /// none"); here the position has a *reader* and no writer.
+    ///
+    /// # Why the delta is seconds and not milliseconds
+    ///
+    /// [`VideoPlayer`](crate::widget::media_widgets::video_player::VideoPlayer) — the
+    /// sibling control in this family — already states playback time in seconds, because
+    /// that is the unit a media clock is expressed in. Matching it means the two players
+    /// cannot disagree about what a "tick" means, and the trait method converts once, at
+    /// the boundary where the frame clock's unit (ms) is known. The alternative — an
+    /// inherent millisecond tick and a seconds-based trait method — would put a
+    /// conversion in the one place both players share, which is how the two drift.
+    ///
+    /// # Why it stops at the end rather than wrapping
+    ///
+    /// Reaching the end clears the playing state and emits `position_changed` with the final
+    /// position, matching [`VideoPlayer::tick`]'s behaviour and the single playback-ended
+    /// fact a host can act on. Wrapping would need a repeat mode, which this control does
+    /// not have — inventing one here would be a second mechanism for a question the
+    /// control has not been asked.
+    ///
+    /// # The arithmetic is the clock's, not this control's
+    ///
+    /// The advance used to be computed here — `position_ms + advance`, clamped against
+    /// `duration_ms` — which is the same calculation [`MediaClock::tick`] performs on the same
+    /// timeline this control now shares. Keeping one copy means the end rule, the rate and the clamp
+    /// cannot come out different in the two places a caller can observe the position.
+    pub fn tick(&mut self, delta_secs: f64) -> bool {
+        if !self.is_playing_internal() || !delta_secs.is_finite() || delta_secs <= 0.0 {
+            return false;
+        }
+        let before = self.clock.position();
+        let after = self.clock.tick((delta_secs * 1000.0).round().max(0.0) as u32);
+        if after != before {
+            self.position_changed.emit(self.position_ms());
+            self.base.request_redraw();
+        }
+        if self.clock.state() == crate::core::PlaybackState::Ended {
+            // The end of the media: say so through the one signal that carries "playback state
+            // changed". Returning `true` keeps the frame that observed the stop flowing, so the
+            // pause is painted in the same frame it happened.
+            self.playback_changed.emit(false);
+            return true;
+        }
+        true
+    }
+
     fn progress_ratio(&self) -> f32 {
         if self.duration_ms == 0 {
             return 0.0;
         }
-        (self.position_ms as f32 / self.duration_ms as f32).clamp(0.0, 1.0)
+        (self.position_ms() as f32 / self.duration_ms as f32).clamp(0.0, 1.0)
     }
 }
 
@@ -228,6 +316,20 @@ impl Widget for MediaPlayer {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(320, 240)
     }
+
+    /// The frame clock's entry point; see [`MediaPlayer::tick`] for the unit and the stop rule.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        MediaPlayer::tick(self, f64::from(delta_ms) / 1000.0)
+    }
+
+    /// A playing player is the one thing about it that changes without an event.
+    ///
+    /// This is what makes [`crate::drive_frame`] keep asking for frames: a paused player
+    /// answers `false` and costs a still frame nothing (BLUE24 §1 criterion 2).
+    fn is_animating(&self) -> bool {
+        self.is_playing_internal()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -445,7 +547,7 @@ impl Draw for MediaPlayer {
             .as_deref()
             .map(|src| src.rsplit('/').next().unwrap_or(src))
             .unwrap_or("No media");
-        let state = if self.playing { "Playing" } else { "Paused" };
+        let state = if self.is_playing_internal() { "Playing" } else { "Paused" };
         let vol = if self.muted { "Muted".to_string() } else { format!("Vol {}", self.volume) };
         let fs = if self.fullscreen { "Fullscreen" } else { "Window" };
 
@@ -594,6 +696,63 @@ mod tests {
 
         player.pause();
         assert!(!player.is_playing());
+    }
+
+    /// A playing player advances with the frame clock, and a paused one does not.
+    ///
+    /// # The defect this pins
+    ///
+    /// Before `tick` existed, `play()` set `playing = true` and **nothing ever moved
+    /// `position_ms`**: the control had a position field, a progress ratio and a progress
+    /// rule in `draw`, all of them readable and none of them written. A started player
+    /// painted a bar frozen at zero for ever. This asserts the writer exists.
+    #[test]
+    fn a_playing_player_advances_with_the_frame_clock() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 320, 200));
+        player.set_source("demo.mp3", 10_000);
+
+        // Paused: a frame costs nothing, which is what keeps a still window free (BLUE24 §1
+        // criterion 2).
+        assert!(!player.tick(0.016), "a paused player does not advance");
+        assert_eq!(player.position_ms(), 0);
+
+        assert!(player.play());
+        assert!(player.tick(0.5), "a playing player reports that it is still running");
+        assert_eq!(player.position_ms(), 500, "half a second of media time passed");
+        assert!(player.is_animating(), "and it answers the frame loop's question");
+
+        // Pausing stops the clock at the position it reached, rather than resetting it.
+        player.pause();
+        assert!(!player.tick(0.5));
+        assert_eq!(player.position_ms(), 500);
+        assert!(!player.is_animating());
+    }
+
+    /// Reaching the end stops playback and clamps at the duration.
+    ///
+    /// The alternative readings are both wrong in ways a user would notice: wrapping needs
+    /// a repeat mode this control does not have, and overshooting the duration would make
+    /// [`MediaPlayer::progress_ratio`] exceed `1.0` on the frame the media ends.
+    #[test]
+    fn playback_stops_at_the_end_and_clamps() {
+        let mut player = MediaPlayer::new(Rect::new(0, 0, 320, 200));
+        player.set_source("short.mp3", 1_000);
+        assert!(player.play());
+
+        // A single long frame overshoots; the position must clamp, not run past the end.
+        assert!(player.tick(5.0), "the frame that observes the stop keeps flowing");
+        assert_eq!(player.position_ms(), 1_000, "the position clamps at the duration");
+        assert!(!player.is_playing(), "and playback has stopped");
+        assert!((player.progress_ratio() - 1.0).abs() < 1e-6, "a finished player is full");
+        assert!(!player.is_animating(), "so the frame loop can go back to sleep");
+
+        // A degenerate frame (no media, or a non-finite delta) must not advance or panic.
+        let mut idle = MediaPlayer::new(Rect::new(0, 0, 320, 200));
+        assert!(!idle.tick(0.016), "a player with no source does not advance");
+        idle.set_source("x.mp3", 5_000);
+        assert!(idle.play());
+        assert!(!idle.tick(f64::NAN), "a non-finite delta advances nothing");
+        assert_eq!(idle.position_ms(), 0, "rather than poisoning the position");
     }
 
     #[test]

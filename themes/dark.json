@@ -641,6 +641,31 @@
         "material": null,
         "hairline": null
       },
+      "toggle_button:checked": {
+        "background": {
+          "r": 131,
+          "g": 192,
+          "b": 241,
+          "a": 255
+        },
+        "foreground": {
+          "r": 0,
+          "g": 0,
+          "b": 0,
+          "a": 255
+        },
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
       "toggle_button:disabled": {
         "background": {
           "r": 80,

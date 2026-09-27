@@ -100,11 +100,110 @@ pub(crate) fn apply_active_theme(widget: &mut dyn Widget) {
     // unmarked, so its caller-set fields survive every later switch.
     let mut style = widget.style().clone();
     let caller_authored = !style.theme_derived && style != WidgetStyle::default();
-    style.merge_theme(&theme_style);
+    refresh_state_style(&mut style, &theme_style, caller_authored);
+    widget.set_style(style);
+}
+
+/// Re-resolves the active theme's override for a widget's **current** state and writes it onto
+/// the widget, so a state that changes after creation is painted rather than only reported.
+///
+/// # The defect this exists to fix
+///
+/// [`apply_active_theme`] runs inside the two creation funnels, so a control is themed exactly
+/// **once**, in the state its constructor produced. Every latching control in the crate changes
+/// its state later, through a setter (`set_checked`, `set_selected_index`, …) that fires its
+/// signals and asks for a redraw — and a redraw re-runs `draw`, not the theme application. The
+/// style therefore kept the fill of the creation state, and because a control's `draw` reads
+/// `style.background_color` **before** anything it derives itself, that stale colour won and the
+/// new state painted nothing.
+///
+/// Measured (probe, `ToggleButton`): themed at `Normal`, then `set_checked(true)`.
+///
+/// ```text
+/// widget_state()                 = Checked                    ← the control tells the truth
+/// style.background_color         = Some(rgb(33,150,243))      ← the *unchecked* base
+/// re-rendered SVG == the unchecked SVG                       ← a visible no-op
+/// ```
+///
+/// The snapshot set could not see it: the exporter latches its `_checked` appearances *before*
+/// theming them, which is the one order that works.
+///
+/// # Why this is the theme layer's job
+///
+/// Resolving `"<kind>:<state>"` needs the factory name (to classify the kind into a role) and
+/// the store's resolved style — the same two facts [`apply_active_theme`] needs, and the two
+/// reasons it lives behind the `full_widgets` gate. A control cannot answer either question, so
+/// the setter cannot do this itself; the call has to come from the theme side.
+///
+/// # Why a state change and not a paint
+///
+/// This is deliberately **not** wired into `request_redraw`, which would re-resolve on every
+/// frame for every animating control. A state change is the only thing that can make the answer
+/// differ, so it is the only thing that asks.
+#[cfg(full_widgets)]
+pub fn reapply_active_theme_state(widget: &mut dyn crate::widget::Widget) {
+    apply_active_theme(widget);
+}
+
+/// The no-theme arm, for the profiles that compile `crate::theme` out.
+///
+/// A separate definition rather than a `cfg` inside one body, for the same reason
+/// [`apply_theme_to_widget`] has one: the widget layer still names this symbol in every profile,
+/// and the truthful answer where there is no theme is that nothing was applied.
+#[cfg(not(full_widgets))]
+pub fn reapply_active_theme_state(_widget: &mut dyn crate::widget::Widget) {}
+
+/// Writes the theme's resolution for the control's **current** state into an already-themed
+/// style.
+///
+/// # The defect this exists to fix
+///
+/// A control carries its style as a value that a **later** state change does not touch. The
+/// theme is re-resolved only inside the two creation funnels, so a control whose state changes
+/// *after* it was themed keeps the fill of the state it was created in — and `draw` reads
+/// `style.background_color` *before* whatever it derives itself, so the stale colour wins and
+/// the state never appears.
+///
+/// Measured (probe, `ToggleButton`): theme applied, then `set_checked(true)`.
+///
+/// ```text
+/// widget_state = Checked                                  ← the control tells the truth
+/// style.background_color = Some(rgb(33,150,243))          ← the *unchecked* base
+/// re-rendered SVG identical to the unchecked one = true   ← nothing a user can see changed
+/// ```
+///
+/// Every latching control has this shape, and it is the same defect each time: a state the
+/// control **declares** (it reports it from `widget_state`, and the theme names a key for it)
+/// that is **unobservable** because the style was resolved before the state existed. The
+/// snapshot set only ever caught the `ToggleButton` instance of it, because its extra
+/// appearance happens to latch before theming.
+///
+/// # Why `merge_theme` and not `merge`
+///
+/// The style going in has already been merged once, so `Some` does **not** mean "the caller set
+/// this" — it means "some theme resolution set this", which is precisely the value that has to
+/// be replaced. `merge_theme` makes that distinction already; reusing it keeps one rule instead
+/// of two.
+///
+/// # Why the caller still wins
+///
+/// `merge_theme`'s non-theme-derived arm is a fill-only `merge`, so a colour the **caller** set
+/// after the first application survives: it is `Some` and the incoming value cannot overwrite
+/// it. Nothing here re-owns a caller's field.
+///
+/// # Why the normal state is left alone
+///
+/// A resting control has no `"<kind>:normal"` key in the shipped presets, so `theme_style` is
+/// empty — every field is `None` — and merging it is the identity. That is what keeps this
+/// from re-resolving every control on every theme application, and it is the same reasoning by
+/// which [`crate::theme::resolved_theme_style`] answers a resting state exactly as
+/// [`crate::theme::resolved_theme_style_for_state`] does.
+#[cfg(all(not(alloc_frugal), widgets_unstripped))]
+fn refresh_state_style(style: &mut WidgetStyle, theme_style: &WidgetStyle, caller_authored: bool) {
+    style.merge_theme(theme_style);
     if !caller_authored {
         style.theme_derived = true;
     }
-    widget.set_style(style);
 }
 
 /// Applies the active theme on a device build whose widget registry is stripped.
@@ -397,6 +496,147 @@ mod tests {
             hovered.style().background_color,
             resting.style().background_color,
             "`button:hover` in the preset must change the painted fill"
+        );
+    }
+
+    /// A state change that happens **after** the theme was applied still repaints.
+    ///
+    /// # The defect this pins
+    ///
+    /// `apply_active_theme` resolves the theme exactly once, at creation. Every latching control
+    /// (`ToggleButton`, `CheckBox`, `Switch`, `RadioButton`, `SegmentedButton`) changes its state
+    /// through a *setter* — `set_checked` / `set_selected_index` — which fires signals and asks for
+    /// a redraw but does **not** re-theme. The style therefore kept the fill of the state the control
+    /// was created in, and because `draw` reads `style.background_color` *before* whatever it derives
+    /// itself, the stale colour won and the new state painted nothing.
+    ///
+    /// So `set_checked` on a live control was a **visible no-op**: measured on `ToggleButton`, the
+    /// control reported `widget_state() == Checked` while its re-rendered SVG was byte-identical to
+    /// the unchecked one. The snapshot set could not see this, because the exporter latches its
+    /// `_checked` appearances *before* theming them.
+    ///
+    /// # Why the assertion is on the re-rendered geometry
+    ///
+    /// `is_checked()`, `widget_state()` and `set_checked`'s own return all passed throughout — the
+    /// model was never wrong, only the painting. Only the emitted geometry can catch it.
+    #[test]
+    fn a_latch_that_changes_after_the_theme_was_applied_still_repaints() {
+        use crate::widget::ToggleButton;
+        let _guard = guard();
+        let mut manager = global_theme_manager();
+        assert!(manager.set_theme("default"), "the default preset must be registered");
+        drop(manager);
+
+        let bounds = Rect::new(0, 0, 120, 40);
+        let mut off = ToggleButton::new("On".to_string(), bounds);
+        apply_active_theme(&mut off);
+        let resting = crate::widget::svg::render_widget_to_svg(&mut off, bounds);
+
+        // Themed **first**, latched second — the order a running application produces, and the one
+        // the exporter never exercises.
+        let mut on = ToggleButton::new("On".to_string(), bounds);
+        apply_active_theme(&mut on);
+        on.set_checked(true);
+        assert_eq!(on.widget_state(), crate::style::WidgetState::Checked);
+        let latched = crate::widget::svg::render_widget_to_svg(&mut on, bounds);
+
+        assert_ne!(
+            resting, latched,
+            "a latch applied after theming must change the painted fill, not only the model"
+        );
+    }
+
+    /// The same defect in the **other five** state-reporting controls, each pinned separately.
+    ///
+    /// # Why one test and not five assertions elsewhere
+    ///
+    /// These controls fail for **different** reasons, and only a per-control assertion can tell
+    /// them apart:
+    ///
+    /// * `CheckBox` and `RadioButton` already *painted* correctly — their `draw` reads a colour it
+    ///   derives rather than `style.background_color`, so the creation-state style may not be the
+    ///   field that paints. They are asserted here so a future change to either `draw` cannot
+    ///   silently introduce the defect.
+    /// * `Switch` is the interesting one: its track colour is `off_track.blend(&on_track,
+    ///   travel.value())`, and `travel` only advances in `tick`. So a latch with no frame in
+    ///   between **cannot** change the pixels, by design — the animation *is* the visible change.
+    ///   What must change immediately is the *style*, because that is what a caller reads and what
+    ///   a later re-theme merges onto, and it is what the `switch:checked` key exists to carry.
+    /// * `Chip` reports `Selected`, which is a **different** state from `Checked` and therefore a
+    ///   different key — so its assertion names the resolution rather than only comparing a field.
+    ///   Before the fix a selected chip still resolved plain `chip`, and `chip:selected`'s
+    ///   `rgb(33,150,243)` reached nothing.
+    ///
+    /// # What is deliberately **not** here
+    ///
+    /// `LineEdit` reports `Focused` from `widget_state`, but the preset declares no
+    /// `"line_edit:focused"` key, so re-resolving changes nothing and an assertion would be
+    /// vacuous. Its one semantic key, `line_edit:error`, travels a **separate** channel by design
+    /// — `resolved_semantic_border` is resolved at draw time from `semantic_state`, precisely so
+    /// the border channel and the interaction-fill channel cannot overwrite each other. A
+    /// `SegmentedButton` is also out of scope and correctly so: it overrides neither
+    /// `widget_state` nor any theme state key, so it has no state for the theme to key on.
+    ///
+    /// The assertion is on the style rather than the geometry, because the geometry legitimately
+    /// lags for an animated control.
+    #[test]
+    fn the_other_state_reporting_controls_re_resolve_after_themming() {
+        use crate::widget::special_widgets::chip::{Chip, ChipItem};
+        use crate::widget::{CheckBox, RadioButton, Switch};
+        let _guard = guard();
+        let mut manager = global_theme_manager();
+        assert!(manager.set_theme("default"), "the default preset must be registered");
+        drop(manager);
+        let bounds = Rect::new(0, 0, 120, 40);
+
+        let mut check_box = CheckBox::new(bounds);
+        check_box.set_checked(false);
+        apply_active_theme(&mut check_box);
+        let unchecked = check_box.style().background_color;
+        check_box.set_checked(true);
+        assert_ne!(
+            unchecked,
+            check_box.style().background_color,
+            "`check_box:checked` must reach a box that latched after it was themed"
+        );
+
+        let mut radio = RadioButton::new(bounds);
+        apply_active_theme(&mut radio);
+        let unselected = radio.style().background_color;
+        radio.set_checked(true);
+        assert_ne!(
+            unselected,
+            radio.style().background_color,
+            "`radio_button:checked` must reach a radio selected after it was themed"
+        );
+
+        let mut switch = Switch::new(bounds);
+        apply_active_theme(&mut switch);
+        let off = switch.style().background_color;
+        switch.set_checked(true);
+        assert_ne!(
+            off,
+            switch.style().background_color,
+            "`switch:checked` must reach a switch that latched after it was themed"
+        );
+
+        // `Chip` selects through `toggle_index`, not a `set_checked`. The expected value is read
+        // from the resolver, so the assertion says "the selected key was reached" rather than
+        // pinning a colour that a preset change would legitimately move.
+        let mut chip = Chip::new(bounds);
+        chip.set_items(vec![ChipItem::new("a", "A"), ChipItem::new("b", "B")]);
+        apply_active_theme(&mut chip);
+        assert_eq!(chip.widget_state(), crate::style::WidgetState::Normal);
+        chip.toggle_index(0);
+        assert_eq!(chip.widget_state(), crate::style::WidgetState::Selected);
+        assert_eq!(
+            chip.style().background_color,
+            crate::theme::resolved_theme_style_for_state(
+                "chip",
+                crate::style::WidgetState::Selected
+            )
+            .and_then(|resolved| resolved.background_color),
+            "a chip selected after theming must resolve `chip:selected`, not the unselected `chip`"
         );
     }
 }

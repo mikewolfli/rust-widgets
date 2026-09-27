@@ -99,6 +99,20 @@ const EXTRA_APPEARANCES: &[(&str, &str, &str)] = &[
     ("frame", "_styled_panel", "styled_panel"),
     ("frame", "_win_panel", "win_panel"),
     ("frame", "_panel", "panel"),
+    // A toggle's *on* state is the half a user actually wants to check, and it was in no snapshot.
+    //
+    // `switch`, `radio_button`, `check_box` and `toggle_button` all publish `set_checked`, and the
+    // default construction of the first two leaves them **off** — so `switch.svg` showed a thumb at
+    // the left of its track and `radio_button.svg` an empty ring, and the appearance a user sees when
+    // the control is on had never been rendered by anything. `check_box` was the accidental exception
+    // (its constructor starts checked), which is exactly the kind of accident that hides a gap: one
+    // control in the family happened to exercise the state, so "the family is covered" looked true.
+    //
+    // This is BLUE24 §10A.6 criterion 6 again — every declared state must be reviewable — applied to
+    // a state a user toggles rather than to a drawing path a theme selects.
+    ("switch", "_on", "on"),
+    ("radio_button", "_checked", "checked"),
+    ("toggle_button", "_checked", "checked"),
 ];
 
 /// Applies the state an extra appearance depicts. Returns `false` when the control does not have
@@ -115,6 +129,45 @@ fn apply_extra_state(
                 Some(group_box) => {
                     group_box.set_checkable(true);
                     group_box.set_checked(true);
+                    true
+                }
+                None => false,
+            }
+        }
+        // The toggles, each through its own `set_checked`. The string in `EXTRA_APPEARANCES` and the
+        // state that is drawn cannot disagree, because the arm names the state and the control is
+        // asked for it by its published name — a mismatch would produce a snapshot of the *off* state
+        // under a name that says `on`, which is the one failure this has to rule out.
+        ("switch", "_on") => {
+            use rust_widgets::widget::display_widgets::switch::Switch;
+            match rust_widgets::widget::capability::coercion::widget_as_mut::<Switch>(widget) {
+                Some(switch) => {
+                    switch.set_checked(true);
+                    // The travel is animated, so one `tick` would leave the thumb between the two
+                    // ends and the snapshot would show a position no user can rest in. Ticking past
+                    // the animation is what makes this the settled `on` state.
+                    let _ = switch.tick(1000);
+                    true
+                }
+                None => false,
+            }
+        }
+        ("radio_button", "_checked") => {
+            use rust_widgets::widget::base_widgets::radiobutton::RadioButton;
+            match rust_widgets::widget::capability::coercion::widget_as_mut::<RadioButton>(widget) {
+                Some(radio) => {
+                    radio.set_checked(true);
+                    true
+                }
+                None => false,
+            }
+        }
+        ("toggle_button", "_checked") => {
+            use rust_widgets::widget::base_widgets::toggle_button::ToggleButton;
+            match rust_widgets::widget::capability::coercion::widget_as_mut::<ToggleButton>(widget)
+            {
+                Some(button) => {
+                    button.set_checked(true);
                     true
                 }
                 None => false,

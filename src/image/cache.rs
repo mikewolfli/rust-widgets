@@ -22,25 +22,40 @@
 //!
 //! # What is shared, and what is not
 //!
-//! The cache holds **decoded pixels**, keyed by the *content* of the request — the bytes' hash plus
-//! the target format — so two controls naming the same file hit the same entry, and so does one
-//! control that reads a file and another that was handed the same bytes. It does **not** intercept
-//! `std::fs::read`: a caller wanting to share the *file* read too goes through
-//! [`cached_from_path`], which is what the controls do.
+//! Two layers, because there are two costs:
 //!
-//! Keying on content rather than on the path is deliberate. A path is not a resource identity: two
-//! paths can be the same file (symlink, relative vs absolute, hard link) and one path can be a
-//! different file than it was a second ago. Hashing the bytes makes "the same image" mean the same
-//! pixels, which is the only thing a cache can safely promise.
+//! 1. **The read** — [`cached_from_path`] answers "these are the bytes this path produces" from a
+//!    `stat` when the file has not changed, so twelve tool buttons on one icon read it once. This is
+//!    the one place a **path** is a key, and only because it sits *before* the identity question: a
+//!    stat is what a filesystem answers without reading, and identity is still settled by content one
+//!    layer up. The stamp it compares is `(length, modified)`; a same-length rewrite inside one
+//!    filesystem timestamp tick is the accepted residual hole.
+//! 2. **The decode** — the pixel layer, keyed by the *content* of the bytes plus the target format,
+//!    so two controls naming the same file hit the same entry, and so does one control that reads a
+//!    file and another that was handed the same bytes.
+//!
+//! The file layer exists because the decode layer could not do its job alone: it is keyed on content,
+//! and content is what a read produces — so avoiding a read by hashing would require having already
+//! read. Before it existed, every file entry point called `std::fs::read` on every request, so a
+//! request whose pixels were already cached still paid a full read to discover that.
+//!
+//! # Why content, and not the path, is the identity
+//!
+//! Keying on content rather than on the path is deliberate for the *pixels*. A path is not a resource
+//! identity: two paths can be the same file (symlink, relative vs absolute, hard link) and one path
+//! can be a different file than it was a second ago. Hashing the bytes makes "the same image" mean the
+//! same pixels, which is the only thing a cache can safely promise. The file layer above does not
+//! contradict this — it caches *the file as it was*, and the pixel layer still decides identity.
 //!
 //! # The bound, and why it is by bytes
 //!
 //! An unbounded cache is a leak with a friendly name, and an entry-count bound is the wrong unit:
-//! 64 icons and 64 photographs differ by three orders of magnitude. So the budget is in **bytes of
-//! decoded pixel data**, and the eviction order is least-recently-used. A miss on a full cache
-//! evicts until the new entry fits; an image larger than the whole budget is decoded and returned
-//! but **not** stored, because storing it would evict everything and then immediately be evicted
-//! itself — the pathological case that makes a cache slower than no cache.
+//! 64 icons and 64 photographs differ by three orders of magnitude. So the budget is in **bytes**, and
+//! the eviction order is least-recently-used across **all three maps** — decoded images, extracted
+//! pixels and file bytes — because the bound is on memory and those three are equally real. A miss on
+//! a full cache evicts until the new entry fits; an item larger than the whole budget is returned but
+//! **not** stored, because storing it would evict everything and then immediately be evicted itself —
+//! the pathological case that makes a cache slower than no cache.
 //!
 //! # Where the accounting lives
 //!
@@ -83,10 +98,67 @@ struct PixelEntry {
     used_at: u64,
 }
 
+/// One cached **file's bytes** — the layer under the decode cache.
+///
+/// # Why this exists, and why it is keyed differently from everything else here
+///
+/// The decode cache saves the *decode*. It cannot save the *read*, because it is keyed on content
+/// and content is what the read produces: to hash the bytes you must first have them. So
+/// `file_rgba8_or_none` used to call `std::fs::read` on **every** request, even a request whose
+/// pixels were already cached, and twelve tool buttons on one icon opened and read that file twelve
+/// times.
+///
+/// This layer is the one place a **path** is a legitimate key, and the reason is precisely that it
+/// sits *before* the identity question: `(len, mtime)` is what a filesystem will tell you without
+/// reading the file, so a stat that matches the stamp means "the bytes this path produced are still
+/// the bytes it produces", and a stat that differs means "re-read". That is the standard
+/// invalidation rule and it keeps the content-addressing above intact — this layer caches *the file
+/// as it was*, and the pixel layer still decides identity by hashing.
+///
+/// The stamp is deliberately NOT only the path: a path whose file changed under it must not serve
+/// the old bytes. Length plus modification time is the cheapest pair of facts that changes when a
+/// file's contents do; a same-length rewrite within one filesystem timestamp tick is the residual
+/// hole, and it is the same hole every build system accepts.
+struct SourceEntry {
+    bytes: Arc<Vec<u8>>,
+    /// Bytes of file content held. Kept beside the vector rather than asked of it on every eviction
+    /// comparison, matching [`PixelEntry`] and [`Entry`].
+    size: usize,
+    /// `(length, modified-as-nanos)` at the time the bytes were read, so a later stat can tell
+    /// whether they are still current.
+    stamp: SourceStamp,
+    used_at: u64,
+}
+
+/// The facts a filesystem will report about a path without reading it.
+///
+/// `(length, modified-as-nanos)`, compared as a pair. Separated from `SourceEntry` so the comparison
+/// has one name and a reader can see the invalidation rule at the point it is applied rather than
+/// having to infer it from two struct fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SourceStamp {
+    len: u64,
+    modified_nanos: u128,
+}
+
+/// Which entry the budget should drop next.
+///
+/// A named type rather than a tuple of `(map-index, key)`, because the three maps have **different
+/// key types** — a content hash is a `u64`, a path is bytes — and a tuple would have to invent a
+/// placeholder in one of the slots to unify them. Naming the victim keeps the three cases distinct
+/// and the eviction loop a plain `match`.
+enum Victim {
+    Image(u64),
+    Pixels(u64),
+    Source(alloc::vec::Vec<u8>),
+}
+
 /// The cache itself. Held behind a mutex in a process-wide `OnceLock`.
 struct DecodeCache {
     entries: BTreeMap<u64, Entry>,
     pixels: BTreeMap<u64, PixelEntry>,
+    /// File bytes, keyed by the path's bytes rather than by a content hash — see [`SourceEntry`].
+    sources: BTreeMap<alloc::vec::Vec<u8>, SourceEntry>,
     /// Total decoded bytes across both maps, maintained rather than summed on demand so the eviction
     /// loop does not walk the maps to answer "how full am I".
     used_bytes: usize,
@@ -102,6 +174,7 @@ impl DecodeCache {
         Self {
             entries: BTreeMap::new(),
             pixels: BTreeMap::new(),
+            sources: BTreeMap::new(),
             used_bytes: 0,
             budget_bytes,
             tick: 0,
@@ -125,6 +198,48 @@ impl DecodeCache {
         let entry = self.pixels.get_mut(&key)?;
         entry.used_at = tick;
         Some(Arc::clone(&entry.pixels))
+    }
+
+    /// The file bytes for `path_key`, if the entry is still current per `stamp`, marking it
+    /// most-recently-used.
+    ///
+    /// Returns `None` for a stale entry **and drops it**, so a file that changed does not leave its
+    /// old bytes occupying budget until something else happens to evict them.
+    fn get_source(&mut self, path_key: &[u8], stamp: SourceStamp) -> Option<Arc<Vec<u8>>> {
+        self.tick += 1;
+        let tick = self.tick;
+        let entry = self.sources.get_mut(path_key)?;
+        if entry.stamp != stamp {
+            // A stale entry must not keep its old bytes on the books: the file changed, so its
+            // bytes are no longer what any request for this path should get.
+            if let Some(old) = self.sources.remove(path_key) {
+                self.used_bytes = self.used_bytes.saturating_sub(old.size);
+            }
+            return None;
+        }
+        entry.used_at = tick;
+        Some(Arc::clone(&entry.bytes))
+    }
+
+    /// Stores `bytes` for `path_key`, with the same budgeting rules as [`Self::insert`].
+    fn insert_source(
+        &mut self,
+        path_key: alloc::vec::Vec<u8>,
+        bytes: Arc<Vec<u8>>,
+        stamp: SourceStamp,
+    ) {
+        let size = bytes.len();
+        if size > self.budget_bytes {
+            return;
+        }
+        if let Some(old) = self.sources.remove(&path_key) {
+            self.used_bytes = self.used_bytes.saturating_sub(old.size);
+        }
+        self.evict_until_fits(size);
+        self.tick += 1;
+        let used_at = self.tick;
+        self.sources.insert(path_key, SourceEntry { bytes, size, stamp, used_at });
+        self.used_bytes += size;
     }
 
     /// Stores `image` under `key`, evicting least-recently-used entries until it fits.
@@ -163,49 +278,62 @@ impl DecodeCache {
         self.used_bytes += bytes;
     }
 
-    /// Drops least-recently-used entries until `incoming` bytes fit, across both maps.
+    /// Drops least-recently-used entries until `incoming` bytes fit, across all three maps.
     ///
-    /// One budget over both maps, because the bound is on *memory* and a decoded image and its
-    /// extracted pixels are equally real memory. Evicting from whichever is least recently used —
-    /// rather than draining one map first — is what keeps a screen that uses only images from
-    /// discarding images to make room for pixels it never asked for.
+    /// One budget over all of them, because the bound is on *memory*: a decoded image, its extracted
+    /// pixels and the file bytes it came from are equally real memory. Evicting by least-recently-used
+    /// across the maps, rather than draining one map first, is what keeps a screen that shows only
+    /// images from discarding images to make room for pixels it never asked for.
     fn evict_until_fits(&mut self, incoming: usize) {
-        while self.used_bytes + incoming > self.budget_bytes
-            && !(self.entries.is_empty() && self.pixels.is_empty())
-        {
-            let oldest_image =
-                self.entries.iter().min_by_key(|(_, e)| e.used_at).map(|(k, e)| (*k, e.used_at));
-            let oldest_pixels =
-                self.pixels.iter().min_by_key(|(_, e)| e.used_at).map(|(k, e)| (*k, e.used_at));
-            match (oldest_image, oldest_pixels) {
-                // The pixel map holds the older entry: drop it. (Comparing the ticks rather than
-                // preferring one map keeps "least recently used" meaning what it says across both.)
-                (Some((_ik, it)), Some((pk, pt))) if pt < it => {
-                    if let Some(removed) = self.pixels.remove(&pk) {
-                        self.used_bytes = self.used_bytes.saturating_sub(removed.bytes);
-                        self.evictions += 1;
-                    }
+        while self.used_bytes + incoming > self.budget_bytes {
+            let Some(victim) = self.least_recently_used() else { break };
+            let removed_bytes = match victim {
+                Victim::Image(key) => self.entries.remove(&key).map(|e| e.bytes),
+                Victim::Pixels(key) => self.pixels.remove(&key).map(|e| e.bytes),
+                Victim::Source(key) => self.sources.remove(&key).map(|e| e.size),
+            };
+            match removed_bytes {
+                Some(bytes) => {
+                    self.used_bytes = self.used_bytes.saturating_sub(bytes);
+                    self.evictions += 1;
                 }
-                (Some((ik, _)), _) => {
-                    if let Some(removed) = self.entries.remove(&ik) {
-                        self.used_bytes = self.used_bytes.saturating_sub(removed.bytes);
-                        self.evictions += 1;
-                    }
-                }
-                (None, Some((pk, _))) => {
-                    if let Some(removed) = self.pixels.remove(&pk) {
-                        self.used_bytes = self.used_bytes.saturating_sub(removed.bytes);
-                        self.evictions += 1;
-                    }
-                }
-                (None, None) => break,
+                // The entry was already gone, which cannot happen while the lock is held; breaking
+                // rather than looping keeps a hypothetical inconsistency from spinning.
+                None => break,
             }
         }
+    }
+
+    /// The single least-recently-used entry, whichever of the three maps holds it.
+    ///
+    /// One function rather than three comparisons at each call site keeps the policy in one place:
+    /// "least recently used" has to mean the same thing in the decode layer, the pixel layer and the
+    /// file layer, or the budget would be shared by three different replacement rules.
+    fn least_recently_used(&self) -> Option<Victim> {
+        let mut oldest: Option<(u64, Victim)> = None;
+        let mut consider = |used_at: u64, victim: Victim| {
+            if oldest.as_ref().is_none_or(|(t, _)| used_at < *t) {
+                oldest = Some((used_at, victim));
+            }
+        };
+
+        for (key, entry) in &self.entries {
+            consider(entry.used_at, Victim::Image(*key));
+        }
+        for (key, entry) in &self.pixels {
+            consider(entry.used_at, Victim::Pixels(*key));
+        }
+        for (key, entry) in &self.sources {
+            consider(entry.used_at, Victim::Source(key.clone()));
+        }
+
+        oldest.map(|(_, victim)| victim)
     }
 
     fn clear(&mut self) {
         self.entries.clear();
         self.pixels.clear();
+        self.sources.clear();
         self.used_bytes = 0;
     }
 }
@@ -219,6 +347,17 @@ static HITS: AtomicU64 = AtomicU64::new(0);
 static MISSES: AtomicU64 = AtomicU64::new(0);
 static EVICTIONS: AtomicU64 = AtomicU64::new(0);
 static STORED_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+/// The file layer's own counters, kept separate from the decode layer's.
+///
+/// Two layers, two questions. "How many decodes did we avoid" and "how many *reads* did we avoid"
+/// have different answers and different fixes — a decode cache with a poor hit rate means the pixels
+/// are being requested under different content keys, whereas a file cache with a poor hit rate means
+/// the path or the stamp is changing. Folding them into one counter would make both questions
+/// unanswerable.
+static FILE_REQUESTS: AtomicU64 = AtomicU64::new(0);
+static FILE_HITS: AtomicU64 = AtomicU64::new(0);
+static FILE_MISSES: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(all(feature = "image", not(alloc_frugal)))]
 static CACHE: std::sync::Mutex<Option<DecodeCache>> = std::sync::Mutex::new(None);
@@ -259,6 +398,12 @@ pub struct DecodeCacheStats {
     pub bytes: usize,
     /// The byte budget.
     pub budget_bytes: usize,
+    /// Calls that asked for a file's bytes (the layer under the decode cache).
+    pub file_requests: u64,
+    /// Those answered from cache without reading the file — `stat` only.
+    pub file_hits: u64,
+    /// Those that had to read the file.
+    pub file_misses: u64,
 }
 
 impl DecodeCacheStats {
@@ -293,6 +438,9 @@ pub fn stats() -> DecodeCacheStats {
         evictions: EVICTIONS.load(Ordering::Relaxed),
         bytes: STORED_BYTES.load(Ordering::Relaxed),
         budget_bytes: DEFAULT_BUDGET_BYTES,
+        file_requests: FILE_REQUESTS.load(Ordering::Relaxed),
+        file_hits: FILE_HITS.load(Ordering::Relaxed),
+        file_misses: FILE_MISSES.load(Ordering::Relaxed),
     }
 }
 
@@ -449,6 +597,81 @@ pub fn decode_to_rgba8_cached(data: &[u8]) -> Result<Arc<DecodedImage>, String> 
     Ok(image)
 }
 
+/// The bytes of `path`, reusing a previous read when the file has not changed.
+///
+/// # Why this is the layer under the decode cache
+///
+/// [`decode_to_rgba8_cached`] saves the *decode*, and it is keyed on content — so it cannot save
+/// the *read*, because reading is what produces the thing it hashes. Every file entry point used to
+/// call `std::fs::read` unconditionally, so twelve tool buttons on one icon opened, read and hashed
+/// that file twelve times to reach a pixel entry that only needed inserting once.
+///
+/// This is the one place in the module where a **path** is the key, and the reason is that it sits
+/// before the identity question: a `stat` is what a filesystem answers without reading, so a stamp
+/// that matches means these are still the bytes, and a stamp that changed means re-read. Identity is
+/// still decided by content one layer up — this layer only promises "the file as it was".
+///
+/// # The stamp, and the residual hole
+///
+/// `(length, modified)`. A same-length rewrite inside one filesystem timestamp tick would not be
+/// noticed. That is the same hole every build system accepts, and the alternative — reading the file
+/// to find out whether you could have avoided reading the file — is not a cache.
+///
+/// # Errors
+///
+/// The caller gets the error the read produced. Unlike a decode failure, **a read failure is not
+/// remembered**: there is nothing to remember (the cache stores bytes), and a file that appears
+/// later would otherwise stay "unreadable".
+#[cfg(all(feature = "image", not(alloc_frugal)))]
+pub fn cached_from_path(path: impl AsRef<std::path::Path>) -> Result<Arc<Vec<u8>>, std::io::Error> {
+    let path = path.as_ref();
+    let metadata = std::fs::metadata(path)?;
+    let stamp = SourceStamp {
+        len: metadata.len(),
+        modified_nanos: metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|since| since.as_nanos())
+            .unwrap_or(0),
+    };
+    let path_key = path_key(path);
+
+    FILE_REQUESTS.fetch_add(1, Ordering::Relaxed);
+    if let Some(bytes) = with_cache(|cache| cache.get_source(&path_key, stamp)) {
+        FILE_HITS.fetch_add(1, Ordering::Relaxed);
+        return Ok(bytes);
+    }
+    FILE_MISSES.fetch_add(1, Ordering::Relaxed);
+
+    let bytes = Arc::new(std::fs::read(path)?);
+    let stored = Arc::clone(&bytes);
+    let (used, evictions) = with_cache(|cache| {
+        cache.insert_source(path_key, stored, stamp);
+        (cache.used_bytes, cache.evictions)
+    });
+    STORED_BYTES.store(used, Ordering::Relaxed);
+    EVICTIONS.store(evictions, Ordering::Relaxed);
+    Ok(bytes)
+}
+
+/// The cache key for a path: its bytes, with Windows' separators normalised.
+///
+/// `\\` and `/` name the same file on Windows, so a caller that spelled the path the other way
+/// would otherwise get a second entry and a second read. On other platforms this is the identity.
+#[cfg(all(feature = "image", not(alloc_frugal)))]
+fn path_key(path: &std::path::Path) -> alloc::vec::Vec<u8> {
+    let bytes = path.as_os_str().to_string_lossy().as_bytes().to_vec();
+    #[cfg(windows)]
+    {
+        return bytes.into_iter().map(|b| if b == b'\\' { b'/' } else { b }).collect();
+    }
+    #[cfg(not(windows))]
+    {
+        bytes
+    }
+}
+
 /// Reads and decodes a file as RGBA8, reusing a previously decoded result for the same bytes.
 ///
 /// The convenience the controls actually call: it does the `fs::read` and the cached decode in one
@@ -457,7 +680,7 @@ pub fn decode_to_rgba8_cached(data: &[u8]) -> Result<Arc<DecodedImage>, String> 
 pub fn decode_file_to_rgba8_cached(
     path: impl AsRef<std::path::Path>,
 ) -> Result<Arc<DecodedImage>, String> {
-    let bytes = std::fs::read(path.as_ref()).map_err(|error| error.to_string())?;
+    let bytes = cached_from_path(path.as_ref()).map_err(|error| error.to_string())?;
     decode_to_rgba8_cached(&bytes)
 }
 
@@ -479,10 +702,16 @@ pub fn decode_file_to_rgba8_cached(
 /// the cloned vector is itself stored under a second key. The result: the decode happens once, the
 /// copy happens once, and every later request is an `Arc` bump — which is what "shared" has to mean
 /// to be worth anything.
+///
+/// # And why it reads through [`cached_from_path`] rather than `std::fs::read`
+///
+/// Reading directly here made the decode cache cheaper than it looked: a request whose pixels were
+/// already cached still paid a full file read to find that out. The read is now the layer below, so
+/// the second and every later request for one file costs a `stat` and an `Arc` bump.
 #[cfg(all(feature = "image", not(alloc_frugal)))]
 pub fn file_rgba8_or_none(path: impl AsRef<std::path::Path>) -> Option<Arc<Vec<u8>>> {
     let path = path.as_ref();
-    let bytes = match std::fs::read(path) {
+    let bytes = match cached_from_path(path) {
         Ok(bytes) => bytes,
         Err(error) => {
             log::warn!("image {path:?} could not be read ({error}); nothing is drawn for it");
@@ -686,5 +915,155 @@ mod tests {
         assert_eq!(stats.avoided(), 0);
         let half = DecodeCacheStats { requests: 8, hits: 4, ..Default::default() };
         assert!((half.hit_rate() - 0.5).abs() < f32::EPSILON);
+    }
+
+    // ── The file layer (the read under the decode) ──────────────────────────────
+
+    /// Writes `bytes` to a uniquely-named file under the system temp directory.
+    ///
+    /// A per-test name rather than a fixed one: the file cache is process-wide and keyed on the
+    /// path, so two tests sharing a name would share an entry with different content — the same
+    /// cross-test coupling the decode cache's own docs record.
+    fn write_temp(name_hint: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "rw_cache_test_{}_{}_{}.png",
+            name_hint,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::write(&path, bytes).expect("the temp file must be writable");
+        path
+    }
+
+    /// The second read of one file must not read the file.
+    ///
+    /// # The defect this pins
+    ///
+    /// Every file entry point called `std::fs::read` unconditionally, so the decode cache could only
+    /// ever save the *decode*: a request whose pixels were already cached still opened, read and
+    /// hashed the file to discover that. The `file_hits` counter is the observable — it is what makes
+    /// "the read was avoided" a fact rather than a claim.
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
+    #[test]
+    fn the_second_read_of_one_file_does_not_read_it() {
+        let _guard = stats_test_guard();
+        clear();
+        let png = png_1x1();
+        let path = write_temp("read_once", &png);
+
+        let before = stats();
+        let first = cached_from_path(&path).expect("the file reads");
+        let second = cached_from_path(&path).expect("and the cached one");
+        let third = cached_from_path(&path).expect("and again");
+        let after = stats();
+
+        assert_eq!(&*first, &png[..], "the bytes are the file's");
+        assert!(Arc::ptr_eq(&first, &second), "a hit hands back the same allocation");
+        assert!(Arc::ptr_eq(&second, &third));
+        assert_eq!(after.file_requests - before.file_requests, 3);
+        assert_eq!(
+            after.file_hits - before.file_hits,
+            2,
+            "the second and third reads were avoided"
+        );
+        assert_eq!(after.file_misses - before.file_misses, 1, "exactly one real read");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A file whose contents change must not serve the previous bytes.
+    ///
+    /// The stamp is `(len, modified)`, so this writes a file, reads it, then rewrites it with
+    /// **different-length** content — which is the case the stamp is guaranteed to catch. Without the
+    /// stamp check the cache would answer with a picture of something that is no longer on disk, and
+    /// because both layers hash content, nothing above would notice.
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
+    #[test]
+    fn a_changed_file_is_not_served_from_stale_bytes() {
+        let _guard = stats_test_guard();
+        clear();
+        let path = write_temp("changed", b"first version");
+        let first = cached_from_path(&path).expect("reads");
+        assert_eq!(&*first, b"first version");
+
+        // A longer file, so `len` differs and the stamp cannot match.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(&path, b"a second, much longer version").expect("rewrite");
+
+        let second = cached_from_path(&path).expect("re-reads");
+        assert_eq!(
+            &*second, b"a second, much longer version",
+            "a changed file must be re-read, not served from the old bytes"
+        );
+        assert!(!Arc::ptr_eq(&first, &second));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The pixel layer sits on top of the byte layer: one read, one decode, for N requests.
+    ///
+    /// This is the composition the twelve-tool-buttons-on-one-icon case exercises, stated as the two
+    /// counters it moves. Before the byte layer the decode was saved and the read was not; the pair of
+    /// assertions is what distinguishes the two.
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
+    #[test]
+    fn one_file_reads_and_decodes_once_for_many_requests() {
+        let _guard = stats_test_guard();
+        clear();
+        let png = png_1x1();
+        let path = write_temp("compose", &png);
+
+        let before = stats();
+        for _ in 0..12 {
+            let pixels = file_rgba8_or_none(&path).expect("twelve controls on one icon");
+            assert_eq!(pixels.len(), 4, "a 1x1 RGBA image is four bytes");
+        }
+        let after = stats();
+
+        assert_eq!(after.file_misses - before.file_misses, 1, "the file was read once");
+        assert_eq!(after.file_hits - before.file_hits, 11, "and the other eleven were stats");
+        assert_eq!(after.misses - before.misses, 1, "and decoded once");
+        assert_eq!(after.hits - before.hits, 11);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A missing file is an error every time, and is never remembered as "unreadable".
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
+    #[test]
+    fn a_missing_file_errors_and_is_not_remembered() {
+        let _guard = stats_test_guard();
+        clear();
+        let mut path = std::env::temp_dir();
+        path.push(format!("rw_cache_test_missing_{}.png", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        assert!(cached_from_path(&path).is_err(), "a missing file is an error");
+        // Create it, and the next call must succeed: the failure was not cached.
+        std::fs::write(&path, png_1x1()).expect("write");
+        assert!(
+            cached_from_path(&path).is_ok(),
+            "a file that appears later must be readable; the earlier failure was not an entry"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The three maps share one budget, and the file layer is part of it.
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
+    #[test]
+    fn the_file_layer_is_inside_the_same_budget() {
+        let mut cache = DecodeCache::new(100);
+        let stamp = SourceStamp { len: 80, modified_nanos: 1 };
+        cache.insert_source(b"a".to_vec(), Arc::new(vec![0u8; 80]), stamp);
+        assert_eq!(cache.used_bytes, 80, "the file bytes are on the budget's books");
+
+        // A second file that does not fit evicts the first rather than overrunning.
+        let stamp2 = SourceStamp { len: 80, modified_nanos: 2 };
+        cache.insert_source(b"b".to_vec(), Arc::new(vec![1u8; 80]), stamp2);
+        assert!(cache.used_bytes <= 100, "the budget is a ceiling across all three maps");
+        assert_eq!(cache.evictions, 1);
+        assert!(cache.get_source(b"a", stamp).is_none(), "the older file was the victim");
+        assert!(cache.get_source(b"b", stamp2).is_some());
     }
 }

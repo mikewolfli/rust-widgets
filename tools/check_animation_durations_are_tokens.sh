@@ -93,7 +93,22 @@ if [[ ! -f "$ANIMATION" ]]; then
     exit 1
 fi
 
-FINDINGS="$(
+# The scan is a heredoc written to a function rather than inlined into `$( ... )`.
+#
+# # Why this indirection exists (a real bash limitation, measured)
+#
+# `FINDINGS="$( "$PYTHON" - "$ANIMATION" <<'PY' ... PY )"` **does not parse** when the
+# heredoc body contains an **odd** number of apostrophes — which this one does, because the
+# finding messages quote the source they complain about (`` `TransitionTempo`'s variants ``,
+# `['Fast', 'Normal', 'Slow']`). Bash pre-scans `$( )` for its closing parenthesis while
+# tracking quote state, and a quoted heredoc's body is not exempt from that scan, so the
+# apostrophes were counted as opening quotes and the construct failed to parse.
+#
+# The symptom was worse than an error: the gate **never ran**. `bash -n` reports
+# `unexpected EOF while looking for matching \'`, so the script exited non-zero without
+# asserting anything — a gate that is present, wired into the runner, and silently inert.
+# Collecting the output through a function removes the `$( )` from the picture entirely.
+scan_animation() {
     "$PYTHON" - "$ANIMATION" <<'PY'
 import pathlib
 import re
@@ -219,7 +234,9 @@ for finding in findings:
     print(finding)
 print(f"checked=3 failed={len(findings)}")
 PY
-)"
+}
+
+FINDINGS="$(scan_animation)"
 
 SUMMARY="$(printf '%s\n' "$FINDINGS" | tail -n 1)"
 DETAIL="$(printf '%s\n' "$FINDINGS" | sed '$d')"

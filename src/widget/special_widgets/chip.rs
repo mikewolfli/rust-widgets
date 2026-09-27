@@ -60,6 +60,10 @@ impl Chip {
     }
 
     /// Replaces all chip items.
+    ///
+    /// The single-select normalisation below can **clear** a selection, so this is a state change
+    /// and not merely a content change — see [`Chip::toggle_index`] for why the theme has to be
+    /// re-resolved on one.
     pub fn set_items(&mut self, items: Vec<ChipItem>) {
         self.items = items;
         self.focused_index = if self.items.is_empty() { None } else { Some(0) };
@@ -75,6 +79,7 @@ impl Chip {
                 }
             }
         }
+        crate::style::reapply_active_theme_state(self);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -101,6 +106,9 @@ impl Chip {
                 }
             }
         }
+        // Dropping out of multi-select can clear a selection, which changes the state
+        // `widget_state` reports — so the theme is re-resolved here too.
+        crate::style::reapply_active_theme_state(self);
         self.base.request_redraw();
     }
 
@@ -120,6 +128,19 @@ impl Chip {
     }
 
     /// Toggles chip selection.
+    ///
+    /// # Why this re-resolves the theme
+    ///
+    /// A selection change flips this control between [`WidgetState::Normal`] and
+    /// [`WidgetState::Selected`], and those are two different theme keys (`chip` and
+    /// `"chip:selected"`). `apply_active_theme` runs once, inside the creation funnels, and a
+    /// redraw re-runs `draw` rather than the theme application — so without this call the
+    /// control kept the style it was built in, `chip:selected` resolved to `rgb(33,150,243)` and
+    /// reached nothing, and this method was a visible no-op. See
+    /// [`crate::style::reapply_active_theme_state`] for the measurement.
+    ///
+    /// Before the signal, so a handler that reads the style back sees the state it is being told
+    /// about rather than the previous one.
     pub fn toggle_index(&mut self, index: usize) -> bool {
         if index >= self.items.len() {
             return false;
@@ -135,6 +156,7 @@ impl Chip {
             self.items[index].selected = next;
         }
 
+        crate::style::reapply_active_theme_state(self);
         let id = self.items[index].id.clone();
         self.chip_toggled.emit(id);
         self.base.request_redraw();

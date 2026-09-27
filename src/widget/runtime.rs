@@ -1088,6 +1088,52 @@ pub struct FrameStats {
     pub decode_misses: u64,
 }
 
+/// The frame account as text, so it can leave the process.
+///
+/// # Why this is the exportable half of BLUE24 §12 U-8
+///
+/// U-8 (a remote / off-screen renderer) asks for the frame account to be a **product** rather than
+/// an in-memory value: pixels can be sent to another machine, but "why this frame looks like this"
+/// can only be transmitted if the account has a form that survives leaving the process. A `Debug`
+/// derive is not that form — it is a debugger's view, unstable across versions and unreadable in a
+/// log. This is the stable one: the fields in a fixed order, the causes by their published tokens.
+///
+/// It is also the answer to a defect that exists **today, in this process**: `last_frame_stats()`
+/// had no consumer anywhere in the crate, so the ledger's whole purpose — answering "why is this
+/// still redrawing?" — was reachable only from a Rust expression. A host logging a slow frame now
+/// has something to log.
+///
+/// # Why one line and not JSON
+///
+/// The crate's JSON path is hand-written (`capability::designer_manifest`), and adding a second
+/// serializer for a value with no JSON consumer would be a second mechanism for one question
+/// (principle #101). A single line of `key=value` is what a log wants, diffs cleanly, and needs no
+/// dependency in a `no_std` build.
+impl core::fmt::Display for FrameStats {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "frame={} delta_ms={} events={} ticked={} drawn={} coalesced={} decode={}/{}/{}",
+            self.index,
+            self.delta_ms,
+            self.events,
+            self.controls_ticked,
+            self.controls_drawn,
+            self.repaints_coalesced,
+            self.decode_requests,
+            self.decode_hits,
+            self.decode_misses,
+        )?;
+        // The causes are the part a reader scans for, so they are named rather than counted: a frame
+        // that says "drawn=3" without saying why is the anonymous repaint BLUE24 §8 criterion 4
+        // exists to prevent.
+        for (surface, reason) in &self.last_repaint_reason {
+            write!(f, " repaint[{}]={}", surface, reason.as_str())?;
+        }
+        Ok(())
+    }
+}
+
 /// Performs every library-side task of one frame, in a fixed order, exactly once.
 ///
 /// # Why a *frame* and not just [`tick_animations`]
@@ -1338,6 +1384,46 @@ impl RepaintReason {
     pub fn keeps_animating(self) -> bool {
         matches!(self, RepaintReason::Animation)
     }
+
+    /// The reason's stable spelling, for a frame account that leaves the process.
+    ///
+    /// # Why a cause needs a name at all
+    ///
+    /// [`FrameStats`] carries `last_repaint_reason` — one entry per repainted surface — because
+    /// "why is this still redrawing?" is the question the ledger exists to answer. But until this
+    /// function existed the answer could not be **written down**: the reason is an enum, and a host
+    /// logging the account or showing it in a diagnostics pane had no spelling to print. The field
+    /// was therefore complete for a Rust reader and useless to any other kind.
+    ///
+    /// The tokens are lower-case and stable, because they are what a log line or an exported
+    /// account will be read and grepped for. They match [`RepaintReason::parse`], so the two cannot
+    /// drift into a spelling that only one of them accepts.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RepaintReason::Animation => "animation",
+            RepaintReason::State => "state",
+            RepaintReason::Overlay => "overlay",
+            RepaintReason::Explicit => "explicit",
+            RepaintReason::Native => "native",
+        }
+    }
+
+    /// Parses a token produced by [`RepaintReason::as_str`].
+    ///
+    /// `None` rather than a default: an account that named a cause the library does not publish is
+    /// a fact about a version mismatch, and silently folding it into `Explicit` would make a reader
+    /// believe the library asked for a repaint it did not. The same rule the crate's other token
+    /// parsers follow (`BevelDirection::parse`, `Elevation::parse`).
+    pub fn parse(token: &str) -> Option<Self> {
+        match token {
+            "animation" => Some(RepaintReason::Animation),
+            "state" => Some(RepaintReason::State),
+            "overlay" => Some(RepaintReason::Overlay),
+            "explicit" => Some(RepaintReason::Explicit),
+            "native" => Some(RepaintReason::Native),
+            _ => None,
+        }
+    }
 }
 
 /// Records that this frame submitted one repaint to the platform, for `reason` on `surface`.
@@ -1484,9 +1570,28 @@ pub fn tick_animations(delta_ms: u32) -> bool {
             }
         }
     });
-    if still_animating {
-        let _ = LAST_SWEEP_HAD_UNSETTLED_MOUNTED.try_with(|flag| flag.set(true));
-    }
+    // The latch is written **both ways**, and that is the whole point.
+    //
+    // # The defect this replaces
+    //
+    // It used to be set when `still_animating` and never cleared. The doc above explains what it
+    // is for: scheduling the one frame that paints a control's *settled* state. But a flag whose
+    // only clearer is the teardown function (`animation_bus_reset_host_owned`) is not a "one more
+    // frame" request — it is a latch that turns `needs_another_frame` into a permanent `true`
+    // from the first frame in which anything moved. A window that had ever shown a spinner could
+    // never sleep again, which is the exact opposite of what `drive_frame` promises
+    // (BLUE24 §1: "the cost of a still frame is one emptiness check").
+    //
+    // Writing `still_animating` unconditionally makes the flag mean what its name and its doc
+    // say: *this* sweep found something unsettled. The settle frame still gets scheduled, because
+    // the answer is read **after** the sweep: the last frame in which a control moved sets the
+    // flag and is told `true`, the next sweep finds nothing and clears it, so the frame after
+    // that is free. That is one extra frame, not an infinite stream.
+    //
+    // It cannot clobber the host-owned fact: `HOST_OWNED_ANIMATING` is a separate cell, written by
+    // `draw_bridge` when it advances an owned control, and `animation_bus_needs_another_frame` ORs
+    // the two.
+    let _ = LAST_SWEEP_HAD_UNSETTLED_MOUNTED.try_with(|flag| flag.set(still_animating));
     still_animating
 }
 
@@ -5464,6 +5569,111 @@ mod tests {
             );
             assert!(stats.last_repaint_reason.is_empty(), "and no surface was repainted");
         }
+    }
+
+    /// A control that STOPS animating must let the frame loop stop asking for frames.
+    ///
+    /// # The defect this pins
+    ///
+    /// `tick_animations` sets `LAST_SWEEP_HAD_UNSETTLED_MOUNTED` on any frame that found an
+    /// animating control, and `animation_bus_needs_another_frame` ORs it in. The flag exists so
+    /// the frame that observes a *settle* is scheduled. But nothing consumed it: the only writer
+    /// that cleared it was `animation_bus_reset_host_owned`, which a host calls on **teardown**.
+    ///
+    /// So the first frame in which any mounted control animated turned
+    /// `needs_another_frame` into a **permanent `true`** — a window that had ever shown a spinner
+    /// or an indeterminate bar could never sleep again. That is the opposite of BLUE24 §1's
+    /// central promise ("a still window's frame costs one emptiness check"), and it is invisible
+    /// without a control that animates *and then stops*, which is why it survived until a player
+    /// that reaches the end of its media was wired up.
+    #[test]
+    fn a_control_that_stops_animating_lets_the_frame_loop_sleep() {
+        use crate::widget::display_widgets::progressbar::ProgressBar;
+
+        let mut bar = ProgressBar::new(crate::core::Rect::new(0, 0, 160, 16));
+        bar.set_indeterminate(true);
+        let id = register(Box::new(bar)).expect("mount");
+        let _unmount = MountGuard(id);
+
+        // While it animates the loop is owed another frame.
+        let running = drive_frame(16);
+        assert_eq!(running.controls_ticked, 1);
+        assert!(running.needs_another_frame, "an animating control keeps the loop awake");
+
+        // Stop it. The very next frame must tick nothing, and the one after that must be free:
+        // a settle is painted once and then scheduling stops.
+        with_widget_mut(id, |widget| {
+            if let Some(bar) =
+                crate::widget::capability::coercion::widget_as_mut::<ProgressBar>(widget)
+            {
+                bar.set_indeterminate(false);
+            }
+        });
+
+        let settled = drive_frame(16);
+        assert_eq!(settled.controls_ticked, 0, "nothing is animating now");
+        let after = drive_frame(16);
+        assert!(
+            !after.needs_another_frame,
+            "a window whose animation has settled must stop being scheduled"
+        );
+        assert_eq!(after.controls_ticked, 0);
+        assert_eq!(after.repaints_submitted, 0, "and a still frame costs no submission");
+    }
+
+    /// A mounted, playing `MediaPlayer` advances through the frame loop and then stops it.
+    ///
+    /// # The defect this pins, and why it belongs in **this** module's tests
+    ///
+    /// `MediaPlayer` had a `position_ms`, a progress ratio, a `position_changed` signal and a
+    /// progress rule in `draw` — and nothing that moved the position. The missing piece was not
+    /// inside the control (a `tick` is) but at the **seam**: the frame loop is what turns "this
+    /// control would advance" into "this control advanced", and it only does so for a mounted
+    /// control that answers [`Widget::is_animating`]. So the test that proves the seam is closed
+    /// belongs here, next to `drive_frame`, rather than only in the control's unit tests —
+    /// a `tick` nobody calls is exactly the shape BLUE24 §0A.1 measurement 1 is about.
+    #[test]
+    fn a_playing_media_player_advances_through_the_frame_loop() {
+        use crate::widget::special_widgets::media_player::MediaPlayer;
+
+        let mut player = MediaPlayer::new(crate::core::Rect::new(0, 0, 320, 200));
+        player.set_source("clip.mp4", 1_000);
+        assert!(player.play());
+        let id = register(Box::new(player)).expect("mount");
+        let _unmount = MountGuard(id);
+
+        // One frame of the frame loop's own delta must move the control, and the loop must be
+        // told it still owes another frame.
+        let outcome = drive_frame(16);
+        assert_eq!(outcome.controls_ticked, 1, "the player is the one control animating");
+        assert!(outcome.needs_another_frame, "a playing player keeps the loop awake");
+        assert_eq!(
+            with_widget(id, |widget| widget.is_animating()),
+            Some(true),
+            "and it says so through the trait, not only through its own methods"
+        );
+
+        // The next frames are the media's own duration: at the loop's 16 ms delta it takes 63
+        // frames to cover the 1_000 ms, so the bound below has margin and the assertion is about
+        // "it stops at all", not about the exact frame it stops on. What must not happen is the
+        // loop staying awake for ever, which is the failure a missing end condition produces.
+        let mut stopped_at = None;
+        for frame in 1..=120 {
+            let outcome = drive_frame(16);
+            if !outcome.needs_another_frame {
+                stopped_at = Some(frame);
+                break;
+            }
+        }
+        assert!(
+            stopped_at.is_some(),
+            "playback must end on its own, not keep the frame loop awake for ever"
+        );
+        let stats = last_frame_stats().expect("a frame ran");
+        assert_eq!(
+            stats.controls_ticked, 0,
+            "the frame that observed the end no longer ticks the player"
+        );
     }
 
     /// BLUE24 §8 criterion 3: five requests for one surface submit once and coalesce four.

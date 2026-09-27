@@ -5,7 +5,8 @@
 //!
 //! # Reachability
 //!
-//! **State:** Reserved: a video pipeline with no production consumer and no example. Build it only under `--features video`. Removal condition: when no video backend is planned, or when a consumer wires it to a decoder.
+//! **State:** Production callers: `src/widget/special_widgets/media_player.rs:42` (the master clock),
+//! `src/video/engine.rs:176` (`VideoEngine::tick_frame`). The decoder itself is behind `--features video`.
 
 /// Codec-agnostic decoder interface plus the built-in MJPEG and
 /// frame-buffer decoders.

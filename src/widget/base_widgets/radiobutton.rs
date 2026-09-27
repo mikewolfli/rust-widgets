@@ -209,6 +209,11 @@ impl RadioButton {
             return;
         }
         self.checked = checked;
+        // Before the signals: a handler reading the style back must see the state it is being
+        // told about, not the previous one. `apply_active_theme` runs once, at creation — a
+        // redraw re-runs `draw`, not the theme application — so without this the selection
+        // paints the unselected fill. See [`crate::style::reapply_active_theme_state`].
+        crate::style::reapply_active_theme_state(self);
         self.checked_changed.emit(checked);
         if checked {
             self.selected.emit();
@@ -475,21 +480,49 @@ impl Draw for RadioButton {
         context.draw_circle_stroke(center, radius, ring, RING_WIDTH);
 
         if self.checked {
-            // The dot is the control's *meaning*, so it takes the accent — the same token a
-            // checked switch's track takes. It used to read `style.background_color`, which is
-            // the **surface** the control sits on: on a default theme that painted a near-white
-            // dot on a near-white surface, so a checked radio was indistinguishable from an
-            // unchecked one, and the doc comment claiming "the caller's or the theme's accent"
-            // described a colour the code never read.
+            // The dot is the control's *meaning*, and the theme **declares** what it is: the
+            // `"radio_button:checked"` key carries `background: primary`. This arm is what
+            // consumes that key.
             //
-            // The caller's explicit colour still wins, so a themed radio can be re-coloured;
-            // the accent rung is what a *theme-derived* style falls through to.
+            // # Why the read is spelled `or_else(resolved)` rather than `if theme_derived`
+            //
+            // The field it reads used to be the one field it must *not* read. The old code did
+            // `let explicit = if style.theme_derived { None } else { style.background_color }`
+            // and fell through to `SemanticColor::Info`, so on a theme-derived style the
+            // declared key was **resolved and then discarded** — an orphan key: the preset wrote
+            // `rgb(33,150,243)` into it, `apply_token` copied it onto the style, and nothing ever
+            // painted it. The dot took `info` (`rgb(66,133,244)`) instead, which is a *different*
+            // blue that no theme author editing `radio_button:checked` could change.
+            //
+            // The reason the old guard existed is real and is kept: `style.background_color` is
+            // the **surface** the control sits on, and painting the dot in the surface drew a
+            // near-white dot on a near-white page (the defect the old comment records). The fix
+            // is to separate the two facts rather than to stop reading the field — so:
+            //
+            // 1. a caller-named colour still wins outright (`!theme_derived`);
+            // 2. otherwise the *checked-state* resolution is consulted, which is a second read of
+            //    the same manager and returns the declared key. This is the rung that was
+            //    missing: it is what makes the declaration reachable **without** mistaking the
+            //    resting surface for an accent;
+            // 3. and only then the semantic token, for a profile or theme that declares no key.
+            //
+            // Asking the resolver instead of reading `style.background_color` is what keeps the
+            // resting surface out of the chain entirely — the surface can never be reached by
+            // step 2, because step 2 resolves `radio_button:checked`, not `radio_button`.
+            let caller_named = if style.theme_derived { None } else { style.background_color };
+            #[cfg(device_profile)]
+            let declared = crate::style::resolved_theme_style_for_state(
+                "radio_button",
+                crate::style::WidgetState::Checked,
+            )
+            .and_then(|resolved| resolved.background_color);
+            #[cfg(not(device_profile))]
+            let declared: Option<Color> = None;
             #[cfg(device_profile)]
             let accent = crate::style::semantic_color(crate::style::SemanticColor::Info);
             #[cfg(not(device_profile))]
             let accent: Option<Color> = None;
-            let explicit = if style.theme_derived { None } else { style.background_color };
-            let dot = explicit.or(accent).unwrap_or(ink);
+            let dot = caller_named.or(declared).or(accent).unwrap_or(ink);
             let dot = if enabled { dot } else { dot.with_alpha(140) };
             // Sized from the shared table rather than as a ratio of the ring: the
             // inner/outer ratio is 0.5625, which this table rounds to a fixed radius so the
@@ -1090,5 +1123,64 @@ mod tests {
         assert_eq!(rb.widget_state(), WidgetState::Checked);
         rb.set_enabled(false);
         assert_eq!(rb.widget_state(), WidgetState::Disabled);
+    }
+
+    /// The selected dot paints the colour `"radio_button:checked"` **declares**.
+    ///
+    /// # The orphan key this pins
+    ///
+    /// Both presets declare the key with `background: primary`, and until this fix the key was
+    /// **resolved and then discarded**: `draw` read `style.background_color`, found it was
+    /// theme-derived (it holds the *surface* the control sits on), set it to `None`, and fell
+    /// through to `SemanticColor::Info`. So a theme author could edit `radio_button:checked` and
+    /// see nothing move, and the dot took `info` — a *different* blue (`rgb(138,180,248)` on dark)
+    /// from the `primary` the key names (`rgb(100,181,246)`).
+    ///
+    /// # Why the assertion is on the emitted geometry
+    ///
+    /// `widget_state()` reported `Checked` and the resolver returned the right colour throughout;
+    /// only the painted circle can tell "the declaration was read" from "the declaration was
+    /// resolved and thrown away". The expected value is read from the resolver rather than
+    /// hard-coded, so this tracks a preset change instead of pinning today's palette.
+    #[test]
+    #[cfg(device_profile)]
+    fn the_selected_dot_paints_the_declared_checked_colour() {
+        let _guard = crate::style::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Dark);
+
+        let bounds = Rect::new(0, 0, 120, 40);
+        let mut button = RadioButton::new(bounds);
+        button.set_checked(true);
+        crate::theme::apply_active_theme(&mut button);
+        let svg = crate::widget::svg::render_widget_to_svg(&mut button, bounds);
+
+        let declared = crate::style::resolved_theme_style_for_state(
+            "radio_button",
+            crate::style::WidgetState::Checked,
+        )
+        .and_then(|resolved| resolved.background_color)
+        .expect("the preset must declare a `radio_button:checked` fill to paint");
+
+        // The dot is the only circle with a **`fill`** colour: the ring is a stroke, so its
+        // `fill` is `none` and its colour lives in `stroke`. Matching on the `fill="rgba` prefix
+        // is what separates them — a plain `contains("rgba")` also matches the ring, because
+        // `stroke="rgba(...)"` contains it too.
+        let dot = svg
+            .lines()
+            .find(|line| line.contains("<circle") && line.contains("fill=\"rgba"))
+            .expect("a selected radio draws a filled dot");
+        let expected = format!(
+            "rgba({},{},{},{:.2})",
+            declared.r,
+            declared.g,
+            declared.b,
+            f32::from(declared.a) / 255.0
+        );
+        assert!(
+            dot.contains(&expected),
+            "the selected dot must paint the declared `radio_button:checked` colour {expected}; \
+             got: {dot}"
+        );
     }
 }

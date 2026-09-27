@@ -561,6 +561,15 @@ impl WidgetFactory {
     }
 
     /// Registers one widget capability and constructor.
+    ///
+    /// # Overwriting is deliberate here, and why the checked form exists
+    ///
+    /// This is the form the core registration table uses, where a control and its aliases are one
+    /// coherent set and re-registering is how a table is built. For a **third party** — a plugin, a
+    /// host adding its own control — silently replacing an existing name is the wrong default: the
+    /// name a plugin picked may already belong to a core control, and the result would be a control
+    /// that changed its appearance depending on what was loaded. See
+    /// [`WidgetFactory::try_register`], which refuses a collision instead.
     pub fn register(&mut self, capability: WidgetCapability, ctor: WidgetCtor) {
         let idx = self.capabilities.len();
         self.kind_to_index.entry(capability.kind).or_default().push(idx);
@@ -576,6 +585,61 @@ impl WidgetFactory {
         }
 
         self.capabilities.push(capability);
+    }
+
+    /// Registers a control, refusing a name that is already taken.
+    ///
+    /// # Why this is the form an extension should use (BLUE24 §12 U-7)
+    ///
+    /// A plugin brings its own name. `register` would let it **replace a core control** — and because
+    /// the replacement is silent, the symptom is not a failed load but a control that looks wrong, in
+    /// a build whose only difference is that a plugin was enabled. Refusing the collision turns that
+    /// into one error at load time.
+    ///
+    /// The check covers the canonical name **and every alias**, because an alias is a name the
+    /// factory resolves: a plugin claiming `"btn"` would shadow whatever `"btn"` already meant, which
+    /// is the same defect reached by a different spelling.
+    ///
+    /// Nothing is registered when the check fails. A partial registration (canonical taken, alias
+    /// free) would leave the factory in a state where the same control is reachable under some of its
+    /// names and not others.
+    pub fn try_register(
+        &mut self,
+        capability: WidgetCapability,
+        ctor: WidgetCtor,
+    ) -> Result<(), RegistrationError> {
+        if let Some(existing) = self.name_taken_by(capability.canonical_name) {
+            return Err(RegistrationError::NameTaken { name: capability.canonical_name, existing });
+        }
+        for alias in capability.aliases {
+            if let Some(existing) = self.name_taken_by(alias) {
+                return Err(RegistrationError::NameTaken { name: alias, existing });
+            }
+        }
+        self.register(capability, ctor);
+        Ok(())
+    }
+
+    /// The canonical name of the control that already answers to `name`, if any.
+    ///
+    /// Answers with the **canonical** name rather than the spelling that matched, so an error can say
+    /// "`btn` is already `button`" instead of "`btn` is already `btn`" — the first tells the caller
+    /// which control they collided with, which is what makes the message actionable.
+    pub fn name_taken_by(&self, name: &str) -> Option<&'static str> {
+        let key = normalize_key(name);
+        let index = self.key_to_index.get(&key).copied()?;
+        self.capabilities.get(index).map(|capability| capability.canonical_name)
+    }
+
+    /// Every name an extension may not use, for a caller that wants to check before building.
+    ///
+    /// Sorted, and including aliases, because the question "is this name free?" is asked about one
+    /// name and answered against the whole space. A caller with a generated name (a namespaced plugin
+    /// id) can assert its own reservation rather than discovering a collision at load time.
+    pub fn reserved_names(&self) -> Vec<crate::compat::String> {
+        let mut names: Vec<crate::compat::String> = self.key_to_index.keys().cloned().collect();
+        names.sort_unstable();
+        names
     }
 
     /// Creates a widget by canonical name or alias.

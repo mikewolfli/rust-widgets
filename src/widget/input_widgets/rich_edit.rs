@@ -213,6 +213,31 @@ impl RichEdit {
         Some((line, col))
     }
 
+    /// The byte offset at which `line` starts in `self.text`.
+    ///
+    /// # Why this is derived and not stored
+    ///
+    /// Line starts are a pure function of the text, and the text is mutated by every edit. A stored
+    /// table would have to be rebuilt on each of them, and a missed rebuild would put the selection
+    /// highlight on the wrong line — a defect that only shows up after an edit, which is the hardest
+    /// kind to reproduce. Deriving it costs one pass over the prefix, which the draw already pays for
+    /// the caret's own line lookup.
+    fn line_start_offset(&self, line: usize) -> usize {
+        if line == 0 {
+            return 0;
+        }
+        let mut current = 0usize;
+        for (i, ch) in self.text.char_indices() {
+            if ch == '\n' {
+                current += 1;
+                if current == line {
+                    return i + 1;
+                }
+            }
+        }
+        self.text.len()
+    }
+
     /// Converts (line_index, col_index) back to a byte offset.
     fn line_col_to_byte_offset(&self, line: usize, col: usize) -> usize {
         let mut current_line = 0usize;
@@ -353,6 +378,11 @@ impl Draw for RichEdit {
             .border_color
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))
             .unwrap_or_else(|| paper.blend(&ink, 0.28));
+        // The selection band is a step from the page toward the accent — visible on both appearances
+        // and distinct from the caret, which is the accent at full strength.
+        let selection_fill = crate::style::semantic_color(crate::style::SemanticColor::Info)
+            .unwrap_or(ink)
+            .blend(&paper, 0.65);
 
         // Draw background
         context.face(
@@ -372,9 +402,49 @@ impl Draw for RichEdit {
         let cursor_before = self.selection.map_or(0, |(start, _)| start);
         // Compute (line, col) for cursor
         let cursor_coord = self.byte_offset_to_line_col(cursor_before);
+
+        // The selection highlight is drawn as a background band **before** the ink, so the text
+        // stays legible on top of it.
+        //
+        // # The gap this closes (BLUE24 §12 U-4)
+        //
+        // The control has published `selection()` / `set_selection()` / `clear_selection()` since it
+        // was written, and drew **nothing** for them: a caller could select a range and the only
+        // visible feedback was a caret at one end. A selection model with no rendering is the
+        // "mechanism built, port not opened" shape this whole plan is about.
+        //
+        // The band's two edges are measured with the same `estimate_text_width` the caret uses, so
+        // highlighting a range cancels exactly to the caret at either end. Computing them `col * 7`
+        // apart would have reproduced the caret defect twice more.
+        let selection = self.selection.filter(|(start, end)| start != end);
         for (line_idx, line) in self.text.lines().enumerate() {
             if line_y > rect.y + rect.height as i32 {
                 break;
+            }
+            if let Some((start, end)) = selection {
+                let line_start = self.line_start_offset(line_idx);
+                let line_end = line_start + line.len();
+                // Clamp the selection to this line, so a range spanning several lines highlights
+                // each of them only over its own part.
+                let from = start.max(line_start).min(line_end) - line_start;
+                let to = end.max(line_start).min(line_end) - line_start;
+                if from < to {
+                    let left = rect.x
+                        + padding
+                        + crate::widget::metrics::estimate_text_width(&line[..from], &font, 1.0)
+                            as i32;
+                    let width =
+                        crate::widget::metrics::estimate_text_width(&line[from..to], &font, 1.0);
+                    context.fill_rect(
+                        crate::core::Rect::new(
+                            left,
+                            line_y - line_height + 2,
+                            width,
+                            line_height as u32,
+                        ),
+                        selection_fill,
+                    );
+                }
             }
             // Draw the line text
             context.draw_text(
@@ -387,8 +457,27 @@ impl Draw for RichEdit {
             // Draw cursor on this line if not read-only
             if !self.read_only && Some(line_idx) == cursor_coord.map(|(l, _)| l) {
                 if let Some((_, col)) = cursor_coord {
-                    // Estimate cursor x position (rough char width)
-                    let cursor_x = rect.x + padding + (col as i32) * 7;
+                    // The caret sits where the text **actually** ends, measured with the renderer's
+                    // own advance model, rather than at `col * 7`.
+                    //
+                    // # The defect this replaces (BLUE24 §12 U-4's prerequisite)
+                    //
+                    // The old line was `rect.x + padding + (col as i32) * 7`, with the comment
+                    // "rough char width". Seven logical pixels is an average for a proportional
+                    // Latin face at one size, so the caret drifted off the character it was supposed
+                    // to sit on: on the crate's own `Open Sans` an `i` is ~3.5 px and a `w` ~10.3 px
+                    // (measured in §12.2.4), and on a CJK glyph it is off by roughly a factor of two
+                    // per character. A caret that is not where the text is makes every later
+                    // editing gesture look wrong — which is why this is the prerequisite for
+                    // selection handles, not a cosmetic fix.
+                    //
+                    // `estimate_text_width` is the shared model — the one the gate
+                    // `check_implicit_size_uses_metrics` points at and the one the renderer draws
+                    // with — so the caret and the ink cannot disagree about where a character ends.
+                    let prefix: String = line.chars().take(col).collect();
+                    let advance =
+                        crate::widget::metrics::estimate_text_width(&prefix, &font, 1.0) as i32;
+                    let cursor_x = rect.x + padding + advance;
                     // The caret is the selection indicator, so it carries the accent rather than
                     // a fixed black the user could not find on a dark page.
                     let caret = crate::style::semantic_color(crate::style::SemanticColor::Info)
@@ -561,6 +650,108 @@ mod tests {
         assert!(re.selection().is_none());
         assert!(!re.is_read_only());
         assert_eq!(re.cursor_position(), 0);
+    }
+
+    /// The caret sits at the measured end of the prefix, not at `col * 7`.
+    ///
+    /// # The defect this pins (BLUE24 §12 U-4's prerequisite)
+    ///
+    /// The caret was drawn at `rect.x + padding + col * 7`, with the comment "rough char width".
+    /// Seven pixels is an average for one proportional face at one size, so on a real face the caret
+    /// drifts off the character it should sit on — and on CJK, roughly doubles per character. The
+    /// test asserts the **vertical line the renderer emits** against the shared measurement, so the
+    /// caret and the ink cannot disagree.
+    #[test]
+    fn the_caret_is_placed_by_measurement_not_by_a_fixed_advance() {
+        use crate::widget::metrics::estimate_text_width;
+        use crate::widget::svg::render_widget_to_svg;
+
+        let bounds = Rect::new(0, 0, 400, 300);
+        let font = crate::core::Font::default();
+        // A line whose characters have very different advances: `ill` is narrow, `www` is wide. A
+        // fixed 7 px per character cannot be right for both.
+        let text = "illwww";
+        let mut re = RichEdit::new(bounds);
+        re.set_text(text.to_string());
+        // Put the caret after `ill` (column 3).
+        re.set_cursor_position(3);
+        let svg = render_widget_to_svg(&mut re, bounds);
+
+        // The caret is a vertical `<line>`: x1 == x2. Take the last one (the caret is drawn after
+        // the text).
+        let caret_x = svg
+            .lines()
+            .filter_map(|line| {
+                let rest = line.split("<line ").nth(1)?;
+                let x1: i32 = rest.split("x1=\"").nth(1)?.split('"').next()?.parse().ok()?;
+                let x2: i32 = rest.split("x2=\"").nth(1)?.split('"').next()?.parse().ok()?;
+                (x1 == x2).then_some(x1)
+            })
+            .next_back()
+            .expect("the caret is drawn as a vertical line");
+
+        // The crate's padding for this control, and the measured advance of `ill`.
+        let expected = 2 + estimate_text_width("ill", &font, 1.0) as i32;
+        assert_eq!(
+            caret_x, expected,
+            "the caret must be at the measured end of `ill` ({expected}), not at 3 * 7 = 21"
+        );
+        assert_ne!(caret_x, 2 + 3 * 7, "the fixed-advance placement is the defect");
+    }
+
+    /// A selected range is actually painted, and its band ends where the caret would be.
+    ///
+    /// # The gap this pins (BLUE24 §12 U-4)
+    ///
+    /// The control published `selection()` / `set_selection()` / `clear_selection()` and drew
+    /// **nothing** for them — a selection model with no rendering. This asserts a filled rect appears
+    /// whose left edge is the measured start of the range and whose width is the measured length of
+    /// it, so highlighting a range cancels to the caret at either end.
+    #[test]
+    fn a_selection_range_is_painted_and_measured() {
+        use crate::widget::metrics::estimate_text_width;
+        use crate::widget::svg::render_widget_to_svg;
+
+        let bounds = Rect::new(0, 0, 400, 300);
+        let font = crate::core::Font::default();
+        let mut re = RichEdit::new(bounds);
+        re.set_text("abcdef".to_string());
+        re.set_selection(1, 4); // `bcd`
+        let svg = render_widget_to_svg(&mut re, bounds);
+
+        let expected_left = 2 + estimate_text_width("a", &font, 1.0) as i32;
+        let expected_width = estimate_text_width("bcd", &font, 1.0);
+        // The band is a filled rect at the selection's x, with the selection's width.
+        let painted = svg.lines().any(|line| {
+            if !line.contains("<rect ") || line.contains("fill=\"none\"") {
+                return false;
+            }
+            let attr = |name: &str| -> Option<i32> {
+                line.split(&format!("{name}=\"")).nth(1)?.split('"').next()?.parse().ok()
+            };
+            attr("x") == Some(expected_left) && attr("width") == Some(expected_width as i32)
+        });
+        assert!(
+            painted,
+            "a selection must be painted as a rect at x={expected_left} width={expected_width} \
+             (the model existed, the rendering did not)"
+        );
+
+        // And an empty selection paints no band, so the highlight is tied to the range rather than
+        // to the control always drawing one.
+        re.clear_selection();
+        let svg = render_widget_to_svg(&mut re, bounds);
+        let still_painted = svg.lines().any(|line| {
+            line.contains("<rect ")
+                && !line.contains("fill=\"none\"")
+                && line
+                    .split("x=\"")
+                    .nth(1)
+                    .and_then(|rest| rest.split('"').next())
+                    .and_then(|x| x.parse::<i32>().ok())
+                    == Some(expected_left)
+        });
+        assert!(!still_painted, "with no selection there is no band");
     }
 
     #[test]

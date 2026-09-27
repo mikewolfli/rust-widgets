@@ -576,7 +576,41 @@ pub struct WidgetCapabilityManifest {
 
 /// Constructor signature the factory registers for each control.
 #[cfg(widgets_unstripped)]
-pub(crate) type WidgetCtor = fn(Rect, &str) -> Box<dyn Widget>;
+/// Constructs a widget from a geometry and a text payload.
+///
+/// Public because [`crate::widget::capability::WidgetFactory::try_register`] takes one: an extension
+/// that adds a control supplies its own constructor, and a registration API whose parameter type is
+/// not nameable would be unusable outside this crate. A plain function pointer rather than a boxed
+/// closure, so registration stays allocation-free and `WidgetFactory` keeps its `Hash`-map-of-fns
+/// shape.
+pub type WidgetCtor = fn(Rect, &str) -> Box<dyn Widget>;
+
+/// Why a control could not be registered.
+///
+/// See [`crate::widget::capability::WidgetFactory::try_register`] for why a name collision is an error
+/// rather than a silent replacement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegistrationError {
+    /// The name (canonical or alias) is already answered by another control.
+    NameTaken {
+        /// The name the caller tried to claim.
+        name: &'static str,
+        /// The canonical name of the control that already owns it, so a message can name both.
+        existing: &'static str,
+    },
+}
+
+impl core::fmt::Display for RegistrationError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            RegistrationError::NameTaken { name, existing } => write!(
+                f,
+                "the name '{name}' is already registered as '{existing}'; an extension must pick a \
+                 name the factory does not already answer to"
+            ),
+        }
+    }
+}
 
 /// Factory + metadata registry for dynamic widget instantiation.
 ///

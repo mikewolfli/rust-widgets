@@ -129,6 +129,16 @@ impl Switch {
     pub fn set_checked(&mut self, checked: bool) {
         if self.checked != checked {
             self.checked = checked;
+            // Before the signal: a handler reading the style back must see the state it is
+            // being told about, not the previous one. `apply_active_theme` runs once, at
+            // creation, so without this the control keeps the fill of the state it was built
+            // in — see [`crate::style::reapply_active_theme_state`].
+            //
+            // This does **not** make the track change colour on its own: `draw` blends
+            // `off_track` toward `on_track` by `travel.value()`, and `travel` only advances in
+            // `tick`, so the colour still belongs to the frame loop. What this fixes is the
+            // style, which is what a caller reads and what a later re-theme merges onto.
+            crate::style::reapply_active_theme_state(self);
             self.toggled.emit(checked);
         }
     }

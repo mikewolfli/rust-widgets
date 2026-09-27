@@ -62,6 +62,58 @@ pub fn resolved_theme_style_for(
     None
 }
 
+/// The resolved style for a control in a **specific state**, or `None` when no theme is active,
+/// the build has no theme module, or the theme declares no override for that state.
+///
+/// The always-available counterpart of `crate::theme::resolved_theme_style_for_state`; see
+/// [`resolved_theme_style`] for why the lookups live here.
+///
+/// # Why a control asks this while drawing
+///
+/// A control whose *resting* fill is the surface it sits on cannot read
+/// `style.background_color` to learn its accent — that field holds the surface, and painting with
+/// it draws a near-white mark on a near-white page. Asking for the **state's** resolution instead
+/// keeps the two facts apart: the surface is never reachable from here, because this resolves
+/// `"<kind>:<state>"` rather than `"<kind>"`. `RadioButton`'s dot is the caller. See its comment
+/// for the orphan key this closed.
+#[cfg(device_profile)]
+pub fn resolved_theme_style_for_state(
+    kind_name: &str,
+    state: crate::style::WidgetState,
+) -> Option<WidgetStyle> {
+    crate::theme::resolved_theme_style_for_state(kind_name, state)
+}
+
+/// No theme module in this profile; see [`resolved_theme_style`].
+#[cfg(not(device_profile))]
+pub fn resolved_theme_style_for_state(
+    _kind_name: &str,
+    _state: crate::style::WidgetState,
+) -> Option<WidgetStyle> {
+    None
+}
+
+/// Re-resolves the active theme for a widget's **current** state and writes it onto the widget.
+///
+/// The always-available counterpart of `crate::theme::reapply_active_theme_state`; see
+/// [`resolved_theme_style`] for why the lookups live here. A latching control calls this from
+/// its state setter — in **every** profile, because `set_checked` is not feature-gated — so it
+/// must not name `crate::theme`, which `mini`/`embedded` do not compile.
+///
+/// Answering by doing nothing is the truthful arm where there is no theme module: the control
+/// keeps the style it already has, which is the same thing `apply_active_theme`'s own no-theme
+/// arm does. The pre-existing `apply_theme_to_widget` could not be reused here for exactly the
+/// opposite reason — it is gated `full_widgets`, and a `mini` build still has latching
+/// controls that must compile.
+#[cfg(device_profile)]
+pub fn reapply_active_theme_state(widget: &mut dyn crate::widget::Widget) {
+    crate::theme::reapply_active_theme_state(widget);
+}
+
+/// No theme module in this profile, so there is nothing to re-resolve.
+#[cfg(not(device_profile))]
+pub fn reapply_active_theme_state(_widget: &mut dyn crate::widget::Widget) {}
+
 /// The border a **semantic state** resolves to, or `None` when the theme does not style one.
 ///
 /// The always-available counterpart of `crate::theme::resolved_semantic_border`; see

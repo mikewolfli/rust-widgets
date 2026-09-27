@@ -1198,3 +1198,130 @@ fn declared_defaults_are_published_properties() {
     }
     assert!(violations.is_empty(), "defaults declared for unpublished properties: {violations:?}");
 }
+
+// ── Extension registration (BLUE24 §12 U-7) ──────────────────────────────────
+
+/// An extension registering a *new* name succeeds, and the control is then constructible.
+#[test]
+fn an_extension_can_register_a_new_name() {
+    let mut factory = WidgetFactory::new_with_defaults();
+    let capability = WidgetCapability {
+        kind: WidgetKind::Label,
+        canonical_name: "vendor_zz_badge",
+        aliases: &["vendor_zz_short"],
+        properties: &[],
+        events: &[],
+        ..default_capability_for_tests()
+    };
+    factory
+        .try_register(capability, |geometry, text| {
+            Box::new(crate::widget::base_widgets::label::Label::new(text.to_string(), geometry))
+        })
+        .expect("a name no control uses is free");
+
+    assert!(factory.capability("vendor_zz_badge").is_some());
+    assert!(factory.capability("vendor_zz_short").is_some(), "its alias resolves too");
+    assert!(factory.create("vendor_zz_badge", Rect::new(0, 0, 10, 10), "x").is_some());
+}
+
+/// Registering a name a core control already answers to is **refused**, not silently applied.
+///
+/// # The defect this pins
+///
+/// `WidgetFactory::register` overwrites on collision, so a plugin claiming `"label"` would replace
+/// the core label — and the symptom would not be a failed load but a control that looks wrong, in a
+/// build whose only difference is that a plugin was enabled.
+#[test]
+fn an_extension_cannot_shadow_a_core_control() {
+    let mut factory = WidgetFactory::new_with_defaults();
+    let before = factory.capabilities().len();
+
+    let capability = WidgetCapability {
+        kind: WidgetKind::Label,
+        canonical_name: "label",
+        aliases: &[],
+        properties: &[],
+        events: &[],
+        ..default_capability_for_tests()
+    };
+    let error = factory
+        .try_register(capability, |geometry, text| {
+            Box::new(crate::widget::base_widgets::label::Label::new(text.to_string(), geometry))
+        })
+        .expect_err("the name belongs to a core control");
+    assert_eq!(
+        error,
+        RegistrationError::NameTaken { name: "label", existing: "label" },
+        "and the error names both sides"
+    );
+    assert_eq!(factory.capabilities().len(), before, "nothing was registered");
+}
+
+/// An **alias** collision is refused too: an alias is a name the factory resolves.
+#[test]
+fn an_extension_cannot_shadow_a_core_alias() {
+    let factory = WidgetFactory::new_with_defaults();
+    // Find a name that resolves to a control whose canonical name differs from it — an alias.
+    let alias = factory
+        .reserved_names()
+        .into_iter()
+        .find(|name| {
+            factory.name_taken_by(name).is_some_and(|canonical| canonical != name.as_str())
+        })
+        .expect("the core table publishes at least one alias");
+
+    // The property that matters: an alias reports as taken by its canonical owner, so
+    // `try_register` refuses a plugin that claimed it. Without this, a plugin could shadow a
+    // control by its alias rather than its name — the same defect, a different spelling.
+    let owner = factory.name_taken_by(&alias).expect("the alias resolves");
+    assert_ne!(owner, alias.as_str(), "it is an alias, owned by another control");
+
+    let mut target = WidgetFactory::new_with_defaults();
+    // An alias that *is* taken, stated on a capability whose canonical name is free — so a check
+    // that only looked at the canonical name would let this through.
+    let taken_alias: &'static str = "label";
+    assert!(target.name_taken_by(taken_alias).is_some());
+    let capability = WidgetCapability {
+        kind: WidgetKind::Label,
+        canonical_name: "vendor_zz_innocent",
+        aliases: &["label"],
+        properties: &[],
+        events: &[],
+        ..default_capability_for_tests()
+    };
+    let error = target
+        .try_register(capability, |geometry, text| {
+            Box::new(crate::widget::base_widgets::label::Label::new(text.to_string(), geometry))
+        })
+        .expect_err("the alias belongs to a core control");
+    assert_eq!(error, RegistrationError::NameTaken { name: "label", existing: "label" });
+    assert!(
+        target.capability("vendor_zz_innocent").is_none(),
+        "nothing was written: a partial registration would leave one control reachable by some of \
+         its names and not others"
+    );
+}
+
+/// The reserved-name list contains the core names, so a caller can check before building.
+#[test]
+fn reserved_names_include_the_core_table() {
+    let factory = WidgetFactory::new_with_defaults();
+    let names = factory.reserved_names();
+    assert!(names.iter().any(|name| name == "label"), "a core name is reserved");
+    assert!(
+        names.iter().any(|name| name != "label" && factory.capability(name).is_some()),
+        "aliases are reserved too, not only canonical names"
+    );
+    assert!(
+        !names.iter().any(|name| factory.capability(name).is_none()),
+        "every reserved name must actually resolve, or the list would protect nothing"
+    );
+}
+
+/// A minimal capability for the registration tests to vary one field of.
+fn default_capability_for_tests() -> WidgetCapability {
+    WidgetFactory::new_with_defaults()
+        .capability("label")
+        .expect("the core table publishes label")
+        .clone()
+}

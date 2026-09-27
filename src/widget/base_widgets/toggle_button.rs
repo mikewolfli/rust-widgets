@@ -134,11 +134,20 @@ impl ToggleButton {
     /// redundant set**. On an actual change this emits `checked_changed` and
     /// `toggled` (both with the new flag) followed by `state_changed`, and
     /// requests a redraw.
+    ///
+    /// The redraw is not enough on its own: `draw` reads `style.background_color`
+    /// before the `checked` fallback below, and the theme wrote that field once — at
+    /// creation, in the state the constructor produced. So this asks the theme to
+    /// re-resolve `"toggle_button:<state>"` first, or the new latch paints the old
+    /// colour. See [`crate::style::reapply_active_theme_state`] for the measurement.
     pub fn set_checked(&mut self, checked: bool) {
         if self.checked == checked {
             return;
         }
         self.checked = checked;
+        // Before the signals: a handler that reads the style back must see the state it
+        // is being told about, not the previous one.
+        crate::style::reapply_active_theme_state(self);
         self.base.request_redraw();
         self.checked_changed.emit(checked);
         self.toggled.emit(checked);
@@ -265,6 +274,39 @@ impl Widget for ToggleButton {
             EdgeOffsets::symmetric(dimensions::BUTTON_PADDING_V, dimensions::BUTTON_PADDING_H),
             dimensions::BUTTON_MIN,
         )
+    }
+
+    /// The latched state, reported so the theme's `toggle_button:checked` override is reachable.
+    ///
+    /// # The defect this closes
+    ///
+    /// The trait's default `widget_state` knows only the four primitive flags
+    /// (`disabled`/`pressed`/`hovered`/`focused`) and **none of them means "latched"**, so a checked
+    /// toggle reported `Normal` and the theme's state lookup — `"<kind>:<state>"` — could not reach a
+    /// checked key. `CheckBox` was fixed for exactly this reason (see
+    /// `widget_state_reports_checked_for_a_latched_box`); `ToggleButton` was missed, and the symptom
+    /// was measurable: its `_checked` extra appearance rendered **byte-identical** to the default,
+    /// because `draw`'s own `if self.checked` branch was shadowed by the base fill the theme always
+    /// supplies. A toggle with no visible difference between on and off is not a toggle.
+    fn widget_state(&self) -> crate::style::WidgetState {
+        use crate::style::WidgetState;
+        if !self.base.is_enabled() {
+            return WidgetState::Disabled;
+        }
+        // The latch outranks the momentary states, matching `CheckBox`: a checked toggle that is
+        // hovered is still checked, and the checked fill is the fact a user is looking for.
+        if self.checked {
+            return WidgetState::Checked;
+        }
+        if self.base.is_pressed() {
+            WidgetState::Pressed
+        } else if self.base.is_hovered() {
+            WidgetState::Hover
+        } else if self.base.draws_focus_ring() {
+            WidgetState::Focused
+        } else {
+            WidgetState::Normal
+        }
     }
 
     /// Lifts the control's own `tick` onto the trait so a host holding `&mut dyn Widget` can
@@ -894,5 +936,61 @@ mod tests {
         let g = parts.next().and_then(|v| v.trim().parse().ok()).expect("g");
         let b = parts.next().and_then(|v| v.trim().parse().ok()).expect("b");
         (r, g, b)
+    }
+}
+
+#[cfg(test)]
+mod checked_visibility_tests {
+    use super::*;
+    use crate::event::EventHandler;
+
+    /// A latched toggle reports `Checked`, which is what makes `toggle_button:checked` reachable.
+    ///
+    /// # The defect this pins
+    ///
+    /// The trait's default `widget_state` knows only `disabled`/`pressed`/`hovered`/`focused`, and
+    /// **none of them means "latched"** — so a checked toggle reported `Normal`, the theme's
+    /// `"<kind>:<state>"` lookup could never reach a checked key, and this control had no such key at
+    /// all. `CheckBox` was fixed for the same reason; `ToggleButton` was missed.
+    #[test]
+    fn a_latched_toggle_reports_checked() {
+        use crate::style::WidgetState;
+        let mut button = ToggleButton::new("On".to_string(), Rect::new(0, 0, 100, 30));
+        assert_eq!(button.widget_state(), WidgetState::Normal);
+        button.set_checked(true);
+        assert_eq!(button.widget_state(), WidgetState::Checked);
+        // The latch outranks the momentary states, as it does for `CheckBox`: a checked toggle that is
+        // hovered is still checked, and that fill is the fact a user is looking for.
+        button
+            .handle_event(&crate::event::Event::MouseEnter { pos: crate::core::Point::new(1, 1) });
+        assert_eq!(button.widget_state(), WidgetState::Checked);
+    }
+
+    /// A checked toggle **paints differently** from an unchecked one.
+    ///
+    /// # The defect this pins, and why the assertion is on the drawing
+    ///
+    /// `draw` has always branched on `self.checked`, but it read `style.background_color` first — and
+    /// the theme always supplies one for this control — so the branch was **dead code**. The two
+    /// states rendered byte-identical, which the snapshot set showed as `toggle_button_checked.svg`
+    /// differing from `toggle_button.svg` only in its provenance comment. Asserting
+    /// `is_checked() == true` would have passed throughout; only the emitted geometry can catch it.
+    #[test]
+    fn a_checked_toggle_looks_different_from_an_unchecked_one() {
+        let bounds = Rect::new(0, 0, 120, 40);
+
+        let mut unchecked = ToggleButton::new("On".to_string(), bounds);
+        crate::theme::apply_theme_to_widget(&mut unchecked);
+        let plain = crate::widget::svg::render_widget_to_svg(&mut unchecked, bounds);
+
+        let mut checked = ToggleButton::new("On".to_string(), bounds);
+        checked.set_checked(true);
+        crate::theme::apply_theme_to_widget(&mut checked);
+        let latched = crate::widget::svg::render_widget_to_svg(&mut checked, bounds);
+
+        assert_ne!(
+            plain, latched,
+            "a toggle whose on state draws the same as its off state is not a toggle"
+        );
     }
 }

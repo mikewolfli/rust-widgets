@@ -54,6 +54,22 @@ pub struct LineEdit {
     /// Borrowed from [`crate::style::CursorBlink`] rather than reimplemented, so this field's caret
     /// keeps the tempo and phase logic of every other caret in the crate.
     cursor_blink: crate::style::CursorBlink,
+    /// The uncommitted input-method composition, or `None` when no IME session is active.
+    ///
+    /// # Why the preedit is a field of the *field*, and not an overlay widget
+    ///
+    /// [`crate::widget::input_widgets::ime_preedit::ImePreedit`] draws a composition string with an
+    /// underline, and that is the right thing to draw — but on its own it is an *overlay*: the string
+    /// it shows never reaches any text model, so committing it had nowhere to go and the "preedit"
+    /// could not be edited, cancelled or committed. That is BLUE24 §12 U-5's gap exactly
+    /// ("组合串如何进入文本模型").
+    ///
+    /// The three methods a real IME needs are [`LineEdit::set_composition`],
+    /// [`LineEdit::commit_composition`] and [`LineEdit::cancel_composition`], and they are correct
+    /// **because** the composition is held apart from `text`: while a session is active the field's
+    /// value must not change (a `text_changed` per keystroke would fire a form's validation on a word
+    /// the user has not finished typing), and cancelling must restore the text exactly as it was.
+    composition: Option<String>,
     /// Emitted after the widget's text changes: on edit commits, and after an
     /// undo/redo restores a snapshot. Not emitted when a programmatic
     /// `set_text` is given the text the field already holds.
@@ -97,6 +113,7 @@ impl LineEdit {
             focused: false,
             decorations: DecorationSlots::default(),
             cursor_blink: crate::style::CursorBlink::new(),
+            composition: None,
             text_changed: Signal1::new(),
             editing_finished: GenericSignal::new(),
             return_pressed: GenericSignal::new(),
@@ -333,6 +350,73 @@ impl LineEdit {
         self.selection_start = None;
         self.set_text(new_text);
     }
+    /// Starts or updates an input-method composition without changing the field's value.
+    ///
+    /// # The three methods an IME session needs, and why they are a set (BLUE24 §12 U-5)
+    ///
+    /// A platform input method reports a **preedit** (the uncommitted string it is building) and then
+    /// either commits it or cancels. Mapping that onto a text field takes exactly these three
+    /// operations, and none of them is expressible as `insert_text`:
+    ///
+    /// * `set_composition` — the user is still typing. The field's **value must not change**: firing
+    ///   `text_changed` on every keystroke of an unfinished word would run a form's validation
+    ///   against text the user has not committed, which is the defect this separation exists to
+    ///   prevent.
+    /// * `commit_composition` — the input method accepted its candidate. Now the string enters the
+    ///   model, through the ordinary edit path (so `max_length`, the selection replacement and
+    ///   `text_changed` all apply as they do for any other insert).
+    /// * `cancel_composition` — the user pressed Escape. The composition is dropped and the value is
+    ///   exactly what it was, because it was never touched.
+    ///
+    /// An empty string clears the composition without committing it, which is what an input method
+    /// sends when it withdraws.
+    pub fn set_composition(&mut self, preedit: &str) {
+        if preedit.is_empty() {
+            self.composition = None;
+        } else {
+            self.composition = Some(preedit.to_string());
+        }
+        self.base.request_redraw();
+    }
+
+    /// The uncommitted composition, or `None` when no IME session is active.
+    pub fn composition(&self) -> Option<&str> {
+        self.composition.as_deref()
+    }
+
+    /// Whether an input-method composition is in progress.
+    pub fn has_composition(&self) -> bool {
+        self.composition.is_some()
+    }
+
+    /// Accepts the composition: the preedit becomes text, through the ordinary insert path.
+    ///
+    /// Returns `true` when something was committed. A commit with no active composition is a no-op
+    /// rather than an error: an input method may commit and clear in either order, and a field that
+    /// refused the second call would report a failure for a normal sequence.
+    pub fn commit_composition(&mut self) -> bool {
+        let Some(preedit) = self.composition.take() else {
+            return false;
+        };
+        // Through `insert_text`, so `max_length`, the selection replacement and `text_changed`
+        // behave exactly as they do for any other insertion — a committed composition is text.
+        self.insert_text(&preedit);
+        self.base.request_redraw();
+        true
+    }
+
+    /// Drops the composition without changing the field's value.
+    ///
+    /// Returns `true` when there was one. The text is untouched **by construction**, not by
+    /// restoring a snapshot: the composition was never written into it.
+    pub fn cancel_composition(&mut self) -> bool {
+        let had = self.composition.take().is_some();
+        if had {
+            self.base.request_redraw();
+        }
+        had
+    }
+
     /// Deletes selected text or character before cursor.
     pub fn backspace(&mut self) {
         if let Some(start) = self.selection_start {
@@ -1076,6 +1160,39 @@ impl Draw for LineEdit {
                 Point::new(caret_x, caret_bottom),
                 caret_color,
             );
+
+            // The uncommitted composition is drawn **after the caret**, where it will land when it is
+            // committed, with an underline marking it as preedit.
+            //
+            // # Why the field draws this and not only `ImePreedit`
+            //
+            // `ImePreedit` is an overlay: a host that mounts one gets a composition string with an
+            // underline, in a box of its own. But a user typing into a field expects the composition
+            // **inline**, at the caret, growing as they type — that is what makes an input method
+            // legible. Drawing it here is possible only because the preedit is now part of the
+            // field's model (`composition`); the overlay could never place it, because it does not
+            // know where this field's caret is.
+            //
+            // The advance is measured from the **same** `prefix` the caret uses, so the underline
+            // begins exactly at the caret and cannot drift from it.
+            if let Some(preedit) = self.composition.as_deref() {
+                let preedit_x = caret_x;
+                let preedit_width = context.measure_text(preedit, font).width as i32;
+                context.draw_text(
+                    Point::new(preedit_x, value_line.y),
+                    preedit,
+                    font,
+                    caret_color,
+                    crate::core::HorizontalAlignment::Left,
+                );
+                // The underline is one pixel below the glyph box, over the preedit's own width.
+                let underline_y = value_line.y + context.measure_text("M", font).height as i32 + 1;
+                context.draw_line(
+                    Point::new(preedit_x, underline_y),
+                    Point::new(preedit_x + preedit_width, underline_y),
+                    caret_color,
+                );
+            }
         }
     }
 }
@@ -1931,5 +2048,138 @@ mod tests {
             SemanticState::Error,
             "while the meaning is still reported on its own channel"
         );
+    }
+}
+
+#[cfg(test)]
+mod composition_tests {
+    use super::*;
+
+    fn field() -> LineEdit {
+        LineEdit::new(Rect::new(0, 0, 200, 24))
+    }
+
+    /// A composition does **not** change the field's value.
+    ///
+    /// # The defect this pins (BLUE24 §12 U-5)
+    ///
+    /// A platform input method reports the preedit one keystroke at a time. If that went through
+    /// `insert_text`, the field's value would change on every partial character and `text_changed`
+    /// would fire for a word the user has not finished — so a form's validation would run against
+    /// text nobody committed. Holding the composition apart is what makes the value stable until the
+    /// commit.
+    #[test]
+    fn a_composition_does_not_change_the_value() {
+        let mut field = field();
+        field.set_text("ab");
+        field.set_composition("し");
+        assert_eq!(field.text(), "ab", "the value is untouched while composing");
+        assert_eq!(field.composition(), Some("し"));
+        assert!(field.has_composition());
+    }
+
+    /// Committing puts the preedit into the model, at the caret, through the ordinary insert path.
+    #[test]
+    fn committing_inserts_the_preedit_as_text() {
+        let mut field = field();
+        field.set_text("ab");
+        field.set_cursor_position(1);
+        field.set_composition("X");
+        assert!(field.commit_composition());
+        assert_eq!(field.text(), "aXb", "a commit is an insert, not a replacement");
+        assert!(!field.has_composition(), "and the session is over");
+        assert!(!field.commit_composition(), "a second commit has nothing to accept");
+    }
+
+    /// Cancelling restores nothing, because nothing was changed.
+    #[test]
+    fn cancelling_leaves_the_value_exactly_as_it_was() {
+        let mut field = field();
+        field.set_text("keep");
+        field.set_composition("discard me");
+        assert!(field.cancel_composition());
+        assert_eq!(field.text(), "keep");
+        assert!(!field.has_composition());
+        assert!(!field.cancel_composition(), "there was nothing left to cancel");
+    }
+
+    /// Committing a composition respects `max_length`, exactly as typing does.
+    ///
+    /// This is the reason the commit goes through `insert_text` rather than writing `text` directly:
+    /// a shortcut would have been the one edit path in the control that ignores the limit.
+    #[test]
+    fn committing_respects_the_max_length() {
+        let mut field = field();
+        field.set_max_length(Some(4));
+        field.set_text("ab");
+        field.set_composition("cdef");
+        field.commit_composition();
+        assert!(field.text().len() <= 4, "the limit applies: got {:?}", field.text());
+    }
+
+    /// A composition can replace a selection, like any other insertion.
+    #[test]
+    fn committing_replaces_a_selection() {
+        let mut field = field();
+        field.set_text("abc");
+        field.select_all();
+        field.set_composition("Z");
+        field.commit_composition();
+        assert_eq!(field.text(), "Z", "the commit replaced the selected range");
+    }
+
+    /// An empty preedit withdraws the session without committing anything.
+    #[test]
+    fn an_empty_preedit_withdraws_the_session() {
+        let mut field = field();
+        field.set_text("ab");
+        field.set_composition("x");
+        field.set_composition("");
+        assert!(!field.has_composition());
+        assert_eq!(field.text(), "ab", "withdrawing is not committing");
+    }
+
+    /// The preedit is drawn **inline at the caret**, with an underline.
+    ///
+    /// # The gap this pins (BLUE24 §12 U-5)
+    ///
+    /// `ImePreedit` is an overlay in a box of its own; it cannot place a composition at a field's
+    /// caret, because it does not know where that is. The field can, and this asserts it does: the
+    /// preedit appears after the value's own ink and a horizontal rule is drawn beneath it.
+    #[test]
+    fn the_preedit_is_painted_at_the_caret_with_an_underline() {
+        let bounds = Rect::new(0, 0, 200, 24);
+        let mut field = LineEdit::new(bounds);
+        field.set_text("ab");
+        field.set_cursor_position(2);
+        field.set_focused(true);
+
+        let without = crate::widget::svg::render_widget_to_svg(&mut field, bounds);
+        field.set_composition("し");
+        let with = crate::widget::svg::render_widget_to_svg(&mut field, bounds);
+
+        assert_ne!(with, without, "an active composition must change what is painted");
+        // A horizontal rule is a `<line>` with `y1 == y2`; the caret is a vertical one. The underline
+        // is the only horizontal line this change adds.
+        let horizontal_lines = |svg: &str| {
+            svg.lines()
+                .filter(|line| line.contains("<line "))
+                .filter(|line| {
+                    let get = |name: &str| -> Option<i32> {
+                        line.split(&format!("{name}=\"")).nth(1)?.split('"').next()?.parse().ok()
+                    };
+                    get("y1").is_some() && get("y1") == get("y2")
+                })
+                .count()
+        };
+        assert!(
+            horizontal_lines(&with) > horizontal_lines(&without),
+            "the preedit must be underlined, or a user cannot see it is uncommitted"
+        );
+
+        // And cancelling removes it again, so the picture is tied to the session.
+        field.cancel_composition();
+        let after = crate::widget::svg::render_widget_to_svg(&mut field, bounds);
+        assert_eq!(horizontal_lines(&after), horizontal_lines(&without));
     }
 }

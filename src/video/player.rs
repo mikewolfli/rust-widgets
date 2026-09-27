@@ -1,68 +1,17 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-//! Playback state machine for video/audio.
+//! Playback state — re-exported from `core`, where it is defined.
+//!
+//! # Why this is a re-export and not a definition
+//!
+//! `PlaybackState` used to be defined here, inside the `video` feature. That put a plain five-variant
+//! enum behind a codec dependency, so a control that only wanted to say "playing or paused" — the
+//! `MediaPlayer` widget, which is always built — could not name it. The type moved to
+//! [`crate::core::PlaybackState`] beside the clock that uses it, and every path that imported it from
+//! here still works.
+//!
+//! Principle #54: a same-semantics type has exactly one definition, and the layer that re-exports it
+//! refers to that definition rather than keeping a copy that can drift.
 
-/// Playback state for media engines.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum PlaybackState {
-    /// No media loaded or stopped.
-    #[default]
-    Stopped,
-    /// Currently playing.
-    Playing,
-    /// Paused.
-    Paused,
-    /// Buffering/waiting for data.
-    Buffering,
-    /// Playback finished.
-    Ended,
-}
-
-impl PlaybackState {
-    /// Returns true if the player is actively playing.
-    pub fn is_active(&self) -> bool {
-        matches!(self, PlaybackState::Playing | PlaybackState::Buffering)
-    }
-
-    /// Returns true if playback can be resumed.
-    pub fn can_resume(&self) -> bool {
-        matches!(self, PlaybackState::Paused)
-    }
-
-    /// Returns a human-readable label.
-    pub fn label(&self) -> &'static str {
-        match self {
-            PlaybackState::Stopped => "Stopped",
-            PlaybackState::Playing => "Playing",
-            PlaybackState::Paused => "Paused",
-            PlaybackState::Buffering => "Buffering",
-            PlaybackState::Ended => "Ended",
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_playback_state_default() {
-        assert_eq!(PlaybackState::default(), PlaybackState::Stopped);
-    }
-
-    #[test]
-    fn test_playback_state_is_active() {
-        assert!(PlaybackState::Playing.is_active());
-        assert!(PlaybackState::Buffering.is_active());
-        assert!(!PlaybackState::Paused.is_active());
-        assert!(!PlaybackState::Stopped.is_active());
-    }
-
-    #[test]
-    fn test_playback_state_labels() {
-        assert_eq!(PlaybackState::Playing.label(), "Playing");
-        assert_eq!(PlaybackState::Paused.label(), "Paused");
-        assert_eq!(PlaybackState::Ended.label(), "Ended");
-    }
-}
+pub use crate::core::PlaybackState;

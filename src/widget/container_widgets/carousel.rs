@@ -65,7 +65,7 @@
 //! regardless of how slowly it was released — the velocity rule only ever *adds*
 //! gestures, it never takes one away.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, HorizontalAlignment, Point, Rect, ScrollPhysics, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -251,37 +251,6 @@ impl CarouselIndicatorPosition {
     }
 }
 
-/// How far a drag must travel, as a fraction of the control's width, before
-/// releasing it pages forward or back.
-///
-/// 0.18 keeps a deliberate swipe working while a click-then-drift does not page:
-/// a click that slips by a couple of percent of the width is still a click. The
-/// plan's acceptance case ("drag past 50% and release lands on the adjacent page")
-/// is satisfied with margin, because any travel beyond this threshold pages.
-///
-/// A drag **faster** than [`FLICK_VELOCITY_PX_PER_SEC`] pages on less travel than
-/// this: see [`Carousel::swipe_direction_at`].
-const SWIPE_THRESHOLD_FRACTION: f32 = 0.18;
-
-/// The release speed, in logical pixels per second, at which a short drag still
-/// pages.
-///
-/// A flick is how a pointer user pages a carousel without dragging most of the way
-/// across it. Judging on distance alone makes every flick below the threshold snap
-/// back, which reads as the control ignoring the gesture.
-///
-/// 400 px/s is roughly a quarter of a screen width per second on a phone — fast
-/// enough that it cannot be produced by a click that drifted, slow enough that a
-/// deliberate slow drag still has to travel the distance threshold.
-const FLICK_VELOCITY_PX_PER_SEC: f32 = 400.0;
-
-/// A drag shorter than this fraction of the width never pages, however fast it was.
-///
-/// It is the floor that makes the velocity rule safe: a pointer that jitters a few
-/// pixels in one frame can compute an enormous instantaneous speed, and on a click
-/// that is noise rather than intent. 2% of the width is below any deliberate swipe.
-const MIN_FLICK_FRACTION: f32 = 0.02;
-
 /// The thickness reserved for the indicator strip, in logical pixels.
 const INDICATOR_STRIP: u32 = 26;
 
@@ -323,6 +292,13 @@ pub struct Carousel {
     indicator_style: CarouselIndicatorStyle,
     indicator_position: CarouselIndicatorPosition,
     drag: DragState,
+    /// How a drag and a release feel (BLUE24 §12 U-3).
+    ///
+    /// Replaces three private constants — the swipe fraction, the flick speed and the anti-jitter
+    /// floor — whose values are now this type's default, so adopting it changed no
+    /// behaviour. What it buys is that a host can tune the feel without patching the crate, and that
+    /// the same four thresholds are shared with every other pager instead of re-invented.
+    physics: ScrollPhysics,
     /// Emitted when the current page index changes.
     pub page_changed: Signal1<usize>,
 }
@@ -344,6 +320,7 @@ impl Carousel {
             indicator_style: CarouselIndicatorStyle::Dots,
             indicator_position: CarouselIndicatorPosition::Bottom,
             drag: DragState::Idle,
+            physics: ScrollPhysics::default(),
             page_changed: Signal1::new(),
         }
     }
@@ -583,7 +560,7 @@ impl Carousel {
     /// The pixel width a drag must exceed to count as a swipe on this geometry.
     fn swipe_threshold_px(&self) -> i32 {
         let width = self.geometry().width as f32;
-        (width * SWIPE_THRESHOLD_FRACTION).max(1.0) as i32
+        (width * self.physics.page_fraction).max(1.0) as i32
     }
 }
 
@@ -620,7 +597,7 @@ fn swipe_velocity_px_per_sec(
     // Capped at ten widths per second. The floor matters more than the exact value:
     // a synthetic event stream delivered with no real gap between moves would
     // otherwise compute an enormous speed and turn every tiny drag into a flick. The
-    // cap must stay **above** [`FLICK_VELOCITY_PX_PER_SEC`] by a wide margin, or it
+    // cap must stay **above** the physics' flick threshold by a wide margin, or it
     // would clamp genuine flicks down to something the threshold rejects — a 300px
     // wide control dragged at a normal flick speed is well past 400px/s, so a cap of
     // one width per second would make the velocity rule unreachable.
@@ -897,6 +874,17 @@ impl Carousel {
         Some(if offset_x > 0 { -1 } else { 1 })
     }
 
+    /// The physics this carousel pages under (BLUE24 §12 U-3).
+    pub fn physics(&self) -> ScrollPhysics {
+        self.physics
+    }
+
+    /// Sets the feel, requesting a redraw.
+    pub fn set_physics(&mut self, physics: ScrollPhysics) {
+        self.physics = physics;
+        self.base.request_redraw();
+    }
+
     /// Which way a released drag pages, given both its travel and its release
     /// speed: either the distance threshold or a flick is enough.
     ///
@@ -914,7 +902,9 @@ impl Carousel {
         // reverse direction in its final frame, and it is the release motion the
         // user means.
         let floor_px = self.min_flick_px();
-        if velocity_px_per_sec.abs() >= FLICK_VELOCITY_PX_PER_SEC && offset_x.abs() >= floor_px {
+        if velocity_px_per_sec.abs() >= self.physics.flick_velocity_px_per_sec
+            && offset_x.abs() >= floor_px
+        {
             return Some(if velocity_px_per_sec > 0.0 { -1 } else { 1 });
         }
         None
@@ -922,7 +912,7 @@ impl Carousel {
 
     /// The smallest travel, in pixels, that can ever count as a flick.
     fn min_flick_px(&self) -> i32 {
-        (self.geometry().width as f32 * MIN_FLICK_FRACTION).max(1.0) as i32
+        (self.geometry().width as f32 * self.physics.drag_min_fraction).max(1.0) as i32
     }
 
     /// The page index `step` away from the current one, honoring `loop`.
@@ -1787,6 +1777,58 @@ mod tests {
         assert_eq!(c.swipe_direction_at(-6, -500.0), Some(1));
     }
 
+    /// The feel is the caller's, not the crate's (BLUE24 §12 U-3).
+    ///
+    /// # The defect this pins
+    ///
+    /// The three thresholds used to be private `const`s, so a host with a large touchscreen, a
+    /// kiosk that must not land between pages, or a design tool that wants paging to be visible had
+    /// no way to change any of them without patching the crate. The same gesture is asserted to page
+    /// under one physics and not under another, on the **same** carousel.
+    #[test]
+    fn carousel_the_feel_is_configurable() {
+        let mut c = default_carousel();
+        assert_eq!(c.physics(), ScrollPhysics::default(), "the default is the crate's own feel");
+
+        // 40px of 300 is 13%: under the default's 18%, so it snaps back.
+        assert_eq!(c.swipe_direction_at(-40, 0.0), None);
+
+        // Loosening the distance threshold makes the same gesture page.
+        c.set_physics(ScrollPhysics { page_fraction: 0.1, ..ScrollPhysics::default() });
+        assert_eq!(
+            c.swipe_direction_at(-40, 0.0),
+            Some(1),
+            "a drag past the caller's threshold pages on distance"
+        );
+        assert_eq!(c.swipe_threshold_px(), 30, "10% of 300px");
+
+        // The anti-jitter floor moves with the physics too.
+        c.set_physics(ScrollPhysics { drag_min_fraction: 0.2, ..ScrollPhysics::default() });
+        assert_eq!(c.min_flick_px(), 60, "20% of 300px");
+        assert_eq!(
+            c.swipe_direction_at(-40, -5_000.0),
+            None,
+            "a flick below the caller's floor is noise, however fast"
+        );
+
+        // And the flick speed is the caller's.
+        c.set_physics(ScrollPhysics {
+            drag_min_fraction: 0.0,
+            flick_velocity_px_per_sec: 2_000.0,
+            ..ScrollPhysics::default()
+        });
+        assert_eq!(c.swipe_direction_at(-20, -800.0), None, "800 px/s is under 2000");
+        assert_eq!(c.swipe_direction_at(-20, -2_500.0), Some(1), "2500 px/s is over it");
+    }
+
+    /// A physics that does not snap turns the carousel into a free scroller.
+    #[test]
+    fn carousel_a_non_snapping_physics_never_pages() {
+        let mut c = default_carousel();
+        c.set_physics(ScrollPhysics::scroller());
+        assert_eq!(c.swipe_direction_at(-200, -5_000.0), None, "a scroller stops where it is");
+    }
+
     #[test]
     fn carousel_velocity_is_zero_without_two_timed_samples() {
         let now = Instant::now();
@@ -1842,7 +1884,7 @@ mod tests {
             300.0,
         );
         assert!(
-            real_flick >= FLICK_VELOCITY_PX_PER_SEC,
+            real_flick >= ScrollPhysics::default().flick_velocity_px_per_sec,
             "{real_flick} must exceed the flick \
              threshold and must not be capped below it"
         );

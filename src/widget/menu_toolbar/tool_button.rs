@@ -690,8 +690,15 @@ impl Draw for ToolButton {
             // row rather than two baselines.
             let strip = dimensions::TOOL_BUTTON_POPUP_ARROW_RESERVE as i32;
             let arrow_x = rect.x + rect.width as i32 - strip;
+            // The origin is a glyph box's **top** edge, so `rect.y + height / 2` would put that edge
+            // on the middle line and draw the arrow half a line low (the defect
+            // `tools/check_text_vertically_centred.sh` names). `text_line` answers the question
+            // directly: it is the band's own line box, centred, measured from the same font the ink
+            // is drawn with — which is what the sibling label above already uses.
+            let arrow_box =
+                context.text_line(Rect::new(arrow_x, rect.y, strip as u32, rect.height), &font);
             context.draw_text(
-                Point::new(arrow_x + strip / 2, rect.y + rect.height as i32 / 2),
+                Point::new(arrow_box.x + strip / 2, arrow_box.y),
                 "▾",
                 &font,
                 fg,
@@ -797,6 +804,46 @@ mod tests {
 
         btn.set_popup_mode(ToolButtonPopupMode::DelayedPopup);
         assert_eq!(btn.popup_mode(), ToolButtonPopupMode::DelayedPopup);
+    }
+
+    /// The popup arrow is centred on the button's middle line, not half a line below it.
+    ///
+    /// # The defect this pins
+    ///
+    /// The arrow was drawn at `rect.y + rect.height / 2`. A text origin is a glyph box's **top**
+    /// edge, so that put the top edge on the middle line and the ink half a line low — the exact
+    /// shape `tools/check_text_vertically_centred.sh` reports, and which that gate did report at
+    /// this file's line until it was fixed.
+    ///
+    /// The assertion is on the **drawn geometry**, not on a helper's return value: the snapshot set
+    /// cannot see this (the default tool button has no popup, so `tool_button.svg` never draws an
+    /// arrow), which is why a unit test is the only thing standing between this and a regression.
+    #[test]
+    fn tool_button_popup_arrow_is_vertically_centred() {
+        let mut btn = ToolButton::new("Menu", Rect::new(0, 0, 120, 40));
+        btn.set_popup_mode(ToolButtonPopupMode::MenuButtonPopup);
+        let svg = crate::widget::svg::render_widget_to_svg(&mut btn, Rect::new(0, 0, 120, 40));
+
+        // An arrow glyph reaches the renderer as a text path; take its ink box.
+        // An arrow glyph reaches the renderer as a text path; take its ink box.
+        let ink = crate::widget::svg::text_ink_boxes(&svg);
+        assert!(
+            !ink.is_empty(),
+            "the popup mode must draw the arrow, or this test asserts nothing"
+        );
+        // The **rightmost** box is the arrow: the label is drawn first and lies to its left. Reading
+        // `ink[0]` instead picks up the label, which is centred in both the fixed and the broken
+        // code — so a test written that way passes either way and pins nothing. (It did, and this
+        // is the correction.)
+        let (_, top, _, bottom) =
+            *ink.iter().max_by_key(|(left, ..)| *left).expect("boxes were checked non-empty");
+        let mid = 20i32; // half of 40
+        let ink_mid = (top + bottom) / 2;
+        assert!(
+            (ink_mid - mid).abs() <= 2,
+            "the arrow's ink must straddle the button's middle line ({mid}); it was {top}..{bottom} \
+             (mid {ink_mid}) — half a line low is the defect this pins"
+        );
     }
 
     // ── 7. Signal accessor (clicked) ──

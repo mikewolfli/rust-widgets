@@ -33,6 +33,7 @@
 | `check_environment_is_single_sourced.sh` | (earlier round) relabelled a device fact as a wall-clock read | `FAIL  wall-clock inference of an appearance` |
 | `check_native_redraw_goes_through_the_runtime.sh` | removed the `note_native_redraw(id)` pairing from a macOS event handler (`forward_mouse`) | `FAIL  these files queue more platform redraws than they announce: src/platform/macos/canvas.rs:453 in forward_mouse()` |
 | `check_no_anonymous_repaint.sh` | inserted a bare `crate::invalidate_surface(self.base().id());` into `progressbar.rs`'s `draw` | `FAIL  these repaints name no cause: src/widget/display_widgets/progressbar.rs:431 in draw()` |
+| `check_conclusion_covers_the_gap_table.sh` | four injections, each observed: (a) removed the `§5 Breakpoint` cell from `blue24.md` §13's dimension table; (b) renamed every `§0B` mention inside §13 away; (c) added the count word `五件事` back to §13's opening sentence; (d) removed the `| 8 面的材质 |` mapping row from §14.2 step 4 | (a) `FAIL  §5 is not named in §13 (no \`Breakpoint\`)…` (b) `FAIL  §13 does not name §0B…` (c) `FAIL  §13 opens a sentence with a count word, which must be kept in sync by hand:` (d) `FAIL  §0B row 8 (…面…的材质没有声明通道…) is not in §14.2 step 4's merge table` |
 
 ## Earlier gates (BLUE12–BLUE23)
 

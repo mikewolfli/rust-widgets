@@ -46,15 +46,19 @@ mod color;
 pub mod coords;
 mod font;
 mod geometry;
+mod media_clock;
 mod mutex_ext;
 pub mod rect_merge;
+mod scroll_physics;
 mod text_direction;
 mod types;
 pub use alignment::{Alignment, HorizontalAlignment, VerticalAlignment};
 pub use color::Color;
 pub use font::Font;
 pub use geometry::{deg_to_rad, Orientation, Point, Rect, Size};
+pub use media_clock::{FrameVerdict, MediaClock, PlaybackState};
 pub use mutex_ext::MutexExt;
+pub use scroll_physics::ScrollPhysics;
 pub use text_direction::TextDirection;
 pub use types::{
     CoreConfig, CoreError, CoreObject, CoreResult, DeviceClass, ObjectId, PlatformCapabilities,

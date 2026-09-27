@@ -42,6 +42,7 @@
 // it is written out rather than globbed so each name has one documented home.
 mod apply;
 pub(crate) use apply::apply_active_theme;
+pub use apply::reapply_active_theme_state;
 mod manager;
 mod preset_states;
 mod types;

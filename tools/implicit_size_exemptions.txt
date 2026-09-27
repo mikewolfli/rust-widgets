@@ -55,7 +55,7 @@ src/widget/chart_widgets/bar_chart.rs 275 backlog
 src/widget/chart_widgets/line_chart.rs 312 backlog
 src/widget/chart_widgets/pie_chart.rs 396 backlog
 src/widget/chart_widgets/sparkline.rs 200 backlog
-src/widget/container_widgets/carousel.rs 639 backlog
+src/widget/container_widgets/carousel.rs 616 backlog
 src/widget/container_widgets/collapsible_pane.rs 149 backlog
 src/widget/container_widgets/dockwidget.rs 426 backlog
 src/widget/container_widgets/masonry_layout.rs 117 backlog
@@ -113,7 +113,7 @@ src/widget/input_widgets/command_link.rs 99 backlog
 src/widget/input_widgets/ime_preedit.rs 151 backlog
 src/widget/input_widgets/inplace_editor.rs 283 backlog
 src/widget/input_widgets/keyboard.rs 293 backlog
-src/widget/input_widgets/lineedit.rs 555 backlog
+src/widget/input_widgets/lineedit.rs 639 backlog
 src/widget/input_widgets/listbox.rs 473 backlog
 src/widget/input_widgets/masked_edit.rs 366 backlog
 src/widget/input_widgets/mention.rs 542 backlog
@@ -169,7 +169,7 @@ src/widget/special_widgets/heatmap.rs 457 backlog
 src/widget/special_widgets/kanban_board.rs 643 backlog
 src/widget/special_widgets/map_view.rs 220 backlog
 src/widget/special_widgets/markdown_editor.rs 205 backlog
-src/widget/special_widgets/media_player.rs 228 backlog
+src/widget/special_widgets/media_player.rs 316 backlog
 src/widget/special_widgets/notification_center.rs 225 backlog
 src/widget/special_widgets/radar_chart.rs 321 backlog
 src/widget/special_widgets/segmented_control.rs 169 backlog
@@ -210,7 +210,7 @@ src/widget/base_widgets/frame.rs 501 backlog
 #     not a measurement: a scrollbar is a piece of chrome whose *thickness* is the only fixed
 #     dimension, and that comes from `dimensions::SCROLLBAR_THICKNESS`. This is the "delegates to
 #     its own geometry" shape.
-src/widget/container_widgets/tabwidget.rs 766 fixed-chrome
+src/widget/container_widgets/tabwidget.rs 771 fixed-chrome
 src/widget/nav_widgets/tab_view.rs 281 fixed-chrome
 src/widget/display_widgets/scrollbar.rs 411 fixed-chrome
 
