@@ -195,6 +195,49 @@ impl Color {
     /// place rather than re-derived at each call site.
     const DISABLED_MIX_PERCENT: u32 = 66;
 
+    /// How far a derived border is stepped toward black from the fill it surrounds.
+    ///
+    /// A border is a value the fill cannot express on its own, so when neither the control's
+    /// own style nor the theme states one it has to be derived. `0.15` is the weight fourteen
+    /// controls had converged on independently before this constant existed; naming it keeps
+    /// the derivation from drifting one call site at a time.
+    pub const BORDER_STEP: f32 = 0.15;
+
+    /// The border that belongs to `fill` when nothing else states one.
+    ///
+    /// # Why this is a named relationship rather than a blend at each call site
+    ///
+    /// Fourteen controls wrote the same three-part expression:
+    ///
+    /// ```text
+    /// style.border_color
+    ///     .or_else(|| theme.border_color)
+    ///     .unwrap_or_else(|| fill.blend(&Color::BLACK, 0.15))
+    /// ```
+    ///
+    /// The two `or_else` halves are each control's business — a style may set the border, a
+    /// theme may set it — but the **fallback** is one relationship stated fourteen times: "a
+    /// border is the fill's own tone, one step darker". Stating it here means a change to how a
+    /// derived border looks is one edit, and it keeps the derivation legible to the surface
+    /// gate, which otherwise reads `blend(&Color::BLACK, ..)` as a hand-rolled bevel.
+    ///
+    /// Deriving from the fill rather than using a fixed grey is deliberate: a border must stay
+    /// visible on the background the control was actually given, so it follows that colour the
+    /// way the bevel does (see `render::bevel`).
+    ///
+    /// Note that the channels including alpha are blended, exactly as the hand-written
+    /// expression did, so this is a rename of an existing relationship and not a change to it.
+    ///
+    /// ```
+    /// # use rust_widgets::core::Color;
+    /// let fill = Color::rgb(200, 200, 200);
+    /// let border = Color::border_of(fill);
+    /// assert!(border.r < fill.r && border.g < fill.g && border.b < fill.b);
+    /// ```
+    pub fn border_of(fill: Color) -> Color {
+        fill.blend(&Color::BLACK, Self::BORDER_STEP)
+    }
+
     /// A dimmed version of `color`, for a control that cannot be interacted with.
     ///
     /// # Why a mix rather than a flat replacement
@@ -608,6 +651,22 @@ mod tests {
 
         let three_quarters = black.blend(&white, 0.75);
         assert_eq!(three_quarters, Color::rgba(191, 191, 191, 255));
+    }
+
+    #[test]
+    fn border_of_steps_a_fill_toward_black() {
+        // The relationship the fourteen call sites used to spell out: a derived border is the
+        // fill's own tone one step darker, so it stays legible on whatever background the
+        // control was given.
+        let fill = Color::rgb(200, 200, 200);
+        let border = Color::border_of(fill);
+        assert_eq!(border, fill.blend(&Color::BLACK, Color::BORDER_STEP));
+        assert!(border.r < fill.r, "a derived border is darker than its fill");
+
+        // Black is the one fill a derived border cannot darken further: it is already at the
+        // floor, so the border is black too. Stated as a test because it is the degenerate case
+        // a caller could mistake for the helper doing nothing.
+        assert_eq!(Color::border_of(Color::BLACK), Color::BLACK);
     }
     #[test]
     fn color_luminance_and_contrast() {

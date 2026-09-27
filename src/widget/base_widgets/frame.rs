@@ -276,49 +276,31 @@ impl Frame {
             }
             FrameShadow::Sunken => {
                 // Draw sunken border
-                let light_color = if plain {
-                    border
+                //
+                // The same relationship the `Raised` arm states, with the tones exchanged — and
+                // that exchange is now the *direction* rather than the order of two blocks. Before
+                // this the arm carried a full second copy of the four `draw_line` calls, so "make
+                // this raised" was a copy-paste edit across a dozen lines instead of one token.
+                let bevel = if plain {
+                    Bevel::from_tones(border, border, border)
                 } else if themed {
-                    border.blend(&Color::rgb(0, 0, 0), 0.5)
+                    Bevel::from_base(border)
                 } else {
-                    Color::rgb(128, 128, 128)
-                };
-                let dark_color = if plain {
-                    border
-                } else if themed {
-                    border.blend(&Color::rgb(255, 255, 255), 0.5)
-                } else {
-                    Color::rgb(255, 255, 255)
-                };
-                // Top and left (dark)
-                context.draw_line(
-                    Point::from_f32(rect.x as f32, rect.y as f32),
-                    Point::from_f32(rect.x as f32 + rect.width as f32, rect.y as f32),
-                    light_color,
-                );
-                context.draw_line(
-                    Point::from_f32(rect.x as f32, rect.y as f32),
-                    Point::from_f32(rect.x as f32, rect.y as f32 + rect.height as f32),
-                    light_color,
-                );
-                // Bottom and right (light)
-                context.draw_line(
-                    Point::from_f32(rect.x as f32, rect.y as f32 + rect.height as f32),
-                    Point::from_f32(
-                        rect.x as f32 + rect.width as f32,
-                        rect.y as f32 + rect.height as f32,
-                    ),
-                    dark_color,
-                );
-                context.draw_line(
-                    Point::from_f32(rect.x as f32 + rect.width as f32, rect.y as f32),
-                    Point::from_f32(
-                        rect.x as f32 + rect.width as f32,
-                        rect.y as f32 + rect.height as f32,
-                    ),
-                    dark_color,
-                );
-                // Draw mid line if needed
+                    // No theme: the historical hard-coded pair. `from_base` would blend the
+                    // fallback black border and the bevel would vanish, so the tones are stated —
+                    // and, for `Inset`, `shade` is the top-left edge and `light` the bottom-right.
+                    Bevel::from_tones(
+                        Color::rgb(128, 128, 128),
+                        Color::rgb(255, 255, 255),
+                        Color::rgb(128, 128, 128),
+                    )
+                }
+                .with_direction(BevelDirection::Inset);
+                // One pixel, because that is what the `draw_line` calls this replaces painted.
+                bevel.stroke(context, rect, 1);
+
+                // Draw mid line if needed — the same four-line groove the `Raised` arm keeps,
+                // with the pair exchanged.
                 let mid_light = if themed {
                     border.blend(&Color::rgb(0, 0, 0), 0.75)
                 } else {
@@ -450,29 +432,17 @@ impl Frame {
             Color::BLACK,
         );
         // Draw 3D border
-        let light_color = Color::rgb(255, 255, 255);
-        let dark_color = Color::rgb(128, 128, 128);
-        // Outer border (sunken)
-        context.draw_line(
-            Point::from_f32(rect.x as f32, rect.y as f32),
-            Point::from_f32(rect.x as f32 + rect.width as f32, rect.y as f32),
-            dark_color,
-        );
-        context.draw_line(
-            Point::from_f32(rect.x as f32, rect.y as f32),
-            Point::from_f32(rect.x as f32, rect.y as f32 + rect.height as f32),
-            dark_color,
-        );
-        context.draw_line(
-            Point::from_f32(rect.x as f32, rect.y as f32 + rect.height as f32),
-            Point::from_f32(rect.x as f32 + rect.width as f32, rect.y as f32 + rect.height as f32),
-            light_color,
-        );
-        context.draw_line(
-            Point::from_f32(rect.x as f32 + rect.width as f32, rect.y as f32),
-            Point::from_f32(rect.x as f32 + rect.width as f32, rect.y as f32 + rect.height as f32),
-            light_color,
-        );
+        //
+        // This is a **double bevel**: an outer sunken edge and an inner raised one, which is
+        // the classic two-tone panel. Both halves are the relationship `Bevel` states, so they
+        // are two strokes with opposite directions rather than sixteen hand-placed lines — the
+        // whole point of the primitive being that "which edges are lit" is a direction and not
+        // the order of two blocks. The tones are stated with `from_tones` rather than derived
+        // from the fill: as the note above says, the white/grey pair *is* the illusion.
+        let (light_color, dark_color) = (Color::rgb(255, 255, 255), Color::rgb(128, 128, 128));
+        Bevel::from_tones(bg_color, light_color, dark_color)
+            .with_direction(BevelDirection::Inset)
+            .stroke(context, rect, 1);
         // Inner border (raised)
         let inner_rect = Rect::new(
             rect.x + 1,
@@ -480,32 +450,9 @@ impl Frame {
             rect.width.saturating_sub(2),
             rect.height.saturating_sub(2),
         );
-        context.draw_line(
-            Point::new(inner_rect.x, inner_rect.y),
-            Point::new(inner_rect.x + inner_rect.width as i32, inner_rect.y),
-            light_color,
-        );
-        context.draw_line(
-            Point::new(inner_rect.x, inner_rect.y),
-            Point::new(inner_rect.x, inner_rect.y + inner_rect.height as i32),
-            light_color,
-        );
-        context.draw_line(
-            Point::new(inner_rect.x, inner_rect.y + inner_rect.height as i32),
-            Point::new(
-                inner_rect.x + inner_rect.width as i32,
-                inner_rect.y + inner_rect.height as i32,
-            ),
-            dark_color,
-        );
-        context.draw_line(
-            Point::new(inner_rect.x + inner_rect.width as i32, inner_rect.y),
-            Point::new(
-                inner_rect.x + inner_rect.width as i32,
-                inner_rect.y + inner_rect.height as i32,
-            ),
-            dark_color,
-        );
+        Bevel::from_tones(bg_color, light_color, dark_color)
+            .with_direction(BevelDirection::Raised)
+            .stroke(context, inner_rect, 1);
     }
 }
 // Implement Widget trait

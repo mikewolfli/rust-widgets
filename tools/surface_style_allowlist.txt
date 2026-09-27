@@ -15,19 +15,32 @@
 # would force bad migrations. They are separated here so a future reader can see
 # which are bevel work (migratable to `render::bevel`) and which are not.
 # ============================================================================
-#
 # ## Pattern A — a real bevel (lit edge + shaded edge, derived from the border)
 #
-# These ARE the relationship `render::bevel::Bevel` exists to state. They are
-# migratable, one control at a time, and each migration should shrink this list.
-# The gate's ceiling (42) is what stops a NEW one appearing while that happens.
+# These ARE the relationship `render::bevel::Bevel` exists to state, and each one
+# that is migratable has been migrated, one control at a time, and left this list.
+# The three below are the ones a migration could NOT take: they are the arms of a
+# shape `Bevel` deliberately does not model.
 #
 #   src/widget/base_widgets/frame.rs                    — bevel, but only its *four-line
-#       groove* arm; the raised/sunken arms already call `Bevel`. Migrating the groove
-#       means adding a four-line shape to `Bevel`, which is its own change.
-#   src/widget/special_widgets/timeline_widget.rs       — a two-line bevel on the ruler.
-#   src/widget/special_widgets/chip.rs                  — a two-line bevel on the chip face.
-#   src/widget/special_widgets/command_palette.rs       — a two-line bevel on the input well.
+#       groove* arm; the raised/sunken arms already call `Bevel`, and so does the
+#       double bevel in `draw_win_panel_frame`. What is left here is the four-line
+#       groove: a softer highlight and a *deeper* shade, which is a different shape
+#       from a two-line bevel. Migrating it means adding that shape to `Bevel`.
+#
+# ## Pattern A′ — a *derived border*, not a bevel at all
+#
+# FOURTEEN controls used to be on this list under a "two-line bevel" reason that a
+# reader could not have checked — the code at those sites is a single
+# `fill.blend(&Color::BLACK, 0.15)` producing the *border colour* when neither the
+# control's style nor the theme states one. There is no opposite pair and no
+# direction, so it was never bevel work. They now route through `Color::border_of`,
+# which names the relationship, and the gate matched their old expression without
+# being able to tell the two apart. That is fixed at the source: the relationship has
+# a name, so the next reader does not have to re-derive what `0.15` meant.
+#
+# (This is the §10A.6 criterion-3 direction: the count only ever goes down, and every
+# step down is one that a real shared abstraction pays for.)
 #
 # ## Pattern B — a *tint step* for a zebra/hover band, not a bevel
 #
@@ -38,24 +51,13 @@
 # palette layer, not the bevel primitive. Listed with that conclusion stated so the
 # next reader does not "helpfully" migrate them into a shape they are not.
 #
-#   src/widget/container_widgets/stepper.rs
 #   src/widget/container_widgets/toolbox.rs
 #   src/widget/dialog/bottom_sheet.rs
 #   src/widget/display_widgets/color_well.rs
-#   src/widget/menu_toolbar/dropdown_menu.rs
 #   src/widget/misc_widgets/bezier_curve_editor.rs
 #   src/widget/misc_widgets/drop_zone.rs
-#   src/widget/overlay_widgets/refresh_control.rs
-#   src/widget/special_widgets/breadcrumb.rs
 #   src/widget/special_widgets/canvas.rs
-#   src/widget/special_widgets/diff_viewer.rs
-#   src/widget/special_widgets/gantt_widget.rs
-#   src/widget/special_widgets/kanban_board.rs
-#   src/widget/special_widgets/notification_center.rs
 #   src/widget/special_widgets/terminal_view.rs
-#   src/widget/special_widgets/toast/single.rs
-#   src/widget/special_widgets/toast/stack.rs
-#   src/widget/view_widgets/query_builder.rs
 #   src/widget/misc_widgets/barcode_scanner.rs
 #   src/widget/special_widgets/color_picker.rs
 #
@@ -89,9 +91,7 @@
 # ── The measured list (one line per file, with its pattern and reason) ────────
 
 src/widget/advanced_widgets/calendar.rs        C-disabled: lightens the error tone by one edge only
-src/widget/base_widgets/frame.rs                A-bevel: the four-line groove arm; raised/sunken already use Bevel
-src/widget/container_widgets/stepper.rs         B-tint: recessed step band, one shade of the page family
-src/widget/container_widgets/toolbox.rs         B-tint: recessed page band, one shade of the page colour
+src/widget/base_widgets/frame.rs                A-bevel: the four-line groove arm; raised/sunken/double already use Bevel
 src/widget/cupertino/core.rs                    C-disabled: the switch track's lighter/darker pair
 src/widget/dialog/bottom_sheet.rs               B-tint: the scrim darkening, one shade
 src/widget/dialog/file_dialog.rs                C-disabled: a side-panel tint
@@ -110,23 +110,11 @@ src/widget/media_widgets/animated_image.rs      C-disabled: the disabled renditi
 src/widget/media_widgets/hero_animation.rs      C-disabled: the disabled rendition
 src/widget/media_widgets/lottie_widget.rs       C-disabled: the disabled rendition
 src/widget/media_widgets/rive_widget.rs         C-disabled: the disabled rendition
-src/widget/menu_toolbar/dropdown_menu.rs        B-tint: the pressed/hover band, one shade
 src/widget/menu_toolbar/tool_button.rs          C-disabled: the active lighten on the icon
 src/widget/misc_widgets/barcode_scanner.rs      B-tint: the letterbox/scrim, one shade
 src/widget/misc_widgets/bezier_curve_editor.rs  B-tint: the canvas gutter, one shade
 src/widget/misc_widgets/drop_zone.rs            B-tint: the rejected-state band, one shade
-src/widget/overlay_widgets/refresh_control.rs   B-tint: the pull track, one shade
-src/widget/special_widgets/breadcrumb.rs        B-tint: the separator band, one shade
 src/widget/special_widgets/canvas.rs            B-tint: the canvas gutter, one shade
-src/widget/special_widgets/chip.rs              A-bevel: a two-line bevel on the chip face (migratable)
 src/widget/special_widgets/color_picker.rs      B-tint: a palette highlight, one shade
-src/widget/special_widgets/command_palette.rs   A-bevel: a two-line bevel on the input well (migratable)
-src/widget/special_widgets/diff_viewer.rs       B-tint: the diff gutter, one shade
-src/widget/special_widgets/gantt_widget.rs      B-tint: the row band, one shade
-src/widget/special_widgets/kanban_board.rs      B-tint: the column band, one shade
-src/widget/special_widgets/notification_center.rs B-tint: the panel recess, one shade
 src/widget/special_widgets/terminal_view.rs     B-tint: the chrome bands, one shade each
-src/widget/special_widgets/timeline_widget.rs   A-bevel: a two-line bevel on the ruler (migratable)
-src/widget/special_widgets/toast/single.rs      B-tint: the toast recess, one shade
-src/widget/special_widgets/toast/stack.rs       B-tint: the stack recess, one shade
-src/widget/view_widgets/query_builder.rs        B-tint: the rule band, one shade
+src/widget/container_widgets/toolbox.rs         B-tint: recessed page band, one shade of the page colour

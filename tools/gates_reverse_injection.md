@@ -52,7 +52,7 @@
 | `check_locking.sh` | — | — |
 | `check_error_messages.py` | — | — |
 | `check_theme_fixtures.sh` | — | — |
-| `check_surface_style_is_declared_not_hand_rolled.sh` | — | — |
+| `check_surface_style_is_declared_not_hand_rolled.sh` | appended `fn _probe() -> Color { Color::RED.blend(&Color::WHITE, 0.3) }` to `src/widget/base_widgets/label.rs` | `FAIL  29 files hand-derive a bevel; the ceiling is 28.` then `Offending files not already on the list: src/widget/base_widgets/label.rs` |
 
 > **How to add a line.** Run the gate, inject something that must trip it, run it again, and paste
 > the gate's own failure text into the `reported` column. If it does not fail, the gate is either

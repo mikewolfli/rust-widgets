@@ -398,7 +398,7 @@ impl Draw for CommandPalette {
         let border = style
             .border_color
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))
-            .unwrap_or_else(|| background.blend(&Color::BLACK, 0.15));
+            .unwrap_or_else(|| crate::core::Color::border_of(background));
         let text_color = style
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))

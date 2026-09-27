@@ -28,13 +28,21 @@
 #
 # The count, and why it is a one-way ratchet
 # ------------------------------------------
-# `frame.rs` has already been migrated to the `Bevel` primitive, so the measured
-# baseline is 42, not the 43 the plan recorded at writing time. This gate does not
-# demand the number reach zero in one step — that would be a rewrite, not a fix,
-# and it would have to be done blind. It demands the number **never rise**, and
+# `frame.rs`'s raised/sunken arms and its `draw_win_panel_frame` double bevel have
+# been migrated to the `Bevel` primitive, and fourteen controls have had their derived
+# *border* routed through `Color::border_of`. The measured baseline is therefore 28,
+# down from the 43 the plan recorded at writing time. This gate does not demand the
+# number reach zero — what remains are shapes the bevel primitive does not model (see
+# `tools/surface_style_allowlist.txt`) — it demands the number **never rise**, and
 # that every file still on the list is named in an allowlist WITH A REASON. A new
 # hand-rolled bevel therefore fails the gate at the moment it is written, which is
 # the only moment it is cheap to fix.
+#
+# The fourteen that left are worth a note, because the reason they were on the list
+# was itself wrong: the gate matched `fill.blend(&Color::BLACK, 0.15)`, which those
+# sites used to derive a *border colour*, not to draw a lit/shaded edge pair. Labeling
+# them "two-line bevels" made the entry look examined while leaving the relationship
+# without a name. `Color::border_of` is that name.
 #
 # Why the allowlist carries a reason, not just a path
 # --------------------------------------------------
@@ -51,9 +59,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-# The measured ceiling. Not "0" because migrating 42 controls is a separate,
-# later job; the number going UP is the defect this gate is for.
-CEILING=42
+# The measured ceiling. Not "0" because the remaining 28 are shapes the bevel
+# primitive does not model (a four-line groove; a one-sided tint step; a disabled
+# rendition) — see `tools/surface_style_allowlist.txt`. The number going UP is the
+# defect this gate is for.
+CEILING=28
 
 ALLOWLIST="tools/surface_style_allowlist.txt"
 

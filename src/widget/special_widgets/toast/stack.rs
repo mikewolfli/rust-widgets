@@ -313,7 +313,7 @@ impl Draw for ToastStack {
         let border = style
             .border_color
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))
-            .unwrap_or_else(|| resolved.blend(&Color::BLACK, 0.15));
+            .unwrap_or_else(|| crate::core::Color::border_of(resolved));
         let text_color = style
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
