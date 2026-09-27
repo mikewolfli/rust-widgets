@@ -43,9 +43,15 @@
 //! the boundary principle #101 requires to be written down.
 
 // This gate walks the capability registry and reads the theme, neither of which a stripped
-// profile has, so it is declared for a **device** profile. `not(mini)` was too weak:
-// `embedded` is stripped too, and the build failed there with `cannot find WidgetFactory`.
-#![cfg(all(not(feature = "mini"), not(feature = "embedded"), not(target_arch = "wasm32")))]
+// profile has, so it is declared for a **device** profile with an unstripped widget set — the
+// conjunction `build.rs` names `full_widgets` (principle #47).
+//
+// It used to read `all(not(mini), not(embedded), not(wasm32))`, which is a list of the profiles
+// someone had already seen fail rather than a statement of the requirement. A **cross target**
+// such as `aarch64-unknown-linux-ohos` matches none of those three, so the gate passed and the
+// file then failed to compile with `no associated function new_with_defaults found for
+// WidgetFactory` — the registry it needs is behind `full_widgets`.
+#![cfg(full_widgets)]
 
 use rust_widgets::core::Rect;
 use rust_widgets::widget::capability::WidgetFactory;

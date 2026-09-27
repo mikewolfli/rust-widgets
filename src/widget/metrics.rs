@@ -1300,6 +1300,33 @@ pub mod dimensions {
     /// Square, so one number serves both axes: the icon box plus its own padding.
     pub const TOOL_BUTTON_SIZE: u32 = 28;
 
+    /// Horizontal padding between a tool button's frame and its content box: 4.
+    ///
+    /// Tighter than [`BUTTON_PADDING_H`] because a tool button is compact chrome: its label is
+    /// often a single glyph and its icon already carries the button's own margin.
+    pub const TOOL_BUTTON_PADDING: u32 = 4;
+
+    /// The square a tool button's icon occupies when its style asks for one: 16.
+    ///
+    /// # Why this is its own number rather than [`BUTTON_ICON_SIZE`]
+    ///
+    /// A tool button is a 28 px square; an 18 px icon leaves it 5 px of air per side, which reads
+    /// as a push button squeezed into a tool bar. Sixteen keeps the same 6 px margin the compact
+    /// row's own controls use, so a tool bar's icon-only buttons look like one family. The value
+    /// is named here rather than derived because the derivation would be "28 minus a margin", and
+    /// the margin is the thing being chosen.
+    pub const TOOL_BUTTON_ICON_SIZE: u32 = 16;
+
+    /// The gap between a tool button's icon and its label when the style puts them on one line: 4.
+    pub const TOOL_BUTTON_ICON_SPACING: u32 = 4;
+
+    /// Width reserved at a tool button's trailing edge for its popup indicator arrow: 12.
+    ///
+    /// The arrow is drawn by the button itself, so the room has to be taken out of the content box
+    /// before the icon and the label are laid out in it -- otherwise the label runs under the
+    /// glyph. Twelve is the arrow's own advance plus a small gap.
+    pub const TOOL_BUTTON_POPUP_ARROW_RESERVE: u32 = 12;
+
     /// A `bezier_curve_editor`'s intrinsic width: 300.
     ///
     /// The graph's own box rather than a fraction of the area it is given: a curve editor in a

@@ -72,7 +72,7 @@ echo "  PASS  declaration_alignment_test (Q1/Q2/Q3)"
 echo "[2/2] census: the counted table is present and consistent with the registry"
 if [[ ! -f "$CENSUS" ]]; then
     echo "  FAIL  $CENSUS is missing; regenerate with:"
-    echo "        python3 tools/check_declaration_implementation_alignment.py --update"
+    echo "        $PYTHON tools/check_declaration_implementation_alignment.py --update"
     exit 1
 fi
 

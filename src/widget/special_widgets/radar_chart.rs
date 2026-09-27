@@ -307,7 +307,26 @@ impl RadarChart {
     }
 
     /// The axis whose spoke is nearest `pos`, when the pointer is in the plot.
+    /// The axis nearest `pos`'s bearing from the centre, or `None` when `pos` is outside the
+    /// control.
+    ///
+    /// # Why the containment test comes first
+    ///
+    /// This used to reduce the point to an *angle* about the centre and snap that to the nearest
+    /// spoke, with no rectangle test at all. An angle is defined for every point in the plane, so a
+    /// press anywhere on the window -- in a sibling control, on the window's own chrome, in another
+    /// window entirely once the point is translated -- still resolved to *some* axis, and the press
+    /// arm then reported a series click for a gesture that never touched the chart. `nearest_series`
+    /// below cannot catch it either: it picks the closest of a fixed series set with no distance
+    /// threshold, so it always answers `Some`.
+    ///
+    /// The guard therefore belongs here, at the outermost of the two, and it is the same predicate
+    /// every other control in the crate uses (`contains_point_with_touch_expansion`, which adds the
+    /// device class's touch-target expansion).
     fn axis_at(&self, pos: Point) -> Option<usize> {
+        if !self.base.contains_point_with_touch_expansion(pos) {
+            return None;
+        }
         let (center, _) = self.geometry_center_radius()?;
         if self.axis_count() == 0 {
             return None;
@@ -1018,6 +1037,54 @@ mod tests {
         let vertex = chart.vertex(center, radius, chart.axis_angle(0), 80.0, max);
         chart.handle_event(&Event::mouse_press(vertex.x, vertex.y, 1));
         assert_eq!(*clicked.lock().expect("click lock poisoned"), vec![0]);
+    }
+
+    /// A press that never touched the chart must not report a series click.
+    ///
+    /// # Why this is the test the geometry assertion above could not replace
+    ///
+    /// `axis_at` used to reduce the point to an *angle* about the centre with no rectangle test. An
+    /// angle exists for every point in the plane, so a press in a sibling control -- or on the
+    /// window chrome -- still resolved to *some* axis, and `nearest_series` then answered `Some`
+    /// because it picks the closest of a fixed set with no distance threshold. The vertex test above
+    /// cannot see that: it presses *inside*, where both the old and the new code agree.
+    ///
+    /// The point is chosen well outside on every side, because "outside" was not previously
+    /// distinguished from "inside" in any direction: the old guard had no x bound, no y bound and no
+    /// radius test.
+    #[test]
+    fn a_press_outside_the_chart_reports_no_series() {
+        let mut chart = chart();
+        chart.add_series(vec![20.0, 20.0, 20.0, 20.0, 20.0]);
+        let clicks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sink = clicks.clone();
+        chart.series_clicked.connect(move |_| {
+            sink.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        let rect = chart.geometry();
+        // One point just outside each edge and one far away, so a guard on a single side would not
+        // pass this.
+        let outside = [
+            Point::new(rect.x - 40, rect.y + rect.height as i32 / 2),
+            Point::new(rect.x + rect.width as i32 + 40, rect.y + rect.height as i32 / 2),
+            Point::new(rect.x + rect.width as i32 / 2, rect.y - 40),
+            Point::new(rect.x + rect.width as i32 / 2, rect.y + rect.height as i32 + 40),
+            Point::new(5000, 5000),
+        ];
+        for point in outside {
+            assert_eq!(
+                chart.axis_at(point),
+                None,
+                "a point outside the control at {point:?} must resolve to no axis"
+            );
+            chart.handle_event(&Event::mouse_press(point.x, point.y, 1));
+        }
+        assert_eq!(
+            clicks.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a press outside the chart emitted a series click"
+        );
     }
 
     #[test]

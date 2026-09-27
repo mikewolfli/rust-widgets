@@ -561,6 +561,12 @@ mod tests {
     ///
     /// The bound is deliberately tight: it has to absorb the outline inset (≤ 2 px) and nothing
     /// more, so a label anchored a whole tick away still fails.
+    ///
+    /// Gated with its only consumers: the assertions below are `#[cfg(feature = "chart")]`, because
+    /// they exercise the shared tick engine. An ungated constant became dead code in
+    /// `tablet`/`mobile`/`mini` — where `chart` is off — and `clippy -D warnings` reported it there
+    /// while `desktop` stayed green.
+    #[cfg(feature = "chart")]
     const INK_INSET_TOLERANCE: i32 = 3;
 
     #[test]

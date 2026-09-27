@@ -794,6 +794,16 @@ mod tests {
     /// other is the failure mode this crate has paid for before — a JSON-overridden control whose
     /// property silently did nothing. `serde(default)` matters as much as the value: a theme written
     /// before this field existed must load as "the face's own space", not fail to parse.
+    ///
+    /// # Why the gate matches the sibling test above
+    ///
+    /// The JSON half needs `serde` *and* `serde_json`, both optional, and a target that has
+    /// `embedded_surface` has neither staged for a host test. Without this gate the test compiled
+    /// unconditionally and the `serde_json` path failed to resolve on the `ohos` cross target -- a
+    /// build break in `check_harmony_cross.sh` for a test that target cannot run anyway. The gate is
+    /// spelled exactly as the neighbouring `font_*_serde` test spells it, so the two cannot drift
+    /// into disagreeing about which configuration can parse a theme.
+    #[cfg(all(test, feature = "serde", feature = "serde_json", not(embedded_surface)))]
     #[test]
     fn word_spacing_survives_the_builder_and_serde() {
         use crate::compat::MiniToString;

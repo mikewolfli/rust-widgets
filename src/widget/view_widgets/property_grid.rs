@@ -486,8 +486,24 @@ impl EventHandler for PropertyGrid {
                     // cast `click_y` to `u32` before subtracting, which turned a negative
                     // offset into a huge row index.
                     let click_y = pos.y - content.y;
+                    // The row index below is derived from `pos.y` **alone**: nothing in that
+                    // arithmetic looks at `x`, and nothing tests whether `y` is inside the control.
+                    // Without this guard a press one column over in a dialog -- or in the window's
+                    // own margin -- selected whichever property happened to sit at that height, and
+                    // emitted `clicked` for a gesture that never touched the grid.
+                    //
+                    // # Why the guard gates *selection* and not the whole arm
+                    //
+                    // `property_grid_click_above_the_widget_deselects` pins a deliberate
+                    // behaviour: a press outside the rows **deselects**. Returning early for every
+                    // point outside the control would silently drop that, turning an
+                    // outside-the-widget press into a no-op. The two requirements are not in
+                    // conflict once separated: containment decides whether a *row can be chosen*,
+                    // and the click's own `y` decides whether the existing selection *stands*.
+                    // A press outside therefore still clears the selection and still cannot select.
+                    let over_the_grid = self.base.contains_point_with_touch_expansion(*pos);
 
-                    if click_y >= FIRST_ROW_TOP as i32 {
+                    if over_the_grid && click_y >= FIRST_ROW_TOP as i32 {
                         // `draw` paints row `scroll_offset + i` at
                         // `y = content.y + FIRST_ROW_TOP + i * ROW_HEIGHT`, so this is the
                         // inverse of that mapping. `>=` (not `>`) matters: a click on the
@@ -776,6 +792,53 @@ mod tests {
         // The last painted row is still reachable.
         pg.handle_event(&Event::MousePress { pos: Point::new(10, 190), button: 1 });
         assert_eq!(pg.selected_index(), Some(6));
+    }
+
+    /// A click beside the grid must not select a row, however well its `y` maps.
+    ///
+    /// # Why the `y` axis alone was not enough
+    ///
+    /// The row index is derived from `pos.y` alone -- an offset from the content box's top edge
+    /// divided by the row height. Nothing in that arithmetic looks at `x`, and until this test the
+    /// arm did not either, so a press one column over in a dialog, or in the window's own margin,
+    /// selected whichever property happened to sit at that height. The press was outside the control
+    /// and the grid answered as though it were inside.
+    ///
+    /// `property_grid_click_above_the_widget_deselects` covers the vertical axis, which the old code
+    /// *did* bound (via `click_y >= FIRST_ROW_TOP`). This one covers the horizontal axis, which had
+    /// no bound at all -- so neither test subsumes the other.
+    #[test]
+    fn property_grid_click_beside_the_grid_does_not_select() {
+        let rows_top = |pg: &PropertyGrid| pg.content_rect().y + FIRST_ROW_TOP as i32;
+        // A `y` that maps onto row 0, so only the containment test can reject these points.
+        let y_inside_row_zero = |pg: &PropertyGrid| rows_top(pg) + ROW_HEIGHT as i32 / 2;
+
+        let build = || {
+            let mut pg = PropertyGrid::new(Rect::new(0, 0, 300, 200));
+            pg.add_property("A", "1", true);
+            pg.add_property("B", "2", true);
+            pg
+        };
+
+        // The baseline: the same `y` *inside* the grid does select, so a green result below cannot
+        // be explained by the point being rejected for some other reason.
+        let mut inside = build();
+        inside.handle_event(&Event::MousePress {
+            pos: Point::new(10, y_inside_row_zero(&inside)),
+            button: 1,
+        });
+        assert_eq!(inside.selected_index(), Some(0), "the baseline press must select row 0");
+
+        for (label, x) in [("left", -5), ("right", 305), ("far right", 5000)] {
+            let mut pg = build();
+            let y = y_inside_row_zero(&pg);
+            pg.handle_event(&Event::MousePress { pos: Point::new(x, y), button: 1 });
+            assert_eq!(
+                pg.selected_index(),
+                None,
+                "a press {label} of the grid at x={x} (y={y} maps onto row 0) must not select"
+            );
+        }
     }
 
     #[test]

@@ -419,7 +419,18 @@ def main() -> int:
             out.append("")
 
     output = DEFAULT_OUTPUT
-    output.write_text("\n".join(out) + "\n", encoding="utf-8")
+    # `newline=""` is what keeps this byte-stable across hosts.
+    #
+    # `Path.write_text` translates every `\n` to the platform's separator when `newline` is left at
+    # its default, so on Windows this wrote CRLF while the committed `control.md` is LF. The gate
+    # compares the two files **byte for byte** (that is the whole point of step [5/5]), so it could
+    # never pass on Windows no matter how current the page was, and the diff it printed was all 1244
+    # lines -- which reads as "the page is rewritten" rather than "every line has a carriage return".
+    #
+    # The repository stores LF (`.gitattributes`; the gate's own snapshots are compared the same way),
+    # so the file this produces must be LF on every host. Passing `newline=""` disables the
+    # translation and makes the output the bytes this function actually computes.
+    output.write_text("\n".join(out) + "\n", encoding="utf-8", newline="")
     print(f"wrote {output.relative_to(ROOT)}: {len(names)} controls in {len(ordered)} families")
     for family in ordered:
         print(f"  {family}: {len(grouped[family])}")

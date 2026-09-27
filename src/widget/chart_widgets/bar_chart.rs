@@ -649,6 +649,12 @@ mod tests {
     ///
     /// The bound is deliberately tight: it has to absorb the outline inset (≤ 2 px) and nothing
     /// more, so a run anchored a whole entry away still fails.
+    ///
+    /// Gated with its only consumers: the two assertions below are `#[cfg(feature = "chart")]`,
+    /// because they exercise the shared tick engine, which does not exist without that feature. An
+    /// ungated constant therefore became dead code in `tablet`/`mobile`/`mini` — where `chart` is
+    /// off — and `clippy -D warnings` reported it there while `desktop` stayed green.
+    #[cfg(feature = "chart")]
     const INK_INSET_TOLERANCE: i32 = 3;
 
     /// The widget must render through the shared chart engine rather than its

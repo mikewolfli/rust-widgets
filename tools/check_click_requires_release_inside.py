@@ -72,6 +72,22 @@ def production_lines(path):
     return out
 
 
+def as_posix_path(path):
+    """`path` with forward slashes on every host.
+
+    The exemption table is written and read with forward slashes, because every other path in this
+    repository is (`themes/…`, `src/widget/…` in the docs). `str(pathlib.Path(...))` does not agree:
+    on Windows it produces backslashes, so `str(path) in exempt` never matched and *every* exempted
+    control was reported as an offender. On Linux it happened to agree, which is why the gate read
+    green in CI while failing on a Windows checkout. Normalising both sides removes the host from the
+    question instead of recording the host in the table.
+
+    The same discipline as principle #44: an OS path convention belongs to the API that owns it, not
+    to every comparison that happens to touch a path.
+    """
+    return pathlib.PurePath(path).as_posix()
+
+
 def exempt_paths():
     """The exemption table's first whitespace-separated field of each non-comment line."""
     table = pathlib.Path("tools/click_release_exemptions.txt")
@@ -82,7 +98,7 @@ def exempt_paths():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        names.add(stripped.split()[0])
+        names.add(as_posix_path(stripped.split()[0]))
     return names
 
 
@@ -97,7 +113,9 @@ def main():
             continue
         checked += 1
 
-        key = str(path)
+        # Normalised on both sides -- see `as_posix_path`. The scan's own findings print the host
+        # spelling (`str(path)`), which is what a reader wants: the path they can click through.
+        key = as_posix_path(path)
         if key in exempt:
             continue
         if any(word in text for word in CONTAINMENT):

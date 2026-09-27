@@ -81,7 +81,10 @@ fi
 # always wins.
 if [[ -z "${OHOS_SDK_NATIVE:-}" ]]; then
     for root in "${HOS_SDK_HOME:-}" "$HOME/Library/OpenHarmony/Sdk" \
-                "$HOME/OpenHarmony/Sdk" /opt/OpenHarmony/Sdk; do
+                "$HOME/OpenHarmony/Sdk" /opt/OpenHarmony/Sdk \
+                "${USERPROFILE:-}/AppData/Local/Huawei/Sdk" \
+                "${USERPROFILE:-}/AppData/Local/OpenHarmony/Sdk" \
+                /c/Tools/Huawei/SDK /c/Tools/OpenHarmony/Sdk; do
         [[ -n "$root" && -d "$root" ]] || continue
         # A root that *is* the native dir, or the newest API level inside it.
         if [[ -d "$root/native/llvm" ]]; then

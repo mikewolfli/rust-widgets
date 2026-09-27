@@ -80,7 +80,16 @@ esac
 # ── Reverse injection: the mutation this gate exists to catch ───────────────────────────────────
 INJECT_DIR="$(mktemp -d)"
 trap 'rm -rf "$INJECT_DIR"' EXIT
-python3 - "$ROUTING" "$INJECT_DIR/injected.rs" <<'PY'
+# `"$PYTHON"`, not a bare `python3`, and the status is checked.
+#
+# Both halves matter. The name: this file sources `lib_python.sh` above (line 65) precisely because
+# `python3` is not a reliable name on Windows, and this one call site was left spelling it directly.
+# The status: without the check, a `python3` that does not exist produces *no* `injected.rs`, and the
+# scan below then runs against a missing file. It reports non-zero findings for that, which is exactly
+# what the assertion below treats as "the mutation was caught" -- so the gate printed
+# `routing-match checks passed` while its reverse injection had not run at all. A gate whose own
+# mutation test silently no-ops is worse than one that fails, because nothing is reported.
+if ! "$PYTHON" - "$ROUTING" "$INJECT_DIR/injected.rs" <<'PY'
 import pathlib, sys
 source, destination = sys.argv[1], sys.argv[2]
 text = pathlib.Path(source).read_text()
@@ -95,6 +104,10 @@ text = text.replace(
 )
 pathlib.Path(destination).write_text(text)
 PY
+then
+    echo "FAIL: the reverse injection could not be written; this gate did not verify anything"
+    exit 1
+fi
 if "$PYTHON" tools/routing_match_scan.py --routing "$INJECT_DIR/injected.rs" \
         | grep -q "findings=0"; then
     echo "FAIL: appending a wildcard arm did not fail the scan, so the gate cannot see the mutation"

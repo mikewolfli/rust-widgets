@@ -36,23 +36,14 @@
 # clears `mouse_pressed` and emits nothing.
 src/widget/special_widgets/grid.rs    press-arm-only    containment via cell_at, which bounds-checks rect in cell_at_y/cell_at_x
 
-# NOT AN ALTERNATIVE MECHANISM — a live defect, recorded so the finding stays visible.
-# `nearest_series` (radar_chart.rs:711) is bounded (it picks the nearest of a fixed series set), but
-# the guard above it, `axis_at` (radar_chart.rs:292), is not: it reduces the point to an *angle*
-# about the centre and has no radius or rectangle test, so a pointer far outside the control still
-# resolves to an axis. The click then fires from the PRESS arm (radar_chart.rs:691) on a press that
-# is outside the control.
-# REMOVE THIS ENTRY WHEN FIXED. The fix is one line at axis_at:
-#     let (center, radius) = self.geometry_center_radius()?;
-#     if !self.base.geometry().contains_point(pos) { return None; }
-src/widget/special_widgets/radar_chart.rs    DEFECT-press-outside    axis_at has no bounds test (only an angle), so a press outside still resolves to an axis
-
-# NOT AN ALTERNATIVE MECHANISM — a live defect, recorded so the finding stays visible.
-# The press/release arm (property_grid.rs:421) computes `click_y = pos.y - rect.y` and bounds the
-# row index, but never tests that the point is over the control: there is no x bound and no
-# containment call anywhere in the file. A press or release left of, right of or above the control
-# with a `y` that maps onto a visible row therefore selects that row and emits `clicked`
-# (property_grid.rs:448).
-# REMOVE THIS ENTRY WHEN FIXED. The fix is one line at the top of the arm:
-#     if !self.base.geometry().contains_point(*pos) { return; }
-src/widget/view_widgets/property_grid.rs    DEFECT-press-maps-by-y    no containment test: the click is indexed from pos.y alone, with no x bound
+# FIXED — `radar_chart` and `property_grid` were recorded here as live defects and both are now
+# guarded at the source, so their entries are gone rather than kept as stale licences (a stale
+# exemption is worse than none: it would silently cover the next defect in the same file).
+#
+#   radar_chart.rs  `axis_at` now returns `None` for a point outside the control, so the press arm
+#                   cannot resolve an axis for a press that never touched the chart.
+#   property_grid.rs The press/release arm now returns early for a point outside the grid, so a
+#                   press left of, right of or below it can no longer select a row by `y` alone.
+#
+# Both fixes are pinned by tests that drive the control with a point outside its geometry and assert
+# `clicked` stays silent -- see each control's own test module.

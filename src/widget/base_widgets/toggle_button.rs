@@ -804,6 +804,16 @@ mod tests {
     /// The plan asks for "三帧几何互异" on a button. A toggle button's shape does not move, so the
     /// observable is the **fill**: at `t=0` it is the resting colour, mid-transition it is between
     /// the resting and interactive colours, and at the end it has settled on the interactive one.
+    ///
+    /// # Why this is gated with `full_widgets`
+    ///
+    /// It installs the preset appearances through `widget::census`, which is itself
+    /// `#[cfg(full_widgets)]` — and so is `crate::theme`. On a stripped target (an `ohos`/
+    /// `android` build, where `full_widgets` is off) naming either one failed to *compile*:
+    /// `cannot find `census` in `widget`` / `cannot find `theme` in `crate``. The test asserts a
+    /// property of an installed palette, so a build that has no palette module cannot run it and
+    /// should not try; the gate says exactly that.
+    #[cfg(full_widgets)]
     #[test]
     fn the_interaction_transition_moves_the_fill_across_three_frames() {
         let _guard = crate::style::theme_test_guard();

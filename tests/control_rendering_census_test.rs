@@ -53,11 +53,20 @@
 //! control's rectangle, which is the one property both backends must share.
 
 // The census needs the theme module and the full widget registry, which exist only on a
-// **device** profile (`desktop`/`tablet`/`mobile`). `not(mini)` was too weak: `embedded` is
-// also stripped of both, so the test failed to compile there with `cannot find theme in
-// rust_widgets`. Naming the requirement directly is what keeps this true when a profile is
-// added, rather than a `not(...)` list that has to be extended.
-#![cfg(all(not(feature = "mini"), not(feature = "embedded"), not(target_arch = "wasm32")))]
+// **device** profile with an unstripped widget set. That conjunction has a name —
+// `full_widgets` (declared in `build.rs`, principle #47) — and this file now names it.
+//
+// # Why the `not(...)` list it used to carry was not enough
+//
+// It read `all(not(mini), not(embedded), not(wasm32))`, which is a description of the profiles
+// someone had already seen fail rather than of the requirement. A **cross target** is neither
+// `mini` nor `embedded`, so the gate passed — and the file then failed to compile on
+// `aarch64-unknown-linux-ohos` with `cannot find theme in rust_widgets` and
+// `cannot find census in widget`. The comment's own closing sentence asked for exactly this fix:
+// "Naming the requirement directly is what keeps this true when a profile is added, rather than a
+// `not(...)` list that has to be extended." A target is not a profile, but the argument is the
+// same one.
+#![cfg(full_widgets)]
 
 use rust_widgets::theme::theme_test_guard;
 use rust_widgets::widget::census::{

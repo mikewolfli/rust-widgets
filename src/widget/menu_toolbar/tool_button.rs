@@ -2,24 +2,26 @@
 // SPDX-License-Identifier: MIT
 
 //! Tool button widget.
-use crate::compat::Vec;
-use crate::core::{Color, Font, HorizontalAlignment, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
+use crate::style::EdgeOffsets;
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::path::{Path, PathBuf};
+
 /// Tool button popup mode.
 ///
 /// Selects how the button's attached menu is presented. The mode is stored and
-/// exposed as a property, but the widget does not itself own or show a menu, so
-/// the value is currently a hint for the containment layer that wires the button
-/// to one.
+/// exposed as a property, but the widget does not itself own or show a menu: it
+/// paints the popup indicator arrow and reserves its room, and the value tells
+/// the containment layer that wires the button to a menu how to present it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolButtonPopupMode {
     /// Opening the menu requires a long or delayed press, so a quick click
@@ -31,6 +33,7 @@ pub enum ToolButtonPopupMode {
     /// A click opens the menu immediately; there is no separate main action.
     InstantPopup,
 }
+
 /// Tool button style.
 ///
 /// Selects which of the text and icon parts are painted, and how they are arranged when both are
@@ -54,9 +57,10 @@ pub enum ToolButtonStyle {
     /// Defer to the enclosing tool bar's style rather than setting one here.
     FollowStyle,
 }
+
 /// Tool button widget.
 ///
-/// A compact button for tool bars and menu surfaces. It can act as a plain push
+/// A compact icon-or-text button for tool bars and menu surfaces. It can act as a plain push
 /// button or, when [`ToolButton::set_checkable`] is enabled, as a toggle whose
 /// state is exposed through [`ToolButton::is_checked`].
 ///
@@ -73,29 +77,8 @@ pub enum ToolButtonStyle {
 /// this control's resolved style, and falls back to the previous literal when no theme is
 /// active. The interaction states are derived from that fill rather than hardcoded, so
 /// pressed, checked and hovered remain distinguishable on any appearance. The label is
-/// centred and fades toward the fill while the button is disabled. The icon is loaded from the path
-/// [`ToolButton::set_icon`] stores, once per path, and is laid out by [`ToolButtonStyle`].
-/// Horizontal padding between the button's edge and its label.
-const BUTTON_PADDING: i32 = 4;
-
-/// The square an icon occupies when the style asks for one, in logical pixels.
-///
-/// The same size a `Button`'s own icon uses, so two toolbar-shaped controls do not disagree about
-/// how big an icon is.
-const ICON_SIZE: u32 = 16;
-
-/// The gap between the icon and the label when the style puts them on one line.
-const ICON_SPACING: u32 = 4;
-
-/// Width reserved at the trailing edge for the popup indicator arrow.
-const POPUP_ARROW_RESERVE: i32 = 12;
-
-/// Tool button widget.
-///
-/// A `ToolButton` is a compact icon-or-text button for a toolbar strip: it can be
-/// checkable, can carry a popup-menu indicator, and can opt into `auto_raise` so it
-/// stays flat until the pointer is over it. Chrome resolves the explicit style first,
-/// then the theme, so its fill, ink and accent all move with the active appearance.
+/// centred and fades toward the fill while the button is disabled. The icon is loaded from the
+/// path [`ToolButton::set_icon`] stores, once per path, and is laid out by [`ToolButtonStyle`].
 pub struct ToolButton {
     base: BaseWidget,
     text: String,
@@ -128,13 +111,15 @@ pub struct ToolButton {
     /// handlers that do not care about the checked state.
     pub triggered: GenericSignal,
 }
+
 impl ToolButton {
     /// Creates a tool button labelled `text` occupying `geometry`.
     ///
     /// The label may be any string-convertible value. The defaults are: no icon,
     /// not checkable and unchecked, [`ToolButtonPopupMode::DelayedPopup`],
     /// [`ToolButtonStyle::IconOnly`], and auto-raise off. Note that the default
-    /// style hides the label even though one is set.
+    /// style hides the label even though one is set, but only once an icon is
+    /// available to replace it -- see [`ToolButton::wants_label`].
     pub fn new(text: impl Into<String>, geometry: Rect) -> Self {
         let text = text.into();
         Self {
@@ -155,6 +140,7 @@ impl ToolButton {
             triggered: GenericSignal::new(),
         }
     }
+
     /// Returns the button's label.
     ///
     /// The label is stored whether or not the current [`ToolButtonStyle`]
@@ -162,53 +148,56 @@ impl ToolButton {
     pub fn text(&self) -> &str {
         &self.text
     }
+
     /// Returns the icon's file path, or `None` when no icon has been set.
     ///
     /// The path is returned as given; nothing verifies that the file exists or
-    /// that it decodes as an image.
+    /// that it decodes as an image. The decode happens lazily on the first paint,
+    /// so a caller that sets an icon on a control it never shows pays nothing.
     pub fn icon(&self) -> Option<&Path> {
         self.icon.as_deref()
     }
+
     /// Returns whether the button toggles rather than acting as a momentary
     /// push button.
     pub fn is_checkable(&self) -> bool {
         self.checkable
     }
+
     /// Returns whether the button is currently checked.
     ///
     /// Always `false` for a non-checkable button.
     pub fn is_checked(&self) -> bool {
         self.checked
     }
+
     /// Returns how the button's attached menu should be presented.
     pub fn popup_mode(&self) -> ToolButtonPopupMode {
         self.popup_mode
     }
+
     /// Returns which parts of the button are painted.
     pub fn button_style(&self) -> ToolButtonStyle {
         self.button_style
     }
+
     /// Returns whether the button raises itself out of a tool bar when hovered.
     pub fn auto_raise(&self) -> bool {
         self.auto_raise
     }
+
     /// Sets the button's label and requests a redraw.
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.text = text.into();
         self.base.request_redraw();
     }
+
     /// Sets or clears the icon path and requests a redraw.
     ///
     /// The path is stored verbatim and decoded lazily by [`Self::resolved_icon`] on the first
     /// paint -- not here, because a caller that sets an icon on a control it never shows should not
     /// pay for the decode, and because a decode at set time would have to run inside the event
     /// handler that called it.
-    ///
-    /// # What was dead, and what proves it is alive now
-    ///
-    /// The path was stored, published (getter, setter, schema row, round-trip test) and read by
-    /// nothing: `draw` never looked at it, and the control's own doc said so -- "the icon path is
-    /// stored but not decoded or painted by this widget".
     pub fn set_icon(&mut self, icon: Option<PathBuf>) {
         if self.icon == icon {
             return;
@@ -231,10 +220,10 @@ impl ToolButton {
     /// same fallback `avatar` uses for the same reason: a toolbar's shape must not change because
     /// one of its images is missing.
     ///
-    /// Two layers, as in `avatar`: `icon_pixels_key` is the per-instance string compare that keeps
-    /// the per-frame path cheap, and [`crate::image::cache`] is what makes **twelve buttons on one
-    /// icon** decode it once. Before the cache existed this method had a private memo and nothing
-    /// else, so a toolbar decoded the same file once per button.
+    /// # Two layers, as in `avatar`
+    ///
+    /// `icon_pixels_key` is the per-instance string compare that keeps the per-frame path cheap, and
+    /// [`crate::image::cache`] is what makes **twelve buttons on one icon** decode it once.
     #[cfg(all(feature = "image", not(alloc_frugal)))]
     fn resolved_icon(&mut self) -> Option<alloc::sync::Arc<Vec<u8>>> {
         let path = self.icon.as_ref()?;
@@ -248,6 +237,7 @@ impl ToolButton {
         }
         self.icon_pixels.clone()
     }
+
     /// Enables or disables checkable behaviour and requests a redraw.
     ///
     /// Turning checkability **off** also clears the checked state without
@@ -260,11 +250,13 @@ impl ToolButton {
         }
         self.base.request_redraw();
     }
+
     /// Sets the popup mode and requests a redraw.
     pub fn set_popup_mode(&mut self, mode: ToolButtonPopupMode) {
         self.popup_mode = mode;
         self.base.request_redraw();
     }
+
     /// Sets the button style and requests a redraw.
     pub fn set_button_style(&mut self, style: ToolButtonStyle) {
         self.button_style = style;
@@ -277,6 +269,14 @@ impl ToolButton {
     /// that asks for an icon the control does not have is a button with nothing to show, so every
     /// caller that would ask "icon only?" has to re-ask "but is there an icon?". Answering once
     /// keeps a style change and a `set_icon(None)` from disagreeing about the layout.
+    ///
+    /// # Why the answer is a *place*, not a *path*
+    ///
+    /// "There is an icon path" is not the same as "there is an icon to draw": the file may not
+    /// exist, or may not decode. The layout is therefore derived from where a *set* icon path
+    /// lands, not from whether its bytes loaded, so a missing file cannot shift the label (that is
+    /// [`Self::pixels_available`]'s separate question, and it only decides whether pixels are
+    /// painted).
     ///
     /// # Why `IconOnly` still reports `false` without an icon
     ///
@@ -301,19 +301,24 @@ impl ToolButton {
         }
     }
 
-    /// The button's content box: its own frame inset by [`BUTTON_PADDING`], less the room the popup
-    /// arrow reserves at the trailing edge when one is drawn.
+    /// The button's content box: its own frame inset by [`dimensions::TOOL_BUTTON_PADDING`], less
+    /// the room the popup arrow reserves at the trailing edge when one is drawn.
     ///
     /// One derivation for both content slots and the arrow, so the three cannot disagree about
     /// where the button's interior ends.
     fn content_box(&self) -> Rect {
         let rect = self.geometry();
-        let has_popup = self.popup_mode == ToolButtonPopupMode::MenuButtonPopup
-            || self.popup_mode == ToolButtonPopupMode::InstantPopup;
-        let left = rect.x + BUTTON_PADDING;
-        let right = rect.x + rect.width as i32
-            - if has_popup { POPUP_ARROW_RESERVE } else { BUTTON_PADDING };
-        Rect::new(left, rect.y, (right - left).max(0) as u32, rect.height)
+        let has_popup = matches!(
+            self.popup_mode,
+            ToolButtonPopupMode::MenuButtonPopup | ToolButtonPopupMode::InstantPopup
+        );
+        let padding = dimensions::TOOL_BUTTON_PADDING;
+        let trailing =
+            if has_popup { dimensions::TOOL_BUTTON_POPUP_ARROW_RESERVE } else { padding };
+        ControlMetrics::content_box(
+            rect,
+            EdgeOffsets { top: padding, right: trailing, bottom: padding, left: padding },
+        )
     }
 
     /// The box the icon occupies, or `None` when the style does not ask for one.
@@ -331,7 +336,10 @@ impl ToolButton {
             ToolButtonStyle::TextUnderIcon if self.wants_label() => self.content_bands(content).0,
             _ => content,
         };
-        let size = ICON_SIZE.min(content.width).min(band.height);
+        let size = dimensions::TOOL_BUTTON_ICON_SIZE.min(content.width).min(band.height);
+        if size == 0 {
+            return None;
+        }
         let y = band.y + (band.height.saturating_sub(size)) as i32 / 2;
         let x = match self.button_style {
             // With the label beside it, the icon is the leading slot, so it sits at the leading edge
@@ -356,7 +364,9 @@ impl ToolButton {
         let content = self.content_box();
         match self.button_style {
             ToolButtonStyle::TextBesideIcon if self.wants_icon() => {
-                let advance = (ICON_SIZE + ICON_SPACING).min(content.width);
+                let advance = (dimensions::TOOL_BUTTON_ICON_SIZE
+                    + dimensions::TOOL_BUTTON_ICON_SPACING)
+                    .min(content.width);
                 Some(Rect::new(
                     content.x + advance as i32,
                     content.y,
@@ -377,9 +387,10 @@ impl ToolButton {
     ///
     /// The icon is a fixed square and the label is `n` whole lines, so the split has to start from
     /// one of them. The icon goes first because its size is the *constraint* -- a label given a band
-    /// that leaves less than [`ICON_SIZE`] would squeeze the icon into a sliver, which is what a split
-    /// driven by whole lines alone produced in a short button. Whatever is left after the icon and its
-    /// gap is the label's, floored to whole lines so the band never clips the glyphs it draws.
+    /// that leaves less than [`dimensions::TOOL_BUTTON_ICON_SIZE`] would squeeze the icon into a
+    /// sliver, which is what a split driven by whole lines alone produced in a short button.
+    /// Whatever is left after the icon and its gap is the label's, floored to whole lines so the
+    /// band never clips the glyphs it draws.
     ///
     /// # Why the two bands always sum to the content box
     ///
@@ -390,11 +401,13 @@ impl ToolButton {
         // than a literal: a control that floors to a number the renderer does not agree with would
         // give its label a band that clips the glyphs it draws.
         let line = crate::widget::metrics::estimate_line_height(&Font::default(), 1.0).max(1);
-        let reserved = (ICON_SIZE + ICON_SPACING / 2).min(content.height);
+        let reserved = (dimensions::TOOL_BUTTON_ICON_SIZE
+            + dimensions::TOOL_BUTTON_ICON_SPACING / 2)
+            .min(content.height);
         let remainder = content.height.saturating_sub(reserved);
         // A remainder shorter than one line is still given to the label rather than discarded: a
-        // button with no room for a line is better drawn with a cramped one than with the icon on its
-        // own, which would make the style's instruction unobservable.
+        // button with no room for a line is better drawn with a cramped one than with the icon on
+        // its own, which would make the style's instruction unobservable.
         let label_height =
             if remainder == 0 { 0 } else { (remainder / line).max(1) * line }.min(remainder);
         let icon_height = content.height.saturating_sub(label_height);
@@ -409,6 +422,7 @@ impl ToolButton {
         self.auto_raise = v;
         self.base.request_redraw();
     }
+
     /// Sets the checked state, if the button is checkable and the state changes.
     ///
     /// The call is a no-op for a non-checkable button, or when `checked` already
@@ -424,6 +438,7 @@ impl ToolButton {
             self.base.request_redraw();
         }
     }
+
     /// Activates the button as if the user had clicked it.
     ///
     /// A checkable button flips its state first (emitting [`ToolButton::toggled`]
@@ -439,6 +454,7 @@ impl ToolButton {
         self.triggered.emit();
     }
 }
+
 impl Widget for ToolButton {
     fn base(&self) -> &BaseWidget {
         &self.base
@@ -447,8 +463,12 @@ impl Widget for ToolButton {
         &mut self.base
     }
 
+    /// The square this button claims when nothing constrains it.
+    ///
+    /// [`dimensions::TOOL_BUTTON_SIZE`] rather than a literal, so the tool bar that packs a row of
+    /// these and the button's own snapshot agree on the same size (rule #101).
     fn size_hint(&self) -> crate::core::Size {
-        let side = crate::widget::metrics::dimensions::TOOL_BUTTON_SIZE;
+        let side = dimensions::TOOL_BUTTON_SIZE;
         crate::core::Size::new(side, side)
     }
     impl_draw_bridge!();
@@ -502,39 +522,65 @@ impl WidgetProperties for ToolButton {
 }
 
 impl EventHandler for ToolButton {
+    /// Tool button activation, in the four-segment form `Button` established.
+    ///
+    /// # Why the gesture runs **before** the base records the event
+    ///
+    /// The base both records and paints from the same primitive facts, and it clears
+    /// `grabbed`/`pressed` on the release. A control that read them *after* delegating could no
+    /// longer tell whether the release belonged to its own gesture — this handler used to have
+    /// exactly that shape, and it fired `clicked` for a press that started elsewhere and merely
+    /// ended here. Running the gesture first keeps the grab's guard meaningful; the base then
+    /// records the same outcome from the same facts.
+    ///
+    /// | event | result |
+    /// |---|---|
+    /// | press inside | armed + `pressed` |
+    /// | move | `pressed` follows whether the pointer is still inside |
+    /// | release inside | `clicked` + `triggered` |
+    /// | release outside | nothing (the base clears the state) |
+    /// | Enter / Space | `clicked` + `triggered` |
+    /// | disabled | every arm is skipped |
     fn handle_event(&mut self, event: &Event) {
-        if !self.base.is_enabled() {
-            // A disabled button is inert, but the base still records the pointer facts so
-            // hover keeps working once it is re-enabled.
-            self.base.handle_event(event);
-            return;
-        }
-        // The gesture is resolved **before** the base records the event: the base clears
-        // `pressed`/`grabbed` on the release, so a control that asked afterwards could no
-        // longer tell whether the release belonged to its own press.
         match event {
-            Event::MouseEnter { pos: _ } => {}
-            Event::MouseLeave { pos: _ } => {
-                // Crossing the edge abandons the press; the grab is kept by the base, which is
-                // what lets a drag that returns still complete.
-                self.base.set_pressed(false);
-            }
-            Event::MousePress { button: 1, .. } => {
+            // Only a press that resolves to this control arms it. The runtime hit-tests before
+            // delivery, but a direct dispatch (a test, a host with its own routing, a designer
+            // preview) does not, and an unguarded press would leave the latch armed for a release
+            // that belongs elsewhere. Both halves of "resolves to this control" are in the guard,
+            // so the arm either arms the gesture or does nothing at all.
+            Event::MousePress { pos, button }
+                if self.base.is_enabled()
+                    && *button == crate::event::mouse_button::PRIMARY
+                    && self.base.contains_point_with_touch_expansion(*pos) =>
+            {
                 self.base.set_pressed(true);
             }
-            Event::MouseRelease { button: 1, .. } if self.base.is_pressed() => {
-                self.base.set_pressed(false);
+            // A press that wanders off cancels, and one that wanders back re-arms: `pressed` is a
+            // continuous quantity, not an edge. Guarded on the grab rather than on `pressed` so
+            // that the move which should restore the state is not the one that exits early.
+            Event::MouseMove { pos } | Event::PointerMove { pos, .. } if self.base.is_grabbed() => {
+                self.base.set_pressed(self.base.contains_point_with_touch_expansion(*pos));
+            }
+            // `is_pressed` still answers for the gesture that is ending, because the base has not
+            // yet cleared it (the base records after this match). A release inside is an
+            // activation; a release outside was already cancelled by the move arm, so the guard
+            // reads the same fact the arm would.
+            Event::MouseRelease { .. } | Event::PointerRelease { .. }
+                if self.base.is_grabbed() && self.base.is_pressed() =>
+            {
                 self.click();
             }
-            Event::KeyPress { key: 13, .. } | Event::KeyPress { key: 32, .. } => {
+            Event::KeyPress { key: 13 | 32, .. } if self.base.is_enabled() => {
                 self.click();
             }
             _ => { /* Other events are not relevant */ }
         }
-        // Record the primitive facts after the gesture, so `widget_state`/hover stay right.
+        // After the control's own gesture: let the base record the primitive facts (hover, press,
+        // grab, focus reason) for the state channel.
         self.base.handle_event(event);
     }
 }
+
 impl Draw for ToolButton {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
@@ -560,95 +606,92 @@ impl Draw for ToolButton {
         let themed_border = theme.as_ref().and_then(|resolved| resolved.border_color);
         // `tool_button` is absent from the role table, so it resolves as `Surface` and its
         // background is the resolved surface fill. A caller that set a colour still wins.
-        //
-        // The surface literal is the *last* step, not the whole answer: it used to be read
-        // unconditionally, which left `themed_bg` resolved and then discarded — the four
-        // state fills were therefore constant across appearances and the census reported
-        // the control as theme-blind. Reading the resolved surface here is what makes the
-        // states move when the theme does.
         let base = style.background_color.or(themed_bg).unwrap_or(Color::rgb(240, 240, 240));
         let accent = themed_border.unwrap_or(Color::rgb(0, 120, 215));
         // The interaction states are **derived from the base**, not collapsed into one
         // colour, so the four states stay distinguishable on any theme: a press is a step
         // toward the accent, a hover is a step toward white, and a toggled-on button keeps
         // the previous checked/hover ordering.
-        let bg = if self.base.is_pressed() {
+        let pressed = self.base.is_pressed();
+        let hovered = self.base.is_hovered();
+        let bg = if pressed {
             base.blend(&accent, 0.45)
         } else if self.checked {
             base.blend(&accent, 0.25)
-        } else if self.base.is_hovered() && !self.auto_raise {
+        } else if hovered && !self.auto_raise {
             base.blend(&Color::WHITE, 0.55)
-        } else if self.auto_raise && !self.base.is_hovered() {
+        } else if self.auto_raise && !hovered {
             Color::rgba(0, 0, 0, 0) // transparent
         } else {
             base
         };
+        // The face, not a bare rectangle: `tool_button` classifies as pressable chrome in
+        // `render::surface`'s role table, so its `SurfaceStyle` carries a raised bevel (and level 0,
+        // i.e. no shadow). Painting through `face` is what makes that declaration reach the screen --
+        // a raw `fill_rect` here would leave the role table's answer for this kind unread, which is
+        // the "declared but nobody consumes it" shape the census exists to catch. `tool_bar`,
+        // `menu_bar` and `status_bar` are the sibling call sites in this module and all read their
+        // own surface the same way.
         context.face(
             Rect::new(rect.x, rect.y, rect.width, rect.height),
             bg,
-            self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            style.surface.unwrap_or_default(),
+            style.border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        if self.base.is_hovered() || self.base.is_pressed() || self.checked {
+        if hovered || pressed || self.checked {
             context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), accent);
         }
         // A disabled label is the ink faded toward the fill behind it, which keeps it
         // readable-but-muted on a dark theme as well as a light one; the literal is only
         // the fallback for a control whose ink the theme does not supply.
-        let ink = style.text_color.or(themed_text).unwrap_or_else(|| bg.contrast_color());
+        let ink = style.text_color.or(themed_text).unwrap_or(Color::rgb(0, 0, 0));
         let fg = if !self.base.is_enabled() { ink.blend(&base, 0.45) } else { ink };
-        // Popup arrow indicator
-        let has_popup = self.popup_mode == ToolButtonPopupMode::MenuButtonPopup
-            || self.popup_mode == ToolButtonPopupMode::InstantPopup;
 
-        let font = Font::default();
-        let line = context.text_line(rect, &font);
-
-        // ── The icon ──
+        // ── Icon ──
         //
-        // The box comes from `icon_rect`, the same derivation that decides whether the label gets
-        // the content box or only part of it -- so a style change moves the two together rather than
-        // letting a label overlap the icon it was told to sit beside. The path is decoded once per
-        // path by `resolved_icon`, so a paint does not read the file.
+        // The icon is the leading slot (or the upper band), and its box comes from `icon_rect` --
+        // the same derivation `ToolButtonStyle` documents -- so the room the style reserves and the
+        // pixels drawn cannot disagree. Pixels are painted only when the path actually decoded:
+        // a missing file leaves the slot empty instead of shifting the label onto the icon.
         #[cfg(all(feature = "image", not(alloc_frugal)))]
-        if let Some(box_) = self.icon_rect() {
-            if let Some(pixels) = self.resolved_icon() {
+        if let (Some(pixels), Some(box_)) = (self.resolved_icon(), self.icon_rect()) {
+            if !pixels.is_empty() {
                 context.draw_image(box_.x, box_.y, box_.width, box_.height, &pixels);
             }
         }
 
-        // The label is **centred in its own content box**. The previous form put the glyph
-        // origin — which is the box's top-left — at `rect.x + (content - rect.x) / 2`, i.e. the
-        // horizontal midpoint of the content, and then asked for `HorizontalAlignment::Left`.
-        // The result was a label that began at the middle of the button and ran off its right
-        // edge, with its top edge on the vertical midline: the signature of "computed a centre,
-        // drew from it as an origin".
+        // ── Label and popup arrow ──
         //
-        // The box is now the *trailing slot* of the content box, from `label_rect`, so it is the
-        // room after the icon when one is beside the label and the whole box otherwise.
-        if let Some(label_box) = self.label_rect() {
-            // A label under an icon is centred in the lower half; a label beside one is centred in
-            // the space that is left, which is what `text_line` already does for its own band.
-            let band = Rect::new(
-                label_box.x,
-                context.text_line(label_box, &font).y,
-                label_box.width,
-                line.height,
-            );
-            context.draw_text_fitted(band, &self.text, &font, fg, HorizontalAlignment::Center);
+        // Both are `RenderContext::text_line`-free here: the label's box is centred on its own
+        // middle line, and the arrow sits in the room `content_box` reserved, so neither can drift
+        // from the band that was laid out for it.
+        let font = Font::default();
+        let has_popup = matches!(
+            self.popup_mode,
+            ToolButtonPopupMode::MenuButtonPopup | ToolButtonPopupMode::InstantPopup
+        );
+        if let Some(box_) = self.label_rect() {
+            // `draw_text_line` is the primitive that both fits the label to the box and centres it
+            // **vertically** in it -- `draw_text_fitted` alone leaves the origin at `bounds.y`, so a
+            // full-height box would pin the label to its top edge. `Button` centres its own label on
+            // `context.text_line(rect, font)` for the same reason.
+            //
+            // The box is handed over whole, with `Center` doing the horizontal centring. Computing
+            // an `x` here *and* asking for `Center` would centre twice: the renderer offsets by
+            // `(free + 1) / 2` from the origin it is given, so a pre-shifted origin lands the ink
+            // half a box to the leading side.
+            context.draw_text_line(box_, &self.text, &font, fg, HorizontalAlignment::Center);
         }
-
         if has_popup {
-            // The arrow sits on the same line box as the label and is centred on it, instead
-            // of being pinned to a hardcoded 6 px above the button's bottom edge.
-            context.draw_text_fitted(
-                Rect {
-                    x: rect.x + rect.width as i32 - POPUP_ARROW_RESERVE,
-                    y: line.y,
-                    width: POPUP_ARROW_RESERVE as u32,
-                    height: line.height,
-                },
+            // The arrow lives in the trailing strip `content_box` already removed from the content,
+            // so its x is derived from that strip rather than from another literal. It is centred on
+            // the button's middle line like the label, which is what makes a menu button read as one
+            // row rather than two baselines.
+            let strip = dimensions::TOOL_BUTTON_POPUP_ARROW_RESERVE as i32;
+            let arrow_x = rect.x + rect.width as i32 - strip;
+            context.draw_text(
+                Point::new(arrow_x + strip / 2, rect.y + rect.height as i32 / 2),
                 "▾",
                 &font,
                 fg,
@@ -660,7 +703,7 @@ impl Draw for ToolButton {
 
 #[cfg(test)]
 mod tests {
-    use super::{ToolButton, ToolButtonPopupMode, ToolButtonStyle, ICON_SPACING};
+    use super::{ToolButton, ToolButtonPopupMode, ToolButtonStyle};
     use crate::core::{Color, Point, Rect, Size};
     use crate::event::Event;
     use crate::event::EventHandler;
@@ -668,7 +711,7 @@ mod tests {
     use crate::render::PaintBackend;
     use crate::render::RenderContext;
     use crate::widget::{Draw, Widget, WidgetKind};
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -942,29 +985,12 @@ mod tests {
         assert!(!btn.auto_raise());
     }
 
-    // ── 16. `icon` and `button_style` decide the content layout ──
-
-    /// A style change moves the two content slots, and the label is *not* drawn where the icon is.
-    ///
-    /// # What was dead, and what proves it is alive now
-    ///
-    /// `button_style` was stored, published and read by a `match` whose four arms all returned
-    /// `&self.text` -- a four-way branch with one answer. The label was drawn in the content box
-    /// whichever style was set, so `IconOnly` and `TextBesideIcon` rendered identically. The
-    /// assertion is on the *boxes*, because that is what a paint has to obey.
+    // ── 16. `button_style` decides where the label and the icon go ──
     #[test]
     fn the_style_decides_where_the_label_and_the_icon_go() {
-        let build = |style, with_icon: bool| {
-            let mut btn = ToolButton::new("Go", rect());
-            btn.set_button_style(style);
-            if with_icon {
-                btn.set_icon(Some(PathBuf::from("icons/go.png")));
-            }
-            btn
-        };
-
-        // Without an icon, every style falls back to the label filling the content box. A blank
-        // button is a state the user cannot act on, so this is the whole answer for `IconOnly` too.
+        let mut btn = ToolButton::new("Open", rect());
+        // Without an icon every style falls back to a full-box label: a button with nothing to
+        // show is not a state a user can act on.
         for style in [
             ToolButtonStyle::IconOnly,
             ToolButtonStyle::TextOnly,
@@ -972,152 +998,166 @@ mod tests {
             ToolButtonStyle::TextUnderIcon,
             ToolButtonStyle::FollowStyle,
         ] {
-            let btn = build(style, false);
-            assert!(!btn.wants_icon(), "{style:?} has no icon to want");
-            assert!(btn.wants_label(), "{style:?} must still show its label");
-            assert!(btn.icon_rect().is_none());
-            assert_eq!(
-                btn.label_rect(),
-                Some(btn.content_box()),
-                "{style:?} gives the label the whole content box without an icon"
-            );
+            btn.set_button_style(style);
+            assert!(btn.icon_rect().is_none(), "{style:?} without an icon has no icon box");
+            assert_eq!(btn.label_rect(), Some(btn.content_box()), "{style:?} label takes the box");
         }
 
-        // Icon-only with an icon draws no label, which is what the variant's name means.
-        let icon_only = build(ToolButtonStyle::IconOnly, true);
-        assert!(icon_only.wants_icon());
-        assert!(!icon_only.wants_label(), "icon-only draws no label");
-        assert!(icon_only.label_rect().is_none());
-        assert!(icon_only.icon_rect().is_some());
+        btn.set_icon(Some(PathBuf::from("icons/open.png")));
 
-        // `TextOnly` with an icon set still draws no icon: the style is the caller's instruction.
-        let text_only = build(ToolButtonStyle::TextOnly, true);
-        assert!(!text_only.wants_icon(), "text-only ignores the icon");
-        assert_eq!(text_only.label_rect(), Some(text_only.content_box()));
+        // `IconOnly` with an icon draws exactly that, so there is no label box at all.
+        btn.set_button_style(ToolButtonStyle::IconOnly);
+        assert!(btn.icon_rect().is_some());
+        assert!(btn.label_rect().is_none(), "icon-only hides the label");
 
-        // Beside: the label starts after the icon and its gap, so the two cannot overlap.
-        let beside = build(ToolButtonStyle::TextBesideIcon, true);
-        let icon = beside.icon_rect().expect("beside shows an icon");
-        let label = beside.label_rect().expect("beside shows a label");
-        assert_eq!(icon.x, beside.content_box().x, "the icon is the leading slot");
+        // `TextOnly` is the caller's instruction, not "draw whatever there is".
+        btn.set_button_style(ToolButtonStyle::TextOnly);
+        assert!(btn.icon_rect().is_none(), "text-only hides the icon");
+        assert_eq!(btn.label_rect(), Some(btn.content_box()));
+
+        // Beside: the label begins after the icon and its gap, so a wider icon pushes it along.
+        btn.set_button_style(ToolButtonStyle::TextBesideIcon);
+        let icon = btn.icon_rect().expect("beside has an icon");
+        let label = btn.label_rect().expect("beside has a label");
         assert_eq!(
             label.x,
-            icon.x + icon.width as i32 + ICON_SPACING as i32,
-            "the label begins after the icon and its gap"
+            icon.x
+                + icon.width as i32
+                + crate::widget::metrics::dimensions::TOOL_BUTTON_ICON_SPACING as i32,
+            "the label starts after the icon's own advance"
         );
-        assert!(
-            label.x + label.width as i32
-                <= beside.content_box().x + beside.content_box().width as i32,
-            "and the label stays inside the content box"
-        );
+        assert!(label.width < btn.content_box().width, "the icon took room from the label");
 
-        // Under: the label takes the lower half, below the icon rather than across it.
-        let under = build(ToolButtonStyle::TextUnderIcon, true);
-        let icon = under.icon_rect().expect("under shows an icon");
-        let label = under.label_rect().expect("under shows a label");
+        // Under: the label takes the lower band, so its top is at or below the icon's bottom.
+        btn.set_button_style(ToolButtonStyle::TextUnderIcon);
+        let icon = btn.icon_rect().expect("under has an icon");
+        let label = btn.label_rect().expect("under has a label");
         assert!(
             label.y >= icon.y + icon.height as i32,
-            "the label is below the icon: {label:?} vs {icon:?}"
-        );
-        assert!(
-            icon.x + icon.width as i32 <= under.content_box().x + under.content_box().width as i32,
-            "and the icon stays inside the content box"
+            "the stacked label sits below the icon (label.y={}, icon bottom={})",
+            label.y,
+            icon.y + icon.height as i32
         );
     }
 
-    /// A real icon file is decoded, painted, and cached per path.
+    // ── 17. A real icon path is loaded and painted ──
     ///
-    /// The layout assertions above say where the icon's box is; this says the pixels reach the
-    /// document. Without it, an `icon_rect` nothing drew would satisfy every number.
+    /// # Why a real file rather than injected pixels
+    ///
+    /// The claim is that *an icon path becomes a picture*, so the test writes the smallest real PNG
+    /// it can and points the button at it. Injecting RGBA bytes would test the draw and skip the
+    /// loader, which is the half that was dead.
+    ///
+    /// # Why the filename carries a per-test suffix
+    ///
+    /// [`crate::image::cache`] is process-wide and keyed on content, so two tests that write the
+    /// *same path* with *different bytes* can observe each other. A name no other test uses is what
+    /// makes each test's I/O its own. The bytes are the fixture `avatar` uses, so the two controls
+    /// are proven against the same "a real image decodes" baseline rather than two hand-written
+    /// PNGs that could each be wrong in their own way.
     #[cfg(all(feature = "image", not(alloc_frugal)))]
     #[test]
     fn a_real_icon_path_is_loaded_and_painted() {
-        let path = std::env::temp_dir().join("rw_tool_button_icon_test.png");
+        use crate::widget::svg::render_to_svg;
+
+        let path = std::env::temp_dir().join("rw_tool_button_icon_real.png");
         std::fs::write(&path, MINIMAL_PNG).expect("the fixture is writable");
 
-        let render = |source: Option<&Path>| {
-            let mut btn = ToolButton::new("Go", Rect::new(0, 0, 60, 24));
-            btn.set_icon(source.map(Path::to_path_buf));
-            let (w, h) = (btn.geometry().width, btn.geometry().height);
-            let mut backend = SvgPaintBackend::new(Size::new(w, h));
-            backend.begin_frame(Color::WHITE);
-            let mut ctx = RenderContext::new(&mut backend);
-            btn.draw(&mut ctx);
-            backend.end_frame();
-            backend.finish()
-        };
+        let mut with_icon = ToolButton::new("Open", Rect::new(0, 0, 80, 30));
+        with_icon.set_icon(Some(path.clone()));
+        with_icon.set_button_style(ToolButtonStyle::IconOnly);
+        let icon_svg = render_to_svg(&mut with_icon);
 
-        let without = render(None);
-        let with = render(Some(&path));
-        assert_ne!(
-            without, with,
-            "a real icon must change the rendering -- that was the dead state"
-        );
-        assert!(with.contains("<image"), "the decoded pixels reach the document");
-        assert!(!without.contains("<image"), "and nothing is embedded without an icon");
+        let mut without_icon = ToolButton::new("Open", Rect::new(0, 0, 80, 30));
+        without_icon.set_button_style(ToolButtonStyle::IconOnly);
+        let plain_svg = render_to_svg(&mut without_icon);
+
+        assert_ne!(icon_svg, plain_svg, "a real icon must change the rendering");
+        // The SVG backend emits `<image>` for a non-empty `draw_image`, and nothing else does.
+        assert!(icon_svg.contains("<image"), "the icon is painted as an image: {icon_svg}");
+        assert!(!plain_svg.contains("<image"), "without a path nothing is painted");
 
         let _ = std::fs::remove_file(&path);
     }
 
-    /// A path that will not load leaves the button intact rather than blanking or panicking it.
+    // ── 18. An unloadable icon leaves the layout alone ──
     #[cfg(all(feature = "image", not(alloc_frugal)))]
     #[test]
-    fn an_unloadable_icon_falls_back_to_the_label() {
-        let mut btn = ToolButton::new("Go", rect());
-        btn.set_button_style(ToolButtonStyle::IconOnly);
-        btn.set_icon(Some(PathBuf::from("/definitely/not/a/real/icon.png")));
-        // The style asks for an icon and the path exists as a *path*, so the box is reserved ...
-        assert!(btn.icon_rect().is_some(), "the style still reserves the icon's slot");
-        // ... but nothing decodes, so no pixels are handed to the paint.
-        assert!(btn.resolved_icon().is_none(), "an unreadable path decodes to nothing");
-        // The label is *not* brought back: `IconOnly` is the caller's instruction, and silently
-        // switching layouts because a file is missing would move the button's content under a user
-        // who did not ask for it.
-        assert!(btn.label_rect().is_none());
+    fn an_unloadable_icon_keeps_the_layout_and_paints_nothing() {
+        use crate::widget::svg::render_to_svg;
 
-        // The failure is cached, so a paint does not re-read the file every frame.
-        assert_eq!(
-            btn.icon_pixels_key.as_deref(),
-            Some(Path::new("/definitely/not/a/real/icon.png")),
-            "the failure is recorded against the path"
-        );
-        assert!(btn.resolved_icon().is_none());
+        // The bytes are not a PNG, so the file reads but the decode fails -- the IO-succeeds path
+        // rather than the IO-fails one.
+        let path = std::env::temp_dir().join("rw_tool_button_icon_bad_bytes.png");
+        std::fs::write(&path, b"this is not a png at all").expect("the fixture is writable");
+
+        let mut btn = ToolButton::new("Open", Rect::new(0, 0, 80, 30));
+        btn.set_icon(Some(path.clone()));
+        btn.set_button_style(ToolButtonStyle::IconOnly);
+
+        // The *layout* still reserves the icon (a path was set), so a failure cannot move the
+        // label; only the pixels are absent. This is the deliberate non-degradation.
+        assert!(btn.icon_rect().is_some(), "the slot is reserved by the path, not by the bytes");
+        assert!(btn.label_rect().is_none(), "icon-only with an icon still hides the label");
+        assert!(btn.resolved_icon().is_none(), "undecodable bytes produce no pixels");
+
+        let svg = render_to_svg(&mut btn);
+        assert!(!svg.contains("<image"), "nothing is painted for a failed decode: {svg}");
+
+        // The failure is cached: the path is remembered, so the next frame does not re-read it.
+        assert_eq!(btn.icon_pixels_key.as_ref(), Some(&path));
+
+        let _ = std::fs::remove_file(&path);
     }
 
-    /// Changing the path drops the cached pixels, so a new icon cannot paint the old one.
+    // ── 19. Changing the icon path invalidates the decoded pixels ──
     #[cfg(all(feature = "image", not(alloc_frugal)))]
     #[test]
     fn changing_the_icon_path_invalidates_the_decoded_pixels() {
-        let path = std::env::temp_dir().join("rw_tool_button_cache_test.png");
-        std::fs::write(&path, MINIMAL_PNG).expect("the fixture is writable");
+        let path = std::env::temp_dir().join("rw_tool_button_icon_cache_a.png");
+        std::fs::write(&path, b"not a png").expect("the fixture is writable");
 
-        let mut btn = ToolButton::new("Go", rect());
+        let mut btn = ToolButton::new("Open", Rect::new(0, 0, 80, 30));
         btn.set_icon(Some(path.clone()));
-        assert!(btn.resolved_icon().is_some(), "the fixture decodes");
-        assert_eq!(btn.icon_pixels_key.as_deref(), Some(path.as_path()));
+        let _ = btn.resolved_icon();
+        // Even a failure is cached, so the key is populated.
+        assert!(btn.icon_pixels_key.is_some());
 
-        btn.set_icon(Some(PathBuf::from("/somewhere/else.png")));
-        assert!(btn.icon_pixels.is_none(), "the pixels are dropped with the path");
-        assert!(btn.icon_pixels_key.is_none(), "and so is the key they belong to");
-
-        // Clearing the icon drops them too.
-        btn.set_icon(Some(path.clone()));
-        btn.resolved_icon();
-        btn.set_icon(None);
-        assert!(btn.icon_pixels.is_none());
+        // A new path drops both halves together: leaving the key would make the next paint believe
+        // the old pixels belonged to the new path.
+        btn.set_icon(Some(std::env::temp_dir().join("rw_tool_button_icon_cache_b.png")));
         assert!(btn.icon_pixels_key.is_none());
+        assert!(btn.icon_pixels.is_none());
+
+        // Clearing the icon does the same, and removes the slot with it.
+        let _ = btn.resolved_icon();
+        btn.set_icon(None);
+        assert!(btn.icon_pixels_key.is_none());
+        assert!(btn.icon_pixels.is_none());
+        assert!(btn.icon_rect().is_none(), "no path, no slot");
+
+        // Re-setting the *same* path is a no-op, so the cache is not needlessly dropped.
+        btn.set_icon(Some(path.clone()));
+        let _ = btn.resolved_icon();
+        let cached = btn.icon_pixels_key.clone();
+        btn.set_icon(Some(path.clone()));
+        assert_eq!(btn.icon_pixels_key, cached, "an unchanged path keeps its decoded pixels");
 
         let _ = std::fs::remove_file(&path);
     }
 
-    /// The smallest valid PNG: a 2x2 truecolour-with-alpha image, first pixel opaque red.
+    /// The smallest valid PNG: a 2x2 truecolour-with-alpha image whose first pixel is opaque red.
+    ///
+    /// Written out as bytes rather than produced by an encoder so the fixture works wherever the
+    /// `image` feature is on, including builds without the encoder side. The same fixture `avatar`
+    /// uses, so both controls are held to one "a real image decodes" baseline.
     #[cfg(all(feature = "image", not(alloc_frugal)))]
     const MINIMAL_PNG: &[u8] = &[
         0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, // PNG signature
-        0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, // IHDR
+        0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, // IHDR, 13 data bytes
         0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, // width 2, height 2
-        0x08, 0x06, 0x00, 0x00, 0x00, 0x72, 0xb6, 0x0d, // 8-bit, RGBA
-        0x24, 0x00, 0x00, 0x00, 0x0f, 0x49, 0x44, 0x41, // IDAT
+        0x08, 0x06, 0x00, 0x00, 0x00, 0x72, 0xb6, 0x0d, // 8-bit, colour type 6 (RGBA), CRCs
+        0x24, 0x00, 0x00, 0x00, 0x0f, 0x49, 0x44, 0x41, // IDAT, 15 data bytes
         0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0x00, // zlib stream
         0x44, 0x48, 0x00, 0x00, 0x1e, 0xf3, 0x01, 0xff, // ...
         0x6a, 0x37, 0x5d, 0xad, 0x00, 0x00, 0x00, 0x00, // IDAT CRC

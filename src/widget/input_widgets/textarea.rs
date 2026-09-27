@@ -535,6 +535,13 @@ mod tests {
     /// The bitmap face fills its glyph box, so its ink top *is* the box top. An outline face draws a
     /// real glyph whose ink is inset, so the ink top sits one or two pixels below the box top at these
     /// sizes. Pinning the two equal encoded a property of the bitmap face, not of the layout.
+    ///
+    /// Gated with its only consumer:
+    /// `the_first_line_is_padded_consistently_with_every_other_field` renders through the SVG backend
+    /// and is `#[cfg(not(alloc_frugal))]`. An ungated constant therefore became dead code under `mini`
+    /// (which *is* `alloc_frugal`) and `clippy -D warnings` reported it there while every other
+    /// profile stayed green.
+    #[cfg(not(alloc_frugal))]
     const INK_INSET_TOLERANCE: i32 = 3;
 
     #[test]

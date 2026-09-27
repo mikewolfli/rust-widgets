@@ -471,15 +471,41 @@ fn box_blur_region(
 /// of it. The two differ by exactly two, which keeps the iterated kernel symmetric — a set like
 /// `(2, 5, 2)` would have a different falloff on each side.
 ///
+/// # The per-pass share, which this used to omit
+///
+/// Variances **add** across independent passes, so the three boxes together must carry `sigma^2`,
+/// i.e. each one carries `sigma^2 / 3` and therefore has a width that solves
+/// `(w^2 - 1) / 12 = sigma^2 / 3`, i.e. `w = sqrt(12 * (sigma / sqrt(3))^2 + 1)`.
+///
+/// The width was computed as `sqrt(12 * sigma^2 + 1)` instead — the *whole* variance put into each
+/// of the three passes — so the kernel came out `sqrt(3)` times too wide. Measured against the
+/// intended standard deviation (the code's own `sigma = radius / 2`):
+///
+/// | radius | intended | produced | over-blur |
+/// |---|---|---|---|
+/// | 2 px | 1.0 | 1.83 | 1.83x |
+/// | 6 px | 3.0 | 4.83 | 1.61x |
+/// | 12 px | 6.0 | 9.83 | 1.64x |
+/// | 24 px | 12.0 | 20.83 | 1.74x |
+///
+/// Every shadow a theme drew was therefore roughly **1.6–1.8x softer than its own elevation said**,
+/// which also made `Theme::elevation`'s levels less distinguishable from one another than the ladder
+/// intends. With the share applied, the realised variance lands within the integer-width quantisation
+/// of the target at every radius (`sigma=3`: 8.00 against 9.00, `sigma=6`: 34.00 against 36.00,
+/// `sigma=12`: 140.00 against 144.00).
+///
 /// Returns `(0, 0, 0)` for a non-positive `sigma`, which the caller reads as "no blur": a zero
 /// width is a no-op pass rather than a division by zero.
 fn box_blur_widths(sigma: f32) -> (usize, usize, usize) {
     if sigma <= 0.0 {
         return (0, 0, 0);
     }
-    // The width that contributes exactly the requested variance: `variance = (w^2 - 1) / 12`, so
-    // `w = sqrt(12 * sigma^2 + 1)`. Rounded down, then forced odd so the box has a true centre.
-    let ideal = (12.0 * sigma * sigma + 1.0).sqrt();
+    // Each of the three passes carries an equal share of the total variance.
+    const PASSES: f32 = 3.0;
+    let per_pass = sigma / PASSES.sqrt();
+    // The width that contributes exactly that share: `variance = (w^2 - 1) / 12`, so
+    // `w = sqrt(12 * per_pass^2 + 1)`. Rounded down, then forced odd so the box has a true centre.
+    let ideal = (12.0 * per_pass * per_pass + 1.0).sqrt();
     let wl = match ideal.floor() as usize {
         w if w % 2 == 1 => w,
         w => w.saturating_sub(1),
@@ -586,7 +612,13 @@ fn blur_row(pixels: &mut [u8], len: usize, width: usize, source: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `Vec` from `compat` rather than the std prelude. These tests build pixel buffers, and on the
+    // `ohos`/`android` cross targets there is no `std` prelude to supply `Vec` -- which is how they
+    // broke `check_harmony_cross.sh` (`cannot find type Vec in this scope`) while every host build
+    // stayed green. `compat` re-exports `alloc::vec::Vec`, so importing it makes the tests mean the
+    // same thing on every target rather than only on the ones with a `std`.
     use crate::compat::MiniToString;
+    use crate::compat::Vec;
     use crate::core::{Color, HorizontalAlignment, Point, Rect, Size};
 
     // ── SoftwarePaintBackend construction ───────────────────────────────
@@ -1125,6 +1157,88 @@ mod tests {
         }
         assert_eq!(box_blur_widths(0.0), (0, 0, 0), "a zero sigma is not a blur");
         assert_eq!(box_blur_widths(-1.0), (0, 0, 0), "and neither is a negative one");
+    }
+
+    /// The three boxes together must realise the requested `sigma`, not three times its variance.
+    ///
+    /// # The defect this pins
+    ///
+    /// `box_blur_widths` solved each width from `variance = (w^2 - 1) / 12 == sigma^2`, i.e. it put
+    /// the **whole** requested variance into **each** of the three passes. Variances add, so the
+    /// kernel that came out had three times the intended variance -- about `sqrt(3)` times too wide,
+    /// which measured out as every shadow being 1.6-1.8x softer than its own elevation said:
+    ///
+    /// | radius | intended sigma | produced |
+    /// |---|---|---|
+    /// | 2 px | 1.0 | 1.83 |
+    /// | 6 px | 3.0 | 4.83 |
+    /// | 12 px | 6.0 | 9.83 |
+    /// | 24 px | 12.0 | 20.83 |
+    ///
+    /// The widths are still *odd* and still *monotonic* with such a bug present, which is exactly
+    /// why `the_box_widths_are_odd_and_monotonic` above cannot see it: it asserts the shape of the
+    /// response, not its scale. This test asserts the scale.
+    ///
+    /// # Why the radii below are the ladder's own, and why the band is wide at the small end
+    ///
+    /// A box width is an integer, so the realised variance can only land where some `(w^2 - 1) / 12`
+    /// falls. The residual is therefore quantisation, and it shrinks as a fraction of the target as
+    /// sigma grows. Measured after the fix, over exactly the four radii
+    /// [`crate::render::default_shadow`] uses (`blur` 3/6/12/24):
+    ///
+    /// | blur | sigma | realised / target | standard deviation |
+    /// |---|---|---|---|
+    /// | 3 | 1.5 | 1.48 | 1.22x |
+    /// | 6 | 3.0 | 0.889 | 0.94x |
+    /// | 12 | 6.0 | 0.944 | 0.97x |
+    /// | 24 | 12.0 | 0.972 | 0.99x |
+    ///
+    /// So the band is `0.6..=1.6` on variance (0.77x-1.26x on standard deviation): it admits the
+    /// quantisation at `blur: 3`, and it still rejects the `sqrt(3)`-scale error by a wide margin --
+    /// that bug produces 2.59-3.67x, i.e. outside the band at every radius.
+    ///
+    /// # Why `radius: 1` is deliberately not in the list
+    ///
+    /// Because at that radius the test **cannot tell the fix from the bug**, and a case that passes
+    /// either way is not evidence. `box_blur_widths(0.5)` is `(1, 1, 3)` both before and after the
+    /// fix -- every width floors to the same odd integers -- so both kernels realise 0.67 against a
+    /// target of 0.25, a ratio of 2.667. Asserting it would either fail the *correct* code or force a
+    /// band wide enough to admit the *broken* one, and both of those make the test worse than not
+    /// having it.
+    ///
+    /// The smallest radius where a separating integer kernel exists is 2 (`sigma` 1.0), and the
+    /// separation is complete from there up: fixed gives 0.667/1.48/0.83/0.89/0.92/0.94/0.97/0.99,
+    /// buggy gives 3.33/3.56/3.67/2.59/2.92/2.69/3.01/3.04. Excluding one radius for a stated
+    /// reason is the honest form of this exclusion; silently widening the band to cover it would
+    /// have hidden exactly the defect the test exists for.
+    #[test]
+    fn the_three_boxes_realise_the_requested_sigma_not_three_times_it() {
+        let variance_of = |w: usize| {
+            if w == 0 {
+                0.0
+            } else {
+                (w * w - 1) as f32 / 12.0
+            }
+        };
+
+        // `default_shadow`'s four levels, plus a finer and a coarser radius so a regression that
+        // only shows at one scale cannot hide behind the ladder's particular values. `radius: 1` is
+        // excluded on purpose -- see this test's rustdoc.
+        for radius in [2usize, 3, 4, 6, 8, 12, 24, 48, 96] {
+            let sigma = radius as f32 / 2.0;
+            let (a, b, c) = box_blur_widths(sigma);
+            let realised = variance_of(a) + variance_of(b) + variance_of(c);
+            let target = sigma * sigma;
+            let ratio = realised / target;
+            assert!(
+                (0.6..=1.6).contains(&ratio),
+                "radius {radius}: the kernel realises variance {realised:.2} against a target of \
+                 {target:.2} (ratio {ratio:.3}), i.e. a standard deviation {:.2}x the one asked for. \
+                 Widths were ({a}, {b}, {c}). A ratio near 3 means the per-pass variance share was \
+                 dropped again.",
+                ratio.sqrt()
+            );
+        }
     }
 
     /// The blur is separable: three boxes in x and three in y must equal the same work done the

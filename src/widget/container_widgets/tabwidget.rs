@@ -566,7 +566,12 @@ impl TabWidget {
                 placed.push(box_rect);
                 cursor += *width + TAB_SPACING;
             }
-            return placed;
+            // No `return`: the block below is `#[cfg(full_widgets)]`, so exactly one of the two is
+            // compiled, and here `placed` is already the expression's value. Keeping the `return`
+            // made the stripped profile (Android `mobile-api`, whose feature set has no
+            // `full_widgets`) report `clippy::needless_return` — a warning that could not appear on
+            // any host profile, because every host profile compiles the *other* arm.
+            placed
         }
         #[cfg(full_widgets)]
         {

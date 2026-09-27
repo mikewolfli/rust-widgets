@@ -21,13 +21,21 @@ use crate::platform::windows::types::*;
 use crate::platform::DropEvent;
 use std::sync::atomic::Ordering;
 
-/// SAFETY: All Win32 FFI calls in this module follow standard Windows API safety patterns:
-/// - `CreateWindowExW` return values are checked for null (via `hwnd.is_null()`) before use.
-/// - `GetLastError` is implicitly checked via the null-return convention; a null HWND indicates
-///   that the caller should inspect `GetLastError` for the specific failure code.
-/// - Pointers passed to Win32 functions must remain valid for the duration of the call; wide
-///   strings (`to_wide`) are kept alive via local variables that live across the `unsafe` block.
-/// - `ShowWindow` / `UpdateWindow` / `MoveWindow` operate on previously-validated HWNDs.
+// SAFETY: All Win32 FFI calls in this module follow standard Windows API safety patterns:
+// - `CreateWindowExW` return values are checked for null (via `hwnd.is_null()`) before use.
+// - `GetLastError` is implicitly checked via the null-return convention; a null HWND indicates
+//   that the caller should inspect `GetLastError` for the specific failure code.
+// - Pointers passed to Win32 functions must remain valid for the duration of the call; wide
+//   strings (`to_wide`) are kept alive via local variables that live across the `unsafe` block.
+// - `ShowWindow` / `UpdateWindow` / `MoveWindow` operate on previously-validated HWNDs.
+//
+// These are `//` rather than `///` because they describe the module's *implementation* discipline
+// rather than declaring an item: as `///` they were a doc comment with nothing to attach to, and
+// the next declaration's doc comment followed immediately. rustdoc reads that as one document —
+// the `FRAME_INTERVAL_MS` paragraph was parsed as a continuation of the bullet list above — which
+// `clippy::doc_lazy_continuation` flagged as `doc list item without indentation`. The note is not
+// lost: it stays exactly where a reader of the unsafe code looks for it.
+
 /// The frame interval this backend's message loop runs at, in milliseconds.
 ///
 /// The same value as every other backend's twin constant, and named here for the same

@@ -422,6 +422,12 @@ mod tests {
     /// the box edges. An outline face draws a real glyph whose ink is inset, so the ink top sits one
     /// or two pixels below the box top at these sizes and its sides come in by as much. Pinning the
     /// two equal encoded a property of the bitmap face, not of the layout.
+    ///
+    /// Gated with its only consumer: `arc_value_is_drawn_only_when_it_fits_in_the_ring_hole` renders
+    /// through the SVG backend, which is `#[cfg(not(alloc_frugal))]`. An ungated constant therefore
+    /// became dead code under `mini` (which *is* `alloc_frugal`) and `clippy -D warnings` reported it
+    /// there while every other profile stayed green.
+    #[cfg(not(alloc_frugal))]
     const INK_INSET_TOLERANCE: i32 = 3;
 
     #[test]

@@ -537,6 +537,70 @@ mod tests {
         assert_eq!(clicked_values, vec![(0, 1)]);
     }
 
+    /// A press outside the grid reports no cell, in any direction.
+    ///
+    /// # Why this test exists even though the code is already right
+    ///
+    /// `cell_at` bounds-checks both axes (`cell_at_y` and `cell_at_x` each return `None` outside
+    /// `base.geometry()`), so a point outside cannot resolve to a cell and the press arm's
+    /// `clicked.emit()` is unreachable. That was an **argument**, and this file is listed in
+    /// `tools/click_release_exemptions.txt` on the strength of it -- but the exemption table's own
+    /// header is explicit that the vocabulary-based scan "does not prove the containment test guards
+    /// the specific `clicked.emit()`", and that a mechanism the scan cannot name shows up as a
+    /// finding precisely so it gets looked at.
+    ///
+    /// The risk this pins is drift, not a present defect: `cell_at_y`'s bound and `cell_at_x`'s bound
+    /// are two separate lines, and deleting either one leaves the file's vocabulary unchanged and the
+    /// gate green, while restoring the exact bug class the gate exists for.
+    ///
+    /// # Why the grid is built with a spacing
+    ///
+    /// At `spacing == 0` the cells tile the rectangle exactly and the column bound
+    /// (`col < self.columns`) rejects every outside point on its own -- so a test written that way
+    /// passes even with the rectangle bound deleted, proving nothing. It did: the first version of
+    /// this test used `with_dimensions`, whose spacing defaults to `0`, and survived that injection.
+    ///
+    /// A spacing opens a gutter between the columns, and the gutter is exactly where the two bounds
+    /// disagree: `x` past the last cell but still under `rect.right` maps to a *valid* column index,
+    /// so only the rectangle bound rejects it. `rect.right` itself is that case -- `cell_at_x` admits
+    /// it by division and the bound is what excludes it.
+    #[test]
+    fn a_press_outside_the_grid_reports_no_cell() {
+        let mut grid = GridWidget::with_dimensions(Rect::new(0, 0, 100, 100), 2, 2);
+        // The gutter is what makes the rectangle bound observable; see this test's rustdoc.
+        grid.set_spacing(10);
+
+        let clicked = Arc::new(Mutex::new(Vec::<(u32, u32)>::new()));
+        let sink = clicked.clone();
+        grid.cell_clicked.connect(move |cell| {
+            if let Ok(mut guard) = sink.lock() {
+                guard.push(*cell);
+            }
+        });
+
+        // A point inside the first cell, to prove the coordinates below are the only difference.
+        assert_eq!(grid.cell_at(Point::new(10, 10)), Some((0, 0)));
+
+        // `rect.right` and `rect.bottom` are excluded (`>=`), and the far corner is 4000 px away.
+        let rect = grid.geometry();
+        let right = rect.x + rect.width as i32;
+        let bottom = rect.y + rect.height as i32;
+        for (label, point) in [
+            ("left", Point::new(-1, 10)),
+            ("right", Point::new(right, 10)),
+            ("above", Point::new(10, -1)),
+            ("below", Point::new(10, bottom)),
+            ("far away", Point::new(5000, 5000)),
+        ] {
+            assert_eq!(grid.cell_at(point), None, "{label} of the grid must resolve to no cell");
+            grid.handle_event(&Event::mouse_press(point.x, point.y, 1));
+        }
+        assert!(
+            clicked.lock().expect("clicked lock poisoned").is_empty(),
+            "a press outside the grid reported a cell"
+        );
+    }
+
     /// `#DCDCDC` is a colour a caller can actually ask for.
     ///
     /// # The defect this pins

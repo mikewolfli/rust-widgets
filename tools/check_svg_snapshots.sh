@@ -272,7 +272,14 @@ trap 'rm -rf "$GALLERY_SCRATCH"' EXIT
 # catch, and the first version of this step had it. `cp` rather than `git show` so the check
 # works on a tree whose changes are not yet staged.
 cp control.md "$GALLERY_SCRATCH/committed.md"
-if ! python3 tools/generate_control_index.py > "$GALLERY_SCRATCH/gen.log" 2>&1; then
+# `"$PYTHON"`, not a bare `python3`: this file already sources `lib_python.sh` (see the top) exactly
+# because `python3` is not a safe name on every host -- on Windows the Store installs an execution
+# alias under that name which can *block* on the Store UI instead of running the script, turning a
+# check into a hang. This one call site spelled the interpreter directly and so bypassed the helper,
+# which made the last step of this gate the single place the resolution did not apply. The failure
+# it produced was misleading, too: it reported "the gallery generator itself failed" while the real
+# problem was which interpreter was being asked to run it.
+if ! "$PYTHON" tools/generate_control_index.py > "$GALLERY_SCRATCH/gen.log" 2>&1; then
     echo "  FAIL  the gallery generator itself failed:"
     sed 's/^/        /' "$GALLERY_SCRATCH/gen.log"
     cp "$GALLERY_SCRATCH/committed.md" control.md
@@ -281,7 +288,7 @@ fi
 if ! diff -u "$GALLERY_SCRATCH/committed.md" control.md > "$GALLERY_SCRATCH/gallery.diff"; then
     echo "  FAIL  control.md is stale — it does not match what the generator produces now:"
     sed 's/^/        /' "$GALLERY_SCRATCH/gallery.diff" | head -40
-    echo "        regenerate with: python3 tools/generate_control_index.py"
+    echo "        regenerate with: $PYTHON tools/generate_control_index.py"
     exit 1
 fi
 echo "  PASS  control.md matches the generated index ($(grep -c '^### ' control.md) controls listed)"

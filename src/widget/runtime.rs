@@ -1002,6 +1002,29 @@ pub struct FrameOutcome {
     pub needs_another_frame: bool,
 }
 
+/// The decode accounting for a build with no decoder linked in: always zero.
+///
+/// # Why a real type and not `(0, 0, 0)`
+///
+/// `drive_frame` reads the cache counters twice per frame and takes the difference. On a build
+/// without `feature = "image"` (`android`, `embedded`) there is no `crate::image` module to ask, and
+/// naming it did not compile. The three readings could have been written as three separate `cfg`
+/// blocks with literal zeros, but a type keeps the two readings structurally identical to the
+/// gated arm: the same field names, the same subtraction below, one `cfg` on each read.
+///
+/// The zero is the *true* answer rather than a placeholder. With no decoder compiled in, no decode
+/// can occur, so a frame's share is genuinely zero -- the same reasoning
+/// `avatar::resolved_image_source` records for its own no-decoder arm. It is not a "we could not
+/// measure this" stand-in, which would be a dishonest number in exactly the place this crate's
+/// frame ledger exists to be honest about.
+#[cfg(not(all(feature = "image", not(alloc_frugal))))]
+#[derive(Default)]
+struct NoDecoderStats {
+    requests: u64,
+    hits: u64,
+    misses: u64,
+}
+
 /// A frame's cost, grouped by **what produced it** rather than as one total.
 ///
 /// # Why not a duration
@@ -1115,7 +1138,22 @@ pub struct FrameStats {
 pub fn drive_frame(delta_ms: u32) -> FrameOutcome {
     // The decode counters, read before anything else in the frame so this frame's share is exactly
     // the work done between here and the reading below -- and not whatever a previous frame left.
+    //
+    // # Why this is two `cfg` arms rather than one call
+    //
+    // `crate::image` is gated on `feature = "image"`, while this function is not: `full_widgets`
+    // profiles like `android` and `embedded` have the widget tree but not the decoder. Naming
+    // `crate::image::cache::stats()` unconditionally therefore failed to *compile* on those targets
+    // (`unresolved module image`), which is why `check_android_cross.sh` reported a cross-target
+    // break on `aarch64-linux-android` while every host build was green.
+    //
+    // The zero is not a placeholder. With no decoder compiled in, no decode *can* happen, so
+    // "this frame decoded nothing" is the true count rather than a stand-in for an unknown one --
+    // the same reasoning `avatar::resolved_image_source` uses for its no-decoder arm.
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
     let decodes_before = crate::image::cache::stats();
+    #[cfg(not(all(feature = "image", not(alloc_frugal))))]
+    let decodes_before = NoDecoderStats::default();
 
     // Step 0 -- the device facts, so every control in this frame sees one set of them.
     crate::style::environment::refresh_environment();
@@ -1146,7 +1184,10 @@ pub fn drive_frame(delta_ms: u32) -> FrameOutcome {
     // happens inside `draw` and the whole point is to account for it. (The repaint counts are taken
     // before painting for the opposite reason: they report what the *input* steps invalidated, and a
     // submission made while painting belongs to the frame that will paint it.)
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
     let decodes_after = crate::image::cache::stats();
+    #[cfg(not(all(feature = "image", not(alloc_frugal))))]
+    let decodes_after = NoDecoderStats::default();
     let decode_requests = decodes_after.requests.saturating_sub(decodes_before.requests);
     let decode_hits = decodes_after.hits.saturating_sub(decodes_before.hits);
     let decode_misses = decodes_after.misses.saturating_sub(decodes_before.misses);
@@ -2837,10 +2878,26 @@ mod tests {
 
         // The frame's own account of step 1. A delta, because the queue is shared: what this asserts is
         // that the frame **counted what its drain took**, not that it took exactly one thing.
+        //
+        // # Why this is not `outcome.events_dispatched > before`
+        //
+        // That is what it used to assert, and it was **flaky under the full suite** while passing
+        // in isolation: `events_dispatched` is the process-wide count, and the sibling tests in this
+        // module (`drive_frame_ticks_a_hovered_control_and_asks_for_another_frame`,
+        // `drive_frame_on_a_resting_tree_submits_nothing`, `drive_frame_advances_each_control_once_per_frame`,
+        // `drive_frame_accounts_for_repaints_and_clears_the_count`) each call `drive_frame` too. A
+        // concurrent test's frame can drain this test's injected trigger first, so the count this test
+        // compares against moves for a reason that has nothing to do with the claim.
+        //
+        // The claim is about *this* frame having drained *this* control's trigger, and that is
+        // observable without the global counter: the handler runs during the drain, so the widget's
+        // own value callback having fired is the per-control evidence that step 1 happened. It is
+        // also the stronger assertion -- a frame that dispatched *someone else's* trigger would still
+        // satisfy `> before` but cannot satisfy this.
         assert!(
-            outcome.events_dispatched > before,
-            "the frame must account for at least the trigger injected since the last drain: \
-             dispatched={} before={before}",
+            DRAINED.with(|flag| flag.get()),
+            "the injected trigger must have reached its handler during the frame's drain \
+             (dispatched={}, before={before})",
             outcome.events_dispatched
         );
 

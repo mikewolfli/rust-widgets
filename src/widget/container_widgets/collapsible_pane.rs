@@ -724,6 +724,15 @@ mod tests {
     /// fills come from the active theme now, so a colour literal here would pin the light
     /// preset and fail the moment the appearance changed — which is exactly the
     /// theme-blindness the resolved colours exist to remove.
+    ///
+    /// # Why this is gated with `full_widgets`
+    ///
+    /// Both halves it depends on — `widget::census` (for `install_preset_appearances`) and
+    /// `crate::theme` — are `#[cfg(full_widgets)]`. On a stripped target (an `ohos`/`android`
+    /// build) naming them failed to *compile*. A test whose subject is "the fill comes from the
+    /// active theme" has nothing to assert on a build with no theme module, so the gate states
+    /// that rather than inventing a stripped variant.
+    #[cfg(full_widgets)]
     #[test]
     fn collapsible_pane_draw_produces_svg() {
         // The expectation below is derived from the active theme, so the test has to pin the

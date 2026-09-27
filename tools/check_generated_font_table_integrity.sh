@@ -67,7 +67,7 @@ case "$OUT" in
     *)
         echo ""
         echo "  The generated CJK table no longer satisfies its reader's assumptions. Regenerate"
-        echo "  it with \`python3 tools/gen_cjk_bitmap.py --license=ofl-1.1\` rather than editing"
+        echo "  it with \`$PYTHON tools/gen_cjk_bitmap.py --license=ofl-1.1\` rather than editing"
         echo "  the arrays (BLUE23 §0A.4, G-4b)."
         exit 1
         ;;

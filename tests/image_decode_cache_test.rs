@@ -9,6 +9,15 @@
 //! that an avatar and a tool button naming the same file decode it once between them, and that the
 //! accounting can be read back. A unit test on the cache's own map cannot reach that — it would prove
 //! the map works and say nothing about whether the controls use it.
+//!
+//! # Why the whole file is gated on `image`
+//!
+//! `rust_widgets::image` only exists with `feature = "image"` (see `src/lib.rs`), and so does every
+//! function this file calls. Without the gate the crate's own module was reported missing on the
+//! `ohos` cross target — `cannot find `image` in `rust_widgets`` — which failed
+//! `check_harmony_cross.sh` for a test that configuration cannot run in the first place. An
+//! integration test has no per-item gate to reach for, so the file states its requirement once.
+#![cfg(feature = "image")]
 
 use std::io::Write;
 

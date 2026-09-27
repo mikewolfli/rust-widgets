@@ -63,7 +63,9 @@ FEATURES="android-jni jni mobile-api controls-custom controls-native serde serde
 # Linux uses `Android/Sdk`. Checking only the Linux path left a macOS host with a perfectly good
 # SDK reporting "no SDK" — the directory was there, the gate looked in the wrong place.
 if [[ -z "${ANDROID_HOME:-}" ]]; then
-  for candidate in "$HOME/Library/Android/sdk" "$HOME/Android/Sdk"; do
+  for candidate in "$HOME/Library/Android/sdk" "$HOME/Android/Sdk" \
+                   "$HOME/AppData/Local/Android/Sdk" \
+                   /c/Tools/Android/SDK /c/Android/Sdk; do
     if [[ -d "$candidate" ]]; then
       export ANDROID_HOME="$candidate"
       break
