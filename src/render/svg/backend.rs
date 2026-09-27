@@ -207,7 +207,36 @@ impl SvgPaintBackend {
 // ─── Helper: RGBA→BMP conversion ──────────────────────────────────────────
 
 /// Convert raw RGBA pixel data into an in-memory BMP file (32-bit BGRA).
+///
+/// # The size is the *data's*, not the caller's
+///
+/// `width`/`height` are what the caller asked the image to be scaled to, and the data is only
+/// `data.len() / 4` pixels. Indexing the buffer with the requested extent panicked whenever the two
+/// disagreed -- which is the normal case for a scaled icon, because a 2x2 source drawn into a 16x16
+/// slot is exactly "draw me at a size the pixels do not have". The BMP therefore carries the data's
+/// own extent, and the `<image>` element that references it keeps the requested one: SVG scales the
+/// bitmap into the box, which is what the caller asked for and what the software backend already
+/// does.
 fn rgba_to_bmp(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
+    // The extent the buffer actually holds. A zero factor means "no pixels", and the caller's
+    // rectangle is then only an empty box to draw nothing into.
+    let source_pixels = (rgba.len() / 4) as u32;
+    let (width, height) = if source_pixels == 0 {
+        (0, 0)
+    } else if (width * height) as usize == source_pixels as usize && width > 0 && height > 0 {
+        // The data matches what was asked for, so the caller's extent is the data's.
+        (width, height)
+    } else if let Some(derived_width) = source_pixels.checked_div(height) {
+        // Otherwise the declared height indexes rows and the width follows from the data, which keeps
+        // a mis-declared pair from producing a short or ragged row. `checked_div` rather than a bare
+        // `/` guarded by the branch above: the guard and the division are one fact, so the division
+        // carries it instead of a reader having to check that the branch protects it.
+        (derived_width, height)
+    } else {
+        // No usable height: treat the data as one row, which is the only shape left that cannot lose
+        // a pixel.
+        (source_pixels, 1)
+    };
     let row_size = width * 4; // 4 bytes/pixel, already 4-byte aligned
     let pixel_data_size = row_size * height;
     let file_size: usize = 14 + 40 + pixel_data_size as usize;
@@ -232,11 +261,16 @@ fn rgba_to_bmp(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
     bmp.extend_from_slice(&0u32.to_le_bytes()); // colors used
     bmp.extend_from_slice(&0u32.to_le_bytes()); // important colors
 
-    // Pixel data: RGBA → BGRA, stored bottom-up
+    // Pixel data: RGBA → BGRA, stored bottom-up. Bounded by the buffer rather than by the extent,
+    // so a truncated payload loses its trailing pixels instead of panicking -- the same rule
+    // `chunks_exact` states elsewhere in this crate for a malformed buffer.
     for y in (0..height).rev() {
         let row_off = (y * row_size) as usize;
         for x in 0..width {
             let idx = row_off + (x * 4) as usize;
+            if idx + 4 > rgba.len() {
+                return bmp;
+            }
             bmp.push(rgba[idx + 2]); // B
             bmp.push(rgba[idx + 1]); // G
             bmp.push(rgba[idx]); // R
@@ -544,11 +578,14 @@ impl PaintBackend for SvgPaintBackend {
             // ── Image ──────────────────────────────────────────────────
             RenderCommand::DrawImage { x, y, width, height, data } => {
                 if !data.is_empty() && *width > 0 && *height > 0 {
-                    // Convert RGBA pixel data to BMP and base64-encode for embedding.
+                    // Convert RGBA pixel data to BMP and base64-encode for embedding. The BMP holds
+                    // the pixels' own extent and the `<image>` element holds the requested box, so a
+                    // scaled draw scales rather than reading past the buffer -- the two were the same
+                    // number until a control drew an image at a size its pixels did not have.
                     let bmp = rgba_to_bmp(*width, *height, data);
                     let b64 = base64_encode(&bmp);
                     self.push_element(format!(
-                        r##"<image x="{x}" y="{y}" width="{width}" height="{height}" href="data:image/bmp;base64,{b64}" />"##
+                        r##"<image x="{x}" y="{y}" width="{width}" height="{height}" preserveAspectRatio="none" href="data:image/bmp;base64,{b64}" />"##
                     ));
                 } else {
                     // No pixel data: render an error placeholder rectangle.

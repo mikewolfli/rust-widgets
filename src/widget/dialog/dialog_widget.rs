@@ -237,7 +237,10 @@ impl Widget for Dialog {
     }
 
     fn size_hint(&self) -> Size {
-        Size::new(320, 240)
+        Size::new(
+            crate::widget::metrics::dimensions::DIALOG_WIDGET_DEFAULT_WIDTH,
+            dimensions::DIALOG_MIN_HEIGHT,
+        )
     }
 
     // The reveal is the control's own animation; the trait spelling is what the frame bus reaches

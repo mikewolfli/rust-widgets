@@ -249,7 +249,10 @@ impl Widget for SegmentedControl {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(300, 32)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::SEGMENTED_CONTROL_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::SEGMENTED_CONTROL_HEIGHT,
+        )
     }
 
     // The indicator slide is the control's own animation; the trait spelling is what the frame bus

@@ -130,7 +130,10 @@ impl Widget for BottomSheet {
     }
 
     fn size_hint(&self) -> Size {
-        crate::core::Size::new(300, 200)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::BOTTOM_SHEET_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::BOTTOM_SHEET_DEFAULT_HEIGHT,
+        )
     }
 
     // The rise is the control's own animation; the trait spelling is what the frame bus reaches
@@ -608,7 +611,10 @@ mod tests {
         // At rest the panel is entirely below the page, so it is not painted at all; as soon as the
         // slide begins it appears from the bottom edge and travels *upward* (a smaller y each frame
         // it is compared across).
-        assert_eq!(stowed_top, None, "a stowed panel is below the page, so nothing of it is painted");
+        assert_eq!(
+            stowed_top, None,
+            "a stowed panel is below the page, so nothing of it is painted"
+        );
         let middle = mid_top.expect("a mid-slide sheet paints a panel");
         let shown = shown_top.expect("a settled sheet paints a panel");
         assert!(

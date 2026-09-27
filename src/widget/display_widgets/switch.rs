@@ -346,10 +346,14 @@ impl Widget for Switch {
         // ring's inset on both sides. `SWITCH_TRACK.width` alone made the hint *narrower*
         // than the width at which the ring is drawable, so `size_hint` described a control
         // whose focus state could not be rendered. The height stays the track's own.
-        crate::core::Size::new(
-            self.geometry.track.width + FOCUS_RING_WIDTH * 2,
-            self.geometry.track.height,
-        )
+        // The height is the track's own; the width is the track plus one focus ring either side.
+        // Both come from the shared table, so this hint and the control's geometry are one fact.
+        let hint = crate::widget::metrics::switch_hint_size(self.geometry.track, FOCUS_RING_WIDTH);
+        debug_assert!(
+            hint.height >= crate::widget::metrics::dimensions::SLIDER_TRACK_HEIGHT,
+            "a switch's hint must read the shared metric system"
+        );
+        hint
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

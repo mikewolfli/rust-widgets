@@ -150,7 +150,13 @@ macro_rules! impl_properties_container {
         pub(crate) const DOCK_WIDGET_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("title", PropertyValueKind::String, true, true),
             PropertySchema::new("floating", PropertyValueKind::Bool, true, true),
-            PropertySchema::new("docked", PropertyValueKind::Bool, true, false),
+            // `docked` is writable: the control's `set` routes it through `set_docked`, which keeps
+            // the `floating`/`docked` pair consistent and emits the change signal, so writing it is
+            // an observable operation rather than a silent field assignment. Declaring it read-only
+            // while the control answers a *value* verdict (rather than `ReadOnlyProperty`) is the
+            // declaration/implementation disagreement `check_declaration_implementation_alignment`
+            // exists to catch; the declaration is the half that was wrong.
+            PropertySchema::new("docked", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

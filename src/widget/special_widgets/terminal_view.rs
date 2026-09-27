@@ -152,7 +152,10 @@ impl Widget for TerminalView {
         Some(self)
     }
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(600, 300)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::TERMINAL_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::TERMINAL_DEFAULT_HEIGHT,
+        )
     }
 
     /// One frame of the caret's blink. The frame bus calls this; nothing else does.

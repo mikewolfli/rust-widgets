@@ -307,7 +307,10 @@ impl Widget for Keyboard {
     }
 
     fn size_hint(&self) -> Size {
-        Size::new(320, 160)
+        Size::new(
+            crate::widget::metrics::dimensions::KEYBOARD_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::KEYBOARD_DEFAULT_HEIGHT,
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

@@ -930,7 +930,7 @@ impl Draw for LineEdit {
         // meaning the border falls back to the interaction style's own colour, so a control with
         // `semantic_state() == None` draws exactly as it did before the two channels were split.
         let semantic_border =
-            crate::theme::resolved_semantic_border("line_edit", self.semantic_state());
+            crate::style::resolved_semantic_border("line_edit", self.semantic_state());
         if let Some(border_color) = semantic_border.or(style.border_color) {
             let bw = style.border_width.unwrap_or(0);
             if bw > 0 {
@@ -1847,7 +1847,7 @@ mod tests {
         );
 
         // The theme resolves a border for that meaning — the whole point of reporting it.
-        let border = crate::theme::resolved_semantic_border("line_edit", field.semantic_state());
+        let border = crate::style::resolved_semantic_border("line_edit", field.semantic_state());
         assert!(border.is_some(), "the preset must define a border on `line_edit:error`");
 
         // Clearing the message returns the field to no meaning, so it is not latched.
@@ -1894,7 +1894,7 @@ mod tests {
             crate::theme::resolved_theme_style_for_state("line_edit", WidgetState::Hover);
         assert!(hover_style.is_some(), "the preset defines `line_edit:hover`");
         assert!(
-            crate::theme::resolved_semantic_border("line_edit", field.semantic_state()).is_some(),
+            crate::style::resolved_semantic_border("line_edit", field.semantic_state()).is_some(),
             "and a border for `line_edit:error` at the same time"
         );
     }

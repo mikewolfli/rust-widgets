@@ -17,6 +17,7 @@ use crate::widget::capability::coercion::{expect_f32, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::dimensions;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -606,7 +607,10 @@ impl Widget for PieMenu {
     }
 
     fn size_hint(&self) -> Size {
-        crate::core::Size::new(200, 200)
+        crate::core::Size::new(
+            dimensions::PIE_MENU_DEFAULT_WIDTH,
+            dimensions::PIE_MENU_DEFAULT_HEIGHT,
+        )
     }
 
     fn show(&mut self) {

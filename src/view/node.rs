@@ -266,6 +266,39 @@ impl Node {
         }
     }
 
+    /// Append `child` only when the build's current
+    /// [`Breakpoint`](crate::view::Breakpoint) equals `at`. Chainable.
+    ///
+    /// # Why this is a builder method and not an `if` in the caller
+    ///
+    /// The tier a build runs at is a fact the *build* establishes (see
+    /// [`with_breakpoint`](crate::view::with_breakpoint)), not something every `View::build`
+    /// should re-derive and thread through. Expressing the choice here means a view declares
+    /// "this sidebar exists on a tablet and up" and the framework supplies the fact — the same
+    /// division [`Node::child_if`] uses for a boolean the view *does* own.
+    ///
+    /// # What it selects
+    ///
+    /// A **subtree**, or nothing. Which is what makes the narrow and wide layouts two different
+    /// trees rather than one tree with two coordinate calculations: the unchosen branch's nodes
+    /// do not exist at all, so no control's `Hints` are consulted for them and no diff matches
+    /// them across a tier change (it sees an `Insert`/`Remove`, which is what actually changed).
+    ///
+    /// ```
+    /// use rust_widgets::view::{with_breakpoint, Breakpoint, Node};
+    /// let tree = || Node::new("row").breakpoint(
+    ///     Breakpoint::Medium,
+    ///     Node::new("panel").key("sidebar"),
+    /// );
+    /// let wide = with_breakpoint(Breakpoint::Expanded, tree);
+    /// assert_eq!(wide.children.len(), 0);
+    /// let tablet = with_breakpoint(Breakpoint::Medium, tree);
+    /// assert_eq!(tablet.children.len(), 1);
+    /// ```
+    pub fn breakpoint(self, at: crate::view::Breakpoint, child: Node) -> Self {
+        self.child_if(crate::view::is_current(at), child)
+    }
+
     /// Append one child per element of `items`, matched across rebuilds by `key_of`.
     ///
     /// # Why this is not just `children_of(items.map(..))`
@@ -474,6 +507,55 @@ mod tests {
         let shown = Node::new("section");
         let shown = if true { shown.children_of([Node::new("a"), Node::new("b")]) } else { shown };
         assert_eq!(shown.children.len(), 2);
+    }
+
+    /// BLUE24 §5 criterion 1: the same declaration yields **different trees** at different tiers.
+    ///
+    /// The assertion is a node *count*, not a coordinate — that is the whole point of selecting a
+    /// subtree rather than computing positions. If `breakpoint` were implemented as a flag a
+    /// control read while drawing, both tiers would report the same node count and this would fail.
+    #[test]
+    fn a_breakpoint_selects_a_subtree_by_the_builds_tier() {
+        use crate::view::{with_breakpoint, Breakpoint};
+
+        let build = || {
+            Node::new("window")
+                .key("root")
+                .breakpoint(Breakpoint::Medium, Node::new("panel").key("sidebar"))
+        };
+
+        let compact = with_breakpoint(Breakpoint::Compact, build);
+        let medium = with_breakpoint(Breakpoint::Medium, build);
+        let expanded = with_breakpoint(Breakpoint::Expanded, build);
+
+        assert_eq!(compact.children.len(), 0, "a phone has no room for the sidebar");
+        assert_eq!(medium.children.len(), 1, "a tablet does");
+        assert_eq!(expanded.children.len(), 0, "and the desktop layout declares its own clearly");
+        assert_eq!(compact.node_count(), 1, "only the window exists narrow");
+        assert_eq!(medium.node_count(), 2, "the window and its sidebar exist at tablet width");
+    }
+
+    /// Two branches of one `breakpoint`/`breakpoint_else` pair are two different subtrees, and
+    /// exactly one contributes — the `child_if_else` property, at a tier.
+    #[test]
+    fn a_breakpoint_chooses_exactly_one_of_two_subtrees() {
+        use crate::view::{with_breakpoint, Breakpoint};
+
+        let build = || {
+            let root = Node::new("window").key("root");
+            root.child_if(
+                crate::view::is_current(Breakpoint::Compact),
+                Node::new("drawer").key("drawer"),
+            )
+            .breakpoint(Breakpoint::Expanded, Node::new("rail").key("rail"))
+        };
+
+        let compact = with_breakpoint(Breakpoint::Compact, build);
+        let expanded = with_breakpoint(Breakpoint::Expanded, build);
+        assert_eq!(compact.children.len(), 1);
+        assert_eq!(compact.children[0].widget, "drawer");
+        assert_eq!(expanded.children.len(), 1);
+        assert_eq!(expanded.children[0].widget, "rail");
     }
 
     #[test]

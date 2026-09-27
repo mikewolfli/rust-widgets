@@ -201,6 +201,21 @@
   },
   "overrides": {
     "styles": {
+      "button": {
+        "background": null,
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "none",
+        "material": null,
+        "hairline": null
+      },
       "button:disabled": {
         "background": {
           "r": 200,
@@ -220,7 +235,11 @@
         "font": null,
         "opacity": null,
         "shadow": "Inherit",
-        "touch_target": null
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
       },
       "button:hover": {
         "background": {
@@ -236,7 +255,11 @@
         "font": null,
         "opacity": null,
         "shadow": "Inherit",
-        "touch_target": null
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
       },
       "button:pressed": {
         "background": {
@@ -252,7 +275,11 @@
         "font": null,
         "opacity": null,
         "shadow": "Inherit",
-        "touch_target": null
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
       },
       "check_box:checked": {
         "background": {
@@ -273,7 +300,11 @@
         "font": null,
         "opacity": null,
         "shadow": "Inherit",
-        "touch_target": null
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
       },
       "chip:selected": {
         "background": {
@@ -294,7 +325,26 @@
         "font": null,
         "opacity": null,
         "shadow": "Inherit",
-        "touch_target": null
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "combo_box": {
+        "background": null,
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "none",
+        "material": null,
+        "hairline": null
       },
       "combo_box:error": {
         "background": null,
@@ -310,7 +360,26 @@
         "font": null,
         "opacity": null,
         "shadow": "Inherit",
-        "touch_target": null
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "combo_box_edit": {
+        "background": null,
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "none",
+        "material": null,
+        "hairline": null
       },
       "date_edit:error": {
         "background": null,
@@ -326,7 +395,11 @@
         "font": null,
         "opacity": null,
         "shadow": "Inherit",
-        "touch_target": null
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
       },
       "date_time_edit:error": {
         "background": null,
@@ -342,7 +415,26 @@
         "font": null,
         "opacity": null,
         "shadow": "Inherit",
-        "touch_target": null
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "editable_combo_box": {
+        "background": null,
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "none",
+        "material": null,
+        "hairline": null
       },
       "editable_combo_box:error": {
         "background": null,
@@ -358,7 +450,26 @@
         "font": null,
         "opacity": null,
         "shadow": "Inherit",
-        "touch_target": null
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "line_edit": {
+        "background": null,
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "none",
+        "material": null,
+        "hairline": null
       },
       "line_edit:error": {
         "background": null,
@@ -374,7 +485,11 @@
         "font": null,
         "opacity": null,
         "shadow": "Inherit",
-        "touch_target": null
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
       },
       "masked_edit:error": {
         "background": null,
@@ -390,7 +505,26 @@
         "font": null,
         "opacity": null,
         "shadow": "Inherit",
-        "touch_target": null
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "push_button": {
+        "background": null,
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "none",
+        "material": null,
+        "hairline": null
       },
       "radio_button:checked": {
         "background": {
@@ -411,7 +545,26 @@
         "font": null,
         "opacity": null,
         "shadow": "Inherit",
-        "touch_target": null
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "spin_box": {
+        "background": null,
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "none",
+        "material": null,
+        "hairline": null
       },
       "spin_box:error": {
         "background": null,
@@ -427,7 +580,11 @@
         "font": null,
         "opacity": null,
         "shadow": "Inherit",
-        "touch_target": null
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
       },
       "split_button:disabled": {
         "background": {
@@ -448,7 +605,11 @@
         "font": null,
         "opacity": null,
         "shadow": "Inherit",
-        "touch_target": null
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
       },
       "split_button:hover": {
         "background": {
@@ -464,7 +625,11 @@
         "font": null,
         "opacity": null,
         "shadow": "Inherit",
-        "touch_target": null
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
       },
       "split_button:pressed": {
         "background": {
@@ -480,7 +645,11 @@
         "font": null,
         "opacity": null,
         "shadow": "Inherit",
-        "touch_target": null
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
       },
       "switch:checked": {
         "background": {
@@ -501,7 +670,26 @@
         "font": null,
         "opacity": null,
         "shadow": "Inherit",
-        "touch_target": null
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "text_area": {
+        "background": null,
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "none",
+        "material": null,
+        "hairline": null
       },
       "text_area:error": {
         "background": null,
@@ -517,7 +705,26 @@
         "font": null,
         "opacity": null,
         "shadow": "Inherit",
-        "touch_target": null
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "text_edit": {
+        "background": null,
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "none",
+        "material": null,
+        "hairline": null
       },
       "text_edit:error": {
         "background": null,
@@ -533,7 +740,11 @@
         "font": null,
         "opacity": null,
         "shadow": "Inherit",
-        "touch_target": null
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
       },
       "time_edit:error": {
         "background": null,
@@ -549,7 +760,26 @@
         "font": null,
         "opacity": null,
         "shadow": "Inherit",
-        "touch_target": null
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "toggle_button": {
+        "background": null,
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "none",
+        "material": null,
+        "hairline": null
       },
       "toggle_button:disabled": {
         "background": {
@@ -570,7 +800,11 @@
         "font": null,
         "opacity": null,
         "shadow": "Inherit",
-        "touch_target": null
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
       },
       "toggle_button:hover": {
         "background": {
@@ -586,7 +820,11 @@
         "font": null,
         "opacity": null,
         "shadow": "Inherit",
-        "touch_target": null
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
       },
       "toggle_button:pressed": {
         "background": {
@@ -602,7 +840,26 @@
         "font": null,
         "opacity": null,
         "shadow": "Inherit",
-        "touch_target": null
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
+      },
+      "tool_button": {
+        "background": null,
+        "foreground": null,
+        "border": null,
+        "border_width": null,
+        "radius": null,
+        "font": null,
+        "opacity": null,
+        "shadow": "Inherit",
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "none",
+        "material": null,
+        "hairline": null
       },
       "tool_button:disabled": {
         "background": {
@@ -623,7 +880,11 @@
         "font": null,
         "opacity": null,
         "shadow": "Inherit",
-        "touch_target": null
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
       },
       "tool_button:hover": {
         "background": {
@@ -639,7 +900,11 @@
         "font": null,
         "opacity": null,
         "shadow": "Inherit",
-        "touch_target": null
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
       },
       "tool_button:pressed": {
         "background": {
@@ -655,7 +920,11 @@
         "font": null,
         "opacity": null,
         "shadow": "Inherit",
-        "touch_target": null
+        "touch_target": null,
+        "elevation": null,
+        "bevel": "inherit",
+        "material": null,
+        "hairline": null
       }
     }
   },

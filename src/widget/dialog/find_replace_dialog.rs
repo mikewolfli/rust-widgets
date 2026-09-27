@@ -431,7 +431,10 @@ impl Widget for FindReplaceDialog {
     }
 
     fn size_hint(&self) -> Size {
-        crate::core::Size::new(350, 200)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::FIND_REPLACE_DIALOG_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::FIND_REPLACE_DIALOG_DEFAULT_HEIGHT,
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

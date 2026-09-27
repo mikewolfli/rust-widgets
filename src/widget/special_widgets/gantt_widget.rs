@@ -273,7 +273,7 @@ impl Widget for GanttWidget {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(600, 200)
+        crate::core::Size::new(dimensions::GANTT_DEFAULT_WIDTH, dimensions::GANTT_DEFAULT_HEIGHT)
     }
 
     impl_widget_property_hooks!();

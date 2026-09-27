@@ -337,7 +337,10 @@ impl Widget for RadarChart {
     }
 
     fn size_hint(&self) -> Size {
-        Size::new(320, 320)
+        Size::new(
+            crate::widget::metrics::dimensions::RADAR_CHART_DEFAULT_SIZE,
+            crate::widget::metrics::dimensions::RADAR_CHART_DEFAULT_SIZE,
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

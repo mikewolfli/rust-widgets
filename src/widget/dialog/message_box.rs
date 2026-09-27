@@ -387,7 +387,10 @@ impl Widget for MessageBox {
     }
 
     fn size_hint(&self) -> Size {
-        crate::core::Size::new(350, 150)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::MESSAGE_BOX_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::MESSAGE_BOX_DEFAULT_HEIGHT,
+        )
     }
 
     /// Reports this widget as the object that paints it.

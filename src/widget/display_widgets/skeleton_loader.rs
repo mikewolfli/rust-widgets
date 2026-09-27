@@ -179,7 +179,10 @@ impl Widget for SkeletonLoader {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(300, 20)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::SKELETON_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::SKELETON_ROW_HEIGHT,
+        )
     }
 
     /// One frame of the shimmer. The frame bus calls this; nothing else does.

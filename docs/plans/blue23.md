@@ -1726,7 +1726,7 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 
 ---
 
-## A.9 `audit_control_gaps.py` 报出的 25 个「外部基准有、本仓无」（实跑）
+## A.9 `audit_control_gaps.py` 报出的 25 个「外部基准有、本仓无」（实跑，**轮 48 逐条复核**）
 
 ```text
 $ python3 tools/audit_control_gaps.py
@@ -1736,22 +1736,36 @@ candidate gaps: 25
 **这 25 条不是缺陷登记**（BLUE21 §A.4.3 已确立：本仓在桌面/图表方向**领先** 主流 material 实现），
 而是**外部基准的差集**。逐条裁定（**P4 新功能，不混入外形修复**，BLUE21 §6.5 同一处理）：
 
-| 缺口 | 裁定 | 理由 |
+| 缺口 | 裁定 | 理由（**轮 48 逐条复核过**）|
 |---|---|---|
-| `password_edit` | ❌ 不补 | `line_edit` 的 `EchoMode` 已覆盖（BLUE21 曾删 `PasswordEchoOnEdit`，用 `CursorBlink` 兼得） |
+| `password_edit` | ❌ 不补 | `line_edit` 的 `EchoMode` 已覆盖 |
 | `accordion` | ❌ 不补 | `collapsible_pane` + `tool_box` 已覆盖 |
-| `context_menu` | ⚠️ 部分 | `WidgetKind::ContextMenu` **已存在**（kind 表第 36 项），缺构造器 ⇒ **M10** |
-| `alert_dialog`/`confirm_dialog`/`about_dialog` | ❌ 不补 | `message_box` 用 `MessageBoxLevel` 表达（语义化更清晰） |
-| `time_picker`/`clock` | ⚠️ 部分 | `time_edit` 已存在但**选择器不可达**（§A.8.2）⇒ 补**弹出时钟**而非新 kind |
+| `context_menu` | ✅ **已覆盖**（原判⚠️**有误**）| `src/widget/mod.rs:470` 的 `pub type ContextMenu = Menu;` —— 它不是「缺构造器」，是一个**已存在的类型别名**。原表说「缺构造器 ⇒ M10」是**看错**：别名就是构造器的入口 |
+| `alert_dialog`/`confirm_dialog`/`about_dialog` | ❌ 不补 | `message_box` 用 `MessageBoxLevel` 表达 |
+| `time_picker`/`clock` | 🔶 **不补 kind，但弹出时钟未做** | `time_edit` **存在**（`advanced_widgets/time_edit.rs`），但 `grep -c popup time_edit.rs` = **0** —— 对比 `date_edit` 已在 BLUE23 建了 `calendar_popup`。原表写「已归入上表」是**过早结账**：**它仍是一个缺口**，只是缺口在「弹层」而非「kind」|
 | `tag` | ❌ 不补 | `chip` 已覆盖 |
-| `flex`/`flow_layout`/`wrap_layout`/`split_layout`/`aspect_ratio`/`spacer`/`center`/`align`/`sized_box`/`padding`/`expanded`/`flexible`/`intrinsic_width` | ✅ **本仓优势，勿动** | 这 13 个是 **主流 material 实现 的布局 widget**；本仓把它们做成了 `src/layout/` 的 15 种 `Layout` 实现（更少类型、更可测）。补成 180 个 kind 才是**退步** |
-| `gauge` | ⚠️ 部分 | `meter` 已覆盖（§A.4，**需修刻度错相**） |
+| `flex`/…/`intrinsic_width`（13 个）| ✅ **本仓优势，勿动** | 本仓把它们做成了 `src/layout/` 的 `Layout` 实现（更少类型、更可测）|
+| `gauge` | ✅ **已覆盖**（原判⚠️**已过时**）| `meter.rs:20` 的模块文档写明「the factory already accepts `gauge`」；刻度错相已在 **§A.4 修完**（`meter.rs` 现 110 处刻度相关代码）|
 | `phone_input`/`email_input` | ❌ 不补 | 属**校验规则**而非控件；应做成 `masked_edit` 的 preset |
 
-**结论**：25 条中 **13 条是本仓的更优形态**（布局作为引擎而非 widget）、
-**3 条是「kind 在但能力缺」**（`context_menu`/`time_picker`/`gauge`，已归入上表）、
-**9 条是不该补的别名**。**因此本计划的控件数维持 188，不新增 kind**——
-与 `tools/check_widget_kind_count.sh`（22 份文档均声明 180）保持一致。
+**结论（修正后）**：25 条中 **13 条是本仓的更优形态**（布局作为引擎而非 widget）、
+**1 条是「缺一个部件」**（`time_picker` 的弹层 —— 见下）、
+**1 条原本就已被覆盖**（`context_menu`，类型别名）、
+**1 条已随 §A.4 关闭**（`gauge`）、
+**9 条是不该补的别名**。**控件数维持 188，不新增 kind**——
+与 `check_widget_kind_count.sh` 一致（实测：180 变体 / 22 份文档声明 180）。
+
+> **轮 48 修正了本表两处看错**，两处都是同一个形状：**把「名字不存在」当成了「能力不存在」。**
+> * `context_menu`：名字不存在，但 `ContextMenu = Menu` 的别名存在 ⇒ 能力存在；
+> * `gauge`：名字不存在，但 `meter` 的工厂就接受 `gauge` ⇒ 能力存在。
+> 而反过来也错过一次：`time_picker` **名字存在**（`time_edit`），但**能力不存在**（无弹层）。
+> 判据：**差集工具报的是名字，裁定要回到能力。**
+
+### A.9.1 `time_picker` 的弹层：**仍未做，本计划不包**
+
+与 §A.11.2 的 `combobox.max_visible_items` **同性质**（控件缺一个部件，不是接一条线）。
+要做需要：弹层容器 + 时钟表盘 + 键盘导航 + 失焦关闭 —— 与 `date_edit`
+的 `calendar_popup`（BLUE23 已建）同量级。**已显式登记，不当作已完成。**
 
 ---
 
@@ -1812,7 +1826,7 @@ M7/M8/M9/M10 是 4/6/8/25 个控件的逐条。
 | **批 7** 各组 P0 单点 | ✅ **完成** | 12 项全部落地（`group_box` 勾 / `meter` 刻度 / `dial` 刻度环 / `tab_widget` 零 tab / `tooltip` 层级 / `bottom_sheet` 遮罩 / `fab` 契约 / `drop_zone` 面 / `calendar` 行高 / `app_bar` clamp / `switch` 滑动 / `camera_preview` 判为内容色）。**`tab_bar` 两项（D9 三形状 / D10 溢出）也在§4.4 完成**，选「均分」路 —— 见 §4.4 的复核 | — |
 | **批 8** M7/M8/M9/M10/M12 长尾 | ✅ **完成** | `tree_view`/`tree_table`/`virtual_list` 行 hover + base 转发；`range_slider` 双柄 a11y；`calendar` a11y 播报选中日；`combo_box` RTL 指示符；`segmented_control` a11y；`:error` 状态通道；`gantt_widget` 里程碑/今日线/依赖箭头；`date_edit` 日历弹层（含 `Date::weekday`）；`spinbox` RTL；`splash_screen` 淡出（opt-in）；`image_gallery` 切图到达；**`chart` 值动画**（0..=1 进度映射到各自区间，Bar/Line/Area 共用）；**`FlexLayout::arrange` 反向轴**（轮 26 发现，真 bug）| — |
 
-### A.11.2 **死状态普查**（轮 30，系统扫描一次）
+### A.11.2 **死状态普查**（轮 30 系统扫描；轮 37–45 **全部关闭**）
 
 **方法与判据**见 `log-20260924-1.md` §155。已修：
 `calendar.vertical_header_visible`（→ ISO 周号栏）、
@@ -1821,18 +1835,195 @@ M7/M8/M9/M10 是 4/6/8/25 个控件的逐条。
 `refresh_control.content`（结构性：子控件从未登记 ⇒ 从未绘制）。
 另修一处**真 flaky**（`drive_frame_drains_*` 的「修了一半的修补」）。
 
-**尚未关闭（各自需要一个新功能，已登记为独立议题，不假装是接线）**：
+**本轮（轮 37–45）已全部关闭**——下表十二项逐一落地，每项都有「绘制 + 命中」两层的断言：
 
-| 项 | 性质 | 所需工作 |
-| `list_view.view_mode` / `mdiarea.view_mode` | 死状态 | `Icon`/`Details`/`Thumbnails`、`TabbedView` 三/一种布局 |
-| `scrollarea.alignment`/`widget_resizable`、`dockwidget.docked`/`dock_location` | 死状态 | 滚动区对中/尺寸策略；dock 方向要重排 chrome |
-| `lcd_number.small_decimal_point`、`avatar.image_source`、`tool_button.icon`、`textedit.max_length`/`line_wrap`、`combobox.max_visible_items`、`inplace_editor.padding`、`audio_visualizer.peak_hold_duration` | 死状态 | 各自一条小功能（小数点绘制 / 图像加载 / 图标加载 / 长度上限 + 换行 / 下拉列表 / 内边距 / 峰值计时）|
+| 项 | 状态 | 实际改法 | 日志 |
+|---|---|---|---|
+| `list_view.view_mode` | ✅ | `ListLayout`（行高/列数/标签位置）+ `item_rect`；`Icon`/`Details`/`Thumbnails` 三种新布局 | §188–191 |
+| `mdiarea.view_mode` | ✅ | `SubwindowPlacement`（框 + 是否自画标题栏）+ `tab_rect`/`tab_at_point` + tab 条绘制与点击 | §192–196 |
+| `scrollarea.alignment` | ✅ | `content_frame()` 把松弛对齐到子控件上 | §197–200 |
+| `scrollarea.widget_resizable` | ✅ | 同一个 `content_frame()`：框是 viewport 还是 `max(viewport, extent)` | §197–200 |
+| `dockwidget.dock_location` | ✅ | `TitleBarAxis` 决定条是横是竖；逐字竖排标题；按钮跟随尾缘 | §201–206 |
+| `dockwidget.docked` | ✅ | `set_docked` 同步 `floating`、emit、并选一个 `allowed_areas` 内的边缘 | §201–206 |
+| `inplace_editor.padding` | ✅ | `text_rect()`：两个模式与光标共读一处内缩 | §207 |
+| `lcd_number.small_decimal_point` | ✅ | `draw_decimal_point()` 两种尺寸；`Dec` 保留小数位；`has_fraction` 容差 | §208–210 |
+| `audio_visualizer.peak_hold_duration` | ✅ | `advance_peak_hold()` + `Widget::tick`；峰值**到期下降**而非永不到期 | §211–216 |
+| `textedit.max_length` | ✅ | `within_max_length()` 门在 `set_text` 唯一漏斗上（键盘/粘贴/undo/属性） | §217 |
+| `textedit.line_wrap` | ✅ | `draw_text_layout()` + `flush_row()`；折行 / 不折行两种布局 | §218–220 |
+| `avatar.image_source` | ✅ | `paint_image_source()`：解码缓存 + 圆形遮角 + 失败回退首字母 | §221–225 |
+| `tool_button.icon` | ✅ | `resolved_icon()` 惰性解码 + 缓存；`icon_rect()` | §226–230 |
+
+> **扫描产出但不在本表内、已登记为独立议题的**：
+>
+> * **`tool_button.button_style`** —— **已在本轮一并关闭**（见 §226）：它原本在 `draw` 里
+>   有一个五路 `match`，而五个分支返回同一个值，所以它是一种**更难发现的死状态**
+>   （「分支写得很像分支、但每条路都一样」）。改法见 `icon_rect` / `label_rect`。
+> * **`combobox.max_visible_items`** —— **不是接线问题，而是缺一个主要部件**：
+>   `combobox` 没有任何下拉/弹层代码。「最多可见几项」是一个**不存在的列表**的属性。
+>   要做需要：弹层容器 + 滚动列表 + 键盘导航 + 失焦关闭。**本计划不包它**，
+>   因为它不是「一条小功能」，而是一个子控件。
 
 > 这一表是**扫描产出**，不是计划原有条目。它们与 §A.8 的「字面量」不同：
 > 字面量是**画错了颜色**，这些是**承诺了一件没做的事**。
-> 每条都记了「所需工作」，所以下一轮可以从任一条接续，不需要重新扫描。
-| **批 10** §5A（二） | ✅ **完成** | 上下文传播 + `children_if` 裁定；`View::build` 签名变更后全量绿 | — |
-| **收尾** | ⏳ **未开始** | 按用户指令**放到最后**：单次全量 + 5 profile + `run_all_gates.sh` + 快照再生 | — |
+> **轮 45 已全部关闭**（含扫描外发现的 `tool_button.button_style`）。
+
+### A.11.3 完工判定（一份可核对的清单，**轮 47 逐条实跑**）
+
+**本计划自身范围内的条目：全部完成，且 31 条验收判据无一条例外。**
+
+| 范围 | 状态 |
+|---|---|
+| §7 批 1–批 8（状态层 / 预设 / 动效总线 / 层级 / 字面量 / 各组 P0 / 长尾）| ✅ |
+| §5A 批 9–批 10（错误边界 / `portal` / 生命周期 / 上下文 / `children_if` 裁定）| ✅ |
+| 附录 A 15 组、58 条逐控件处方 | ✅ |
+| §9 收尾判据（**31 条逐条实跑**）| ✅ **见下表** |
+
+**§9 的 31 条判据，轮 47 逐条实跑的结果**：
+
+| 判据 | 命令 / 方式 | **实测** |
+|---|---|---|
+| 1 `fn widget_state` > 1 | `grep -rn "fn widget_state" src/widget/ \| wc -l` | **12** |
+| 3 `hovered: bool` 仅 `BaseWidget` 一处 | 同上 | 字段仅 `base.rs:122` |
+| 4 两主题各 ≥6 个 `kind:state` 键 | `overrides.styles` 计数 | `dark` **37** / `default` **37** |
+| 6 17 个颜色角色有消费者 | `check_declared_tokens_have_consumers.sh` | **17 roles / 0 failed** |
+| 11 每个 `tick` 控件可被推进 | `check_animation_has_a_driver.sh` | **269 / 0 failed** |
+| 12 时长来自 `theme.motion` | `check_transition_durations_are_tokens.sh` | **188 / 0 failed** |
+| 13 `panel` 面色 ≠ bg；diff > 4 行 | 快照对账 | 面色 `rgba(18,18,18)`；**diff 16 行** |
+| 17 `group_box_checked` 快照存在 | `ls snapshots/svg/` | ✅ |
+| 20 全量测试 0 failed | `cargo test --…--lib -- --skip bevel` | **5939 passed / 0 failed** |
+| 21 clippy 0 warning | `cargo clippy --…--all-targets` | **0** |
+| 22 五 profile | `cargo check --…--lib` | **5/5 OK** |
+| 23 全部门禁 FAIL=0 | `bash tools/run_all_gates.sh` | **PASS=88 FAIL=0 TIMEOUT=0 NOT-RUN=0** |
+| 24 **静止快照逐字节不变** | `export_control_svgs` + `git diff snapshots/` | **零差异**（含修掉一个 5px 回归）|
+| 25 mini 体积增量 ≤ 64 B | `7efee081` vs `main` 的 `size_of::<BaseWidget>()` | **1232 → 1256 = +24 B** |
+| 30 `children_if` 裁定 | `grep -rn children_if src/` | **命中 0**（选 B：已删）|
+| 31 失败局部性门禁 | `check_view_failures_are_local.sh` | **checks=3 failures_pushed=4 failed=0** |
+| 2/5/7–10/14–16/18–19/26–29 | 在测试套与快照内 | 均绿（见 `log-20260924-1.md` §240）|
+
+> **判据 24 是本计划的安全绳**，而轮 47 第一次**真正拉了一下**：
+> 它当场报出 `dock_widget.svg` 有 20 行差异 —— 一个**真实的 5px 回归**（按钮整体左移）。
+> 根因是 `title_button_rect` 多算了一个 `gap`。修正后零差异。
+> **在那之前，5939 条测试、88 条门禁、5 个 profile、clippy 全部是绿的。**
+> 这证明了一件事：**“没有坏”与“与之前一样”是两个不同的命题，需要两套判据。**
+
+**§A.11.2 的死状态表不属于计划的原始范围** —— 它是普查 **新发现** 的，
+轮 37–45 已**全部关闭**，轮 46 对改动最大的 4 项做了反向注入。
+
+**仍不属本计划的两件事（**轮 48 已逐条处置**）**：
+
+| # | 项 | 轮 48 的处置 |
+|---|---|---|
+| 1 | `combobox.max_visible_items` | ✅ **已做完** —— 不是“不属本计划”，是**真缺口**。见 §A.11.4 |
+| 2 | §A.9 的 25 个「外部基准有、本仓无」 | ✅ **已逐条复核**，并修正原表两处看错。见 §A.9 |
+
+### A.11.4 `combobox` 的下拉列表（轮 48，`max_visible_items` 的真正落点）
+
+**原表中的“控件缺一个主要部件”是正确的描述，而“不属本计划”是错误的处置。**
+轮 48 把它做完了。
+
+#### 病灶：一个描述“不存在的列表”的属性
+
+```
+combobox.rs:max_visible_items   引用数 = 3（字段 + getter + setter）
+```
+
+而 `draw()` 只画字段与指示符 —— **一行列表都没有**。但控件里已经躺着三个为此准备的字段：
+
+| 字段 | 原注释直言它是为列表准备的 |
+|---|---|
+| `open: bool` | “there was no drop-down at all … this flag is what makes the list reachable” |
+| `hovered_item: Option<usize>` | “the row a click will take” |
+| `first_visible_item: usize` | “the list shows `max_visible_items` rows starting here” |
+
+**三个字段的 doc 写得比代码还完整** —— 这是本会话第四次遇到同一形状
+（`textedit` 的“in real implementation would…”、`avatar` 的“no image pipeline yet”、
+`tool_button` 的“stored but not decoded or painted”）。
+
+#### 更严重的一层：点击的语义是错的
+
+```rust
+// 旧代码
+fn activate_combo(&mut self) {
+    let new_index = current.map(|c| (c + 1) % len).unwrap_or(0);
+    self.set_current_index(Some(new_index));
+}
+```
+
+**点击字段 = 把值推向下一个。** 后果：
+
+* 九项列表要到第 8 项要点 **8 次**，而且**无法后退**；
+* `popup_visibility_changed` 这个信号**永不触发**（没有人打开过列表）；
+* `max_visible_items` 连一个可以夹紧的对象都没有。
+
+#### 修法：一行几何 + 一处解析
+
+| 新增 | 作用 |
+|---|---|
+| `visible_item_count()` | `max_visible_items` 与 items 数的 **夹紧**。永不 > items（两项列表不留八行空白），永不为 0（空列表仍需一行画“无项”）|
+| `first_visible_item()` | 窗口的起点，**每次读时夹紧** —— 删项/缩小限制都不能把窗口留在自己末端之外 |
+| `list_rect()` | 列表框：**同宽、贴在字段下缘、高 = 行数 × `MENU_ROW_HEIGHT`**。高度**导出而不存储** |
+| `item_rect(index)` | 单行的框。**绘制与命中同读**（`list_view` 的同一规则）|
+| `item_at_point(point)` | 建在 `item_rect` **之上**的反查，而不是另算一遍 |
+| `scroll_to / scroll_to_current` | 键盘导航与“开在已选项上”|
+| `move_hover / commit_hovered` | 高亮移动与“取行并关闭” |
+
+#### 事件重排：一个统一的优先序
+
+* **列表优先**（它画在字段之上，重叠处的点击属于列表）；
+* **点在别处 ⇒ 关闭列表**（弹层必须能被“点外面”关掉，否则困住用户）；
+* **键盘**：↑↓ 在**列表打开时移高亮**、关闭时仍旧步进值；Enter 开时取行/关时重激活；
+  Esc 关闭不提交；Space/`F2`(113) 开关列表。
+
+#### 两个刻意的设计决定
+
+1. **单击字段 = 打开列表**（不是进值）。值为单一项时例外：直接提交，
+   因为一项列表没有可选之物。
+2. **开列表时滚动到已选项**（居中）。这是 `max_visible_items` 对“第一页之后的选择”
+   唯一有意义的地方 —— 否则字段显示 item 15、列表却从 0 开始。
+
+#### 四条断言 + 反向注入
+
+| 测试 | 抓什么 |
+|---|---|
+| `max_visible_items_sizes_the_drop_down_list` | 关闭无行；列表与字段同宽、贴在下方；高 = `行数 × MENU_ROW_HEIGHT`；20 项限 10 ⇒ 不是 20 行；项少于限制 ⇒ 列表随之缩短；空列表仍有一行 |
+| `a_click_takes_the_row_it_is_painted_on` | **滚动到列表中段**后逐行回查；**窗口外的行无 box**（两端都查）|
+| `pressing_the_field_opens_the_list_and_a_row_commits` | 点击**打开而不改值**；开/关两张 SVG 不同且文字 run 数更多；点第二行 ⇒ `current_index==1` 且列表关闭 |
+| `opening_the_list_scrolls_to_the_chosen_row` | 选中第 15 项时窗口**确实移了**（`first > 0`）且 15 在窗内 |
+| `the_keyboard_drives_the_open_list` | ↑↓ 移高亮不提交；Enter 取行并关闭；Esc 关闭不改值 |
+| `shrinking_the_window_cannot_scroll_past_the_last_row` | 删项后窗口被夹紧，item 0 仍可见 |
+
+**反向注入**（本会话一贯要求）：
+
+```
+注入：visible_item_count() 忽略 max_visible_items（恒 = items.len()）
+→ FAILED：a_click_takes_the_row…、max_visible_items_sizes…、opening_the_list_scrolls…
+   （3 条转红）
+恢复 → 48 passed / 0 failed
+```
+
+> 第一次注入我改的是 `list_rect` 的高度，**只红了 1 条** —— 因为 `item_rect` 自己
+> 也读了 `visible_item_count`，两边一起错就自洽了。
+> 改成注入 `visible_item_count` 本身，3 条全红。
+> 这正是 §233 的同一教训：**注入要打在“被断言的量”上，不是“看着相关的地方”。**
+
+#### 验收
+
+| 项 | 实测 |
+|---|---|
+| `combobox` 定向测试 | ✅ **48 passed / 0 failed** |
+| 全量测试 | ✅ **5945 passed / 0 failed** |
+| 五 profile | ✅ 全 OK |
+| **快照** | ✅ **零差异**（列表默认关闭，`field_band` 未动 —— 安全绳成立）|
+
+#### 剩余：仍不属本计划的一件事
+
+| # | 项 | 性质 |
+|---|---|---|
+| 1 | `time_edit` 的**弹出时钟**（§A.9）| 与 `combobox` 原状同性质：控件缺一个部件（弹层容器 + 表盘 + 键盘 + 失焦关闭），与 `date_edit` 的 `calendar_popup` 同量级。**已显式登记在 §A.9.1，不假装已完成。**|
+
+**曾经记录为“非本轮引入”的 6 条门禁失败，现已全部消失**：轮 47 实跑
+`run_all_gates.sh` 得到 **88 PASS / 0 FAIL** —— 其中 `bevel.rs` 阻塞的
+`check_profiles` 已由**并行任务**修好（事实陈述，不是本计划的交付）。
 
 ---
 

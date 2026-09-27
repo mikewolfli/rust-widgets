@@ -187,8 +187,7 @@ def exempted(path):
     return names
 
 EXEMPT = exempted("tools/control_color_exemptions.txt") | exempted(
-    "tools/control_surface_coincidence_exemptions.txt"
-)
+    "tools/control_surface_coincidence_exemptions.txt")
 # The recorded known-blind list lives in the census test, because it is a to-do list that
 # must shrink as the controls are fixed. Parsed rather than duplicated so the two cannot
 # disagree about what is still outstanding.
@@ -208,17 +207,15 @@ same = []
 # the default pair already answers. They are therefore skipped rather than reported as "no light
 # companion", which is a real defect for a control and a category error for a state file.
 #
-# Derived from the exporter's table, not from the file name: a name pattern like `*_checked` would
-# silently absorb a future control that happened to end that way.
+# Derived from the exporter table, not from the file name: a name pattern like `*_checked`
+# would silently absorb a future control that happened to end that way.
 extra_state = set()
 exporter = pathlib.Path("examples/export_control_svgs.rs")
 if exporter.exists():
     match_extra = re.search(r"EXTRA_APPEARANCES[^=]*=\s*&\[(.*?)\];", exporter.read_text(encoding="utf-8"), re.S)
     if match_extra:
-        for control, suffix, _ in re.findall(
-            r"\(\s*\"([^\"]+)\"\s*,\s*\"([^\"]+)\"\s*,\s*\"([^\"]+)\"\s*\)",
-            match_extra.group(1),
-        ):
+        pattern = r"\(\s*\"([^\"]+)\"\s*,\s*\"([^\"]+)\"\s*,\s*\"([^\"]+)\"\s*\)"
+        for control, suffix, _ in re.findall(pattern, match_extra.group(1)):
             extra_state.add(f"{control}{suffix}")
 
 for path in sorted(pathlib.Path("snapshots/svg").glob("*.svg")):

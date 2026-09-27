@@ -399,7 +399,10 @@ impl Widget for RangeSlider {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(200, 28)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::RANGE_SLIDER_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::RANGE_SLIDER_DEFAULT_HEIGHT,
+        )
     }
 
     /// Announces **both** handles, because a range has two values.

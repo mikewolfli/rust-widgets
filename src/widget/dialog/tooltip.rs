@@ -314,7 +314,10 @@ impl Widget for Tooltip {
     }
 
     fn size_hint(&self) -> Size {
-        crate::core::Size::new(100, 30)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::TOOLTIP_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::TOOLTIP_HEIGHT,
+        )
     }
 
     /// One frame of the delays and the fade. The frame bus calls this; nothing else does.

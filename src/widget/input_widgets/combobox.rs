@@ -298,6 +298,29 @@ pub struct ComboBox {
     /// [`crate::core::TextDirection`] documents: a vertical control ignores it. Defaults to
     /// left-to-right, so a caller that never asks behaves exactly as it did.
     direction: crate::core::TextDirection,
+    /// Whether the drop-down list is showing.
+    ///
+    /// # Why this is the field the list needed
+    ///
+    /// The widget published `max_visible_items` ("how many items the drop-down shows at once") and
+    /// carried `items` and `current_index` -- but **there was no drop-down at all**. The field
+    /// therefore described a control that did not exist: `max_visible_items` was stored, published
+    /// via `get`/`set` and covered by a round-trip test, and read by nothing, because there was
+    /// nothing to clamp. This flag is what makes the list reachable, and the list is what makes the
+    /// field meaningful.
+    open: bool,
+    /// The item the pointer is over while the list is open, if any.
+    ///
+    /// The highlight is what tells a user which row a click will take, so it is derived from the
+    /// same row geometry the draw uses rather than from a second calculation in `handle_event`.
+    hovered_item: Option<usize>,
+    /// The first item the list is scrolled to.
+    ///
+    /// The list shows `max_visible_items` rows starting here, so a list longer than the window is
+    /// reachable by keyboard even though the rows that fit on screen never change height. It is
+    /// clamped against the item count on every read, so removing items cannot leave the list
+    /// scrolled past its own end.
+    first_visible_item: usize,
     /// Emitted with the new index after `current_index` changes, including when
     /// it is cleared to `None`. An out-of-range index is ignored (and emits
     /// nothing); re-applying the same value emits nothing.
@@ -309,6 +332,9 @@ pub struct ComboBox {
     /// (click, or keyboard confirm) with the activated item's index. Not emitted
     /// by programmatic `set_current_index`.
     pub activated: Signal1<usize>,
+    /// Emitted with the new open state when the drop-down is shown or hidden, so a
+    /// host can dismiss its other popups without polling.
+    pub popup_visibility_changed: Signal1<bool>,
 }
 impl ComboBox {
     /// The band the control actually paints: full width, one field tall, centred.
@@ -357,10 +383,14 @@ impl ComboBox {
             current_index: None,
             editable: false,
             max_visible_items: 10,
-            direction: crate::core::TextDirection::default(),
+            direction: crate::core::TextDirection::LeftToRight,
+            open: false,
+            hovered_item: None,
+            first_visible_item: 0,
             current_index_changed: Signal1::new(),
             current_text_changed: Signal1::new(),
             activated: Signal1::new(),
+            popup_visibility_changed: Signal1::new(),
         }
     }
     /// Returns number of items.
@@ -487,8 +517,195 @@ impl ComboBox {
         self.max_visible_items
     }
     /// Sets maximum number of visible items in dropdown.
+    ///
+    /// Read by [`Self::visible_item_count`], which clamps it against the item count to size
+    /// [`Self::list_rect`]. It was stored, published (`get`/`set` plus a schema row and a round-trip
+    /// test) and read by nothing, because there was no list to clamp.
+    ///
+    /// The window is re-clamped as well as the field, so shrinking the limit on a list scrolled past
+    /// its new end cannot leave the window showing nothing.
     pub fn set_max_visible_items(&mut self, max: usize) {
         self.max_visible_items = max.max(1);
+        self.first_visible_item = self.first_visible_item();
+        self.base.request_redraw();
+    }
+
+    /// Whether the drop-down list is showing.
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// Shows or hides the drop-down list.
+    ///
+    /// Opening scrolls the window so the chosen item is on screen, which is the only thing that makes
+    /// opening a list land on the value the user already has rather than at its beginning. Closing
+    /// clears the pointer highlight, because a row cannot be hovered by a list that is not showing --
+    /// leaving it set would paint a highlight the moment the list re-opened, before the pointer moved.
+    pub fn set_open(&mut self, open: bool) {
+        if self.open == open {
+            return;
+        }
+        self.open = open;
+        if open {
+            self.scroll_to_current();
+        } else {
+            self.hovered_item = None;
+        }
+        self.popup_visibility_changed.emit(open);
+        self.base.request_redraw();
+    }
+
+    /// Opens the list if it is closed, closes it if it is open.
+    pub fn toggle_open(&mut self) {
+        self.set_open(!self.open);
+    }
+
+    /// The number of rows the list shows at once: the window [`Self::list_rect`] is sized by.
+    ///
+    /// Never more than the items there are, so a two-item list does not leave eight rows of empty
+    /// space under it, and never zero, so an empty list still has a box to draw its "empty" row in.
+    fn visible_item_count(&self) -> usize {
+        self.max_visible_items.max(1).min(self.items.len().max(1))
+    }
+
+    /// The first item the list's window shows, clamped to the rows that exist.
+    ///
+    /// Read through this rather than the field directly, so removing items or shrinking
+    /// `max_visible_items` cannot leave the window scrolled past its own end -- which would show an
+    /// empty list that still claims to be open.
+    fn first_visible_item(&self) -> usize {
+        let last_first = self.items.len().saturating_sub(self.visible_item_count());
+        self.first_visible_item.min(last_first)
+    }
+
+    /// The list's box: as wide as the field, as tall as its visible rows, below the field.
+    ///
+    /// # Why below rather than over
+    ///
+    /// A combo box normally sits at the top of whatever it is in, and a list hanging *over* the field
+    /// would hide the value the user is choosing between. Below the field's bottom edge is also where
+    /// the indicator points.
+    ///
+    /// # Why the height is derived and not stored
+    ///
+    /// The height is `rows x row_height`, and both terms are facts the control already has
+    /// (`max_visible_items` and the shared row metric). A stored third number would be a third answer
+    /// to one question.
+    fn list_rect(&self) -> Rect {
+        let band = self.field_band();
+        let rows = self.visible_item_count();
+        Rect::new(
+            band.x,
+            band.y + band.height as i32,
+            band.width,
+            dimensions::MENU_ROW_HEIGHT * rows as u32,
+        )
+    }
+
+    /// The box of the item at `index`, or `None` when the list's window does not show it.
+    ///
+    /// One derivation for the paint, the hit test and the keyboard's "scroll to selection", so the
+    /// row that is highlighted is the row a click would take -- the same rule `list_view` records for
+    /// its own rows, and the same reason it states: two independent calculations of "where is row 3"
+    /// drift, and the symptom is a click activating the row next to the one that was clicked.
+    fn item_rect(&self, index: usize) -> Option<Rect> {
+        if !self.open {
+            return None;
+        }
+        let offset = index.checked_sub(self.first_visible_item())?;
+        if offset >= self.visible_item_count() {
+            return None;
+        }
+        let list = self.list_rect();
+        Some(Rect::new(
+            list.x,
+            list.y + (dimensions::MENU_ROW_HEIGHT * offset as u32) as i32,
+            list.width,
+            dimensions::MENU_ROW_HEIGHT,
+        ))
+    }
+
+    /// The item index a point falls on, if the list is open and the point is on a shown row.
+    ///
+    /// Built on [`Self::item_rect`] rather than recomputing the rows, so the two directions cannot
+    /// disagree about where row 0 begins.
+    fn item_at_point(&self, point: Point) -> Option<usize> {
+        if !self.open || !self.list_rect().contains_point(point) {
+            return None;
+        }
+        (self.first_visible_item()..self.items.len())
+            .find(|index| self.item_rect(*index).is_some_and(|row| row.contains_point(point)))
+    }
+
+    /// Scrolls the window so `index` is shown, moving it as little as it takes.
+    ///
+    /// A window that jumped as far as it could on every step would make arrowing down a long list
+    /// flicker; moving by one row when the selection leaves the window is what a list does.
+    fn scroll_to(&mut self, index: usize) {
+        let count = self.visible_item_count();
+        if index < self.first_visible_item {
+            self.first_visible_item = index;
+        } else if index >= self.first_visible_item + count {
+            self.first_visible_item = index + 1 - count;
+        }
+        self.first_visible_item = self.first_visible_item();
+    }
+
+    /// Scrolls the window so the chosen item is shown.
+    fn scroll_to_current(&mut self) {
+        if let Some(index) = self.current_index {
+            // Open on the selected row rather than at the top: a list that always opened at item 0
+            // would make the user re-find the value the field already displays, and would make
+            // `max_visible_items` irrelevant for every selection past the first window.
+            let count = self.visible_item_count();
+            self.first_visible_item = index.saturating_sub(count / 2);
+            self.first_visible_item = self.first_visible_item();
+        } else {
+            self.first_visible_item = 0;
+        }
+    }
+
+    /// Moves the highlight by `delta` rows, clamped to the items that exist.
+    ///
+    /// Returns whether the highlight moved, so a caller can repaint only when something changed.
+    fn move_hover(&mut self, delta: isize) -> bool {
+        if self.items.is_empty() {
+            return false;
+        }
+        let last = self.items.len() - 1;
+        let next = match self.hovered_item {
+            Some(index) => (index as isize + delta).clamp(0, last as isize) as usize,
+            // No highlight yet: the first move starts from whichever end the caller is heading
+            // towards, so an up-arrow from nothing selects the last row rather than the first.
+            None => {
+                if delta < 0 {
+                    last
+                } else {
+                    0
+                }
+            }
+        };
+        let moved = self.hovered_item != Some(next);
+        self.hovered_item = Some(next);
+        self.scroll_to(next);
+        moved
+    }
+
+    /// Takes the highlighted row, if there is one, and closes the list.
+    ///
+    /// Returns whether a row was taken. The chooser is the list's only commit path, so it is where
+    /// `activated` is emitted -- a programmatic `set_current_index` deliberately does not emit it.
+    fn commit_hovered(&mut self) -> bool {
+        let Some(index) = self.hovered_item else {
+            return false;
+        };
+        if index >= self.items.len() {
+            return false;
+        }
+        self.set_current_index(Some(index));
+        self.activated.emit(index);
+        self.set_open(false);
+        true
     }
     /// Finds index of item with specified text.
     pub fn find_text(&self, text: &str) -> Option<usize> {
@@ -499,17 +716,27 @@ impl ComboBox {
         &self.items
     }
     /// Shared activation logic for mouse/touch/gesture input.
+    ///
+    /// # What this does now, and what it used to
+    ///
+    /// It used to advance `current_index` by one, wrapping at the end -- so reaching item 8 of a
+    /// nine-item list took eight clicks and there was no way back. That is not what a combo box's
+    /// field does: clicking it **opens the list**, and the choice is made on a row. Advancing a value
+    /// is what the arrow keys are for.
+    ///
+    /// A single-item list still commits on the click, because there is nothing to choose between and
+    /// an open list of one row would make the user click twice for a foregone answer.
     fn activate_combo(&mut self) {
         self.base.clicked.emit();
-        if !self.items.is_empty() {
-            let new_index = if let Some(current) = self.current_index {
-                (current + 1) % self.items.len()
-            } else {
-                0
-            };
-            self.set_current_index(Some(new_index));
-            self.activated.emit(new_index);
+        if self.items.is_empty() {
+            return;
         }
+        if self.items.len() == 1 {
+            self.set_current_index(Some(0));
+            self.activated.emit(0);
+            return;
+        }
+        self.toggle_open();
     }
 }
 // Implement Widget trait
@@ -636,55 +863,135 @@ impl WidgetProperties for ComboBox {
 }
 
 impl EventHandler for ComboBox {
+    /// The drop-down's interaction, and the field's activation when it is closed.
+    ///
+    /// # What changed, and why
+    ///
+    /// A press used to *cycle the value* (`activate_combo` advanced `current_index` by one). That is
+    /// not what a combo box does: the user cannot reach item 7 of a nine-item list without seven
+    /// clicks, and there was no way to back up. Now a press on the field opens the list, a press on a
+    /// row takes it, and a press outside closes it -- which is also what makes
+    /// `popup_visibility_changed` worth publishing.
+    ///
+    /// The events are routed in one order: the list first (it is over everything), then the field,
+    /// then the keyboard. A press that lands on neither still closes an open list rather than being
+    /// swallowed, because a popup that cannot be dismissed by clicking away traps the user.
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }
         match event {
-            Event::MousePress { button, .. } if *button == 1 => {
-                self.activate_combo();
-            }
-            #[cfg(feature = "touch")]
-            Event::TouchBegin { .. } | Event::Tap { .. } => {
-                self.activate_combo();
-            }
-            Event::KeyPress { key, modifiers: _ } => {
-                match *key {
-                    38 => {
-                        // Up arrow - previous item
-                        if let Some(current) = self.current_index {
-                            if current > 0 {
-                                self.set_current_index(Some(current - 1));
-                                self.activated.emit(current - 1);
-                            }
-                        } else if !self.items.is_empty() {
-                            self.set_current_index(Some(self.items.len() - 1));
-                            self.activated.emit(self.items.len() - 1);
-                        }
-                    }
-                    40 => {
-                        // Down arrow - next item
-                        if let Some(current) = self.current_index {
-                            if current < self.items.len() - 1 {
-                                self.set_current_index(Some(current + 1));
-                                self.activated.emit(current + 1);
-                            }
-                        } else if !self.items.is_empty() {
-                            self.set_current_index(Some(0));
-                            self.activated.emit(0);
-                        }
-                    }
-                    13 => {
-                        // Enter - activate current item
-                        if let Some(current) = self.current_index {
-                            self.activated.emit(current);
-                        }
-                    }
-                    // Unknown key; ignore
-                    _ => {}
+            Event::MousePress { pos, button } if *button == 1 => {
+                // A row of the open list takes priority: it is drawn over the field, so a press
+                // inside it belongs to the list even where the two boxes overlap.
+                if let Some(index) = self.item_at_point(*pos) {
+                    self.hovered_item = Some(index);
+                    self.commit_hovered();
+                    return;
+                }
+                if self.open {
+                    // A press anywhere else dismisses the list. `activate_combo` is deliberately not
+                    // called here: the field is already showing a value, and re-opening on the same
+                    // press that closed it would make the list impossible to close.
+                    self.set_open(false);
+                    return;
+                }
+                if self.field_band().contains_point(*pos) {
+                    self.activate_combo();
                 }
             }
+            // The highlight follows the pointer, derived from the same row geometry the paint uses,
+            // so the row the user sees highlighted is the row a click would take. A pointer that
+            // leaves the rows (the gap, or outside the list) clears it rather than latching the last
+            // row it crossed.
+            Event::MouseMove { pos } => {
+                if self.open {
+                    let hovered = self.item_at_point(*pos);
+                    if hovered != self.hovered_item {
+                        self.hovered_item = hovered;
+                        self.base.request_redraw();
+                    }
+                }
+            }
+            #[cfg(feature = "touch")]
+            Event::Tap { pos } => {
+                if let Some(index) = self.item_at_point(*pos) {
+                    self.hovered_item = Some(index);
+                    self.commit_hovered();
+                } else if self.open {
+                    self.set_open(false);
+                } else if self.field_band().contains_point(*pos) {
+                    self.activate_combo();
+                }
+            }
+            #[cfg(feature = "touch")]
+            Event::TouchBegin { .. } => {
+                self.activate_combo();
+            }
+            Event::KeyPress { key, modifiers: _ } => match *key {
+                // Up/Down move the *highlight* while the list is open, which is what makes the list
+                // navigable without a pointer. With the list closed they keep the old behaviour of
+                // stepping the value, because a closed field has no highlight to move.
+                38 => {
+                    if self.open {
+                        if self.move_hover(-1) {
+                            self.base.request_redraw();
+                        }
+                    } else if let Some(current) = self.current_index {
+                        if current > 0 {
+                            self.set_current_index(Some(current - 1));
+                            self.activated.emit(current - 1);
+                        }
+                    } else if !self.items.is_empty() {
+                        self.set_current_index(Some(self.items.len() - 1));
+                        self.activated.emit(self.items.len() - 1);
+                    }
+                }
+                40 => {
+                    if self.open {
+                        if self.move_hover(1) {
+                            self.base.request_redraw();
+                        }
+                    } else if let Some(current) = self.current_index {
+                        if current < self.items.len().saturating_sub(1) {
+                            self.set_current_index(Some(current + 1));
+                            self.activated.emit(current + 1);
+                        }
+                    } else if !self.items.is_empty() {
+                        self.set_current_index(Some(0));
+                        self.activated.emit(0);
+                    }
+                }
+                13 => {
+                    // Enter takes the highlighted row when the list is open, and re-activates the
+                    // current one when it is closed -- two different commitments, so the open arm
+                    // does not fall through to the closed one and emit `activated` twice.
+                    if self.open {
+                        if !self.commit_hovered() {
+                            self.set_open(false);
+                        }
+                    } else if let Some(current) = self.current_index {
+                        self.activated.emit(current);
+                    }
+                }
+                // Escape closes an open list without committing, which is the one way out that does
+                // not change the value.
+                27 => {
+                    if self.open {
+                        self.set_open(false);
+                    }
+                }
+                // Space and the "open" key both toggle the list, so a keyboard user has a key that
+                // does what a click on the field does. The empty-list guard is in the match arm's own
+                // condition rather than nested inside it, which is also what keeps the two spellings
+                // of "can this list be opened" from drifting.
+                32 | 113 if !self.items.is_empty() => {
+                    self.toggle_open();
+                }
+                // Unknown key; ignore
+                _ => {}
+            },
             // Other events are not relevant for this widget
             _ => {}
         }
@@ -759,6 +1066,61 @@ impl Draw for ComboBox {
                 text_color,
                 HorizontalAlignment::Left,
             );
+        }
+
+        // ── The drop-down list ──
+        //
+        // Drawn last so it sits over whatever follows the field, and drawn *from* `item_rect`, which
+        // is also what the hit test resolves through -- so the row that is highlighted is the row a
+        // click would take. `max_visible_items` is what sizes the window here; before this arm existed
+        // the field described a list that no code drew.
+        if self.open {
+            let list = self.list_rect();
+            let border_color = style.border_color.unwrap_or_else(|| bg.blend(&text_color, 0.35));
+            context.fill_rect(list, bg);
+            context.draw_rect(list, border_color);
+
+            if self.items.is_empty() {
+                // An open list with nothing in it still has to say so: a bare rectangle reads as a
+                // rendering failure rather than as "there is nothing to choose", and a user cannot
+                // tell it from a list that failed to load.
+                let row = Rect::new(list.x, list.y, list.width, dimensions::MENU_ROW_HEIGHT);
+                context.draw_text_fitted(
+                    context.text_line(row, font),
+                    "(No items)",
+                    font,
+                    text_color.blend(&bg, 0.45),
+                    HorizontalAlignment::Left,
+                );
+            } else {
+                for index in self.first_visible_item()..self.items.len() {
+                    let Some(row) = self.item_rect(index) else { break };
+                    // The highlight is two facts at two weights: a row the pointer is over is a
+                    // pointer position, and the row the field currently holds is a committed value.
+                    // Painting them the same would lose "which one am I already on".
+                    if self.hovered_item == Some(index) {
+                        context.fill_rect(row, bg.blend(&text_color, 0.18));
+                    } else if self.current_index == Some(index) {
+                        context.fill_rect(row, bg.blend(&text_color, 0.08));
+                    }
+                    // The label's band is the row inset by the field's own padding, so a list entry
+                    // lines up with the value shown in the field above it.
+                    let inset = dimensions::TEXT_FIELD_PADDING_H;
+                    let label = Rect::new(
+                        row.x + inset as i32,
+                        context.text_line(row, font).y,
+                        row.width.saturating_sub(inset * 2),
+                        context.text_line(row, font).height,
+                    );
+                    context.draw_text_fitted(
+                        label,
+                        &self.items[index],
+                        font,
+                        text_color,
+                        HorizontalAlignment::Left,
+                    );
+                }
+            }
         }
     }
 }
@@ -1177,5 +1539,230 @@ mod tests {
 
         // And the direction round-trips through the property API, so a host can read what it set.
         assert_eq!(rtl.get("direction").expect("direction is published").as_str(), Some("rtl"));
+    }
+
+    // ── The drop-down list, and `max_visible_items` ──
+
+    /// `max_visible_items` sizes the list, and the list is what makes it meaningful.
+    ///
+    /// # What was dead, and what proves it is alive now
+    ///
+    /// The field was stored, published (`get`/`set` plus a schema row and a round-trip test) and read
+    /// by nothing -- because **there was no list at all**. `count`, `current_index` and
+    /// `max_visible_items` coexisted while nothing was ever drawn for them, so a user could not see a
+    /// single item they had added. The assertion is on the list's own box, which is what a paint has
+    /// to obey.
+    #[test]
+    fn max_visible_items_sizes_the_drop_down_list() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        let mut items = Vec::new();
+        for n in 0..20 {
+            items.push(format!("item {n}"));
+        }
+        cb.set_items(items);
+        let band = cb.field_band();
+
+        // Closed: there is no list, so no row has a box either.
+        assert!(!cb.is_open());
+        assert_eq!(cb.item_rect(0), None, "a closed list has no rows");
+
+        cb.set_open(true);
+        assert!(cb.is_open());
+        // The list is as wide as the field and sits directly below it, so it never covers the value.
+        let list = cb.list_rect();
+        assert_eq!(list.x, band.x);
+        assert_eq!(list.width, band.width);
+        assert_eq!(list.y, band.y + band.height as i32, "the list hangs below the field");
+        // And its height is the window, not the item count: 20 items with a limit of 10 must not
+        // produce a 20-row box.
+        assert_eq!(list.height, dimensions::MENU_ROW_HEIGHT * 10);
+
+        cb.set_max_visible_items(3);
+        assert_eq!(
+            cb.list_rect().height,
+            dimensions::MENU_ROW_HEIGHT * 3,
+            "the limit is what sizes the window"
+        );
+        // Fewer items than the limit: the list shrinks to the items rather than leaving empty rows.
+        let mut short = ComboBox::new(Rect::new(0, 0, 200, 24));
+        short.set_items(vec!["a".to_string(), "b".to_string()]);
+        short.set_max_visible_items(10);
+        short.set_open(true);
+        assert_eq!(short.list_rect().height, dimensions::MENU_ROW_HEIGHT * 2);
+        // An empty list still has a row to draw its "no items" message in.
+        let mut empty = ComboBox::new(Rect::new(0, 0, 200, 24));
+        empty.set_open(true);
+        assert_eq!(empty.list_rect().height, dimensions::MENU_ROW_HEIGHT);
+    }
+
+    /// The rows the list paints are the rows a click resolves to: the two share one derivation.
+    #[test]
+    fn a_click_takes_the_row_it_is_painted_on() {
+        use crate::core::Point;
+
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.set_items((0..8).map(|n| format!("item {n}")).collect());
+        cb.set_max_visible_items(4);
+        // Scrolled into the middle of the list, so the window is *not* the first `max` rows: a
+        // window that ignored the limit (or the scroll) would lay these rows out at 0..4 and the
+        // centre of each painted row would hit-test to a different index.
+        cb.set_current_index(Some(5));
+        cb.set_open(true);
+        assert!(cb.first_visible_item() > 0, "the window moved, or this proves nothing");
+
+        let first = cb.first_visible_item();
+        for index in first..first + 4 {
+            let row = cb.item_rect(index).expect("four rows fit");
+            let centre = Point::new(row.x + row.width as i32 / 2, row.y + row.height as i32 / 2);
+            assert_eq!(
+                cb.item_at_point(centre),
+                Some(index),
+                "the centre of row {index} at {row:?} must hit-test back to it"
+            );
+        }
+        // A row outside the window has no box, so it is not a target either. Both ends are checked:
+        // one is below the window and the other is above it.
+        assert_eq!(cb.item_rect(first + 4), None, "the row past the window has no box");
+        assert_eq!(cb.item_rect(first.saturating_sub(1)), None, "nor the one before it");
+        assert_eq!(
+            cb.item_at_point(Point::new(100, cb.list_rect().y + cb.list_rect().height as i32 + 5)),
+            None,
+            "a point past the list is no row"
+        );
+        // A point inside the list but *above* the first shown row is no row either, which is what
+        // pins the rows to the list's own origin rather than to the item's index.
+        assert_eq!(
+            cb.item_at_point(Point::new(100, cb.list_rect().y - 3)),
+            None,
+            "a point above the list is no row"
+        );
+        // The rows tile the list exactly, in sequence.
+        for index in (first + 1)..(first + 4) {
+            let previous = cb.item_rect(index - 1).expect("visible");
+            let row = cb.item_rect(index).expect("visible");
+            assert_eq!(
+                row.y,
+                previous.y + previous.height as i32,
+                "row {index} follows row {}",
+                index - 1
+            );
+        }
+    }
+
+    /// The list is reachable and committable: opening, choosing, and dismissing all work.
+    #[test]
+    fn pressing_the_field_opens_the_list_and_a_row_commits() {
+        use crate::event::{Event, EventHandler};
+        use crate::widget::svg::{render_to_svg, text_ink_boxes};
+
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.set_items((0..6).map(|n| format!("item {n}")).collect());
+        cb.set_max_visible_items(3);
+
+        // The resting frame has no list, so the two frames below differ by the list alone.
+        let resting = render_to_svg(&mut cb);
+
+        // A press on the field opens the list rather than cycling the value -- the defect this
+        // replaces made a nine-item list take nine clicks to reach item 8.
+        let band_centre = crate::core::Point::new(50, cb.field_band().y + 8);
+        cb.handle_event(&Event::MousePress { pos: band_centre, button: 1 });
+        assert!(cb.is_open(), "a press on the field opens the list");
+        assert_eq!(cb.current_index(), None, "and does not change the value");
+
+        let open = render_to_svg(&mut cb);
+        assert_ne!(open, resting, "an open list must be visible -- that was the dead state");
+        assert!(
+            text_ink_boxes(&open).len() > text_ink_boxes(&resting).len(),
+            "the list adds text runs for its rows: {} vs {}",
+            text_ink_boxes(&open).len(),
+            text_ink_boxes(&resting).len()
+        );
+
+        // A press on the second row takes it and closes the list.
+        let row = cb.item_rect(1).expect("the second row is in the window");
+        cb.handle_event(&Event::MousePress {
+            pos: crate::core::Point::new(row.x + 5, row.y + row.height as i32 / 2),
+            button: 1,
+        });
+        assert_eq!(cb.current_index(), Some(1), "the row under the press is taken");
+        assert_eq!(cb.current_text(), "item 1");
+        assert!(!cb.is_open(), "and taking a row closes the list");
+    }
+
+    /// Re-opening the list lands on the value already chosen, and the window follows it.
+    ///
+    /// This is the one thing that makes `max_visible_items` matter for a selection past the first
+    /// window: a list that always opened at item 0 would show rows 0..3 while the field displayed
+    /// item 9, so the user could not see which row was chosen.
+    #[test]
+    fn opening_the_list_scrolls_to_the_chosen_row() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.set_items((0..20).map(|n| format!("item {n}")).collect());
+        cb.set_max_visible_items(4);
+        cb.set_current_index(Some(15));
+
+        cb.set_open(true);
+        let first = cb.first_visible_item();
+        let last = first + 4 - 1;
+        assert!(
+            (first..=last).contains(&15),
+            "the chosen row is inside the window: {first}..={last}"
+        );
+        assert!(cb.item_rect(15).is_some(), "and it has a box");
+        // Not pinned to the top: the window moved, which is what "scroll to" means.
+        assert!(first > 0, "the window moved to reach a row past the first page");
+    }
+
+    /// Escape closes without committing; the keyboard can move the highlight and take it.
+    #[test]
+    fn the_keyboard_drives_the_open_list() {
+        use crate::event::{Event, EventHandler};
+
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.set_items((0..5).map(|n| format!("item {n}")).collect());
+        let press = |cb: &mut ComboBox, key: u32| {
+            cb.handle_event(&Event::KeyPress { key, modifiers: 0 });
+        };
+
+        cb.set_open(true);
+        // Down twice highlights rows 0 then 1, without committing anything.
+        press(&mut cb, 40);
+        assert_eq!(cb.current_index(), None, "moving the highlight is not a commitment");
+        press(&mut cb, 40);
+        // Enter takes the highlighted row and closes the list.
+        press(&mut cb, 13);
+        assert_eq!(cb.current_index(), Some(1));
+        assert!(!cb.is_open());
+
+        // Escape abandons the list: the value is unchanged and the list is closed.
+        cb.set_open(true);
+        press(&mut cb, 40);
+        press(&mut cb, 27);
+        assert!(!cb.is_open(), "escape closes the list");
+        assert_eq!(cb.current_index(), Some(1), "and does not change the value");
+
+        // A key that is neither of the above leaves the state alone.
+        cb.set_open(true);
+        press(&mut cb, 65);
+        assert!(cb.is_open());
+    }
+
+    /// Shrinking the limit on a scrolled list re-clamps the window instead of showing nothing.
+    #[test]
+    fn shrinking_the_window_cannot_scroll_past_the_last_row() {
+        let mut cb = ComboBox::new(Rect::new(0, 0, 200, 24));
+        cb.set_items((0..20).map(|n| format!("item {n}")).collect());
+        cb.set_max_visible_items(10);
+        cb.set_current_index(Some(19));
+        cb.set_open(true);
+        assert!(cb.item_rect(19).is_some(), "the last row is reachable at first");
+
+        // Removing items is the other way the window can end up past its own end.
+        cb.set_items((0..3).map(|n| format!("item {n}")).collect());
+        assert!(
+            cb.first_visible_item() + cb.visible_item_count() <= 3,
+            "the window is clamped to the rows that exist"
+        );
+        assert!(cb.item_rect(0).is_some(), "and item 0 is still shown");
     }
 }

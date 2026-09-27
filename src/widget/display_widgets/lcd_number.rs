@@ -106,6 +106,10 @@ impl LCDNumber {
     }
     /// Returns whether a reduced-size decimal point is used. Defaults to
     /// `false`.
+    ///
+    /// `true` draws the point at a third of its cell's width and `false` at half — see
+    /// [`LCDNumber::draw_decimal_point`], which is the only reader. The choice matters because a
+    /// point is a mark rather than a glyph: at full cell width it reads as a bar between two digits.
     pub fn is_small_decimal_point(&self) -> bool {
         self.small_decimal_point
     }
@@ -222,8 +226,20 @@ impl LCDNumber {
     /// three modes in two ways: it produces a decimal point the seven-segment renderer has no
     /// glyph for (so `3.5` drew as `35`), and it produces an exponent for large magnitudes (so
     /// `1e20` drew as the literal characters `1`, `e`, `2`, `0`). The value field is an `f64`
-    /// because the property is published as `Float`, but an LCD readout shows integers; truncating
+    ///      because the property is published as `Float`, but an LCD readout shows integers; truncating
     /// toward zero makes `Dec` agree with `Hex`/`Oct`/`Bin` about what a value looks like.
+    ///
+    ///      # The decimal point
+    ///
+    ///      Truncating was the right call for a panel with no glyph for a point, and that was the
+    ///      state this file recorded: `3.5` drew as `35`, which is not a rounding choice a reader can
+    ///      see. [`Self::draw_decimal_point`] is now that glyph, so a fractional value in `Dec` mode
+    ///      shows its point rather than dropping it, and [`Self::small_decimal_point`] chooses the
+    ///      point's size -- which is the whole reason the property exists.
+    ///
+    ///      The point is a *position*, not a digit: it is charged against the digit budget the same
+    ///      way a sign is, and the integer part keeps pad-to-the-left so the panel's shape still
+    ///      follows `num_digits`.
     pub fn display_text(&self) -> String {
         let magnitude = self.value.abs() as i64;
         let sign = if self.value < 0.0 { "-" } else { "" };
@@ -233,14 +249,28 @@ impl LCDNumber {
             LCDNumberMode::Oct => format!("{magnitude:o}"),
             LCDNumberMode::Bin => format!("{magnitude:b}"),
         };
-        // `num_digits` counts digit positions, so the sign is charged against the budget and the
-        // fill goes **before** it, not between the sign and the digits: a readout is `
-        // "  -42"`, never `"-  42"`. A value wider than the budget is shown in full rather
-        // than truncated — a readout that silently loses its most significant digits is worse
-        // than one that overflows its own cell.
-        let budget = (self.num_digits.max(1) as usize).saturating_sub(sign.len());
+        // A fractional value in `Dec` mode keeps its point. The other three modes are positional
+        // numerals (base 16/8/2), where a point has no meaning and the fraction is truncated --
+        // which is why this is a `Dec`-only branch rather than a property of `value`.
+        let point = if self.mode == LCDNumberMode::Dec && self.has_fraction() { "." } else { "" };
+        // `num_digits` counts positions, so the sign and the point are each charged against the
+        // budget and the fill goes **before** the sign, not between the sign and the digits: a
+        // readout is `"  -42"`, never `"-  42"`. A value wider than the budget is shown in full
+        // rather than truncated — a readout that silently loses its most significant digits is
+        // worse than one that overflows its own cell.
+        let budget = (self.num_digits.max(1) as usize).saturating_sub(sign.len() + point.len());
         let fill = budget.saturating_sub(digits.chars().count());
-        format!("{}{sign}{digits}", " ".repeat(fill))
+        format!("{}{sign}{digits}{point}", " ".repeat(fill))
+    }
+
+    /// Whether the value carries a fractional part that the `Dec` readout should show.
+    ///
+    /// A float's `fract()` is exact for the halves and quarters a hand-entered value has, but a
+    /// computed one carries representation noise, so "has a fraction" is a tolerance rather than a
+    /// comparison: a value within a ten-thousandth of an integer is an integer, and painting a point
+    /// for it would show a fraction the caller never asked for.
+    fn has_fraction(&self) -> bool {
+        (self.value - self.value.trunc()).abs() > 0.0001
     }
 }
 impl Widget for LCDNumber {
@@ -252,7 +282,10 @@ impl Widget for LCDNumber {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(80, 30)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::LCD_NUMBER_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::LCD_NUMBER_DEFAULT_HEIGHT,
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -438,6 +471,14 @@ impl LCDNumber {
         color: Color,
     ) {
         let segments = self.get_segments(ch);
+        // A decimal point is not a seven-segment digit: it owns no segments and is drawn as its own
+        // dot at the cell's foot. `get_segments` answers all-false for `.`, so without this arm the
+        // character occupied a position and painted nothing -- and `small_decimal_point`, which
+        // exists only to choose this dot's size, could not change a pixel.
+        if ch == '.' {
+            self.draw_decimal_point(context, x, y, width, height, color);
+            return;
+        }
         let hw = (segment_width / 2) as i32;
         // let mid_x = x as i32 + width as i32 / 2;
         let mid_y = y as i32 + height as i32 / 2;
@@ -516,6 +557,43 @@ impl LCDNumber {
             );
         }
     }
+    /// Draws a decimal point: a square dot on the cell's baseline.
+    ///
+    /// # The two sizes, and why this is a property at all
+    ///
+    /// A seven-segment panel's cells are wide because the digits are; a decimal point is a *mark*
+    /// rather than a glyph, so at full cell width it reads as a stray bar between two digits rather
+    /// than as punctuation. `small_decimal_point` (Qt's own name for the choice, and the field this
+    /// widget publishes) selects the reduced dot; the normal one is a quarter of the segment
+    /// thickness wide, which is the smallest mark that still reads on a panel this coarse.
+    ///
+    /// The dot is anchored to the cell's **foot**, not its centre: a decimal point sits on the
+    /// baseline, and a dot vertically centred between two digits reads as a middle dot — a
+    /// different piece of punctuation.
+    fn draw_decimal_point(
+        &self,
+        context: &mut RenderContext,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        color: Color,
+    ) {
+        let side = if self.small_decimal_point {
+            // Reduced: a third of the cell's width, which is what "small" means beside a digit that
+            // fills the cell.
+            (width / 3).max(1)
+        } else {
+            // Normal: half the cell's width. Not the full width -- the point would touch the digits
+            // on either side of it and read as a bar.
+            (width / 2).max(1)
+        };
+        // Horizontally centred in its cell, flush with the cell's foot and inset by one dot's side so
+        // it does not sit on the baseline the digits rest on.
+        let dot_x = x as i32 + (width as i32 - side as i32) / 2;
+        let dot_y = y as i32 + height as i32 - side as i32 - (side as i32 / 4);
+        context.fill_rect(Rect::new(dot_x, dot_y.max(y as i32), side, side), color);
+    }
     fn draw_horizontal_segment(
         &self,
         context: &mut RenderContext,
@@ -592,6 +670,7 @@ impl LCDNumber {
 mod tests {
     use super::*;
     use crate::core::Rect;
+    use crate::widget::svg::render_to_svg;
 
     #[test]
     fn lcd_creation_defaults() {
@@ -715,20 +794,52 @@ mod tests {
     }
 
     #[test]
-    fn lcd_decimal_is_formatted_as_an_integer_like_the_other_modes() {
+    fn lcd_decimal_shows_its_point_and_the_other_modes_truncate() {
         // `Dec` used `format!("{}", f64)` while the other three formatted an integer, so a
-        // fractional value produced a decimal point the seven-segment renderer has no glyph for
-        // (drawing `3.5` as `35`) and a large magnitude produced an exponent, drawing the literal
-        // characters `1e20`. Truncation toward zero makes all four modes agree.
+        // fractional value produced a decimal point the seven-segment renderer had no glyph for,
+        // drawing `3.5` as `35` -- a rounding a reader cannot see. `draw_decimal_point` is now that
+        // glyph, so `Dec` keeps the point; the three positional modes (16/8/2) have no use for one
+        // and truncate, which is what makes the branch a `Dec`-only decision.
         let mut lcd = LCDNumber::new(Rect::new(0, 0, 200, 50));
-        lcd.set_num_digits(2);
+        lcd.set_num_digits(4);
         lcd.set_value(3.5);
-        assert_eq!(lcd.display_text(), " 3");
+        // `num_digits` counts *positions*, so the point is charged against the budget exactly as a
+        // sign is: four positions hold three digits and one point. Without that the panel would grow
+        // a cell the caller did not ask for the moment a fraction appeared.
+        assert_eq!(lcd.display_text(), "  3.");
+        assert_eq!(lcd.display_text().chars().count(), 4, "the point is a position, not a digit");
+
+        // A whole value paints no point, so the common case is unchanged.
+        lcd.set_value(3.0);
+        assert_eq!(lcd.display_text(), "   3");
+        // Representation noise on a *whole* value is not a fraction: `0.1 + 0.2 - 0.3` is
+        // 5.55e-17 rather than 0, and painting a point for it would show a fraction the caller never
+        // asked for. The tolerance in `has_fraction` is what makes this an integer.
+        lcd.set_value(0.1 + 0.2 - 0.3);
+        assert_eq!(lcd.display_text(), "   0", "noise is not a fraction");
+        // A real fraction below one still shows its point, so the tolerance is not a blanket
+        // "small values are whole".
+        lcd.set_value(0.3);
+        assert_eq!(lcd.display_text(), "  0.");
+
+        // The positional modes truncate the fraction rather than splitting the digits across a
+        // base that has no point.
+        for (mode, expected) in [
+            (LCDNumberMode::Hex, "   3"),
+            (LCDNumberMode::Oct, "   3"),
+            (LCDNumberMode::Bin, "  11"),
+        ] {
+            lcd.set_mode(mode);
+            lcd.set_value(3.5);
+            assert_eq!(lcd.display_text(), expected, "{mode:?} is positional");
+        }
+
         // A magnitude larger than `i64::MAX` saturates rather than producing an exponent or a
         // wrapped value. That is the honest behaviour of a seven-segment readout: it shows the
         // largest integer it can represent, and `check_overflow()` is what tells the caller the
         // value did not fit. Before this, `Dec` rendered `1e20` as the literal characters
         // `1`,`e`,`2`,`0`, which is not a number at all.
+        lcd.set_mode(LCDNumberMode::Dec);
         lcd.set_max_value(1e21);
         lcd.set_value(1e20);
         let shown = lcd.display_text();
@@ -739,6 +850,48 @@ mod tests {
         assert!(
             shown.trim().chars().all(|ch| ch.is_ascii_digit()),
             "every visible cell must be a digit: {shown:?}"
+        );
+    }
+
+    /// `small_decimal_point` chooses the point's size, and the point reaches the pixels.
+    ///
+    /// # What was dead, and what proves it is alive now
+    ///
+    /// `small_decimal_point` was stored, published (getter, setter, schema row, round-trip test) and
+    /// read by nothing -- and it *could not* be read, because no decimal point was drawn at all.
+    /// This asserts the two settings paint different amounts of ink in the point's own cell, which
+    /// is the thing the property names.
+    #[test]
+    fn small_decimal_point_changes_the_dot_it_names() {
+        let build = |small: bool| {
+            let mut lcd = LCDNumber::new(Rect::new(0, 0, 120, 40));
+            lcd.set_num_digits(1);
+            lcd.set_value(0.5);
+            lcd.set_small_decimal_point(small);
+            lcd
+        };
+        // The panel is one digit plus the point, so the point's cell is the trailing half.
+        assert_eq!(build(false).display_text(), "0.");
+
+        let large = render_to_svg(&mut build(false));
+        let small = render_to_svg(&mut build(true));
+        assert_ne!(
+            large, small,
+            "the two settings must not render identically -- that was the dead state"
+        );
+
+        // And the point is drawn at all: a value with a fraction paints more than the same digits
+        // without one. `render_to_svg` is a string, so the comparison is on its `rect` count.
+        let with_point = render_to_svg(&mut build(false));
+        let mut whole = LCDNumber::new(Rect::new(0, 0, 120, 40));
+        whole.set_num_digits(1);
+        whole.set_value(0.0);
+        let without_point = render_to_svg(&mut whole);
+        assert!(
+            with_point.matches("<rect").count() > without_point.matches("<rect").count(),
+            "the point adds a filled mark: {} vs {}",
+            with_point.matches("<rect").count(),
+            without_point.matches("<rect").count()
         );
     }
 

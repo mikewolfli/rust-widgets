@@ -812,21 +812,26 @@ impl Draw for Button {
             bg.blend(&interactive, progress)
         };
         let br = style.border_radius.unwrap_or(0);
-        if br > 0 {
-            context.fill_rounded_rect(rect, br, bg);
-        } else {
-            context.fill_rect(rect, bg);
-        }
-
-        // ── Border ──
-        if let Some(border_color) = style.border_color {
-            let bw = style.border_width.unwrap_or(0);
-            if br > 0 && bw > 0 {
-                context.draw_rounded_rect_stroke(rect, br, border_color, bw);
-            } else if bw > 0 {
-                context.draw_rect_stroke(rect, border_color, bw);
-            }
-        }
+        // ── The face ──
+        //
+        // The fill, the bevel and the outline are painted in one call, because they are one
+        // operation with an order that matters (fill, then bevel on the boundary, then the
+        // outermost line). The surface comes from the style — the role table's default for a
+        // button, as any theme override replaced it — so a theme that says "raise this face" or
+        // "flatten it" changes what a button is drawn as **without a line of code here**
+        // (BLUE24 §10A).
+        //
+        // `solid()` is the identity, so a button on the flat preset emits exactly the fill and
+        // outline it emitted before surfaces existed: the snapshot suite is the proof.
+        let surface = style.surface.unwrap_or_else(crate::render::SurfaceStyle::solid);
+        surface.paint(
+            context,
+            rect,
+            bg,
+            style.border_color.unwrap_or(bg),
+            style.border_width.unwrap_or(0),
+            br,
+        );
 
         // ── Icon ──
         //
@@ -2087,5 +2092,63 @@ mod tests {
         let tall = Button::new("OK".into(), Rect::new(0, 0, 240, 120));
         assert_eq!(tall.implicit_size().height, hint.height);
         assert!(tall.implicit_size().height < 120, "the hint must not follow the cell height");
+    }
+
+    /// BLUE24 §10A.6 criterion 2: the two styles differ in **geometry**, not only in colour.
+    ///
+    /// # Why "geometry" and not "a colour changed"
+    ///
+    /// The whole claim of the surface channel is that a flat theme and a dimensional one are two
+    /// corners of one parameter space — so the observable difference must be a *shape*: a bevelled
+    /// face draws two light/shade lines along its boundary, and a flat one draws none. Asserting on
+    /// a fill colour would pass for any theme change, including one that never reached the bevel.
+    ///
+    /// The bevel is drawn with `<line>` elements, which is what the assertion counts — the same
+    /// marker `check_control_feature_visible_in_own_snapshot` uses for `group_box`.
+    ///
+    /// # Why this is gated on `device_profile`
+    ///
+    /// It drives the real theme manager, which exists only where a device profile does. On
+    /// `mini`/`embedded` there is no theme to resolve, so there is nothing for the channel to
+    /// carry — the subject of the test does not exist there, which is what a gate has to say.
+    #[cfg(device_profile)]
+    #[test]
+    fn flat_and_dimensional_styles_differ_in_geometry() {
+        use crate::theme::{global_theme_manager, Theme};
+
+        let _theme_guard = crate::style::theme_test_guard();
+
+        // The global manager is what `apply_active_theme` reads, so the test drives the same
+        // path production does: register both presets, draw under one, then the other.
+        {
+            let mut manager = global_theme_manager();
+            manager.register_theme(Theme::default());
+            manager.register_theme(Theme::dimensional());
+        }
+
+        let draw_under = |name: &str| {
+            assert!(global_theme_manager().set_theme(name), "{name} is registered");
+            let mut b = make_button();
+            crate::theme::apply_theme_to_widget(&mut b);
+            crate::widget::svg::render_to_svg(&mut b)
+        };
+
+        let flat = draw_under("default");
+        let dimensional = draw_under("dimensional");
+
+        let bevel_lines = |svg: &str| svg.matches("<line").count();
+        assert_eq!(
+            bevel_lines(&flat),
+            0,
+            "the flat style must draw no bevel at all, or the default snapshots would change"
+        );
+        assert!(
+            bevel_lines(&dimensional) > 0,
+            "and the dimensional style must draw the bevel's light/shade pair, or the channel \
+             never reached the control"
+        );
+
+        // Restore the light default so a later test in this binary starts where it expects.
+        assert!(global_theme_manager().set_theme("default"));
     }
 }

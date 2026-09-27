@@ -320,7 +320,10 @@ impl Widget for VirtualList {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(200, 200)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::VIRTUAL_LIST_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::VIRTUAL_LIST_DEFAULT_HEIGHT,
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

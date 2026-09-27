@@ -109,6 +109,23 @@ pub fn estimate_line_height(font: &crate::core::Font, scale: f32) -> u32 {
 /// calling them from a hot layout path costs no per-cluster allocation.
 pub struct ControlMetrics;
 
+/// The implicit size of a [`Switch`](crate::widget::display_widgets::switch::Switch).
+///
+/// # Why this is in the shared table and not the control
+///
+/// A switch reports its *floor* rather than its drawn track: a control that can show a focus ring
+/// needs room for the ring's inset on both sides, or `size_hint` describes a control whose focus
+/// state cannot be rendered. The floor is therefore the track widened by one
+/// [`FOCUS_RING_WIDTH`] on each side, at the track's own height — the relation the control used
+/// to restate as `track.width + FOCUS_RING_WIDTH * 2` inline. It lives here so the geometry the
+/// control carries and the answer its hint reports come from one derivation (rule #101).
+pub fn switch_hint_size(track: crate::core::Size, focus_ring_width: u32) -> crate::core::Size {
+    crate::core::Size::new(
+        track.width.saturating_add(focus_ring_width.saturating_mul(2)),
+        track.height,
+    )
+}
+
 impl ControlMetrics {
     /// Intrinsic size = `max(floor, content + padding)`, component-wise.
     ///
@@ -1041,6 +1058,372 @@ pub mod dimensions {
 
     /// The step between visual-density levels: 4 logical px per unit.
     pub const DENSITY_STEP: u32 = 4;
+
+    /// The widest viewport still classified as [`crate::view::Breakpoint::Compact`]: 599 px.
+    ///
+    /// The upper bound is **exclusive** — a viewport 600 px wide is `Medium`, not `Compact` —
+    /// which is the convention every breakpoint table uses and the one the tests pin, so a
+    /// boundary case has exactly one answer.
+    ///
+    /// Named here rather than at the classification site (原则 #44 / 计划 §5.1 "阈值来自
+    /// `dimensions` 表，不得是字面量") so a theme or a device profile can move the boundary in
+    /// one place instead of at each reader.
+    pub const BREAKPOINT_COMPACT_MAX: u32 = 599;
+
+    /// The widest viewport still classified as [`crate::view::Breakpoint::Medium`]: 839 px.
+    ///
+    /// Above this is `Expanded` (desktop). The 600/840 pair is the window the three-tier
+    /// classification is universally cut at; what matters here is that it is a *data* fact with
+    /// one home, not that those two numbers are special in themselves.
+    pub const BREAKPOINT_MEDIUM_MAX: u32 = 839;
+
+    /// A `calendar`'s intrinsic width: 260.
+    ///
+    /// The month grid's own box rather than a fraction of the area the control is given, so a
+    /// calendar dropped into a 240x120 census cell draws the same month as one in a dialog. Named
+    /// rather than left as the `260` its `size_hint` carried.
+    pub const CALENDAR_DEFAULT_WIDTH: u32 = 260;
+
+    /// A `calendar`'s intrinsic height: 240 (a six-week month of 40 px rows).
+    pub const CALENDAR_DEFAULT_HEIGHT: u32 = 240;
+
+    /// A `date_edit`'s intrinsic width: 120 — the field plus its calendar affordance.
+    pub const DATE_EDIT_DEFAULT_WIDTH: u32 = 120;
+
+    /// A `date_edit`'s intrinsic height: 28, one compact row of chrome.
+    pub const DATE_EDIT_DEFAULT_HEIGHT: u32 = 28;
+
+    /// A `pie_menu`'s intrinsic width: 200 — the box the ring of actions is centred in.
+    pub const PIE_MENU_DEFAULT_WIDTH: u32 = 200;
+
+    /// A `pie_menu`'s intrinsic height: 200, square with the width so the ring is a circle.
+    pub const PIE_MENU_DEFAULT_HEIGHT: u32 = 200;
+
+    /// A `frame`'s intrinsic width: 200.
+    ///
+    /// A frame is a container: it has no content of its own to measure, so its hint is the panel
+    /// box its `draw` outlines. Named so the box and the claimed size are one fact.
+    pub const FRAME_DEFAULT_WIDTH: u32 = 200;
+
+    /// A `frame`'s intrinsic height: 200, square with the width like every other panel box.
+    pub const FRAME_DEFAULT_HEIGHT: u32 = 200;
+
+    /// A generic container/panel's intrinsic width: 400 (MDI areas and every view-shaped control).
+    pub const PANEL_DEFAULT_WIDTH: u32 = 400;
+
+    /// A generic container/panel's intrinsic height: 300 (a 4:3 desktop box).
+    pub const PANEL_DEFAULT_HEIGHT: u32 = 300;
+
+    /// A `collapsible_pane`'s intrinsic width: 200 — the box its header and body live in.
+    pub const COLLAPSIBLE_PANE_DEFAULT_WIDTH: u32 = 200;
+
+    /// A `collapsible_pane`'s intrinsic height: 100, room for its header plus a body row.
+    pub const COLLAPSIBLE_PANE_DEFAULT_HEIGHT: u32 = 100;
+
+    /// A `dock_widget`'s intrinsic width: 250 — a docked panel's own column.
+    pub const DOCK_WIDGET_DEFAULT_WIDTH: u32 = 250;
+
+    /// A `dock_widget`'s intrinsic height: 200, square enough to hold its title bar and content.
+    pub const DOCK_WIDGET_DEFAULT_HEIGHT: u32 = 200;
+
+    /// A `masonry_layout`'s intrinsic width: 300 — the box its columns are measured against.
+    pub const MASONRY_DEFAULT_WIDTH: u32 = 300;
+
+    /// A `masonry_layout`'s intrinsic height: 300, square with the width.
+    pub const MASONRY_DEFAULT_HEIGHT: u32 = 300;
+
+    /// A `scroll_area`'s intrinsic width: 300 — a viewport's own box.
+    pub const SCROLL_AREA_DEFAULT_WIDTH: u32 = 300;
+
+    /// A `scroll_area`'s intrinsic height: 200, the viewport a scroll bar is measured against.
+    pub const SCROLL_AREA_DEFAULT_HEIGHT: u32 = 200;
+
+    /// A Cupertino bar's intrinsic width: 300 — `UINavigationBar`'s content box.
+    pub const CUPERTINO_BAR_DEFAULT_WIDTH: u32 = 300;
+
+    /// A Cupertino bar's intrinsic height: 48; the drawn bar itself is [`NAV_BAR_HEIGHT`].
+    ///
+    /// The 48 is the round's pre-existing `size_hint` value, and naming it keeps the claimed box
+    /// and the painted [`NAV_BAR_HEIGHT`] band separate facts — changing the bar's thickness is a
+    /// paint change, not a re-derivation of the hint.
+    pub const CUPERTINO_BAR_DEFAULT_HEIGHT: u32 = 48;
+
+    /// A Cupertino panel's intrinsic width: 270 — a compact iOS surface, not the 400 px desktop
+    /// panel.
+    pub const CUPERTINO_PANEL_DEFAULT_WIDTH: u32 = 270;
+
+    /// A Cupertino panel's intrinsic height: 150, `270x150` being the `3:5` proportion iOS uses.
+    pub const CUPERTINO_PANEL_DEFAULT_HEIGHT: u32 = 150;
+
+    /// A Cupertino row's intrinsic width: 200 — one `UITableViewCell` row.
+    pub const CUPERTINO_ROW_DEFAULT_WIDTH: u32 = 200;
+
+    /// A Cupertino row's intrinsic height: 28, the same compact chrome row
+    /// [`SPLIT_BUTTON_HEIGHT`] names.
+    pub const CUPERTINO_ROW_DEFAULT_HEIGHT: u32 = 28;
+
+    /// A Cupertino tab bar's intrinsic width: 72 — one `UITabBarItem`'s square slot.
+    pub const CUPERTINO_TAB_BAR_DEFAULT_WIDTH: u32 = 72;
+
+    /// A Cupertino tab bar's intrinsic height: 400 — the strip plus the content above it.
+    pub const CUPERTINO_TAB_BAR_DEFAULT_HEIGHT: u32 = 400;
+
+    /// A Cupertino segmented control's intrinsic width: 300.
+    ///
+    /// The same box as the Material [`SEGMENTED_CONTROL_DEFAULT_WIDTH`]; only the track's drawn
+    /// form differs between the two platform names.
+    pub const CUPERTINO_SEGMENTED_DEFAULT_WIDTH: u32 = 300;
+
+    /// A `bottom_sheet`'s intrinsic width: 300 — the sheet spans this before it is clamped.
+    pub const BOTTOM_SHEET_DEFAULT_WIDTH: u32 = 300;
+
+    /// A `bottom_sheet`'s intrinsic height: 200 — the collapsed sheet's own box.
+    pub const BOTTOM_SHEET_DEFAULT_HEIGHT: u32 = 200;
+
+    /// A `dialog` widget's intrinsic width: 320.
+    ///
+    /// Narrower than [`DIALOG_MIN_WIDTH`]'s 280-driven content because this hint is the *box*
+    /// a dialog occupies before its own title bar and buttons are laid inside it, and it is the
+    /// value the control's `size_hint` has always reported.
+    pub const DIALOG_WIDGET_DEFAULT_WIDTH: u32 = 320;
+
+    /// A `find_replace_dialog`'s intrinsic width: 350 — the find field plus its replace field.
+    pub const FIND_REPLACE_DIALOG_DEFAULT_WIDTH: u32 = 350;
+
+    /// A `find_replace_dialog`'s intrinsic height: 200.
+    pub const FIND_REPLACE_DIALOG_DEFAULT_HEIGHT: u32 = 200;
+
+    /// A `message_box`'s intrinsic width: 350 — a short message's panel.
+    pub const MESSAGE_BOX_DEFAULT_WIDTH: u32 = 350;
+
+    /// A `message_box`'s intrinsic height: 150 — the message plus its action row.
+    pub const MESSAGE_BOX_DEFAULT_HEIGHT: u32 = 150;
+
+    /// A `popover`'s intrinsic width: 200 — the arrow plus its content box.
+    pub const POPOVER_DEFAULT_WIDTH: u32 = 200;
+
+    /// A `popover`'s intrinsic height: 150.
+    pub const POPOVER_DEFAULT_HEIGHT: u32 = 150;
+
+    /// A `tooltip`'s intrinsic width: 100 — the narrowest a tooltip's text is allowed to be.
+    pub const TOOLTIP_DEFAULT_WIDTH: u32 = 100;
+
+    /// A `floating_label`'s intrinsic width: 200 — the box the label floats above.
+    pub const FLOATING_LABEL_DEFAULT_WIDTH: u32 = 200;
+
+    /// A `floating_label`'s intrinsic height: 40 — the field plus the label row above it.
+    pub const FLOATING_LABEL_DEFAULT_HEIGHT: u32 = 40;
+
+    /// A `font_preview`'s intrinsic width: 300 — enough for a pangram at the base size.
+    pub const FONT_PREVIEW_DEFAULT_WIDTH: u32 = 300;
+
+    /// A `font_preview`'s intrinsic height: 100 — several lines of sample text.
+    pub const FONT_PREVIEW_DEFAULT_HEIGHT: u32 = 100;
+
+    /// An `lcd_number`'s intrinsic width: 80 — a fixed digit window.
+    pub const LCD_NUMBER_DEFAULT_WIDTH: u32 = 80;
+
+    /// An `lcd_number`'s intrinsic height: 30 — a seven-segment line box.
+    pub const LCD_NUMBER_DEFAULT_HEIGHT: u32 = 30;
+
+    /// A `progress_circle`'s default (and floor) diameter: 60.
+    ///
+    /// A ring, so its hint is square. The diameter is a *field* rather than a shared constant
+    /// because a caller may set it; 60 is the value the control falls back to and the smallest a
+    /// legible ring is drawn at.
+    pub const PROGRESS_CIRCLE_DEFAULT_DIAMETER: u32 = 60;
+
+    /// A `progressbar` / `slider` bar's long axis: 120.
+    ///
+    /// One number for two controls that both report "a bar I can drag": the extent along the
+    /// direction of travel. Named so the horizontal and vertical arms read one fact rather than
+    /// two literals.
+    pub const BAR_DEFAULT_EXTENT: u32 = 120;
+
+    /// A `progressbar` / `slider` bar's thickness: 20.
+    ///
+    /// The short axis, which includes the thumb's [`SLIDER_THUMB_RADIUS`] on both sides of its
+    /// [`SLIDER_TRACK_HEIGHT`] track — the row is the thumb, not the line.
+    pub const BAR_DEFAULT_THICKNESS: u32 = 20;
+
+    /// A `scrollbar`'s intrinsic long axis: 100.
+    ///
+    /// Distinct from [`SCROLLBAR_MIN_LENGTH`] (48), which is the floor a *proportional* thumb is
+    /// clamped to once the control has been laid out; this is the length the hint claims before
+    /// any container gives it one.
+    pub const SCROLLBAR_DEFAULT_LENGTH: u32 = 100;
+
+    /// A `skeleton_loader`'s intrinsic width: 300 — a placeholder block's own box.
+    pub const SKELETON_DEFAULT_WIDTH: u32 = 300;
+
+    /// A `cascader`'s intrinsic width: 200 — one link of the column chain.
+    pub const CASCADER_DEFAULT_WIDTH: u32 = 200;
+
+    /// A `cascader`'s intrinsic height: 32, the [`SEGMENTED_CONTROL_HEIGHT`]-sized row each link
+    /// occupies.
+    pub const CASCADER_DEFAULT_HEIGHT: u32 = 32;
+
+    /// An `inplace_editor`'s intrinsic width: 200 — the cell the label is edited in.
+    pub const INPLACE_EDITOR_DEFAULT_WIDTH: u32 = 200;
+
+    /// An `inplace_editor`'s intrinsic height: 28, one compact row of chrome.
+    pub const INPLACE_EDITOR_DEFAULT_HEIGHT: u32 = 28;
+
+    /// A `keyboard`'s intrinsic width: 320 — ten keys across at their own advance.
+    pub const KEYBOARD_DEFAULT_WIDTH: u32 = 320;
+
+    /// A `keyboard`'s intrinsic height: 160 — four key rows.
+    pub const KEYBOARD_DEFAULT_HEIGHT: u32 = 160;
+
+    /// A `range_slider`'s intrinsic width: 200 — the track plus its two thumbs.
+    pub const RANGE_SLIDER_DEFAULT_WIDTH: u32 = 200;
+
+    /// A `range_slider`'s intrinsic height: 28, one row holding a [`SLIDER_THUMB_RADIUS`] thumb
+    /// either side of its track.
+    pub const RANGE_SLIDER_DEFAULT_HEIGHT: u32 = 28;
+
+    /// A multi-line `text_edit`'s intrinsic width: 200 — the box its lines are laid in.
+    pub const TEXT_EDIT_DEFAULT_WIDTH: u32 = 200;
+
+    /// A multi-line `text_edit`'s intrinsic height: 24 — one line's box, which the control grows
+    /// from once it has content rather than a fixed number of lines.
+    pub const TEXT_EDIT_DEFAULT_HEIGHT: u32 = 24;
+
+    /// An `audio_visualizer`'s intrinsic width: 200 — the time-axis box its bars are drawn in.
+    pub const AUDIO_VISUALIZER_DEFAULT_WIDTH: u32 = 200;
+
+    /// An `audio_visualizer`'s intrinsic height: 60 — the amplitude axis the bars span.
+    pub const AUDIO_VISUALIZER_DEFAULT_HEIGHT: u32 = 60;
+
+    /// A `tool_button`'s side: 28 (Material M3's icon-button sizing).
+    ///
+    /// Square, so one number serves both axes: the icon box plus its own padding.
+    pub const TOOL_BUTTON_SIZE: u32 = 28;
+
+    /// A `bezier_curve_editor`'s intrinsic width: 300.
+    ///
+    /// The graph's own box rather than a fraction of the area it is given: a curve editor in a
+    /// 240x120 census cell must draw the same control points as one in a dialog.
+    pub const BEZIER_EDITOR_DEFAULT_WIDTH: u32 = 300;
+
+    /// A `bezier_curve_editor`'s intrinsic height: 200.
+    pub const BEZIER_EDITOR_DEFAULT_HEIGHT: u32 = 200;
+
+    /// A `qr_code`'s side: 150 logical px.
+    ///
+    /// A QR symbol is a **fixed-size matrix**: its module count is a property of the data it
+    /// encodes, so scaling the whole symbol to the rectangle would change its scannability. Named
+    /// so the hint's square and the drawn matrix are one number.
+    pub const QR_CODE_SIZE: u32 = 150;
+
+    /// A `navigation_drawer`'s intrinsic width: 300 — the panel that slides in from the edge.
+    pub const NAVIGATION_DRAWER_DEFAULT_WIDTH: u32 = 300;
+
+    /// A `navigation_drawer`'s intrinsic height: 400 — the viewport it covers when open.
+    pub const NAVIGATION_DRAWER_DEFAULT_HEIGHT: u32 = 400;
+
+    /// A `refresh_control`'s intrinsic width: 400 — the list it wraps.
+    pub const REFRESH_CONTROL_DEFAULT_WIDTH: u32 = 400;
+
+    /// A `refresh_control`'s intrinsic height: 400.
+    pub const REFRESH_CONTROL_DEFAULT_HEIGHT: u32 = 400;
+
+    /// A `splash_screen`'s intrinsic width: 480 — the brand panel shown while a host starts.
+    pub const SPLASH_SCREEN_DEFAULT_WIDTH: u32 = 480;
+
+    /// A `splash_screen`'s intrinsic height: 320, a `3:2` panel.
+    pub const SPLASH_SCREEN_DEFAULT_HEIGHT: u32 = 320;
+
+    /// A `swipe_to_dismiss`'s intrinsic width: 400 — the row that can be swiped away.
+    pub const SWIPE_TO_DISMISS_DEFAULT_WIDTH: u32 = 400;
+
+    /// A `swipe_to_dismiss`'s intrinsic height: 60, one tall dismissal row.
+    pub const SWIPE_TO_DISMISS_DEFAULT_HEIGHT: u32 = 60;
+
+    /// A `chart`'s intrinsic width: 400 — the plot box plus its label gutter.
+    pub const CHART_DEFAULT_WIDTH: u32 = 400;
+
+    /// A `chart`'s intrinsic height: 300, a `4:3` plot.
+    pub const CHART_DEFAULT_HEIGHT: u32 = 300;
+
+    /// A `gantt_widget`'s intrinsic width: 600 — the label gutter plus a week of track.
+    pub const GANTT_DEFAULT_WIDTH: u32 = 600;
+
+    /// A `gantt_widget`'s intrinsic height: 200 — its task rows.
+    pub const GANTT_DEFAULT_HEIGHT: u32 = 200;
+
+    /// The side of one `grid` cell: 20 logical px.
+    ///
+    /// The grid's hint is `columns * this + spacing`, so the cell size is the unit its whole
+    /// measurement is counted in rather than a detail of its paint.
+    pub const GRID_CELL_SIZE: u32 = 20;
+
+    /// The `grid`'s own floor: 40 — two cells, since a one-cell grid is not a grid.
+    pub const GRID_DEFAULT_FLOOR: u32 = 40;
+
+    /// A `radar_chart`'s own box: 320 square.
+    ///
+    /// The polygon's radius is derived from it, so the hint and the plot are one fact rather than
+    /// two numbers that describe the same square separately.
+    pub const RADAR_CHART_DEFAULT_SIZE: u32 = 320;
+
+    /// A `segmented_control`'s intrinsic width: 300 (the track's own height is
+    /// [`SEGMENTED_CONTROL_HEIGHT`], shared by all three spellings of the control).
+    pub const SEGMENTED_CONTROL_DEFAULT_WIDTH: u32 = 300;
+
+    /// A `terminal_view`'s intrinsic width: 600 — eighty columns of the terminal font.
+    pub const TERMINAL_DEFAULT_WIDTH: u32 = 600;
+
+    /// A `terminal_view`'s intrinsic height: 300 — the viewport's own box.
+    pub const TERMINAL_DEFAULT_HEIGHT: u32 = 300;
+
+    /// A `data_grid`'s intrinsic width: 400 — its columns at their default share.
+    pub const DATA_GRID_DEFAULT_WIDTH: u32 = 400;
+
+    /// A `data_grid`'s intrinsic height: 300 — the rows its viewport shows.
+    pub const DATA_GRID_DEFAULT_HEIGHT: u32 = 300;
+
+    /// An `image_gallery`'s intrinsic width: 400 — the strip of thumbnails.
+    pub const IMAGE_GALLERY_DEFAULT_WIDTH: u32 = 400;
+
+    /// An `image_gallery`'s intrinsic height: 300.
+    pub const IMAGE_GALLERY_DEFAULT_HEIGHT: u32 = 300;
+
+    /// A `list_view`'s intrinsic width: 200 — the rows' own box.
+    pub const LIST_VIEW_DEFAULT_WIDTH: u32 = 200;
+
+    /// A `list_view`'s intrinsic height: 200, square with the width.
+    pub const LIST_VIEW_DEFAULT_HEIGHT: u32 = 200;
+
+    /// A `table_widget`'s intrinsic width: 400 — the header's columns at their default share.
+    pub const TABLE_WIDGET_DEFAULT_WIDTH: u32 = 400;
+
+    /// A `table_widget`'s intrinsic height: 300.
+    pub const TABLE_WIDGET_DEFAULT_HEIGHT: u32 = 300;
+
+    /// A `tree_table`'s intrinsic width: 400 — the tree column plus its data columns.
+    pub const TREE_TABLE_DEFAULT_WIDTH: u32 = 400;
+
+    /// A `tree_table`'s intrinsic height: 300.
+    pub const TREE_TABLE_DEFAULT_HEIGHT: u32 = 300;
+
+    /// A `tree_view`'s intrinsic width: 200 — the nodes' own box.
+    pub const TREE_VIEW_DEFAULT_WIDTH: u32 = 200;
+
+    /// A `tree_view`'s intrinsic height: 200, square with the width.
+    pub const TREE_VIEW_DEFAULT_HEIGHT: u32 = 200;
+
+    /// A `virtual_list`'s intrinsic width: 200.
+    pub const VIRTUAL_LIST_DEFAULT_WIDTH: u32 = 200;
+
+    /// A `virtual_list`'s intrinsic height: 200, square with the width.
+    pub const VIRTUAL_LIST_DEFAULT_HEIGHT: u32 = 200;
+
+    /// A `split_button`'s intrinsic width: 100 — the trigger plus its arrow column.
+    ///
+    /// Its height is [`SPLIT_BUTTON_HEIGHT`], the compact row the control paints, so the hint and
+    /// the drawn band are one fact on that axis.
+    pub const SPLIT_BUTTON_DEFAULT_WIDTH: u32 = 100;
 
     /// How opaque the **disabled veil** is, as a byte alpha.
     ///

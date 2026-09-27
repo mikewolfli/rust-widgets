@@ -217,7 +217,10 @@ impl Widget for CollapsiblePane {
     }
 
     fn size_hint(&self) -> Size {
-        crate::core::Size::new(200, 100)
+        crate::core::Size::new(
+            dimensions::COLLAPSIBLE_PANE_DEFAULT_WIDTH,
+            dimensions::COLLAPSIBLE_PANE_DEFAULT_HEIGHT,
+        )
     }
 
     fn remove_child(&mut self, child: ObjectId) {

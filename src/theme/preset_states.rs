@@ -145,6 +145,69 @@ pub(super) fn preset_state_overrides(colors: &Colors) -> BTreeMap<String, ThemeS
     styles
 }
 
+/// The `"<kind>"` (class) surface overrides a **flat** preset carries.
+///
+/// # Why a preset has to flatten what the role table raises
+///
+/// [`crate::render::role_surface_style`] states each role's *character* — a button is pressable,
+/// a field is a well — and it does so with a bevel, because a bevel is what makes those shapes
+/// readable in the dimensional style. The **default** preset is the flat one, so it has to say
+/// so explicitly: a preset that omits these keys inherits the role's bevel and stops being flat.
+///
+/// That is the whole of BLUE24 §10A.5's "flat and dimensional are two corners of one parameter
+/// space, not two code paths": the difference between them is **this table**, and the control
+/// code is identical in both.
+///
+/// # Why `bevel: None` and not `elevation: Flat`
+///
+/// The default preset is byte-for-byte what this crate drew before surfaces existed
+/// (BLUE24 §10A.6 criterion 9), and what it drew was a fill, an outline and a shadow whose shape
+/// the role table's elevations already match — only the *bevel* is new, because no control drew
+/// one. So the flat preset removes exactly the bevel and touches nothing else. Changing the
+/// elevation here would move every shadowed face and break the snapshot safety rope.
+fn flat_surface_overrides() -> BTreeMap<String, ThemeStyleToken> {
+    let mut styles = BTreeMap::new();
+    for kind in [
+        // Pressable chrome, which the role table bevels raised.
+        "button",
+        "push_button",
+        "toggle_button",
+        "tool_button",
+        // The editable kinds, which the role table cuts in as wells.
+        "line_edit",
+        "text_edit",
+        "text_area",
+        "spin_box",
+        "combo_box",
+        "combo_box_edit",
+        "editable_combo_box",
+    ] {
+        styles.insert(
+            kind.to_string(),
+            ThemeStyleToken {
+                bevel: crate::theme::BevelOverride::None,
+                ..ThemeStyleToken::default()
+            },
+        );
+    }
+    styles
+}
+
+/// The class-level surface overrides a preset carries, merged into its style table.
+///
+/// Kept beside [`preset_state_overrides`] because they are the same kind of thing — a preset's
+/// data — and a preset that carried one and not the other would be a preset with an opinion
+/// about states and none about faces.
+pub(super) fn preset_surface_overrides(dimensional: bool) -> BTreeMap<String, ThemeStyleToken> {
+    if dimensional {
+        // The dimensional preset states no class overrides: the role table's bevels *are* its
+        // character, which is what makes it the style with no exceptions to remember.
+        BTreeMap::new()
+    } else {
+        flat_surface_overrides()
+    }
+}
+
 /// The number of state keys a preset is expected to carry.
 ///
 /// Exposed so the gate that guards "the presets really have state overrides" and the

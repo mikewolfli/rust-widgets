@@ -524,9 +524,11 @@ impl Widget for ScrollBar {
     }
 
     fn size_hint(&self) -> crate::core::Size {
+        let long = crate::widget::metrics::dimensions::SCROLLBAR_DEFAULT_LENGTH;
+        let thick = crate::widget::metrics::dimensions::SCROLLBAR_THICKNESS;
         match self.orientation {
-            crate::layout::Orientation::Horizontal => crate::core::Size::new(100, 16),
-            crate::layout::Orientation::Vertical => crate::core::Size::new(16, 100),
+            crate::layout::Orientation::Horizontal => crate::core::Size::new(long, thick),
+            crate::layout::Orientation::Vertical => crate::core::Size::new(thick, long),
         }
     }
 

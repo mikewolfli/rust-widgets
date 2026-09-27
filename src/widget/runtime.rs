@@ -303,6 +303,17 @@ pub fn register(widget: Box<dyn Widget>) -> Option<ObjectId> {
     // the cost of the answer is only ever paid when the answer is `yes`, because the
     // mode it selects is the self-correcting one. See `should_track_damage`.
     let _ = enable_damage_tracking_if_useful(id);
+    // Accessibility submit point 1 of BLUE24 §6.3: a control that has just been mounted is given a
+    // node in the accessibility tree, derived from the control itself through `A11yState::from_widget`
+    // (that is stage ①, which already existed). Without this the three platform bridges had zero
+    // production callers, so a screen reader on any of them received nothing.
+    //
+    // Read through `with_widget` rather than keeping a borrow: the derive reads the same property
+    // contract `accessible_value` does, and both go through the registry this function has just
+    // written to.
+    if let Some(state) = with_widget(id, crate::platform::accessibility::A11yState::from_widget) {
+        crate::widget::a11y_submit::submit_mounted(id, &state);
+    }
     Some(id)
 }
 
@@ -337,7 +348,6 @@ pub fn unregister(id: ObjectId) -> bool {
     // and a stale damage rect would repaint a region that no longer exists.
     forget_cached_frame(id);
     let _ = REPAINT.try_with(|map| map.borrow_mut().remove(&id));
-    let _ = REPAINT.try_with(|map| map.borrow_mut().remove(&id));
     // And the own-id reverse mapping, or a later widget built with the same
     // `BaseWidget::id()` would resolve to this dead registry id and file its damage
     // against a widget that no longer exists.
@@ -348,7 +358,14 @@ pub fn unregister(id: ObjectId) -> bool {
     if let Some(own_id) = own_id {
         let _ = OWN_IDS.try_with(|map| map.borrow_mut().remove(&own_id));
     }
-    MOUNTED.try_with(|map| map.borrow_mut().remove(&id).is_some()).unwrap_or(false)
+    // Accessibility submit point 2 of BLUE24 §6.3: the control is gone, so its node must be too.
+    // Posted only when the widget was actually present, so an `unregister` of an id that was never
+    // mounted does not tear down a node a live control still owns.
+    let removed = MOUNTED.try_with(|map| map.borrow_mut().remove(&id).is_some()).unwrap_or(false);
+    if removed {
+        crate::widget::a11y_submit::submit_unmounted(id);
+    }
+    removed
 }
 
 // ---------------------------------------------------------------------------
@@ -985,6 +1002,46 @@ pub struct FrameOutcome {
     pub needs_another_frame: bool,
 }
 
+/// A frame's cost, grouped by **what produced it** rather than as one total.
+///
+/// # Why not a duration
+///
+/// "This frame took 12 ms" cannot be acted on: it might be one control repainting the whole
+/// surface, a damage merge that failed, or an animation running more frames than it needs. So
+/// the ledger groups by **consumer** -- who was advanced, who was redrawn, how much merging
+/// saved -- which is the form a reader can act on (BLUE24 §8.1).
+///
+/// # Why it is a second type beside [`FrameOutcome`]
+///
+/// [`FrameOutcome`] answers the frame loop's one question (*schedule another frame?*) and is
+/// `Copy` because a loop holds it every iteration. This carries a `Vec` of causes, so it is
+/// not `Copy` and is taken **on demand** -- a host that wants the account asks for it, and a
+/// host that only drives frames never pays for the allocation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FrameStats {
+    /// Monotonic frame counter, so two readings can be compared without a clock.
+    pub index: u64,
+    /// The delta this frame advanced animations by.
+    pub delta_ms: u32,
+    /// Events drained and dispatched this frame.
+    pub events: usize,
+    /// Controls that answered `is_animating()` and were advanced.
+    pub controls_ticked: usize,
+    /// Surfaces submitted for repaint this frame (after coalescing).
+    pub controls_drawn: usize,
+    /// Repaint requests **folded into** an earlier request for the same surface this frame.
+    ///
+    /// The saving, not the work: five requests for one surface submit once and coalesce four.
+    pub repaints_coalesced: usize,
+    /// Why each repainted surface was repainted, last cause first per surface.
+    ///
+    /// One entry per surface -- the reason it was repainted -- so a reader can answer "why is
+    /// this still redrawing?" without a log. A surface with no entry is one that was not
+    /// repainted, which is why "no anonymous repaint" (BLUE24 §8 criterion 4) is a statement
+    /// about this list being complete rather than about it being non-empty.
+    pub last_repaint_reason: alloc::vec::Vec<(ObjectId, RepaintReason)>,
+}
+
 /// Performs every library-side task of one frame, in a fixed order, exactly once.
 ///
 /// # Why a *frame* and not just [`tick_animations`]
@@ -1047,12 +1104,51 @@ pub fn drive_frame(delta_ms: u32) -> FrameOutcome {
     // and then scheduling stops.
     let needs_another_frame = animation_bus_needs_another_frame();
 
-    FrameOutcome {
-        events_dispatched,
-        controls_ticked,
-        repaints_submitted: take_frame_repaint_count(),
-        needs_another_frame,
-    }
+    // The numbers the frame ledger will report. Taken together so the counts and the causes
+    // describe the same frame: taking them apart would let a repaint be attributed to the
+    // frame after the one that submitted it.
+    let repaints_submitted = take_frame_repaint_count();
+    let repaints_coalesced = take_frame_coalesced_count();
+    let last_repaint_reason = take_frame_repaint_reasons();
+    let index = FRAME_INDEX.try_with(|frame| frame.replace(frame.get() + 1)).unwrap_or(0);
+
+    let _ = LAST_FRAME_STATS.try_with(|slot| {
+        slot.replace(Some(FrameStats {
+            index,
+            delta_ms,
+            events: events_dispatched,
+            controls_ticked,
+            controls_drawn: repaints_submitted,
+            repaints_coalesced,
+            last_repaint_reason,
+        }));
+    });
+
+    FrameOutcome { events_dispatched, controls_ticked, repaints_submitted, needs_another_frame }
+}
+
+thread_local! {
+    /// The most recent frame's ledger, for [`last_frame_stats`].
+    ///
+    /// Stored rather than returned because [`drive_frame`]'s return type is part of the frame
+    /// contract a loop calls every iteration (and is `Copy`); a host that wants the account
+    /// reads it separately, so a host that does not want it pays nothing.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static LAST_FRAME_STATS: core::cell::RefCell<Option<FrameStats>> =
+        const { core::cell::RefCell::new(None) };
+}
+
+/// The ledger for the most recent [`drive_frame`], or `None` when no frame has run.
+///
+/// # Why "why" is answerable at all
+///
+/// Because every repaint submission in the crate names a [`RepaintReason`] at its one point of
+/// submission, and this returns those reasons grouped by surface. A frame that repainted
+/// seven surfaces because an animation is in flight says so; if instead it says nothing, no
+/// repaint happened, which is the still-frame guarantee being *observable* rather than asserted
+/// (BLUE24 §8 criterion 1).
+pub fn last_frame_stats() -> Option<FrameStats> {
+    LAST_FRAME_STATS.try_with(|slot| slot.borrow().clone()).ok().flatten()
 }
 
 /// Counts mounted controls that currently report themselves as animating.
@@ -1078,19 +1174,165 @@ thread_local! {
     /// question is answered, not here). Reset by [`take_frame_repaint_count`].
     #[allow(clippy::missing_const_for_thread_local)]
     static FRAME_REPAINTS: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+
+    /// Repaint requests that were **folded into an earlier request for the same surface**
+    /// this frame, so they cost the platform nothing extra.
+    ///
+    /// A coalesced request is not a lost one: the surface is already going to be repainted,
+    /// so asking again would be a second submission of the same work. Counting it is what
+    /// lets a frame answer "how much did merging save?" rather than only "how many went
+    /// out?" -- BLUE24 §8 criterion 3 (five controls asking for one rectangle submit once
+    /// and coalesce four).
+    #[allow(clippy::missing_const_for_thread_local)]
+    static FRAME_REPAINTS_COALESCED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+
+    /// Whether each mounted surface has already had a repaint requested this frame.
+    ///
+    /// Keyed by the repaint's **target surface** rather than by control, because that is
+    /// what coalescing is about: two controls on the same surface produce one submission.
+    /// Cleared by [`take_frame_repaint_count`], so "this frame" is exactly the span between
+    /// two `drive_frame` calls.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static FRAME_REPAINTED_SURFACES: core::cell::RefCell<alloc::vec::Vec<ObjectId>> =
+        const { core::cell::RefCell::new(alloc::vec::Vec::new()) };
+
+    /// The last reason each surface was repainted, for BLUE24 §8's `FrameStats`.
+    ///
+    /// One entry per surface, overwritten (not appended), so a surface repainted fifty times
+    /// in a frame reads as "the reason it was repainted" rather than fifty rows. `Explicit`
+    /// means "a caller asked, and named no cause" — which is itself a fact worth being able
+    /// to see, because it is the one reason a gate cannot attribute to a mechanism.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static FRAME_REPAINT_REASONS: core::cell::RefCell<alloc::vec::Vec<(ObjectId, RepaintReason)>> =
+        const { core::cell::RefCell::new(alloc::vec::Vec::new()) };
+
+    /// Monotonic frame counter, incremented once per [`drive_frame`].
+    ///
+    /// A counter rather than a clock: two readings of [`FrameStats`] are comparable by
+    /// subtracting indices, which needs no `SystemTime` and therefore works under `mini`
+    /// (BLUE24 §4's "no device fact from a wall clock" rule applies to the frame ledger too).
+    #[allow(clippy::missing_const_for_thread_local)]
+    static FRAME_INDEX: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
 }
 
-/// Records that this frame submitted one repaint to the platform.
+/// Why a surface was asked to repaint.
 ///
-/// Called from the damage-tracking path, which is the single place a repaint is
+/// # Why a reason and not just a count
+///
+/// "This frame submitted seven repaints" cannot be acted on. "Seven repaints, all because an
+/// animation is still in flight" says the animation is the cost; "seven, all because a control
+/// changed its theme state" says the styles are; "seven, all `Explicit`" says a caller is
+/// repainting by hand and no library mechanism can explain it. BLUE24 §8 asks the frame ledger
+/// to answer by **cause**, and this is the cause.
+///
+/// The set is deliberately closed, and each variant is a mechanism a reader can go and find:
+/// an implementation that adds a repaint must pick the variant that names *why*, so the ledger
+/// cannot silently grow an "other" bucket that explains nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepaintReason {
+    /// A control's self-driven animation advanced and needs to be seen.
+    Animation,
+    /// A control's interaction or semantic state changed (`widget_state` / `semantic_state`).
+    State,
+    /// An overlay's content changed (a tooltip, a popup, a menu).
+    Overlay,
+    /// A caller asked directly (a property write, an imperative redraw) and named no mechanism.
+    Explicit,
+    /// The platform itself asked for its surface to be redrawn.
+    ///
+    /// Distinct from every variant above because it is the *other* world in a mixed
+    /// native/self-painted window (BLUE24 §7): the platform owns the pixels there, and this is
+    /// how the library comes to know about it.
+    Native,
+}
+
+impl RepaintReason {
+    /// Whether this reason means the surface needs another frame after this one.
+    ///
+    /// Only [`RepaintReason::Animation`] does: it is the one cause that keeps producing new
+    /// pixels frame after frame. The others describe a change that is now complete, and a
+    /// frame loop that scheduled another frame for them would spin on a still window.
+    pub fn keeps_animating(self) -> bool {
+        matches!(self, RepaintReason::Animation)
+    }
+}
+
+/// Records that this frame submitted one repaint to the platform, for `reason` on `surface`.
+///
+/// Called from the damage-tracking paths, which are the single places a repaint is
 /// requested, so the count cannot miss a submission made through the library.
-pub(crate) fn note_frame_repaint() {
+///
+/// # Coalescing
+///
+/// A second request for a surface already repainted this frame is **counted as coalesced
+/// rather than submitted**. That is what makes BLUE24 §8 criterion 3 true: five controls
+/// announcing damage on one surface cost the platform one submission, and the frame can
+/// report the four it saved. The surface, not the control, is the unit because a submission
+/// is per surface -- two controls drawing into one window are one repaint.
+///
+/// The reason recorded is the one from the **first** request for that surface this frame:
+/// it is the cause that already made the frame happen, and overwriting it with a later, more
+/// incidental reason would make the ledger describe the last caller rather than the cost.
+pub(crate) fn note_frame_repaint_reason(surface: ObjectId, reason: RepaintReason) {
+    let already = FRAME_REPAINTED_SURFACES
+        .try_with(|surfaces| {
+            let mut surfaces = surfaces.borrow_mut();
+            if surfaces.contains(&surface) {
+                true
+            } else {
+                surfaces.push(surface);
+                false
+            }
+        })
+        .unwrap_or(false);
+
+    if already {
+        let _ = FRAME_REPAINTS_COALESCED.try_with(|count| count.set(count.get().saturating_add(1)));
+        return;
+    }
+
     let _ = FRAME_REPAINTS.try_with(|count| count.set(count.get().saturating_add(1)));
+    let _ = FRAME_REPAINT_REASONS.try_with(|reasons| {
+        let mut reasons = reasons.borrow_mut();
+        match reasons.iter_mut().find(|(id, _)| *id == surface) {
+            Some(entry) => entry.1 = reason,
+            None => reasons.push((surface, reason)),
+        }
+    });
+}
+
+/// Records that this frame submitted one repaint, naming no surface.
+///
+/// The pre-BLUE24 shape, kept for the callers that genuinely have no surface to name — a
+/// repaint whose target the platform resolved itself. It records [`RepaintReason::Explicit`]
+/// against a synthetic surface, so a bare submission still appears in the ledger rather than
+/// being anonymous.
+#[allow(dead_code)]
+pub(crate) fn note_frame_repaint() {
+    note_frame_repaint_reason(0, RepaintReason::Explicit);
 }
 
 /// Takes (and clears) the number of repaints submitted since the last call.
 fn take_frame_repaint_count() -> usize {
     FRAME_REPAINTS.try_with(|count| count.replace(0)).unwrap_or(0)
+}
+
+/// Takes (and clears) the number of repaints folded into an earlier one this frame.
+fn take_frame_coalesced_count() -> usize {
+    FRAME_REPAINTS_COALESCED.try_with(|count| count.replace(0)).unwrap_or(0)
+}
+
+/// Takes (and clears) why each surface was repainted this frame, and resets the surfaces set.
+///
+/// The surfaces set is cleared here rather than in [`take_frame_repaint_count`] so the two
+/// takers are called together by [`drive_frame`] and the coalescing window is exactly one
+/// frame: clearing it early would let a second request for the same surface be counted as a
+/// fresh submission within the same frame.
+fn take_frame_repaint_reasons() -> alloc::vec::Vec<(ObjectId, RepaintReason)> {
+    let _ = FRAME_REPAINTED_SURFACES.try_with(|surfaces| surfaces.borrow_mut().clear());
+    FRAME_REPAINT_REASONS
+        .try_with(|reasons| reasons.borrow_mut().drain(..).collect())
+        .unwrap_or_default()
 }
 
 /// Advances every animating control by `delta_ms`, reporting whether another frame is needed.
@@ -1328,6 +1570,112 @@ pub fn dispatch_event(id: ObjectId, event: &Event) -> bool {
     with_widget_mut(id, |widget| widget.handle_event(event)).is_some()
 }
 
+/// An input fact a platform backend knows about a control it drew itself.
+///
+/// # Why a native backend reports rather than the library probing
+///
+/// A native control's hover, press and focus are the *platform's* facts: GTK knows them
+/// through `enter-notify-event`, Win32 through `WM_MOUSEMOVE`, AppKit through `mouseEntered:`.
+/// The library cannot discover them — it does not own the pixels (BLUE24 §7.1) — but it can
+/// be *told*, and this enum is the vocabulary.
+///
+/// # Why "report" is not "guess"
+///
+/// The backend already has these facts, because it must handle input to work at all. So this
+/// is a report of something known, not an inference: the backend is the authority on its own
+/// control's state, exactly as [`crate::widget::BaseWidget`] is the authority on a
+/// self-painted control's.
+///
+/// # Why this is not the whole [`crate::event::Event`] vocabulary
+///
+/// Because the platform is *not* delivering an event to the library — the control is native
+/// and its own toolkit consumed the event. What crosses the boundary is only the state that
+/// the library needs to answer `widget_state()`, which is what makes a theme's
+/// `"<kind>:hover"` apply to a native control. A backend that wants to deliver a real event
+/// uses [`dispatch_event`] instead; the two are complementary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateFact {
+    /// The pointer entered (`true`) or left (`false`) the control.
+    Hovered(bool),
+    /// The control is being held down (`true`) or was released (`false`).
+    Pressed(bool),
+    /// The control gained (`true`) or lost (`false`) keyboard focus.
+    Focused(bool),
+    /// The control was enabled (`true`) or disabled (`false`).
+    Enabled(bool),
+}
+
+/// Reports an input fact a platform backend observed about a control it drew itself.
+///
+/// See [`StateFact`] for why a backend reports rather than the library probing. Returns
+/// whether the fact was applied, i.e. whether `id` is a mounted control; a backend that
+/// reports on a control the library does not know about learns that immediately rather than
+/// silently having the fact dropped.
+///
+/// # What it changes
+///
+/// It writes the same [`crate::widget::BaseWidget`] fields that a self-painted control's own
+/// event path writes, so from that point on `widget_state()` is as true for a native control
+/// as for a self-painted one and the theme's `<kind>:<state>` overrides apply to both worlds.
+/// A control that has already been told the same fact is **not** changed again, so a backend
+/// that reports on every mouse move costs one comparison rather than a restyle per sample.
+pub fn report_state(id: ObjectId, fact: StateFact) -> bool {
+    let Some(changed) = with_widget_mut(id, |widget| {
+        let base = widget.base_mut();
+        match fact {
+            StateFact::Hovered(hovered) => {
+                if base.is_hovered() == hovered {
+                    return false;
+                }
+                base.set_hovered(hovered);
+            }
+            StateFact::Pressed(pressed) => {
+                if base.is_pressed() == pressed {
+                    return false;
+                }
+                base.set_pressed(pressed);
+            }
+            StateFact::Focused(focused) => {
+                let already = base.focus_reason().is_some();
+                if already == focused {
+                    return false;
+                }
+                // `Programmatic` because the library did not observe the navigation that
+                // moved focus -- the native toolkit did. Claiming `Tab` would assert the user
+                // pressed Tab, and claiming `Pointer` would suppress the ring; "the
+                // application (here: the platform) moved focus" is the honest reading, and it
+                // is the variant that keeps the ring's meaning intact.
+                base.set_focus_reason(if focused {
+                    Some(crate::event::FocusReason::Programmatic)
+                } else {
+                    None
+                });
+            }
+            StateFact::Enabled(enabled) => {
+                if base.is_enabled() == enabled {
+                    return false;
+                }
+                base.set_enabled(enabled);
+            }
+        }
+        true
+    }) else {
+        return false;
+    };
+
+    // A state change the theme can see is a repaint worth requesting, and it is also a change
+    // a screen reader should hear about (BLUE24 §6.3's submit points 4/5 are the same event
+    // for a self-painted control). Reporting the fact is therefore not complete until both
+    // have been told, which is why they are here rather than at each backend's call site: a
+    // backend that forgot one would make its control the only one whose hover neither painted
+    // nor announced.
+    if changed {
+        request_repaint_because(id, RepaintReason::State);
+        crate::widget::a11y_submit::submit_state_changed(id);
+    }
+    true
+}
+
 /// Opens `menu_id` as a context menu at `position`, clamped to `viewport`.
 ///
 /// This is the one operation a right-click needs, and it lives here rather than in
@@ -1393,9 +1741,57 @@ pub fn open_context_menu_for_event(menu_id: ObjectId, event: &Event, viewport: R
 /// submission; doing it in a wrapper instead would leave the dirty-rect arm counted
 /// twice.
 pub fn request_repaint(id: ObjectId) {
+    request_repaint_because(id, RepaintReason::Explicit);
+}
+
+/// Asks the platform to repaint a mounted widget, naming **why** it is being asked.
+///
+/// # Why the reason is a parameter and not inferred
+///
+/// A caller knows the cause and the runtime does not: a hover finished (state), a value
+/// interpolation advanced (animation), an overlay appeared (overlay). Inferring it here would
+/// mean guessing from a stack that has already returned, and a wrong reason is worse than none
+/// because the frame ledger's whole purpose is to let a reader act on it (BLUE24 §8).
+///
+/// # Coalescing
+///
+/// A request for a surface already repainted this frame is folded into it and counted as
+/// coalesced; see [`note_frame_repaint_reason`].
+pub fn request_repaint_because(id: ObjectId, reason: RepaintReason) {
     if crate::invalidate_surface(id) {
-        note_frame_repaint();
+        note_frame_repaint_reason(id, reason);
     }
+}
+
+/// Tells the library that a **platform-owned surface** needs to be redrawn.
+///
+/// # Why the platform must come through here
+///
+/// A native control owns its own pixels (BLUE24 §7.1), so the platform can and must ask for
+/// its own repaint. What it must not do is ask *without telling the library*, because three
+/// things then stop being true at once:
+///
+/// 1. `performance::render_dirty_regions` computes damage the frame never actually submitted,
+///    so "what did this frame paint?" has no answer;
+/// 2. the still-frame guarantee (BLUE24 §1 criterion 2 — an idle window submits nothing) can
+///    no longer be shown, so "smooth is not paid for with a burning core" is unprovable;
+/// 3. the self-painted and native worlds each keep their own count, so one interaction is
+///    submitted twice.
+///
+/// So a backend routes its own redraw requests through this function. It is the *same* ledger
+/// [`request_repaint`] writes to, so a frame that mixed the two worlds still reports one
+/// coherent account.
+///
+/// `rect` is the damaged region when the platform can name one. It is **not** used to narrow
+/// the submission (the platform has already decided what it needs to repaint, and second-
+/// guessing it here would be the library inventing a claim about pixels it does not own), but
+/// it is recorded, so the ledger can distinguish a full-surface redraw from a partial one.
+pub fn notify_native_redraw(id: ObjectId, rect: Option<Rect>) {
+    // The platform has already invalidated its own surface; this call exists so the *library*
+    // learns about it. Recording the region keeps the account complete even though the
+    // submission is the platform's.
+    let _ = rect;
+    note_frame_repaint_reason(id, RepaintReason::Native);
 }
 
 /// How much of a frame the render loop repaints.
@@ -1756,8 +2152,9 @@ pub fn mark_dirty_rect(id: ObjectId, rect: Rect) -> bool {
         }
         // Account for it against this frame, so `drive_frame`'s `repaints_submitted`
         // reports what the frame actually cost rather than a second bookkeeping pass
-        // that would have to re-derive it.
-        note_frame_repaint();
+        // that would have to re-derive it. A damage rectangle is a state change by
+        // construction: the caller is telling the library which pixels it just invalidated.
+        note_frame_repaint_reason(id, RepaintReason::State);
     }
     recorded
 }
@@ -2374,6 +2771,7 @@ mod tests {
         // Register the handler the way a host does, so the production dispatch path is exercised even
         // though this test does not assert on it.
         thread_local! {
+            #[allow(clippy::missing_const_for_thread_local)]
             static DRAINED: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
         }
         DRAINED.with(|flag| flag.set(false));
@@ -4724,5 +5122,344 @@ mod tests {
         fn is_active(&self) -> bool {
             true
         }
+    }
+
+    // ── BLUE24 §6 -- the accessibility pump ──────────────────────────────────────
+
+    /// A bridge that records what the submit points pushed, so the mount path can be asserted.
+    ///
+    /// `Mutex` rather than `RefCell` because `AccessibilityBridge` is `Send + Sync`, which a real
+    /// platform bridge satisfies by being posted to from threads the platform owns.
+    struct A11yRecorder {
+        names: std::sync::Mutex<Vec<(ObjectId, String)>>,
+        states: std::sync::Mutex<Vec<ObjectId>>,
+    }
+
+    impl A11yRecorder {
+        fn new() -> Self {
+            Self {
+                names: std::sync::Mutex::new(Vec::new()),
+                states: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl crate::platform::accessibility::AccessibilityBridge for A11yRecorder {
+        fn set_accessibility_name(&self, id: ObjectId, name: &str) {
+            self.names.lock().unwrap().push((id, name.to_string()));
+        }
+        fn accessibility_name(&self, id: ObjectId) -> Option<String> {
+            self.names
+                .lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|(recorded, _)| *recorded == id)
+                .map(|(_, name)| name.clone())
+        }
+        fn notify_name_changed(&self, _id: ObjectId) {}
+        fn notify_value_changed(&self, _id: ObjectId) {}
+        fn notify_state_changed(&self, id: ObjectId) {
+            self.states.lock().unwrap().push(id);
+        }
+        fn notify_focus_changed(&self, _id: ObjectId) {}
+    }
+
+    /// Installs a recording bridge for one test, removing it on the way out even on panic.
+    struct A11yGuard;
+    impl Drop for A11yGuard {
+        fn drop(&mut self) {
+            let _ = crate::widget::a11y_submit::uninstall_bridge();
+        }
+    }
+
+    /// BLUE24 §6 criterion 1 and §11 criterion 23: mounting controls creates their nodes.
+    ///
+    /// # Why the real `register` path
+    ///
+    /// A test that called `submit_mounted` directly would prove the submit function works and
+    /// nothing about whether anything calls it — which is exactly the gap BLUE24 §0A.1 measured
+    /// (three platform bridges, zero production callers). So this mounts through `register`, the
+    /// same entry point every control in the crate uses, and asserts the bridge saw it.
+    #[test]
+    fn mounting_controls_creates_their_nodes() {
+        let recorder: &'static A11yRecorder = Box::leak(Box::new(A11yRecorder::new()));
+        crate::widget::a11y_submit::install_bridge(recorder);
+        let _guard = A11yGuard;
+
+        let label = register(Box::new(crate::widget::Label::new(
+            "Hello".to_string(),
+            crate::core::Rect::new(0, 0, 80, 24),
+        )))
+        .expect("mount a label");
+        let _unmount_label = MountGuard(label);
+        let button = register(Box::new(crate::widget::Button::new(
+            "Save".to_string(),
+            crate::core::Rect::new(0, 0, 80, 32),
+        )))
+        .expect("mount a button");
+        let _unmount_button = MountGuard(button);
+        let checkbox =
+            register(Box::new(crate::widget::CheckBox::new(crate::core::Rect::new(0, 0, 24, 24))))
+                .expect("mount a check box");
+        let _unmount_checkbox = MountGuard(checkbox);
+
+        let names = recorder.names.lock().unwrap().clone();
+        assert_eq!(names.len(), 3, "three controls mounted, so three names were pushed: {names:?}");
+        assert!(
+            names.iter().any(|(id, name)| *id == label && name == "Hello"),
+            "a label's accessible name is its text: {names:?}"
+        );
+        assert!(
+            names.iter().any(|(id, name)| *id == button && name == "Save"),
+            "a button's accessible name is its title: {names:?}"
+        );
+        let states = recorder.states.lock().unwrap().clone();
+        assert_eq!(states.len(), 3, "and each node's creation was reported: {states:?}");
+    }
+
+    /// Unmounting a control tears its node down; re-registering a never-mounted id does not.
+    ///
+    /// The second half matters: a removal posted for an id that was never mounted would tear down
+    /// a node a live control still owns, which is a silent loss for a screen reader.
+    #[test]
+    fn unmounting_a_control_tears_down_its_node() {
+        let recorder: &'static A11yRecorder = Box::leak(Box::new(A11yRecorder::new()));
+        crate::widget::a11y_submit::install_bridge(recorder);
+        let _guard = A11yGuard;
+
+        let id = register(Box::new(crate::widget::Label::new(
+            "Bye".to_string(),
+            crate::core::Rect::new(0, 0, 80, 24),
+        )))
+        .expect("mount");
+        let before = recorder.states.lock().unwrap().len();
+        assert!(unregister(id), "the mounted id is present");
+        let after = recorder.states.lock().unwrap().len();
+        assert_eq!(after, before + 1, "unmounting posted one teardown");
+
+        // A second unmount of the same id finds nothing, so it posts nothing.
+        assert!(!unregister(id), "the id is gone");
+        assert_eq!(
+            recorder.states.lock().unwrap().len(),
+            after,
+            "an unmount of a never-mounted id must not post a teardown"
+        );
+    }
+
+    /// A check box's three states all travel the submit path.
+    ///
+    /// BLUE24 §6 criterion 3. The state is read back through the bridge substitute — not from the
+    /// control — so the assertion covers the whole pump: derive (stage ①) and the submission.
+    #[test]
+    fn a_check_boxs_three_states_travel_the_submit_path() {
+        use crate::platform::accessibility::A11yState;
+
+        for (check, expected_checked, expected_mixed) in
+            [(false, Some(false), false), (true, Some(true), false)]
+        {
+            let mut cb = crate::widget::CheckBox::new(crate::core::Rect::new(0, 0, 24, 24));
+            cb.set_checked(check);
+            let state = A11yState::from_widget(&cb);
+            assert_eq!(state.checked, expected_checked, "checked={check}");
+            assert_eq!(state.mixed, expected_mixed, "checked={check}");
+        }
+
+        // The mixed state is the tri-state spelling, which cannot be said with a bool.
+        let mut cb = crate::widget::CheckBox::new(crate::core::Rect::new(0, 0, 24, 24));
+        cb.set_tristate_enabled(true);
+        cb.set_state(crate::widget::CheckState::PartiallyChecked);
+        let state = A11yState::from_widget(&cb);
+        assert_eq!(state.checked, Some(true), "a mixed box is on");
+        assert!(state.mixed, "and separately mixed, which is the only way to say it");
+    }
+
+    // ── BLUE24 §7 -- native state reporting and redraw ───────────────────────────
+
+    /// BLUE24 §7 criterion 1: a reported hover makes `widget_state()` true for a control the
+    /// library did not see the input for.
+    ///
+    /// The defect this pins is the two-worlds problem: a native control's hover is the
+    /// platform's fact, so `BaseWidget::is_hovered` stayed `false`, `widget_state()` reported
+    /// `Normal`, and a theme's `"<kind>:hover"` was unreachable for every native control.
+    /// Reporting the fact is what closes it, and the assertion is the state the theme keys on.
+    #[test]
+    fn a_reported_hover_reaches_widget_state() {
+        use crate::style::WidgetState;
+
+        let id = register(Box::new(crate::widget::Button::new(
+            "native".to_string(),
+            crate::core::Rect::new(0, 0, 80, 32),
+        )))
+        .expect("mount");
+        let _unmount = MountGuard(id);
+
+        assert_eq!(
+            with_widget(id, |w| w.widget_state()),
+            Some(WidgetState::Normal),
+            "a freshly mounted control is at rest"
+        );
+        assert!(report_state(id, StateFact::Hovered(true)), "the fact reaches a mounted control");
+        assert_eq!(
+            with_widget(id, |w| w.widget_state()),
+            Some(WidgetState::Hover),
+            "so `widget_state()` is now true for a control the library never saw input for"
+        );
+
+        // Same fact again: no change, so nothing is re-reported (the idempotence §6.3 asks of
+        // its own submit points, here for the native path).
+        assert!(report_state(id, StateFact::Hovered(true)), "a known id is still found");
+        assert_eq!(with_widget(id, |w| w.widget_state()), Some(WidgetState::Hover));
+
+        assert!(report_state(id, StateFact::Hovered(false)), "leaving is a fact too");
+        assert_eq!(with_widget(id, |w| w.widget_state()), Some(WidgetState::Normal));
+    }
+
+    /// A report about an id the library does not know is refused, not silently dropped.
+    #[test]
+    fn a_report_about_an_unknown_control_is_refused() {
+        assert!(!report_state(0xDEAD_BEEF, StateFact::Hovered(true)));
+        assert!(!report_state(0xDEAD_BEEF, StateFact::Pressed(true)));
+    }
+
+    /// BLUE24 §7 criterion 2: a native redraw is **counted** by the frame ledger.
+    #[test]
+    fn a_native_redraw_is_counted_by_the_frame() {
+        let id = register(Box::new(crate::widget::Label::new(
+            "n".to_string(),
+            crate::core::Rect::new(0, 0, 40, 16),
+        )))
+        .expect("mount");
+        let _unmount = MountGuard(id);
+
+        // Start from a clean frame accounting.
+        let _ = drive_frame(0);
+        notify_native_redraw(id, Some(crate::core::Rect::new(0, 0, 10, 10)));
+        let outcome = drive_frame(0);
+        assert_eq!(
+            outcome.repaints_submitted, 1,
+            "the platform's own redraw request is in the library's account"
+        );
+    }
+
+    // ── BLUE24 §8 -- the frame ledger ───────────────────────────────────────────
+
+    /// BLUE24 §8 criterion 1: sixty still frames tick nothing and coalesce nothing.
+    #[test]
+    fn sixty_still_frames_cost_nothing() {
+        let id = register(Box::new(crate::widget::Label::new(
+            "still".to_string(),
+            crate::core::Rect::new(0, 0, 40, 16),
+        )))
+        .expect("mount");
+        let _unmount = MountGuard(id);
+
+        for _ in 0..60 {
+            let outcome = drive_frame(16);
+            assert_eq!(outcome.controls_ticked, 0, "nothing is animating");
+            let stats = last_frame_stats().expect("a frame ran");
+            assert_eq!(stats.controls_ticked, 0);
+            assert_eq!(
+                stats.repaints_coalesced, 0,
+                "nothing was requested, so nothing could be merged"
+            );
+            assert!(stats.last_repaint_reason.is_empty(), "and no surface was repainted");
+        }
+    }
+
+    /// BLUE24 §8 criterion 3: five requests for one surface submit once and coalesce four.
+    #[test]
+    fn one_surface_is_submitted_once_and_the_rest_are_coalesced() {
+        let surface = register(Box::new(crate::widget::Label::new(
+            "s".to_string(),
+            crate::core::Rect::new(0, 0, 40, 16),
+        )))
+        .expect("mount");
+        let _unmount = MountGuard(surface);
+
+        // A clean frame boundary, so the five requests belong to one window.
+        let _ = drive_frame(0);
+        for _ in 0..5 {
+            notify_native_redraw(surface, None);
+        }
+        let outcome = drive_frame(0);
+        assert_eq!(outcome.repaints_submitted, 1, "one surface, one submission");
+        let stats = last_frame_stats().expect("a frame ran");
+        assert_eq!(stats.repaints_coalesced, 4, "and the other four were merged into it");
+    }
+
+    /// BLUE24 §8 criterion 4: every repainted surface has a cause in the ledger.
+    #[test]
+    fn every_repaint_names_a_reason() {
+        let id = register(Box::new(crate::widget::Button::new(
+            "why".to_string(),
+            crate::core::Rect::new(0, 0, 80, 32),
+        )))
+        .expect("mount");
+        let _unmount = MountGuard(id);
+        let _ = drive_frame(0);
+
+        notify_native_redraw(id, None);
+        let _ = drive_frame(0);
+
+        let stats = last_frame_stats().expect("a frame ran");
+        assert!(
+            !stats.last_repaint_reason.is_empty(),
+            "a frame that submitted a repaint must be able to say why"
+        );
+        assert_eq!(
+            stats.last_repaint_reason.iter().find(|(sid, _)| *sid == id).map(|(_, r)| *r),
+            Some(RepaintReason::Native),
+            "a platform redraw is attributed to the platform: {:?}",
+            stats.last_repaint_reason
+        );
+    }
+
+    /// The ledger attributes a repaint to the cause that **made the frame happen**.
+    ///
+    /// When two causes name one surface in one frame, the first wins: the later one is folded
+    /// into a submission that was already going out, so recording it would describe the last
+    /// caller rather than the cost. This is asserted through the state path, which is the one
+    /// whose submission goes through the library's own invalidation.
+    #[test]
+    fn two_causes_on_one_surface_record_the_first() {
+        use crate::platform::{with_recorded_invalidations, RecordingInvalidations};
+
+        // A recording backend makes `invalidate_surface` succeed, so the state path submits
+        // (and is therefore counted) exactly as it is on a real host.
+        let recorder: &'static RecordingInvalidations =
+            Box::leak(Box::new(RecordingInvalidations::default()));
+        with_recorded_invalidations(recorder, || {
+            let id = register(Box::new(crate::widget::Button::new(
+                "first".to_string(),
+                crate::core::Rect::new(0, 0, 80, 32),
+            )))
+            .expect("mount");
+            let _unmount = MountGuard(id);
+            let _ = drive_frame(0);
+
+            request_repaint_because(id, RepaintReason::Animation);
+            request_repaint_because(id, RepaintReason::State);
+            let outcome = drive_frame(0);
+
+            assert_eq!(outcome.repaints_submitted, 1, "one surface, one submission");
+            let stats = last_frame_stats().expect("a frame ran");
+            assert_eq!(stats.repaints_coalesced, 1, "and the second request was merged");
+            assert_eq!(
+                stats.last_repaint_reason.iter().find(|(sid, _)| *sid == id).map(|(_, r)| *r),
+                Some(RepaintReason::Animation),
+                "the cause that made the frame happen is the one recorded"
+            );
+        });
+    }
+
+    /// Only an animation keeps producing frames; the other causes describe a finished change.
+    #[test]
+    fn only_animation_keeps_asking_for_frames() {
+        assert!(RepaintReason::Animation.keeps_animating());
+        assert!(!RepaintReason::State.keeps_animating());
+        assert!(!RepaintReason::Overlay.keeps_animating());
+        assert!(!RepaintReason::Explicit.keeps_animating());
+        assert!(!RepaintReason::Native.keeps_animating());
     }
 }

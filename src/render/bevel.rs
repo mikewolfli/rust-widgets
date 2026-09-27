@@ -293,6 +293,7 @@ impl Bevel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::Vec;
     use crate::core::Size;
     use crate::render::{PaintBackend, SoftwarePaintBackend};
 

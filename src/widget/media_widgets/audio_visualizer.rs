@@ -50,7 +50,22 @@ pub struct AudioVisualizer {
     peak_hold_duration: u64,
     /// Current peak hold values for each bar.
     peak_values: Vec<f32>,
+    /// Milliseconds each bar's peak has been held, indexed like `peak_values`.
+    ///
+    /// Per bar rather than one clock for the whole control: a peak is raised by *its own* bar, so
+    /// one bar falling silent must not release the peak the bar next to it has just set. A single
+    /// shared timer would do exactly that, and the symptom is every marker sliding down together as
+    /// soon as the loudest band stopped.
+    peak_ages: Vec<u64>,
 }
+
+/// The fall rate of a released peak, in units of full height per second.
+///
+/// A held peak does not *vanish* when its duration expires -- that reads as a flicker rather than
+/// as a marker falling back. It descends at a constant speed, one full bar height per second, which
+/// is slow enough to follow at 60 fps and fast enough that a stale marker is gone by the time the
+/// next beat arrives.
+const PEAK_FALL_PER_SECOND: f32 = 1.0;
 
 impl AudioVisualizer {
     /// Creates a new AudioVisualizer widget with the given geometry.
@@ -67,6 +82,7 @@ impl AudioVisualizer {
             peak_hold: false,
             peak_hold_duration: 500,
             peak_values: vec![0.0; bar_count],
+            peak_ages: vec![0; bar_count],
         }
     }
 
@@ -96,7 +112,11 @@ impl AudioVisualizer {
     /// Sets the number of vertical bars to display.
     pub fn set_bar_count(&mut self, n: usize) {
         self.bar_count = n.max(1);
+        // Both per-bar vectors resize together. They are indexed alike, so resizing one alone left
+        // the other short -- and the marker walk, which indexes both, would have panicked on the
+        // next tick after any widening.
         self.peak_values.resize(self.bar_count, 0.0);
+        self.peak_ages.resize(self.bar_count, 0);
         self.base.request_redraw();
     }
 
@@ -178,13 +198,109 @@ impl AudioVisualizer {
     }
 
     /// Sets the peak hold duration in milliseconds.
+    ///
+    /// The field is read by [`AudioVisualizer::advance_peak_hold`], which the animation bus drives:
+    /// a peak is held for this long after the bar leaves it, then falls. Before that method existed
+    /// the field was stored, published and read by nothing, and a marker sat at its highest ever
+    /// value for the lifetime of the widget -- which is not "hold for 500 ms", it is "hold forever".
     pub fn set_peak_hold_duration(&mut self, ms: u64) {
         self.peak_hold_duration = ms;
+        self.base.request_redraw();
     }
 
     /// Returns the peak hold duration in milliseconds.
     pub fn peak_hold_duration(&self) -> u64 {
         self.peak_hold_duration
+    }
+
+    /// Advances the peak-hold markers by `delta_ms`, and reports whether anything moved.
+    ///
+    /// # The two jobs, and why they are one method
+    ///
+    /// A marker is raised to its bar's current level and then held for [`Self::peak_hold_duration`]
+    /// before falling. Raising is a *state* and falling is a *clock*, and they share the per-bar
+    /// vectors: a caller that ran one without the other would get a marker that rises and never falls
+    /// (the defect this replaces) or one whose age is reset by the bar it belongs to. Both are here
+    /// so neither can be called alone.
+    ///
+    /// # Why the animation bus rather than `draw`
+    ///
+    /// A duration is only observable if time passes for the widget. `draw` runs when something asks
+    /// for a repaint, which for a paused stream is never, so a marker's age must not be computed
+    /// there. [`Widget::tick`] is the bus's clock, so the duration reaches it here and the control
+    /// asks for the repaint its falling marker needs.
+    ///
+    /// Returns `true` when a marker moved, which is what tells the bus to keep ticking.
+    fn advance_peak_hold(&mut self, delta_ms: u64) -> bool {
+        if !self.peak_hold || delta_ms == 0 {
+            return false;
+        }
+        let fall = PEAK_FALL_PER_SECOND * (delta_ms as f32 / 1000.0);
+        let mut moved = false;
+        for index in 0..self.peak_values.len() {
+            let value = self.bar_value(index);
+            if value >= self.peak_values[index] {
+                // The bar has reached or passed its marker, so the marker is re-set and its clock
+                // restarts. `>=` rather than `>` so a steady tone keeps its marker pinned instead of
+                // letting it drift down a step at a time.
+                moved |= self.peak_values[index] != value;
+                self.peak_values[index] = value;
+                self.peak_ages[index] = 0;
+                continue;
+            }
+            self.peak_ages[index] = self.peak_ages[index].saturating_add(delta_ms);
+            if self.peak_ages[index] <= self.peak_hold_duration {
+                continue;
+            }
+            let next = (self.peak_values[index] - fall).max(self.peak_values[index].min(value));
+            // A marker that has fallen to (or below) its bar has done its job and is released here
+            // rather than being left a hair above it, which would paint a fraction of a pixel of
+            // highlight on every quiet bar for the widget's whole life.
+            if next <= 0.0 || next <= value {
+                self.peak_values[index] = value;
+                self.peak_ages[index] = 0;
+            } else {
+                self.peak_values[index] = next;
+            }
+            moved = true;
+        }
+        moved
+    }
+
+    /// The normalized level of bar `index`, or a synthetic level when no samples were supplied.
+    ///
+    /// # Why the paint and the marker share this
+    ///
+    /// The paint used to derive its own `bars` vector inline, and a peak-hold marker that measured
+    /// the same bar *differently* would sit above or below the bar it belongs to. So the derivation
+    /// is one function: index in, level out, and "no samples" is the same synthetic sweep the paint
+    /// has always drawn.
+    ///
+    /// # Mean magnitude, not peak
+    ///
+    /// The level is the mean of the window's absolute samples, which is what this control's bars
+    /// have always meant -- a *loudness* per band rather than a sample peak. A marker derived from a
+    /// maximum would ride above the bar it marks on any non-constant window, which is the one thing
+    /// a peak-hold marker must not do.
+    fn bar_value(&self, index: usize) -> f32 {
+        if self.bar_count == 0 || index >= self.bar_count {
+            return 0.0;
+        }
+        if self.samples.is_empty() {
+            // The paint's synthetic sweep, so a control with no data still has bars for its markers
+            // to belong to rather than a row of markers over an empty panel.
+            let t = index as f32 / self.bar_count as f32;
+            return ((t * std::f32::consts::PI * 4.0).sin().abs() * 0.6 + 0.1).min(1.0);
+        }
+        let step = (self.samples.len() as f32 / self.bar_count as f32).max(1.0);
+        let start = (index as f32 * step) as usize;
+        let end = (((index as f32 + 1.0) * step) as usize).min(self.samples.len());
+        if start >= end {
+            return 0.0;
+        }
+        let chunk = &self.samples[start..end];
+        let sum: f32 = chunk.iter().map(|sample| sample.abs()).sum();
+        (sum / chunk.len() as f32).min(1.0)
     }
 }
 
@@ -197,7 +313,25 @@ impl Widget for AudioVisualizer {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(200, 60)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::AUDIO_VISUALIZER_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::AUDIO_VISUALIZER_DEFAULT_HEIGHT,
+        )
+    }
+
+    /// Drives the peak-hold markers' clock.
+    ///
+    /// The trait's `tick` is the animation bus's entry point, which is the only place a *duration*
+    /// can be observed: `draw` runs when something asks for a repaint, and a paused stream asks for
+    /// none. Returning `advance_peak_hold`'s answer keeps the bus ticking while markers fall and lets
+    /// it stop once they have settled, rather than asking a still visualizer to run at frame rate
+    /// forever.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        let moved = self.advance_peak_hold(delta_ms as u64);
+        if moved {
+            self.base.request_redraw();
+        }
+        moved
     }
 
     /// Reports this widget as the object that paints it.
@@ -257,32 +391,10 @@ impl Draw for AudioVisualizer {
         let center_y = rect.y as f32 + h / 2.0;
         let half_height = h / 2.0 - 2.0;
 
-        // Prepare sample data: downsample to bar_count
-        let bars: Vec<f32> = if self.samples.is_empty() {
-            // Generate some test data when no samples are provided
-            (0..self.bar_count)
-                .map(|i| {
-                    let t = i as f32 / self.bar_count as f32;
-                    (t * std::f32::consts::PI * 4.0).sin().abs() * 0.6 + 0.1
-                })
-                .collect()
-        } else {
-            let step = (self.samples.len() as f32 / self.bar_count as f32).max(1.0);
-            (0..self.bar_count)
-                .map(|i| {
-                    let start = (i as f32 * step) as usize;
-                    let end = ((i as f32 + 1.0) * step) as usize;
-                    let end = end.min(self.samples.len());
-                    if start < end {
-                        let chunk = &self.samples[start..end];
-                        let sum: f32 = chunk.iter().map(|v| v.abs()).sum();
-                        (sum / chunk.len() as f32).min(1.0)
-                    } else {
-                        0.0
-                    }
-                })
-                .collect()
-        };
+        // Prepare sample data: one shared derivation, so the marker and its bar cannot measure
+        // different samples. Empty samples yield the synthetic sweep, which is what makes a
+        // data-less control still a usable preview.
+        let bars: Vec<f32> = (0..self.bar_count).map(|i| self.bar_value(i)).collect();
 
         for (i, &value) in bars.iter().enumerate() {
             let value = value.min(1.0);
@@ -321,14 +433,14 @@ impl Draw for AudioVisualizer {
                 context.fill_rect(bar_rect, bar_color);
             }
 
-            // Peak hold indicator
+            // Peak hold indicator. The marker's own value is raised by `advance_peak_hold` on the
+            // animation bus, not here: a duration is only observable if time passes for the widget,
+            // and `draw` runs only when something asks for a repaint. This arm reads the value and
+            // paints it, so the two callers cannot disagree about what the marker is.
             if self.peak_hold {
                 let peak_value = self.peak_values[i];
-                if value > peak_value {
-                    self.peak_values[i] = value;
-                }
-                if self.peak_values[i] > 0.0 {
-                    let peak_y = center_y - self.peak_values[i] * half_height;
+                if peak_value > 0.0 {
+                    let peak_y = center_y - peak_value * half_height;
                     let peak_rect = Rect::new(
                         x as i32,
                         peak_y as i32,
@@ -369,6 +481,7 @@ impl EventHandler for AudioVisualizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::svg::render_to_svg;
 
     #[test]
     fn audio_visualizer_default_state() {
@@ -461,5 +574,114 @@ mod tests {
         let chosen = Color::rgb(1, 2, 3);
         av.set_background_color(chosen);
         assert_eq!(av.background_color(), chosen, "a caller's colour must survive the theme");
+    }
+
+    // ── `peak_hold_duration` drives the markers' clock ──
+
+    /// A marker is held for `peak_hold_duration` and then falls; the duration is what decides when.
+    ///
+    /// # What was dead, and what proves it is alive now
+    ///
+    /// `peak_hold_duration` was stored, published (getter, setter, schema row, round-trip test) and
+    /// read by nothing. Worse, the peak values themselves were raised in `draw` and **never fell**,
+    /// so a marker sat at its highest ever value for the widget's whole life. "Hold for 500 ms" was
+    /// implemented as "hold forever", and no duration could change that because no clock existed.
+    #[test]
+    fn peak_hold_holds_for_its_duration_then_falls() {
+        let mut av = AudioVisualizer::new(Rect::new(0, 0, 300, 150));
+        av.set_bar_count(1);
+        av.set_peak_hold(true);
+        av.set_peak_hold_duration(500);
+        // A loud moment, then silence: the marker is raised by the loud one and has to fall on its
+        // own once the bar left it.
+        av.set_samples(vec![1.0]);
+        assert!(av.advance_peak_hold(16), "the marker rises to meet the bar");
+        assert!((av.peak_values[0] - 1.0).abs() < 0.001, "it rose to the bar's level");
+
+        av.set_samples(vec![0.0]);
+        // Well inside the hold window: the marker does not move at all, which is the "hold" half.
+        assert!(!av.advance_peak_hold(400), "a held marker owes no frame");
+        assert!((av.peak_values[0] - 1.0).abs() < 0.001, "still at its peak, not falling yet");
+
+        // Past the window: now it descends rather than vanishing.
+        assert!(av.advance_peak_hold(200), "past the hold, the marker moves");
+        let falling = av.peak_values[0];
+        assert!(
+            falling < 1.0 && falling > 0.0,
+            "a released marker descends instead of jumping to zero: {falling}"
+        );
+
+        // The duration is the knob: a longer hold keeps it up for longer from the same moment.
+        let mut patient = AudioVisualizer::new(Rect::new(0, 0, 300, 150));
+        patient.set_bar_count(1);
+        patient.set_peak_hold(true);
+        patient.set_peak_hold_duration(5_000);
+        patient.set_samples(vec![1.0]);
+        patient.advance_peak_hold(16);
+        patient.set_samples(vec![0.0]);
+        assert!(!patient.advance_peak_hold(200), "a 5 s hold is still holding at 200 ms");
+        assert!((patient.peak_values[0] - 1.0).abs() < 0.001);
+
+        // Once it has fallen back to the bar it marks, it is released and stops owing frames.
+        for _ in 0..40 {
+            av.advance_peak_hold(100);
+        }
+        assert!(
+            (av.peak_values[0] - 0.0).abs() < 0.001,
+            "a fully released marker sits on its bar: {}",
+            av.peak_values[0]
+        );
+        assert!(!av.advance_peak_hold(100), "a settled marker owes no frame");
+    }
+
+    /// The duration is genuinely *observable*: two controls differing only in it render differently
+    /// at the same instant.
+    ///
+    /// The state assertions above say when a marker moves; this says the marker is painted where the
+    /// state says it is -- a `peak_values` nothing drew would satisfy every number above.
+    #[test]
+    fn the_hold_duration_reaches_the_pixels() {
+        let build = |duration| -> String {
+            let mut av = AudioVisualizer::new(Rect::new(0, 0, 200, 60));
+            av.set_bar_count(1);
+            av.set_peak_hold(true);
+            av.set_peak_hold_duration(duration);
+            av.set_samples(vec![1.0]);
+            av.advance_peak_hold(16);
+            av.set_samples(vec![0.0]);
+            // One step past the shorter window and inside the longer one.
+            av.advance_peak_hold(600);
+            render_to_svg(&mut av)
+        };
+        assert_ne!(
+            build(500),
+            build(5_000),
+            "the same instant must look different under two hold durations"
+        );
+    }
+
+    /// Every bar carries its own clock, so one bar going quiet does not release its neighbour's peak.
+    #[test]
+    fn each_bar_holds_its_own_peak() {
+        let mut av = AudioVisualizer::new(Rect::new(0, 0, 300, 150));
+        av.set_bar_count(2);
+        av.set_peak_hold(true);
+        av.set_peak_hold_duration(0);
+        // The first bar is loud, the second silent: both markers are raised where they stand.
+        av.set_samples(vec![1.0, 0.0]);
+        av.advance_peak_hold(16);
+        assert!((av.peak_values[0] - 1.0).abs() < 0.001);
+        assert!(av.peak_values[1].abs() < 0.001);
+
+        // Bar 0 goes quiet while bar 1 becomes loud. Bar 1's marker must rise, and bar 0's must fall
+        // without taking bar 1's with it.
+        av.set_samples(vec![0.0, 1.0]);
+        av.advance_peak_hold(1_000);
+        assert!((av.peak_values[1] - 1.0).abs() < 0.001, "bar 1's marker rose");
+        assert!(
+            av.peak_values[0] < 1.0,
+            "bar 0's marker fell on its own clock: {}",
+            av.peak_values[0]
+        );
     }
 }

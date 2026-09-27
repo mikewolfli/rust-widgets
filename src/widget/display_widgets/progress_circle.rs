@@ -237,7 +237,9 @@ impl Widget for ProgressCircle {
     }
 
     fn size_hint(&self) -> Size {
-        Size::new(self.diameter.max(60), self.diameter.max(60))
+        let diameter =
+            self.diameter.max(crate::widget::metrics::dimensions::PROGRESS_CIRCLE_DEFAULT_DIAMETER);
+        Size::new(diameter, diameter)
     }
 
     /// One frame of the indeterminate sweep. The frame bus calls this; nothing else does.

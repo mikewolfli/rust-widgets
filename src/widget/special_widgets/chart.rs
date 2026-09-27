@@ -367,7 +367,10 @@ impl Widget for ChartWidget {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(400, 300)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::CHART_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::CHART_DEFAULT_HEIGHT,
+        )
     }
 
     /// Advances the value reveal by `delta_ms`; `true` while the marks are still growing.

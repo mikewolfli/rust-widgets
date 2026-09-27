@@ -983,6 +983,11 @@ mod tests {
 
         #[derive(Clone, Copy, PartialEq, Eq, Hash)]
         #[cfg_attr(all(feature = "serde", widgets_unstripped), derive(Serialize, Deserialize))]
+        // This enum exists to *name* the backend's trigger kind for the generic instantiation
+        // below; the variant is never constructed because the test only ever uses the type. That is
+        // a marker type's whole purpose, so the dead-code lint is answered rather than the variant
+        // removed (removing it would empty the enum).
+        #[allow(dead_code)]
         enum TestKind {
             Widget,
         }

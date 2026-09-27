@@ -122,7 +122,8 @@ pub use manager::{
 };
 pub use preset_states::preset_state_key_count;
 pub use types::{
-    AppearanceMode, Borders, Colors, Fonts, Motion, ShadowOverride, ShadowToken, Spacing, Theme,
+    AppearanceMode, BevelOverride, Borders, Colors, Fonts, Motion, ShadowOverride, ShadowToken,
+    Spacing, SurfaceElevationToken, SurfaceHairlineToken, SurfaceMaterialToken, Theme,
     ThemeOverrides, ThemeStyleToken, WidgetRole,
 };
 
@@ -770,6 +771,194 @@ mod tests {
             "these colour roles are declared and documented but read by nothing, so a theme author \
              can set them and see no effect: {unconsumed:?}. Either give each one its consumer or \
              remove the role (principle #4)."
+        );
+    }
+
+    // ── BLUE24 §10A -- the surface declaration channel ──────────────────────────
+
+    /// §10A.6 criterion 1: the identity surface is what a control gets by default, so wiring
+    /// the channel in changes nothing until a theme asks.
+    ///
+    /// Asserted through `resolve_style_for_state`, which is the **production** path
+    /// (`apply_active_theme` → this → `resolve_base_style`): the class/role override layers live
+    /// on that path, so asserting on `resolve_style_for(.., None, ..)` would measure a different
+    /// function and miss the preset override entirely.
+    ///
+    /// `button` is the interesting case because the role table gives it a bevel — so this also
+    /// proves the flat preset's override is what removes it.
+    #[test]
+    fn the_default_preset_resolves_a_flat_button() {
+        use crate::render::{Elevation, Hairline, Material};
+
+        let mut manager = ThemeManager::new();
+        manager.register_theme(Theme::default());
+        assert!(manager.set_theme("default"));
+
+        let style = manager.resolve_style_for_state("button", Some(WidgetState::Normal));
+        let surface = style.surface.expect("a resolved theme style carries a surface");
+        assert_eq!(surface.elevation, Elevation::Flat, "a button is flush with the page");
+        assert!(
+            surface.bevel.is_none(),
+            "and flat: the role table's raised bevel is what the flat preset removes"
+        );
+        assert_eq!(surface.material, Material::Solid);
+        assert_eq!(surface.hairline, Hairline::Outline);
+    }
+
+    /// §10A.6 criterion 5: a **kind/role** override reaches a control through the class layer.
+    #[test]
+    fn a_class_level_elevation_override_reaches_a_control() {
+        use crate::render::Elevation;
+
+        let theme = theme_with_overrides(&[(
+            "button",
+            ThemeStyleToken {
+                elevation: Some(SurfaceElevationToken(Elevation::Level4)),
+                ..ThemeStyleToken::default()
+            },
+        )]);
+        let mut manager = ThemeManager::new();
+        manager.register_theme(theme);
+        assert!(manager.set_theme("default"));
+
+        let style = manager.resolve_style_for_state("button", Some(WidgetState::Normal));
+        assert_eq!(
+            style.surface.expect("a surface").elevation,
+            Elevation::Level4,
+            "the kind-layer token must reach the resolved surface"
+        );
+        // And the shadow follows the level: raising a face must cast the shadow that level
+        // implies, or the two spellings of "how high is this?" would disagree.
+        assert!(
+            style.shadow.is_some(),
+            "raising a face must also give it the shadow that level casts"
+        );
+    }
+
+    /// §10A.6 criterion 6: a **state** override reaches a pressed button.
+    ///
+    /// This is the end-to-end judgement of the most valuable layer in the design: BLUE23 §2.4's
+    /// `"<kind>:<state>"` channel already exists, so "a 3D button presses inward" is one table
+    /// entry and no control code.
+    ///
+    /// # Why the resting face here is the *role table's* raised bevel
+    ///
+    /// `theme_with_overrides` builds a theme whose style table holds **exactly** the entries the
+    /// test names, so the flat preset's flattening keys are absent and the role table's own
+    /// character shows — which is the correct default for a theme that states nothing about a
+    /// resting button. The assertion is therefore the pair: the role's `Raised` at rest, the
+    /// token's `Inset` when pressed.
+    #[test]
+    fn a_state_level_bevel_override_reaches_a_pressed_button() {
+        use crate::render::BevelDirection;
+
+        let theme = theme_with_overrides(&[(
+            "button:pressed",
+            ThemeStyleToken {
+                bevel: BevelOverride::Set(BevelDirection::Inset),
+                ..ThemeStyleToken::default()
+            },
+        )]);
+        let mut manager = ThemeManager::new();
+        manager.register_theme(theme);
+        assert!(manager.set_theme("default"));
+
+        let resting = manager.resolve_style_for_state("button", Some(WidgetState::Normal));
+        let pressed = manager.resolve_style_for_state("button", Some(WidgetState::Pressed));
+        assert_eq!(
+            resting.surface.expect("a surface").bevel.map(|b| b.direction),
+            Some(BevelDirection::Raised),
+            "a theme that says nothing about the resting button gets the role's raised key"
+        );
+        assert_eq!(
+            pressed.surface.expect("a surface").bevel.map(|b| b.direction),
+            Some(BevelDirection::Inset),
+            "and the `button:pressed` token cuts it in, through the existing state channel"
+        );
+    }
+
+    /// §10A.6 criterion 7: an unknown surface token is **rejected**, not silently degraded.
+    ///
+    /// Each of the four dimensions is checked, because each has its own parser and a silent
+    /// fallback in any one of them would make a theme author's typo invisible.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn an_unknown_surface_token_is_rejected() {
+        // The message names the key and the accepted words, so a reader can fix the file.
+        let base = serde_json::json!({
+            "name": "bad",
+            "appearance": "Light",
+            "colors": {
+                "background": [255, 255, 255, 255],
+                "foreground": [0, 0, 0, 255],
+                "primary": [0, 0, 0, 255],
+                "secondary": [0, 0, 0, 255],
+                "accent": [0, 0, 0, 255],
+                "error": [0, 0, 0, 255],
+                "warning": [0, 0, 0, 255],
+                "success": [0, 0, 0, 255],
+                "disabled": [0, 0, 0, 255]
+            }
+        });
+
+        for (key, bad) in [
+            ("bevel", "sunken"),
+            ("elevation", "high"),
+            ("material", "glass"),
+            ("hairline", "dotted"),
+        ] {
+            let mut doc = base.clone();
+            doc["overrides"] = serde_json::json!({
+                "styles": { "button": { key: bad } }
+            });
+            let parsed = serde_json::from_value::<Theme>(doc);
+            assert!(
+                parsed.is_err(),
+                "`{key}: {bad:?}` must be rejected rather than silently ignored, or the theme \
+                 author's typo is invisible"
+            );
+            let message = parsed.expect_err("an error").to_string();
+            assert!(
+                message.contains(bad),
+                "the error must name the offending word, got: {message}"
+            );
+        }
+    }
+
+    /// The dimensional preset **is** dimensional: the same control resolves to a raised, beveled
+    /// key there and a flat one under the default.
+    ///
+    /// §10A's headline claim — "one control, two styles, no control code" — asserted as the two
+    /// resolved surfaces differing in the dimensions that make the styles what they are.
+    #[test]
+    fn the_dimensional_preset_bevels_what_the_flat_one_flattens() {
+        use crate::render::BevelDirection;
+
+        let mut manager = ThemeManager::new();
+        manager.register_theme(Theme::default());
+        manager.register_theme(Theme::dimensional());
+
+        assert!(manager.set_theme("default"));
+        let flat = manager
+            .resolve_style_for_state("button", Some(WidgetState::Normal))
+            .surface
+            .expect("a surface");
+
+        assert!(manager.set_theme("dimensional"));
+        let dimensional = manager
+            .resolve_style_for_state("button", Some(WidgetState::Normal))
+            .surface
+            .expect("a surface");
+
+        assert!(flat.bevel.is_none(), "the flat preset leaves a button flat");
+        assert_eq!(
+            dimensional.bevel.map(|b| b.direction),
+            Some(BevelDirection::Raised),
+            "and the dimensional one raises it, from the role table alone"
+        );
+        assert_eq!(
+            dimensional.elevation, flat.elevation,
+            "elevation is not what these presets disagree about"
         );
     }
 }

@@ -159,6 +159,23 @@ extern "C" fn accepts_first_responder(_this: &Object, _cmd: Sel) -> cocoa::base:
     YES
 }
 
+/// Tells the library that AppKit is about to redraw one of its own views for `id`.
+///
+/// # Why the platform's own repaint is announced
+///
+/// A canvas view owns its pixels, so asking AppKit (`setNeedsDisplay:`) is the platform's
+/// job and not something to route back through the library (BLUE24 §7.1). But the library
+/// still has to **know**, or three things stop being true at once: the frame's damage account
+/// would describe repaints the platform made without it, the still-frame guarantee would be
+/// unprovable, and a mixed window would submit one interaction twice (BLUE24 §7.2).
+///
+/// This is the macOS spelling of the same announcement `platform::linux::canvas`
+/// makes; both reach the one ledger, so a frame's account is the same whichever backend
+/// produced it.
+fn note_native_redraw(id: ObjectId) {
+    crate::notify_native_redraw(id, None);
+}
+
 /// `-mouseExited:` clears the hover target.
 ///
 /// AppKit delivers this through a tracking area (installed in `updateTrackingAreas`),
@@ -172,6 +189,11 @@ extern "C" fn mouse_exited(this: &Object, _cmd: Sel, _event: id) {
             let view = this as *const Object as id;
             crate::widget::runtime::clear_hover(Point::new(0, 0));
             let _: () = msg_send![view, setNeedsDisplay: YES];
+            // The hover that just cleared belonged to this view's widget, so the redraw is
+            // this surface's; announcing it keeps the frame's account complete (§7.2).
+            if let Some(widget_id) = widget_id_of(view) {
+                note_native_redraw(widget_id);
+            }
         }
     });
     if outcome.is_err() {
@@ -384,6 +406,7 @@ fn forward_touches(this: &Object, event: id, phase: TouchPhase) {
             }
             if delivered {
                 let _: () = msg_send![view, setNeedsDisplay: YES];
+                note_native_redraw(widget_id);
             }
         }
     });
@@ -427,8 +450,11 @@ fn forward_mouse(this: &Object, event: id, phase: MousePhase) {
                     let _: () = msg_send![window, makeFirstResponder: view];
                 }
             }
-            // The widget's state changed, so ask AppKit to repaint it.
+            // The widget's state changed, so ask AppKit to repaint it. Telling the library
+            // too is what keeps a frame's account complete and stops the native and
+            // self-painted worlds from counting one interaction twice (BLUE24 §7.2).
             let _: () = msg_send![view, setNeedsDisplay: YES];
+            note_native_redraw(widget_id);
         }
     });
     if outcome.is_err() {
@@ -458,6 +484,7 @@ extern "C" fn key_down(this: &Object, _cmd: Sel, event: id) {
             if key == KEY_TAB {
                 crate::widget::runtime::focus_next(modifiers & WIDGET_SHIFT == 0);
                 let _: () = msg_send![view, setNeedsDisplay: YES];
+                note_native_redraw(widget_id);
                 return;
             }
             let translated = if let Some(text) = printable_characters(event) {
@@ -472,6 +499,7 @@ extern "C" fn key_down(this: &Object, _cmd: Sel, event: id) {
                 return;
             }
             let _: () = msg_send![view, setNeedsDisplay: YES];
+            note_native_redraw(target);
         }
     });
     if outcome.is_err() {
@@ -673,6 +701,10 @@ impl MacOSPlatform {
             }
             let _: () = msg_send![content_view, addSubview: view];
             let _: () = msg_send![view, setNeedsDisplay: YES];
+            // The view is being revealed, which is the platform repainting a surface the
+            // library just mounted. Announcing it keeps the frame that reveals it accounted
+            // for like every other platform redraw (§7.2).
+            note_native_redraw(id);
             pool.drain();
 
             crate::compat::lock(mounted_views()).insert(id, view as usize);

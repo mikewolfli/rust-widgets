@@ -131,6 +131,7 @@ pub(crate) fn mount_canvas(
             // area only receives key events while GTK considers it focused.
             focus_area_if_enabled(area);
             press_area.queue_draw();
+            note_canvas_redraw(id);
         }
         glib::Propagation::Proceed
     });
@@ -144,6 +145,7 @@ pub(crate) fn mount_canvas(
             absolute,
         ) {
             widget.queue_draw();
+            note_canvas_redraw(id);
         }
         glib::Propagation::Proceed
     });
@@ -153,6 +155,7 @@ pub(crate) fn mount_canvas(
         let absolute = Point::new(origin.x + position.x, origin.y + position.y);
         if forward_pointer_to_platform(id, &Event::MouseMove { pos: absolute }, absolute) {
             widget.queue_draw();
+            note_canvas_redraw(id);
         }
         glib::Propagation::Proceed
     });
@@ -163,6 +166,7 @@ pub(crate) fn mount_canvas(
     area.connect_leave_notify_event(move |widget, _| {
         crate::widget::runtime::clear_hover(Point::new(0, 0));
         widget.queue_draw();
+        note_canvas_redraw(id);
         glib::Propagation::Proceed
     });
 
@@ -205,6 +209,7 @@ pub(crate) fn mount_canvas(
         };
         if forward_pointer_to_platform(id, &widget_event, absolute) {
             widget.queue_draw();
+            note_canvas_redraw(id);
         }
         glib::Propagation::Proceed
     });
@@ -221,6 +226,7 @@ pub(crate) fn mount_canvas(
             let forward = modifier_bits(event) & WIDGET_SHIFT == 0;
             crate::widget::runtime::focus_next(forward);
             widget.queue_draw();
+            note_canvas_redraw(id);
             return glib::Propagation::Stop;
         }
         let translated = if let Some(text) = printable_text(event) {
@@ -233,6 +239,7 @@ pub(crate) fn mount_canvas(
         };
         if forward_key_to_platform(id, &translated) {
             widget.queue_draw();
+            note_canvas_redraw(id);
         }
         glib::Propagation::Proceed
     });
@@ -251,6 +258,7 @@ pub(crate) fn mount_canvas(
             &Event::Wheel { delta: Point::new(0, dy.round() as i32), modifiers: 0 },
         ) {
             widget.queue_draw();
+            note_canvas_redraw(id);
         }
         glib::Propagation::Proceed
     });
@@ -281,11 +289,19 @@ pub(crate) fn mount_canvas(
     if placed {
         crate::widget::runtime::set_geometry(id, rect);
         area.queue_draw();
+        note_canvas_redraw(id);
     }
     placed
 }
 
-/// Queues a redraw on a mounted canvas.
+/// Queues a redraw on a mounted canvas, for the **library's** invalidation path.
+///
+/// # Why this does not tell the library
+///
+/// Because the library is the caller. `crate::invalidate_surface` reached here through
+/// `request_repaint`, which already recorded the submission against the frame; announcing it
+/// again would count one submission twice. The *platform-initiated* redraws -- the ones an
+/// event handler asks for -- go through [`note_canvas_redraw`], which does tell the library.
 pub(crate) fn repaint_canvas(platform: &LinuxPlatform, id: ObjectId) -> bool {
     let native = platform.native.lock_guard();
     let Some(area) = native.canvases.get(&id) else {
@@ -293,6 +309,27 @@ pub(crate) fn repaint_canvas(platform: &LinuxPlatform, id: ObjectId) -> bool {
     };
     area.queue_draw();
     true
+}
+
+/// Queues a redraw of a mounted canvas that the **platform** decided to make, and tells the
+/// library about it.
+///
+/// # Why the platform still queues its own draw
+///
+/// The control is native (or mounted on a platform surface), so the pixels are the platform's
+/// (BLUE24 §7.1). Asking GTK is the only way they change; routing this through
+/// `request_repaint` would ask the library to invalidate a surface on its own behalf in the
+/// middle of handling an event the library just received.
+///
+/// # Why the library is told anyway
+///
+/// Because otherwise the frame's account is incomplete: `render_dirty_regions` would compute
+/// damage the frame never submitted, the still-frame guarantee would be unprovable, and a
+/// mixed window would submit one interaction twice (BLUE24 §7.2). `notify_native_redraw` is
+/// that announcement, and it is unconditional -- unlike `request_repaint`, the platform has
+/// **already** queued the draw, so there is nothing to condition on.
+pub(crate) fn note_canvas_redraw(id: ObjectId) {
+    crate::notify_native_redraw(id, None);
 }
 
 /// Queues a redraw of one rectangle of a mounted canvas.

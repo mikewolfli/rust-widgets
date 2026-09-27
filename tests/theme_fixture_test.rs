@@ -132,8 +132,12 @@ mod tests {
     #[test]
     fn an_override_token_survives_the_round_trip() {
         use rust_widgets::core::Color;
+        use rust_widgets::render::{BevelDirection, Elevation, Hairline, Material};
         use rust_widgets::style::WidgetState;
-        use rust_widgets::theme::{ShadowOverride, ShadowToken, ThemeOverrides, ThemeStyleToken};
+        use rust_widgets::theme::{
+            BevelOverride, ShadowOverride, ShadowToken, SurfaceElevationToken,
+            SurfaceHairlineToken, SurfaceMaterialToken, ThemeOverrides, ThemeStyleToken,
+        };
 
         let theme = Theme {
             overrides: ThemeOverrides {
@@ -150,6 +154,12 @@ mod tests {
                             opacity: Some(0.5),
                             shadow: ShadowOverride::None,
                             touch_target: Some([44, 44]),
+                            // Every one of the four surface dimensions is stated, so the
+                            // round trip has something to lose in each of them.
+                            elevation: Some(SurfaceElevationToken(Elevation::Level3)),
+                            bevel: BevelOverride::Set(BevelDirection::Inset),
+                            material: Some(SurfaceMaterialToken(Material::Translucent)),
+                            hairline: Some(SurfaceHairlineToken(Hairline::Shadow)),
                         },
                     ),
                     (

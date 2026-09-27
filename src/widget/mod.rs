@@ -71,6 +71,14 @@ pub mod draw;
 pub mod draw_bridge;
 pub mod kind;
 
+/// The pump between deriving an accessible meaning and posting it to the platform bridge.
+///
+/// Both halves already existed in this crate — `A11yState::from_widget` derives the meaning and
+/// the three platform bridges post it to their OS — but no code connected them, so every bridge
+/// had zero production callers. This module is that connection. Gated on `not(alloc_frugal)` with
+/// `runtime`, because it reports on the mounted registry, which those profiles do not have.
+#[cfg(not(alloc_frugal))]
+pub mod a11y_submit;
 /// The five non-value strings a text entry shows, and the boxes they occupy.
 ///
 /// **Not** gated on `widgets_unstripped`: `line_edit` and `spin_box` are built in every profile,

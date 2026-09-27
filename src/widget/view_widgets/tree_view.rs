@@ -246,7 +246,10 @@ impl Widget for TreeView {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(200, 200)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::TREE_VIEW_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::TREE_VIEW_DEFAULT_HEIGHT,
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

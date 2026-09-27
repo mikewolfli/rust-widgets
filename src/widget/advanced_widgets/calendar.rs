@@ -13,6 +13,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::dimensions;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use chrono::Datelike;
@@ -392,7 +393,10 @@ impl Widget for Calendar {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(260, 240)
+        crate::core::Size::new(
+            dimensions::CALENDAR_DEFAULT_WIDTH,
+            dimensions::CALENDAR_DEFAULT_HEIGHT,
+        )
     }
 
     /// Announces the selected date, because that is the calendar's value.

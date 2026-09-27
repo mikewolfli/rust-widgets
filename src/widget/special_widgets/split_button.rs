@@ -420,7 +420,10 @@ impl Widget for SplitButton {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(100, 28)
+        crate::core::Size::new(
+            dimensions::SPLIT_BUTTON_DEFAULT_WIDTH,
+            dimensions::SPLIT_BUTTON_HEIGHT,
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

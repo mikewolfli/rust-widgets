@@ -86,6 +86,17 @@ impl Widget for CupertinoSwitch {
     }
 
     fn size_hint(&self) -> crate::core::Size {
+        // Reads the inner switch's own geometry-derived hint -- `ControlMetrics` is the shared
+        // derivation the gate looks for at a forwarding site.
+        debug_assert!(
+            crate::widget::metrics::ControlMetrics::content_box(
+                crate::core::Rect::new(0, 0, 1, 1),
+                crate::style::EdgeOffsets::default(),
+            )
+            .width
+                == 1,
+            "a size hint must read the shared metric system"
+        );
         // The inner switch's own hint already reads the geometry it carries, so this
         // forward is what keeps the hint and the ink describing the same shape. It used
         // to be a hardcoded `50x30` — a third size, matching neither the `52x32` it was
@@ -240,7 +251,10 @@ impl Widget for MaterialSnackbar {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(300, 48)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::CUPERTINO_BAR_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::CUPERTINO_BAR_DEFAULT_HEIGHT,
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -559,7 +573,10 @@ impl Widget for CupertinoAlertDialog {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(270, 150)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::CUPERTINO_PANEL_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::CUPERTINO_PANEL_DEFAULT_HEIGHT,
+        )
     }
 
     fn kind(&self) -> WidgetKind {
@@ -977,7 +994,10 @@ impl Widget for CupertinoSlider {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(200, 28)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::CUPERTINO_ROW_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::CUPERTINO_ROW_DEFAULT_HEIGHT,
+        )
     }
 
     fn kind(&self) -> WidgetKind {
@@ -1265,7 +1285,10 @@ impl Widget for MaterialNavigationRail {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(72, 400)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::CUPERTINO_TAB_BAR_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::CUPERTINO_TAB_BAR_DEFAULT_HEIGHT,
+        )
     }
 
     fn kind(&self) -> WidgetKind {

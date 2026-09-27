@@ -391,6 +391,26 @@ pub struct WidgetStyle {
     pub spacing: Option<u32>,
     /// Optional drop shadow.
     pub shadow: Option<Shadow>,
+    /// The **surface** this control's face is drawn as: its elevation, bevel, material and
+    /// edge.
+    ///
+    /// # Why this is one field rather than four
+    ///
+    /// The four dimensions are orthogonal (see [`crate::render::SurfaceStyle`]) but they are
+    /// always resolved **together**, from one role table entry plus any token override. Four
+    /// separate `Option` fields on this struct would be four chances for a caller to set one and
+    /// forget the other three, leaving a face whose bevel and elevation disagree. One value that
+    /// is always complete is what makes "the surface" a fact this style carries rather than a
+    /// fact each draw re-derives.
+    ///
+    /// `None` means "this style says nothing about the surface", which is the honest answer for
+    /// a style that was never resolved through a theme — a control then uses the layer's own
+    /// default rather than a value nobody chose.
+    ///
+    /// [`crate::render::SurfaceStyle`] compiles in **every** profile (it depends only on `core`
+    /// and `render::bevel`), so this field does not need a gate and a `mini` build carries it
+    /// like any other.
+    pub surface: Option<crate::render::SurfaceStyle>,
     /// Optional minimum touch-target size override (BLUE8 P4-4).
     /// When set, hit testing expands the effective area to this size.
     pub touch_target: Option<Size>,
@@ -443,6 +463,7 @@ impl WidgetStyle {
             self.border_width = other.border_width;
             self.border_radius = other.border_radius;
             self.shadow = other.shadow.clone();
+            self.surface = other.surface;
             self.touch_target = other.touch_target;
             self.opacity = other.opacity;
             self.theme_derived = true;
@@ -554,6 +575,10 @@ impl WidgetStyle {
             // parent's value.
             spacing: self.spacing,
             shadow: self.shadow.clone().or(parent.shadow.clone()),
+            // A surface is geometry-adjacent like `padding`: a child that declares one keeps
+            // it, and one that does not takes the parent's rather than re-deriving it — so a
+            // control placed under a raised panel stays visually on that panel.
+            surface: self.surface.or(parent.surface),
             touch_target: self.touch_target.or(parent.touch_target),
             opacity: self.opacity.or(parent.opacity),
             // Inheriting from a parent does not make a style the theme's: the child's
@@ -587,6 +612,9 @@ impl WidgetStyle {
         }
         if self.shadow.is_none() {
             self.shadow = other.shadow.clone();
+        }
+        if self.surface.is_none() {
+            self.surface = other.surface;
         }
         if self.touch_target.is_none() {
             self.touch_target = other.touch_target;

@@ -307,9 +307,11 @@ impl Widget for ProgressBar {
     }
 
     fn size_hint(&self) -> Size {
+        let extent = crate::widget::metrics::dimensions::BAR_DEFAULT_EXTENT;
+        let thickness = crate::widget::metrics::dimensions::BAR_DEFAULT_THICKNESS;
         match self.orientation() {
-            Orientation::Horizontal => Size::new(120, 20),
-            Orientation::Vertical => Size::new(20, 120),
+            Orientation::Horizontal => Size::new(extent, thickness),
+            Orientation::Vertical => Size::new(thickness, extent),
         }
     }
     impl_draw_bridge!();

@@ -300,7 +300,10 @@ impl Widget for TreeTable {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(400, 300)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::TREE_TABLE_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::TREE_TABLE_DEFAULT_HEIGHT,
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

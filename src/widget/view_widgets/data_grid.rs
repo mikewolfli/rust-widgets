@@ -543,7 +543,10 @@ impl Widget for DataGrid {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(400, 300)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::DATA_GRID_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::DATA_GRID_DEFAULT_HEIGHT,
+        )
     }
 
     /// Reports this widget as the object that paints it.

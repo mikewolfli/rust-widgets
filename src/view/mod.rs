@@ -112,12 +112,14 @@
 //! `tools/check_view_platform_gate.sh` asserts both directions of that claim.
 
 mod apply;
+mod breakpoint;
 mod diff;
 mod engine;
 mod node;
 mod reactive;
 
 pub use apply::{apply, ApplyReport, ViewError};
+pub use breakpoint::{is_current, with_breakpoint, Breakpoint};
 pub use diff::{diff, DiffReport, Patch};
 pub use engine::{Context, View, ViewEngine};
 pub use node::{Host, Node};

@@ -57,7 +57,10 @@ impl InplaceEditor {
             is_editing: false,
             original_text: text.to_string(),
             font_size: 14.0,
-            padding: 4,
+            // Seeded from the shared text-field inset rather than a second literal: the field *is*
+            // that inset, so a default-built editor renders exactly as it did when `draw` read the
+            // constant directly, and the value the getter reports is the inset in force.
+            padding: dimensions::TEXT_FIELD_PADDING_H as i32,
             cursor_position: text.len(),
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(text.to_string())),
@@ -221,6 +224,32 @@ impl InplaceEditor {
         ControlMetrics::full_width_band(self.geometry(), dimensions::TEXT_FIELD_MIN_HEIGHT)
     }
 
+    /// The box the value is drawn in: the field, inset by [`Self::padding`] on every side.
+    ///
+    /// # What was dead, and what proves it is alive now
+    ///
+    /// `padding` was stored, published (`set_padding` clamps it to `>= 0` and requests a redraw)
+    /// and read by nothing: `draw` used the fixed `dimensions::TEXT_FIELD_PADDING_H` as its inset
+    /// in both modes, and the double-click hit test used [`Self::field_rect`]. So the control's one
+    /// layout knob moved no pixel and clamped an input nothing consumed.
+    ///
+    /// # Why the *field's* inset rather than a separate constant
+    ///
+    /// The default is 4, which is `TEXT_FIELD_PADDING_H` — so a default-built editor is unchanged
+    /// to the pixel, and the constant stays the named default rather than a second source of truth.
+    /// A caller who wants a roomier editor gets one on both axes, which is what "padding around
+    /// the text" says; an inset on the horizontal axis alone would be a different field.
+    fn text_rect(&self) -> Rect {
+        let field = self.field_rect();
+        let inset = self.padding.min(field.width as i32 / 2).min(field.height as i32 / 2).max(0);
+        Rect::new(
+            field.x + inset,
+            field.y,
+            field.width.saturating_sub(inset as u32 * 2),
+            field.height,
+        )
+    }
+
     /// Inserts a character at the cursor position.
     fn insert_char(&mut self, c: char) {
         if c == '\u{7f}' {
@@ -281,7 +310,10 @@ impl Widget for InplaceEditor {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(200, 28)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::INPLACE_EDITOR_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::INPLACE_EDITOR_DEFAULT_HEIGHT,
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -405,6 +437,9 @@ impl Draw for InplaceEditor {
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))
             .unwrap_or_else(|| surface.blend(&ink, 0.25));
 
+        // The box the value is drawn in, which honours the caller's `padding`. It is the field
+        // inset on every side, so the text and the caret share one origin in both modes.
+        let text_box = self.text_rect();
         if self.is_editing {
             // Draw editing mode
             context.fill_rect(rect, surface);
@@ -415,8 +450,8 @@ impl Draw for InplaceEditor {
             // the field's top edge — the text was drawn on the row after the one it belonged
             // to. `context.text_line` returns the field's line box, so the value is centred
             // in the field rather than positioned by two unrelated offsets.
-            let text_x = rect.x + dimensions::TEXT_FIELD_PADDING_H as i32;
-            let line = context.text_line(rect, &font);
+            let text_x = text_box.x;
+            let line = context.text_line(text_box, &font);
             context.draw_text(
                 Point::new(text_x, line.y),
                 &self.text,
@@ -441,8 +476,8 @@ impl Draw for InplaceEditor {
             context.fill_rect(rect, surface);
             context.draw_rect_stroke(rect, border, 1);
 
-            let text_x = rect.x + dimensions::TEXT_FIELD_PADDING_H as i32;
-            let line = context.text_line(rect, &font);
+            let text_x = text_box.x;
+            let line = context.text_line(text_box, &font);
             context.draw_text(
                 Point::new(text_x, line.y),
                 &self.text,
@@ -538,7 +573,7 @@ mod tests {
         assert_eq!(ie.text(), "Hello");
         assert!(!ie.is_editing());
         assert!((ie.font_size() - 14.0).abs() < 0.01);
-        assert_eq!(ie.padding(), 4);
+        assert_eq!(ie.padding(), dimensions::TEXT_FIELD_PADDING_H as i32);
         assert_eq!(ie.kind(), WidgetKind::InplaceEditor);
     }
 
@@ -758,5 +793,51 @@ mod tests {
         ie.insert_char('\u{7f}');
         assert_eq!(ie.text(), "AB");
         assert_eq!(ie.cursor_position, 2);
+    }
+
+    /// `padding` moves the value: the text box is the field inset by the caller's padding.
+    ///
+    /// # What was dead, and what proves it is alive now
+    ///
+    /// `padding` was stored, published (`set_padding` clamps it to `>= 0` and requests a redraw)
+    /// and read by nothing: `draw` used the fixed `dimensions::TEXT_FIELD_PADDING_H` in both modes.
+    /// The field is unchanged; only the value's box moves, which is what "padding around the
+    /// text" means.
+    #[test]
+    fn padding_insets_the_value_inside_the_field() {
+        let mut ie = InplaceEditor::new("Test", Rect::new(0, 0, 200, 30));
+        let field = ie.field_rect();
+
+        // The default padding is the shared text-field inset, so a default editor is unchanged.
+        assert_eq!(
+            ie.padding(),
+            dimensions::TEXT_FIELD_PADDING_H as i32,
+            "the default is the crate's own field inset"
+        );
+        assert_eq!(
+            ie.text_rect().x,
+            field.x + dimensions::TEXT_FIELD_PADDING_H as i32,
+            "a default editor's value starts at the pre-existing inset"
+        );
+
+        ie.set_padding(12);
+        let boxed = ie.text_rect();
+        assert_eq!(boxed.x, field.x + 12, "a larger padding moves the value in");
+        assert_eq!(
+            boxed.width,
+            field.width - 24,
+            "and takes it off both sides, not just the leading one"
+        );
+        assert_eq!(boxed.y, field.y, "the field's own vertical band is unchanged");
+
+        // Zero padding is the value flush with the field's edge.
+        ie.set_padding(0);
+        assert_eq!(ie.text_rect().x, field.x, "zero padding is flush with the field");
+
+        // A padding wider than the field cannot invert the box: the inset is clamped to half.
+        ie.set_padding(10_000);
+        let clamped = ie.text_rect();
+        assert!(clamped.width >= 1, "a clamped box still has width: {clamped:?}");
+        assert!(clamped.x >= field.x, "and is still inside the field: {clamped:?}");
     }
 }

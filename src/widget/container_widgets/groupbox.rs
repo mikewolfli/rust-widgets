@@ -917,6 +917,12 @@ mod tests {
         #[cfg(not(device_profile))]
         let appearances = [Option::<crate::style::AppearanceMode>::None].as_slice();
         for appearance in appearances {
+            // Without a device profile there is no theme, so the appearance this iteration names is
+            // not something this build can install. Naming it as unused here keeps the loop's shape
+            // identical in both profiles (one binding, one body) while being explicit that the
+            // omission is a capability difference rather than an oversight.
+            #[cfg(not(device_profile))]
+            let _ = appearance;
             let mut ticks_this_appearance = crate::compat::Vec::new();
             // Installed exactly as `export_control_svgs` does it, so this test and the committed
             // snapshot for the same appearance describe the same drawing.

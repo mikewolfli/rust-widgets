@@ -685,11 +685,71 @@ impl ScrollArea {
     }
 }
 
-/// The three boxes `ScrollArea` paints into, in control coordinates.
+/// The frame the scrolling child is placed in, given the viewport and how the content should be
+/// aligned in it.
 ///
-/// One value rather than three returns: the three are read together (the content is clipped to its
-/// box, the two bars are filled), and a caller that took them one at a time could pair a content box
-/// with a bar band from a different assembly.
+/// # The two fields this exists for
+///
+/// `alignment` and `widget_resizable` were both stored, published (getters, setters, schema rows)
+/// and read by nothing: every scroll area clipped to its whole rectangle, drew the child at its own
+/// stored size, and neither field could change a pixel. Rather than two branches at the two call
+/// sites -- the paint and the geometry hand-off -- they resolve here once and both read the result,
+/// which is what keeps a click's coordinate and the pixel under it from disagreeing.
+///
+/// # The two fields' meanings, and the third they do *not* replace
+///
+/// * `widget_resizable` decides **who owns the child's size**. `true` says the scroll area sizes the
+///   child to the viewport, so a `ScrollArea` behaves like a container and its child is laid out to
+///   fit. `false` says the caller keeps its child's size, so the content box is the declared extent
+///   and the bars exist to reach the rest of it. This is *not* the same axis as `content_size`,
+///   which is the child's declared extent and stays the caller's either way -- `content_size` is the
+///   number, this is who acts on it.
+///
+///   # Why `false` is the extent, not `max(viewport, extent)`
+///
+///   The tempting reading is "at least the viewport, so the child always fills it", which is what
+///   `max` would give. That reading makes `alignment` **unreachable**: a frame that is never smaller
+///   than the viewport has zero slack in every case, so the field that places slack could never move
+///   a pixel. The two fields are only both meaningful when `false` means *exactly the extent* -- then
+///   a small extent sits somewhere in the viewport (alignment's job) and a large one overflows it
+///   (the bars' job).
+///
+/// * `alignment` decides **where the child sits when it is smaller than the viewport**, which is the
+///   state `widget_resizable: false` makes reachable. Alignment only has a meaning when there is
+///   slack, so it is applied to the extra space and never to the child itself: a child as large as
+///   the viewport is unaffected by any alignment, which is what makes the field a no-op in the
+///   common case rather than a wrong offset in it.
+///
+/// # The axis each variant moves on
+///
+/// [`Alignment`] has no "both axes" variant, so the three pairs are read the way the rest of this
+/// crate reads them: `Left`/`Right` and `Top`/`Bottom` move one axis each, `Center` moves both, and
+/// a variant that names the *other* axis than the one being resolved leaves it alone. That is why
+/// one `match` returns both offsets rather than two `match`es returning one each.
+fn content_frame(
+    viewport: Rect,
+    content_size: Size,
+    resizable: bool,
+    alignment: Alignment,
+) -> Rect {
+    // The box the child is laid out in. A resizable child is given the viewport, because the scroll
+    // area owns its size; a fixed one is given exactly the extent it declared, because the caller
+    // does -- `max(viewport, extent)` would leave no slack for the alignment below to place, which
+    // is what made this pair of fields unreachable together.
+    let width = if resizable { viewport.width } else { content_size.width };
+    let height = if resizable { viewport.height } else { content_size.height };
+    let slack_x = viewport.width.saturating_sub(width) as i32;
+    let slack_y = viewport.height.saturating_sub(height) as i32;
+    let (x, y) = match alignment {
+        Alignment::Left => (viewport.x, viewport.y + slack_y / 2),
+        Alignment::Right => (viewport.x + slack_x, viewport.y + slack_y / 2),
+        Alignment::Top => (viewport.x + slack_x / 2, viewport.y),
+        Alignment::Bottom => (viewport.x + slack_x / 2, viewport.y + slack_y),
+        Alignment::Center => (viewport.x + slack_x / 2, viewport.y + slack_y / 2),
+    };
+    Rect::new(x, y, width, height)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ChromeBands {
     /// The scrolling viewport.
@@ -710,7 +770,10 @@ impl Widget for ScrollArea {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(300, 200)
+        crate::core::Size::new(
+            dimensions::SCROLL_AREA_DEFAULT_WIDTH,
+            dimensions::SCROLL_AREA_DEFAULT_HEIGHT,
+        )
     }
 
     fn set_geometry(&mut self, geometry: Rect) {
@@ -858,12 +921,31 @@ impl Draw for ScrollArea {
         let track_color = style.background_color.unwrap_or(Color::rgb(240, 240, 240));
         let border_color = style.border_color.unwrap_or(Color::rgb(200, 200, 200));
         let thumb_color = style.text_color.unwrap_or(Color::rgb(120, 120, 120)).with_alpha(120);
-        // Set viewport for clipping
-        context.push_clip(rect.x, rect.y, rect.width, rect.height);
+        // Set viewport for clipping. The clip is the *content box* the assembled chrome leaves,
+        // not the control's whole rectangle: with a bar owed, the bars are painted after this clip
+        // is popped and a scrolled child would otherwise draw over the groove it is scrolling to
+        // reach the end of.
+        let chrome = self.assemble_chrome(rect);
+        context.push_clip(
+            chrome.content.x,
+            chrome.content.y,
+            chrome.content.width,
+            chrome.content.height,
+        );
+        // Where the child is placed inside that box. Both `alignment` and `widget_resizable` were
+        // stored, published and read by nothing; this is the one derivation both the paint and the
+        // geometry hand-off read, so a click's coordinate and the pixel under it cannot disagree.
+        let frame =
+            content_frame(chrome.content, self.content_size, self.widget_resizable, self.alignment);
         // Draw widget via registry, translated by the negative scroll offset so
         // the viewport shows the scrolled content window.
         if let Some(widget_id) = self.widget {
             if let Some(ref reg) = self.registry {
+                // Hand the child the frame rather than letting it keep whatever geometry it was
+                // constructed with. `widget_resizable: true` is exactly the promise that the scroll
+                // area sizes its content, and without this line that promise was unobservable: a
+                // resizable area and a fixed one drew the same picture.
+                reg.borrow_mut().set_widget_geometry(widget_id, frame);
                 context.push_offset(-self.scroll_position.0, -self.scroll_position.1);
                 reg.borrow_mut().draw_widget(widget_id, context);
                 context.pop_offset();
@@ -881,10 +963,16 @@ impl Draw for ScrollArea {
                 continue;
             }
             let offset_y = region.draw_offset(self.scroll_position.1);
-            let band_rect =
-                Rect::new(rect.x, rect.y + offset_y, rect.width, region.height.min(rect.height));
+            // Bands span the content box, not the control: a band that ran under the vertical bar
+            // would be painted over by the bar and would look clipped rather than pinned.
+            let band_rect = Rect::new(
+                chrome.content.x,
+                chrome.content.y + offset_y,
+                chrome.content.width,
+                region.height.min(chrome.content.height),
+            );
             // A band pushed entirely above the viewport has nothing left to show.
-            if band_rect.y + band_rect.height as i32 <= rect.y {
+            if band_rect.y + band_rect.height as i32 <= chrome.content.y {
                 continue;
             }
             self.draw_sticky_band(context, band_rect);
@@ -894,7 +982,8 @@ impl Draw for ScrollArea {
         //
         // `assemble_chrome` places the content box and the two bands as one structure, so the
         // "the other bar shortens this one" correction lives in one place instead of once per band.
-        let chrome = self.assemble_chrome(rect);
+        // It was already resolved above to clip the content; reading it once rather than assembling
+        // it twice is what keeps the clip and the bars from being measured from two assemblies.
         if let Some(h_band) = chrome.horizontal {
             // The groove and the thumb both come from the resolved style, so the bar follows an
             // appearance switch. They used to be three fixed greys, so a scroll area kept a pale
@@ -1388,5 +1477,104 @@ mod tests {
         let bands = sa.pinned_sticky_bands();
         assert_eq!(bands.len(), 1);
         assert_eq!(bands[0].1, 100 - 300 - 24, "the band is pushed above the viewport");
+    }
+
+    // ── `alignment` and `widget_resizable` decide the content frame ──
+
+    /// A resizable scroll area hands its child the **viewport** and ignores the declared extent.
+    ///
+    /// # What was dead, and what proves it is alive now
+    ///
+    /// `widget_resizable` was stored, published (`widget_resizable` property, schema row, default
+    /// `true`) and read by nothing: `draw` never touched the child's geometry, so a resizable area
+    /// and a fixed one painted the same picture. The field's own doc says "whether the scroll area
+    /// sizes the child to the viewport" — this asserts the sizing, and the extent being larger than
+    /// the viewport is what makes the two settings distinguishable rather than accidentally equal.
+    #[test]
+    fn a_resizable_area_sizes_its_child_to_the_viewport() {
+        let viewport = Rect::new(0, 0, 100, 80);
+        let content = Size::new(400, 600);
+        let frame = content_frame(viewport, content, true, Alignment::Center);
+        assert_eq!(
+            frame, viewport,
+            "a resizable child is the viewport: the scroll area owns its size"
+        );
+        // And a fixed one keeps the extent, so the two settings are not the same picture.
+        let fixed = content_frame(viewport, content, false, Alignment::Center);
+        assert_eq!(fixed.width, 400, "a fixed child keeps the width it was given");
+        assert_eq!(fixed.height, 600);
+        assert_ne!(fixed, frame, "the two settings must not render identically");
+    }
+
+    /// Alignment places a child that is **smaller** than the viewport, on the axes its variant
+    /// names, and leaves a child that fills the viewport where it is.
+    ///
+    /// Alignment only has a meaning when there is slack, so the interesting case is the one
+    /// `widget_resizable: false` makes reachable: an extent smaller than the viewport. The
+    /// half-viewport assertion (`Left` moves x but centre-y) is what pins the claim that a variant
+    /// naming one axis leaves the other alone — a plausible bug is to read `Alignment::Left` as
+    /// "top-left", which no single-axis assertion would catch.
+    #[test]
+    fn alignment_places_a_child_smaller_than_the_viewport() {
+        let viewport = Rect::new(0, 0, 100, 80);
+        let content = Size::new(40, 20);
+        let place = |alignment| content_frame(viewport, content, false, alignment);
+
+        assert_eq!(place(Alignment::Left).x, 0, "Left pins the leading edge");
+        assert_eq!(place(Alignment::Left).y, 30, "and centres the other axis");
+        assert_eq!(place(Alignment::Right).x, 60, "Right pushes to the trailing edge");
+        assert_eq!(place(Alignment::Right).y, 30);
+        assert_eq!(place(Alignment::Top).y, 0, "Top pins the leading edge");
+        assert_eq!(place(Alignment::Top).x, 30, "and centres the other axis");
+        assert_eq!(place(Alignment::Bottom).y, 60);
+        assert_eq!(place(Alignment::Bottom).x, 30);
+        assert_eq!(place(Alignment::Center), Rect::new(30, 30, 40, 20));
+
+        // A child the size of the viewport has no slack, so every alignment agrees -- which is what
+        // makes the field a no-op in the common case rather than a wrong offset in it.
+        let fitted = Size::new(100, 80);
+        for alignment in [
+            Alignment::Left,
+            Alignment::Right,
+            Alignment::Top,
+            Alignment::Bottom,
+            Alignment::Center,
+        ] {
+            assert_eq!(
+                content_frame(viewport, fitted, false, alignment),
+                viewport,
+                "a child that fills the viewport is unmoved by {alignment:?}"
+            );
+        }
+    }
+
+    /// The frame never exceeds the viewport when it is resizable, and a fixed child keeps its extent.
+    ///
+    /// The one input that could underflow the placement arithmetic is a slack computed from a frame
+    /// larger than the viewport, which cannot happen now: a resizable frame *is* the viewport, and a
+    /// fixed one is clamped by the saturating subtraction. Keeping the invariant is what keeps a
+    /// caller's arithmetic error from becoming a panic inside `draw`.
+    #[test]
+    fn a_fixed_child_keeps_its_extent_and_a_resizable_one_is_the_viewport() {
+        let viewport = Rect::new(10, 10, 100, 80);
+        // A resizable child is the viewport whatever it declared.
+        for content in [Size::new(1, 1), Size::new(400, 600), Size::new(0, 0)] {
+            assert_eq!(
+                content_frame(viewport, content, true, Alignment::Center),
+                viewport,
+                "a resizable child is the viewport regardless of its declared extent"
+            );
+        }
+        // A fixed child is exactly what it declared, which is what leaves `alignment` something to
+        // place -- an extent that filled the box would make the field unobservable.
+        assert_eq!(
+            content_frame(viewport, Size::new(40, 20), false, Alignment::Center),
+            Rect::new(40, 40, 40, 20)
+        );
+        // A fixed child larger than the viewport overflows it, which is the state the bars exist
+        // for: the frame starts at the viewport's origin and the scroll position reaches the rest.
+        let overflow = content_frame(viewport, Size::new(400, 600), false, Alignment::Center);
+        assert_eq!((overflow.x, overflow.y), (viewport.x, viewport.y));
+        assert_eq!((overflow.width, overflow.height), (400, 600));
     }
 }

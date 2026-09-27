@@ -198,6 +198,67 @@ pub enum DockWidgetArea {
     /// No dock area
     NoDockWidgetArea,
 }
+
+/// How thick a dock widget's title bar is, in logical pixels — its height when it runs
+/// horizontally and its width when it runs vertically.
+///
+/// The `24` this replaced was written twice (`title_bar_rect` and `content_rect`), which is how the
+/// two could be changed apart. One number, read by both, so the bar and its complement always sum
+/// to the widget.
+const TITLE_BAR_THICKNESS: u32 = 24;
+
+/// The side of a title-bar button, in logical pixels.
+///
+/// Written once because three numbers are derived from it — the close button's box, the float
+/// button's box and the offset between them — and the three were previously three literals that had
+/// to be kept in step by hand.
+const TITLE_BUTTON_SIZE: u32 = 16;
+
+/// The gap between a title-bar button and the edge, or the next button, in logical pixels.
+const TITLE_BUTTON_GAP: u32 = 5;
+
+/// Every real dock edge, in the order [`DockWidget::set_docked`] prefers when it has to pick one.
+///
+/// A constant rather than a literal array at the call site so the "which edge do we fall back to"
+/// question has one answer, and so adding an area to [`DockWidgetArea`] makes this list the place it
+/// has to be considered. [`DockWidgetArea::NoDockWidgetArea`] is deliberately absent: it is the
+/// *absence* of an edge, not an edge to fall back onto.
+const ALL_DOCK_AREAS: [DockWidgetArea; 4] = [
+    DockWidgetArea::LeftDockWidgetArea,
+    DockWidgetArea::RightDockWidgetArea,
+    DockWidgetArea::TopDockWidgetArea,
+    DockWidgetArea::BottomDockWidgetArea,
+];
+
+/// Which edge a dock widget's title bar runs along, and therefore which way its chrome faces.
+///
+/// A title bar on the left edge is a *column* with vertical text, not a *row* with horizontal text;
+/// drawing the row form for every edge is what made `dock_location` a stored fact with no
+/// consequence. Rows and columns are what a painter can actually express here, so the two are the
+/// whole vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TitleBarAxis {
+    /// The title bar spans the widget's width: its text reads left to right.
+    Horizontal,
+    /// The title bar spans the widget's height: its text reads top to bottom.
+    Vertical,
+}
+
+impl DockWidgetArea {
+    /// The axis a title bar on this edge runs along.
+    ///
+    /// A floating or undocked widget has no edge, so its title bar is horizontal -- the form every
+    /// dock has used until now, which is what keeps the default rendering unchanged.
+    fn title_bar_axis(self) -> TitleBarAxis {
+        match self {
+            DockWidgetArea::LeftDockWidgetArea | DockWidgetArea::RightDockWidgetArea => {
+                TitleBarAxis::Vertical
+            }
+            _ => TitleBarAxis::Horizontal,
+        }
+    }
+}
+
 impl DockWidget {
     /// Creates a dock widget.
     pub fn new(geometry: Rect) -> Self {
@@ -337,8 +398,37 @@ impl DockWidget {
         self.docked
     }
     /// Sets docked state.
+    ///
+    /// # Why this is not simply assigning the field
+    ///
+    /// `docked` and `floating` are two views of one state, and `draw` keys on `floating` alone. So
+    /// `set_docked(false)` used to set a field nothing read: the panel kept the docked appearance
+    /// while `is_docked()` answered `false`, and the two accessors disagreed about the same widget.
+    /// Writing the field is what the caller asked for; keeping the pair consistent is what makes the
+    /// answer visible, which is the whole point of a *setter*. The signal is emitted the same way
+    /// [`Self::set_floating`] emits it, because a caller who watches `top_level_changed` and a
+    /// caller who watches `is_docked()` must not be told different stories.
+    ///
+    /// Undocking to a real edge is refused for the same reason [`Self::set_dock_location`] refuses
+    /// it: an edge that is not in `allowed_areas` is not a place this widget may be.
     pub fn set_docked(&mut self, docked: bool) {
+        if self.docked == docked {
+            return;
+        }
+        // `docked(false)` means the widget is now a top-level window, which is `floating`;
+        // `docked(true)` means it is back on the edge it reports.
+        self.set_floating(!docked);
         self.docked = docked;
+        if docked && self.dock_location == DockWidgetArea::NoDockWidgetArea {
+            // Back onto an edge, but which one was never recorded. The first allowed area is the
+            // one the host declared this widget may use, and guessing `Left` would be a location
+            // the widget might not be permitted to take.
+            let first_allowed =
+                ALL_DOCK_AREAS.into_iter().find(|area| self.allowed_areas.contains(*area));
+            if let Some(area) = first_allowed {
+                self.set_dock_location(area);
+            }
+        }
         self.base.request_redraw();
     }
     /// Toggles floating state.
@@ -346,51 +436,101 @@ impl DockWidget {
         self.set_floating(!self.floating);
     }
     /// Returns title bar rectangle.
+    ///
+    /// # Why this is now a function of `dock_location`
+    ///
+    /// It used to be a fixed `rect.width × 24` band at the widget's top, whatever edge the widget
+    /// reported. So a widget docked to the left drew a *horizontal* title bar across a narrow
+    /// column -- `dock_location` was stored, published, emitted by a signal and read by no geometry.
+    /// A title bar on a left or right edge is a vertical strip, and one on a top or bottom edge (or
+    /// on a floating widget, which has no edge) is the horizontal band this already was.
     fn title_bar_rect(&self) -> Rect {
         let rect = self.geometry();
-        let title_bar_height = 24;
-        Rect::new(rect.x, rect.y, rect.width, title_bar_height)
+        // Measured from one number and clamped to the widget's own extent, so a widget shorter than
+        // its own title bar cannot draw the bar outside itself.
+        let thickness = TITLE_BAR_THICKNESS;
+        match self.dock_location.title_bar_axis() {
+            TitleBarAxis::Horizontal => {
+                Rect::new(rect.x, rect.y, rect.width, thickness.min(rect.height))
+            }
+            TitleBarAxis::Vertical => {
+                Rect::new(rect.x, rect.y, thickness.min(rect.width), rect.height)
+            }
+        }
     }
     /// Returns content rectangle.
+    ///
+    /// The complement of [`Self::title_bar_rect`] within the widget, along whichever axis the title
+    /// bar took. Derived from that function rather than measured again, so the two cannot disagree
+    /// about where the bar ends and the content begins.
     fn content_rect(&self) -> Rect {
         let rect = self.geometry();
-        let title_bar_height = 24;
-        Rect::new(
-            rect.x,
-            rect.y + title_bar_height,
-            rect.width,
-            rect.height.saturating_sub(title_bar_height as u32),
-        )
+        let title_bar = self.title_bar_rect();
+        match self.dock_location.title_bar_axis() {
+            TitleBarAxis::Horizontal => Rect::new(
+                rect.x,
+                rect.y + title_bar.height as i32,
+                rect.width,
+                rect.height.saturating_sub(title_bar.height),
+            ),
+            TitleBarAxis::Vertical => Rect::new(
+                rect.x + title_bar.width as i32,
+                rect.y,
+                rect.width.saturating_sub(title_bar.width),
+                rect.height,
+            ),
+        }
     }
     /// Returns close button rectangle.
+    ///
+    /// The button sits at the title bar's **trailing** end, which is what makes it follow the bar's
+    /// axis: in a horizontal bar that end is the right edge, and in a vertical bar it is the bottom.
+    /// A button pinned to the right edge regardless (the previous form) would land on a vertical
+    /// bar's *side* — outside the strip and over the content.
     fn close_button_rect(&self) -> Option<Rect> {
         if !self.features.dock_widget_closable {
             return None;
         }
-        let title_bar = self.title_bar_rect();
-        let button_size = 16;
-        Some(Rect::new(
-            title_bar.x + title_bar.width as i32 - button_size - 5,
-            title_bar.y + (title_bar.height as i32 - button_size) / 2,
-            button_size as u32,
-            button_size as u32,
-        ))
+        self.title_button_rect(0)
     }
     /// Returns float button rectangle.
+    ///
+    /// `slot` 0 is the one nearest the trailing end, so the two buttons do not overlap and their
+    /// order does not depend on which one exists.
     fn float_button_rect(&self) -> Option<Rect> {
         if !self.features.dock_widget_floatable {
             return None;
         }
-        let title_bar = self.title_bar_rect();
-        let button_size = 16;
-        let close_button_width =
-            if self.features.dock_widget_closable { button_size + 5 } else { 0 };
-        Some(Rect::new(
-            title_bar.x + title_bar.width as i32 - button_size - 5 - close_button_width,
-            title_bar.y + (title_bar.height as i32 - button_size) / 2,
-            button_size as u32,
-            button_size as u32,
-        ))
+        let slot = if self.features.dock_widget_closable { 1 } else { 0 };
+        self.title_button_rect(slot)
+    }
+    /// The box of the `slot`-th button from the title bar's trailing end, centred across the bar.
+    ///
+    /// One derivation for both buttons: the slot index is what differs, so a change to the size, the
+    /// gap or the axis moves both together rather than one of them. A bar too short to hold the slot
+    /// still yields a box at the trailing end -- overlapping rather than placed outside -- because a
+    /// button drawn outside its own title bar would sit over the content below it.
+    fn title_button_rect(&self, slot: u32) -> Option<Rect> {
+        let bar = self.title_bar_rect();
+        let size = TITLE_BUTTON_SIZE;
+        let gap = TITLE_BUTTON_GAP;
+        // The slot's own advance from the trailing edge: slot 0 is one button plus its outer gap,
+        // slot 1 is a whole further button-plus-gap. Written as `(slot + 1) * (size + gap)` because
+        // that is the original arithmetic for slot 0 (`- size - gap`) with the further slots as its
+        // natural extension -- an extra `gap` term would move every button off the end by 5 px,
+        // which is a one-pixel-level regression no geometry number in this file would show.
+        let trailing = (slot + 1) * (size + gap);
+        let (x, y) = match self.dock_location.title_bar_axis() {
+            TitleBarAxis::Horizontal => (
+                bar.x + (bar.width as i32 - trailing as i32).max(0),
+                bar.y + (bar.height as i32 - size as i32) / 2,
+            ),
+            TitleBarAxis::Vertical => (
+                bar.x + (bar.width as i32 - size as i32) / 2,
+                bar.y + (bar.height as i32 - trailing as i32).max(0),
+            ),
+        };
+        Some(Rect::new(x, y, size, size))
     }
     /// Returns whether point is in title bar.
     fn is_in_title_bar(&self, pos: Point) -> bool {
@@ -424,7 +564,10 @@ impl Widget for DockWidget {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(250, 200)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::DOCK_WIDGET_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::DOCK_WIDGET_DEFAULT_HEIGHT,
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -432,10 +575,11 @@ impl Widget for DockWidget {
 
 /// `DockWidget`'s property contract.
 ///
-/// `floating` and `docked` are two views of one state; the old writer had an arm
-/// for neither, and `set_docked` is not the inverse of `set_floating` (it does not
-/// emit `top_level_changed`), so both are published read-only rather than
-/// guessed at.
+/// `floating` and `docked` are two views of one state, so `docked` is published as a **write** as
+/// well as a read: `set_docked` now keeps the pair consistent and emits `top_level_changed`, which
+/// is what makes writing it observable. It is the inverse of `set_floating` in the sense that
+/// matters to a caller (`docked == !floating`), and the two setters agree rather than one being a
+/// "better" entry point.
 impl WidgetProperties for DockWidget {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
@@ -458,8 +602,13 @@ impl WidgetProperties for DockWidget {
                 self.set_floating(expect_bool(value)?);
                 Ok(())
             }
-            // `docked` had no arm in the centralised writer.
-            "docked" => Err(CapabilityAccessError::ReadOnlyProperty),
+            // `docked` had no arm in the centralised writer. It has one now that
+            // `set_docked` keeps the pair consistent and emits, so writing it is
+            // observable rather than a silent field assignment.
+            "docked" => {
+                self.set_docked(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -610,20 +759,49 @@ impl Draw for DockWidget {
         // Draw title text. The origin is the glyph's **top** edge, so the title is centred by
         // half the difference between the bar and the line box. Using the bar's midline put a
         // 14 px title at 12..26 in a 24 px bar — two pixels onto the border below it.
+        //
+        // On a vertical bar the label runs *down* the strip, one glyph per line: the renderer has no
+        // rotated-text primitive, and a horizontal label inside a 24 px column is truncated to its
+        // first glyph, which is what made a left-docked panel unreadable. The label's leading edge is
+        // the bar's leading end, so it starts at the top of the column exactly as it starts at the
+        // left of the row.
         let title_font = Font::default();
-        let title_h = context.measure_text("M", &title_font).height;
-        context.draw_text_fitted(
-            Rect::new(
-                title_bar.x + 5,
-                title_bar.y + (title_bar.height as i32 - title_h as i32) / 2,
-                title_bar.width.saturating_sub(10),
-                title_h,
-            ),
-            &self.title,
-            &title_font,
-            if self.base.is_enabled() { ink } else { ink.blend(&title_bar_color, 0.5) },
-            HorizontalAlignment::Left,
-        );
+        // The line box is measured in the *device* scale, so it is used at its own width; the
+        // centring arithmetic below casts once, here, rather than at each of the two bands.
+        let title_h = context.measure_text("M", &title_font).height.max(1) as i32;
+        let title_color =
+            if self.base.is_enabled() { ink } else { ink.blend(&title_bar_color, 0.5) };
+        // The trailing end is where the buttons live, so the label is bounded by however many are
+        // actually shown -- one gap before the first, one after each button.
+        let shown = u32::from(self.features.dock_widget_closable)
+            + u32::from(self.features.dock_widget_floatable);
+        let buttons =
+            if shown == 0 { 0 } else { shown * TITLE_BUTTON_SIZE + (shown + 1) * TITLE_BUTTON_GAP };
+        match self.dock_location.title_bar_axis() {
+            TitleBarAxis::Horizontal => {
+                context.draw_text_fitted(
+                    Rect::new(
+                        title_bar.x + TITLE_BUTTON_GAP as i32,
+                        title_bar.y + (title_bar.height as i32 - title_h) / 2,
+                        title_bar.width.saturating_sub(buttons + TITLE_BUTTON_GAP),
+                        title_h as u32,
+                    ),
+                    &self.title,
+                    &title_font,
+                    title_color,
+                    HorizontalAlignment::Left,
+                );
+            }
+            TitleBarAxis::Vertical => {
+                let label = Rect::new(
+                    title_bar.x + (title_bar.width as i32 - title_h) / 2,
+                    title_bar.y + TITLE_BUTTON_GAP as i32,
+                    title_h as u32,
+                    title_bar.height.saturating_sub(buttons + TITLE_BUTTON_GAP),
+                );
+                self.draw_vertical_title(context, label, &title_font, title_color);
+            }
+        }
         // Draw close button if enabled
         if self.features.dock_widget_closable {
             if let Some(close_rect) = self.close_button_rect() {
@@ -712,6 +890,48 @@ impl Draw for DockWidget {
                 reg.borrow_mut().draw_widget(widget_id, context);
                 context.pop_clip();
             }
+        }
+    }
+}
+
+impl DockWidget {
+    /// Draws a title on a vertical bar: one glyph per line, advancing down `band`.
+    ///
+    /// # Why glyph by glyph rather than one call
+    ///
+    /// The renderer has no rotated-text primitive, and a single horizontal call inside a 24 px
+    /// column is truncated to its first glyph -- which is exactly the unreadable left-docked panel
+    /// `dock_location` was already promising to render. Stacking the glyphs is the form a column can
+    /// actually express.
+    ///
+    /// # Truncation
+    ///
+    /// The band's height bounds the number of glyphs, and the run stops when the next glyph would
+    /// cross it rather than being clipped mid-glyph. An ellipsis is deliberately not appended: there
+    /// is no room for one in a 24 px column, and a lone `.` under the title reads as part of it.
+    fn draw_vertical_title(
+        &self,
+        context: &mut RenderContext,
+        band: Rect,
+        font: &Font,
+        color: Color,
+    ) {
+        let step = context.measure_text("M", font).height.max(1) as i32;
+        let bottom = band.y + band.height as i32;
+        let mut pen_y = band.y;
+        // One `char` per line: a multi-byte character is a single glyph, and `chars()` is what
+        // keeps a CJK title from being cut mid-character.
+        for ch in self.title.chars() {
+            if pen_y + step > bottom {
+                break;
+            }
+            let glyph = ch.to_string();
+            // Centred across the strip by the glyph's own measured width, so a narrow `i` and a wide
+            // `W` share the same column rather than all starting at the left edge.
+            let width = context.measure_text(&glyph, font).width;
+            let x = band.x + (band.width as i32 - width as i32).max(0) / 2;
+            context.draw_text(Point::new(x, pen_y), &glyph, font, color, HorizontalAlignment::Left);
+            pen_y += step;
         }
     }
 }
@@ -1227,5 +1447,205 @@ mod tests {
         assert!(dw.is_enabled());
         dw.set_enabled(false);
         assert!(!dw.is_enabled());
+    }
+
+    // ── `dock_location` orients the title bar ──
+
+    /// A title bar on a left or right edge is a vertical strip; on a top or bottom edge (or a
+    /// floating widget, which has no edge) it is the horizontal band it always was.
+    ///
+    /// # What was dead, and what proves it is alive now
+    ///
+    /// `dock_location` was stored, published (`dock_location()`), emitted (`dock_location_changed`)
+    /// and **read by no geometry**: every edge drew the same `width × 24` bar across the widget's
+    /// top. A left-docked panel therefore got a horizontal title bar across a narrow column. The
+    /// assertion is on the bar's *shape*, which is the thing a paint has to obey.
+    #[test]
+    fn dock_location_orientates_the_title_bar() {
+        let build = |area| {
+            let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+            dw.set_dock_location(area);
+            dw
+        };
+
+        // Vertical edges: a strip as wide as the bar is thick, running the widget's whole height.
+        for area in [DockWidgetArea::LeftDockWidgetArea, DockWidgetArea::RightDockWidgetArea] {
+            let dw = build(area);
+            let bar = dw.title_bar_rect();
+            assert_eq!(bar.width, TITLE_BAR_THICKNESS, "{area:?} keeps a vertical strip");
+            assert_eq!(bar.height, 100, "{area:?} runs the widget's whole height");
+            // And the content is what the bar left over, beside it rather than below it.
+            let content = dw.content_rect();
+            assert_eq!(content.x, bar.width as i32, "{area:?} leaves the content beside the bar");
+            assert_eq!(content.y, 0);
+            assert_eq!(content.width, 200 - TITLE_BAR_THICKNESS);
+            assert_eq!(content.height, 100);
+        }
+
+        // Horizontal edges, plus no edge at all: the pre-existing band.
+        for area in [
+            DockWidgetArea::TopDockWidgetArea,
+            DockWidgetArea::BottomDockWidgetArea,
+            DockWidgetArea::NoDockWidgetArea,
+        ] {
+            let dw = build(area);
+            let bar = dw.title_bar_rect();
+            assert_eq!(bar.height, TITLE_BAR_THICKNESS, "{area:?} keeps a horizontal band");
+            assert_eq!(bar.width, 200);
+            let content = dw.content_rect();
+            assert_eq!(content.y, bar.height as i32, "{area:?} leaves the content below it");
+            assert_eq!(content.height, 100 - TITLE_BAR_THICKNESS);
+        }
+
+        // The bar and its content tile the widget exactly, on whichever axis was taken.
+        for area in ALL_DOCK_AREAS.into_iter().chain([DockWidgetArea::NoDockWidgetArea]) {
+            let dw = build(area);
+            let bar = dw.title_bar_rect();
+            let content = dw.content_rect();
+            assert_eq!(
+                bar.width * bar.height + content.width * content.height,
+                dw.geometry().width * dw.geometry().height,
+                "{area:?}: the bar and the content are complements"
+            );
+        }
+    }
+
+    /// The close and float buttons follow the bar they sit in: the trailing end of a horizontal bar
+    /// is its right edge, and of a vertical one its bottom.
+    ///
+    /// A button pinned to the right edge regardless would land *outside* a vertical strip, over the
+    /// content area — the same class of defect as the bar itself, one level down.
+    #[test]
+    fn title_bar_buttons_follow_the_bar_they_sit_in() {
+        let build = |area| {
+            let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+            dw.set_dock_location(area);
+            dw
+        };
+
+        let horizontal = build(DockWidgetArea::TopDockWidgetArea);
+        let bar = horizontal.title_bar_rect();
+        let close = horizontal.close_button_rect().expect("the default is closable");
+        assert!(
+            bar.contains(Point::new(close.x + 1, close.y + 1)),
+            "the close button is inside a horizontal bar: {close:?} vs {bar:?}"
+        );
+        let float = horizontal.float_button_rect().expect("the default is floatable");
+        assert!(
+            float.x + float.width as i32 <= close.x,
+            "the float button sits before the close button, not on top of it: {float:?} / {close:?}"
+        );
+
+        let vertical = build(DockWidgetArea::LeftDockWidgetArea);
+        let bar = vertical.title_bar_rect();
+        let close = vertical.close_button_rect().expect("the default is closable");
+        assert!(
+            bar.contains(Point::new(close.x + 1, close.y + 1)),
+            "the close button is inside a vertical bar: {close:?} vs {bar:?}"
+        );
+        let float = vertical.float_button_rect().expect("the default is floatable");
+        assert!(
+            float.y + float.height as i32 <= close.y,
+            "the float button sits above the close button in a vertical bar: {float:?} / {close:?}"
+        );
+        // The vertical bar's trailing end is its *bottom*, so the close button is near it.
+        assert!(
+            close.y > bar.y + bar.height as i32 / 2,
+            "the close button is towards the bar's trailing end: {close:?} vs {bar:?}"
+        );
+    }
+
+    /// `set_docked` now moves the whole state: `floating` follows it, the pair stays consistent, and
+    /// the state change is announced.
+    ///
+    /// `docked` and `floating` are two views of one fact, and `draw` keys on `floating` alone. The
+    /// old setter assigned `docked` and nothing else, so `is_docked()` answered `false` while the
+    /// widget kept its docked appearance and `top_level_changed` never fired — the two accessors
+    /// disagreed about the same widget.
+    #[test]
+    fn set_docked_moves_floating_and_announces_the_change() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        let top_level_events = Arc::new(AtomicUsize::new(0));
+        dw.top_level_changed.connect({
+            let count = Arc::clone(&top_level_events);
+            move |_floating: Arc<bool>| {
+                count.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+
+        dw.set_docked(false);
+        assert!(!dw.is_docked());
+        assert!(dw.is_floating(), "undocking is what floating means");
+        assert_eq!(
+            top_level_events.load(Ordering::SeqCst),
+            1,
+            "the state change is announced, as `set_floating` announces it"
+        );
+
+        dw.set_docked(true);
+        assert!(dw.is_docked());
+        assert!(!dw.is_floating(), "re-docking is not floating");
+        assert_eq!(top_level_events.load(Ordering::SeqCst), 2);
+        // Re-docking picked a real edge rather than leaving the widget at `NoDockWidgetArea` while
+        // claiming to be docked.
+        assert_ne!(
+            dw.dock_location(),
+            DockWidgetArea::NoDockWidgetArea,
+            "a docked widget reports a real edge"
+        );
+
+        // Idempotent: re-applying the state is not a transition.
+        dw.set_docked(true);
+        assert_eq!(
+            top_level_events.load(Ordering::SeqCst),
+            2,
+            "re-applying the same state emits nothing"
+        );
+    }
+
+    /// Re-docking respects `allowed_areas` rather than picking an edge the host forbade.
+    #[test]
+    fn re_docking_picks_an_allowed_edge() {
+        let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
+        // A host that offers only the left and bottom edges. `all_dock_widget_areas` is left off
+        // deliberately: it is an override, and an override set to `true` would permit every edge
+        // and make this test unable to tell a respected constraint from an ignored one.
+        dw.set_allowed_areas(DockWidgetAreas {
+            left_dock_widget_area: true,
+            right_dock_widget_area: false,
+            top_dock_widget_area: false,
+            bottom_dock_widget_area: true,
+            all_dock_widget_areas: false,
+            no_dock_widget_areas: false,
+        });
+        dw.set_docked(false);
+        dw.set_docked(true);
+        let area = dw.dock_location();
+        assert!(
+            area == DockWidgetArea::LeftDockWidgetArea
+                || area == DockWidgetArea::BottomDockWidgetArea,
+            "the chosen edge is one of the two the host allowed, not {area:?}"
+        );
+    }
+
+    /// A left-docked widget renders differently from a top-docked one -- the field reaches the pixels.
+    ///
+    /// The geometry assertions above say where the bar goes; this says the paint obeys them (and,
+    /// for the vertical case, that the glyph run is actually stacked rather than truncated to one
+    /// glyph by the 24 px column).
+    #[test]
+    fn the_dock_edges_render_differently() {
+        let build = |area| {
+            let mut dw = DockWidget::new(Rect::new(0, 0, 160, 120));
+            dw.set_title("Panel".to_string());
+            dw.set_dock_location(area);
+            dw
+        };
+        let top = render_to_svg(&mut build(DockWidgetArea::TopDockWidgetArea));
+        let left = render_to_svg(&mut build(DockWidgetArea::LeftDockWidgetArea));
+        assert_ne!(
+            top, left,
+            "a left-docked panel must not render as a top-docked one -- that was the dead state"
+        );
     }
 }

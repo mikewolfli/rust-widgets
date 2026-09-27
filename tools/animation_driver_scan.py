@@ -28,6 +28,9 @@ WIDGET_DIR = ROOT / "src" / "widget"
 
 # A self-driven animation entry point on a control. `tick_count` / `tick_label_height`
 # (a count, a label height) are not animations and are excluded by the `delta` parameter.
+#
+# The trait bridge also matches this pattern (its `delta_ms: u32` is a `delta*` parameter),
+# so counting uses `CANDIDATE_TICK` minus the bridges; see `scan`.
 ANIM_TICK = re.compile(r"\bfn\s+tick\s*\(\s*&mut\s+self\s*,\s*(?:delta\w*)\s*:")
 # The trait-side bridge a driven control must carry.
 TRAIT_TICK = re.compile(r"\bfn\s+tick\s*\(\s*&mut\s+self\s*,\s*delta_ms\s*:\s*u32\s*\)\s*->\s*bool")
@@ -52,7 +55,19 @@ def scan(files: list[pathlib.Path]) -> list[str]:
         # real declaration above it.
         marker = text.rfind("\n#[cfg(test)]")
         body = text[:marker] if marker != -1 else text
-        if ANIM_TICK.search(body) and not TRAIT_TICK.search(body):
+        # Count the **declarations**, not the file. A file with three animation ticks and
+        # one bridge is two islands, and a file-level "does it mention both" test answers
+        # "no islands" — which is how an injection into a file that already bridges its
+        # tick stayed invisible (BLUE23 §A.11.3 item 3).
+        #
+        # The trait bridge is itself a `fn tick(&mut self, delta_ms: u32) -> bool`, so it
+        # matches `ANIM_TICK` too; subtracting the bridges is what makes the count "animation
+        # ticks that are *not* bridges". The injected probe uses `delta_us: u64`, so it raises
+        # this count without raising the bridge count — which is what the injection needs to
+        # see.
+        anim_ticks = len(ANIM_TICK.findall(body)) - len(TRAIT_TICK.findall(body))
+        bridges = len(TRAIT_TICK.findall(body))
+        if anim_ticks > 0 and bridges == 0:
             findings.append(rel)
     return findings
 

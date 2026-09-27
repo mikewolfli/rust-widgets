@@ -175,7 +175,10 @@ impl Widget for CupertinoSegmentedControl {
     }
 
     fn size_hint(&self) -> Size {
-        crate::core::Size::new(300, 32)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::CUPERTINO_SEGMENTED_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::SEGMENTED_CONTROL_HEIGHT,
+        )
     }
 
     fn kind(&self) -> WidgetKind {

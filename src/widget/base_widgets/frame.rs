@@ -500,7 +500,7 @@ impl Widget for Frame {
     }
 
     fn size_hint(&self) -> Size {
-        Size::new(200, 200)
+        Size::new(dimensions::FRAME_DEFAULT_WIDTH, dimensions::FRAME_DEFAULT_HEIGHT)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

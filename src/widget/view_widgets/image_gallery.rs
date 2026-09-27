@@ -232,7 +232,10 @@ impl Widget for ImageGallery {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(400, 300)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::IMAGE_GALLERY_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::IMAGE_GALLERY_DEFAULT_HEIGHT,
+        )
     }
 
     /// Advances the current image's reveal by `delta_ms`; `true` while it is still moving.

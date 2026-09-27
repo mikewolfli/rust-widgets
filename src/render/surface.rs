@@ -55,6 +55,7 @@
 
 use crate::core::{Color, Rect};
 use crate::render::bevel::{Bevel, BevelDirection};
+use crate::render::RenderContext;
 use alloc::vec::Vec;
 
 /// How far a face sits off the page.
@@ -468,7 +469,79 @@ impl SurfaceStyle {
             color: tint.with_alpha(s.alpha),
         })
     }
+
+    /// Paints this face: its fill, then its bevel, then its edge.
+    ///
+    /// # Why one function and not three calls at each control
+    ///
+    /// The three are one operation with a **fixed order** that matters: the fill is the
+    /// backdrop, the bevel is drawn on the face's own boundary, and the outline is the outermost
+    /// line. A control that reordered them would draw a bevel under its own fill, or an outline
+    /// under its bevel, and the only way to notice is to look. Stating the order here means a
+    /// control asks for "a face" and gets one, and the 43 files that hand-rolled a two-line bevel
+    /// have one place to migrate to (BLUE24 §10A.3).
+    ///
+    /// # The identity case draws exactly what the control drew before
+    ///
+    /// `fill` is passed through [`Self::apply_fill`] — a no-op for [`Material::Solid`] — and a
+    /// face with no bevel draws none. So a control on the default theme emits the same
+    /// [`RenderCommand`](crate::render::RenderCommand)s as before this existed, which is what
+    /// keeps the snapshot suite byte-for-byte (BLUE24 §10A.6 criterion 9).
+    ///
+    /// # What the caller still owns
+    ///
+    /// * `border` — the colour a bevel's two tones step from, and the outline's colour. Passed
+    ///   in rather than read from here because "what colour is this face's edge" is the control's
+    ///   resolved style, which the render layer deliberately cannot see.
+    /// * `border_width` — how thick the outline is; `0` draws none.
+    /// * `radius` — the corner rounding, which the fill and the outline must agree on.
+    ///
+    /// Returns whether an outline was drawn, so a caller that needs to know (a control with a
+    /// focus ring that must clear the edge) does not have to re-derive the decision.
+    pub fn paint(
+        &self,
+        context: &mut RenderContext,
+        rect: Rect,
+        fill: Color,
+        border: Color,
+        border_width: u32,
+        radius: u32,
+    ) -> bool {
+        // 1. The fill, with the material's tint applied. `apply_fill` is the identity for a
+        //    solid face, so this line changes nothing until a theme asks for glass.
+        let materialised = self.apply_fill(fill);
+        if radius > 0 {
+            context.fill_rounded_rect(rect, radius, materialised);
+        } else {
+            context.fill_rect(rect, materialised);
+        }
+
+        // 2. The bevel, if this face declares one. Its tones derive from `border` by default,
+        //    which is what keeps a bevel legible on a dark face instead of glowing white.
+        if let Some(spec) = self.bevel {
+            let bevel = spec.resolve(border);
+            bevel.stroke(context, rect, BEVEL_STROKE_WIDTH);
+        }
+
+        // 3. The edge, if the face wants one and the control gave it a width to draw.
+        let drew_edge = self.draws_outline() && border_width > 0;
+        if drew_edge {
+            if radius > 0 {
+                context.draw_rounded_rect_stroke(rect, radius, border, border_width);
+            } else {
+                context.draw_rect_stroke(rect, border, border_width);
+            }
+        }
+        drew_edge
+    }
 }
+
+/// How thick a face's bevel line is, in logical pixels.
+///
+/// One pixel, matching every hand-rolled bevel in the crate and the platform conventions a
+/// raised edge comes from. Named rather than written at the call site so a future "thick bevel"
+/// style has one place to change.
+pub const BEVEL_STROKE_WIDTH: u32 = 1;
 
 /// A **role default**: the surface a control plays a role with, absent any override.
 ///

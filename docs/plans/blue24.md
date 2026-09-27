@@ -1362,7 +1362,7 @@ if let Some(state) = state {
 | **U-7** | **插件/扩展注册表** | 需要先有 §9 的「单一入口」纪律，否则每个插件会带来一份自己的计划文件 | §9 |
 | **U-8** | **云端/远端渲染后端** | 需要先把 §8 的帧账做成可序列化的产物；否则远端只能传像素，不能传「为什么这一帧这样」 | §8 完成 |
 | **U-9** | **`drive_frame` 在其余宿主上接线**（Harmony / Windows / macOS 的原生帧循环） | 帧循环本身（§1 批 1）必须先在已有循环上成立；其余宿主各自多一个接线点 | 对应宿主可跑（见 U-9 注） |
-| **U-10** | **§10A 的 token 接线**（把 `SurfaceStyle` 的四个维度接进 `ThemeStyleToken` 与两个预设） | **与另一进程共享的同一批文件**（`theme/types.rs`、`theme/manager.rs`、`themes/*.json`）。先把类型与门禁做完，接线在后 | 另一进程停下（或 §10A 批 0 完成且共享面空闲） |
+| **U-10** | **§10A 的 token 接线**（把 `SurfaceStyle` 的四个维度接进 `ThemeStyleToken` 与两个预设） | **与另一进程共享的同一批文件**（`theme/types.rs`、`theme/manager.rs`、`themes/*.json`）。先把类型与门禁做完，接线在后 | 实测（本轮，见 `log-20260924-2.md` §26）**真正的前置不是「共享面空闲」，而是中间那一段**：`WidgetStyle` 没有 `bevel`/`material`/`hairline` 字段，控件层也**零个** `role_surface_style` 读取者 —— 两端（类型、角色默认）都在，中间（承载字段 + 控件消费）不在。顺序是：① 类型与角色默认（✅）；② `WidgetStyle` 加字段 + 各控件 draw 读它；③ token 接线 + 两个预设 |
 | **U-11** | **`BoxShadow` 的真实高斯模糊**（现在软件后端是偏移矩形 + 区域 box blur） | §10A 只做**声明通道**，不改渲染质量。改模糊算法要自己的判据（模糊半径 vs 像素的量化、边缘裁切） | §10A 完成；且先量出 box blur 与高斯在可感知尺度上的差异 |
 | **U-12** | **`material: Translucent` 的背景采样**（真正的 backdrop-filter） | 需要离屏合成与 back buffer 读回。先让 `Translucent` 表达**意图**（半透明 + 预乘 tint），再谈采样 | §10A 完成；§8 帧账能回答「这一帧读回了几次」 |
 

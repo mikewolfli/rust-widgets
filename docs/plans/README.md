@@ -1,7 +1,7 @@
 # docs/plans — 计划索引
 
-> **本文件是入口。** 目录里有 12 份 `.md`（4 份是**工具/门禁依赖**，不可移动），
-> 35 份历史计划已归档到 [`archive/`](archive/)。
+> **本文件是入口。** 目录里有 13 份 `.md`（4 份是**工具/门禁依赖**，不可移动），
+> 37 份历史计划已归档到 [`archive/`](archive/)。
 
 ---
 
@@ -51,24 +51,56 @@
 
 ---
 
-## 4. 归档（35 份）
+## 4. 归档（37 份）
 
 [`archive/`](archive/) 里的计划**全部已完成**或**已被取代**，仅供追溯。
 **不要再从里面取「当前要求」**——那是 BLUE24 §9.1 要消除的失败形态
 （同一件事在两处各写一半）。
 
+> **本表逐份列名**（`tools/check_plan_archive_has_index.sh` 断言每一份都在此有一行）：
+> 一个「`blue1.md` … `blue22.md`」的范围写法看起来更短，但它会让 `blue11.md` 与
+> `blue13.md` 之间的文件既不在表里也不在视线里，而“中间那些是什么”恰恰是归档最该回答的。
+
 | 归档文件 | 说明 |
 |---|---|
-| `blue1.md` … `blue22.md`（22 份） | 历次计划主体，逐次收口 |
-| `blue7_verification.md` | BLUE7 验证记录 |
-| `blue10_degraded_mappings_audit.md` | 降级映射审计（BLUE10 附录） |
-| `blue10_wgpu_upgrade_evaluation.md` | wgpu 升级评估（BLUE10 附录） |
-| `blue20_p3_backlog.md` | BLUE20 P3 遗留（已并入后续计划） |
-| `cocoa_to_objc2_migration.md` | cocoa → objc2 迁移方案（已实施） |
-| `miri_audit.md` | Miri 审计（已实施） |
-| `plan.md` | 早期总计划（已被 BLUE 系列取代） |
-| `REFACTOR_PLAN.md` / `REFACTOR_EXECUTION_GUIDE.md` | 重构计划与执行指南（已完成） |
-| `scan_round1.md` / `scan_round2.md` / `scan_round3.md` | 早期扫描轮次（已被 BLUE 系列取代） |
+| [`blue1.md`](archive/blue1.md) … [`blue22.md`](archive/blue22.md)（逐份见下） | 历次计划主体，逐次收口 |
+| `blue1.md` | BLUE1 — 控件库奠基 |
+| `blue2.md` | BLUE2 — 控件扩充 |
+| [`BLUE3.md`](archive/BLUE3.md) | BLUE3 — 计划主体（大写拼写，与 `blue3` 不共存） |
+| [`BLUE3_R3_COMPLETION.md`](archive/BLUE3_R3_COMPLETION.md) | BLUE3 第 3 轮完成记录 |
+| [`BLUE4.md`](archive/BLUE4.md) | BLUE4 — 计划主体 |
+| [`BLUE5.md`](archive/BLUE5.md) | BLUE5 — 计划主体 |
+| [`BLUE6.md`](archive/BLUE6.md) | BLUE6 — 计划主体 |
+| [`BLUE7.md`](archive/BLUE7.md) | BLUE7 — 计划主体 |
+| [`blue7_verification.md`](archive/blue7_verification.md) | BLUE7 验证记录 |
+| [`blue8.md`](archive/blue8.md) | BLUE8 — 计划主体 |
+| [`blue9.md`](archive/blue9.md) | BLUE9 — 计划主体 |
+| [`blue10.md`](archive/blue10.md) | BLUE10 — 计划主体 |
+| [`blue10_degraded_mappings_audit.md`](archive/blue10_degraded_mappings_audit.md) | 降级映射审计（BLUE10 附录） |
+| [`blue10_wgpu_upgrade_evaluation.md`](archive/blue10_wgpu_upgrade_evaluation.md) | wgpu 升级评估（BLUE10 附录） |
+| [`blue11.md`](archive/blue11.md) | BLUE11 — 计划主体 |
+| [`blue12.md`](archive/blue12.md) | BLUE12 — 计划主体 |
+| [`blue13.md`](archive/blue13.md) | BLUE13 — 计划主体 |
+| [`blue14.md`](archive/blue14.md) | BLUE14 — 计划主体 |
+| [`blue15.md`](archive/blue15.md) | BLUE15 — 计划主体 |
+| [`blue16.md`](archive/blue16.md) | BLUE16 — 计划主体 |
+| [`blue17.md`](archive/blue17.md) | BLUE17 — 计划主体 |
+| [`blue18.md`](archive/blue18.md) | BLUE18 — 计划主体 |
+| [`blue19.md`](archive/blue19.md) | BLUE19 — 计划主体 |
+| [`blue20.md`](archive/blue20.md) | BLUE20 — 计划主体 |
+| [`blue20_p3_backlog.md`](archive/blue20_p3_backlog.md) | BLUE20 P3 遗留（已并入后续计划） |
+| [`blue21.md`](archive/blue21.md) | BLUE21 — 计划主体 |
+| [`blue22.md`](archive/blue22.md) | BLUE22 — 计划主体 |
+| [`cocoa_to_objc2_migration.md`](archive/cocoa_to_objc2_migration.md) | cocoa → objc2 迁移方案（已实施） |
+| [`miri_audit.md`](archive/miri_audit.md) | Miri 审计（已实施） |
+| [`plan.md`](archive/plan.md) | 早期总计划（已被 BLUE 系列取代） |
+| [`plan copy.md`](archive/plan%20copy.md) | 早期总计划的重复副本（已废） |
+| [`REFACTOR_PLAN.md`](archive/REFACTOR_PLAN.md) | 重构计划（已完成） |
+| [`REFACTOR_EXECUTION_GUIDE.md`](archive/REFACTOR_EXECUTION_GUIDE.md) | 重构执行指南（已完成） |
+| [`scan_round1.md`](archive/scan_round1.md) | 早期扫描第 1 轮（已被 BLUE 系列取代） |
+| [`scan_round2.md`](archive/scan_round2.md) | 早期扫描第 2 轮（已被 BLUE 系列取代） |
+| [`scan_round3.md`](archive/scan_round3.md) | 早期扫描第 3 轮（已被 BLUE 系列取代） |
+| [`TODO.md`](archive/TODO.md) | 路线图待办的**历史快照**；现行 TODO 在 [`../TODO.md`](TODO.md) |
 
 ---
 
@@ -90,3 +122,16 @@ $ ls docs/plans/archive/*.md | wc -l  # 35
 $ grep -rn "docs/plans/" --include=*.rs --include=*.sh --include=*.py . | grep -v archive
   # 零命中指向 archive/ 的路径（除刻意保留的历史引注）
 ```
+
+### 三条元门禁（BLUE24 §9）
+
+本目录的收敛由**三条可运行的门禁**钉住（而不是靠习惯）：
+
+| 门禁 | 断言 | 反向注入 |
+|---|---|---|
+| `tools/check_single_open_plan.sh` | 同一主题至多一份**未归档且仍有 `[ ]`** 的计划（多份不同主题可并行） | 造一份与 `blue24` 同标题且带 `[ ]` 的计划 ⇒ 变红 |
+| `tools/check_plan_archive_has_index.sh` | `archive/` 每份文件在本 README 有行；README 不引用不存在的归档 | 向 `archive/` 放一份未入索引的文件 ⇒ 变红 |
+| `tools/check_gates_are_worth_running.sh` | 每个 `check_*.sh` 被 `run_all_gates.sh` 的 glob 枚举；运行预算 ≤ 45 min；每个门禁在 `gates_reverse_injection.md` 有名 | 删一行记录 / 改预算为 9999 ⇒ 各自变红 |
+
+> `gates_reverse_injection.md` 逐门禁记录「注入什么、报什么」。尚未注入的门禁以 `—`
+> 如实列出（不计入通过），元门禁会把它作为一个**数字**打印出来。

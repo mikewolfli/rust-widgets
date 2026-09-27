@@ -43,6 +43,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::dimensions;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -629,7 +630,7 @@ impl Widget for Cascader {
     }
 
     fn size_hint(&self) -> Size {
-        Size::new(200, 32)
+        Size::new(dimensions::CASCADER_DEFAULT_WIDTH, dimensions::CASCADER_DEFAULT_HEIGHT)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

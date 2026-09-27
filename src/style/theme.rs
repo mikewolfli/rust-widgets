@@ -62,6 +62,30 @@ pub fn resolved_theme_style_for(
     None
 }
 
+/// The border a **semantic state** resolves to, or `None` when the theme does not style one.
+///
+/// The always-available counterpart of `crate::theme::resolved_semantic_border`; see
+/// [`resolved_theme_style`] for why the lookups live here. A control that paints a validation
+/// outline reads this while drawing, and it compiles in every profile that has the widget layer --
+/// so it must not name `crate::theme`.
+#[cfg(device_profile)]
+pub fn resolved_semantic_border(
+    kind_name: &str,
+    semantic: crate::style::SemanticState,
+) -> Option<Color> {
+    crate::theme::resolved_semantic_border(kind_name, semantic)
+}
+
+/// No theme module in this profile, so no state resolves to a border; see
+/// [`resolved_semantic_border`].
+#[cfg(not(device_profile))]
+pub fn resolved_semantic_border(
+    _kind_name: &str,
+    _semantic: crate::style::SemanticState,
+) -> Option<Color> {
+    None
+}
+
 /// Serialises a **rendering test** against every other one in the process, and is a no-op value
 /// where the build has no theme.
 ///

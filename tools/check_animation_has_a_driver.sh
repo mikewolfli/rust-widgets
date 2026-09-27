@@ -40,6 +40,15 @@
 # Step 2 appends an undispatched animation `tick` to a named widget and requires the scan
 # to report it, so a search that matched nothing cannot pass.
 #
+# # Why the injection target is a file with no `tick` at all
+#
+# The scan's unit is a *file*: it reports a file that declares an animation `tick` and no
+# trait bridge. Injecting into a file that **already** bridges its tick (`skeleton_loader.rs`,
+# the first target) therefore could not change the verdict -- the file already answers "has a
+# bridge" -- and the injection reported a false defect in the gate rather than in the tree.
+# `label.rs` is a plain control with neither shape, so the injected tick is the only one and
+# the finding appears (BLUE23 §A.11.3 item 3, closed here).
+#
 # Usage: tools/check_animation_has_a_driver.sh
 # Exit 0 = every animation tick is reachable from the bus.
 # Exit 1 = an island (each offender is named by file).
@@ -60,7 +69,7 @@ if ! "$PYTHON" tools/animation_driver_scan.py; then
     exit 1
 fi
 
-if "$PYTHON" tools/animation_driver_scan.py --inject=src/widget/display_widgets/skeleton_loader.rs >/dev/null 2>&1; then
+if "$PYTHON" tools/animation_driver_scan.py --inject=src/widget/base_widgets/label.rs >/dev/null 2>&1; then
     echo "FAIL: injecting an undispatched tick did not change the result, so the check is"
     echo "      not comparing against the widget tree"
     exit 1

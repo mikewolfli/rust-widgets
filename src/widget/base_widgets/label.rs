@@ -796,6 +796,11 @@ mod tests {
     /// The backend writes alpha as a **fraction** (`rgba(18,18,18,0.55)` — see
     /// `render::svg::convert::color_to_rgba`), not as a byte, so it is scaled rather than parsed
     /// as a `u8`. Reading it as a byte is how the first draft of this helper reported `a`.
+    ///
+    /// Gated with its only caller: the legibility test needs a theme, which a profile without a
+    /// device profile does not have, so both the test and its helpers are compiled out together
+    /// rather than leaving two dead functions behind.
+    #[cfg(device_profile)]
     fn last_fill(svg: &str) -> Color {
         let key = "fill=\"rgba(";
         let at = svg.rfind(key).expect("a fill") + key.len();
@@ -812,6 +817,9 @@ mod tests {
     ///
     /// Text leaves the renderer as glyph geometry rather than as a `<text>` element (see
     /// `widget::svg`'s docs), so the ink is the path's `fill`, not an attribute of a text node.
+    ///
+    /// Gated with its only caller; see [`last_fill`].
+    #[cfg(device_profile)]
     fn ink_path_fill(svg: &str) -> Color {
         let at = svg.find("<path").expect("the label draws an ink path");
         let path = &svg[at..];

@@ -609,6 +609,198 @@ pub struct ThemeStyleToken {
     /// `shadow`: the theme schema stays on primitives.
     #[cfg_attr(not(alloc_frugal), serde(default))]
     pub touch_target: Option<[u32; 2]>,
+
+    // ── The four surface dimensions (BLUE24 §10A.4) ──
+    //
+    // Each is an optional override of one orthogonal dimension of the face this control is
+    // drawn as. They reach a control through the same `overrides.styles` channel every other
+    // key here uses, at both the `<kind>` / `<class>` layer and the `<kind>:<state>` layer —
+    // so `"button:pressed": { "bevel": "inset" }` expresses the press feedback every 3D
+    // button has, without a new theme layer and without a line of control code.
+    /// Optional elevation override: which layer the face sits on.
+    ///
+    /// A **named** level (`"flat"`, `"level1"` …) rather than a number, so a theme file speaks
+    /// the same word the role table does and an unrecognised word is a load error rather than a
+    /// silent fallback (BLUE24 §10A.6 criterion 7).
+    #[cfg_attr(not(alloc_frugal), serde(default))]
+    pub elevation: Option<SurfaceElevationToken>,
+    /// Optional bevel override: which way the face's edge is lit.
+    ///
+    /// Three-way like [`ShadowOverride`] and for the same reason: "inset a face the role
+    /// raises", "flatten a face the role insets", and "say nothing" are three intents, and
+    /// `Option` can only express two.
+    #[cfg_attr(not(alloc_frugal), serde(default))]
+    pub bevel: BevelOverride,
+    /// Optional material override: an opaque face or tinted glass.
+    #[cfg_attr(not(alloc_frugal), serde(default))]
+    pub material: Option<SurfaceMaterialToken>,
+    /// Optional edge override: whether the face draws a stroke, defers to its shadow, or has
+    /// no visible edge.
+    #[cfg_attr(not(alloc_frugal), serde(default))]
+    pub hairline: Option<SurfaceHairlineToken>,
+}
+
+/// A surface elevation as a theme file spells it.
+///
+/// # Why a newtype and not the render type directly
+///
+/// The theme schema deliberately stays on its own spellings (the rule [`ShadowOverride`]
+/// follows), and [`crate::render::surface::Elevation`] has no serialisation contract. The
+/// newtype is also where an unknown token can be **rejected**: a theme that writes
+/// `"elevation": "high"` gets an error naming the word, not a face that silently sits on the
+/// page (BLUE24 §10A.6 criterion 7).
+#[cfg_attr(not(alloc_frugal), derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(alloc_frugal), serde(try_from = "String", into = "String"))]
+pub struct SurfaceElevationToken(pub crate::render::surface::Elevation);
+
+/// A surface material as a theme file spells it. See [`SurfaceElevationToken`].
+#[cfg_attr(not(alloc_frugal), derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(alloc_frugal), serde(try_from = "String", into = "String"))]
+pub struct SurfaceMaterialToken(pub crate::render::surface::Material);
+
+/// Which edge a face draws, as a theme file spells it. See [`SurfaceElevationToken`].
+#[cfg_attr(not(alloc_frugal), derive(Serialize, Deserialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(alloc_frugal), serde(try_from = "String", into = "String"))]
+pub struct SurfaceHairlineToken(pub crate::render::surface::Hairline);
+
+/// The message an unrecognised surface token produces.
+///
+/// One spelling for all of them, so a reader who mistypes any gets the same shape of message:
+/// the key, the offending word, and the words that would have worked.
+#[cfg(not(alloc_frugal))]
+pub(crate) fn unknown_surface_token(key: &str, value: &str) -> String {
+    let accepted = match key {
+        "elevation" => "flat, level1, level2, level3, level4",
+        "material" => "solid, translucent",
+        "hairline" => "outline, shadow, none",
+        "bevel" => "raised, inset, none, inherit",
+        _ => "see the surface-style documentation",
+    };
+    format!("unknown {key} token {value:?} (accepted: {accepted})")
+}
+
+#[cfg(not(alloc_frugal))]
+impl TryFrom<String> for SurfaceElevationToken {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        crate::render::surface::Elevation::parse(&value)
+            .map(Self)
+            .ok_or_else(|| unknown_surface_token("elevation", &value))
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+impl TryFrom<String> for SurfaceMaterialToken {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        crate::render::surface::Material::parse(&value)
+            .map(Self)
+            .ok_or_else(|| unknown_surface_token("material", &value))
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+impl TryFrom<String> for SurfaceHairlineToken {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        crate::render::surface::Hairline::parse(&value)
+            .map(Self)
+            .ok_or_else(|| unknown_surface_token("hairline", &value))
+    }
+}
+
+// The round trip a theme file's `"keep it"` edit takes: reading a stored theme and writing it
+// back must not change the token. Falling back to a default here would make an export lossy.
+#[cfg(not(alloc_frugal))]
+impl From<SurfaceElevationToken> for String {
+    fn from(value: SurfaceElevationToken) -> Self {
+        value.0.as_str().to_string()
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+impl From<SurfaceMaterialToken> for String {
+    fn from(value: SurfaceMaterialToken) -> Self {
+        value.0.as_str().to_string()
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+impl From<SurfaceHairlineToken> for String {
+    fn from(value: SurfaceHairlineToken) -> Self {
+        value.0.as_str().to_string()
+    }
+}
+
+/// What a [`ThemeStyleToken`] says about a face's bevel.
+///
+/// # Why three cases rather than `Option<BevelDirection>`
+///
+/// Because there are three intents: **set** a direction (which may differ from the role
+/// default — a theme that flattens buttons still wants a pressed field to read as a well),
+/// **remove** the bevel the role default supplied (the flat-design case), and **inherit**.
+/// `Option<BevelDirection>` can only say two of them (`Some` sets, `None` is ambiguous between
+/// remove and inherit), which is the identical defect [`ShadowOverride`] fixes.
+///
+/// A theme file spells it `"raised"`, `"inset"`, `"none"` or `"inherit"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BevelOverride {
+    /// Leave the bevel as the base resolution left it.
+    #[default]
+    Inherit,
+    /// Remove the bevel, leaving a flat face.
+    None,
+    /// Bevel the face in this direction.
+    Set(crate::render::BevelDirection),
+}
+
+#[cfg(not(alloc_frugal))]
+impl<'de> serde::Deserialize<'de> for BevelOverride {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        let token = String::deserialize(deserializer)?;
+        match token.as_str() {
+            "inherit" => Ok(Self::Inherit),
+            "none" | "flat" => Ok(Self::None),
+            other => crate::render::BevelDirection::parse(other)
+                .map(Self::Set)
+                // `"sunken"` is a plausible mistake for `"inset"`, and degrading it to "no
+                // bevel" would make the face look flat while the author believes it is bevelled
+                // (BLUE24 §10A.6 criterion 7).
+                .ok_or_else(|| {
+                    D::Error::custom(crate::theme::types::unknown_surface_token("bevel", other))
+                }),
+        }
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+impl serde::Serialize for BevelOverride {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let token = match self {
+            Self::Inherit => "inherit",
+            Self::None => "none",
+            Self::Set(direction) => direction.as_str(),
+        };
+        serializer.serialize_str(token)
+    }
+}
+
+impl BevelOverride {
+    /// Applies this override to a resolved bevel, or `None` when it should be removed.
+    pub fn apply(
+        self,
+        current: Option<crate::render::BevelSpec>,
+    ) -> Option<crate::render::BevelSpec> {
+        match self {
+            Self::Inherit => current,
+            Self::None => None,
+            Self::Set(direction) => Some(crate::render::BevelSpec::new(direction)),
+        }
+    }
 }
 
 /// What a [`ThemeStyleToken`] says about a widget's drop shadow.

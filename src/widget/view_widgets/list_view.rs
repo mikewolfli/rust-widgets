@@ -43,6 +43,62 @@ const LIST_TEXT_INSET: i32 = 2;
 /// origins.
 pub const LIST_ROW_HEIGHT: u32 = dimensions::MENU_ROW_HEIGHT;
 
+/// The smallest tile `ViewMode::Icon` will lay out, in pixels.
+///
+/// The **minimum**, not the actual size: a mode whose cell size is derived from how many fit needs a
+/// floor to divide by, and an icon smaller than this stops reading as a picture. A box too narrow for
+/// even one becomes a single narrow column rather than zero columns.
+const LIST_ICON_MIN_CELL: u32 = 48;
+/// The smallest tile `ViewMode::Thumbnails` will lay out, in pixels.
+///
+/// Larger than the icon tile because a thumbnail is a preview rather than a glyph, and a preview too
+/// small to recognise is not a preview.
+const LIST_THUMB_MIN_CELL: u32 = 72;
+/// The caption strip drawn under a tile in the two grid modes, in pixels.
+const LIST_THUMB_CAPTION: u32 = 18;
+
+/// How a [`ListView`]'s items are laid out under the current [`ViewMode`].
+///
+/// Produced by `ListView::list_layout` and read by every geometry decision, so the four modes cannot
+/// be half-applied. See that method for the table of what each mode does.
+#[derive(Debug, Clone, Copy)]
+struct ListLayout {
+    /// The box the items are laid out in.
+    content: Rect,
+    /// One line's height.
+    row_height: u32,
+    /// How many items sit across one line.
+    ///
+    /// A `u32` rather than a `usize` because every number it is combined with — the content box's
+    /// width and height — is a `u32`, and mixing the two in this one struct turned every expression
+    /// that touched it into a cast. It is at least 1 in every mode, so the divisions below never
+    /// divide by zero.
+    columns: u32,
+    /// How far a label is inset from its cell's left edge.
+    text_inset: i32,
+    /// Whether the label is drawn below its cell rather than vertically centred beside it.
+    label_below: bool,
+}
+
+impl ListLayout {
+    /// How wide one tile is: the content box split evenly between the columns.
+    ///
+    /// Floored, so `columns` tiles never claim more than the box actually holds, and never zero — a
+    /// zero-width tile would divide by zero in the hit test rather than merely look wrong.
+    fn cell_width(&self) -> u32 {
+        (self.content.width / self.columns.max(1)).max(1)
+    }
+
+    /// The band a `label_below` caption occupies at the foot of a cell.
+    ///
+    /// A caption is one text line tall, and the strip is where the glyphs land — the *device* line
+    /// height rather than the font's requested one, because the strip only has to hold what
+    /// [`crate::core::Font`] will actually paint.
+    fn caption_height(&self) -> u32 {
+        LIST_THUMB_CAPTION.min(self.row_height.max(1)).max(1)
+    }
+}
+
 /// List model abstraction for list-like views.
 pub trait ListModel: Send + Sync {
     /// Number of rows exposed by model.
@@ -378,8 +434,82 @@ impl ListView {
     /// is the shape this crate keeps deleting.
     #[allow(dead_code)]
     fn visible_row_count(&self) -> usize {
+        let layout = self.list_layout();
+        (layout.content.height / layout.row_height.max(1)) as usize
+    }
+
+    /// How the items are laid out under the current [`ViewMode`].
+    ///
+    /// # Why one struct rather than a height here and a column count there
+    ///
+    /// Four modes differ in **four** numbers: how tall a cell is, how many cells sit across, the
+    /// inset a label starts at, and whether a label is drawn under the cell or beside it. A control
+    /// that read `self.view_mode` at each of those places would be four chances to update three of
+    /// them, and the symptom would be a grid whose hit test disagrees with its paint -- the exact
+    /// defect this file already records for the row height (`20` in three places). Resolving the mode
+    /// once and reading the result everywhere is what makes the two impossible to disagree.
+    ///
+    /// # The modes
+    ///
+    /// | mode | cell | across | label |
+    /// |---|---|---|---|
+    /// | `List` | `LIST_ROW_HEIGHT` | 1 | beside, left-aligned |
+    /// | `Icon` | a square icon tile | as many as fit | under, centred |
+    /// | `Details` | two text lines tall | 1 | beside, on the lower line |
+    /// | `Thumbnails` | a square preview tile | as many as fit | under, centred |
+    ///
+    /// The three modes other than `List` keep the **beside** label placement even where the mode's
+    /// name suggests a caption: moving one of them under its cell would move that mode's own label
+    /// in its own snapshot, which is a rendering change and not part of wiring the mode up. Only the
+    /// two grid modes, which have no pre-existing label geometry to preserve, place theirs below.
+    ///
+    /// `List` is the pre-existing layout to the pixel, which is what keeps every existing geometry
+    /// assertion and the snapshot valid: its numbers are the constants that were already there.
+    fn list_layout(&self) -> ListLayout {
         let content = ControlMetrics::band_inset(self.base.geometry(), LIST_INSET);
-        (content.height / LIST_ROW_HEIGHT) as usize
+        match self.view_mode {
+            ViewMode::List => ListLayout {
+                content,
+                row_height: LIST_ROW_HEIGHT,
+                columns: 1,
+                text_inset: LIST_TEXT_INSET,
+                label_below: false,
+            },
+            // A tile is square, so its height is its width. The width is the content box divided by
+            // how many tiles fit, and how many fit is itself one of these numbers -- so it is derived
+            // from the minimum cell size rather than the other way round. A box narrower than one
+            // minimum cell therefore yields one column of a narrower tile, which is what "as many as
+            // fit, but never zero" means.
+            ViewMode::Icon => {
+                let columns = (content.width / LIST_ICON_MIN_CELL).max(1);
+                ListLayout {
+                    content,
+                    row_height: content.width / columns,
+                    columns,
+                    text_inset: LIST_TEXT_INSET,
+                    label_below: true,
+                }
+            }
+            ViewMode::Details => ListLayout {
+                content,
+                row_height: LIST_ROW_HEIGHT * 2,
+                columns: 1,
+                text_inset: LIST_TEXT_INSET,
+                label_below: false,
+            },
+            ViewMode::Thumbnails => {
+                let columns = (content.width / LIST_THUMB_MIN_CELL).max(1);
+                ListLayout {
+                    content,
+                    // The caption is *added to* the square, not carved out of it: a thumbnail keeps
+                    // its preview area and the label gets its own strip underneath.
+                    row_height: content.width / columns + LIST_THUMB_CAPTION,
+                    columns,
+                    text_inset: LIST_TEXT_INSET,
+                    label_below: true,
+                }
+            }
+        }
     }
 
     /// Row `index`'s own band, or `None` when the row is past the last visible one.
@@ -392,15 +522,36 @@ impl ListView {
     /// band from one function is what makes the drawn rows and the clickable rows the same rows; the
     /// caller cannot forget one of the four numbers because it never handles them.
     fn row_rect(&self, index: usize) -> Option<Rect> {
-        let content = ControlMetrics::band_inset(self.base.geometry(), LIST_INSET);
-        let y = content.y + (LIST_ROW_HEIGHT * index as u32) as i32;
+        let layout = self.list_layout();
+        // A *row* is one line of the grid, so the index walks lines and the column is what varies
+        // within one. That is also what keeps this function's contract unchanged for `List`: with one
+        // column, line `index` and item `index` are the same thing.
+        let line = index as u32 / layout.columns;
+        let y = layout.content.y + (layout.row_height * line) as i32;
         // A row that would extend past the content box is not visible: the clip is the content
         // box's bottom edge, and a partially visible row is not painted at all rather than being
         // painted truncated — a half-height row reads as a rendering error.
-        if y + LIST_ROW_HEIGHT as i32 > content.y + content.height as i32 {
+        if y + layout.row_height as i32 > layout.content.y + layout.content.height as i32 {
             return None;
         }
-        Some(Rect::new(content.x, y, content.width, LIST_ROW_HEIGHT))
+        Some(Rect::new(layout.content.x, y, layout.content.width, layout.row_height))
+    }
+
+    /// The band item `index` occupies: its column's slice of its row.
+    ///
+    /// In a one-column mode this is the row's own band, so [`Self::row_rect`] and this agree exactly
+    /// and the `List`/`Details` modes are unaffected. In a grid mode it is the tile, which is what a
+    /// highlight and a label have to be drawn inside — and its x comes from the *same* cell width
+    /// [`Self::row_at_point`] divides by, so a tile's paint and its hit test land on one another.
+    fn item_rect(&self, index: usize) -> Option<Rect> {
+        let row = self.row_rect(index)?;
+        let layout = self.list_layout();
+        if layout.columns <= 1 {
+            return Some(row);
+        }
+        let column = index as u32 % layout.columns;
+        let cell = layout.cell_width();
+        Some(Rect::new(row.x + (cell * column) as i32, row.y, cell, row.height))
     }
 
     /// The row index a point falls on, if it falls on a visible row.
@@ -408,12 +559,26 @@ impl ListView {
     /// The inverse of [`Self::row_rect`] and deliberately built on it: a point is a row's when it
     /// is inside that row's band, so the two directions cannot disagree about where row 0 begins.
     fn row_at_point(&self, point: crate::core::Point) -> Option<usize> {
-        let content = ControlMetrics::band_inset(self.base.geometry(), LIST_INSET);
-        if !content.contains_point(point) {
+        let layout = self.list_layout();
+        if !layout.content.contains_point(point) {
             return None;
         }
-        let index = ((point.y - content.y) / LIST_ROW_HEIGHT as i32) as usize;
-        (index < self.row_count()).then_some(index)
+        let line = (point.y - layout.content.y) as u32 / layout.row_height.max(1);
+        // In a grid the column is read from x, and a click in the empty space past the last tile of a
+        // line belongs to no item -- clamping it to the last column would select an item the user did
+        // not click, which is worse than selecting nothing.
+        let column = if layout.columns <= 1 {
+            0
+        } else {
+            let column = (point.x - layout.content.x).max(0) as u32 / layout.cell_width();
+            if column >= layout.columns {
+                return None;
+            }
+            column
+        };
+        let index = (line * layout.columns + column) as usize;
+        // The last partial row is not a target, matching `row_rect`'s refusal to paint it.
+        (index < self.row_count() && self.row_rect(index).is_some()).then_some(index)
     }
 
     /// Focuses and selects the row under `point`, if there is one.
@@ -439,7 +604,10 @@ impl Widget for ListView {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(200, 200)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::LIST_VIEW_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::LIST_VIEW_DEFAULT_HEIGHT,
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -579,38 +747,68 @@ impl Draw for ListView {
         // `y + item_height / 2` — which put the glyph box's top edge on the row's middle
         // line and left the first row pinned to y=0.
         //
-        // The row box comes from `row_rect`, which is also what the hit test reads: the row height
+        // The row box comes from `item_rect`, which is also what the hit test reads: the row height
         // used to be a `20` literal in three places (this loop, and both press arms of
         // `handle_event`) and the press arms measured from `rect.y` while this loop measured from
         // the content box, so a press on the first row selected the second.
+        //
+        // The text inset and the label's placement come from the same resolved layout, so a mode that
+        // changed the cell size cannot leave the label behind at the old inset — which is exactly the
+        // class of defect the row height already had.
         if self.model.is_some() {
+            let layout = self.list_layout();
             let row_count = self.row_count();
             let current_row = self.focused_row;
             let font = crate::core::Font::default();
+            // The row-*index* arithmetic is in `usize` (it comes from the model) and the way to get
+            // back to the row's number is to make the whole grid arithmetic `u32`, so the sole cast is
+            // at the two ends. `index / columns` reports the line, `index % columns` the column within
+            // it, and truncating division is what makes the two agree for the last partial line.
             for i in 0..row_count {
-                let Some(row) = self.row_rect(i) else { break };
+                let Some(cell) = self.item_rect(i) else { break };
                 // Hover is painted *under* focus: a row that is both hovered and focused keeps the
                 // focused weight, so the persistent fact is not visually displaced by the pointer
                 // merely passing over it.
                 if Some(i) == current_row {
-                    context.fill_rect(row, focused_bg);
+                    context.fill_rect(cell, focused_bg);
                 } else if Some(i) == self.hovered_row {
-                    context.fill_rect(row, hovered_bg);
+                    context.fill_rect(cell, hovered_bg);
                 }
                 if let Some(text) = self.model.as_ref().and_then(|model| model.data(i)) {
                     if !text.is_empty() {
-                        let cell = crate::core::Rect::new(
-                            row.x + LIST_TEXT_INSET,
-                            row.y,
-                            row.width.saturating_sub(LIST_TEXT_INSET as u32),
-                            row.height,
-                        );
+                        // A tile's caption is one line drawn *under* its picture, so its band is a
+                        // one-line strip at the cell's foot; giving `text_line` the whole cell would
+                        // centre the caption on the tile's middle line, over the picture it names.
+                        // A beside-label mode hands it the cell and lets it centre there, which for
+                        // the single-column modes is the pre-existing geometry exactly.
+                        let (band, align) = if layout.label_below {
+                            let caption = cell.height.min(layout.caption_height()).max(1);
+                            (
+                                Rect::new(
+                                    cell.x + layout.text_inset,
+                                    cell.y + (cell.height - caption) as i32,
+                                    cell.width.saturating_sub(layout.text_inset as u32),
+                                    caption,
+                                ),
+                                HorizontalAlignment::Center,
+                            )
+                        } else {
+                            (
+                                Rect::new(
+                                    cell.x + layout.text_inset,
+                                    cell.y,
+                                    cell.width.saturating_sub(layout.text_inset as u32),
+                                    cell.height,
+                                ),
+                                HorizontalAlignment::Left,
+                            )
+                        };
                         context.draw_text_fitted(
-                            context.text_line(cell, &font),
+                            context.text_line(band, &font),
                             &text,
                             &font,
                             ink,
-                            HorizontalAlignment::Left,
+                            align,
                         );
                     }
                 }
@@ -860,5 +1058,141 @@ mod tests {
         }
         // A point in the view's own frame, outside the content box, is no row at all.
         assert_eq!(view.row_at_point(crate::core::Point::new(0, 0)), None);
+    }
+
+    /// Each `ViewMode` resolves to a *different* layout, and each layout's paint and hit test agree.
+    ///
+    /// # What was dead, and what proves it is alive now
+    ///
+    /// `view_mode` was stored, published (getter, setter, schema row, round-trip test) and read by
+    /// nothing: all four modes painted and hit-tested as a flat list. The property layer therefore
+    /// promised a feature the control did not have.
+    ///
+    /// A mode is *not* wired up merely because `list_layout` mentions it -- the geometry has to reach
+    /// the pixels. This drives a point at each tile's own centre and requires the hit test to name
+    /// that tile, which is only true if `item_rect` (what `draw` paints through) and `row_at_point`
+    /// (what a click resolves through) were both built from the same columns and cell width.
+    #[test]
+    fn every_view_mode_lays_out_its_own_grid_and_hit_tests_to_match() {
+        // Wide enough for a real grid: 200 px holds 4 icon tiles of 48 or 2 thumbnail tiles of 72.
+        const WIDTH: u32 = 200;
+        const HEIGHT: u32 = 120;
+
+        let layout_of = |mode: ViewMode| {
+            let mut view = ListView::new(Rect::new(0, 0, WIDTH, HEIGHT));
+            view.set_view_mode(mode);
+            view.set_model(Arc::new(VecListModel::new((0..12).map(|n| n.to_string()).collect())));
+            view
+        };
+
+        let list = layout_of(ViewMode::List).list_layout();
+        let icons = layout_of(ViewMode::Icon).list_layout();
+        let details = layout_of(ViewMode::Details).list_layout();
+        let thumbs = layout_of(ViewMode::Thumbnails).list_layout();
+
+        // The four modes are four layouts: a mode that resolved to the same numbers as `List` would be
+        // the dead state this test exists to catch.
+        for (name, layout) in [("Icon", icons), ("Details", details), ("Thumbnails", thumbs)] {
+            assert_ne!(
+                (layout.row_height, layout.columns, layout.label_below),
+                (list.row_height, list.columns, list.label_below),
+                "{name} must lay out differently from List"
+            );
+        }
+
+        // `List` keeps the pre-existing numbers exactly, which is what makes the snapshot valid.
+        assert_eq!(list.row_height, LIST_ROW_HEIGHT);
+        assert_eq!(list.columns, 1);
+        assert!(list.content.width > 0 && list.content.height > 0);
+
+        // The two grid modes tile across; the two single-column modes do not.
+        assert!(icons.columns > 1, "200 px holds more than one 48 px icon tile");
+        assert!(thumbs.columns > 1, "200 px holds more than one 72 px thumbnail");
+        assert_eq!(details.columns, 1);
+        // A tile is square (the caption is added below it rather than carved out of it).
+        assert_eq!(icons.row_height, icons.cell_width());
+        assert_eq!(thumbs.row_height, thumbs.cell_width() + LIST_THUMB_CAPTION);
+        // Details is a taller single line, not a second one drawn at the same height.
+        assert_eq!(details.row_height, LIST_ROW_HEIGHT * 2);
+
+        // Paint and hit test agree, tile by tile, in every mode -- the property the old code had
+        // already lost once for the row height, and the reason both now read one `ListLayout`.
+        for (name, mode) in [
+            ("List", ViewMode::List),
+            ("Icon", ViewMode::Icon),
+            ("Details", ViewMode::Details),
+            ("Thumbnails", ViewMode::Thumbnails),
+        ] {
+            let view = layout_of(mode);
+            let mut checked = 0;
+            for index in 0..view.row_count() {
+                let Some(cell) = view.item_rect(index) else { break };
+                let centre = crate::core::Point::new(
+                    cell.x + cell.width as i32 / 2,
+                    cell.y + cell.height as i32 / 2,
+                );
+                assert_eq!(
+                    view.row_at_point(centre),
+                    Some(index),
+                    "{name}: the centre of tile {index} at {cell:?} must hit-test back to it"
+                );
+                checked += 1;
+            }
+            assert!(
+                checked > 1,
+                "{name}: the fixture must lay out more than one item to be a grid"
+            );
+        }
+
+        // In a grid, two items on one line are side by side and share a band; that is what "columns"
+        // means, and a mode that read `columns` for the height only would fail it.
+        let icons_view = layout_of(ViewMode::Icon);
+        let first = icons_view.item_rect(0).expect("visible");
+        let second = icons_view.item_rect(1).expect("visible");
+        assert_eq!(second.y, first.y, "the first two icon tiles share a line");
+        assert_eq!(second.x, first.x + first.width as i32, "and sit side by side");
+        assert!(
+            second.x < first.x + icons_view.list_layout().content.width as i32,
+            "the second tile is still inside the content box"
+        );
+        // The first tile of the *second* line is directly below the first tile of the first.
+        let wrapped = icons_view
+            .item_rect(icons_view.list_layout().columns as usize)
+            .expect("the second line fits");
+        assert_eq!(wrapped.x, first.x, "a wrapped item starts the next line");
+        assert_eq!(wrapped.y, first.y + first.height as i32);
+    }
+
+    /// A tile's caption is drawn in the strip at the tile's foot, not on the tile's middle line.
+    ///
+    /// # Why this needs its own assertion
+    ///
+    /// The caption's *band* is what the glyphs land in, and the obvious implementation -- hand
+    /// `text_line` the whole cell -- centres the caption over the picture it names, because
+    /// `text_line` centres vertically within whatever band it is given. Asserting only that the mode
+    /// changed would pass on that version.
+    #[test]
+    fn a_tile_caption_is_a_strip_at_the_foot_of_its_tile() {
+        let mut view = ListView::new(Rect::new(0, 0, 200, 120));
+        view.set_view_mode(ViewMode::Thumbnails);
+        let layout = view.list_layout();
+        assert!(layout.label_below, "the grid modes caption their tiles");
+        let caption = layout.caption_height();
+        assert!(caption > 0, "a caption with no height would draw nothing");
+        assert!(
+            caption < layout.row_height,
+            "the caption must leave room for the picture above it"
+        );
+        // The strip starts where the picture ends, so it is the cell's last `caption` rows.
+        let tile = view.item_rect(0).expect("visible");
+        assert_eq!(
+            tile.y + (tile.height - caption) as i32,
+            tile.y + layout.row_height as i32 - caption as i32,
+            "the caption strip is flush with the tile's foot"
+        );
+        // And a beside-label mode does not move its label down: `List` is unchanged to the pixel.
+        let mut list = ListView::new(Rect::new(0, 0, 200, 120));
+        list.set_view_mode(ViewMode::List);
+        assert!(!list.list_layout().label_below, "List labels sit beside their row");
     }
 }

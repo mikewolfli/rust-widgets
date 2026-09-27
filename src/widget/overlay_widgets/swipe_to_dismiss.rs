@@ -221,7 +221,10 @@ impl Widget for SwipeToDismiss {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(400, 60)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::SWIPE_TO_DISMISS_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::SWIPE_TO_DISMISS_DEFAULT_HEIGHT,
+        )
     }
 
     fn kind(&self) -> WidgetKind {

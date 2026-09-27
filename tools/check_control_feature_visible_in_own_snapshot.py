@@ -208,6 +208,22 @@ FEATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...], str], ...] = (
     ),
 )
 
+# Controls whose feature is a **state**, and which the exporter therefore draws in a declared
+# *extra appearance* rather than in the default file. The tick of a `group_box` is the worked
+# example: `group_box.svg` deliberately shows the state a caller actually gets (unchecked), and
+# `group_box_checked.svg` is where the tick is reviewable (BLUE23 §4.1, `EXTRA_APPEARANCES` in
+# `examples/export_control_svgs.rs`).
+#
+# # Why this table exists rather than the gate always reading `<control>.svg`
+#
+# The same reasoning `sample_fill` records for leaving `group_box` unchecked: two files showing
+# one thing is not evidence. So the tick lives in exactly one file, and this gate has to read
+# *that* file. Reading only the default would report the feature as missing when it is present in
+# the file the exporter declared — a false defect in the gate rather than in the control.
+FEATURE_STATE_APPEARANCE = {
+    "group_box": "group_box_checked.svg",
+}
+
 LINE_COMMENT = re.compile(r"<!--.*?-->", re.S)
 
 
@@ -218,16 +234,31 @@ def snapshot(control: str) -> str | None:
     return path.read_text(encoding="utf-8")
 
 
+def feature_snapshot(control: str) -> tuple[str | None, str]:
+    """The file this control's feature is reviewable in, and its name.
+
+    The default `<control>.svg` for every control whose feature is not a state. For a control the
+    exporter draws in a declared extra appearance (`FEATURE_STATE_APPEARANCE`), that file instead —
+    because that is where the feature is, and reading a file that by design omits it would report
+    a present feature as missing.
+    """
+    name = FEATURE_STATE_APPEARANCE.get(control, f"{control}.svg")
+    path = SNAPSHOTS / name
+    if not path.exists():
+        return None, name
+    return path.read_text(encoding="utf-8"), name
+
+
 def scan(inject: str | None) -> tuple[list[str], list[str]]:
     """Returns (findings, evidence lines)."""
     findings: list[str] = []
     evidence: list[str] = []
 
     for control, requires, forbids, why in FEATURES:
-        text = snapshot(control)
+        text, file_name = feature_snapshot(control)
         if text is None:
             findings.append(
-                f"{control}: snapshots/svg/{control}.svg does not exist, so this gate cannot "
+                f"{control}: snapshots/svg/{file_name} does not exist, so this gate cannot "
                 "check whether its feature is visible"
             )
             continue

@@ -184,7 +184,10 @@ impl Widget for FontPreview {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(300, 100)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::FONT_PREVIEW_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::FONT_PREVIEW_DEFAULT_HEIGHT,
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

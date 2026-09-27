@@ -39,9 +39,6 @@ use gtk::glib;
 #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
 use std::thread;
 
-#[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
-use std::thread;
-
 /// The frame interval this backend's event loop runs at, in milliseconds.
 ///
 /// One constant rather than a `16` written at each loop and at each `drive_frame`
@@ -457,6 +454,7 @@ impl Platform for LinuxPlatform {
                     point,
                 ) {
                     click_area.queue_draw();
+                    crate::platform::linux::canvas::note_canvas_redraw(window_widget);
                 }
                 glib::Propagation::Proceed
             });
@@ -475,6 +473,7 @@ impl Platform for LinuxPlatform {
                     point,
                 ) {
                     widget.queue_draw();
+                    crate::platform::linux::canvas::note_canvas_redraw(window_widget);
                 }
                 // A released click is also what a click callback keys off, and the draw
                 // above covers the visual half of it.
@@ -498,6 +497,7 @@ impl Platform for LinuxPlatform {
                 let target = crate::widget::runtime::focused_widget().unwrap_or(window_widget);
                 if crate::widget::runtime::dispatch_event(target, &key_event) {
                     widget.queue_draw();
+                    crate::platform::linux::canvas::note_canvas_redraw(target);
                 }
                 glib::Propagation::Proceed
             });

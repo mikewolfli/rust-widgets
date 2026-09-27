@@ -456,7 +456,10 @@ impl Widget for TableWidget {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(400, 300)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::TABLE_WIDGET_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::TABLE_WIDGET_DEFAULT_HEIGHT,
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

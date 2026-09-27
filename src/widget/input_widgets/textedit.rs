@@ -12,6 +12,7 @@ use crate::undo::{TextSnapshotCommand, UndoStack};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::dimensions;
 use crate::widget::text_utils::floor_char_boundary;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use std::cell::RefCell;
@@ -53,9 +54,25 @@ impl TextEdit {
         &self.text
     }
     /// Sets text and emits text_changed signal if different.
+    ///
+    /// # The one gate every path funnels through
+    ///
+    /// Typing, pasting, undo/redo and the property route all end here, so the `max_length` check
+    /// belongs here rather than in each caller. It used to be in none of them: the limit was read
+    /// only when the limit itself was set, so it did not survive a single keystroke.
+    ///
+    /// An over-long candidate is **refused whole** rather than truncated to fit. Truncating a paste
+    /// would silently discard the tail of what the user handed the control, and a user cannot tell a
+    /// completed paste from a cut one; refusing it moves the decision back to the caller, which is
+    /// where the limit was declared in the first place. The one truncation that does happen is in
+    /// [`Self::set_max_length`], where a *lowered* limit must apply to text already in the field and
+    /// there is no caller left to refuse.
     pub fn set_text(&mut self, text: impl Into<String>) {
         let text = text.into();
         if self.text == text {
+            return;
+        }
+        if !self.within_max_length(&text) {
             return;
         }
         let before = self.text.clone();
@@ -86,6 +103,17 @@ impl TextEdit {
         self.max_length
     }
     /// Sets maximum text length.
+    ///
+    /// # What was dead, and what proves it is alive now
+    ///
+    /// The field was stored, published (getter, setter, schema row, round-trip test) and read by
+    /// **nothing in the edit path**: the truncation below only ran when the *limit itself* changed,
+    /// so `set_max_length(Some(10))` on a short field and then typing twenty characters produced a
+    /// twenty-character field. A limit that only applies to the value that was already there is not
+    /// a limit — it is a one-shot trim with a misleading name.
+    ///
+    /// The gate is now [`Self::within_max_length`], which every path that appends or replaces text
+    /// consults, and this setter keeps its truncation because the *existing* text has to conform too.
     pub fn set_max_length(&mut self, max_length: Option<usize>) {
         self.max_length = max_length;
         // Truncate if needed (using floor_char_boundary to avoid mid-char panic)
@@ -95,6 +123,29 @@ impl TextEdit {
                 let truncated = self.text[..boundary].to_string();
                 self.set_text(truncated);
             }
+        }
+    }
+
+    /// Whether `candidate` is short enough to replace the current text.
+    ///
+    /// # Why a byte count and not a character count
+    ///
+    /// `max_length` is documented as a *length* and the schema publishes it as `UInt`, and the
+    /// truncation already in [`Self::set_max_length`] measures bytes (`self.text.len()`). A gate that
+    /// counted characters would let a CJK document through at three bytes per character and then be
+    /// shortened by the next call to the setter — two rules for one number, which is how a limit
+    /// becomes untrustworthy. Bytes are also what a caller sizing a database column is counting.
+    ///
+    /// # Why the whole candidate rather than the appended character
+    ///
+    /// `set_text` is the one place text enters the control (typing, pasting and the property route
+    /// all funnel through it), so the check belongs there -- one gate, not one per caller. Checking
+    /// only the appended character would let a *paste* through, which is the case a limit most
+    /// obviously exists for.
+    fn within_max_length(&self, candidate: &str) -> bool {
+        match self.max_length {
+            Some(max) => candidate.len() <= max,
+            None => true,
         }
     }
     /// Returns whether the widget is read-only.
@@ -206,7 +257,7 @@ impl Widget for TextEdit {
         &mut self.base
     }
     fn size_hint(&self) -> Size {
-        Size::new(200, 24)
+        Size::new(dimensions::TEXT_EDIT_DEFAULT_WIDTH, dimensions::TEXT_EDIT_DEFAULT_HEIGHT)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -436,15 +487,128 @@ impl Draw for TextEdit {
             // The placeholder is de-emphasised from the control's own ink rather than being a
             // fixed grey that a dark theme would render illegible.
             let text_color = if self.text.is_empty() { ink.blend(&field, 0.45) } else { ink };
-            // Simple text drawing - in real implementation would handle line wrapping
-            context.draw_text(
-                Point::new(text_x, text_y),
-                display_text,
-                &Font::default(),
-                text_color,
-                HorizontalAlignment::Left,
+            let font = Font::default();
+            // `line_wrap` used to be stored, published (`get`/`set`/schema row/round-trip test) and
+            // read by nothing: this was a single `draw_text` that ran the whole document off the
+            // right edge and past the bottom. It was even commented as a placeholder -- "in real
+            // implementation would handle line wrapping" -- which is the shape of a stored promise
+            // rather than of a missing line.
+            //
+            // The value is laid out over the field's *interior*, inset by the same padding the
+            // origin uses, so a wrapped line ends where the field ends rather than at the border.
+            let interior = Rect::new(
+                text_x,
+                text_y,
+                rect.width.saturating_sub(padding as u32 * 2),
+                rect.height.saturating_sub(padding as u32 * 2),
             );
+            self.draw_text_layout(context, display_text, interior, &font, text_color);
         }
+    }
+}
+
+impl TextEdit {
+    /// Paints `text` inside `interior`, honouring [`Self::line_wrap`].
+    ///
+    /// # The two layouts
+    ///
+    /// * **Wrapped** (`line_wrap: true`, the default): a line that would cross the interior's right
+    ///   edge continues on the next row, so the whole document is readable without scrolling
+    ///   sideways. This is the mode a document editor wants, and it is what the field's own name
+    ///   promises.
+    /// * **Unwrapped** (`line_wrap: false`): each `\n`-separated line is drawn in full and a line
+    ///   wider than the field is clipped at the border rather than folded. This is the mode a source
+    ///   editor wants, where folding a long line makes the indentation invisible.
+    ///
+    /// # Why the rows are walked manually
+    ///
+    /// The render context has `draw_text` and a per-`\n` `draw_text_line`, but neither wraps: the
+    /// break has to be chosen *by the text*, which needs the font's own advance widths. So the walk
+    /// measures glyph by glyph and breaks where the measurement says the row is full -- one
+    /// measurement per character, which for a field-sized document is what keeps a long paragraph
+    /// from being drawn as one unbounded string.
+    fn draw_text_layout(
+        &self,
+        context: &mut RenderContext,
+        text: &str,
+        interior: Rect,
+        font: &Font,
+        color: Color,
+    ) {
+        let line_height = context.measure_text("M", font).height.max(1) as i32;
+        let mut pen_y = interior.y;
+        // A row is skipped rather than clipped when it would cross the interior's bottom: a
+        // half-height row of glyphs reads as a rendering error, the same rule the list view's rows
+        // follow.
+        let bottom = interior.y + interior.height as i32;
+        let mut row = String::new();
+        let mut row_width = 0.0f32;
+        for ch in text.chars() {
+            if ch == '\n' {
+                pen_y = Self::flush_row(
+                    context,
+                    &row,
+                    interior.x,
+                    pen_y,
+                    line_height,
+                    bottom,
+                    font,
+                    color,
+                );
+                row.clear();
+                row_width = 0.0;
+                continue;
+            }
+            let advance = context.measure_text(&ch.to_string(), font).width;
+            // The break is taken *before* the glyph that would overflow, so the last glyph on a row
+            // is never the one that crossed the edge. A row is never left empty by the break: a
+            // single glyph wider than the interior has to go somewhere, and an empty row followed by
+            // the overflowing glyph is worse than a row that is one glyph too wide.
+            if self.line_wrap
+                && row_width + advance as f32 > interior.width as f32
+                && !row.is_empty()
+            {
+                pen_y = Self::flush_row(
+                    context,
+                    &row,
+                    interior.x,
+                    pen_y,
+                    line_height,
+                    bottom,
+                    font,
+                    color,
+                );
+                row.clear();
+                row_width = 0.0;
+            }
+            row.push(ch);
+            row_width += advance as f32;
+        }
+        if !row.is_empty() {
+            Self::flush_row(context, &row, interior.x, pen_y, line_height, bottom, font, color);
+        }
+    }
+
+    /// Draws one laid-out row at `pen_y` and returns the next row's origin.
+    ///
+    /// Returns `pen_y` unchanged when the row would cross `bottom`, so the caller needs no bound of
+    /// its own and cannot advance the pen past the interior it was given.
+    #[allow(clippy::too_many_arguments)]
+    fn flush_row(
+        context: &mut RenderContext,
+        row: &str,
+        x: i32,
+        pen_y: i32,
+        line_height: i32,
+        bottom: i32,
+        font: &Font,
+        color: Color,
+    ) -> i32 {
+        if pen_y + line_height > bottom {
+            return pen_y;
+        }
+        context.draw_text(Point::new(x, pen_y), row, font, color, HorizontalAlignment::Left);
+        pen_y + line_height
     }
 }
 
@@ -655,5 +819,117 @@ mod tests {
     fn textedit_signal_accessors() {
         let te = TextEdit::new(Rect::new(0, 0, 100, 100));
         let _ = &te.text_changed;
+    }
+
+    // ── `max_length` bounds every path into the field ──
+
+    /// The limit is enforced on **typing**, not only on the value that was already there.
+    ///
+    /// # What was dead, and what proves it is alive now
+    ///
+    /// `max_length` was stored, published (getter, setter, schema row, round-trip test) and read by
+    /// nothing in the edit path: the truncation only ran when the *limit itself* changed. So
+    /// `set_max_length(Some(10))` on a short field followed by typing twenty characters produced a
+    /// twenty-character field, and the property's reader could not tell — it answered `Some(10)`
+    /// either way. This drives the actual keystrokes through `handle_event`, which is the path a
+    /// user takes.
+    #[test]
+    fn max_length_bounds_typing_not_only_the_existing_value() {
+        use crate::event::Event;
+        let mut te = TextEdit::new(Rect::new(0, 0, 300, 200));
+        te.set_max_length(Some(5));
+        for ch in ['a', 'b', 'c', 'd', 'e', 'f', 'g'] {
+            te.handle_event(&Event::KeyPress { key: ch as u32, modifiers: 0 });
+        }
+        assert_eq!(te.text(), "abcde", "the field stopped at the limit, and did not lose a prefix");
+        assert_eq!(te.text().len(), 5);
+
+        // A paste is the case a limit most obviously exists for, so it is refused wholesale rather
+        // than silently cut: a user cannot tell a completed paste from a truncated one.
+        let before = te.text().to_string();
+        te.set_text("a much longer pasted string");
+        assert_eq!(te.text(), before, "an over-long paste is refused, not truncated");
+
+        // Deleting still works, so a full field is not a stuck one.
+        te.handle_event(&Event::KeyPress { key: 8, modifiers: 0 });
+        assert_eq!(te.text(), "abcd");
+        // And the field is usable again now that there is room.
+        te.handle_event(&Event::KeyPress { key: 'z' as u32, modifiers: 0 });
+        assert_eq!(te.text(), "abcdz");
+
+        // Raising the limit re-opens the field; clearing it removes the bound entirely.
+        te.set_max_length(Some(10));
+        te.set_text("0123456789");
+        assert_eq!(te.text(), "0123456789");
+        te.set_max_length(None);
+        te.set_text("a string of any length at all");
+        assert_eq!(te.text(), "a string of any length at all");
+
+        // Lowering the limit truncates the text already in the field, on a char boundary.
+        let mut unicode = TextEdit::new(Rect::new(0, 0, 300, 200));
+        unicode.set_text("你好世界");
+        unicode.set_max_length(Some(7));
+        assert_eq!(unicode.text(), "你好", "a multi-byte truncation lands on a boundary");
+    }
+
+    // ── `line_wrap` decides the layout of the value ──
+
+    /// Wrapping folds a long line onto the next row; not wrapping keeps one row and clips.
+    ///
+    /// # What was dead, and what proves it is alive now
+    ///
+    /// `line_wrap` was stored, published (`get`/`set`/schema row/round-trip test) and read by
+    /// nothing. `draw` was a single `draw_text` of the whole document, commented in place as "in
+    /// real implementation would handle line wrapping" — a stored promise. This asserts the two
+    /// settings paint different pictures *and* that the difference is the wrapping: with wrapping on
+    /// the value occupies several rows, with it off exactly one.
+    #[test]
+    fn line_wrap_folds_the_value_and_its_absence_does_not() {
+        use crate::widget::svg::{render_to_svg, text_ink_boxes};
+
+        let build = |wrap: bool| {
+            let mut te = TextEdit::new(Rect::new(0, 0, 60, 200));
+            te.set_line_wrap(wrap);
+            te.set_text("the quick brown fox jumps over the lazy dog");
+            te
+        };
+
+        let wrapped = render_to_svg(&mut build(true));
+        let unwrapped = render_to_svg(&mut build(false));
+        assert_ne!(
+            wrapped, unwrapped,
+            "the two settings must not render identically -- that was the dead state"
+        );
+
+        // The question `line_wrap` answers is "how many rows does the value occupy", so that is what
+        // is asserted -- a bare "the SVG differs" would pass on a one-pixel shift. The layout emits
+        // one `draw_text` per row and one glyph-geometry `<path>` per `draw_text`, so the row count
+        // is the number of text ink boxes.
+        let wrapped_rows = text_ink_boxes(&wrapped).len();
+        let unwrapped_rows = text_ink_boxes(&unwrapped).len();
+        assert!(
+            wrapped_rows > unwrapped_rows,
+            "wrapping must use more rows: {wrapped_rows} vs {unwrapped_rows}"
+        );
+        // Not wrapping is exactly one row of text, however long the line is.
+        assert_eq!(unwrapped_rows, 1, "an unwrapped value stays on one row");
+
+        // An explicit newline breaks on either setting, because it is the text's own decision rather
+        // than the layout's.
+        let mut explicit = TextEdit::new(Rect::new(0, 0, 300, 200));
+        explicit.set_line_wrap(false);
+        explicit.set_text("first\nsecond");
+        assert_eq!(
+            text_ink_boxes(&render_to_svg(&mut explicit)).len(),
+            2,
+            "an explicit newline is a break regardless of `line_wrap`"
+        );
+
+        // A value taller than the field is clipped rather than drawn outside it: the row count is
+        // bounded by the interior's height (30 px less the padding, over an 8 px line).
+        let mut overflowing = TextEdit::new(Rect::new(0, 0, 40, 30));
+        overflowing.set_text("word ".repeat(40));
+        let rows = text_ink_boxes(&render_to_svg(&mut overflowing)).len();
+        assert!(rows <= 3, "a small field draws only the rows it has room for, not {rows} rows");
     }
 }

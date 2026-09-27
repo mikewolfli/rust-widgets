@@ -240,7 +240,10 @@ impl Widget for SplashScreen {
     /// A full-window surface, so the hint is the smallest desktop window rather
     /// than a content-sized box: this control fills whatever it is given.
     fn size_hint(&self) -> Size {
-        Size::new(480, 320)
+        Size::new(
+            crate::widget::metrics::dimensions::SPLASH_SCREEN_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::SPLASH_SCREEN_DEFAULT_HEIGHT,
+        )
     }
 
     /// Advances the fade by `delta_ms`; `true` while there is still movement.

@@ -281,6 +281,107 @@ impl MdiArea {
         self.view_mode = mode;
         self.base.request_redraw();
     }
+
+    /// The box the tab strip occupies in [`ViewMode::TabbedView`].
+    ///
+    /// One derivation, read by the paint *and* by [`Self::tab_at_point`], because a strip whose
+    /// clickable tabs are not the tabs it drew is the same class of defect the row height had in
+    /// `list_view` -- two independent derivations that drift.
+    fn tab_strip_rect(&self) -> Rect {
+        let rect = self.geometry();
+        Rect::new(
+            rect.x,
+            rect.y,
+            rect.width,
+            TAB_STRIP_HEIGHT.min(rect.height as i32).max(0) as u32,
+        )
+    }
+
+    /// Tab `index`'s own box, or `None` when it is past the strip's trailing edge.
+    ///
+    /// Tabs are laid out end to end from the strip's leading edge at an equal width, capped at
+    /// [`TAB_MAX_WIDTH`]: a strip holding two tabs must not stretch each across half the work area,
+    /// because tabs and a toolbar are read differently. A tab that would cross the trailing edge is
+    /// not returned at all rather than returned truncated -- a half-drawn tab reads as a rendering
+    /// error, and the caller can draw an overflow affordance instead.
+    fn tab_rect(&self, index: usize) -> Option<Rect> {
+        let count = self.subwindows.len();
+        if count == 0 || index >= count {
+            return None;
+        }
+        let strip = self.tab_strip_rect();
+        let width = (strip.width / count as u32).clamp(1, TAB_MAX_WIDTH);
+        let x = strip.x + (width as usize * index) as i32;
+        if x + width as i32 > strip.x + strip.width as i32 {
+            return None;
+        }
+        Some(Rect::new(x, strip.y, width, strip.height))
+    }
+
+    /// The tab index a point falls on, if it falls on a drawn tab.
+    ///
+    /// The inverse of [`Self::tab_rect`], and deliberately built on it for the same reason
+    /// `list_view` builds its own inverse on its forward geometry.
+    fn tab_at_point(&self, point: Point) -> Option<usize> {
+        let strip = self.tab_strip_rect();
+        if !strip.contains_point(point) {
+            return None;
+        }
+        (0..self.subwindows.len())
+            .find(|index| self.tab_rect(*index).is_some_and(|tab| tab.contains_point(point)))
+    }
+
+    /// Where sub-window `index` is placed under the current [`ViewMode`].
+    ///
+    /// # Why one struct rather than a branch in the paint
+    ///
+    /// The two modes differ in **two** things: the frame's box and whether the frame draws its own
+    /// title bar. A paint that read `self.view_mode` at each of those places would be two chances to
+    /// update one of them, and the symptom would be a tab strip naming a window whose title bar is
+    /// also drawn -- or, worse, a click that activates a tab whose body is not the one on screen.
+    /// Resolving the mode once and reading the result everywhere is what makes that impossible.
+    ///
+    /// # The modes
+    ///
+    /// | mode | frame | title bar |
+    /// |---|---|---|
+    /// | `SubWindowView` | the sub-window's own stored geometry | drawn |
+    /// | `TabbedView` | the work area below the tab strip | not drawn (the tab names it) |
+    ///
+    /// # Why a non-active sub-window has no placement in `TabbedView`
+    ///
+    /// The mode shows exactly one window, and which one is [`Self::active_sub_window`]'s answer.
+    /// Handing every sub-window the whole body would paint them all on top of each other, and the
+    /// last one drawn -- not the active one -- would be the one the user sees.
+    fn subwindow_placement(&self, index: usize) -> Option<SubwindowPlacement> {
+        let subwindow = self.subwindows.get(index)?;
+        match self.view_mode {
+            ViewMode::SubWindowView => {
+                Some(SubwindowPlacement { frame: subwindow.geometry, title_bar: true })
+            }
+            ViewMode::TabbedView => {
+                if self.active_subwindow != Some(index) {
+                    return None;
+                }
+                let rect = self.geometry();
+                let strip = self.tab_strip_rect();
+                // The body is the work area below the strip. Both edges are taken from the same
+                // `geometry()` the strip was, so a strip clamped to a short area cannot leave the
+                // body starting *above* the strip's bottom edge.
+                let top = strip.y + strip.height as i32;
+                Some(SubwindowPlacement {
+                    frame: Rect::new(
+                        rect.x,
+                        top,
+                        rect.width,
+                        (rect.y + rect.height as i32 - top).max(0) as u32,
+                    ),
+                    title_bar: false,
+                })
+            }
+        }
+    }
+
     /// Returns background.
     pub fn background(&self) -> Background {
         self.background
@@ -406,7 +507,10 @@ impl Widget for MdiArea {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(400, 300)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::PANEL_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::PANEL_DEFAULT_HEIGHT,
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -491,7 +595,16 @@ impl EventHandler for MdiArea {
         let mut hit_subwindow = false;
         if let Event::MousePress { pos, button } = event {
             if *button == 1 {
-                if let Some(index) = self.sub_window_at_position(*pos) {
+                // In `TabbedView` the tabs are the only clickable chrome, because the windows they
+                // name carry no title bar of their own and all sit in the same body. Resolving the
+                // tab first is what makes the strip interactive rather than decorative -- a mode
+                // whose tabs cannot be clicked is the dead state this whole change closes.
+                if self.view_mode == ViewMode::TabbedView {
+                    if let Some(index) = self.tab_at_point(*pos) {
+                        hit_subwindow = true;
+                        self.set_active_sub_window(self.subwindows[index].widget);
+                    }
+                } else if let Some(index) = self.sub_window_at_position(*pos) {
                     hit_subwindow = true;
                     self.set_active_sub_window(self.subwindows[index].widget);
                 }
@@ -520,6 +633,39 @@ const CLOSE_SIZE_SUM: u32 = 22;
 
 /// Height of a sub-window's title bar, in logical pixels.
 const TITLE_BAR_HEIGHT: i32 = 24;
+
+/// The tab strip's height in `ViewMode::TabbedView`, in logical pixels.
+///
+/// Two pixels taller than a sub-window's own title bar: a tab carries the title *and* sits above
+/// the body it names, so it is chrome twice over and reads as a strip rather than as a detached
+/// title bar.
+const TAB_STRIP_HEIGHT: i32 = TITLE_BAR_HEIGHT + 2;
+
+/// The widest a single tab may grow in `ViewMode::TabbedView`, in logical pixels.
+///
+/// A strip of one or two tabs would otherwise stretch each to half the work area, which reads as
+/// a toolbar rather than as tabs. Past this a tab stops growing and the free space is left at the
+/// strip's trailing edge.
+const TAB_MAX_WIDTH: u32 = 160;
+
+/// How far a tab's label is inset from the tab's own edges, in logical pixels.
+const TAB_TEXT_INSET: i32 = 6;
+
+/// How a sub-window is *placed* under the current [`ViewMode`], independent of what it contains.
+///
+/// Produced by `MdiArea::subwindow_placement` and read by the paint, so the two modes cannot be
+/// half-applied -- the defect `list_view`'s own `ViewMode` had, where four modes were stored,
+/// published and read by nothing. See that method for what each mode does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SubwindowPlacement {
+    /// The sub-window's frame, in the work area's coordinates.
+    frame: Rect,
+    /// Whether the frame's own title bar is drawn.
+    ///
+    /// False in `TabbedView`, where the tab strip names the sub-window: drawing both would name
+    /// the same window twice, one above the other.
+    title_bar: bool,
+}
 
 impl Draw for MdiArea {
     fn draw(&mut self, context: &mut RenderContext) {
@@ -618,72 +764,95 @@ impl Draw for MdiArea {
                 }
             }
         }
+        // In `TabbedView` the tab strip is the mode's whole visible difference at rest, so it is
+        // drawn before the body: the active tab is the one whose window is about to be painted
+        // below it, and painting the strip first keeps the body's own frame from covering it.
+        if self.view_mode == ViewMode::TabbedView {
+            self.draw_tab_strip(context, &area, &border, &ink, &primary);
+        }
         // Draw sub-windows
         // Sort by z-order (lowest first, so highest draws last)
         let mut sorted_indices: Vec<usize> = (0..self.subwindows.len()).collect();
         sorted_indices.sort_by_key(|&i| self.subwindows[i].z_order);
         for index in sorted_indices {
+            let Some(placement) = self.subwindow_placement(index) else {
+                continue;
+            };
             let subwindow = &self.subwindows[index];
             let is_active = self.active_subwindow == Some(index);
             // Draw sub-window frame
-            let frame_rect = subwindow.geometry;
+            let frame_rect = placement.frame;
             // Draw frame background
             let bg_color = if is_active { area.blend(&ink, 0.22) } else { area.blend(&ink, 0.14) };
             context.fill_rect(frame_rect, bg_color);
             // Draw frame border
             let border_color = if is_active { primary } else { border };
             context.draw_rect(frame_rect, border_color);
-            // Draw title bar
-            let title_bar_height = TITLE_BAR_HEIGHT;
-            let title_bar_color = if is_active { primary } else { area.blend(&secondary, 0.55) };
-            context.fill_rect(
-                Rect::new(frame_rect.x, frame_rect.y, frame_rect.width, title_bar_height as u32),
-                title_bar_color,
-            );
-            // Draw title text. Centred on the **title bar's own line box**, not on
-            // `title_bar_height / 2`: the latter put the glyph box's top edge on the bar's
-            // middle line, so a 14 px label occupied `12..26` inside a 24 px bar and the
-            // descenders crossed the bottom border. The close button below already used the
-            // correct `(bar - size) / 2` form — one bar, two rules — so both now share this
-            // line box.
-            let title_bar_rect =
-                Rect::new(frame_rect.x, frame_rect.y, frame_rect.width, title_bar_height as u32);
-            let title_font = Font::default();
-            let title_line = context.text_line(title_bar_rect, &title_font);
-            let text_color = if is_active { primary.contrast_color() } else { ink };
-            context.draw_text_fitted(
-                Rect {
-                    x: frame_rect.x + 5,
-                    y: title_line.y,
-                    // Bounded so a long document title cannot run under the close button.
-                    width: title_bar_rect.width.saturating_sub(5 + CLOSE_SIZE_SUM),
-                    height: title_line.height,
-                },
-                &subwindow.title,
-                &title_font,
-                text_color,
-                HorizontalAlignment::Left,
-            );
-            // Draw close button if closable
-            if subwindow.closable {
-                let close_size = CLOSE_SIZE;
-                let close_x = frame_rect.x + frame_rect.width as i32 - close_size - 5;
-                let close_y = title_line.y + (title_line.height as i32 - close_size) / 2;
-                let close_color = if is_active {
-                    primary.contrast_color()
-                } else {
-                    ink.blend(&title_bar_color, 0.35)
-                };
-                context.draw_line(
-                    Point::new(close_x, close_y),
-                    Point::new(close_x + close_size, close_y + close_size),
-                    close_color,
+            // Draw title bar. `TabbedView` places the window under a tab that already names it, so
+            // the frame draws no title bar of its own -- and, crucially, its content gets the whole
+            // frame rather than the frame minus a bar nobody drew.
+            let title_bar_height = if placement.title_bar { TITLE_BAR_HEIGHT } else { 0 };
+            if placement.title_bar {
+                let title_bar_color =
+                    if is_active { primary } else { area.blend(&secondary, 0.55) };
+                context.fill_rect(
+                    Rect::new(
+                        frame_rect.x,
+                        frame_rect.y,
+                        frame_rect.width,
+                        title_bar_height as u32,
+                    ),
+                    title_bar_color,
                 );
-                context.draw_line(
-                    Point::new(close_x + close_size, close_y),
-                    Point::new(close_x, close_y + close_size),
-                    close_color,
+                // Draw title text. Centred on the **title bar's own line box**, not on
+                // `title_bar_height / 2`: the latter put the glyph box's top edge on the bar's
+                // middle line, so a 14 px label occupied `12..26` inside a 24 px bar and the
+                // descenders crossed the bottom border. The close button below already used the
+                // correct `(bar - size) / 2` form — one bar, two rules — so both now share this
+                // line box.
+                let title_bar_rect = Rect::new(
+                    frame_rect.x,
+                    frame_rect.y,
+                    frame_rect.width,
+                    title_bar_height as u32,
                 );
+                let title_font = Font::default();
+                let title_line = context.text_line(title_bar_rect, &title_font);
+                let text_color = if is_active { primary.contrast_color() } else { ink };
+                context.draw_text_fitted(
+                    Rect {
+                        x: frame_rect.x + 5,
+                        y: title_line.y,
+                        // Bounded so a long document title cannot run under the close button.
+                        width: title_bar_rect.width.saturating_sub(5 + CLOSE_SIZE_SUM),
+                        height: title_line.height,
+                    },
+                    &subwindow.title,
+                    &title_font,
+                    text_color,
+                    HorizontalAlignment::Left,
+                );
+                // Draw close button if closable
+                if subwindow.closable {
+                    let close_size = CLOSE_SIZE;
+                    let close_x = frame_rect.x + frame_rect.width as i32 - close_size - 5;
+                    let close_y = title_line.y + (title_line.height as i32 - close_size) / 2;
+                    let close_color = if is_active {
+                        primary.contrast_color()
+                    } else {
+                        ink.blend(&title_bar_color, 0.35)
+                    };
+                    context.draw_line(
+                        Point::new(close_x, close_y),
+                        Point::new(close_x + close_size, close_y + close_size),
+                        close_color,
+                    );
+                    context.draw_line(
+                        Point::new(close_x + close_size, close_y),
+                        Point::new(close_x, close_y + close_size),
+                        close_color,
+                    );
+                }
             }
             // Draw widget content via registry
             let content_rect = Rect::new(
@@ -703,6 +872,58 @@ impl Draw for MdiArea {
                 reg.borrow_mut().draw_widget(subwindow.widget, context);
                 context.pop_clip();
             }
+        }
+    }
+}
+
+impl MdiArea {
+    /// Paints the `TabbedView` tab strip: one tab per sub-window, the active one raised.
+    ///
+    /// Every tab's box comes from [`Self::tab_rect`], which is also what [`Self::tab_at_point`]
+    /// resolves a click through, so the tab that is highlighted is the tab a click would activate.
+    /// A tab past the strip's trailing edge is skipped by `tab_rect` returning `None`, and the loop
+    /// stops rather than drawing a truncated tab.
+    fn draw_tab_strip(
+        &self,
+        context: &mut RenderContext,
+        area: &Color,
+        border: &Color,
+        ink: &Color,
+        primary: &Color,
+    ) {
+        let strip = self.tab_strip_rect();
+        context.fill_rect(strip, area.blend(ink, 0.06));
+        context.draw_line(
+            Point::new(strip.x, strip.y + strip.height as i32 - 1),
+            Point::new(strip.x + strip.width as i32, strip.y + strip.height as i32 - 1),
+            *border,
+        );
+        let font = Font::default();
+        for index in 0..self.subwindows.len() {
+            let Some(tab) = self.tab_rect(index) else { break };
+            let is_active = self.active_subwindow == Some(index);
+            // The active tab is drawn in the accent and the rest in the strip's own surface, which
+            // is what makes "which window am I looking at" answerable without reading the title.
+            let fill = if is_active { *primary } else { area.blend(ink, 0.12) };
+            context.fill_rect(tab, fill);
+            context.draw_rect(tab, *border);
+            let text_color = if is_active { primary.contrast_color() } else { *ink };
+            // The label's band is the tab minus its own padding, so a long title is ellipsised by
+            // `draw_text_fitted` rather than running into the next tab.
+            let inset = TAB_TEXT_INSET.min(tab.width as i32 / 2);
+            let label = Rect::new(
+                tab.x + inset,
+                tab.y,
+                tab.width.saturating_sub(inset as u32 * 2),
+                tab.height,
+            );
+            context.draw_text_fitted(
+                context.text_line(label, &font),
+                &self.subwindows[index].title,
+                &font,
+                text_color,
+                HorizontalAlignment::Center,
+            );
         }
     }
 }
@@ -1294,5 +1515,137 @@ mod tests {
         area.sub_window_mut(0).expect("subwindow exists").set_minimized(true);
         area.arrange_icons();
         assert_eq!(area.sub_window(0).map(|window| window.geometry().width), Some(100));
+    }
+
+    // ── 11. `view_mode` decides where a sub-window is placed ────────────────
+
+    /// A `TabbedView` area places its active window in the body below the tab strip, and only
+    /// that one.
+    ///
+    /// # What was dead, and what proves it is alive now
+    ///
+    /// `view_mode` was stored, published (getter, `view_mode` property token, round-trip test) and
+    /// read by nothing: `draw` painted the stored sub-window geometries and a title bar for each, so
+    /// `TabbedView` rendered byte-identically to `SubWindowView`. Merely *branching* on the mode in
+    /// `subwindow_placement` would leave the paint ignoring the result, so this asserts the numbers a
+    /// paint has to obey: the frame starts below the strip, spans the work area, and the inactive
+    /// windows have no placement at all rather than one under the active window.
+    #[test]
+    fn tabbed_view_stacks_every_window_in_one_body_below_the_strip() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(widget_id_1(), Rect::new(10, 10, 100, 80));
+        area.add_sub_window(widget_id_2(), Rect::new(200, 200, 100, 80));
+        area.set_active_sub_window(widget_id_2());
+        area.set_view_mode(ViewMode::TabbedView);
+
+        let strip = area.tab_strip_rect();
+        assert_eq!(strip.y, 0);
+        assert_eq!(strip.height, TAB_STRIP_HEIGHT as u32);
+        assert_eq!(strip.width, 600);
+
+        let active = area.subwindow_placement(1).expect("the active window is placed");
+        assert_eq!(active.frame.x, 0, "the body spans the work area");
+        assert_eq!(active.frame.width, 600);
+        assert_eq!(
+            active.frame.y,
+            strip.y + strip.height as i32,
+            "the body starts below the strip, not over it"
+        );
+        assert_eq!(
+            active.frame.y + active.frame.height as i32,
+            400,
+            "and runs to the work area's bottom edge"
+        );
+        assert!(!active.title_bar, "the tab already names this window");
+
+        // The window that is *not* active has no placement: two placements would paint both frames
+        // over the same body and the later one would win, which is the wrong window on screen.
+        assert!(area.subwindow_placement(0).is_none(), "only the active window occupies the body");
+
+        // And the stored geometry is left alone, so switching back to `SubWindowView` restores it.
+        area.set_view_mode(ViewMode::SubWindowView);
+        let restored = area.subwindow_placement(0).expect("sub-window view places every window");
+        assert_eq!(restored.frame, Rect::new(10, 10, 100, 80));
+        assert!(restored.title_bar, "sub-window view draws its own title bar");
+    }
+
+    /// A tab is where the click says it is: the tab box the paint reads is the box the hit test
+    /// resolves.
+    ///
+    /// `tab_rect` and `tab_at_point` are one derivation for the same reason `list_view`'s row
+    /// geometry is: two independent calculations of "where is tab 3" drift, and the symptom is a
+    /// click activating the tab next to the one that was clicked.
+    #[test]
+    fn a_tab_click_activates_the_tab_it_is_painted_on() {
+        let mut area = MdiArea::new(Rect::new(0, 0, 600, 400));
+        area.add_sub_window(widget_id_1(), Rect::new(0, 0, 100, 100));
+        area.add_sub_window(widget_id_2(), Rect::new(0, 0, 100, 100));
+        area.add_sub_window(widget_id_3(), Rect::new(0, 0, 100, 100));
+        area.set_view_mode(ViewMode::TabbedView);
+
+        for index in 0..3 {
+            let tab = area.tab_rect(index).expect("three tabs fit");
+            let centre = Point::new(tab.x + tab.width as i32 / 2, tab.y + tab.height as i32 / 2);
+            assert_eq!(
+                area.tab_at_point(centre),
+                Some(index),
+                "the centre of tab {index} at {tab:?} must hit-test back to it"
+            );
+        }
+        // Tabs are capped rather than stretched: three tabs of 600 px each would each be 200 wide,
+        // which is past the cap and reads as a toolbar.
+        assert_eq!(area.tab_rect(0).map(|tab| tab.width), Some(TAB_MAX_WIDTH));
+        // A click on the strip past the last tab is no tab, not a clamp onto the last one.
+        assert_eq!(area.tab_at_point(Point::new(599, 2)), None);
+        // And outside the strip entirely is no tab either.
+        assert_eq!(area.tab_at_point(Point::new(5, TAB_STRIP_HEIGHT + 40)), None);
+    }
+
+    /// The mode reaches the pixels: a `TabbedView` snapshot is not a `SubWindowView` one.
+    ///
+    /// The geometry assertions above say where the frames go; this says the paint actually obeys
+    /// them. Without it a `subwindow_placement` that nothing called would still pass every number.
+    #[test]
+    fn the_two_view_modes_render_differently() {
+        let build = |mode: ViewMode| {
+            let mut area = MdiArea::new(Rect::new(0, 0, 240, 160));
+            area.add_sub_window(widget_id_1(), Rect::new(10, 10, 120, 90));
+            area.add_sub_window(widget_id_2(), Rect::new(40, 40, 120, 90));
+            area.set_active_sub_window(widget_id_2());
+            area.sub_window_mut(0).expect("exists").set_title("First".to_string());
+            area.sub_window_mut(1).expect("exists").set_title("Second".to_string());
+            area.set_view_mode(mode);
+            area
+        };
+        let windowed = render_to_svg(&mut build(ViewMode::SubWindowView));
+        let tabbed = render_to_svg(&mut build(ViewMode::TabbedView));
+        assert_ne!(
+            windowed, tabbed,
+            "the two view modes must not render identically -- that was the dead state"
+        );
+        // The tab strip sits on the top row and the sub-window view puts a frame there instead.
+        let tabbed_strip = build(ViewMode::TabbedView);
+        assert_eq!(tabbed_strip.tab_strip_rect().height, TAB_STRIP_HEIGHT as u32);
+
+        // The *body* is what the mode is actually about, and "the strings differ" alone does not
+        // pin it: a `TabbedView` that still painted every window at its stored geometry would differ
+        // from the windowed one by the tab strip alone. So the placement is asserted through the
+        // rendering's own numbers -- the active window's frame must start at the strip's bottom
+        // edge, and the inactive one must not be drawn at its stored geometry.
+        let tabbed_area = build(ViewMode::TabbedView);
+        let active_frame =
+            tabbed_area.subwindow_placement(1).expect("the active window is placed").frame;
+        assert_eq!(active_frame.y, TAB_STRIP_HEIGHT, "the tabbed body begins where the strip ends");
+        assert_eq!(active_frame.y + active_frame.height as i32, 160);
+        assert!(
+            tabbed_area.subwindow_placement(0).is_none(),
+            "and the inactive window is not painted at its stored geometry"
+        );
+        // The windowed mode, by contrast, uses the stored geometry for both.
+        let windowed_area = build(ViewMode::SubWindowView);
+        assert_eq!(
+            windowed_area.subwindow_placement(0).expect("placed").frame,
+            Rect::new(10, 10, 120, 90)
+        );
     }
 }

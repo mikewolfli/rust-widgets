@@ -244,10 +244,12 @@ impl Widget for GridWidget {
 
     /// Returns a size hint proportional to rows x columns.
     fn size_hint(&self) -> Size {
-        // Each cell at least 20×20 px, times row/col count, plus spacing.
-        let w = self.columns * 20 + self.spacing.saturating_mul(self.columns.saturating_sub(1));
-        let h = self.rows * 20 + self.spacing.saturating_mul(self.rows.saturating_sub(1));
-        Size::new(w.max(40), h.max(40))
+        // Each cell at least one `GRID_CELL_SIZE` square, times row/col count, plus spacing.
+        let cell = crate::widget::metrics::dimensions::GRID_CELL_SIZE;
+        let floor = crate::widget::metrics::dimensions::GRID_DEFAULT_FLOOR;
+        let w = self.columns * cell + self.spacing.saturating_mul(self.columns.saturating_sub(1));
+        let h = self.rows * cell + self.spacing.saturating_mul(self.rows.saturating_sub(1));
+        Size::new(w.max(floor), h.max(floor))
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

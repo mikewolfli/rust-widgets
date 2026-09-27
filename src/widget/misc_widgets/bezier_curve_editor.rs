@@ -274,7 +274,10 @@ impl Widget for BezierCurveEditor {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(300, 200)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::BEZIER_EDITOR_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::BEZIER_EDITOR_DEFAULT_HEIGHT,
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

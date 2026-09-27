@@ -298,7 +298,10 @@ pub use widget::*;
 /// See [`widget::runtime::drive_frame`] for the ordering contract and the reason it is
 /// the crate's single frame driver.
 #[cfg(not(alloc_frugal))]
-pub use widget::runtime::{drive_frame, FrameOutcome};
+pub use widget::runtime::{
+    drive_frame, last_frame_stats, notify_native_redraw, report_state, request_repaint_because,
+    FrameOutcome, FrameStats, RepaintReason, StateFact,
+};
 
 /// What one frame did, in the profile that has no animation bus.
 ///
@@ -338,14 +341,26 @@ pub struct FrameOutcome {
 /// It still needs an entry point, because the platform loops it shares with the desktop profiles
 /// call one.
 ///
-/// So this is not a placeholder: it performs the one frame step this profile genuinely has
-/// (draining the trigger queue, which is how a host reports a resize here) and reports the
-/// honest answer for the rest. A control in this profile is painted whole, on demand, from its
-/// program state -- there is nothing to interpolate toward, so `needs_another_frame` is `false`
-/// and a loop built on it sleeps until the next event.
+/// So this is not a placeholder: it answers honestly for every field. There is nothing to
+/// interpolate toward -- a control in this profile is painted whole, on demand, from its program
+/// state -- so `needs_another_frame` is `false` and a loop built on it sleeps until the next event.
+///
+/// # Why it does not drain the trigger queue here
+///
+/// It deliberately does **not** call [`drain_triggers`], even though that function compiles in this
+/// profile (it returns `0`, because there is no trigger queue). Two reasons, and the first is the
+/// one that matters:
+///
+/// 1. `drain_triggers` has exactly **one** owner -- this crate's frame driver. The gate
+///    `check_single_frame_driver` asserts that structurally, and a second caller here would make
+///    the assertion false: the order the plan fixes (input → advance → report) would be split
+///    across two places, and a desktop build that later copied this arm would silently introduce
+///    the "two drains per frame" defect the gate exists to catch.
+/// 2. In this profile the drain is a no-op anyway, so calling it would buy nothing and would make
+///    the code *look* like it did something. An honest `0` says the same thing without pretending.
 #[cfg(alloc_frugal)]
 pub fn drive_frame(_delta_ms: u32) -> FrameOutcome {
-    FrameOutcome { events_dispatched: drain_triggers(), ..FrameOutcome::default() }
+    FrameOutcome::default()
 }
 
 /// Translates a message key, or returns it verbatim when i18n is not compiled in.

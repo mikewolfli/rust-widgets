@@ -286,7 +286,10 @@ impl Widget for RefreshControl {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(400, 400)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::REFRESH_CONTROL_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::REFRESH_CONTROL_DEFAULT_HEIGHT,
+        )
     }
 
     // The spring-back is the control's own animation; the trait spelling is what the frame bus

@@ -243,7 +243,8 @@ impl ThemeManager {
             for key in suffixes.into_iter().flatten() {
                 if let Some(token) = self.current_theme().and_then(|t| t.overrides.styles.get(&key))
                 {
-                    apply_token(&mut style, token, None);
+                    let theme = self.current_theme();
+                    apply_token(&mut style, token, None, theme);
                     break;
                 }
             }
@@ -267,7 +268,7 @@ impl ThemeManager {
                 theme.overrides.styles.get(role_key(WidgetRole::for_kind_name(class_name)))
             });
             if let Some(token) = token {
-                apply_token(&mut style, token, Some(&theme.fonts));
+                apply_token(&mut style, token, Some(&theme.fonts), Some(theme));
             }
         }
         style
@@ -321,7 +322,8 @@ impl ThemeManager {
         if let Some(state) = state {
             let key = format!("{class_name}:{}", state_suffix(state));
             if let Some(token) = self.current_theme().and_then(|t| t.overrides.styles.get(&key)) {
-                apply_token(&mut style, token, None);
+                let theme = self.current_theme();
+                apply_token(&mut style, token, None, theme);
             }
         }
         self.apply_high_contrast(&mut style);
@@ -381,6 +383,12 @@ impl ThemeManager {
             padding: Padding::all(theme.spacing.medium),
             margin: Margin::all(theme.spacing.small),
             shadow,
+            // The resolved face itself, not only its shadow. The shadow above is the *raised* half
+            // of a surface; the bevel, material and edge are the other three dimensions, and a draw
+            // path reads them from here rather than re-deriving the role table per control
+            // (BLUE24 §10A.4). `surface` is the role default; the two `overrides.styles` layers
+            // replace it in `apply_token`.
+            surface: Some(surface),
             touch_target,
             // The theme's own base font token, **scaled by the device's text-size preference**.
             //
@@ -431,7 +439,7 @@ impl ThemeManager {
             theme.overrides.styles.get(role_key(WidgetRole::for_kind_name(class_name)))
         });
         if let Some(token) = token {
-            apply_token(&mut style, token, Some(&theme.fonts));
+            apply_token(&mut style, token, Some(&theme.fonts), Some(theme));
         }
         style
     }
@@ -528,7 +536,12 @@ fn state_suffix(state: WidgetState) -> &'static str {
 /// Only the token's `Some` fields are written, so an override may adjust one
 /// property without restating the rest. `fonts` is consulted only when the token
 /// names a font to resolve from the theme's token set.
-fn apply_token(style: &mut WidgetStyle, token: &super::ThemeStyleToken, fonts: Option<&Fonts>) {
+fn apply_token(
+    style: &mut WidgetStyle,
+    token: &super::ThemeStyleToken,
+    fonts: Option<&Fonts>,
+    theme: Option<&Theme>,
+) {
     if let Some(color) = token.background {
         style.background_color = Some(color);
     }
@@ -555,6 +568,19 @@ fn apply_token(style: &mut WidgetStyle, token: &super::ThemeStyleToken, fonts: O
     if let Some([width, height]) = token.touch_target {
         style.touch_target = Some(crate::core::Size::new(width, height));
     }
+    // ── The four surface dimensions (BLUE24 §10A.4) ──
+    //
+    // Each is applied **onto the resolved surface** rather than replacing it, so a token that
+    // names one dimension keeps the other three the role default supplied. That is what makes
+    // `"button:pressed": { "bevel": "inset" }` mean "the role's face, pressed" rather than
+    // "a face with no elevation, no material and no edge".
+    //
+    // Run **before** the shadow block above would be wrong, and the order here is the reason: a
+    // token that raises a face implies a shadow, and a token that *also* states one must win. The
+    // shadow block ran first, so the elevation's implied shadow would have overwritten it. The
+    // solution is not an ordering — it is that `apply_surface_token` only derives a shadow when
+    // the token does not state one, which is passed in below.
+    apply_surface_token(style, token, theme, token.shadow == super::ShadowOverride::Inherit);
     if let Some(font) = &token.font {
         style.font = Some(font.clone());
     } else if let Some(fonts) = fonts {
@@ -564,6 +590,62 @@ fn apply_token(style: &mut WidgetStyle, token: &super::ThemeStyleToken, fonts: O
         // honest behaviour for a token that does not mention a font.
         let _ = fonts;
     }
+}
+
+/// Applies a token's four surface dimensions onto the style's resolved face.
+///
+/// # Why this reads the *current* surface rather than rebuilding one
+///
+/// A token is an **override layer**, not a complete declaration: a theme that says
+/// `"card": { "elevation": 3 }` has named one dimension of the card role's face and left the
+/// other three alone. Rebuilding a `SurfaceStyle` from the token alone would discard the role
+/// table's bevel, material and edge — so the token starts from what the role produced and
+/// replaces only what it names (the same precedence every other key in
+/// [`ThemeStyleToken`] follows).
+///
+/// A style that carries no surface yet (one that never went through the theme) starts from
+/// [`crate::render::SurfaceStyle::solid`], the identity, so an override alone is complete.
+fn apply_surface_token(
+    style: &mut WidgetStyle,
+    token: &super::ThemeStyleToken,
+    theme: Option<&Theme>,
+    may_derive_shadow: bool,
+) {
+    let mut surface = style.surface.unwrap_or_else(crate::render::SurfaceStyle::solid);
+    // The shadow is derived from the elevation, so a token that changes the level must
+    // re-derive the shadow too — otherwise a theme could raise a face without casting anything
+    // and the two spellings of "how high is this?" would disagree.
+    //
+    // It is derived only when the token did **not** state a shadow (`may_derive_shadow`): a
+    // token that says both "level3" and "shadow: null" has said two things, and the specific
+    // one wins over the implied one — the same precedence every other pair in this function
+    // follows.
+    let mut rederive_shadow = false;
+
+    if let Some(level) = token.elevation {
+        surface.elevation = level.0;
+        rederive_shadow = may_derive_shadow;
+    }
+    if token.bevel != super::BevelOverride::Inherit {
+        surface.bevel = token.bevel.apply(surface.bevel);
+    }
+    if let Some(material) = token.material {
+        surface.material = material.0;
+    }
+    if let Some(hairline) = token.hairline {
+        surface.hairline = hairline.0;
+    }
+
+    if rederive_shadow {
+        // The same two inputs `role_base_style` uses, read from the same place, so a token that
+        // raises a face gets the shadow the role table would have given it. `None` (no active
+        // theme) leaves the shadow the base layer produced, which is the honest answer.
+        if let Some(theme) = theme {
+            style.shadow = theme.elevation(surface.elevation, crate::core::Color::BLACK);
+        }
+    }
+
+    style.surface = Some(surface);
 }
 
 impl Colors {
@@ -831,7 +913,15 @@ impl Default for Theme {
             spacing: Spacing { small: 4, medium: 8, large: 16, extra_large: 24 },
             borders: Borders { width: 1, radius: 4, shadow: true },
             overrides: ThemeOverrides {
-                styles: crate::theme::preset_states::preset_state_overrides(&Colors::default()),
+                // The state table, plus the class-level surface overrides that make this preset
+                // the **flat** one. Both are data, and both are derived from the preset's own
+                // palette where they touch colour (BLUE24 §10A.5).
+                styles: {
+                    let mut styles =
+                        crate::theme::preset_states::preset_state_overrides(&Colors::default());
+                    styles.extend(crate::theme::preset_states::preset_surface_overrides(false));
+                    styles
+                },
             },
             // Material's own tempo: `kRadialReactionDuration` 100 ms, `kThemeChangeDuration`
             // 200 ms, the switch's toggle 300 ms. A theme that wants a different rhythm sets
@@ -915,7 +1005,15 @@ impl Theme {
             spacing: Spacing { small: 4, medium: 8, large: 16, extra_large: 24 },
             borders: Borders { width: 1, radius: 4, shadow: true },
             overrides: ThemeOverrides {
-                styles: crate::theme::preset_states::preset_state_overrides(&colors),
+                // The dark preset is flat too, for the same reason the default one is: the two
+                // shipped presets are the crate's existing appearance, and their 377 snapshots
+                // are the safety rope (BLUE24 §10A.6 criterion 9). The **dimensional** style is a
+                // separate, opt-in preset — see `Theme::dimensional`.
+                styles: {
+                    let mut styles = crate::theme::preset_states::preset_state_overrides(&colors);
+                    styles.extend(crate::theme::preset_states::preset_surface_overrides(false));
+                    styles
+                },
             },
             // Material's own tempo: `kRadialReactionDuration` 100 ms, `kThemeChangeDuration`
             // 200 ms, the switch's toggle 300 ms. A theme that wants a different rhythm sets
@@ -923,5 +1021,55 @@ impl Theme {
             // own constant.
             motion: crate::theme::Motion::default(),
         }
+    }
+
+    /// The **dimensional** preset: the same palette as [`Theme::default`], with the role table's
+    /// bevels left in place.
+    ///
+    /// # Why a preset and not a flag
+    ///
+    /// BLUE24 §10A settles this: "flat" and "dimensional" are not two code paths, they are two
+    /// corners of one parameter space, and the difference between them is **data**. A flag would
+    /// be a second mechanism for the same question, and it would put the decision in the control
+    /// rather than in the theme.
+    ///
+    /// # What actually differs from [`Theme::default`]
+    ///
+    /// Exactly two things, and both are data:
+    ///
+    /// 1. **No flattening overrides.** The default preset flattens the role table's bevels so it
+    ///    renders as this crate always has; this one omits those keys, so
+    ///    [`crate::render::role_surface_style`]'s own character shows through — a button is a
+    ///    raised key, a field is a well.
+    /// 2. **A pressed state inverts the bevel.** `"button:pressed": { "bevel": "inset" }` is the
+    ///    end-to-end demonstration of BLUE24 §10A's most valuable layer: the state channel built in
+    ///    BLUE23 §2.4 already reaches `"<kind>:<state>"`, so a 3D press feedback needs one table
+    ///    entry and **zero** control code.
+    ///
+    /// # Reachability
+    ///
+    /// Exposed as a public constructor rather than registered by default, because switching an
+    /// application's whole appearance is the application's decision. A host calls
+    /// `manager.register_theme(Theme::dimensional())` then `set_theme("dimensional")`.
+    pub fn dimensional() -> Self {
+        // Built with `..Theme::default()` rather than by assigning to a binding, so the palette,
+        // fonts, spacing and borders are visibly the default preset's — the two presets differ in
+        // exactly one place, and this spelling makes that a property of the code rather than a
+        // comment.
+        let mut theme = Theme { name: "dimensional".to_string(), ..Theme::default() };
+        // Start from the state table alone (the flat preset's class overrides are what make it
+        // flat), then state the one piece of dimensional *interaction* the role table cannot:
+        // a press turns the key in.
+        theme.overrides.styles = crate::theme::preset_states::preset_state_overrides(&theme.colors);
+        for kind in ["button", "toggle_button", "tool_button"] {
+            theme.overrides.styles.insert(
+                format!("{kind}:pressed"),
+                crate::theme::ThemeStyleToken {
+                    bevel: crate::theme::BevelOverride::Set(crate::render::BevelDirection::Inset),
+                    ..crate::theme::ThemeStyleToken::default()
+                },
+            );
+        }
+        theme
     }
 }

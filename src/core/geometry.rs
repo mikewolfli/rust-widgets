@@ -249,7 +249,11 @@ impl fmt::Display for Size {
     }
 }
 /// Axis-aligned rectangle in logical pixels.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// `Eq` is sound (every field is an integer), and is required by a control that keeps a rectangle
+/// as part of a value it compares for equality — a frame in `MdiArea`, a stale-geometry check in
+/// a cache key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rect {
     /// Left/top origin x.
     pub x: i32,

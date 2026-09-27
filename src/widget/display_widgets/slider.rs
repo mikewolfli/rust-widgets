@@ -481,9 +481,11 @@ impl Widget for Slider {
     }
 
     fn size_hint(&self) -> Size {
+        let extent = crate::widget::metrics::dimensions::BAR_DEFAULT_EXTENT;
+        let thickness = crate::widget::metrics::dimensions::BAR_DEFAULT_THICKNESS;
         match self.orientation() {
-            Orientation::Horizontal => Size::new(120, 20),
-            Orientation::Vertical => Size::new(20, 120),
+            Orientation::Horizontal => Size::new(extent, thickness),
+            Orientation::Vertical => Size::new(thickness, extent),
         }
     }
     impl_draw_bridge!();
@@ -1831,6 +1833,10 @@ mod tests {
     ///
     /// Read from the first `fill="rgba(` in the document, which is the backdrop the exporter
     /// composites over. Named separately because "firmer" is only meaningful relative to it.
+    ///
+    /// Gated with its only caller: the halo test needs a theme, which a profile without a device
+    /// profile does not have, so the test and its helpers are compiled out together.
+    #[cfg(device_profile)]
     fn window_fill_of(s: &mut Slider) -> Color {
         let svg = crate::widget::svg::render_widget_to_svg(s, Rect::new(0, 0, 200, 30));
         let at = svg.find("fill=\"rgba(").expect("a backdrop") + "fill=\"rgba(".len();
@@ -1853,6 +1859,9 @@ mod tests {
     ///
     /// Returning `Option` rather than a count is what lets "no halo" and "a halo the same colour
     /// as the handle" be told apart: the second is a halo the user cannot see, which is the defect.
+    ///
+    /// Gated with its only caller; see [`window_fill_of`].
+    #[cfg(device_profile)]
     fn halo_colour(s: &mut Slider) -> Option<Color> {
         let svg = crate::widget::svg::render_widget_to_svg(s, Rect::new(0, 0, 200, 30));
         let filled: crate::compat::Vec<&str> = svg

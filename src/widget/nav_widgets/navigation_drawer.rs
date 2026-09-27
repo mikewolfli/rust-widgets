@@ -186,7 +186,10 @@ impl Widget for NavigationDrawer {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(300, 400)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::NAVIGATION_DRAWER_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::NAVIGATION_DRAWER_DEFAULT_HEIGHT,
+        )
     }
 
     // The slide is the control's own animation; the trait spelling is what the frame bus reaches

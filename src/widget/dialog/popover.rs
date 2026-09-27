@@ -219,7 +219,10 @@ impl Widget for Popover {
     }
 
     fn size_hint(&self) -> Size {
-        crate::core::Size::new(200, 150)
+        crate::core::Size::new(
+            crate::widget::metrics::dimensions::POPOVER_DEFAULT_WIDTH,
+            crate::widget::metrics::dimensions::POPOVER_DEFAULT_HEIGHT,
+        )
     }
 
     /// Advances the unfold by `delta_ms`, returning whether another frame is owed.

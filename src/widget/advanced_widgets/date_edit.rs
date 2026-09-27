@@ -31,6 +31,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_date, expect_strin
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::dimensions;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -640,7 +641,10 @@ impl Widget for DateEdit {
     }
 
     fn size_hint(&self) -> Size {
-        crate::core::Size::new(120, 28)
+        crate::core::Size::new(
+            dimensions::DATE_EDIT_DEFAULT_WIDTH,
+            dimensions::DATE_EDIT_DEFAULT_HEIGHT,
+        )
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
