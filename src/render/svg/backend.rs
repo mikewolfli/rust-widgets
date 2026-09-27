@@ -71,12 +71,24 @@ impl SvgPaintBackend {
 
     /// Appends `ch`'s **outline** to `path`, returning whether it produced any geometry.
     ///
-    /// # Why the geometry comes from `text::outline` and not from `glyph_rects`
+    /// # Why the geometry comes from `text::outline_by_coverage` and not from `glyph_rects`
     ///
     /// A vector face's ink is curves, and the rasteriser antialiases those curves. Emitting the
     /// face's *bitmap* view here instead would draw a different picture from the one the pixels
-    /// show, which is exactly what a snapshot must not do. `text::outline` gives the same flattened
-    /// polygons the rasteriser fills, so the two backends stay one drawing.
+    /// show, which is exactly what a snapshot must not do. `text::outline_by_coverage` gives the same
+    /// flattened polygons the rasteriser fills, **from the same face** — it selects by coverage, the
+    /// way `VectorSource` does.
+    ///
+    /// # Why not `text::outline`, which takes a family
+    ///
+    /// Because a family lookup and a coverage lookup answer different questions, and the pixels are
+    /// the answer to the *second*. `text::outline` honours the `Font`'s family, which is right for a
+    /// caller that named a face this build ships; but every theme in this crate names `"Arial"`, this
+    /// crate ships `"Open Sans"`, and `face_for_family("Arial")` is `None` on every build — so this
+    /// function's 1-bit fallback drew **all 377 snapshots** as 8x8 bitmap rectangles while
+    /// `paint_active` on the same build reported `source=Open Sans ink=Coverage`. The file and the
+    /// pixels disagreed about which control they described, which is the one thing this backend's
+    /// module docs say it exists to prevent.
     ///
     /// # Why this returns a `bool` rather than writing tofu itself
     ///
@@ -92,10 +104,10 @@ impl SvgPaintBackend {
     ///
     /// # Why this is gated on the vector features
     ///
-    /// `text::outline` only exists when a build carries an outline face, and a build that carries
-    /// none has no outline ink to emit. Gating the whole function — rather than returning `false`
-    /// unconditionally — is what keeps the default build's code path byte-identical: without an
-    /// outline face, every glyph takes [`Self::append_bitmap_rects`] exactly as it always did.
+    /// `outline_by_coverage` only exists when a build carries an outline face, and a build that
+    /// carries none has no outline ink to emit. Gating the whole function — rather than returning
+    /// `false` unconditionally — is what keeps the default build's code path byte-identical: without
+    /// an outline face, every glyph takes [`Self::append_bitmap_rects`] exactly as it always did.
     #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", feature = "fonts-cjk"))]
     fn append_outline(
         &self,
@@ -105,7 +117,6 @@ impl SvgPaintBackend {
         origin_y: i32,
         glyph_width: u32,
         glyph_height: u32,
-        family: &str,
     ) -> bool {
         // The buffers live here rather than in the cluster loop so one allocation of each covers a
         // whole line, and they are the same order as the rasteriser's own scratch (`MAX_POINTS` is
@@ -120,50 +131,92 @@ impl SvgPaintBackend {
         // the wrong column.
         let cell = crate::render::text::Cell::new(glyph_width, glyph_height);
         let Some(count) =
-            crate::render::text::outline(ch, cell, family, &mut points, &mut contours)
+            crate::render::text::outline_by_coverage(ch, cell, &mut points, &mut contours)
         else {
             return false;
         };
-        // # Clipping to the cell is the rasteriser's own behaviour, not a shortcut
+        // # Clipping to the cell, and why it is a real clip now
         //
         // An outline is scaled to the cell's *height*, so a glyph wider than the estimate-based
-        // advance (`M` is 1.37 em wide) reaches past the cell's right edge. The rasteriser never
-        // writes those pixels — its loop is `for py in 0..cell.height { for px in 0..cell.width }` —
-        // so emitting them here would make the snapshot show ink the pixels do not have. That is the
-        // two-backends-disagree failure this backend exists to prevent.
+        // advance reaches past the cell's right edge, and a descender (`p`, `g`) reaches below its
+        // bottom. The rasteriser never writes those pixels — its loop is
+        // `for py in 0..cell.height { for px in 0..cell.width }` — so emitting them here would make
+        // the snapshot show ink the pixels do not have.
         //
-        // A contour is kept only when **every** vertex is inside the cell. Proper polygon clipping
-        // would mean computing intersections and emitting new polygons, which is a second geometry
-        // pipeline for a case that only arises on a face/advance mismatch — and a glyph whose shape
-        // genuinely straddles its own advance is a metrics problem, not a shape to be trimmed. So an
-        // overflowing contour is dropped, exactly as the rasteriser drops the pixels outside the
-        // cell.
+        // # Why "drop the whole contour" was wrong
+        //
+        // It was the first attempt, and it discarded the *glyph*. The cell is the **estimate-based**
+        // advance (0.6 em per Latin cluster) while a real face is genuinely wider, so on `"Sample"`
+        // at 14 px the outlines measured:
+        //
+        // ```text
+        // 'S': x=[0.82, 8.01] in a cell 8 wide   -> overflowed by 0.01, contour dropped
+        // 'm': x=[1.37,13.52] in a cell 8 wide   -> overflowed by 5.52, contour dropped
+        // 'e': x=[0.89, 8.15] in a cell 8 wide   -> overflowed by 0.15, contour dropped
+        // 'p': x=[1.37, 8.90] y=[4.40,16.95]     -> overflowed both    , contour dropped
+        // ```
+        //
+        // Four of the six glyphs therefore fell through to the 1-bit path and were drawn as 8x8 bitmap
+        // rectangles **inside an otherwise vector string** — which is the mixed, cramped-looking text
+        // this produced. A hundredth of a pixel of overflow is not a reason to draw a different glyph.
+        //
+        // # Sutherland–Hodgman, and why the winding matters
+        //
+        // Each contour is clipped against the cell's four edges in turn. Clipping a *closed* polygon
+        // this way **preserves its orientation**, which is what makes the fix compatible with the
+        // `fill-rule="nonzero"` contract: a counter such as `o`'s inner ring still winds opposite to
+        // its outer one, so it stays a hole (a clip that reversed winding would fill every counter and
+        // turn an `o` into a blob).
+        //
+        // This is the "proper polygon clipping" the earlier comment declined to write. It is ~40 lines
+        // of edge function, shared by all four edges, and the alternative was a snapshot set where
+        // most glyphs in a word were a different typeface from the rest.
         let clip_left = pen_x;
         let clip_right = pen_x + glyph_width as f32;
         let clip_top = origin_y as f32;
         let clip_bottom = clip_top + glyph_height as f32;
         let before = path.len();
+        // Two vertex buffers, ping-ponged: one holds the contour before an edge pass, the other after.
+        // Sized for the worst case, where clipping an edge can add one vertex per existing edge.
+        let capacity = crate::render::text::OUTLINE_MAX_POINTS * 2;
+        let mut scratch_a: Vec<(f32, f32)> = Vec::with_capacity(capacity);
+        let mut scratch_b: Vec<(f32, f32)> = Vec::with_capacity(capacity);
         for (start, end) in contours.iter().take(count) {
             let Some(contour) = points.get(*start..*end) else {
                 continue;
             };
-            let Some(first) = contour.first() else {
-                continue;
-            };
-            let inside = contour.iter().all(|p| {
-                (clip_left..=clip_right).contains(&(pen_x + p.x))
-                    && (clip_top..=clip_bottom).contains(&(origin_y as f32 + p.y))
-            });
-            if !inside {
+            scratch_a.clear();
+            scratch_a.extend(contour.iter().map(|p| (pen_x + p.x, origin_y as f32 + p.y)));
+            // Four edge passes, each closing the polygon at one side of the cell. Kept as four calls
+            // rather than a table of predicates because each one captures a different bound, and a
+            // `fn` pointer cannot capture — the table form would push the bounds into a struct for no
+            // gain in clarity.
+            clip_against_x(&scratch_a, &mut scratch_b, clip_left, true);
+            core::mem::swap(&mut scratch_a, &mut scratch_b);
+            if !scratch_a.is_empty() {
+                clip_against_x(&scratch_a, &mut scratch_b, clip_right, false);
+                core::mem::swap(&mut scratch_a, &mut scratch_b);
+            }
+            if !scratch_a.is_empty() {
+                clip_against_y(&scratch_a, &mut scratch_b, clip_top, true);
+                core::mem::swap(&mut scratch_a, &mut scratch_b);
+            }
+            if !scratch_a.is_empty() {
+                clip_against_y(&scratch_a, &mut scratch_b, clip_bottom, false);
+                core::mem::swap(&mut scratch_a, &mut scratch_b);
+            }
+            if scratch_a.len() < 3 {
+                // A degenerate result (a touch on an edge, or a contour that was entirely outside).
+                // Emitting it would be an empty subpath, which the snapshot gate reads as a defect.
                 continue;
             }
             // Polygon subpaths are `M` then `L`s then `Z`. Coordinates are rounded to two decimals
             // rather than to integers: an antialiased outline's whole advantage is its sub-pixel
             // precision, and rounding to whole pixels would turn every curve back into the blocks
             // the 1-bit path already draws.
-            path.push_str(&format!("M{:.2} {:.2}", pen_x + first.x, origin_y as f32 + first.y));
-            for point in contour.iter().skip(1) {
-                path.push_str(&format!("L{:.2} {:.2}", pen_x + point.x, origin_y as f32 + point.y));
+            path.push_str(&format!("M{:.2} {:.2}", scratch_a[0].0, scratch_a[0].1));
+            for point in scratch_a.iter().skip(1) {
+                path.push_str(&format!("L{:.2} {:.2}", point.0, point.1));
             }
             path.push('Z');
         }
@@ -202,6 +255,119 @@ impl SvgPaintBackend {
             path.push_str(&format!("M{x0} {y0}h{}v{}h-{}z", x1 - x0, y1 - y0, x1 - x0));
         }
     }
+}
+
+// ─── Helper: Sutherland–Hodgman polygon clipping ─────────────────────────
+//
+// Gated with `append_outline`, which is the only caller: a build with no outline face draws glyph
+// bitmaps and never clips a polygon, so compiling these there would be dead code — and the crate
+// treats a dead-code warning as a defect rather than as noise.
+
+/// Clips `input` against the half-plane `x >= limit` (`keep_greater`) or `x <= limit`.
+///
+/// One pair of functions per axis keeps the four call sites free of truth tables: "which side does
+/// this edge keep" is a `bool` no reader can misread, whereas a generic comparator would have to be
+/// spelled out at each call. See [`clip_polygon`] for the algorithm and why winding survives it.
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", feature = "fonts-cjk"))]
+fn clip_against_x(
+    input: &[(f32, f32)],
+    output: &mut Vec<(f32, f32)>,
+    limit: f32,
+    keep_greater: bool,
+) {
+    let inside = |x: f32, _y: f32| if keep_greater { x >= limit } else { x <= limit };
+    clip_polygon(input, output, inside, |x, _y| x, limit);
+}
+
+/// Clips `input` against the half-plane `y >= limit` (`keep_greater`) or `y <= limit`.
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", feature = "fonts-cjk"))]
+fn clip_against_y(
+    input: &[(f32, f32)],
+    output: &mut Vec<(f32, f32)>,
+    limit: f32,
+    keep_greater: bool,
+) {
+    let inside = |_x: f32, y: f32| if keep_greater { y >= limit } else { y <= limit };
+    clip_polygon(input, output, inside, |_x, y| y, limit);
+}
+
+/// Clips `input` against one half-plane, appending the result to `output`.
+///
+/// # The algorithm, in one paragraph
+///
+/// Walk the polygon's edges. For each edge from `s` to `e`: if `e` is inside, emit the crossing point
+/// (when `s` was outside) and then `e`; if `e` is outside and `s` was inside, emit only the crossing
+/// point. That is the whole of Sutherland–Hodgman, and applying it to the four sides of a rectangle
+/// clips to that rectangle.
+///
+/// # Why the winding survives, which is the part that matters here
+///
+/// The traversal order is the input's order and nothing is reversed or re-sorted — crossing points are
+/// *inserted between* the vertices they lie between. So a contour that wound one way still winds that
+/// way, and the `fill-rule="nonzero"` contract that keeps an `o`'s counter a hole still holds. That
+/// is not incidental: a clipper that emitted each edge segment as its own subpath would produce a
+/// correct-looking outline whose counters were filled, and the glyph would read as a blob at small
+/// sizes.
+///
+/// `varying` projects a point onto the axis this edge tests, and `limit` is the bound — so the
+/// crossing is always interpolated on the same coordinate the inside test used, which is what keeps
+/// a clip against `x` from computing a crossing along `y`.
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", feature = "fonts-cjk"))]
+fn clip_polygon(
+    input: &[(f32, f32)],
+    output: &mut Vec<(f32, f32)>,
+    inside: impl Fn(f32, f32) -> bool,
+    varying: impl Fn(f32, f32) -> f32,
+    limit: f32,
+) {
+    output.clear();
+    if input.is_empty() {
+        return;
+    }
+    for index in 0..input.len() {
+        let start = input[index];
+        let end = input[(index + 1) % input.len()];
+        let start_inside = inside(start.0, start.1);
+        let end_inside = inside(end.0, end.1);
+        if end_inside {
+            if !start_inside {
+                // Entering: the crossing is where the edge meets the boundary.
+                if let Some(crossing) = edge_crossing(start, end, limit, &varying) {
+                    output.push(crossing);
+                }
+            }
+            output.push(end);
+        } else if start_inside {
+            // Leaving: emit the crossing so the polygon stays closed at the boundary.
+            if let Some(crossing) = edge_crossing(start, end, limit, &varying) {
+                output.push(crossing);
+            }
+        }
+    }
+}
+
+/// Where the segment `start -> end` meets the plane whose `varying` coordinate is `limit`.
+///
+/// Returns `None` for a segment parallel to that plane (its two ends share the varying coordinate, so
+/// it either lies in the plane or never reaches it). Emitting a vertex for such a segment would
+/// duplicate a point the walk already emitted, and a duplicated vertex makes a zero-area edge —
+/// harmless for filling, but it is churn in a byte-compared artifact.
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", feature = "fonts-cjk"))]
+fn edge_crossing(
+    start: (f32, f32),
+    end: (f32, f32),
+    limit: f32,
+    varying: &impl Fn(f32, f32) -> f32,
+) -> Option<(f32, f32)> {
+    let span = varying(end.0, end.1) - varying(start.0, start.1);
+    if span.abs() < f32::EPSILON {
+        return None;
+    }
+    let t = (limit - varying(start.0, start.1)) / span;
+    if !(0.0..=1.0).contains(&t) {
+        return None;
+    }
+    Some((start.0 + (end.0 - start.0) * t, start.1 + (end.1 - start.1) * t))
 }
 
 // ─── Helper: RGBA→BMP conversion ──────────────────────────────────────────
@@ -521,7 +687,6 @@ impl PaintBackend for SvgPaintBackend {
                             origin.y,
                             glyph_width,
                             glyph_height,
-                            font.family(),
                         );
                         #[cfg(not(any(
                             feature = "fonts-vector-latin",
@@ -548,18 +713,37 @@ impl PaintBackend for SvgPaintBackend {
                     // which the snapshot gate reads as a defect.
                     return;
                 }
-                // `fill-rule` is emitted only when an outline face is in the build. The 1-bit path
-                // needs none — axis-aligned, non-overlapping rectangles are the same picture under
-                // either rule — and adding the attribute unconditionally would rewrite all 376
-                // committed snapshots for no behavioural change, which is exactly the kind of
-                // silent churn the byte-identical requirement exists to prevent.
+                // `fill-rule` and the `data-text` provenance tag are emitted only when an outline
+                // face is in the build.
+                //
+                // The 1-bit path needs neither: axis-aligned, non-overlapping rectangles are the
+                // same picture under either fill rule, and a run built from `h`/`v` is already
+                // identifiable by its command letters alone (see `widget::svg::is_text_path`).
+                // Adding either attribute unconditionally would rewrite all 377 committed snapshots
+                // for no behavioural change, which is exactly the kind of silent churn the
+                // byte-identical requirement exists to prevent.
+                //
+                // # Why the tag exists at all
+                //
+                // `data-text` is what lets a consumer tell a text run from a drawn shape **without
+                // guessing**. It was guessed before — "a `d` containing `L` is a picture, not text"
+                // — because the only glyph path that existed was the bitmap one, whose command set
+                // is `M`/`h`/`v`/`z`. An outline's command set is `M`/`L`/`Z` with fractional
+                // coordinates, which is *also* how a triangle or an elbow is written, so the guess
+                // became ambiguous the moment outlines were drawn: `widget::svg::text_ink_boxes`
+                // answered "no text" for every vector-rendered control, and 42 tests that assert on
+                // where a label's ink landed began to fail.
+                //
+                // A provenance tag resolves it at the source. The producer knows a run is a run;
+                // recording that fact costs 15 bytes on a path that is already hundreds, and it
+                // replaces a heuristic that cannot be made correct by adding cases.
                 #[cfg(any(
                     feature = "fonts-vector-latin",
                     feature = "fonts-complex",
                     feature = "fonts-cjk"
                 ))]
                 self.push_element(format!(
-                    r#"<path d="{}" fill="{}" fill-rule="nonzero" />"#,
+                    r#"<path d="{}" fill="{}" fill-rule="nonzero" data-text="1" />"#,
                     path,
                     color_to_rgba(color)
                 ));

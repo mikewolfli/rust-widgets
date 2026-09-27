@@ -355,7 +355,13 @@ impl Draw for RichEdit {
             .unwrap_or_else(|| paper.blend(&ink, 0.28));
 
         // Draw background
-        context.fill_rect(rect, paper);
+        context.face(
+            rect,
+            paper,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         // Draw border
         context.draw_rect(rect, if self.read_only { border.blend(&paper, 0.50) } else { border });
         // Draw text content — all lines

@@ -505,7 +505,13 @@ impl Draw for ShortcutEditor {
         let header_ink = ink.blend(&panel, 0.15).legible_on(panel, 4.5);
 
         // Draw background
-        context.fill_rect(rect, panel);
+        context.face(
+            rect,
+            panel,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
 
         let margin = 8;
         let mut y = rect.y + margin;

@@ -820,6 +820,17 @@ mod tests {
     use crate::widget::svg::render_to_svg;
     use std::sync::{Arc, Mutex};
 
+    /// How far inside its glyph **box** a glyph's ink may begin and still count as starting on
+    /// that box's own line.
+    ///
+    /// The bitmap face fills its whole glyph box (`font8x8` rectangles span the box), so a glyph's
+    /// ink top *is* the box top, exactly. An **outline** face draws a real glyph whose ink is
+    /// inset — a digit's cap does not quite reach the box's top edge — so the ink top sits one or
+    /// two pixels below the box top at 13 px. Both are correct; the assertion must not encode
+    /// which face drew the run, so it allows the inset and stays tight enough that a run placed a
+    /// whole line low still fails.
+    const INK_INSET_TOLERANCE: i32 = 3;
+
     #[test]
     fn masked_edit_default_creation() {
         let me = MaskedEdit::new(Rect::new(0, 0, 200, 30));
@@ -1022,45 +1033,21 @@ mod tests {
     ///
     /// # Why per element, not per merged run
     ///
-    /// Text leaves the backend as `font8x8` **glyph geometry** — one axis-aligned subpath per
-    /// set bitmap bit — so the string is not in the document in any form and a test has to
-    /// locate ink by *where* it is rather than by what it says. This control draws one
-    /// character per `draw_text`, so each element is exactly one glyph's ink; the boundary is
-    /// therefore the element, which is what makes "every glyph" expressible.
+    /// This control draws one character per `draw_text`, so each `<path>` is exactly one glyph's
+    /// ink; the boundary is therefore the element, which is what makes "every glyph" expressible.
+    /// The string is not in the document in any form (a run is glyph geometry), so a test locates
+    /// ink by *where* it is rather than by what it says.
     ///
-    /// The union of a `<path>`'s subpaths is its ink. Subpaths are deliberately **not**
-    /// deduplicated: a glyph box wider than the 8 bitmap columns maps two columns onto the same
-    /// pixel (`gx * w / 8`), so the same rectangle is emitted twice — exactly as the rasteriser
-    /// fills that pixel twice.
+    /// # Why this delegates instead of parsing `d` itself
+    ///
+    /// The first form read the `font8x8` rectangle spelling directly (`M{x} {y}h{w}v{h}`), which
+    /// is the **bitmap** path's grammar and only its grammar. An outline face writes
+    /// `M18.30 59.24L...Z` with fractional vertices, so that reader took `18` as `x` and `30` as
+    /// `y` — not ink, and not where the glyph is — and every box came back in the wrong place. The
+    /// crate's own reader knows both grammars and the `data-text` provenance tag; one reader, so
+    /// the two cannot drift apart.
     fn text_run_boxes(svg: &str) -> Vec<(i32, i32, i32, i32)> {
-        let mut boxes = Vec::new();
-        for line in svg.lines() {
-            let Some(path_at) = line.find("<path ") else { continue };
-            let Some(d_at) = line[path_at..].find("d=\"") else { continue };
-            let start = path_at + d_at + 3;
-            let Some(end) = line[start..].find('"') else { continue };
-            let mut bounds: Option<(i32, i32, i32, i32)> = None;
-            for subpath in line[start..start + end].split('M').skip(1) {
-                let numbers: Vec<i32> = subpath
-                    .split(|c: char| !c.is_ascii_digit() && c != '-')
-                    .filter(|part| !part.is_empty())
-                    .filter_map(|part| part.parse().ok())
-                    .collect();
-                if numbers.len() < 4 {
-                    continue;
-                }
-                let (x, y, w, h) = (numbers[0], numbers[1], numbers[2], numbers[3]);
-                let bit = (x, y, x + w, y + h);
-                bounds = Some(match bounds {
-                    None => bit,
-                    Some((l, t, r, b)) => (l.min(bit.0), t.min(bit.1), r.max(bit.2), b.max(bit.3)),
-                });
-            }
-            if let Some(union) = bounds {
-                boxes.push(union);
-            }
-        }
-        boxes
+        crate::widget::svg::text_ink_boxes(svg)
     }
 
     /// The ink is vertically centred inside the **field**, not below its middle line.
@@ -1087,11 +1074,14 @@ mod tests {
         let runs = text_run_boxes(&svg);
         assert!(!runs.is_empty(), "a filled masked field draws glyphs: {svg}");
         // Every character is placed on the field's own line box, so every glyph's ink has to sit
-        // inside that box — and the topmost ink has to *be* the box's top edge, because a digit's
-        // bitmap lights its first row. The box top is `field.y + (height - line) / 2`, derived
-        // from the measured line height rather than from a copied literal so this stays a
-        // statement about the layout. The defect was an origin below the field's middle line,
-        // which pushes the whole box down by at least a line and fails both halves.
+        // inside that box — and the topmost ink has to *reach* the box's top edge, because that is
+        // where the glyph begins. Under the bitmap face the ink top *is* the box top; under an
+        // outline face the glyph is inset a pixel or two (`INK_INSET_TOLERANCE`), so "reaches" is
+        // stated as "within the inset" rather than as an equality, which is a property of the
+        // layout rather than of the typeface. The box top is `field.y + (height - line) / 2`, the
+        // shared line-box derivation rather than a copied literal, so this stays a statement about
+        // the control. The defect was an origin below the field's middle line, which pushes the
+        // whole box down by at least a whole line — far past the tolerance — and fails.
         let mut font_probe = crate::render::SvgPaintBackend::new(crate::core::Size::new(240, 120));
         let line_h = crate::render::RenderContext::new(&mut font_probe)
             .measure_text("M", &Font::simple("monospace", 13.0))
@@ -1113,7 +1103,10 @@ mod tests {
             );
             highest = highest.min(top);
         }
-        assert_eq!(highest, expected_top, "the line box's top edge is where the ink begins");
+        assert!(
+            highest - expected_top <= INK_INSET_TOLERANCE && highest >= expected_top,
+            "the line box's top edge is where the ink begins: box top {expected_top}, ink top {highest}"
+        );
     }
 
     /// The five chrome colours were fixed literals, so a themed field carried unthemed text:

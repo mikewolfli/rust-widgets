@@ -2,7 +2,7 @@
 <!-- control: query_builder | appearance: light -->
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(240,240,240,1.00)" />
-  <rect x="0" y="0" width="240" height="120" fill="rgba(224,218,227,1.00)" />
+  <rect x="0" y="0" width="240" height="120" rx="4" ry="4" fill="rgba(224,218,227,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
   <rect x="0" y="0" width="240" height="34" fill="rgba(211,205,213,1.00)" />
   <rect x="8" y="7" width="56" height="20" rx="10" ry="10" fill="rgba(111,111,111,1.00)" />

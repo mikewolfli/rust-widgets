@@ -105,7 +105,7 @@ pub struct ToolButton {
     /// `None` is cached too, so an icon path that cannot be read is not re-read every frame. The
     /// pixels are square RGBA8 (width * height * 4 bytes), which is what `draw_image` takes.
     #[cfg(all(feature = "image", not(alloc_frugal)))]
-    icon_pixels: Option<Vec<u8>>,
+    icon_pixels: Option<alloc::sync::Arc<Vec<u8>>>,
     /// The path [`Self::icon_pixels`] was produced for, so changing the path invalidates the pixels
     /// without the caller having to clear them.
     #[cfg(all(feature = "image", not(alloc_frugal)))]
@@ -224,42 +224,26 @@ impl ToolButton {
         self.base.request_redraw();
     }
 
-    /// The RGBA8 pixels for the current icon path, decoding once per path.
+    /// The RGBA8 pixels for the current icon path, shared process-wide.
     ///
     /// Returns `None` when there is no icon, when the file cannot be read, or when the bytes do not
     /// decode -- in which case the button simply shows no icon rather than a broken-image glyph, the
     /// same fallback `avatar` uses for the same reason: a toolbar's shape must not change because
     /// one of its images is missing.
+    ///
+    /// Two layers, as in `avatar`: `icon_pixels_key` is the per-instance string compare that keeps
+    /// the per-frame path cheap, and [`crate::image::cache`] is what makes **twelve buttons on one
+    /// icon** decode it once. Before the cache existed this method had a private memo and nothing
+    /// else, so a toolbar decoded the same file once per button.
     #[cfg(all(feature = "image", not(alloc_frugal)))]
-    fn resolved_icon(&mut self) -> Option<Vec<u8>> {
+    fn resolved_icon(&mut self) -> Option<alloc::sync::Arc<Vec<u8>>> {
         let path = self.icon.as_ref()?;
         if self.icon_pixels_key.as_ref() != Some(path) {
-            let decoded =
-                std::fs::read(path).map_err(|error| error.to_string()).and_then(|bytes| {
-                    crate::image::decoder::decode_to_rgba8(&bytes)
-                        .map_err(|error| error.to_string())
-                });
-            match decoded {
-                Ok(image) => {
-                    if let crate::image::ImageData::Rgba8(pixels) = image.data {
-                        // The decoded extent is dropped: the icon is scaled to the slot the style
-                        // derivation reserved, so a non-square source would otherwise change the
-                        // button's layout. Only the pixels are kept.
-                        self.icon_pixels = Some(pixels);
-                    } else {
-                        // `decode_to_rgba8` guarantees the `Rgba8` variant; this arm is written out
-                        // rather than `unwrap`ed because an unreachable panic inside `draw` is a
-                        // worse failure than an icon that does not show.
-                        self.icon_pixels = None;
-                    }
-                }
-                Err(reason) => {
-                    log::warn!(
-                        "tool button icon {path:?} could not be loaded ({reason}); no icon is drawn"
-                    );
-                    self.icon_pixels = None;
-                }
-            }
+            // The decoded extent is dropped: the icon is scaled to the slot the style derivation
+            // reserved, so a non-square source would otherwise change the button's layout. Only the
+            // pixels are kept -- and they are the cache's allocation, not this button's.
+            self.icon_pixels = crate::image::cache::file_rgba8_or_none(path);
+            // Set whether or not it loaded, so a missing icon is not re-read every frame.
             self.icon_pixels_key = Some(path.clone());
         }
         self.icon_pixels.clone()
@@ -599,7 +583,13 @@ impl Draw for ToolButton {
         } else {
             base
         };
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), bg);
+        context.face(
+            Rect::new(rect.x, rect.y, rect.width, rect.height),
+            bg,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         if self.base.is_hovered() || self.base.is_pressed() || self.checked {
             context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), accent);
         }

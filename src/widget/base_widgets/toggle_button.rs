@@ -419,7 +419,13 @@ impl Draw for ToggleButton {
                 resting.blend(&interactive, progress)
             }
         };
-        context.fill_rect(rect, bg_color);
+        context.face(
+            rect,
+            bg_color,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
 
         // ── Border ──
         //

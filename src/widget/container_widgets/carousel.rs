@@ -815,7 +815,13 @@ impl Draw for Carousel {
             // theme and on a dark one, while the border keeps the control's extent visible.
             let (panel, mark, border) = self.chrome_colors();
             let interior = panel.blend(&mark, 0.08);
-            context.fill_rect(rect, border);
+            context.face(
+                rect,
+                border,
+                self.style().surface.unwrap_or_default(),
+                self.style().border_radius.unwrap_or(0),
+                Color::BLACK,
+            );
             let inner = Rect::new(
                 rect.x + 1,
                 rect.y + 1,

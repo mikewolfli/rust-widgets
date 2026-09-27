@@ -279,7 +279,13 @@ impl Draw for AppBar {
         };
 
         // Draw background
-        context.fill_rect(rect, background);
+        context.face(
+            rect,
+            background,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
 
         // Draw bottom border line
         let border_y = rect.y + bar_height as i32 - 1;
@@ -694,31 +700,33 @@ mod tests {
     ///
     /// # How the ink is located
     ///
-    /// The SVG backend draws text as glyph **rectangles**, not `<text>` elements (a `<text>` would be
-    /// rendered by the viewer's own font rather than this crate's), so the assertion reads the x of the
-    /// leftmost and rightmost glyph rect the bar emitted. Giving each affordance its own render keeps
-    /// the two apart without inventing a text layout.
+    /// The SVG backend draws text as glyph geometry, not `<text>` elements (a `<text>` would be
+    /// rendered by the viewer's own font rather than this crate's), so the assertion reads the
+    /// extent of the run the bar emitted. Giving each affordance its own render keeps the two apart
+    /// without inventing a text layout.
+    ///
+    /// The title is empty in both cases, so each render holds exactly one text run and its ink box
+    /// is read with the crate reader — which knows both the `font8x8` grammar and an outline face's
+    /// fractional `M…L…Z`, and the `data-text` provenance tag.
     #[test]
     fn a_right_to_left_bar_mirrors_both_affordances() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
         // test that switches the appearance would otherwise change a later frame.
         let _theme_guard = crate::style::theme_test_guard();
+
+        /// The bitmap face fills its glyph box, so its ink left *is* the box left. An outline face
+        /// draws a real glyph whose ink is inset, so the ink left sits one or two pixels inside the
+        /// box left at these sizes. Pinning the two equal encoded a property of the bitmap face,
+        /// not of the layout.
+        const INK_INSET_TOLERANCE: i32 = 3;
+
         fn glyph_xs(svg: &str) -> (i32, i32) {
-            let mut min = i32::MAX;
-            let mut max = i32::MIN;
-            for command in svg.split("M").skip(1) {
-                let x = command
-                    .split_whitespace()
-                    .next()
-                    .and_then(|token| token.parse::<f32>().ok())
-                    .map(|v| v as i32);
-                if let Some(x) = x {
-                    min = min.min(x);
-                    max = max.max(x);
-                }
-            }
-            assert!(min <= max, "the bar painted no ink at all");
-            (min, max)
+            let boxes = crate::widget::svg::text_ink_boxes(svg);
+            let (left, right) = boxes
+                .iter()
+                .fold((i32::MAX, i32::MIN), |(min, max), b| (min.min(b.0), max.max(b.2)));
+            assert!(left <= right, "the bar painted no ink at all");
+            (left, right)
         }
 
         // The title is useless for this comparison because it is centred and must not move, so each
@@ -738,7 +746,10 @@ mod tests {
 
         let (ltr_back_left, _) = glyph_xs(&only_back(TextDirection::LeftToRight));
         let (rtl_back_left, _) = glyph_xs(&only_back(TextDirection::RightToLeft));
-        assert_eq!(ltr_back_left, APP_BAR_ARROW_INSET, "LTR draws the arrow at the left inset");
+        assert!(
+            (ltr_back_left - APP_BAR_ARROW_INSET).abs() <= INK_INSET_TOLERANCE,
+            "LTR draws the arrow at the left inset: ink left {ltr_back_left}, inset {APP_BAR_ARROW_INSET}"
+        );
         assert!(
             rtl_back_left > 400 / 2,
             "RTL must draw the arrow on the right half, drew its ink at {rtl_back_left}"
@@ -750,7 +761,10 @@ mod tests {
             ltr_action_right > 400 - APP_BAR_ACTION_INSET - 40,
             "LTR must draw the action against the right edge, its ink ended at {ltr_action_right}"
         );
-        assert_eq!(rtl_action_left, APP_BAR_ACTION_INSET, "RTL draws the action at the left inset");
+        assert!(
+            (rtl_action_left - APP_BAR_ACTION_INSET).abs() <= INK_INSET_TOLERANCE,
+            "RTL draws the action at the left inset: ink left {rtl_action_left}, inset {APP_BAR_ACTION_INSET}"
+        );
     }
 
     /// The tap zones are the same derivation the drawing uses, so they move with it.

@@ -531,7 +531,13 @@ impl Draw for Keyboard {
             Some(resolved) if resolved != window_fill => resolved,
             _ => board_from_theme,
         };
-        context.fill_rect(rect, board);
+        context.face(
+            rect,
+            board,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
 
         let row_count = self.keys.len();
         if row_count == 0 {

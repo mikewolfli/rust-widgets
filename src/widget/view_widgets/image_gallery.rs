@@ -310,7 +310,13 @@ impl Draw for ImageGallery {
                 .background_color
                 .or_else(|| theme.as_ref().and_then(|t| t.background_color))
                 .unwrap_or(fallback_bg);
-            context.fill_rect(rect, bg);
+            context.face(
+                rect,
+                bg,
+                self.style().surface.unwrap_or_default(),
+                self.style().border_radius.unwrap_or(0),
+                Color::BLACK,
+            );
             let font = Font::default();
             let text = "No images in gallery";
             // Fitted to the control's width: 20 characters at 14 px is wider than a

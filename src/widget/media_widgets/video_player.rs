@@ -351,7 +351,13 @@ impl Draw for VideoPlayer {
         } else {
             Color::rgba(20, 20, 40, 255)
         };
-        context.fill_rect(rect, video_bg);
+        context.face(
+            rect,
+            video_bg,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         context.draw_rect_stroke(rect, Color::rgba(80, 80, 80, 200), 1);
 
         let font = Font::default();

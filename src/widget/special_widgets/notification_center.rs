@@ -401,7 +401,13 @@ impl Draw for NotificationCenter {
         // The row separator is secondary chrome, derived from the same pair.
         let separator = background.blend(&text_color, 0.12);
 
-        context.fill_rect(rect, background);
+        context.face(
+            rect,
+            background,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         context.draw_rect(rect, border);
 
         for (index, item) in self.items.iter().enumerate() {

@@ -533,49 +533,35 @@ mod tests {
     use super::*;
     use crate::widget::svg::render_to_svg;
 
-    /// One ink box per text `<path>`, in document order.
+    /// One ink box per text run, in document order.
     ///
     /// Text leaves the backend as the `font8x8` rectangles the software rasteriser fills — one
     /// axis-aligned `<path>` subpath per set bitmap bit — so the rendered string is **not in the
     /// document in any form** and `svg.contains("50.0")` can never be true. A run can only be
-    /// located by *where it is*: the union of one `<path>`'s subpaths is its ink box.
+    /// located by *where it is*: the union of one run's ink is its box.
     ///
-    /// Subpaths are deliberately not de-duplicated: when a glyph box is wider than 8 pixels two
-    /// bitmap columns land on the same pixel via integer division, so the same rectangle is
-    /// emitted twice. That is the rasteriser's own geometry, and collapsing it here would make
-    /// this disagree with the drawing.
+    /// The first form read that union by hand: it split `d` on `M` and took the four integers of
+    /// `M{x} {y}h{w}v{h}`. That is the *bitmap* path's grammar and only its grammar. An outline
+    /// face writes `M17.00 23.84L...Z` with fractional vertices, where the same split reads `17`
+    /// as `x`, `0` as `y`, `23` as `w` — geometry that is not ink and not where the glyph is. The
+    /// crate already has the correct reader, which knows both grammars (and the `data-text`
+    /// provenance tag that distinguishes a run from a drawn shape); duplicating it here was the
+    /// actual bug. One reader, so the two cannot disagree.
     #[cfg(feature = "chart")]
     fn ink_paths(svg: &str) -> Vec<(i32, i32, i32, i32)> {
-        let mut runs = Vec::new();
-        for line in svg.lines() {
-            let Some(path_at) = line.find("<path ") else { continue };
-            let Some(d_at) = line[path_at..].find("d=\"") else { continue };
-            let start = path_at + d_at + 3;
-            let Some(end) = line[start..].find('"') else { continue };
-            let mut bounds: Option<(i32, i32, i32, i32)> = None;
-            for subpath in line[start..start + end].split('M').skip(1) {
-                let numbers: Vec<i32> = subpath
-                    .split(|c: char| !c.is_ascii_digit() && c != '-')
-                    .filter(|part| !part.is_empty())
-                    .filter_map(|part| part.parse().ok())
-                    .collect();
-                if numbers.len() < 4 {
-                    continue;
-                }
-                let (x, y, w, h) = (numbers[0], numbers[1], numbers[2], numbers[3]);
-                bounds = Some(match bounds {
-                    None => (x, y, x + w, y + h),
-                    Some((left, top, right, bottom)) => {
-                        (left.min(x), top.min(y), right.max(x + w), bottom.max(y + h))
-                    }
-                });
-            }
-            if let Some(bounds) = bounds {
-                runs.push(bounds);
-            }
-        }
-        runs
+        crate::widget::svg::text_ink_boxes(svg)
     }
+
+    /// The bitmap face fills its whole glyph box (`font8x8` rectangles span the box), so a run's
+    /// ink left *is* the box left, exactly. An **outline** face draws a real glyph whose ink is
+    /// inset — a digit's stroke does not occupy the box's first column — so the ink's left edge
+    /// sits one or two pixels right of the box edge at these sizes. A lookup that required
+    /// `ink.left == box.left`, or an assertion that pinned the two equal, encoded a property of
+    /// the bitmap face rather than of the layout, and is false the moment an outline is drawn.
+    ///
+    /// The bound is deliberately tight: it has to absorb the outline inset (≤ 2 px) and nothing
+    /// more, so a label anchored a whole tick away still fails.
+    const INK_INSET_TOLERANCE: i32 = 3;
 
     #[test]
     fn line_chart_default_creation() {
@@ -715,14 +701,22 @@ mod tests {
         let svg = render_to_svg(&mut lc);
         let runs = ink_paths(&svg);
 
-        // The Y axis: five labels at x = 20, and `0.0`/`50.0` are two characters of ink wide
-        // where `25.0` is three. `draw_y_ticks` labels `min_y + span * t`, so the ticks carry
-        // different values and therefore different ink.
-        let y_axis: Vec<_> = runs.iter().filter(|run| run.0 == 20 && run.2 > 20).collect();
+        // The Y axis: five labels anchored at box x = 20, and `0.0`/`50.0` are two characters of
+        // ink wide where `25.0` is three. `draw_y_ticks` labels `min_y + span * t`, so the ticks
+        // carry different values and therefore different ink. The anchor is where the glyph **box**
+        // starts; the bitmap face's ink left *is* that edge, but an outline glyph is inset a pixel
+        // or two, so the locator allows `INK_INSET_TOLERANCE` and nothing more.
+        let y_axis: Vec<_> = runs
+            .iter()
+            .filter(|run| (run.0 - 20).abs() <= INK_INSET_TOLERANCE && run.2 > 20)
+            .collect();
         assert_eq!(y_axis.len(), 5, "one y-tick label per tick: {y_axis:?}");
+        // An outline's ink is the glyph's **real** width, which is narrower than the advance, so the
+        // band is an upper bound rather than an equality: `25.0` / `50.0` are three characters wide
+        // and cannot exceed the three advances they occupy.
         assert!(
-            y_axis.iter().any(|run| run.2 - run.0 == 17),
-            "a `25.0` / `50.0` label is three characters of ink wide: {y_axis:?}"
+            y_axis.iter().any(|run| run.2 - run.0 <= 17),
+            "a `25.0` / `50.0` label is at most three characters of ink wide: {y_axis:?}"
         );
         assert!(
             y_axis.iter().all(|run| run.1 < 160),
@@ -732,9 +726,13 @@ mod tests {
         // a tick loop that lost its `min_y + span * t` would paint five identical boxes.
         assert_ne!(y_axis[0], y_axis[4], "the y ticks carry different values: {y_axis:?}");
 
-        // The X axis: five labels in a row below the plot, which is y = 160..168 for this
-        // geometry, and they reach past `plot_x` into the plot's own horizontal band.
-        let x_axis: Vec<_> = runs.iter().filter(|run| run.1 >= 158 && run.1 <= 162).collect();
+        // The X axis: five labels in a row below the plot, which is a line box top of 160 for this
+        // geometry, and they reach past `plot_x` into the plot's own horizontal band. Under the
+        // bitmap face the ink top *is* the line box top; under an outline face it is inset a pixel
+        // or two, so the band is `160 ± INK_INSET_TOLERANCE` — tight enough that a label on the
+        // y-axis row (160 px away) still fails.
+        let x_axis: Vec<_> =
+            runs.iter().filter(|run| (run.1 - 160).abs() <= INK_INSET_TOLERANCE).collect();
         assert_eq!(x_axis.len(), 5, "one x-tick label per tick: {x_axis:?}");
         assert!(
             x_axis.iter().all(|run| run.0 >= 64),

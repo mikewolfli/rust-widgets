@@ -401,7 +401,13 @@ impl Draw for GridWidget {
             Some(resolved) if resolved != window_fill => resolved,
             _ => surface,
         };
-        context.fill_rect(rect, cell_fill);
+        context.face(
+            rect,
+            cell_fill,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
 
         // Border
         let border_color = style

@@ -35,6 +35,26 @@ pub struct Theme {
     pub spacing: Spacing,
     /// Border/elevation tokens.
     pub borders: Borders,
+    /// Whether this theme draws **flat** faces: no bevel, no elevation, no material.
+    ///
+    /// # Why this is one flag rather than a table of kind overrides
+    ///
+    /// The distinction BLUE24 §10A draws is between a *flat* style and a *dimensional* one, and
+    /// it applies to **every** control: a theme that says "I am flat" means it about the card, the
+    /// button, the dialog and the widget nobody has written yet. Expressing it as a table of
+    /// `"<kind>": { "bevel": null }` entries means the next control added is **not** flat until
+    /// someone remembers to add its key — measured, the first attempt at that table flattened 22
+    /// kinds and left the fallback role casting shadows again.
+    ///
+    /// So the flat style is a property of the *preset*, read once where the role default is
+    /// resolved, and the per-kind/per-state `overrides.styles` keys remain available for a theme
+    /// that wants to make a **specific** control differ from its preset — which is a different, and
+    /// still useful, statement.
+    ///
+    /// Default `false`: a theme built by a caller who does not think about surfaces keeps the role
+    /// table's character, which is what every theme written before this field expects.
+    #[cfg_attr(not(alloc_frugal), serde(default))]
+    pub flat_surfaces: bool,
     /// Class-level style overrides applied after base resolution.
     pub overrides: ThemeOverrides,
     /// Animation timing tokens.

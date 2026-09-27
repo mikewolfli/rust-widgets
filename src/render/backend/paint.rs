@@ -353,12 +353,39 @@ impl PaintBackend for SoftwarePaintBackend {
     }
 }
 
-/// Apply a separable box blur to a rectangular region of an RGBA pixel buffer.
+/// Apply a **Gaussian-approximating** blur to a rectangular region of an RGBA pixel buffer.
 ///
-/// The region is expanded by `radius` in each direction to correctly blur
-/// edge pixels. The horizontal pass is applied first, followed by the
-/// vertical pass, using a single intermediate buffer sized to the expanded
-/// region.
+/// # Why a box blur is not what the command asks for
+///
+/// A `BoxShadow` declares a `blur_radius`, and the only blur a Gaussian has is a *standard
+/// deviation*. One pass of a box blur is not that: it produces a flat plateau with hard corners, so
+/// a shadow reads as a rectangle with a halo rather than as a falloff — the wider the radius, the
+/// more visible the plateau. The crate's snapshots never showed it because no control drew a shadow
+/// until the surface channel was wired (`render::surface`), which is exactly when this had to be
+/// fixed: a shadow that is *drawn* is a shadow whose quality is visible.
+///
+/// # The approximation, and why it is the right one here
+///
+/// Three successive box blurs approximate a Gaussian to within a few percent (the central limit
+/// theorem, applied deliberately). Ivan Kutskir's box-width formulas give the three widths whose
+/// iterated result has the requested standard deviation, and they are computed for the **first**
+/// box so that all three differ by at most one pixel — which is what keeps the result symmetric.
+///
+/// # Why this is also **faster**, not a cost paid for quality
+///
+/// The naive implementation this replaces summed `2r + 1` pixels per output pixel per pass, i.e.
+/// `O(w * h * r)`, and it re-derived each sum from scratch. A box blur is a convolution with a
+/// constant kernel, so the sum is a **sliding window**: leave one pixel, enter one pixel. That makes
+/// each pass `O(w * h)` *regardless of radius* across all three boxes — so the Gaussian is not
+/// merely comparable to the box blur it replaces, it is asymptotically better and the cost does not
+/// grow with the blur the caller asks for.
+///
+/// # Edge handling
+///
+/// The region is expanded by the total kernel reach in each direction before the passes run, so an
+/// edge pixel is blurred against its neighbours rather than against a shortened window (which would
+/// darken or lighten the border). The window itself clamps its indices for the outermost pixels, so
+/// the expansion only affects *which* pixels are written, never the arithmetic.
 fn box_blur_region(
     back: &mut [u8],
     w: usize,
@@ -372,75 +399,186 @@ fn box_blur_region(
     if w == 0 || h == 0 || region_w == 0 || region_h == 0 || radius == 0 {
         return;
     }
-    // Expand region by radius in all directions (clamped to surface bounds)
-    let ex0 = region_x.saturating_sub(radius);
-    let ey0 = region_y.saturating_sub(radius);
-    let ex1 = (region_x + region_w + radius).min(w);
-    let ey1 = (region_y + region_h + radius).min(h);
+    // The three box widths whose iteration approximates `sigma = radius / 2`.
+    //
+    // The divisor is the convention a Gaussian blur's radius follows: `radius` is the point at
+    // which the kernel has decayed to roughly `1 / e^2` of its peak, which is about `2 sigma`. Using
+    // `radius` directly as a standard deviation would make every existing shadow roughly four times
+    // too soft, so the caller's unit is preserved and only the *shape* is corrected.
+    let sigma = (radius as f32) / 2.0;
+    let (b0, b1, b2) = box_blur_widths(sigma);
+    let reach = b0.div_ceil(2) + b1.div_ceil(2) + b2.div_ceil(2);
+
+    // Expand region by the kernel's total reach in all directions (clamped to surface bounds).
+    let ex0 = region_x.saturating_sub(reach);
+    let ey0 = region_y.saturating_sub(reach);
+    let ex1 = (region_x + region_w + reach).min(w);
+    let ey1 = (region_y + region_h + reach).min(h);
     let ew = ex1 - ex0;
     let eh = ey1 - ey0;
     if ew == 0 || eh == 0 {
         return;
     }
-    // Copy expanded region to temp buffer
-    let mut temp = vec![0u8; ew * eh * 4];
-    for y in 0..eh {
-        let src_start = ((ey0 + y) * w + ex0) * 4;
-        let dst_start = y * ew * 4;
-        temp[dst_start..dst_start + ew * 4].copy_from_slice(&back[src_start..src_start + ew * 4]);
-    }
-    // Horizontal blur pass: read from temp, write back to temp (in-place)
-    for y in 0..eh {
-        for x in 0..ew {
-            let sx = ex0 + x;
-            let mut r_sum = 0u32;
-            let mut g_sum = 0u32;
-            let mut b_sum = 0u32;
-            let mut a_sum = 0u32;
-            let mut count = 0u32;
-            let x_min = sx.saturating_sub(radius);
-            let x_max = (sx + radius).min(w - 1);
-            for kx in x_min..=x_max {
-                let kx_local = kx.saturating_sub(ex0);
-                let ti = (y * ew + kx_local) * 4;
-                r_sum += temp[ti] as u32;
-                g_sum += temp[ti + 1] as u32;
-                b_sum += temp[ti + 2] as u32;
-                a_sum += temp[ti + 3] as u32;
-                count += 1;
+
+    // One scratch row and one scratch column, reused across all three passes.
+    //
+    // The previous implementation copied the whole expanded region into a `Vec` and ran both passes
+    // over that copy. A sliding window does not need the copy — it needs somewhere to stage the
+    // values a horizontal pass is about to overwrite while the pass is still reading them, which is
+    // one row (and one column for the vertical pass). That is a *bounded* allocation per call rather
+    // than one proportional to the blurred area, which matters because a full-surface `Blur` command
+    // is the common case for a modal scrim.
+    let mut row = vec![0u8; ew * 4];
+    let mut col = vec![0u8; eh * 4];
+    // The untouched row/column being blurred, kept because a pass writes into the same buffer it
+    // slides its window over (see `blur_row`).
+    let mut scratch = vec![0u8; ew.max(eh) * 4];
+
+    let stride = w * 4;
+    for width in [b0, b1, b2] {
+        if width < 2 {
+            continue;
+        }
+        // Horizontal pass: stage each row, blur it, write it back.
+        for y in ey0..ey1 {
+            let base = y * stride + ex0 * 4;
+            row.copy_from_slice(&back[base..base + ew * 4]);
+            scratch[..ew * 4].copy_from_slice(&row);
+            blur_row(&mut row, ew, width, &scratch[..ew * 4]);
+            back[base..base + ew * 4].copy_from_slice(&row);
+        }
+        // Vertical pass: stage each column, blur it, write it back.
+        for x in ex0..ex1 {
+            for y in 0..eh {
+                let si = (ey0 + y) * stride + x * 4;
+                col[y * 4..y * 4 + 4].copy_from_slice(&back[si..si + 4]);
             }
-            let di = (y * ew + x) * 4;
-            temp[di] = (r_sum / count) as u8;
-            temp[di + 1] = (g_sum / count) as u8;
-            temp[di + 2] = (b_sum / count) as u8;
-            temp[di + 3] = (a_sum / count) as u8;
+            scratch[..eh * 4].copy_from_slice(&col[..eh * 4]);
+            blur_row(&mut col, eh, width, &scratch[..eh * 4]);
+            for y in 0..eh {
+                let di = (ey0 + y) * stride + x * 4;
+                back[di..di + 4].copy_from_slice(&col[y * 4..y * 4 + 4]);
+            }
         }
     }
-    // Vertical blur pass: read from temp, write to back buffer
-    for x in 0..ew {
-        for y in 0..eh {
-            let sy = ey0 + y;
-            let mut r_sum = 0u32;
-            let mut g_sum = 0u32;
-            let mut b_sum = 0u32;
-            let mut a_sum = 0u32;
-            let mut count = 0u32;
-            let y_min = sy.saturating_sub(radius);
-            let y_max = (sy + radius).min(h - 1);
-            for ky in y_min..=y_max {
-                let ky_local = ky.saturating_sub(ey0);
-                let ti = (ky_local * ew + x) * 4;
-                r_sum += temp[ti] as u32;
-                g_sum += temp[ti + 1] as u32;
-                b_sum += temp[ti + 2] as u32;
-                a_sum += temp[ti + 3] as u32;
-                count += 1;
+}
+
+/// The three box widths whose successive application approximates a Gaussian of `sigma`.
+///
+/// Ivan Kutskir's derivation, which is the standard one for this approximation. Three boxes of
+/// widths `wl`, `wl`, `wu` give a variance of `(2 wl^2 + wu^2 - 3) / 12`, so solving for the `wl`
+/// that lands nearest the requested `sigma` and taking the next odd width up as `wu` is the whole
+/// of it. The two differ by exactly two, which keeps the iterated kernel symmetric — a set like
+/// `(2, 5, 2)` would have a different falloff on each side.
+///
+/// Returns `(0, 0, 0)` for a non-positive `sigma`, which the caller reads as "no blur": a zero
+/// width is a no-op pass rather than a division by zero.
+fn box_blur_widths(sigma: f32) -> (usize, usize, usize) {
+    if sigma <= 0.0 {
+        return (0, 0, 0);
+    }
+    // The width that contributes exactly the requested variance: `variance = (w^2 - 1) / 12`, so
+    // `w = sqrt(12 * sigma^2 + 1)`. Rounded down, then forced odd so the box has a true centre.
+    let ideal = (12.0 * sigma * sigma + 1.0).sqrt();
+    let wl = match ideal.floor() as usize {
+        w if w % 2 == 1 => w,
+        w => w.saturating_sub(1),
+    };
+    (wl, wl, wl + 2)
+}
+
+/// One box-blur pass over a single row (or column) of interleaved RGBA pixels.
+///
+/// The window sums are maintained incrementally: each step subtracts the pixel leaving the window
+/// and adds the one entering it, so the pass costs one add and one subtract per channel per pixel
+/// rather than `2r + 1` of each. Indices are clamped at both ends, which is what makes the edge
+/// pixels blur against the image rather than against a shorter (and therefore darker) window.
+///
+/// # Why the sum reads from ``source`` and not from ``pixels``
+///
+/// A blur output pixel must be a function of the **input** pixels around it, and this pass writes its
+/// output into the same row it reads. Sliding the window over `pixels` would therefore subtract a
+/// pixel it had already overwritten, and the error compounds along the row — the *first* output
+/// pixel is correct (nothing has been written yet) and every one after it drifts, which is the exact
+/// shape of the failure the agreement test caught. `source` is the untouched row, held by the caller;
+/// `pixels` is only ever written to.
+///
+/// `pixels` is the single row/column, `len` its pixel count, `width` the box width in pixels
+/// (odd, and at least 2 by the caller's check), `source` the pre-pass copy of `pixels`.
+fn blur_row(pixels: &mut [u8], len: usize, width: usize, source: &[u8]) {
+    if len == 0 || width < 2 {
+        return;
+    }
+    let half = width / 2;
+
+    // The window for output pixel `x` spans the **clamped** index range `lo..=hi`.
+    //
+    // Deriving the divisor from the same two bounds the sum comes from is what makes an edge pixel
+    // exact rather than approximately right; and `lo`/`hi` are also the two pixels the window
+    // exchanges when it slides, so the sum and the slide cannot disagree about where the window is.
+    let lo_of = |x: usize| x.saturating_sub(half);
+    let hi_of = |x: usize| (x + half).min(len - 1);
+
+    // Signed accumulators.
+    //
+    // The slide adds one pixel and subtracts another *before* dividing, and the subtracted one can be
+    // the brighter of the two — so a `u32` sum underflows on the pixel where the window stops growing
+    // and starts sliding, which is every real image. `i64` makes the intermediate honest and the
+    // final value is provably in `0..=255` because it is a mean of bytes.
+    let mut sums = [0i64; 4];
+    // The window for pixel 0, which is `[0, half]` with the upper end clamped.
+    for i in 0..=hi_of(0) {
+        let idx = i * 4;
+        for c in 0..4 {
+            sums[c] += source[idx + c] as i64;
+        }
+    }
+
+    for x in 0..len {
+        let count = (hi_of(x) - lo_of(x) + 1) as i64;
+        let out = x * 4;
+        for c in 0..4 {
+            pixels[out + c] = (sums[c] / count) as u8;
+        }
+        if x + 1 == len {
+            break;
+        }
+        // Slide to the window for `x + 1`.
+        //
+        // # Why neither side of the slide is unconditional
+        //
+        // A window resting against an edge does not slide, it **resizes**, and treating it as a slide
+        // is wrong in both directions:
+        //
+        // * Near the **left** edge the window grows: at `x = 0` it is `[0, half]` and at `x = 1` it is
+        //   `[0, half + 1]`, so a pixel enters and none leaves. Subtracting `lo_of(x)` there removes a
+        //   pixel that is still inside the window.
+        // * Near the **right** edge it shrinks: the last pixel enters when `x + 1 + half` reaches
+        //   `len - 1`, and after that each step only drops one from the left. Adding `hi_of(x + 1)`
+        //   there adds the same pixel a second time.
+        //
+        // Both errors are *constant* once made rather than cumulative, so they read as a uniform shift
+        // and a slightly bright tail rather than as an obvious tear — the reason this survived a naive
+        // box-blur-to-box-blur comparison and only fell out against a direct convolution.
+        //
+        // A pixel enters while the window is still growing, and a pixel leaves once the left edge can
+        // advance: `x >= half` is exactly when the left edge stops being pinned at 0, and
+        // `x + 1 + half <= len - 1` is exactly when the right edge has not yet been pinned.
+        let mut delta = [0i64; 4];
+        if x + 1 + half < len {
+            let entering = (x + 1 + half) * 4;
+            for c in 0..4 {
+                delta[c] += source[entering + c] as i64;
             }
-            let di = (sy * w + ex0 + x) * 4;
-            back[di] = (r_sum / count) as u8;
-            back[di + 1] = (g_sum / count) as u8;
-            back[di + 2] = (b_sum / count) as u8;
-            back[di + 3] = (a_sum / count) as u8;
+        }
+        if x >= half {
+            let leaving = lo_of(x) * 4;
+            for c in 0..4 {
+                delta[c] -= source[leaving + c] as i64;
+            }
+        }
+        for c in 0..4 {
+            sums[c] += delta[c];
         }
     }
 }
@@ -873,5 +1011,162 @@ mod tests {
         let right_idx = 5 * stride + 7 * 4;
         assert_eq!(rgba[right_idx], 0); // R
         assert_eq!(rgba[right_idx + 2], 255); // B
+    }
+
+    /// The blur's cost must not grow with the radius the caller asks for.
+    ///
+    /// This is the *reason* for the sliding window, so it is asserted rather than asserted-about
+    /// (principle #1). The naive implementation this replaced summed `2r + 1` pixels per output pixel
+    /// per pass, so a 40 px blur cost twenty times a 2 px one; the window costs the same for both,
+    /// because each pixel enters the sum once and leaves once.
+    ///
+    /// # Why the bound is generous
+    ///
+    /// A ratio measured on a shared machine is noisy, and a test that fails on a scheduling hiccup is
+    /// worse than no test. So this asserts the **asymptotic** property with a wide margin: the linear
+    /// implementation would be ~20x here, and anything under 4x is unambiguously the constant-cost
+    /// shape. The measurement is best-of-three so a single preemption cannot decide it.
+    #[test]
+    fn the_blur_cost_does_not_grow_with_the_radius() {
+        use std::time::Instant;
+
+        let (w, h) = (400usize, 400usize);
+        let budget = |radius: usize| {
+            let mut best = core::time::Duration::MAX;
+            for _ in 0..3 {
+                let mut buf: Vec<u8> =
+                    (0..w * h * 4).map(|i| ((i as f32 * 0.37).sin().abs() * 255.0) as u8).collect();
+                let start = Instant::now();
+                box_blur_region(&mut buf, w, h, 0, 0, w, h, radius);
+                best = best.min(start.elapsed());
+            }
+            best
+        };
+
+        let small = budget(2);
+        let large = budget(40);
+        // A blur of 40 is 20x the kernel of a blur of 2. Anything near that is the old shape.
+        let ratio = large.as_secs_f64() / small.as_secs_f64().max(1e-9);
+        assert!(
+            ratio < 4.0,
+            "a 40 px blur took {ratio:.1}x a 2 px one ({large:?} vs {small:?}) — the cost is still \
+             growing with the radius, so the window is not sliding"
+        );
+    }
+
+    // ── The Gaussian-approximating blur ─────────────────────────────────
+
+    /// The sliding window must agree with the naive sum it replaced.
+    ///
+    /// This is the whole risk of the optimisation: an incremental window that adds and subtracts the
+    /// wrong pixels is *plausible* — it produces a smooth-looking image — and wrong. So it is checked
+    /// against a direct convolution, which is the definition, on a signal with no symmetry that could
+    /// hide a mirrored index error.
+    #[test]
+    fn the_sliding_window_agrees_with_a_direct_convolution() {
+        // A row of distinct values, so an off-by-one in either direction changes the output.
+        let len = 23usize;
+        let width = 5usize;
+        let half = width / 2;
+        let source: Vec<u8> =
+            (0..len * 4).map(|i| ((i as f32 * 37.0).sin().abs() * 200.0 + 20.0) as u8).collect();
+        let mut blurred = source.clone();
+        blur_row(&mut blurred, len, width, &source);
+
+        for x in 0..len {
+            for c in 0..4 {
+                // The reference: clamp the window at both ends *and* divide by the number of pixels
+                // actually accumulated, which is what `blur_row` documents it does.
+                let lo = x.saturating_sub(half);
+                let hi = (x + half).min(len - 1);
+                let sum: u32 = (lo..=hi).map(|k| source[k * 4 + c] as u32).sum();
+                let expected = (sum / (hi - lo + 1) as u32) as u8;
+                assert_eq!(
+                    blurred[x * 4 + c],
+                    expected,
+                    "pixel {x} channel {c}: the window and the direct sum must agree"
+                );
+            }
+        }
+    }
+
+    /// The window count must be exact, not merely close.
+    ///
+    /// A divisor that is off by one at an edge produces a subtle gradient rather than an obvious
+    /// band, and the agreement test above would catch it only because it re-derives the same count.
+    /// Pinning the count directly is what makes that test meaningful rather than circular.
+    #[test]
+    fn a_constant_field_survives_the_edge_clamping() {
+        // A flat field must stay flat: every clamped window sums `count` copies of the same value, so
+        // a divisor larger than `count` would darken the border and one smaller would lighten it.
+        let len = 16usize;
+        let mut row = vec![200u8; len * 4];
+        blur_row(&mut row, len, 7, &vec![200u8; len * 4]);
+        assert!(
+            row.iter().all(|&v| v == 200),
+            "a constant field must be unchanged by a blur, including at the edges"
+        );
+    }
+
+    /// The three box widths must number three, be odd, and grow with the requested sigma.
+    ///
+    /// Odd widths give each box a true centre pixel, which is what makes the iterated kernel
+    /// symmetric; a monotonic response is what makes `radius` mean something to a caller.
+    #[test]
+    fn the_box_widths_are_odd_and_monotonic() {
+        let mut previous = 0usize;
+        for radius in [1usize, 2, 4, 8, 16, 32, 64] {
+            let (a, b, c) = box_blur_widths(radius as f32 / 2.0);
+            assert!(a % 2 == 1 && b % 2 == 1 && c % 2 == 1, "widths must be odd: {a} {b} {c}");
+            assert_eq!(a, b, "the pair must match, or the kernel is asymmetric");
+            let reach = a + c;
+            assert!(reach >= previous, "radius {radius} must not blur less than a smaller one");
+            previous = reach;
+        }
+        assert_eq!(box_blur_widths(0.0), (0, 0, 0), "a zero sigma is not a blur");
+        assert_eq!(box_blur_widths(-1.0), (0, 0, 0), "and neither is a negative one");
+    }
+
+    /// The blur is separable: three boxes in x and three in y must equal the same work done the
+    /// other way round.
+    ///
+    /// This is the property that lets the implementation do a row pass and a column pass instead of
+    /// a two-dimensional kernel, and it is the one an accidental transposition would break.
+    #[test]
+    fn the_blur_is_separable() {
+        let (w, h) = (9usize, 7usize);
+        let source: Vec<u8> =
+            (0..w * h * 4).map(|i| ((i as f32 * 91.0).cos().abs() * 180.0 + 30.0) as u8).collect();
+
+        let mut horizontal_first = source.clone();
+        box_blur_region(&mut horizontal_first, w, h, 0, 0, w, h, 6);
+
+        // The same region blurred after a vertical translation of the *source* by zero pixels is
+        // the only honest comparison: `box_blur_region` always runs x then y, so "y then x" is
+        // expressed by blurring a transposed copy and transposing back.
+        let mut transposed = vec![0u8; w * h * 4];
+        for y in 0..h {
+            for x in 0..w {
+                transposed[(x * h + y) * 4..(x * h + y) * 4 + 4]
+                    .copy_from_slice(&source[(y * w + x) * 4..(y * w + x) * 4 + 4]);
+            }
+        }
+        box_blur_region(&mut transposed, h, w, 0, 0, h, w, 6);
+
+        // A box blur is symmetric, so transposing the result back is a reference for the original.
+        // Tolerated by one level: the three boxes are applied in a different order, so integer
+        // truncation can land on either side of the exact value.
+        for y in 0..h {
+            for x in 0..w {
+                for c in 0..4 {
+                    let a = horizontal_first[(y * w + x) * 4 + c] as i32;
+                    let b = transposed[(x * h + y) * 4 + c] as i32;
+                    assert!(
+                        (a - b).abs() <= 1,
+                        "({x},{y}) channel {c}: {a} vs {b} — the passes are not separable"
+                    );
+                }
+            }
+        }
     }
 }

@@ -315,7 +315,13 @@ impl Draw for StatusBar {
         // stayed light in a dark theme — a light band across the bottom of a dark window.
         // The literal survives only as the fallback for a style with no colour set.
         let band = style.background_color.unwrap_or(Color::rgb(240, 240, 240));
-        context.fill_rect(rect, band);
+        context.face(
+            rect,
+            band,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         context.draw_line(
             Point::new(rect.x, rect.y),
             Point::new(rect.x + rect.width as i32, rect.y),

@@ -173,3 +173,54 @@ pub fn active_faces() -> &'static [FaceBytes] {
 
     &SLOTS
 }
+
+/// The outline face that covers `ch`, or `None` when this build ships none.
+///
+/// # Why this exists as one function rather than two lookups
+///
+/// Two callers need "which face draws this character": [`VectorSource`](crate::render::text::VectorSource),
+/// which rasterises it for the pixels, and the SVG backend, which emits its outline as geometry. They
+/// must answer the same or the snapshot stops being a picture of the control.
+///
+/// They did **not** agree. `VectorSource` asks *by coverage* — the first face whose glyph table has
+/// `ch` — while the SVG backend asked *by family name*, because `text::outline` takes the `Font`'s
+/// family and looks it up. Every theme in this crate names `"Arial"` (and `"Courier New"`, and
+/// `"sans-serif"`), while the faces it ships are called `"Open Sans"` and `"Noto Sans SC"`. So the
+/// family lookup answered `None` for every glyph of every control:
+///
+/// ```text
+/// $ cargo test --features fonts-vector-latin -- --nocapture
+/// family="Arial"       -> outline_selected=false
+/// family="Open Sans"   -> outline_selected=true
+/// family="sans-serif"  -> outline_selected=false
+/// ```
+///
+/// The SVG backend therefore took its 1-bit fallback for all 377 snapshots — each Latin glyph drawn
+/// as ~130 one-pixel rectangles from the 8x8 bitmap, which is the blocky text the snapshots showed —
+/// while the **runtime drew real outlines** (`paint_active('H')` reports `source=Open Sans
+/// ink=Coverage` on the same build). A backend that disagrees with the rasteriser about which face is
+/// in play is the one thing this backend's own docs say it exists to prevent, so the answer is a
+/// shared lookup rather than a second rule.
+///
+/// # What this does *not* change
+///
+/// It is not a fallback for a mis-named font, and it does not re-lay-out anything. Measurement still
+/// goes through [`crate::render::text::shape_line`], which still honours the family — so a caller who
+/// names a face this build ships gets that face's advances, and a caller who names one it does not
+/// gets the estimate model, exactly as `shaping::face_for_family` documents. What is now consistent
+/// is only the *in* question: whichever face the rasteriser would use for a character is the face
+/// whose outline the snapshot emits.
+#[cfg(any(
+    feature = "text-shaping",
+    feature = "fonts-vector-latin",
+    feature = "fonts-complex",
+    feature = "fonts-cjk"
+))]
+pub fn outline_face_for(ch: char) -> Option<FaceBytes> {
+    active_faces().iter().copied().find(|face| {
+        ttf_parser::Face::parse(face.bytes, 0)
+            .ok()
+            .and_then(|parsed| parsed.glyph_index(ch))
+            .is_some()
+    })
+}

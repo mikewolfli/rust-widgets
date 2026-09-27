@@ -1780,36 +1780,21 @@ mod tests {
         assert!(svg.ends_with("</svg>"), "SVG should end with </svg>");
         assert!(svg.contains("width=\"300\""), "SVG should contain width=\"300\"");
         assert!(svg.contains("height=\"200\""), "SVG should contain height=\"200\"");
-        // Both tab titles are drawn. They are `font8x8` glyph geometry, not `<text>` elements, so
-        // the titles are checked as ink on the **tab strip**: the strip is the control's top
-        // `TAB_HEIGHT` rows, and one label per tab means one ink box per tab, each inside its own
-        // tab rather than a single run spanning the strip.
-        let title_boxes: Vec<(i32, i32, i32, i32)> = svg
-            .lines()
-            .filter(|line| line.contains("<path "))
-            .filter_map(|line| {
-                let d = line.find("d=\"")? + 3;
-                let end = line[d..].find('"')? + d;
-                let d = &line[d..end];
-                let mut box_: Option<(i32, i32, i32, i32)> = None;
-                for subpath in d.split('M').skip(1) {
-                    let numbers: Vec<i32> = subpath
-                        .split(|c: char| !c.is_ascii_digit() && c != '-')
-                        .filter(|part| !part.is_empty())
-                        .filter_map(|part| part.parse().ok())
-                        .collect();
-                    if numbers.len() < 4 {
-                        continue;
-                    }
-                    let (x, y, w, h) = (numbers[0], numbers[1], numbers[2], numbers[3]);
-                    box_ = Some(match box_ {
-                        None => (x, y, x + w, y + h),
-                        Some((l, t, r, b)) => (l.min(x), t.min(y), r.max(x + w), b.max(y + h)),
-                    });
-                }
-                box_
-            })
-            .collect();
+        // Both tab titles are drawn. They are glyph geometry, not `<text>` elements, so the titles
+        // are checked as ink on the **tab strip**: the strip is the control's top `TAB_HEIGHT`
+        // rows, and one label per tab means one ink box per tab, each inside its own tab rather
+        // than a single run spanning the strip.
+        //
+        // # Why the boxes come from the crate reader, not a local `d` parser
+        //
+        // This used to split `d` on `M` and read the four integers of `M{x} {y}h{w}v{h}` — the
+        // **bitmap** path's grammar and only its grammar. An outline face writes
+        // `M17.00 23.84L...Z` with fractional vertices, which that reader took as a rectangle at
+        // `(17, 23)` sized by the next two numbers: geometry that is not ink and not where the
+        // glyph is, so both titles were located off the strip and the assertion below failed on a
+        // correctly drawn control. `text_ink_boxes` knows both grammars and the `data-text`
+        // provenance tag; one reader, so the two cannot drift apart.
+        let title_boxes = crate::widget::svg::text_ink_boxes(&svg);
         assert_eq!(title_boxes.len(), 2, "one label per tab: {title_boxes:?}");
         for (index, title) in title_boxes.iter().enumerate() {
             assert!(

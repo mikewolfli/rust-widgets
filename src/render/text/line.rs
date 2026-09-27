@@ -119,6 +119,29 @@ pub(crate) fn shape_line(text: &str, font: &Font, scale: f32) -> ShapedText {
             _ => estimate_cluster_advance(&cluster.text, font.size(), scale),
         };
     }
+    // The word spacing is added **after** the real metrics, and only to whitespace clusters.
+    //
+    // # Why it is not folded into the loop above
+    //
+    // A whitespace cluster's `real_advances` entry is the face's own space glyph — the value that is
+    // correct in Latin, Arabic and CJK alike. Overwriting it here would discard that, so the spacing
+    // is an *addition*: with `word_spacing == 0` the face's value is the whole answer, which is the
+    // default and the one that stays right across scripts (`Font::word_spacing`).
+    //
+    // # Why whitespace and not space characters by name
+    //
+    // `is_whitespace` is the same predicate `estimate_cluster_advance` uses to decide that a cluster
+    // paints nothing, so "a cluster that has an advance but no ink" and "a word boundary" are one
+    // question rather than two that must be kept in step. A no-break space is *not* whitespace to
+    // this predicate, which is correct: by definition it must not be given a word boundary's gap.
+    let word_gap = font.word_spacing() * scale;
+    if word_gap != 0.0 {
+        for cluster in clusters.iter_mut() {
+            if cluster.text.chars().all(|ch| ch.is_whitespace()) {
+                cluster.advance = (cluster.advance + word_gap).max(0.0);
+            }
+        }
+    }
     let mut total_advance: f32 = clusters.iter().map(|cluster| cluster.advance).sum();
     // `n` clusters have `n - 1` inter-cluster gaps, so a trailing tracking would extend past
     // the end of the run and make a centred label sit visibly left of centre.
@@ -192,6 +215,60 @@ mod tests {
 
     fn font() -> Font {
         Font::new("sans", 10.0, false, false)
+    }
+
+    /// The word spacing must be **inert by default**, so a caller that has no opinion gets the
+    /// face's own space glyph and every existing control's layout is unchanged.
+    ///
+    /// This is the property that makes the field safe to add: `0.0` is what every existing call site
+    /// and every serialised theme already means, and the whole point of defaulting to the face's own
+    /// metric rather than a fraction of an em is that the gap stays correct across scripts.
+    #[test]
+    fn no_word_spacing_leaves_the_line_exactly_as_it_was() {
+        let plain = shape_line("a b", &font(), 1.0);
+        let mut explicit = font();
+        explicit.set_word_spacing(0.0);
+        let zero = shape_line("a b", &explicit, 1.0);
+        assert_eq!(plain.advance(), zero.advance(), "0.0 must mean 'the face's own space'");
+    }
+
+    /// The word spacing must move **word boundaries only**, and must not touch letter gaps.
+    ///
+    /// The two knobs exist separately for this reason: a caller who wants looser words otherwise has
+    /// to loosen every letter as well, which is a different typographic change. Measured on a line
+    /// with no space at all, the width must not move a single pixel.
+    #[test]
+    fn word_spacing_moves_spaces_and_leaves_letters_alone() {
+        let mut spaced = font();
+        spaced.set_word_spacing(6.0);
+
+        assert_eq!(
+            shape_line("ab", &font(), 1.0).advance(),
+            shape_line("ab", &spaced, 1.0).advance(),
+            "a line with no whitespace must be untouched"
+        );
+        assert!(
+            shape_line("a b", &spaced, 1.0).advance() > shape_line("a b", &font(), 1.0).advance(),
+            "a line with a space must gain the gap"
+        );
+    }
+
+    /// Two spaces must gain **two** gaps, so the adjustment is per word boundary rather than per line.
+    ///
+    /// A implementation that added the spacing once to the run's total would pass the single-space
+    /// test above and be wrong for every line with more than one space — which is most prose.
+    #[test]
+    fn every_word_boundary_gains_the_gap() {
+        let mut spaced = font();
+        spaced.set_word_spacing(6.0);
+        let one =
+            shape_line("a b", &spaced, 1.0).advance() - shape_line("a b", &font(), 1.0).advance();
+        let two =
+            shape_line("a  b", &spaced, 1.0).advance() - shape_line("a  b", &font(), 1.0).advance();
+        assert!(
+            (two - one * 2.0).abs() < 0.01,
+            "two spaces must gain twice the gap: one={one}, two={two}"
+        );
     }
 
     #[test]

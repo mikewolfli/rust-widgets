@@ -2,7 +2,7 @@
 <!-- control: chart | appearance: light -->
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(240,240,240,1.00)" />
-  <rect x="0" y="0" width="240" height="120" fill="rgba(243,237,247,1.00)" />
+  <rect x="0" y="0" width="240" height="120" rx="4" ry="4" fill="rgba(243,237,247,1.00)" />
   <rect x="0" y="0" width="240" height="120" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
   <line x1="34" y1="97" x2="232" y2="97" stroke="rgba(199,194,203,0.95)" stroke-width="1" />
   <path d="M25 92h1v1h-1zM26 92h1v1h-1zM27 92h1v1h-1zM28 92h1v1h-1zM28 92h1v1h-1zM25 93h1v1h-1zM25 93h1v1h-1zM28 93h1v1h-1zM29 93h1v1h-1zM25 94h1v1h-1zM25 94h1v1h-1zM28 94h1v1h-1zM28 94h1v1h-1zM29 94h1v1h-1zM25 95h1v2h-1zM25 95h1v2h-1zM27 95h1v2h-1zM28 95h1v2h-1zM28 95h1v2h-1zM29 95h1v2h-1zM25 97h1v1h-1zM25 97h1v1h-1zM26 97h1v1h-1zM27 97h1v1h-1zM28 97h1v1h-1zM29 97h1v1h-1zM25 98h1v1h-1zM25 98h1v1h-1zM26 98h1v1h-1zM28 98h1v1h-1zM29 98h1v1h-1zM25 99h1v1h-1zM26 99h1v1h-1zM27 99h1v1h-1zM28 99h1v1h-1zM28 99h1v1h-1z" fill="rgba(0,0,0,0.75)" />

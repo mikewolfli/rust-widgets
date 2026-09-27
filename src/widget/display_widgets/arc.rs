@@ -418,6 +418,12 @@ mod tests {
     use crate::core::{Color, Rect, Size};
     use crate::render::{PaintBackend, SoftwarePaintBackend};
 
+    /// The bitmap face fills its glyph box, so its ink top *is* the box top and its ink edges *are*
+    /// the box edges. An outline face draws a real glyph whose ink is inset, so the ink top sits one
+    /// or two pixels below the box top at these sizes and its sides come in by as much. Pinning the
+    /// two equal encoded a property of the bitmap face, not of the layout.
+    const INK_INSET_TOLERANCE: i32 = 3;
+
     #[test]
     fn arc_creation_defaults() {
         let arc = Arc::new(Rect::new(0, 0, 200, 200));
@@ -530,10 +536,10 @@ mod tests {
         roomy.set_show_value(true);
         let (subpaths, ink) = reading_ink(&mut roomy, 200);
         assert!(subpaths > 0, "a reading that fits inside the ring hole must still be drawn");
-        // …and it is drawn in the hole, not over the ring. `0%` is `0`'s bitmap followed by
-        // `%`'s, so the run's ink is one pixel narrower on each side than the glyph box the
-        // width test above accepted. A label left at the arc's own radius, or one wider than
-        // the hole, overflows these bounds.
+        // …and it is drawn in the hole, not over the ring. An outline face's ink is narrower and
+        // lower than the bitmap's — it is inset from the glyph box on every side — so the run's
+        // ink is *within* the bounds a full-box face would fill rather than exactly on them. A
+        // label at the arc's own radius, or one wider than the hole, overshoots these bounds.
         let (left, top, right, _) = ink.expect("the drawn reading has an ink box");
         let field = roomy.geometry();
         let outer_radius = field.width.min(field.height).saturating_sub(2) / 2;
@@ -541,20 +547,32 @@ mod tests {
         let center_x = field.x + field.width as i32 / 2;
         let center_y = field.y + field.height as i32 / 2;
         // The run is drawn on the hole's **own** centre line and its ink fits inside the hole:
-        // `inner_radius` is that hole's half-width, so both edges of the ink are within
-        // `inner_radius - 1` of `center_x`. A reading placed at the arc's own radius (the
-        // defect this pins) overshoots that bound; one positioned from the field rather than
-        // from the hole lands off the hole's centre line entirely.
+        // `inner_radius` is that hole's half-width, so neither edge of the ink reaches past
+        // `inner_radius` from `center_x`. A reading placed at the arc's own radius (the defect
+        // this pins) overshoots that bound; one positioned from the field rather than from the
+        // hole lands off the hole's centre line entirely.
         assert!(
             left >= center_x - inner_radius as i32 && right <= center_x + inner_radius as i32,
             "the reading's ink {left}..{right} must lie within the hole's centre ± {inner_radius}"
         );
-        assert_eq!(
-            left + right,
-            2 * center_x - 1,
-            "the reading hangs on the hole's own centre line, not the field's"
+        // Hang on that centre line: `left - center_x == center_x - right` under the bitmap face,
+        // where both halves of a glyph's last column carry ink. An outline face's rightmost ink
+        // sits a pixel or two inside the box (that column has no ink), so the two distances
+        // balance to within the same inset; a label hung on the *field's* edge is off by
+        // `center_x - inner_radius` — 70 px here — and still fails.
+        assert!(
+            (left - center_x + right - center_x).abs() <= INK_INSET_TOLERANCE,
+            "the reading hangs on the hole's own centre line, not the field's: \
+             ink {left}..{right}, centre {center_x}"
         );
-        assert_eq!(top, center_y - 7, "and is centred on the hole's middle line");
+        // The digit's ink reaches the line box's top edge under the bitmap face and sits an inset
+        // below it under an outline face; either way the run is on the hole's middle line, so a
+        // reading on the field's top or at the arc's radius is a whole line away and fails.
+        assert!(
+            (top - (center_y - 7)).abs() <= INK_INSET_TOLERANCE,
+            "and is centred on the hole's middle line: ink top {top}, box top {}",
+            center_y - 7
+        );
 
         // A ring whose thickness equals its radius has no hole for the label, so there is
         // nowhere legal to put it — it is dropped rather than overprinted on the arc.

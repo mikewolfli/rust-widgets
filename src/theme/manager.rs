@@ -355,7 +355,25 @@ impl ThemeManager {
         //
         // A theme that draws no shadows keeps drawing none, because `Theme::elevation` answers
         // `None` when `borders.shadow` is off — the same condition the literal was behind.
-        let surface = crate::render::role_surface_style(kind_name);
+        //
+        // # Why the theme, and not the role table, decides flatness
+        //
+        // A preset used to flatten the raised roles by carrying a class override for each of them
+        // — a list of 22 kind names, in a second file, that had to be kept in step with the role
+        // table by hand. The list could not be complete: the role table's fallback is a raised
+        // level, so every kind the list forgot (`adaptive_scaffold`, `app_bar`, ...) went on
+        // floating in a style that calls itself flat. That is a rule stated as data, which is why
+        // it drifted.
+        //
+        // It is stated as a rule instead: flat means flat for every kind. The dimensional preset
+        // answers `false` and gets the whole of the role table back, which is what "flat and
+        // dimensional are two corners of one parameter space" has to mean to be true of the space
+        // and not only of the kinds someone remembered to write down.
+        let surface = if theme.flat_surfaces {
+            crate::render::SurfaceStyle::solid()
+        } else {
+            crate::render::role_surface_style(kind_name)
+        };
         // A shadow's hue, stated once; each level applies its own alpha (`Theme::elevation`), so the
         // ladder owns the opacity rather than this call site.
         let shadow = theme.elevation(surface.elevation, Color::BLACK);
@@ -912,16 +930,19 @@ impl Default for Theme {
             },
             spacing: Spacing { small: 4, medium: 8, large: 16, extra_large: 24 },
             borders: Borders { width: 1, radius: 4, shadow: true },
+            // This preset is the flat one, and it says so with the rule rather than with a list of
+            // kinds: every role's bevel and elevation is flattened, in `role_base_style`, for every
+            // kind. See that function for why the list had to go.
+            flat_surfaces: true,
             overrides: ThemeOverrides {
-                // The state table, plus the class-level surface overrides that make this preset
-                // the **flat** one. Both are data, and both are derived from the preset's own
-                // palette where they touch colour (BLUE24 §10A.5).
-                styles: {
-                    let mut styles =
-                        crate::theme::preset_states::preset_state_overrides(&Colors::default());
-                    styles.extend(crate::theme::preset_states::preset_surface_overrides(false));
-                    styles
-                },
+                // The state table alone. The *surface* half of this preset is `flat_surfaces`, and
+                // moving it there is what stopped the preset having two half-answers to one
+                // question — a rule and a 22-entry table that could disagree.
+                //
+                // The state keys are colour, not shape, so they stay data: a pressed colour is a
+                // token a host may want to retheme, whereas "this preset is flat" is a property of
+                // the preset and not something a host should have to spell out key by key.
+                styles: crate::theme::preset_states::preset_state_overrides(&Colors::default()),
             },
             // Material's own tempo: `kRadialReactionDuration` 100 ms, `kThemeChangeDuration`
             // 200 ms, the switch's toggle 300 ms. A theme that wants a different rhythm sets
@@ -1004,16 +1025,14 @@ impl Theme {
             },
             spacing: Spacing { small: 4, medium: 8, large: 16, extra_large: 24 },
             borders: Borders { width: 1, radius: 4, shadow: true },
+            // The dark preset is flat too, for the same reason the default one is: the two shipped
+            // presets are the crate's existing appearance, and their 377 snapshots are the safety
+            // rope (BLUE24 §10A.6 criterion 9). The **dimensional** style is a separate, opt-in
+            // preset — see `Theme::dimensional`.
+            flat_surfaces: true,
             overrides: ThemeOverrides {
-                // The dark preset is flat too, for the same reason the default one is: the two
-                // shipped presets are the crate's existing appearance, and their 377 snapshots
-                // are the safety rope (BLUE24 §10A.6 criterion 9). The **dimensional** style is a
-                // separate, opt-in preset — see `Theme::dimensional`.
-                styles: {
-                    let mut styles = crate::theme::preset_states::preset_state_overrides(&colors);
-                    styles.extend(crate::theme::preset_states::preset_surface_overrides(false));
-                    styles
-                },
+                // The state table alone, for the reason [`Theme::default`] gives.
+                styles: crate::theme::preset_states::preset_state_overrides(&colors),
             },
             // Material's own tempo: `kRadialReactionDuration` 100 ms, `kThemeChangeDuration`
             // 200 ms, the switch's toggle 300 ms. A theme that wants a different rhythm sets
@@ -1037,10 +1056,11 @@ impl Theme {
     ///
     /// Exactly two things, and both are data:
     ///
-    /// 1. **No flattening overrides.** The default preset flattens the role table's bevels so it
-    ///    renders as this crate always has; this one omits those keys, so
-    ///    [`crate::render::role_surface_style`]'s own character shows through — a button is a
-    ///    raised key, a field is a well.
+    /// 1. **`flat_surfaces: false`.** The default preset answers `true`, so every role's bevel and
+    ///    elevation is flattened; this one does not, so [`crate::render::role_surface_style`]'s own
+    ///    character shows through — a button is a raised key, a field is a well. This is a single
+    ///    boolean and not a table of kind names, which is the point: see `role_base_style` for the
+    ///    drift a table produced.
     /// 2. **A pressed state inverts the bevel.** `"button:pressed": { "bevel": "inset" }` is the
     ///    end-to-end demonstration of BLUE24 §10A's most valuable layer: the state channel built in
     ///    BLUE23 §2.4 already reaches `"<kind>:<state>"`, so a 3D press feedback needs one table
@@ -1056,9 +1076,10 @@ impl Theme {
         // fonts, spacing and borders are visibly the default preset's — the two presets differ in
         // exactly one place, and this spelling makes that a property of the code rather than a
         // comment.
-        let mut theme = Theme { name: "dimensional".to_string(), ..Theme::default() };
-        // Start from the state table alone (the flat preset's class overrides are what make it
-        // flat), then state the one piece of dimensional *interaction* the role table cannot:
+        let mut theme =
+            Theme { name: "dimensional".to_string(), flat_surfaces: false, ..Theme::default() };
+        // Start from the state table alone — `flat_surfaces: false` already put the role table's
+        // shapes back — then state the one piece of dimensional *interaction* the role table cannot:
         // a press turns the key in.
         theme.overrides.styles = crate::theme::preset_states::preset_state_overrides(&theme.colors);
         for kind in ["button", "toggle_button", "tool_button"] {

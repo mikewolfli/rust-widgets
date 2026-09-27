@@ -154,7 +154,13 @@ impl Draw for Label {
         let disabled = !self.base.is_enabled();
         // Draw background if specified
         if let Some(bg_color) = self.style().background_color {
-            context.fill_rect(rect, bg_color);
+            context.face(
+                rect,
+                bg_color,
+                self.style().surface.unwrap_or_default(),
+                self.style().border_radius.unwrap_or(0),
+                Color::BLACK,
+            );
         }
         // The two role colours this control needs, read **out** of the theme before drawing.
         //

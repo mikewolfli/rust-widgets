@@ -478,6 +478,17 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
+    /// How far inside its glyph **box** a glyph's ink may begin and still count as sitting on that
+    /// box's own line.
+    ///
+    /// Two captions on one line share the line box `draw_text` was handed, and under the bitmap
+    /// face their ink tops are both that box's top exactly. Under an **outline** face each glyph is
+    /// inset by its own shape — `Alpha`'s capital reaches higher than `Beta`'s, so one ink top is a
+    /// pixel below the other's — and neither is the box top exactly. Pinning either shape would be
+    /// a statement about the typeface, not the layout; the tolerance is tight enough (≤ 2 px of
+    /// inset) that a caption placed on the wrong line still fails.
+    const INK_INSET_TOLERANCE: i32 = 3;
+
     fn make_tab_view() -> TabView {
         TabView::new(Rect::new(0, 0, 300, 400))
     }
@@ -509,44 +520,23 @@ mod tests {
     ///
     /// # Why the ink and not the string
     ///
-    /// Text leaves the SVG backend as the `font8x8` rectangles the rasteriser fills — one
-    /// axis-aligned subpath per set bitmap bit — so a caption is not in the document in any form
-    /// and a test has to locate a run by *where* it is. That is the stronger check: the old form
-    /// matched `>Alpha</text>` and read the element's `y`, so a caption drawn on the wrong line
-    /// with a correct attribute would have passed it.
+    /// Text leaves the SVG backend as glyph geometry — one subpath per ink region — so a caption
+    /// is not in the document in any form and a test has to locate a run by *where* it is. That is
+    /// the stronger check: the old form matched `>Alpha</text>` and read the element's `y`, so a
+    /// caption drawn on the wrong line with a correct attribute would have passed it.
     ///
-    /// One element is one `draw_text`, so this is one box per caption. Subpaths are not
-    /// deduplicated: a glyph box wider than the 8 bitmap columns maps two columns to one pixel
-    /// and emits the same rectangle twice, exactly as the rasteriser fills it twice.
+    /// # Why this delegates instead of parsing `d` itself
+    ///
+    /// The first form read the `font8x8` rectangle spelling directly (`M{x} {y}h{w}v{h}`), which
+    /// is the **bitmap** path's grammar and only its grammar, and it read each glyph rectangle as
+    /// its own run rather than unioning a `<path>`'s subpaths. An outline face writes
+    /// `M17.00 23.84L...Z` with fractional vertices, so that reader took `17` as `x` and `23` as
+    /// `y` and, worse, the raw rectangle parse produced overlapping fragments — every caption came
+    /// back as many boxes in the wrong places, so the per-tab lookup matched the wrong one. The
+    /// crate's own reader knows both grammars and the `data-text` provenance tag; one reader, so
+    /// the two cannot drift apart.
     fn text_run_boxes(svg: &str) -> Vec<(i32, i32, i32, i32)> {
-        let mut boxes = Vec::new();
-        for line in svg.lines() {
-            let Some(path_at) = line.find("<path ") else { continue };
-            let Some(d_at) = line[path_at..].find("d=\"") else { continue };
-            let start = path_at + d_at + 3;
-            let Some(end) = line[start..].find('"') else { continue };
-            let mut bounds: Option<(i32, i32, i32, i32)> = None;
-            for subpath in line[start..start + end].split('M').skip(1) {
-                let numbers: Vec<i32> = subpath
-                    .split(|c: char| !c.is_ascii_digit() && c != '-')
-                    .filter(|part| !part.is_empty())
-                    .filter_map(|part| part.parse().ok())
-                    .collect();
-                if numbers.len() < 4 {
-                    continue;
-                }
-                let (x, y, w, h) = (numbers[0], numbers[1], numbers[2], numbers[3]);
-                let bit = (x, y, x + w, y + h);
-                bounds = Some(match bounds {
-                    None => bit,
-                    Some((l, t, r, b)) => (l.min(bit.0), t.min(bit.1), r.max(bit.2), b.max(bit.3)),
-                });
-            }
-            if let Some(union) = bounds {
-                boxes.push(union);
-            }
-        }
-        boxes
+        crate::widget::svg::text_ink_boxes(svg)
     }
 
     /// A tab caption is centred on its tab's own line box, not on a hand-computed pair of axes.
@@ -557,8 +547,7 @@ mod tests {
     ///
     /// The captions are located by the **tab they lie in** rather than by the string they spell:
     /// the string is no longer in the document, and a geometric lookup is what the assertion is
-    /// about anyway. Both captions start with a bitmap row that is lit in its first row, so a
-    /// run's ink top is its glyph box's top edge.
+    /// about anyway.
     #[test]
     fn a_tab_caption_sits_on_its_tabs_line_box() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
@@ -599,8 +588,18 @@ mod tests {
         };
         let alpha = caption_of(0);
         let beta = caption_of(1);
-        assert_eq!(alpha.1, expected_y, "a caption belongs on the strip's line box");
-        assert_eq!(beta.1, expected_y, "and every caption shares it");
+        // Each caption begins on the strip's line box top (`draw_text`'s `origin.y`), allowing for
+        // the outline face's inset; a caption on a different line is off by a whole line and fails.
+        assert!(
+            (alpha.1 - expected_y).abs() <= INK_INSET_TOLERANCE,
+            "a caption belongs on the strip's line box: expected {expected_y}, ink top {}",
+            alpha.1
+        );
+        assert!(
+            (beta.1 - expected_y).abs() <= INK_INSET_TOLERANCE,
+            "and every caption shares it: expected {expected_y}, ink top {}",
+            beta.1
+        );
         // The caption is bounded by its own tab, which the attribute assertion could not see: a
         // run centred on the strip but not on its tab would still have had the right `y`.
         for (index, run) in [alpha, beta].into_iter().enumerate() {

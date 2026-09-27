@@ -470,23 +470,32 @@ impl SurfaceStyle {
         })
     }
 
-    /// Paints this face: its fill, then its bevel, then its edge.
+    /// Paints this face: its shadow, then its fill, then its bevel, then its edge.
     ///
-    /// # Why one function and not three calls at each control
+    /// # Why one function and not four calls at each control
     ///
-    /// The three are one operation with a **fixed order** that matters: the fill is the
-    /// backdrop, the bevel is drawn on the face's own boundary, and the outline is the outermost
-    /// line. A control that reordered them would draw a bevel under its own fill, or an outline
-    /// under its bevel, and the only way to notice is to look. Stating the order here means a
-    /// control asks for "a face" and gets one, and the 43 files that hand-rolled a two-line bevel
-    /// have one place to migrate to (BLUE24 §10A.3).
+    /// The four are one operation with a **fixed order** that matters: the shadow is behind the
+    /// face, the fill is the face, the bevel is on its boundary, and the outline is the outermost
+    /// line. A control that reordered them would draw a bevel under its own fill or a shadow over
+    /// its own face, and the only way to notice is to look. Stating the order here means a control
+    /// asks for "a face" and gets one, and the 42 files that hand-rolled a two-line bevel have one
+    /// place to migrate to (BLUE24 §10A.3).
+    ///
+    /// # Why the shadow is drawn here rather than left to the caller
+    ///
+    /// Measured: before this channel existed the crate resolved a `shadow` for every control in
+    /// `role_base_style` and **no control ever drew it** — the field was written by the theme and
+    /// read by nothing, so every shadow the palette declared was invisible. Painting it is part of
+    /// "a face" for the same reason the bevel is: the theme said the face is raised, and a raised
+    /// face that casts nothing is a face whose declaration was ignored.
     ///
     /// # The identity case draws exactly what the control drew before
     ///
-    /// `fill` is passed through [`Self::apply_fill`] — a no-op for [`Material::Solid`] — and a
-    /// face with no bevel draws none. So a control on the default theme emits the same
-    /// [`RenderCommand`](crate::render::RenderCommand)s as before this existed, which is what
-    /// keeps the snapshot suite byte-for-byte (BLUE24 §10A.6 criterion 9).
+    /// `fill` is passed through [`Self::apply_fill`] — a no-op for [`Material::Solid`] — a face with
+    /// no bevel draws none, and [`Self::draws_shadow`] is false at `Elevation::Flat`. So a control
+    /// on the flat preset emits the same [`RenderCommand`](crate::render::RenderCommand)s as before
+    /// this existed, which is what keeps the snapshot suite byte-for-byte
+    /// (BLUE24 §10A.6 criterion 9).
     ///
     /// # What the caller still owns
     ///
@@ -495,6 +504,7 @@ impl SurfaceStyle {
     ///   resolved style, which the render layer deliberately cannot see.
     /// * `border_width` — how thick the outline is; `0` draws none.
     /// * `radius` — the corner rounding, which the fill and the outline must agree on.
+    /// * `shadow_tint` — the shadow's hue; each level owns its own alpha (see [`Self::shadow`]).
     ///
     /// Returns whether an outline was drawn, so a caller that needs to know (a control with a
     /// focus ring that must clear the edge) does not have to re-derive the decision.
@@ -506,8 +516,18 @@ impl SurfaceStyle {
         border: Color,
         border_width: u32,
         radius: u32,
+        shadow_tint: Color,
     ) -> bool {
-        // 1. The fill, with the material's tint applied. `apply_fill` is the identity for a
+        // 1. The shadow, if this face is raised. It is behind the face, so it goes first — a
+        //    raised face drawn before its own shadow would have the shadow cover it.
+        if let Some(shadow) = self.shadow(shadow_tint) {
+            context.fill_rect(
+                Rect::new(rect.x + shadow.x, rect.y + shadow.y, rect.width, rect.height),
+                shadow.color,
+            );
+        }
+
+        // 2. The fill, with the material's tint applied. `apply_fill` is the identity for a
         //    solid face, so this line changes nothing until a theme asks for glass.
         let materialised = self.apply_fill(fill);
         if radius > 0 {
@@ -516,14 +536,14 @@ impl SurfaceStyle {
             context.fill_rect(rect, materialised);
         }
 
-        // 2. The bevel, if this face declares one. Its tones derive from `border` by default,
+        // 3. The bevel, if this face declares one. Its tones derive from `border` by default,
         //    which is what keeps a bevel legible on a dark face instead of glowing white.
         if let Some(spec) = self.bevel {
             let bevel = spec.resolve(border);
             bevel.stroke(context, rect, BEVEL_STROKE_WIDTH);
         }
 
-        // 3. The edge, if the face wants one and the control gave it a width to draw.
+        // 4. The edge, if the face wants one and the control gave it a width to draw.
         let drew_edge = self.draws_outline() && border_width > 0;
         if drew_edge {
             if radius > 0 {

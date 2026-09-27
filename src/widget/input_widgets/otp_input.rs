@@ -622,7 +622,13 @@ impl Draw for OtpInput {
         // its box, so `slot.y + slot.height / 2` drew every character half a line low).
         let line = context.text_line(rect, &font);
 
-        context.fill_rect(rect, background);
+        context.face(
+            rect,
+            background,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
 
         for index in 0..self.length {
             let slot = self.box_rect(index);

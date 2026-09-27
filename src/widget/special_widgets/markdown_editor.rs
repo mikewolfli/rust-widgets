@@ -363,7 +363,13 @@ impl Draw for MarkdownEditor {
             .map(|active| active.colors.primary.legible_on(surface, 4.5))
             .unwrap_or_else(|| ink.contrast_color());
 
-        context.fill_rect(rect, surface);
+        context.face(
+            rect,
+            surface,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         context.draw_rect(rect, border);
 
         let header = if self.preview_mode {

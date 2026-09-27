@@ -579,7 +579,13 @@ impl Draw for GroupBox {
             .filter(|_| !style.theme_derived)
             .or_else(|| crate::style::layer_color(crate::style::LayerColor::SurfaceContainer));
         if let Some(face) = face {
-            context.fill_rect(rect, face);
+            context.face(
+                rect,
+                face,
+                self.style().surface.unwrap_or_default(),
+                self.style().border_radius.unwrap_or(0),
+                Color::BLACK,
+            );
         }
         // Draw border
         context.draw_rect(rect, style.border_color.unwrap_or(Color::rgb(200, 200, 200)));

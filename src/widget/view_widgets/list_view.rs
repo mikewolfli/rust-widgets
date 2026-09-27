@@ -740,7 +740,13 @@ impl Draw for ListView {
         // from the same accent keeps the two in step when a theme changes hue.
         let hovered_bg = surface.blend(&accent, 0.12);
 
-        context.fill_rect(rect, surface);
+        context.face(
+            rect,
+            surface,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         context.draw_rect(rect, border);
         // Draw items from model. Each row is a band of the content box, never of the
         // control, and the label's line box is derived from the row rather than from

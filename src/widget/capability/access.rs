@@ -514,6 +514,7 @@ pub fn default_widget_property_default_value(
             "minimum_time" => CapabilityValue::String("00:00:00".to_string()),
             "maximum_time" => CapabilityValue::String("23:59:59".to_string()),
             "display_format" => CapabilityValue::String("HH:mm:ss".to_string()),
+            "clock_popup" => CapabilityValue::Bool(false),
             _ => return None,
         },
         WidgetKind::LineEdit => match property_name {

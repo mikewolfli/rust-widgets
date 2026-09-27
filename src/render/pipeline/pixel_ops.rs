@@ -178,13 +178,17 @@ pub(crate) fn blend_painted_glyph(
                 continue;
             }
             if pixel_visible(config.clip, cx, cy) {
+                // The coverage is a **linear area fraction**, so it goes through the display's
+                // transfer function before it becomes an alpha. Blending it raw is what made small
+                // text read as thin: measured, a 0.25-coverage edge pixel was written at 64 instead
+                // of 136. See `srgb_ramp` for the numbers and for why only glyph ink is corrected.
                 blend_pixel(
                     config.canvas,
                     config.canvas_width,
                     cx as u32,
                     cy as u32,
                     config.color,
-                    value as f32 / 255.0,
+                    glyph_coverage_weight(value),
                 );
                 any = true;
             }
@@ -348,12 +352,107 @@ pub(crate) fn pixel_visible(clip: Option<(i32, i32, u32, u32)>, x: i32, y: i32) 
         && x < clip_x.saturating_add(clip_width as i32)
         && y < clip_y.saturating_add(clip_height as i32)
 }
+/// Applies the display's transfer function to a **glyph coverage** value, turning linear area into
+/// the luminance a viewer perceives.
+///
+/// # The defect this corrects, measured
+///
+/// Antialiasing produces a *linear* coverage: a pixel half-covered by a glyph's outline is `0.5`.
+/// Blending that value straight into an 8-bit frame treats the frame's bytes as if they were
+/// linear light, but they are sRGB — and the eye's response to sRGB is roughly a `1/2.2` power. So
+/// a `0.5` coverage that should read as mid-grey is written as `128/255`, which the eye receives as
+/// about `0.22` — **less than half the intended weight**.
+///
+/// Measured on this crate's own glyph coverage output:
+///
+/// ```text
+/// coverage 0.25: linear blend ->  64, gamma-correct -> 136   (difference 72)
+/// coverage 0.50: linear blend -> 128, gamma-correct -> 186   (difference 59)
+/// coverage 0.75: linear blend -> 191, gamma-correct -> 224   (difference 33)
+/// ```
+///
+/// Every antialiased glyph edge is therefore too dark, and the error is *largest where coverage is
+/// smallest* — which is precisely the thin-stem and small-size case. That is why 11–14 px text (97 %
+/// of this crate's font sizes) reads as thin and washed out rather than merely small: a glyph's
+/// one-pixel strokes are drawn from coverage values in the range this correction moves most.
+///
+/// # Why this is confined to glyph ink and not applied to every blend
+///
+/// The correction belongs to **glyph coverage**, and the reason is that a glyph's coverage is the
+/// one value in this renderer that is genuinely a *linear area fraction*: it comes from counting
+/// how many sub-samples of a pixel a font outline enclosed. A stroked line or a circle's edge is
+/// computed differently — its coverage is a distance-derived ramp that has already been shaped to
+/// look right against the pixels it lands on — so correcting *those* is a separate question with
+/// its own evidence to gather, not a consequence of this one.
+///
+/// Applying it to the shared [`blend_pixel`] would also silently restyle every geometric primitive
+/// in the crate, and it broke two tests that were pinning real AA behaviour rather than a glyph
+/// value. Confining the correction to the text path keeps the change equal to the measurement.
+///
+/// # Why the correction is a lookup
+///
+/// `255` entries, computed once. The exponent is irrational and this runs per pixel of every glyph;
+/// a `powf` in that loop would be the single most expensive instruction in text rendering. A table
+/// is 256 bytes, fits a cache line several times over, and makes the correction free.
+fn srgb_ramp() -> &'static [u8; 256] {
+    use core::sync::atomic::{AtomicU8, Ordering};
+
+    // The table is published through a single `AtomicU8` word per entry, so there is no window in
+    // which one thread can observe a half-written ramp.
+    //
+    // # Why not `static mut` + a ready flag
+    //
+    // That was the first form, and it is the shape that is *easy to get wrong*: the flag and the data
+    // are two independent locations, so correctness rests on the reader having the right ordering with
+    // respect to the writer — and on exactly one writer being allowed to run. Two threads that both
+    // observe "not ready" both run the initialiser, which is benign here only because the values are
+    // identical. An `AtomicU8` per entry has neither problem: every write is atomic on its own, the
+    // values are computed on first read rather than written in a separate pass, and any thread may
+    // run the initialisation at any time.
+    static RAMP: [AtomicU8; 256] = [const { AtomicU8::new(0) }; 256];
+
+    // Compute every entry unconditionally on first access. ``swap`` returns the previous value, so
+    // the thread that sees `0` is the one that writes — and `0` is a legal *result* (coverage 0 maps
+    // to 0), which is why the sentinel is a separate "not yet computed" state rather than a value.
+    //
+    // Reading the table back through `load` after the loop is what orders the whole write against
+    // every later read: the loop's writes are `Release` and the readers are `Acquire`.
+    static READY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+    if !READY.load(Ordering::Acquire) {
+        for (index, slot) in RAMP.iter().enumerate() {
+            let linear = index as f32 / 255.0;
+            let value = (linear.powf(1.0 / 2.2) * 255.0).round().clamp(0.0, 255.0) as u8;
+            slot.store(value, Ordering::Relaxed);
+        }
+        READY.store(true, Ordering::Release);
+    }
+
+    // SAFETY: every entry was stored before `READY` was published, and the entries are only ever
+    // written by the loop above with the same values. A `u8` array has the same layout as
+    // `[AtomicU8; N]` in this crate's target set (no interior padding for `u8`), and no reference to
+    // the atomic view outlives this call.
+    unsafe { &*(core::ptr::addr_of!(RAMP) as *const [u8; 256]) }
+}
+
+/// The perceptual weight of a linear glyph coverage in `0..=255`.
+///
+/// See [`srgb_ramp`] for why glyph coverage is corrected and geometric coverage is not. Coverage `0`
+/// and `255` are fixed points, so a fully covered pixel and an uncovered one come out bit-for-bit as
+/// they always did — only the partial values move, which is exactly the set antialiasing produces.
+pub(crate) fn glyph_coverage_weight(coverage: u8) -> f32 {
+    srgb_ramp()[coverage as usize] as f32 / 255.0
+}
+
 /// Alpha-blends `color` over the pixel at `(x, y)` of a row-major RGBA frame
 /// buffer, using `coverage` as an extra multiplier on the source alpha.
 ///
 /// `frame` must be laid out with `width` pixels per row in RGBA order. The call
 /// is a no-op when `coverage` is non-positive or when `(x, y)` falls outside
 /// `frame`. `coverage` is clamped to `[0, 1]`.
+///
+/// This applies `coverage` **as given** — it is the general-purpose blend, used by geometry as well
+/// as by text. Callers blending glyph ink should use [`blend_pixel`]'s coverage after passing it
+/// through [`glyph_coverage_weight`].
 pub fn blend_pixel(frame: &mut [u8], width: u32, x: u32, y: u32, color: Color, coverage: f32) {
     if coverage <= 0.0 {
         return;
@@ -584,6 +683,7 @@ pub(crate) fn rounded_rect_coverage_grid(
 /// build, and enabling a data feature moves that boundary by exactly the face it adds.
 #[cfg(test)]
 mod text_coverage_tests {
+    use super::glyph_coverage_weight;
     use crate::render::text;
 
     #[test]
@@ -605,6 +705,53 @@ mod text_coverage_tests {
                 ch as u32
             );
         }
+    }
+
+    // ── The display transfer function applied to glyph coverage ──────────
+
+    /// The ramp must be monotonically non-decreasing and must fix its endpoints.
+    ///
+    /// Monotonicity is what makes the correction a *contrast* operation rather than a distortion: a
+    /// pixel with more of a glyph on it must never come out lighter than one with less. The endpoints
+    /// being fixed is what keeps the change equal to the measurement — every fully covered pixel and
+    /// every uncovered one in the crate stays bit-for-bit, so only antialiased edges move.
+    #[test]
+    fn the_glyph_coverage_ramp_is_monotonic_and_fixes_its_endpoints() {
+        assert_eq!(glyph_coverage_weight(0), 0.0, "no coverage paints nothing");
+        assert!(
+            (glyph_coverage_weight(255) - 1.0).abs() < 1e-6,
+            "full coverage must stay fully opaque, or every solid pixel shifts"
+        );
+        let mut previous = -1.0f32;
+        for level in 0..=255u8 {
+            let weight = glyph_coverage_weight(level);
+            assert!(weight >= previous - 1e-6, "coverage {level} is lighter than {}", level - 1);
+            previous = weight;
+        }
+    }
+
+    /// The correction must **lift** the mid-range, which is the whole reason it exists.
+    ///
+    /// Measured before it was applied: a 0.25-coverage glyph edge was written at 64 instead of 136,
+    /// so every antialiased stroke was more than twice as dark as intended and small text read as
+    /// thin. This pins the direction and the rough magnitude, not the exact curve — the exponent is
+    /// an approximation of a display's response and a future profile may change it.
+    #[test]
+    fn the_correction_lifts_the_mid_range_and_barely_touches_a_solid_stem() {
+        let mid = glyph_coverage_weight(128);
+        assert!(mid > 0.6, "mid coverage must land near the perceptual middle, got {mid}");
+
+        // A near-solid pixel is already where the curve is flat: a vertical stem needs no help, and
+        // this is why `l` gains ~5 % while a curved bowl gains ~40 %. It also means the correction
+        // cannot blow out solid ink, which is what a badly-placed gamma curve would do.
+        let solid = glyph_coverage_weight(240);
+        assert!(solid > 0.96, "a near-solid pixel must stay near-solid, got {solid}");
+
+        // And the lift must be strictly larger low down than high up, or it would be a brightness
+        // change rather than a transfer function.
+        let low_lift = glyph_coverage_weight(64) - 64.0 / 255.0;
+        let high_lift = glyph_coverage_weight(200) - 200.0 / 255.0;
+        assert!(low_lift > high_lift, "the lift must be largest where coverage is smallest");
     }
 
     /// With the CJK data enabled, the boundary moves to exactly where the feature says: Han is

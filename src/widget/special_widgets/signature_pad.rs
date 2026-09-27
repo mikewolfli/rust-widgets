@@ -376,7 +376,13 @@ impl Draw for SignaturePad {
         // stays visible against either surface.
         let hint = background.blend(&text_color, 0.4);
 
-        context.fill_rect(rect, background);
+        context.face(
+            rect,
+            background,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         context.draw_rect(rect, border);
 
         // Draw committed strokes.

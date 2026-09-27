@@ -230,7 +230,13 @@ impl Draw for EmptyState {
         let action_fill = ink.blend(&surface, 0.35);
 
         // ── Background ──
-        context.fill_rect(rect, surface);
+        context.face(
+            rect,
+            surface,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
 
         let center_x = rect.x + rect.width as i32 / 2;
 
@@ -660,46 +666,23 @@ mod tests {
     ///
     /// # Why the ink box and not the string
     ///
-    /// The backend no longer emits a `<text>` element: a run is the `font8x8` rectangles the
-    /// software rasteriser fills, one axis-aligned subpath per set bitmap bit, inside a single
-    /// `<path>` (see `crate::widget::svg::text_ink_box`). The string is therefore absent from
-    /// the document in every form — `svg.contains("Sample")` can never be true — and a run is
-    /// located by *where it is* rather than by *what it says*.
+    /// The backend no longer emits a `<text>` element: a run is the glyph geometry the backend
+    /// fills, one subpath per ink region inside a single `<path>` (see
+    /// `crate::widget::svg::text_ink_boxes`). The string is therefore absent from the document in
+    /// every form — `svg.contains("Sample")` can never be true — and a run is located by *where
+    /// it is* rather than by *what it says*.
     ///
-    /// Only text is a `<path>` in this backend; the empty state's other chrome is `<rect>`,
-    /// so a path's union box is a run. Subpaths are not deduplicated: a glyph box wider than
-    /// 8 px maps two bitmap columns onto one pixel column and the backend emits that rectangle
-    /// twice, exactly as the rasteriser fills it twice. The union is unaffected either way.
+    /// # Why this delegates instead of parsing `d` itself
+    ///
+    /// The first form read the `font8x8` rectangle spelling directly (`M{x} {y}h{w}v{h}`), which
+    /// is the **bitmap** path's grammar and only its grammar. An outline face writes
+    /// `M21.45 30.24L...Z` with fractional vertices, so that reader took `21` as `x` and `45` as
+    /// `y` — not ink, and not where the glyph is — and every lookup missed. It also read each
+    /// glyph rectangle as its own run rather than unioning a `<path>`'s subpaths, so a bitmap
+    /// glyph came back as one box *per set bit*. The crate's own reader knows both grammars and
+    /// unions correctly; one reader, so the two cannot drift apart.
     fn ink_runs(svg: &str) -> Vec<(i32, i32, i32, i32)> {
-        let mut runs = Vec::new();
-        for line in svg.lines() {
-            let Some(path_at) = line.find("<path ") else { continue };
-            let Some(d_at) = line[path_at..].find("d=\"") else { continue };
-            let start = path_at + d_at + 3;
-            let Some(end) = line[start..].find('"') else { continue };
-            let mut bounds: Option<(i32, i32, i32, i32)> = None;
-            for subpath in line[start..start + end].split('M').skip(1) {
-                let numbers: Vec<i32> = subpath
-                    .split(|c: char| !c.is_ascii_digit() && c != '-')
-                    .filter(|part| !part.is_empty())
-                    .filter_map(|part| part.parse().ok())
-                    .collect();
-                if numbers.len() < 4 {
-                    continue;
-                }
-                let (x, y, w, h) = (numbers[0], numbers[1], numbers[2], numbers[3]);
-                bounds = Some(match bounds {
-                    None => (x, y, x + w, y + h),
-                    Some((left, top, right, bottom)) => {
-                        (left.min(x), top.min(y), right.max(x + w), bottom.max(y + h))
-                    }
-                });
-            }
-            if let Some(bounds) = bounds {
-                runs.push(bounds);
-            }
-        }
-        runs
+        crate::widget::svg::text_ink_boxes(svg)
     }
 
     /// The stack's rows do not overlap: each begins at or below the previous row's bottom edge.
@@ -711,11 +694,20 @@ mod tests {
     ///
     /// # What is asserted, and why it is the ink
     ///
-    /// Each row is checked against the *drawing* rather than against an element attribute: the
-    /// run's ink box top is the row's glyph box top (`origin.y`, the top edge of the run's
-    /// bitmap), which is exactly the quantity the defect moved. A row's height is the font's
-    /// own `measure_text("M", font).height`, the renderer's measurement contract, and the
-    /// order of `ink_runs` is document order — the order the rows are drawn in.
+    /// Each row is checked against the *drawing* rather than against an element attribute: a run's
+    /// ink box is where the row was painted, and the top of that box is the quantity the defect
+    /// moved. A row's height is the font's own `measure_text("M", font).height`, the renderer's
+    /// measurement contract, and the order of `ink_runs` is document order — the order the rows are
+    /// drawn in.
+    ///
+    /// # Why the bound is a `>=` and not an equality
+    ///
+    /// The check is that the next row's ink starts at or below the previous row's box bottom, not
+    /// that it starts exactly there. Under the bitmap face a row's ink top *is* its box top, so the
+    /// two coincide; under an outline face the ink is inset a pixel or two inside the box, which is
+    /// painting *further* from the overlap rather than toward it. `>=` is therefore the property
+    /// the defect violated (the title's ink started *inside* the icon's box) and it holds for both
+    /// faces without having to pin which one drew the run.
     #[cfg(not(alloc_frugal))]
     #[test]
     fn the_stack_rows_do_not_overlap() {

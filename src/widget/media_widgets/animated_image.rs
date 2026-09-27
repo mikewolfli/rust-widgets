@@ -368,7 +368,13 @@ impl Draw for AnimatedImage {
             // colour rather than being a second fixed grey, so the two states stay
             // distinguishable in any theme.
             let bg = if !is_enabled { base_bg.blend(&Color::WHITE, 0.35) } else { base_bg };
-            context.fill_rect(rect, bg);
+            context.face(
+                rect,
+                bg,
+                self.style().surface.unwrap_or_default(),
+                self.style().border_radius.unwrap_or(0),
+                Color::BLACK,
+            );
 
             // Draw the frame centered in the widget geometry.
             let fw = frame.width as i32;

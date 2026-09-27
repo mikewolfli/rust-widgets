@@ -608,7 +608,13 @@ impl Draw for Heatmap {
         let default_font = Font::default();
         let font = style.font.as_ref().unwrap_or(&default_font);
 
-        context.fill_rect(rect, background);
+        context.face(
+            rect,
+            background,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         if let Some(border_color) = style.border_color {
             context.draw_rect(rect, border_color);
         }

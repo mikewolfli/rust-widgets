@@ -18,6 +18,7 @@
 //!
 //! **State:** Production callers: `src/widget/display_widgets/image_view.rs:7` (`use crate::image::{Image, ImageFormat}`).
 
+pub mod cache;
 mod color;
 pub mod decoder;
 mod encoder;
@@ -26,6 +27,10 @@ pub mod format;
 pub mod image_impl;
 pub mod transform;
 
+pub use cache::{
+    clear as clear_decode_cache, stats as decode_cache_stats, DecodeCacheStats,
+    DEFAULT_BUDGET_BYTES,
+};
 pub use color::*;
 pub use decoder::{decode, decode_animation, decode_to_rgba8, detect_format};
 pub use encoder::*;

@@ -87,6 +87,18 @@ const EXTRA_APPEARANCES: &[(&str, &str, &str)] = &[
     // BLUE23 §4.1: the tick is the only part of a group box a user toggles, and `create_group_box`
     // leaves `checkable` false — so without this the checked appearance is absent from the set.
     ("group_box", "_checked", "checked"),
+    // BLUE24 §10A.6 criterion 6 ("every declared face is reviewable"): `frame`'s default shape is
+    // `Box`, which paints an outline and **no fill at all**, so the three shapes that *do* paint a
+    // face — `styled_panel`, `win_panel`, and the 3D `panel` edge — had no snapshot anywhere in the
+    // set. A control with three declaring draw paths and one exercised path is the coverage loss
+    // the criterion is about: a defect inside `draw_styled_panel_frame` was invisible to every
+    // automated check this crate has.
+    //
+    // The shape is a factory property (`FRAME_PROPERTIES`), so the extra appearances are the three
+    // values of it that are otherwise unreachable from the default construction.
+    ("frame", "_styled_panel", "styled_panel"),
+    ("frame", "_win_panel", "win_panel"),
+    ("frame", "_panel", "panel"),
 ];
 
 /// Applies the state an extra appearance depicts. Returns `false` when the control does not have
@@ -103,6 +115,21 @@ fn apply_extra_state(
                 Some(group_box) => {
                     group_box.set_checkable(true);
                     group_box.set_checked(true);
+                    true
+                }
+                None => false,
+            }
+        }
+        // The three frame shapes that paint a fill, each reached through the control's own
+        // `from_name`, so the string in `EXTRA_APPEARANCES` and the shape that is drawn cannot
+        // disagree — a mismatch would produce a snapshot of the *default* shape under a name that
+        // claims otherwise, which is the one failure mode this arm has to rule out.
+        ("frame", "_styled_panel" | "_win_panel" | "_panel") => {
+            use rust_widgets::widget::base_widgets::frame::{Frame, FrameShape};
+            let shape = FrameShape::from_name(&suffix[1..]).expect("a name from EXTRA_APPEARANCES");
+            match rust_widgets::widget::capability::coercion::widget_as_mut::<Frame>(widget) {
+                Some(frame) => {
+                    frame.set_frame_shape(shape);
                     true
                 }
                 None => false,
@@ -179,6 +206,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 name,
                 suffix,
                 "",
+                "",
                 widget.as_mut(),
                 appearance,
                 &mut failed,
@@ -213,9 +241,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &mut written,
                 name,
                 state_suffix,
+                &format!(" ({state_word})"),
                 state_word,
                 widget.as_mut(),
                 AppearanceMode::Dark,
+                &mut failed,
+            )?;
+            // ... and the same state under the light appearance.
+            //
+            // The pair above settles "does this control respond to an appearance switch" for the
+            // *default* shape only. A shape reachable solely through a factory property needs its
+            // own pair, or the light rendering of `draw_win_panel_frame`'s white/grey bevel — whose
+            // whole purpose is an illusion of relief — would never have been looked at.
+            rust_widgets::theme::global_theme_manager().set_appearance(AppearanceMode::Light);
+            let Some(mut widget) = factory.create(name, CENSUS_RECT, CENSUS_TEXT) else {
+                continue;
+            };
+            rust_widgets::widget::sample_fill::apply(name, widget.as_mut());
+            if !apply_extra_state(control, state_suffix, widget.as_mut()) {
+                continue;
+            }
+            rust_widgets::theme::apply_theme_to_widget(widget.as_mut());
+            write_one(
+                dir,
+                &mut written,
+                name,
+                &format!("{state_suffix}.light"),
+                &format!(" ({state_word}, light)"),
+                state_word,
+                widget.as_mut(),
+                AppearanceMode::Light,
                 &mut failed,
             )?;
         }
@@ -255,6 +310,7 @@ fn write_one(
     written: &mut usize,
     name: &str,
     suffix: &str,
+    caption: &str,
     state_word: &str,
     widget: &mut dyn rust_widgets::widget::Widget,
     appearance: AppearanceMode,
@@ -277,7 +333,7 @@ fn write_one(
         .map(|active| active.colors.background)
         .unwrap_or(rust_widgets::core::Color::WHITE);
     let body = render_widget_to_svg_on(drawable, CENSUS_RECT, backdrop);
-    let document = decorate(&body, name, appearance, state_word);
+    let document = decorate(&body, name, appearance, caption, state_word);
     fs::write(dir.join(format!("{name}{suffix}.svg")), document)?;
     *written += 1;
     Ok(())
@@ -288,9 +344,22 @@ fn write_one(
 /// The renderer's own output is left byte-for-byte intact after the opening tag, so a
 /// diff of two snapshots is a diff of the drawing rather than of this wrapper.
 ///
-/// `state_word` is empty for a plain appearance and names the state for an extra one, so a reader
-/// of `group_box_checked.svg` can tell what it shows without comparing it to its siblings.
-fn decorate(body: &str, name: &str, appearance: AppearanceMode, state_word: &str) -> String {
+/// # Why the caption and the state word are two arguments
+///
+/// They are two different readers' spellings of one fact, and collapsing them cost a snapshot.
+/// `state_word` is what a **gate** reads out of the provenance line, and its contract is the bare
+/// token the extra appearance was declared with — `checked`. `caption` is what a **person** reads
+/// in `group_box_checked.svg` to know what it shows without diffing it against its siblings, and it
+/// is free to be prose. Passing one string for both meant adding a caption to the frame extras
+/// rewrote `group_box_checked.svg`'s provenance line to `state:  (checked)`, i.e. a committed
+/// snapshot changed for a reason that had nothing to do with any control's drawing.
+fn decorate(
+    body: &str,
+    name: &str,
+    appearance: AppearanceMode,
+    caption: &str,
+    state_word: &str,
+) -> String {
     let label = match appearance {
         AppearanceMode::Light => "light",
         AppearanceMode::Dark => "dark",
@@ -299,7 +368,7 @@ fn decorate(body: &str, name: &str, appearance: AppearanceMode, state_word: &str
         format!("{GENERATED_MARKER}\n<!-- control: {name} | appearance: {label} -->\n{body}\n")
     } else {
         format!(
-            "{GENERATED_MARKER}\n<!-- control: {name} | appearance: {label} | state: {state_word} -->\n{body}\n"
+            "{GENERATED_MARKER}\n<!-- control: {name} | appearance: {label} | state: {state_word}{caption} -->\n{body}\n"
         )
     }
 }

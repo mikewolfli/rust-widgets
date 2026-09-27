@@ -73,6 +73,7 @@ macro_rules! impl_properties_advanced {
             PropertySchema::new("minimum_time", PropertyValueKind::String, true, true),
             PropertySchema::new("maximum_time", PropertyValueKind::String, true, true),
             PropertySchema::new("display_format", PropertyValueKind::String, true, true),
+            PropertySchema::new("clock_popup", PropertyValueKind::Bool, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

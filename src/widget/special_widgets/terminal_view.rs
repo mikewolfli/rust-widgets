@@ -319,7 +319,13 @@ impl Draw for TerminalView {
             .map(|token| nudge_apart(token, background))
             .unwrap_or_else(|| background.blend(&text_color, 0.6));
 
-        context.fill_rect(rect, background);
+        context.face(
+            rect,
+            background,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         context.draw_rect(rect, border);
 
         // The prompt row is anchored to the control's bottom edge, but it has to be a

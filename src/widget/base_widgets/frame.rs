@@ -389,14 +389,27 @@ impl Frame {
     fn draw_panel_frame(&self, context: &mut RenderContext, rect: Rect) {
         let style = self.style();
         let bg_color = style.background_color.unwrap_or(Color::rgb(236, 233, 216));
-        context.fill_rect(rect, bg_color);
+        context.face(
+            rect,
+            bg_color,
+            style.surface.unwrap_or_default(),
+            style.border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         context.draw_rect(rect, style.border_color.unwrap_or(Color::rgb(64, 64, 64)));
     }
     /// Draws styled panel frame.
     fn draw_styled_panel_frame(&self, context: &mut RenderContext, rect: Rect) {
         // More sophisticated panel with gradient
-        let bg_color = self.style().background_color.unwrap_or(Color::rgb(240, 240, 240));
-        context.fill_rect(rect, bg_color);
+        let style = self.style();
+        let bg_color = style.background_color.unwrap_or(Color::rgb(240, 240, 240));
+        context.face(
+            rect,
+            bg_color,
+            style.surface.unwrap_or_default(),
+            style.border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         self.draw_box_frame(context, rect);
     }
     /// Draws horizontal line frame.
@@ -429,7 +442,13 @@ impl Frame {
         // still wants its highlight to read as a highlight.
         let style = self.style();
         let bg_color = style.background_color.unwrap_or(Color::rgb(240, 240, 240));
-        context.fill_rect(rect, bg_color);
+        context.face(
+            rect,
+            bg_color,
+            style.surface.unwrap_or_default(),
+            style.border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         // Draw 3D border
         let light_color = Color::rgb(255, 255, 255);
         let dark_color = Color::rgb(128, 128, 128);

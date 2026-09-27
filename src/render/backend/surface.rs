@@ -441,6 +441,60 @@ impl<'a> RenderContext<'a> {
         let rect = self.offset_rect(rect);
         self.backend.execute_command(&RenderCommand::FillRoundedRect { rect, radius, color });
     }
+
+    /// Paints a control's own **face**: its shadow, then its fill.
+    ///
+    /// # Why this exists beside `fill_rect`
+    ///
+    /// A control's face is not "a rectangle of colour". It is a rectangle whose *shape* and
+    /// *depth* come from the theme: a `border_radius` the theme declares, a material (opaque or
+    /// tinted glass), and an elevation whose shadow sits behind it. Writing
+    /// `fill_rect(rect, bg)` states only the colour, so the other three were unreachable --
+    /// measured, **88 controls** declared a radius the theme never gave them and **no control at
+    /// all** ever drew the shadow its role resolved (BLUE24 §10A).
+    ///
+    /// This is the one-line replacement for that call. Its **identity case is `fill_rect`**: a
+    /// solid face of radius 0 at elevation 0 emits exactly `FillRect`, so a control that has not
+    /// been taught about surfaces draws byte-for-byte what it did before.
+    ///
+    /// # Why it takes the two resolved values rather than the style
+    ///
+    /// Because a call site has them and taking `&WidgetStyle` would not borrow-check at every one:
+    /// some `draw` bodies hold the style by value, some by reference, and some only in an inner
+    /// scope. `SurfaceStyle` and `u32` are both `Copy`, so passing them cannot conflict with a
+    /// borrow the caller is still using -- which is what makes this a **mechanical** rewrite
+    /// rather than one that has to reason about each control's borrows.
+    ///
+    /// The **outline is deliberately not drawn here**: a control's edge is often a semantic colour
+    /// (a validation error, a checked state) that lives in the control rather than in the face, so
+    /// a control keeps its own `draw_rect_stroke` call. [`crate::render::SurfaceStyle::paint`] is
+    /// the fuller form for a control that wants the bevel and the edge derived too.
+    ///
+    /// `shadow_tint` is the shadow's hue; each elevation level owns its own alpha.
+    pub fn face(
+        &mut self,
+        rect: Rect,
+        fill: Color,
+        surface: crate::render::SurfaceStyle,
+        radius: u32,
+        shadow_tint: Color,
+    ) {
+        // 1. The shadow, behind the face. `draws_shadow` is false at `Elevation::Flat`, so a face
+        //    on the flat preset emits nothing here.
+        if let Some(shadow) = surface.shadow(shadow_tint) {
+            self.fill_rect(
+                Rect::new(rect.x + shadow.x, rect.y + shadow.y, rect.width, rect.height),
+                shadow.color,
+            );
+        }
+        // 2. The fill, at the surface's own radius and material.
+        let materialised = surface.apply_fill(fill);
+        if radius > 0 {
+            self.fill_rounded_rect(rect, radius, materialised);
+        } else {
+            self.fill_rect(rect, materialised);
+        }
+    }
     /// Anti-aliased equivalent of [`RenderContext::fill_rounded_rect`].
     ///
     /// Costs more per call: the corners are sampled on the surface's

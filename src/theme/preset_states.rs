@@ -145,67 +145,32 @@ pub(super) fn preset_state_overrides(colors: &Colors) -> BTreeMap<String, ThemeS
     styles
 }
 
-/// The `"<kind>"` (class) surface overrides a **flat** preset carries.
+/// The class-level surface overrides a preset carries.
 ///
-/// # Why a preset has to flatten what the role table raises
+/// # Why this is now driven by the theme and not by a table of kinds
 ///
-/// [`crate::render::role_surface_style`] states each role's *character* — a button is pressable,
-/// a field is a well — and it does so with a bevel, because a bevel is what makes those shapes
-/// readable in the dimensional style. The **default** preset is the flat one, so it has to say
-/// so explicitly: a preset that omits these keys inherits the role's bevel and stops being flat.
+/// A preset used to make itself flat by carrying a class override for every kind it knew to be
+/// raised. That is now the [`Theme::flat_surfaces`](crate::theme::Theme::flat_surfaces) rule, so
+/// both corners of the parameter space answer through the *same* mechanism: `true` means the role
+/// table is flattened, `false` means it is not. There is no third corner, so there is no table to
+/// carry.
 ///
-/// That is the whole of BLUE24 §10A.5's "flat and dimensional are two corners of one parameter
-/// space, not two code paths": the difference between them is **this table**, and the control
-/// code is identical in both.
+/// # Why the signature survives the table
 ///
-/// # Why `bevel: None` and not `elevation: Flat`
-///
-/// The default preset is byte-for-byte what this crate drew before surfaces existed
-/// (BLUE24 §10A.6 criterion 9), and what it drew was a fill, an outline and a shadow whose shape
-/// the role table's elevations already match — only the *bevel* is new, because no control drew
-/// one. So the flat preset removes exactly the bevel and touches nothing else. Changing the
-/// elevation here would move every shadowed face and break the snapshot safety rope.
-fn flat_surface_overrides() -> BTreeMap<String, ThemeStyleToken> {
-    let mut styles = BTreeMap::new();
-    for kind in [
-        // Pressable chrome, which the role table bevels raised.
-        "button",
-        "push_button",
-        "toggle_button",
-        "tool_button",
-        // The editable kinds, which the role table cuts in as wells.
-        "line_edit",
-        "text_edit",
-        "text_area",
-        "spin_box",
-        "combo_box",
-        "combo_box_edit",
-        "editable_combo_box",
-    ] {
-        styles.insert(
-            kind.to_string(),
-            ThemeStyleToken {
-                bevel: crate::theme::BevelOverride::None,
-                ..ThemeStyleToken::default()
-            },
-        );
-    }
-    styles
-}
-
-/// The class-level surface overrides a preset carries, merged into its style table.
-///
-/// Kept beside [`preset_state_overrides`] because they are the same kind of thing — a preset's
-/// data — and a preset that carried one and not the other would be a preset with an opinion
-/// about states and none about faces.
-pub(super) fn preset_surface_overrides(dimensional: bool) -> BTreeMap<String, ThemeStyleToken> {
-    if dimensional {
-        // The dimensional preset states no class overrides: the role table's bevels *are* its
-        // character, which is what makes it the style with no exceptions to remember.
-        BTreeMap::new()
-    } else {
-        flat_surface_overrides()
-    }
+/// Removing the function outright would have removed the *question* with it. A preset with an
+/// opinion about states and none about faces is half described, and "does a preset carry class
+/// surface data?" is answered here rather than left to be inferred from an absence — the test below
+/// reads this and fails if a preset starts carrying a table again, which is the one thing that
+/// would put two answers back where there is now one.
+#[cfg(test)]
+pub(super) fn preset_surface_overrides() -> BTreeMap<String, ThemeStyleToken> {
+    // The dimensional preset states no class overrides *because its rule already says so*: it is
+    // the preset that answers `flat_surfaces: false`, so `role_base_style` hands it the role
+    // table's own bevels and elevations. Adding entries here would be a second way to say the
+    // same thing, and two answers to one question is what produced the drift this replaced.
+    //
+    // The flat preset is the same by symmetry: its answer is `flat_surfaces: true`.
+    BTreeMap::new()
 }
 
 /// The number of state keys a preset is expected to carry.
@@ -262,5 +227,21 @@ mod tests {
         assert_ne!(hover, colors.background, "hover must move the fill");
         let pressed = styles["button:pressed"].background.expect("pressed sets a background");
         assert_ne!(pressed, hover, "a press must be a firmer step than a hover");
+    }
+
+    /// A preset carries no class-level surface table, and this is where that is pinned.
+    ///
+    /// The answer used to be a 22-entry table of flattened kinds, and a list is only as complete as
+    /// whoever wrote it: the role table falls back to a **raised** level, so every kind the list
+    /// missed floated inside a preset calling itself flat. The rule that replaced it lives on the
+    /// theme (`Theme::flat_surfaces`), which means this function's honest answer is "nothing", and
+    /// a preset that starts carrying surface data has to come back here and say why.
+    #[test]
+    fn a_preset_carries_no_class_level_surface_table() {
+        assert!(
+            preset_surface_overrides().is_empty(),
+            "flatness is `Theme::flat_surfaces`, not a per-kind table; a non-empty table here \
+             means a second answer to a question the theme already answers"
+        );
     }
 }

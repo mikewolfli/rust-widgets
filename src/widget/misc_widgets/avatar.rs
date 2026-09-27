@@ -37,7 +37,7 @@ pub struct Avatar {
     /// RGBA8 pixels for [`Self::image_source`], decoded once per source.
     ///
     /// `None` is cached too, so a source that failed to load is not re-read every frame.
-    decoded_source: Option<Vec<u8>>,
+    decoded_source: Option<alloc::sync::Arc<Vec<u8>>>,
     /// The source string [`Self::decoded_source`] was produced for, so a change to the source
     /// invalidates the pixels without the caller having to clear them.
     decoded_source_key: Option<String>,
@@ -352,49 +352,34 @@ impl Avatar {
         true
     }
 
-    /// The RGBA8 pixels for the current [`Self::image_source`], decoding once per source.
+    /// The RGBA8 pixels for the current [`Self::image_source`], shared process-wide.
     ///
     /// Returns `None` when there is no source, when the file cannot be read, or when the bytes do
     /// not decode -- see [`Self::paint_image_source`] for why that is not an error to render.
-    fn resolved_image_source(&mut self) -> Option<Vec<u8>> {
+    ///
+    /// # Two layers, for two different questions
+    ///
+    /// `decoded_source_key` answers "has *this avatar* already resolved this source", and it is a
+    /// string compare -- the cheapest possible check, which matters because this runs on every frame.
+    /// [`crate::image::cache`] answers "has *anybody in this process* already decoded these bytes",
+    /// and it is what makes a list of avatars sharing one picture decode it once instead of once per
+    /// row. The first is the fast path; the second is the reason the fast path is not the only thing
+    /// there is.
+    ///
+    /// What is *stored* is now the shared [`Arc<Vec<u8>>`](alloc::sync::Arc) rather than a `Vec` this
+    /// control owns, so the pixels are the cache's allocation and a hit here hands back the same one
+    /// an `image_view` of the same file would get.
+    fn resolved_image_source(&mut self) -> Option<alloc::sync::Arc<Vec<u8>>> {
         #[cfg(all(feature = "image", not(alloc_frugal)))]
         {
             if self.decoded_source_key.as_deref() != Some(self.image_source.as_str()) {
-                // `decode_to_rgba8` is the whole pipeline in one call (detect, decode, convert), and
-                // it is the same entry point `image_view` uses -- so an avatar and an image view of
-                // the same file cannot disagree about what the file looks like.
-                let decoded = std::fs::read(&self.image_source)
-                    .map_err(|error| error.to_string())
-                    .and_then(|bytes| {
-                        crate::image::decoder::decode_to_rgba8(&bytes)
-                            .map_err(|error| error.to_string())
-                    });
-                match decoded {
-                    Ok(image) => {
-                        let crate::image::ImageData::Rgba8(pixels) = image.data else {
-                            // `decode_to_rgba8` guarantees the `Rgba8` variant, so this arm is
-                            // unreachable; it is written out rather than `unwrap`ed because an
-                            // unreachable panic in `draw` is a worse failure than a fallback.
-                            self.decoded_source = None;
-                            self.decoded_source_key = Some(self.image_source.clone());
-                            return None;
-                        };
-                        self.decoded_source = Some(pixels);
-                        self.decoded_source_key = Some(self.image_source.clone());
-                    }
-                    Err(reason) => {
-                        // Cached as a failure, so a bad path is not re-read every frame; logged
-                        // once per source because an avatar silently showing initials is exactly
-                        // the kind of thing a caller cannot diagnose from the screen.
-                        log::warn!(
-                            "avatar image source {:?} could not be loaded ({reason}); the initials \
-                             fallback is drawn instead",
-                            self.image_source
-                        );
-                        self.decoded_source = None;
-                        self.decoded_source_key = Some(self.image_source.clone());
-                    }
-                }
+                // One entry point for "a file's RGBA8 pixels", shared by every control that wants
+                // one -- so an avatar and an image view of the same file cannot disagree about what
+                // the file looks like, and cannot decode it twice.
+                self.decoded_source = crate::image::cache::file_rgba8_or_none(&self.image_source);
+                // The key is set whether or not the decode succeeded, so a bad path is not re-read
+                // every frame -- an avatar that cannot load must not make every frame a disk read.
+                self.decoded_source_key = Some(self.image_source.clone());
             }
             self.decoded_source.clone()
         }
@@ -610,7 +595,15 @@ mod tests {
 
         // A 2x2 PNG with one fully-opaque red pixel and three transparent ones, written by hand so
         // the fixture does not depend on an encoder being compiled in.
-        let path = std::env::temp_dir().join("rw_avatar_source_test.png");
+        //
+        // # Why the filename carries a per-test suffix
+        //
+        // [`crate::image::cache`] is process-wide and keyed on content, so two tests that write the
+        // *same path* with *different bytes* can observe each other: the decoder reads whatever the
+        // other test's `write` left, which made `an_unloadable_source_falls_back_to_the_initials`
+        // pass alone and fail under the full suite. A name no other test uses is what makes each
+        // test's I/O its own.
+        let path = std::env::temp_dir().join("rw_avatar_source_real_image.png");
         std::fs::write(&path, MINIMAL_PNG).expect("the fixture is writable");
         let source = path.to_str().expect("a UTF-8 temp path").to_string();
 
@@ -680,7 +673,8 @@ mod tests {
 
         // A file that exists but is not an image is the same case, so a caller who points at a text
         // file gets the fallback rather than a panic or a blank disc.
-        let not_an_image = std::env::temp_dir().join("rw_avatar_source_not_an_image.txt");
+        let not_an_image =
+            std::env::temp_dir().join(format!("rw_avatar_not_an_image_{}.txt", std::process::id()));
         std::fs::write(&not_an_image, b"this is not a picture").expect("writable");
         let garbage = build(not_an_image.to_str().expect("UTF-8 temp path"));
         assert_eq!(garbage, no_source, "undecodable bytes fall back too");

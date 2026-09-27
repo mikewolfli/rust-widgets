@@ -502,7 +502,13 @@ impl Draw for NumberPicker {
         // even the 3:1 large-text floor, on the one row the control exists to show.
         let selected_text_color = selected_color.contrast_color();
 
-        context.fill_rect(rect, background);
+        context.face(
+            rect,
+            background,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
 
         let row_h = self.row_height.max(1);
         let centre = rect.y + (rect.height as i32) / 2;

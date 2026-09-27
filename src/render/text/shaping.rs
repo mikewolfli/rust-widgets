@@ -56,6 +56,62 @@ pub(crate) fn face_for_family(family: &str) -> Option<FaceBytes> {
     active_faces().iter().copied().find(|face| face.name.eq_ignore_ascii_case(family))
 }
 
+/// The face that will **paint** `text`, which is the face whose metrics must size it.
+///
+/// # The defect this corrects, in measured numbers
+///
+/// Measurement used [`face_for_family`], which only succeeds when the caller names a face this build
+/// ships. Every theme in this crate names `"Arial"`, this crate ships `"Open Sans"`, so the lookup
+/// answered `None` and every Latin cluster fell back to the **flat estimate** in
+/// [`crate::render::text::estimate_cluster_advance`] — `0.6 em` for *every* non-wide cluster, the same
+/// width for `i` as for `w`. Measured against Open Sans' own `hmtx` at 14 px:
+///
+/// ```text
+///   ch   real(px)  estimate   drift        'widget' pen positions
+///    w     10.25      8.40    +1.85        0.00 / 0.00
+///    i      3.53      8.40    -4.87       10.25 / 8.40   <- next glyph starts 1.85 px early
+///    d      8.57      8.40    +0.17       13.79 /16.80   <- and the one after, 3.01 px late
+///    g      7.72      8.40    -0.68       22.35 /25.20
+///    e      7.86      8.40    -0.54       30.08 /33.60
+///    t      5.47      8.40    -2.93       37.94 /42.00
+/// ```
+///
+/// So `w` and `i` overlapped by 1.85 px while the gap after `i` was 3.01 px too wide — the cramping
+/// and the stretched gaps in one word, which is what a flat factor applied to a proportional face
+/// has to produce. (The totals nearly agree by luck: 43.4 px of real ink against 50.4 px reserved,
+/// because over- and under-estimates cancel. Per-glyph they do not, and per-glyph is what a reader
+/// sees.)
+///
+/// # Why the fallback is by *coverage*, and why that is not "silently re-laying-out"
+///
+/// The concern [`face_for_family`] documents is real: a face's metrics must not change for a caller
+/// that did not ask. But the relevant question is not "did the caller name a face" — it is "which
+/// face will the ink come from". [`VectorSource`](crate::render::text::VectorSource) selects by
+/// coverage and ignores the family entirely, so on this build `"Arial"` text is **painted by Open
+/// Sans** whatever the metrics say. Sizing it by the 0.6 em estimate is therefore not conservatism,
+/// it is measuring one font and drawing another — the "measure with A, draw with B" defect this crate
+/// has already paid for once.
+///
+/// Honouring the family first keeps the documented behaviour exactly: a caller that names a shipped
+/// face gets that face, byte for byte as before. Coverage is only the fallback for a family this build
+/// does not ship — which, for every theme in this crate today, is the case that is *currently* wrong.
+///
+/// # What this does not change
+///
+/// A build with **no** vector face still resolves `None` here, so the estimate remains the whole
+/// answer and the default build's output is unchanged. The fallback needs a face to fall back to.
+fn face_for_metrics(text: &str, font: &Font) -> Option<FaceBytes> {
+    // Named first, so the documented contract is untouched.
+    if let Some(named) = face_for_family(font.family()) {
+        return Some(named);
+    }
+    // Otherwise the face the ink will actually come from. The probe character is the first strong
+    // non-whitespace one, which is the same rule `face_for_text` uses — a run is shaped by the face
+    // that covers what it says.
+    let probe = text.chars().find(|ch| !ch.is_whitespace())?;
+    active_faces().iter().copied().find(|face| covers(face, probe))
+}
+
 /// The first face that covers `text`'s first strong character.
 ///
 /// "First strong character" is the rule the bidirectional algorithm uses to pick a paragraph's
@@ -103,7 +159,7 @@ pub(crate) fn cluster_advances(
     font: &Font,
     scale: f32,
 ) -> Option<Vec<f32>> {
-    let face = face_for_family(font.family())?;
+    let face = face_for_metrics(text, font)?;
     let parsed = rustybuzz::Face::from_slice(face.bytes, 0)?;
     let units_per_em = parsed.units_per_em() as f32;
     if units_per_em <= 0.0 {

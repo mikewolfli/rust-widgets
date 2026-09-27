@@ -1233,13 +1233,15 @@ mod tests {
     /// A prefix wide enough to consume the field's inner box leaves the value **no room**, and the clamp
     /// is what stops the two from overlapping.
     ///
-    /// # Why the assertion is "one run", not "two runs that do not overlap"
+    /// # Why the assertion is "no overlap", not "only one run"
     ///
-    /// The prefix is 17 characters in a field whose editable box is roughly 170 px wide at this font, so
-    /// the prefix legitimately takes all of it. The value's box then clamps to zero width and nothing is
-    /// painted for it — which *is* the no-overlap guarantee, expressed as "the second run was not drawn"
-    /// rather than as "the second run was drawn somewhere harmless". Asserting two runs would be asserting
-    /// that the value was painted on top of the prefix.
+    /// The prefix is 17 characters in a field whose editable box is roughly 170 px wide, so the prefix
+    /// legitimately takes almost all of it. How much is left for the value depends on the **face**: the
+    /// bitmap face advances a glyph a full box per cluster, so the value's box clamps to zero width and
+    /// nothing is painted for it, while an outline face's narrower glyphs leave the value a few pixels and
+    /// it is painted after the prefix. Asserting "one run" pinned the bitmap advance rather than the
+    /// layout. The guarantee the clamp provides is that the value never runs under the prefix, so the test
+    /// asserts that: the value's ink begins at or after the prefix's ends, whether it was painted at all.
     #[test]
     fn a_prefix_wide_enough_to_fill_the_field_leaves_the_value_no_room() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
@@ -1256,12 +1258,26 @@ mod tests {
         assert_eq!(bare_runs.len(), 1, "the value is drawn when nothing squeezes it");
 
         sb.set_prefix("a-very-long-prefix".to_string());
-        let runs = crate::widget::svg::text_ink_boxes(&crate::widget::svg::render_to_svg(&mut sb));
-        assert_eq!(
-            runs.len(),
-            1,
-            "the value's box clamped to zero width, so only the prefix has ink: {runs:?}"
-        );
+        let svg = crate::widget::svg::render_to_svg(&mut sb);
+        let mut runs = crate::widget::svg::text_ink_boxes(&svg);
+        runs.sort_by_key(|b| b.0);
+        // The prefix is 17 characters and takes essentially the whole editable box. Under the bitmap
+        // face its advance is wide enough to clamp the value's box to zero width, so the value is not
+        // painted at all; an outline face's glyphs are narrower, so the prefix leaves the value a few
+        // pixels and it *is* painted — legitimately, after the prefix. "One run" therefore encoded the
+        // bitmap face's advance, not the layout. What the layout actually guarantees is **no overlap**:
+        // the clamp keeps the value's box (and so its ink) from running under the prefix. That is the
+        // property asserted here, and it holds whichever face is in use.
+        assert!(runs.len() <= 2, "a prefix and a value are the only runs the field has: {runs:?}");
+        assert!(!runs.is_empty(), "the prefix was drawn: {runs:?}");
+        if runs.len() == 2 {
+            assert!(
+                runs[0].2 <= runs[1].0,
+                "the value ({:?}) must not overlap the prefix ({:?})",
+                runs[1],
+                runs[0]
+            );
+        }
         // And what was drawn starts at or after the field's padding — nothing was pushed off the leading
         // edge.
         assert!(

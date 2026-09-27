@@ -770,30 +770,24 @@ mod tests {
         let first = control.segment_rect(0).expect("a laid-out first segment");
         let svg = render_to_svg(&mut control);
 
-        // Glyph columns of paths whose origin is inside the first segment's own band — i.e. the
-        // first label, not the bar or the indicator (both of which are `<rect>`s at x = 0).
-        let label_start = svg
-            .split("d=\"M")
-            .skip(1)
-            .filter_map(|rest| {
-                let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-                let rest = &rest[digits.len()..];
-                if !rest.starts_with(' ') {
-                    return None;
-                }
-                let y_digits: String =
-                    rest[1..].chars().take_while(|c| c.is_ascii_digit()).collect();
-                Some((digits.parse::<i32>().ok()?, y_digits.parse::<i32>().ok()?))
+        // The first segment's **label ink**, located by the segment it lies in rather than by the
+        // subpath spelling of a `d` string.
+        //
+        // The first form read `d="M{x} {y}..."` by taking leading *integer* digits, which is the
+        // bitmap face's grammar only: an outline writes `d="M23.44 64.25L..."`, so the reader took
+        // `23` as `x` and then refused the run because the next character was `.` rather than a
+        // space — no label was ever found. Reading the run's union ink box through the crate's own
+        // reader handles both grammars, and its left edge *is* the leftmost glyph column, which is
+        // the quantity the inset is measured from. The bar and the indicator are `<rect>`s, so the
+        // only `<path>` runs are the labels and the band test selects the first one.
+        let label = crate::widget::svg::text_ink_boxes(&svg)
+            .into_iter()
+            .find(|(l, _, r, _)| {
+                let centre = (l + r) / 2;
+                centre >= first.x && centre < first.x + first.width as i32
             })
-            .filter(|(x, y)| {
-                *x >= first.x
-                    && *x < first.x + first.width as i32
-                    && *y >= first.y
-                    && *y < first.y + first.height as i32
-            })
-            .map(|(x, _)| x)
-            .min()
             .expect("the first segment's label was painted");
+        let label_start = label.0;
 
         let painted_inset = label_start - first.x;
         assert!(

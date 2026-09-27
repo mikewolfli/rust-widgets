@@ -523,7 +523,13 @@ impl Draw for Banner {
         let text_color = style.text_color.unwrap_or_else(|| self.severity.default_text());
         let border_color = style.border_color.unwrap_or_else(|| self.severity.border());
 
-        context.fill_rect(rect, background);
+        context.face(
+            rect,
+            background,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
 
         // The dismiss control is the right-most element, so the text stops short
         // of it and of any actions, otherwise a long message would run under the

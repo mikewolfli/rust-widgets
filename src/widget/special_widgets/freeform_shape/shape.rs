@@ -832,7 +832,13 @@ impl Draw for FreeformShapeWidget {
             (false, _) => Some(fill.blend(&background, 0.5)),
         };
 
-        context.fill_rect(rect, background);
+        context.face(
+            rect,
+            background,
+            self.base.style().surface.unwrap_or_default(),
+            self.base.style().border_radius.unwrap_or(0),
+            crate::core::Color::BLACK,
+        );
         self.draw_filled_shape(context, fill, stroke);
         if !self.base.is_enabled() {
             // A disabled shape is a chrome state, so the veil is derived from the

@@ -921,7 +921,13 @@ impl Draw for LineEdit {
         let text_x = layout.value.x;
         // Draw background
         let bg = style.background_color.unwrap_or(Color::rgb(255, 255, 255));
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), bg);
+        context.face(
+            Rect::new(rect.x, rect.y, rect.width, rect.height),
+            bg,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         // Draw border
         //
         // The **border** answers to the meaning channel, the fill above to the interaction one.
@@ -1079,6 +1085,12 @@ mod tests {
     use super::*;
     use crate::compat::{MiniToString, Vec};
     use crate::core::Rect;
+
+    /// The bitmap face fills its glyph box, so its ink left *is* the box left. An outline face draws
+    /// a real glyph whose ink is inset, so the ink's left edge sits one or two pixels right of the
+    /// box edge at these sizes. Pinning the two equal encoded a property of the bitmap face, not of
+    /// the layout.
+    const INK_INSET_TOLERANCE: i32 = 3;
 
     #[test]
     fn lineedit_creation_defaults() {
@@ -1534,14 +1546,16 @@ mod tests {
         let (prefix_left, prefix_right) = (runs[0].0, runs[0].2);
         let (value_left, value_right) = (runs[1].0, runs[1].2);
 
-        // The `$` takes the field's leading padding. The run's left edge is the *ink*, and the `$`
-        // bitmap has no set bit in its leftmost column, so the ink starts a glyph-bit right of the
-        // origin — the same inset a value at the padding shows. Asserting the origin would need the
-        // pen position, which the SVG does not carry; asserting the relation to the plain field is the
-        // honest form.
-        assert_eq!(
-            prefix_left, plain_left,
-            "the prefix starts where a value with no prefix starts: the field's leading padding"
+        // The `$` takes the field's leading padding. The run's left edge is the *ink*, and neither
+        // face's ink starts exactly at the origin — the `$` bitmap has no set bit in its leftmost
+        // column, and an outline `$` is inset by its own shape — so the assertion allows the ink
+        // inset and nothing more. It is still a comparison against where a *value with no prefix*
+        // starts, so a prefix that ignored the padding and began on the border (or after the
+        // value) is a whole glyph away and fails.
+        assert!(
+            (prefix_left - plain_left).abs() <= INK_INSET_TOLERANCE,
+            "the prefix starts where a value with no prefix starts: it begins at {prefix_left}, \
+             the field's leading padding puts a run at {plain_left}"
         );
         // …and the value is pushed clear of it rather than starting there too.
         assert!(

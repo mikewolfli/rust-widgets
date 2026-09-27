@@ -635,7 +635,13 @@ impl Draw for ToolBar {
         // were lighter than the surface they sat on, so a checked item read as a hole).
         let surface = style.background_color.unwrap_or(Color::rgb(245, 245, 245));
         let border = style.border_color.unwrap_or_else(|| surface.contrast_color().with_alpha(60));
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), surface);
+        context.face(
+            Rect::new(rect.x, rect.y, rect.width, rect.height),
+            surface,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         // Draw bottom border line
         let y = rect.y + rect.height as f32 as i32 - 1;
         context.draw_line(Point::new(rect.x, y), Point::new(rect.x + rect.width as i32, y), border);

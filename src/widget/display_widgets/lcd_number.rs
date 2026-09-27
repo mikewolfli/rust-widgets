@@ -417,7 +417,13 @@ impl Draw for LCDNumber {
         // surface, so an untinted fallback to `theme.colors.background` would be
         // byte-identical to the frame behind it and the panel would be invisible.
         let bg_color = resolved.blend(&fg_color, 0.08);
-        context.fill_rect(rect, bg_color);
+        context.face(
+            rect,
+            bg_color,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         let display_text = self.display_text();
         // The panel is `num_digits` cells wide, always — that is what the property means. It used
         // to be sized by the *text* (`display_text.len()`), so the digit cells shrank and grew as

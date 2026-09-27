@@ -230,7 +230,18 @@ impl CodeEditor {
             }
             let tab_rect = Rect::new(x, rect.y + 2, width, strip_height.saturating_sub(4) as u32);
             if index == active {
-                context.fill_rect(tab_rect, chrome.surface);
+                // The tab is chrome, and the **tab**, not the editor, is what gets the radius: a
+                // 104 px-wide strip at 4 px corners reads as a tab, while rounding the whole editor
+                // would round the surface a document is read on. `0` here was a literal standing in
+                // for "this is not the editor's own face", which is why the resolved radius is the
+                // honest value to pass — a theme that rounds its tabs says so once, in `borders`.
+                context.face(
+                    tab_rect,
+                    chrome.surface,
+                    self.style().surface.unwrap_or_default(),
+                    self.style().border_radius.unwrap_or(0),
+                    Color::BLACK,
+                );
                 context.draw_rect(tab_rect, chrome.border);
             }
             context.draw_text(
@@ -1123,7 +1134,13 @@ impl CodeEditor {
             return;
         }
         let rect = self.completion_rect();
-        context.fill_rect(rect, chrome.popup_background);
+        context.face(
+            rect,
+            chrome.popup_background,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         context.draw_rect(rect, chrome.popup_border);
         for (index, item) in self.completion.items.iter().enumerate() {
             let row_y = rect.y + index as i32 * MIN_TOUCH_TARGET;
@@ -1153,7 +1170,13 @@ impl CodeEditor {
             return;
         }
         let Some(rect) = self.context_menu_rect() else { return };
-        context.fill_rect(rect, chrome.popup_background);
+        context.face(
+            rect,
+            chrome.popup_background,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         context.draw_rect(rect, chrome.popup_border);
         for (index, item) in self.context_menu.items.iter().enumerate() {
             let row_y = rect.y + index as i32 * MIN_TOUCH_TARGET;

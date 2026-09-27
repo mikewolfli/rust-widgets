@@ -237,7 +237,13 @@ impl Draw for MiniChart {
         let grid_color = bg_color.blend(&line_color, 0.16);
 
         // Draw background
-        context.fill_rect(rect, bg_color);
+        context.face(
+            rect,
+            bg_color,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
 
         // Chart area margins. The left margin reserves room for the value labels a full
         // `ChartWidget` draws; this control draws none, so the reservation is generous — but it

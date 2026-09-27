@@ -138,8 +138,19 @@ mod tests {
     /// A helper rather than a literal in each test: assigning `theme.overrides`
     /// after `Theme::default()` trips `clippy::field_reassign_with_default`, and a
     /// constructor argument would change the public API for a test's convenience.
+    ///
+    /// # Why this also clears `flat_surfaces`
+    ///
+    /// The point of the helper is "a theme whose style table holds **exactly** these entries" — a
+    /// theme with no opinion beyond the ones it states. `Theme::default()` is the *flat* preset, and
+    /// flatness is now a rule on the theme (`Theme::flat_surfaces`) rather than a table of kind
+    /// names, so inheriting the default would smuggle in an opinion the caller did not state and
+    /// silently flatten every role the role table raises. Clearing it is what keeps the helper's
+    /// promise: the role table's own character shows through, and each test's override is the only
+    /// thing it says.
     fn theme_with_overrides(entries: &[(&str, ThemeStyleToken)]) -> Theme {
         Theme {
+            flat_surfaces: false,
             overrides: ThemeOverrides {
                 styles: entries
                     .iter()

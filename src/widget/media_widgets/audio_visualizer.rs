@@ -383,7 +383,13 @@ impl Draw for AudioVisualizer {
         }
 
         // Draw background
-        context.fill_rect(rect, self.resolved_background());
+        context.face(
+            rect,
+            self.resolved_background(),
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
 
         // Calculate bar layout
         let total_spacing = self.bar_spacing * (self.bar_count as f32 + 1.0);

@@ -431,7 +431,13 @@ impl Draw for TextArea {
 
         // -- Background --
         let bg = self.style().background_color.unwrap_or(Color::rgb(255, 255, 255));
-        context.fill_rect(rect, bg);
+        context.face(
+            rect,
+            bg,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
 
         // -- Border --
         let border = self.style().border_color.unwrap_or(Color::rgb(200, 200, 200));
@@ -525,6 +531,11 @@ impl TextArea {
 mod tests {
     use super::*;
     use crate::core::Rect;
+
+    /// The bitmap face fills its glyph box, so its ink top *is* the box top. An outline face draws a
+    /// real glyph whose ink is inset, so the ink top sits one or two pixels below the box top at these
+    /// sizes. Pinning the two equal encoded a property of the bitmap face, not of the layout.
+    const INK_INSET_TOLERANCE: i32 = 3;
 
     #[test]
     fn textarea_creation_defaults() {
@@ -654,7 +665,14 @@ mod tests {
         let (x, y, right, _) = crate::widget::svg::text_ink_box(&svg)
             .unwrap_or_else(|| panic!("a text path must be emitted for the first line: {svg}"));
 
-        assert_eq!(x, dimensions::TEXT_FIELD_PADDING_H as i32, "the shared horizontal inset");
+        // The bitmap face fills its glyph box, so the run's left ink is the shared inset; an
+        // outline face's ink is inset from the box, so the two agree to within that inset rather
+        // than exactly — which was a property of the typeface, not of the layout.
+        assert!(
+            (x - dimensions::TEXT_FIELD_PADDING_H as i32).abs() <= INK_INSET_TOLERANCE,
+            "the shared horizontal inset: ink left {x}, inset {}",
+            dimensions::TEXT_FIELD_PADDING_H
+        );
         assert!(right > x, "the first line laid down ink: {x}..{right}");
         // The first line's band is one line tall and starts at the field's top inset, the same
         // 4 px a single-line field's content starts at; a line centred in that band therefore
@@ -672,7 +690,13 @@ mod tests {
             .height as i32;
         let first_band_top = 4;
         let expected = first_band_top + (LINE_H - line_h) / 2;
-        assert_eq!(y, expected, "the first line sits on the band's centred line box");
+        // The glyph box's top edge is the centred line box; the ink top is that edge under the
+        // bitmap face and one or two pixels in under an outline face, so the two agree to within
+        // the inset. A line left at `y = 4` is a whole inset-plus-half-line away and fails.
+        assert!(
+            (y - expected).abs() <= INK_INSET_TOLERANCE,
+            "the first line sits on the band's centred line box: ink top {y}, box top {expected}"
+        );
     }
 
     #[test]

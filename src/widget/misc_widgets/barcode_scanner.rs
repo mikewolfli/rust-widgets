@@ -291,7 +291,13 @@ impl Draw for BarcodeScanner {
             .unwrap_or(Color::GREEN);
 
         // Background
-        context.fill_rect(rect, surface);
+        context.face(
+            rect,
+            surface,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
 
         // Viewfinder area (centered, 80% of widget size)
         let vf_margin_x = (w as f32 * 0.1) as i32;

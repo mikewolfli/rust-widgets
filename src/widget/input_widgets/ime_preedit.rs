@@ -237,7 +237,13 @@ impl Draw for ImePreedit {
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
             .unwrap_or(foreground);
         let surface = window_fill.blend(&ink, 0.08);
-        context.fill_rect(rect, surface);
+        context.face(
+            rect,
+            surface,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
 
         // The preedit text: a caller's own colour wins, then the theme's foreground, and the
         // widget's constructed default is dropped in favour of that foreground rather than a

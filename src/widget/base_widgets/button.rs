@@ -831,6 +831,9 @@ impl Draw for Button {
             style.border_color.unwrap_or(bg),
             style.border_width.unwrap_or(0),
             br,
+            // The shadow's hue. Black is the conventional shadow colour and the one the role
+            // table's elevations were tuned against; each level applies its own alpha.
+            Color::BLACK,
         );
 
         // ── Icon ──

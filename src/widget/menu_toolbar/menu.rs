@@ -1110,49 +1110,31 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
-    /// One ink box per text `<path>` in document order, as `(left, top, right, bottom)`.
+    /// One ink box per text run in document order, as `(left, top, right, bottom)`.
     ///
     /// # Why the ink and not the string
     ///
-    /// Text leaves the SVG backend as the `font8x8` rectangles the rasteriser fills — one
-    /// axis-aligned subpath per set bitmap bit — so the label is not in the document in any form
-    /// and a test has to locate a run by *where* it is. That is the stronger check: the old form
-    /// matched `>Open</text>` and read the element's `y`, so a glyph placed a line away with a
-    /// correct attribute would have passed it.
+    /// Text leaves the SVG backend as glyph geometry, not a `<text>` element, so the label is not
+    /// in the document in any form and a test has to locate a run by *where* it is. That is the
+    /// stronger check: the old form matched `>Open</text>` and read the element's `y`, so a glyph
+    /// placed a line away with a correct attribute would have passed it.
     ///
-    /// One element is one `draw_text`, so this is one box per label here. Subpaths are not
-    /// deduplicated: a glyph box wider than the 8 bitmap columns maps two columns to one pixel
-    /// and emits the same rectangle twice, exactly as the rasteriser fills it twice.
+    /// # Why the boxes come from the crate reader, not a local `d` parser
+    ///
+    /// This used to split each `d` on `M` and read four integers as `x y w h` — the **bitmap**
+    /// path's grammar and only its grammar. An outline face writes `M17.00 23.84L...Z` with
+    /// fractional vertices, which that reader took as a rectangle at `(17, 23)` sized by the next
+    /// two numbers: geometry that is not ink and not where the glyph is, so the labels were located
+    /// off their rows. `text_ink_boxes` knows both grammars and the `data-text` provenance tag; one
+    /// reader, so the two cannot drift apart.
     fn text_run_boxes(svg: &str) -> Vec<(i32, i32, i32, i32)> {
-        let mut boxes = Vec::new();
-        for line in svg.lines() {
-            let Some(path_at) = line.find("<path ") else { continue };
-            let Some(d_at) = line[path_at..].find("d=\"") else { continue };
-            let start = path_at + d_at + 3;
-            let Some(end) = line[start..].find('"') else { continue };
-            let mut bounds: Option<(i32, i32, i32, i32)> = None;
-            for subpath in line[start..start + end].split('M').skip(1) {
-                let numbers: Vec<i32> = subpath
-                    .split(|c: char| !c.is_ascii_digit() && c != '-')
-                    .filter(|part| !part.is_empty())
-                    .filter_map(|part| part.parse().ok())
-                    .collect();
-                if numbers.len() < 4 {
-                    continue;
-                }
-                let (x, y, w, h) = (numbers[0], numbers[1], numbers[2], numbers[3]);
-                let bit = (x, y, x + w, y + h);
-                bounds = Some(match bounds {
-                    None => bit,
-                    Some((l, t, r, b)) => (l.min(bit.0), t.min(bit.1), r.max(bit.2), b.max(bit.3)),
-                });
-            }
-            if let Some(union) = bounds {
-                boxes.push(union);
-            }
-        }
-        boxes
+        crate::widget::svg::text_ink_boxes(svg)
     }
+
+    /// The bitmap face fills its glyph box, so its ink top *is* the box top. An outline face draws a
+    /// real glyph whose ink is inset, so the ink top sits one or two pixels below the box top at these
+    /// sizes. Pinning the two equal encoded a property of the bitmap face, not of the layout.
+    const INK_INSET_TOLERANCE: i32 = 3;
 
     /// A menu row's label is centred on its own line box, not offset by half a line.
     ///
@@ -1183,9 +1165,10 @@ mod tests {
         };
         let expected_y = row_top + (Menu::item_height() as i32 - line_h) / 2;
         // The rows are located by the band they occupy, not by the string they spell: a run
-        // belongs to a row when its glyph box's top edge falls inside that row's own band. Every
-        // label ('O', 'S', 'F') lights its bitmap's first row, so the ink's top edge *is* the
-        // glyph box's top edge and the band test is exact.
+        // belongs to a row when its ink's top edge falls inside that row's own band. Every label
+        // ('O', 'S', 'F') lights its glyph's top row, so the ink top is the glyph box's top edge
+        // under the bitmap face and within the inset of it under an outline face — inside the
+        // 22 px row either way, so the band test separates the rows.
         let runs = text_run_boxes(&svg);
         let on_row = |index: usize| -> (i32, i32, i32, i32) {
             let top = row_top + index as i32 * Menu::item_height() as i32;
@@ -1195,13 +1178,22 @@ mod tests {
                 .unwrap_or_else(|| panic!("row {index} painted no ink (rows at {top})"))
         };
         let first = on_row(0);
-        assert_eq!(first.1, expected_y, "the label belongs on its row's line box");
+        // The glyph box's top edge is the line box; the ink top is that edge under the bitmap face
+        // and one or two pixels in under an outline face, so the two are pinned equal to within the
+        // inset rather than exactly. A row still avoids the old `+ item_height() / 2` origin — that
+        // mistake is four pixels out here, past the tolerance.
+        assert!(
+            (first.1 - expected_y).abs() <= INK_INSET_TOLERANCE,
+            "the label belongs on its row's line box: ink top {}, box top {expected_y}",
+            first.1
+        );
         // Every row derives its origin the same way, so the second row's line box is the first's
         // shifted down by exactly one row.
-        assert_eq!(
+        assert!(
+            (on_row(1).1 - (expected_y + Menu::item_height() as i32)).abs() <= INK_INSET_TOLERANCE,
+            "and every row derives its own line box the same way: ink top {}, box top {}",
             on_row(1).1,
-            expected_y + Menu::item_height() as i32,
-            "and every row derives its own line box the same way"
+            expected_y + Menu::item_height() as i32
         );
         assert_ne!(
             first.1,

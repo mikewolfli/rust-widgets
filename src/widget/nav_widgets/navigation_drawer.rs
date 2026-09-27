@@ -328,7 +328,13 @@ impl Draw for NavigationDrawer {
             .unwrap_or_else(|| ink.with_alpha(82));
         if slide > 0.0 {
             let scrim = scrim.with_alpha((scrim.a as f32 * slide) as u8);
-            context.fill_rect(rect, scrim);
+            context.face(
+                rect,
+                scrim,
+                self.style().surface.unwrap_or_default(),
+                self.style().border_radius.unwrap_or(0),
+                Color::BLACK,
+            );
         }
 
         // Draw side panel on the left, at the width the slide calls for.

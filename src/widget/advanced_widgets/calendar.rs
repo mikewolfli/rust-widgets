@@ -674,7 +674,13 @@ impl Draw for Calendar {
             .unwrap_or(Color::rgb(180, 60, 60));
 
         // ── Outer background & border ──
-        context.fill_rect(rect, calendar_bg);
+        context.face(
+            rect,
+            calendar_bg,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         context.draw_rect(rect, border_color);
 
         // ── 1. Navigation bar ──
@@ -1284,108 +1290,47 @@ mod tests {
         assert!(svg.starts_with("<svg"));
     }
 
-    /// How far apart two `y` values can be and still be the same visual line.
+    /// How far inside its glyph **box** a run's ink can start and still count as being on
+    /// that box's own line.
     ///
-    /// Reserved for the host's line spacing: rows on one line differ by less than this, lines
-    /// differ by more. A single bitmap row is a fraction of the box, so this bound is loose
-    /// enough to absorb integer rounding and tight enough to separate adjacent rows.
-    const LINE_TOLERANCE: i32 = 3;
-
-    /// One line's worth of ink bits, keyed by the topmost `y` seen on that line.
-    type InkLine = (i32, Vec<(i32, i32, i32, i32)>);
+    /// # Why a tolerance is needed at all
+    ///
+    /// The bitmap face fills its whole glyph box (`font8x8` rectangles span the box), so a run's
+    /// ink top *is* the box top, exactly. An **outline** face draws a real glyph whose ink is
+    /// inset — a digit's cap or an `M`'s shoulder does not reach the box's top edge — so the ink
+    /// top sits one or two pixels below the box top at this font size. A lookup that required
+    /// `ink.top == box.top`, or an assertion that pinned the two equal, encoded a property of the
+    /// bitmap face rather than of the layout, and is false the moment an outline is drawn.
+    ///
+    /// The bound is deliberately tight: it has to absorb the outline inset (≤ 2 px at 11–14 px)
+    /// and nothing more, so a run drawn a whole line low still fails.
+    const INK_INSET_TOLERANCE: i32 = 3;
 
     /// Text runs recovered from a rendered SVG, as `(left, top, right, bottom)` ink boxes.
     ///
     /// # Why the ink box and not the string
     ///
-    /// Text leaves the backend as `font8x8` **glyph geometry** — one axis-aligned `<path>`
-    /// subpath per set bitmap bit, the same rectangles the software rasteriser fills — so the
-    /// document contains a picture of the run, not the run. A test therefore has to locate a
-    /// run by *where it is*, which is strictly better than locating it by *what it says*:
-    /// the old `texts()` helper matched `body == "1"` and then asserted on the element's `x`,
-    /// so it verified the backend's attribute rather than the ink the control produced, and a
-    /// mis-placed glyph with a correct attribute would have passed.
+    /// Text leaves the backend as **glyph geometry** — one `<path>` per `draw_text` — so the
+    /// document contains a picture of the run, not the run. A test therefore has to locate a run
+    /// by *where it is*, which is strictly better than locating it by *what it says*: the old
+    /// `texts()` helper matched `body == "1"` and then asserted on the element's `x`, so it
+    /// verified the backend's attribute rather than the ink the control produced, and a mis-placed
+    /// glyph with a correct attribute would have passed.
     ///
-    /// # Why grouping is by quantised `y`, then by horizontal gaps
+    /// # Why this delegates instead of parsing `d` itself
     ///
-    /// A glyph box is stretched across the 8 bitmap rows, so those rows land on 8 distinct `y`
-    /// values spanning the box; two runs on the same visual line share every one of them, and
-    /// the line below shares none. Grouping subpaths by which *bitmap row band* their `y` falls
-    /// into therefore separates lines. Within a band, a horizontal gap wider than one glyph
-    /// advance separates runs, because the pen advances between clusters.
+    /// The first form of this helper read the `font8x8` rectangle spelling directly: split `d` on
+    /// `M` and take the four integers of `M{x} {y}h{w}v{h}`. That is the *bitmap* path's grammar
+    /// and only its grammar. An outline face writes `M21.45 30.24L...Z` with fractional vertices,
+    /// where the same split reads `21` as `x`, `45` as `y`, `30` as `w` — geometry that is not ink
+    /// and not where the glyph is, so every lookup missed and the test panicked with an empty
+    /// search rather than a wrong value. The crate already has the correct reader, which knows
+    /// both grammars (and the `data-text` provenance tag that distinguishes a run from a drawn
+    /// shape); duplicating it here was the actual bug. One reader, so the two cannot disagree.
     ///
-    /// Note that a run's subpaths are *not* deduplicated: when a bitmap column is wider than a
-    /// pixel (`11 / 8` for a 11 px box), two columns map to the same pixel and the same
-    /// rectangle is emitted twice. That is the rasteriser's own geometry — it fills that pixel
-    /// twice — so removing it here would make the test disagree with the drawing.
+    /// One `<path>` is one `draw_text`, so this is one box per run, in document order.
     fn ink_runs(svg: &str) -> Vec<(i32, i32, i32, i32)> {
-        /// Bits further apart than this on `x` belong to different runs.
-        const RUN_GAP: i32 = 4;
-        let mut bits: Vec<(i32, i32, i32, i32)> = Vec::new();
-        for line in svg.lines() {
-            let Some(path_at) = line.find("<path ") else { continue };
-            let Some(d_at) = line[path_at..].find("d=\"") else { continue };
-            let start = path_at + d_at + 3;
-            let Some(end) = line[start..].find('"') else { continue };
-            for subpath in line[start..start + end].split('M').skip(1) {
-                let numbers: Vec<i32> = subpath
-                    .split(|c: char| !c.is_ascii_digit() && c != '-')
-                    .filter(|part| !part.is_empty())
-                    .filter_map(|part| part.parse().ok())
-                    .collect();
-                if numbers.len() < 4 {
-                    continue;
-                }
-                let (x, y, w, h) = (numbers[0], numbers[1], numbers[2], numbers[3]);
-                bits.push((x, y, x + w, y + h));
-            }
-        }
-        if bits.is_empty() {
-            return Vec::new();
-        }
-        // Which `y` values are on the same visual line. A new line starts when the `y` jumps
-        // by more than one bitmap row's worth, which is a bound rather than a guess: two runs
-        // on one line differ by less than one bitmap row, and two lines differ by at least the
-        // smaller part of a box height.
-        let mut row_tops: Vec<i32> = Vec::new();
-        for bit in &bits {
-            if !row_tops.iter().any(|top| (top - bit.1).abs() <= LINE_TOLERANCE) {
-                row_tops.push(bit.1);
-            }
-        }
-        // Number each line left to right, so a caller can index them in reading order.
-        let mut lines: Vec<InkLine> = row_tops.into_iter().map(|top| (top, Vec::new())).collect();
-        for bit in bits {
-            if let Some((_, group)) =
-                lines.iter_mut().find(|(top, _)| (bit.1 - *top).abs() <= LINE_TOLERANCE)
-            {
-                group.push(bit);
-            }
-        }
-        let mut runs = Vec::new();
-        for (_, mut group) in lines {
-            group.sort_by_key(|bit| bit.0);
-            let mut run: Option<(i32, i32, i32, i32)> = None;
-            let mut previous_right = i32::MIN;
-            for bit in group {
-                if run.is_none() || bit.0 - previous_right > RUN_GAP {
-                    if let Some(finished) = run.take() {
-                        runs.push(finished);
-                    }
-                    run = Some(bit);
-                } else if let Some(open) = run.as_mut() {
-                    open.2 = open.2.max(bit.2);
-                    open.3 = open.3.max(bit.3);
-                }
-                if let Some(open) = run.as_ref() {
-                    previous_right = previous_right.max(open.2);
-                }
-            }
-            if let Some(finished) = run {
-                runs.push(finished);
-            }
-        }
-        runs
+        crate::widget::svg::text_ink_boxes(svg)
     }
 
     /// A day number sits in the **middle of its cell**, on both axes.
@@ -1445,12 +1390,19 @@ mod tests {
             // layout contract, and it is exact.
             let box_x = cx + (cell_w - advance) / 2;
             let box_y = cy + (cell_h - line_h) / 2;
-            // The matching ink, located by the box rather than by the string it spells.
+            // The matching ink, located by the box rather than by the string it spells. The run
+            // is matched by its **centre** on both axes: the centre is the quantity the test
+            // asserts on, and unlike the ink's top edge it lies in the same band whichever face
+            // drew the run (a bitmap's top edge is the box top; an outline's is inset below it).
+            // Matching on the centre is therefore the same predicate for both backends rather than
+            // one that silently only ever matched the bitmap.
             let ink = runs
                 .iter()
-                .find(|(l, t, r, _)| {
-                    let inside_x = (l + r) / 2 >= box_x && (l + r) / 2 < box_x + advance;
-                    let inside_y = *t >= box_y && *t < box_y + line_h;
+                .find(|(l, t, r, b)| {
+                    let centre_x = (l + r) / 2;
+                    let centre_y = (t + b) / 2;
+                    let inside_x = centre_x >= box_x && centre_x < box_x + advance;
+                    let inside_y = centre_y >= box_y && centre_y < box_y + line_h;
                     inside_x && inside_y
                 })
                 .copied()
@@ -1478,7 +1430,7 @@ mod tests {
                 box_y + line_h
             );
             assert!(
-                ink.1 - box_y <= crate::render::TEXT_FIT_MARGIN as i32,
+                ink.1 - box_y <= INK_INSET_TOLERANCE,
                 "day {day_num} ink must start at the top of its box {box_y}, started at {}",
                 ink.1
             );
@@ -1511,9 +1463,14 @@ mod tests {
     /// The heading is drawn through `draw_text_fitted`, whose usable width is inset at **both**
     /// ends by `TEXT_FIT_MARGIN` — so its centre is the centre of that inset span, which is the
     /// column's centre, and the ink lands within a margin of it rather than exactly on it (a
-    /// 11 px glyph box is 7 px wide and `font8x8`'s lit columns start at column 1, biasing the
-    /// ink by up to half a pixel). Asserting the margin rather than exactness keeps the test a
-    /// statement about the layout and not about the bitmap.
+    /// glyph's own bearings bias the ink by up to half a pixel). Asserting the margin rather than
+    /// exactness keeps the test a statement about the layout and not about the typeface.
+    ///
+    /// The heading's **line box** top is `hdr.y + 6`, the `y` `draw_text_fitted` was handed, and
+    /// the ink starts there exactly under the bitmap face. Under an outline face the ink is inset
+    /// a pixel or two (`INK_INSET_TOLERANCE`), so the check is that the ink begins *on* that line
+    /// rather than that it begins on the same integer; the column-space and centring assertions
+    /// above are unchanged and remain the substance of the test.
     #[test]
     fn a_weekday_heading_is_centred_in_its_column() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
@@ -1550,7 +1507,11 @@ mod tests {
                 "column {i}: heading ink centre {ink_cx} must be within a fit margin of the column centre {}",
                 cell_x + cell_w / 2
             );
-            assert_eq!(found.1, label_top, "column {i}: the heading starts on its line box top");
+            assert!(
+                (found.1 - label_top).abs() <= INK_INSET_TOLERANCE,
+                "column {i}: the heading starts on its line box top {label_top}, started at {}",
+                found.1
+            );
         }
     }
 

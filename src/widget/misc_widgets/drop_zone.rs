@@ -354,7 +354,13 @@ impl Draw for DropZone {
             DropZoneState::Dropped => surface.blend(&ink, 0.20),
             DropZoneState::Rejected => surface.blend(&Color::BLACK, 0.10),
         };
-        context.fill_rect(rect, fill);
+        context.face(
+            rect,
+            fill,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
 
         // A dashed border drawn as a series of short strokes. The colour and the stroke width both
         // carry the state: an accepted drag draws the zone's own ink at full weight, a resisted one

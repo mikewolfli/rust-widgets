@@ -4,10 +4,13 @@
 
 本仓一共有 **188** 个控件，每个控件有两个外观（深色 / 浅色），共 **376** 张 SVG。
 
-此外还有 **1** 张**状态快照**（下表），它们不是额外的控件，而是某个控件在用户可切换到的状态下的样子。
+此外还有 **4** 张**状态快照**（下表），它们不是额外的控件，而是某个控件在用户可切换到的状态下的样子。
 
 | 状态快照 | 控件 | 说明 |
 |---|---|---|
+| `snapshots/svg/frame_panel.svg` | `frame` | `frame` 的 `panel` 态（默认外观） |
+| `snapshots/svg/frame_styled_panel.svg` | `frame` | `frame` 的 `styled_panel` 态（默认外观） |
+| `snapshots/svg/frame_win_panel.svg` | `frame` | `frame` 的 `win_panel` 态（默认外观） |
 | `snapshots/svg/group_box_checked.svg` | `group_box` | `group_box` 的 `checked` 态（默认外观） |
 
 这些图片由 `examples/export_control_svgs.rs` 从**控件注册表**导出，并由 `tools/check_svg_snapshots.sh` 门禁保证「重新生成的结果与提交的字节完全一致」。因此它们是**产物**而不是手绘插图：任何控件的绘制改动都会在这里以 diff 的形式出现。

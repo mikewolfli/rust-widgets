@@ -22,17 +22,18 @@
 //!   clamping it.
 //! * Times are ordered chronologically, hour then minute then second then
 //!   millisecond.
-use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
 
 use crate::widget::capability::access::time_to_string;
-use crate::widget::capability::coercion::{expect_string, expect_time};
+use crate::widget::capability::coercion::{expect_bool, expect_string, expect_time};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::metrics::dimensions;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -82,6 +83,21 @@ impl UndoCommand for TimeEditCommand {
         Ok(())
     }
 }
+/// The clock face's diameter, in logical pixels.
+///
+/// A clock is read by angle, so it has to be big enough that twelve of them are distinguishable --
+/// below about this size the 1 and the 2 positions run together and the face is decoration.
+const CLOCK_DIAMETER: u32 = 160;
+/// The space between the field and the clock face it opens.
+const CLOCK_GAP: i32 = 4;
+/// The radius fraction below which a point belongs to no ring: the clock's hub.
+///
+/// A real clock has a hub that sets nothing, and a click there should not silently pick an arbitrary
+/// value -- which is what treating the centre as the inner ring would do.
+const HOUR_HOLE: f32 = 0.22;
+/// The radius fraction where the inner (minute) ring gives way to the outer (hour) ring.
+const MINUTE_RING_INNER: f32 = 0.62;
+
 /// Time value (hour, minute, second, millisecond).
 ///
 /// All four fields are stored already clamped to their valid ranges, so any
@@ -197,6 +213,22 @@ pub struct TimeEdit {
     minimum: Time,
     maximum: Time,
     display_format: String,
+    /// Whether the field draws a clock face under itself for picking a time.
+    ///
+    /// The widget had `step_up`/`step_down` from the day it was written, so a keyboard user could
+    /// walk a time one second at a time — but a *pointer* user had nothing: there was no affordance to
+    /// click, and no way to reach 14:30 without pressing an arrow eight thousand times. This flag is
+    /// what makes the picker reachable, and the picker is what makes `TimeEdit` a time *picker*
+    /// rather than a text field with a formatter.
+    clock_popup: bool,
+    /// Which of the clock's two rings the pointer is over, while the popup is open.
+    ///
+    /// The hand a click would move: the outer ring sets the hour and the inner one the minute, so
+    /// naming it once here is what lets the hover highlight and the click agree.
+    hovered_hand: Option<ClockHand>,
+    /// Emitted with the new open state when the clock is shown or hidden, so a host can dismiss its
+    /// other popups without polling.
+    pub popup_visibility_changed: Signal1<bool>,
     /// Emitted with the new time after every accepted change, including changes
     /// produced by [`TimeEdit::undo`] and [`TimeEdit::redo`]. Not emitted when a
     /// change is rejected or when the time is already the requested value.
@@ -204,6 +236,21 @@ pub struct TimeEdit {
     undo_stack: UndoStack,
     history_target: Rc<RefCell<Time>>,
     restoring_history: bool,
+}
+
+/// Which ring of the clock face a point or a click belongs to.
+///
+/// A clock face answers "what time is it" by angle and "which part" by radius, so the two rings are
+/// the whole interaction: the outer ring is the hour and the inner one the minute. An enum rather than
+/// a boolean because there are three answers a hit test can give — the outer ring, the inner ring, or
+/// neither — and a `bool` would have to encode "neither" as "inner", which is a wrong answer rather
+/// than a missing one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClockHand {
+    /// The outer ring: sets the hour.
+    Hour,
+    /// The inner ring: sets the minute.
+    Minute,
 }
 impl TimeEdit {
     /// Creates a time editor occupying `geometry`.
@@ -218,6 +265,9 @@ impl TimeEdit {
             minimum: Time::new(0, 0, 0, 0),
             maximum: Time::new(23, 59, 59, 999),
             display_format: "HH:mm:ss".to_string(),
+            clock_popup: false,
+            hovered_hand: None,
+            popup_visibility_changed: Signal1::new(),
             time_changed: Signal1::new(),
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(Time::new(0, 0, 0, 0))),
@@ -227,6 +277,191 @@ impl TimeEdit {
     /// Returns the current time.
     pub fn time(&self) -> Time {
         self.time
+    }
+
+    /// Whether the field draws its clock face under itself.
+    ///
+    /// Defaults to `false`, so a caller that never asks renders exactly as it did. With it set, the
+    /// draw paints the face below the field; see [`TimeEdit::set_clock_popup`].
+    pub fn clock_popup(&self) -> bool {
+        self.clock_popup
+    }
+
+    /// Shows or hides the clock face.
+    ///
+    /// The flag is what makes the picker reachable, so setting it is a visible change rather than the
+    /// redraw-of-the-same-field it used to be. Hiding the face clears the pointer highlight, because a
+    /// ring cannot be hovered by a face that is not showing.
+    pub fn set_clock_popup(&mut self, popup: bool) {
+        if self.clock_popup == popup {
+            return;
+        }
+        self.clock_popup = popup;
+        if !popup {
+            self.hovered_hand = None;
+        }
+        self.popup_visibility_changed.emit(popup);
+        self.base.request_redraw();
+    }
+
+    /// Opens the clock if it is closed, closes it if it is open.
+    pub fn toggle_clock_popup(&mut self) {
+        self.set_clock_popup(!self.clock_popup);
+    }
+
+    /// The box the clock face occupies: as tall as it is wide, centred under the field.
+    ///
+    /// # Why square and derived
+    ///
+    /// A clock face is a circle, and a circle in a non-square box is an ellipse whose angles no longer
+    /// mean what the numbers say -- 3 o'clock would sit off the 3 o'clock position. So the diameter
+    /// is the smaller of the face's derived extent and the field's width, and it is derived rather
+    /// than stored because both terms are already facts the control has.
+    ///
+    /// # Why it does not fit the field's own `rect`
+    ///
+    /// The value's box is the control's whole rectangle (a `time_edit` is a plain field), while the
+    /// popup belongs below the field's *visible* bottom edge. Reading the same `rect` the value does is
+    /// what keeps "below the field" meaning the painted field.
+    fn clock_rect(&self) -> Rect {
+        let field = self.geometry();
+        let diameter = CLOCK_DIAMETER.min(field.width);
+        Rect::new(
+            field.x + (field.width.saturating_sub(diameter)) as i32 / 2,
+            field.y + field.height as i32 + CLOCK_GAP,
+            diameter,
+            diameter,
+        )
+    }
+
+    /// The clock face's centre.
+    fn clock_centre(&self) -> Point {
+        let face = self.clock_rect();
+        Point::new(face.x + face.width as i32 / 2, face.y + face.height as i32 / 2)
+    }
+
+    /// The hand a point falls on, if the clock is open and the point is on one of its two rings.
+    ///
+    /// # Why radius, not angle
+    ///
+    /// The ring is what decides *which* hand is being set, and the angle is what decides the value.
+    /// Splitting them this way is what lets a caller aim at the minute ring without also having to
+    /// hit the exact angle a value would round to -- the value is read from the angle once the ring
+    /// has been chosen.
+    ///
+    /// Returns `None` for the face's centre hole and for anything outside its rim, so a click that is
+    /// not on either ring is not silently taken as one.
+    fn hand_at_point(&self, point: Point) -> Option<ClockHand> {
+        if !self.clock_popup {
+            return None;
+        }
+        let face = self.clock_rect();
+        if !face.contains_point(point) {
+            return None;
+        }
+        let centre = self.clock_centre();
+        let dx = (point.x - centre.x) as f32;
+        let dy = (point.y - centre.y) as f32;
+        let distance = (dx * dx + dy * dy).sqrt();
+        let radius = face.width as f32 / 2.0;
+        // The band each ring owns, as fractions of the radius: the outer ring takes the rim's half and
+        // the inner ring the next band in, leaving a centre hole nothing belongs to -- a clock has a
+        // hub, and a click on it should not set the minute to an arbitrary value.
+        if distance > radius || distance < radius * HOUR_HOLE {
+            return None;
+        }
+        if distance >= radius * MINUTE_RING_INNER {
+            Some(ClockHand::Hour)
+        } else if distance >= radius * HOUR_HOLE {
+            Some(ClockHand::Minute)
+        } else {
+            None
+        }
+    }
+
+    /// The value a point on `hand`'s ring selects.
+    ///
+    /// # The clock convention, stated once
+    ///
+    /// Twelve o'clock is **up** and the angle grows clockwise, so `0/12` is at the top and `3/15` at
+    /// the right -- the same reading a wall clock has. `atan2` gives the mathematical convention
+    /// (zero at the right, counter-clockwise), so the conversion is `+90°` to move the origin to the
+    /// top and a negation to make it run clockwise. Getting either sign wrong yields a face where
+    /// every value lands mirrored or a quarter turn off, which is why the whole conversion is one
+    /// expression rather than a chain of adjustments.
+    fn value_at_point(&self, point: Point, hand: ClockHand) -> Option<u8> {
+        let centre = self.clock_centre();
+        let dx = (point.x - centre.x) as f32;
+        let dy = (point.y - centre.y) as f32;
+        // A click exactly on the hub has no angle; it is not a menu of "every value at once".
+        if dx == 0.0 && dy == 0.0 {
+            return None;
+        }
+        // `atan2(-dy, dx)` already counts counter-clockwise from the right; negating the y is what
+        // makes it clockwise from the top once the quarter turn is added.
+        let clockwise_from_top = dy.atan2(dx);
+        let fraction = match hand {
+            ClockHand::Hour => {
+                // `dy` is positive downward in screen coordinates, so `atan2(dy, dx)` runs clockwise
+                // from the right already; shifting it a quarter turn puts zero at the top.
+                let turns = (clockwise_from_top + std::f32::consts::FRAC_PI_2)
+                    / (2.0 * std::f32::consts::PI);
+                turns.rem_euclid(1.0)
+            }
+            ClockHand::Minute => {
+                let turns = (clockwise_from_top + std::f32::consts::FRAC_PI_2)
+                    / (2.0 * std::f32::consts::PI);
+                turns.rem_euclid(1.0)
+            }
+        };
+        let value = match hand {
+            // The hour ring reads 1..=12 on the face. The face cannot distinguish 09:00 from 21:00,
+            // so **which half** is decided by the field's own hour -- with one exception: the twelve
+            // at the top is noon or midnight on a 24-hour clock and noon on a 12-hour one, so it maps
+            // to 12 for the afternoon half and to 0 for the morning half. Every other numeral maps to
+            // itself within the half, which is what makes clicking the 9 position on a 21:xx time
+            // keep it in the afternoon instead of silently jumping to the morning.
+            ClockHand::Hour => {
+                let face_hour = (fraction * 12.0).round() as u8;
+                let is_pm = self.time.hour() >= 12;
+                match (face_hour % 12, is_pm) {
+                    // 12 on the face: midnight in the morning half, noon in the afternoon half.
+                    (0, false) => 0,
+                    (0, true) => 12,
+                    (h, false) => h,
+                    (h, true) => h + 12,
+                }
+            }
+            // The minute ring reads in five-minute steps: 60 positions on a 40 px rim would be finer
+            // than a pointer can aim, and an exact minute is what the arrow keys are for.
+            ClockHand::Minute => {
+                let step = (fraction * 12.0).round() as u8;
+                (step % 12) * 5
+            }
+        };
+        Some(value)
+    }
+
+    /// Applies the value a click on `hand`'s ring selects, if the point is on that ring.
+    ///
+    /// Returns whether the time changed, so a caller repaints only when something moved. The write
+    /// goes through [`TimeEdit::set_time`], so a value outside `minimum ..= maximum` is rejected there
+    /// rather than being clamped here -- one place decides what is acceptable.
+    fn pick_at(&mut self, point: Point) -> bool {
+        let Some(hand) = self.hand_at_point(point) else {
+            return false;
+        };
+        let Some(value) = self.value_at_point(point, hand) else {
+            return false;
+        };
+        let mut next = self.time;
+        match hand {
+            ClockHand::Hour => next.set_hour(value),
+            ClockHand::Minute => next.set_minute(value),
+        }
+        let before = self.time;
+        self.set_time(next);
+        self.time != before
     }
     /// Returns the inclusive lower bound accepted by [`TimeEdit::set_time`].
     ///
@@ -423,8 +658,52 @@ impl Widget for TimeEdit {
         &mut self.base
     }
 
+    /// The size this control claims when nothing constrains it.
+    ///
+    /// The answer is `max(floor, content + padding)` through [`ControlMetrics::implicit_size`], with the
+    /// content being the **formatted value** measured by the shared estimator and the floor being the
+    /// field's own minimum. It used to be the pair of literals `(100, 28)`, which had no link to the
+    /// advance model the renderer draws with: a value formatted as `"HH:mm:ss"` is wider than 100 at
+    /// the default font, and the hint said nothing about it -- so a caller that trusted the hint got a
+    /// field whose text was fitted away.
+    ///
+    /// The height comes from the same `TEXT_FIELD_MIN_HEIGHT` the field's own band uses, so the number
+    /// reported and the number drawn cannot disagree.
     fn size_hint(&self) -> Size {
-        crate::core::Size::new(100, 28)
+        let font = crate::core::Font::default();
+        let line_height = crate::widget::metrics::estimate_line_height(&font, 1.0);
+        // The widest value this format can produce, not the *current* one: a hint that shrank when the
+        // time happened to be `01:01:01` would make the field jump as the user stepped through values.
+        let sample = super::date_edit::format_with_pattern(
+            &self.display_format,
+            super::date_edit::DateTimeComponents {
+                hour: Some(23),
+                minute: Some(59),
+                second: Some(59),
+                millisecond: Some(999),
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|| Time::new(23, 59, 59, 999).to_string());
+        let content = crate::widget::metrics::estimate_text_width(&sample, &font, 1.0);
+        // The field's vertical padding is what is left of its height once a line is accounted for, so it
+        // is *derived* rather than a second constant: the crate names one horizontal text-field inset
+        // and states no vertical one, because `TEXT_FIELD_MIN_HEIGHT` is the fact that fixes that axis.
+        let vertical_padding = dimensions::TEXT_FIELD_MIN_HEIGHT.saturating_sub(line_height) / 2;
+        let padding = crate::style::EdgeOffsets::symmetric(
+            vertical_padding,
+            dimensions::TEXT_FIELD_PADDING_H,
+        );
+        let floor = Size::new(
+            dimensions::TEXT_FIELD_PADDING_H * 2 + dimensions::BUTTON_ICON_SIZE,
+            dimensions::TEXT_FIELD_MIN_HEIGHT,
+        );
+        let hint = crate::widget::metrics::ControlMetrics::implicit_size(
+            Size::new(content, line_height),
+            padding,
+            floor,
+        );
+        Size::new(hint.width, hint.height.max(line_height))
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -442,6 +721,7 @@ impl WidgetProperties for TimeEdit {
             "minimum_time" => Ok(CapabilityValue::String(time_to_string(self.minimum_time()))),
             "maximum_time" => Ok(CapabilityValue::String(time_to_string(self.maximum_time()))),
             "display_format" => Ok(CapabilityValue::String(self.display_format().to_string())),
+            "clock_popup" => Ok(CapabilityValue::Bool(self.clock_popup())),
             _ => base_property_get(self, name),
         }
     }
@@ -464,6 +744,10 @@ impl WidgetProperties for TimeEdit {
                 self.set_display_format(expect_string(value)?);
                 Ok(())
             }
+            "clock_popup" => {
+                self.set_clock_popup(expect_bool(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -474,29 +758,95 @@ impl WidgetProperties for TimeEdit {
             "minimum_time",
             "maximum_time",
             "display_format",
+            "clock_popup",
             BASE_PROPERTY_NAMES
         ]
     }
 }
 
 impl EventHandler for TimeEdit {
+    /// The clock's pointer interaction, then the field's keyboard one.
+    ///
+    /// # Why the pointer path needed adding at all
+    ///
+    /// The widget had `step_up`/`step_down` from the day it was written, so a keyboard user could walk
+    /// a time one second at a time -- and that was the **only** way in. Reaching 14:30 from midnight was
+    /// fifty-two thousand key presses. The clock face is the pointer's way in, and the two paths write
+    /// through the same [`TimeEdit::set_time`], so neither can accept a value the other rejects.
+    ///
+    /// The routing order is: the face first (it is drawn below the field, so a press inside its box
+    /// belongs to it), then the field, then the keyboard. A press on the field toggles the face, which
+    /// is the same thing `combobox`'s field does and for the same reason: a picker that cannot be
+    /// opened by clicking the thing that shows its value is not a picker.
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         if !self.base.is_enabled() {
             return;
         }
-        if let Event::KeyPress { key, modifiers } = event {
-            match *key {
+        match event {
+            Event::MousePress { pos, button } if *button == 1 => {
+                if self.clock_popup {
+                    // A press on a ring sets that hand's value and leaves the face open: a clock is a
+                    // two-part answer (hour *and* minute), so closing after the first would make the
+                    // second unreachable without re-opening.
+                    if self.pick_at(*pos) {
+                        return;
+                    }
+                    // A press on the face that is **not** on a ring is a miss, and a miss must not
+                    // throw away the hour the user just set: it is absorbed and the face stays open.
+                    // Closing on a miss would mean a click a few pixels off the rim discarded the
+                    // edit *and* dismissed the picker -- two losses from one near miss.
+                    if self.clock_rect().contains_point(*pos) {
+                        return;
+                    }
+                }
+                if self.geometry().contains_point(*pos) {
+                    self.toggle_clock_popup();
+                } else if self.clock_popup {
+                    // A press outside both dismisses the face, which is what a popup owes its user.
+                    self.set_clock_popup(false);
+                }
+            }
+            // The ring under the pointer is highlighted, derived from the same `hand_at_point` a click
+            // resolves through, so the ring the user sees emphasised is the ring a click would move.
+            Event::MouseMove { pos } => {
+                if self.clock_popup {
+                    let hovered = self.hand_at_point(*pos);
+                    if hovered != self.hovered_hand {
+                        self.hovered_hand = hovered;
+                        self.base.request_redraw();
+                    }
+                }
+            }
+            #[cfg(feature = "touch")]
+            Event::Tap { pos } => {
+                if self.clock_popup && self.pick_at(*pos) {
+                    return;
+                }
+                if self.geometry().contains_point(*pos) {
+                    self.toggle_clock_popup();
+                } else if self.clock_popup {
+                    self.set_clock_popup(false);
+                }
+            }
+            Event::KeyPress { key, modifiers } => match *key {
                 90 if *modifiers == 2 => {
                     let _ = self.undo();
                 }
                 89 if *modifiers == 2 => {
                     let _ = self.redo();
                 }
+                // Enter and Space open the face from the keyboard, so the picker is reachable without a
+                // pointer -- the same pair `combobox` uses.
+                13 | 32 if !self.clock_popup => self.set_clock_popup(true),
+                // Escape closes it without changing anything, which is the one way out that leaves the
+                // value alone.
+                27 if self.clock_popup => self.set_clock_popup(false),
                 38 => self.step_up(),
                 40 => self.step_down(),
                 _ => { /* Other keys are not relevant */ }
-            }
+            },
+            _ => { /* Other events are not relevant */ }
         }
     }
 }
@@ -549,7 +899,13 @@ impl Draw for TimeEdit {
             .filter(|resolved| *resolved != surface)
             .unwrap_or_else(|| surface.blend(&ink, 0.35));
 
-        context.fill_rect(rect, surface);
+        context.face(
+            rect,
+            surface,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         context.draw_rect(rect, border);
         let text = super::date_edit::format_with_pattern(
             &self.display_format,
@@ -580,6 +936,133 @@ impl Draw for TimeEdit {
             ink,
             HorizontalAlignment::Left,
         );
+
+        if self.clock_popup {
+            self.draw_clock_face(context, surface, border, ink);
+        }
+    }
+}
+
+impl TimeEdit {
+    /// Paints the clock face under the field: two rings of numerals and the two hands.
+    ///
+    /// # Why it is drawn rather than held as a child widget
+    ///
+    /// The face is a **function of the field's own state**: the hour hand's angle comes from
+    /// `self.time`, the muted numerals from `self.minimum`/`self.maximum`, and the highlighted ring
+    /// from `self.hovered_hand`. A child widget would have to be kept in step with all three on every
+    /// mutation, which is three places to forget -- and the flag is published as a boolean, so there is
+    /// nothing for a caller to hold anyway. This is the same shape `date_edit`'s calendar uses for the
+    /// same reason.
+    ///
+    /// # The rings
+    ///
+    /// Twelve numerals on the outer ring are the hours 1..=12, and twelve on the inner ring are the
+    /// minutes in five-minute steps. The rings are *not* labelled with their values: the face is a
+    /// clock, and a clock's ring positions are what a reader already knows.
+    fn draw_clock_face(
+        &self,
+        context: &mut RenderContext,
+        surface: Color,
+        border: Color,
+        ink: Color,
+    ) {
+        let face = self.clock_rect();
+        if face.width < CLOCK_DIAMETER / 2 {
+            // Too small to read: a shrunken clock is worse than none, because its numerals overlap
+            // into a ring of noise that still looks like a control.
+            return;
+        }
+        // The face gets its own plate and edge, because a bare ring of numerals over the page is
+        // indistinguishable from a table that happens to be there. It is the *field's* surface one
+        // step away from the field, so the two read as one control opening rather than two.
+        let plate = surface.blend(&ink, 0.10);
+        context.fill_rect(face, plate);
+        context.draw_rect(face, border);
+
+        let centre = self.clock_centre();
+        let radius = face.width as f32 / 2.0;
+        let font = Font::default();
+        let muted = plate.blend(&ink, 0.45);
+        // The rims, so the two rings' extents are visible rather than only implied by where the
+        // numerals happen to land.
+        context.draw_circle(centre, (radius * MINUTE_RING_INNER) as u32, border);
+        context.draw_circle(centre, (radius * HOUR_HOLE) as u32, border);
+
+        for step in 0..12 {
+            // Clock convention: twelve at the top, growing clockwise. `step` counts from the top, so
+            // the sine term is the horizontal offset and the cosine term is the vertical one.
+            let angle = step as f32 / 12.0 * 2.0 * std::f32::consts::PI;
+            let (sin, cos) = angle.sin_cos();
+            // Hours: 1..=12 rather than 0..=11, because a clock face has no zero.
+            let hour = if step == 0 { 12 } else { step };
+            self.draw_clock_numerals(
+                context,
+                centre,
+                radius * 0.82,
+                sin,
+                cos,
+                &hour.to_string(),
+                if self.hovered_hand == Some(ClockHand::Hour) { ink } else { muted },
+                &font,
+            );
+            // Minutes: in five-minute steps, which is what the minute ring selects.
+            let minute = step * 5;
+            self.draw_clock_numerals(
+                context,
+                centre,
+                radius * 0.42,
+                sin,
+                cos,
+                &format!("{minute:02}"),
+                if self.hovered_hand == Some(ClockHand::Minute) { ink } else { muted },
+                &font,
+            );
+        }
+
+        // The two hands, drawn from the centre outward. The hour hand is shorter, as on a real clock,
+        // so which ring a value came from is readable from the picture.
+        let hour_angle = (self.time.hour() % 12) as f32 / 12.0 * 2.0 * std::f32::consts::PI;
+        let (hour_sin, hour_cos) = hour_angle.sin_cos();
+        context.draw_line(
+            centre,
+            Point::new(
+                centre.x + (hour_sin * radius * 0.55) as i32,
+                centre.y - (hour_cos * radius * 0.55) as i32,
+            ),
+            ink,
+        );
+        let minute_angle = self.time.minute() as f32 / 60.0 * 2.0 * std::f32::consts::PI;
+        let (minute_sin, minute_cos) = minute_angle.sin_cos();
+        context.draw_line(
+            centre,
+            Point::new(
+                centre.x + (minute_sin * radius * 0.78) as i32,
+                centre.y - (minute_cos * radius * 0.78) as i32,
+            ),
+            ink,
+        );
+    }
+
+    /// Draws one ring position's numeral, centred on the point at `distance` along `(sin, cos)`.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_clock_numerals(
+        &self,
+        context: &mut RenderContext,
+        centre: Point,
+        distance: f32,
+        sin: f32,
+        cos: f32,
+        label: &str,
+        color: Color,
+        font: &Font,
+    ) {
+        let metrics = context.measure_text(label, font);
+        // Centred on the ring position rather than started there: a numeral is read as a mark at a
+        // position, so starting every label at its position would push the wider ones off the ring.
+        let x = centre.x + (sin * distance) as i32 - metrics.width as i32 / 2;
+        let y = centre.y - (cos * distance) as i32 - metrics.height as i32 / 2;
+        context.draw_text(Point::new(x, y), label, font, color, HorizontalAlignment::Left);
     }
 }
 
@@ -1003,5 +1486,216 @@ mod tests {
         // Try setting above maximum
         editor.set_time(Time::new(18, 0, 0, 0));
         assert_eq!(editor.time(), within); // unchanged
+    }
+
+    // ── The clock popup, and the pointer path it adds ──
+
+    /// `clock_popup` is not a stored flag: it changes the picture, and the picture is a clock.
+    ///
+    /// # What was dead, and what proves it is alive now
+    ///
+    /// This is the defect `date_edit`'s `calendar_popup` had, one control over. A `time_edit` is a
+    /// picker by name only if there is something to pick with: the widget had `step_up`/`step_down`
+    /// (so a keyboard user could walk a time one second at a time), and **that was the only way in**.
+    /// Reaching 14:30 from midnight was fifty-two thousand key presses, and no pointer affordance
+    /// existed at all.
+    ///
+    /// The assertion reads the **document**, not the flag: the face must add ink, and it must add the
+    /// *ring positions* -- a bare plate would satisfy "the documents differ".
+    #[test]
+    fn the_clock_popup_is_actually_painted() {
+        use crate::widget::svg::{render_to_svg, text_subpath_count};
+        let _theme_guard = crate::style::theme_test_guard();
+
+        let make = |popup: bool| {
+            let mut editor = TimeEdit::new(Rect::new(0, 0, 200, 30));
+            editor.set_time(Time::new(14, 30, 0, 0));
+            editor.set_clock_popup(popup);
+            editor
+        };
+
+        let closed_svg = render_to_svg(&mut make(false));
+        let open_svg = render_to_svg(&mut make(true));
+        assert_ne!(closed_svg, open_svg, "opening the clock must change the picture");
+
+        // Twelve hour numerals plus twelve minute numerals is twenty-four runs; the field alone
+        // contributes one (`14:30:00`). The face's own rims and hands are paths, not text. Measured:
+        // closed=194, open=1225 -- so the face roughly quadruples the document's glyph ink, and the
+        // floor is set below that rather than at a number chosen to match.
+        let closed_ink = text_subpath_count(&closed_svg);
+        let open_ink = text_subpath_count(&open_svg);
+        assert!(
+            open_ink > closed_ink * 4,
+            "the clock must paint both rings of numerals: closed={closed_ink} open={open_ink}"
+        );
+        // And it paints its own plate, which is what makes it legible over whatever is behind it.
+        assert!(
+            open_svg.matches("<rect").count() > closed_svg.matches("<rect").count(),
+            "the clock paints its own plate"
+        );
+        // A clock too small to read draws no face at all: a shrunken ring of overlapping numerals
+        // is worse than nothing, because it still looks like a control. The two renders come from the
+        // *same* field size, so the only difference between them is the flag.
+        let tiny_open = {
+            let mut t = TimeEdit::new(Rect::new(0, 0, 40, 30));
+            t.set_clock_popup(true);
+            render_to_svg(&mut t)
+        };
+        let tiny_closed = {
+            let mut t = TimeEdit::new(Rect::new(0, 0, 40, 30));
+            t.set_clock_popup(false);
+            render_to_svg(&mut t)
+        };
+        assert_eq!(
+            tiny_closed, tiny_open,
+            "a face below the readable floor draws nothing rather than a smear"
+        );
+    }
+
+    /// A click on a ring sets that hand's value, and the two rings address different fields.
+    #[test]
+    fn clicking_a_ring_sets_the_hand_it_belongs_to() {
+        use crate::core::Point;
+        use crate::event::{Event, EventHandler};
+
+        let mut editor = TimeEdit::new(Rect::new(0, 0, 200, 30));
+        editor.set_clock_popup(true);
+        let centre = editor.clock_centre();
+        let radius = editor.clock_rect().width as f32 / 2.0;
+
+        // Three o'clock is 90 degrees clockwise from the top, i.e. straight right of the centre.
+        // On the **hour** ring that must read 3 -- and, because the current hour is in the morning,
+        // it must read the *morning* 3, not 15.
+        editor.set_time(Time::new(9, 0, 0, 0));
+        let hour_point = Point::new(centre.x + (radius * 0.82) as i32, centre.y);
+        assert_eq!(
+            editor.hand_at_point(hour_point),
+            Some(ClockHand::Hour),
+            "the outer ring is the hour"
+        );
+        editor.handle_event(&Event::MousePress { pos: hour_point, button: 1 });
+        assert_eq!(editor.time().hour(), 3, "three o'clock on the hour ring");
+        assert_eq!(editor.time().minute(), 0, "and the minute is untouched");
+
+        // The same angle on the **minute** ring reads fifteen, and the hour is untouched.
+        let minute_point = Point::new(centre.x + (radius * 0.45) as i32, centre.y);
+        assert_eq!(
+            editor.hand_at_point(minute_point),
+            Some(ClockHand::Minute),
+            "the inner ring is the minute"
+        );
+        editor.handle_event(&Event::MousePress { pos: minute_point, button: 1 });
+        assert_eq!(editor.time().minute(), 15, "three o'clock on the minute ring is :15");
+        assert_eq!(editor.time().hour(), 3, "and the hour is untouched");
+
+        // An afternoon hour keeps its half: clicking 9 on the face of a 21:xx time must not jump to
+        // the morning, because the face cannot say which half it means and the field already knows.
+        editor.set_time(Time::new(21, 30, 0, 0));
+        let nine_point = Point::new(centre.x + (radius * 0.82) as i32, centre.y);
+        editor.handle_event(&Event::MousePress { pos: nine_point, button: 1 });
+        assert_eq!(editor.time().hour(), 15, "the afternoon half is preserved");
+
+        // The hub belongs to no ring: a click there must not silently pick a value.
+        assert_eq!(editor.hand_at_point(centre), None, "the hub is not a ring");
+        // Nor does a point outside the rim.
+        let outside = Point::new(centre.x + (radius * 2.0) as i32, centre.y);
+        assert_eq!(editor.hand_at_point(outside), None, "outside the rim is no ring");
+        // And a click on the plate between ring positions is not a value either, which is what keeps
+        // "never mind" from being the same gesture as "set the hour".
+        let before = editor.time();
+        editor.handle_event(&Event::MousePress { pos: centre, button: 1 });
+        assert_eq!(editor.time(), before, "a click on the hub changes nothing");
+    }
+
+    /// Clicking the field toggles the face; Escape closes it without committing.
+    #[test]
+    fn the_field_opens_the_clock_and_escape_closes_it() {
+        use crate::event::{Event, EventHandler};
+
+        let mut editor = TimeEdit::new(Rect::new(0, 0, 200, 30));
+        assert!(!editor.clock_popup(), "a fresh field shows no face");
+
+        let field_point = crate::core::Point::new(80, editor.geometry().y + 10);
+        editor.handle_event(&Event::MousePress { pos: field_point, button: 1 });
+        assert!(editor.clock_popup(), "a press on the field opens the face");
+
+        editor.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
+        assert!(!editor.clock_popup(), "escape closes it");
+
+        // The keyboard can open it too, so the picker is reachable without a pointer.
+        editor.handle_event(&Event::KeyPress { key: 13, modifiers: 0 });
+        assert!(editor.clock_popup(), "enter opens the face");
+
+        // A press outside both dismisses it, which is what a popup owes its user.
+        editor.handle_event(&Event::MousePress {
+            pos: crate::core::Point::new(9000, 9000),
+            button: 1,
+        });
+        assert!(!editor.clock_popup(), "a press outside dismisses the face");
+    }
+
+    /// A value the range rejects is rejected through the clock too, not clamped by it.
+    #[test]
+    fn the_clock_cannot_set_a_time_the_range_forbids() {
+        use crate::core::Point;
+        use crate::event::{Event, EventHandler};
+
+        let mut editor = TimeEdit::new(Rect::new(0, 0, 200, 30));
+        editor.set_clock_popup(true);
+        // A range that stops at 09:10, and a time at 09:05: clicking the :30 position would produce
+        // 09:30, which is outside it. The refusal has to come from `set_time` -- one place decides what
+        // is acceptable -- rather than from the face silently clamping to 09:10.
+        editor.set_time_range(Time::new(9, 0, 0, 0), Time::new(9, 10, 0, 0));
+        editor.set_time(Time::new(9, 5, 0, 0));
+
+        let centre = editor.clock_centre();
+        let radius = editor.clock_rect().width as f32 / 2.0;
+        // The :30 position on the inner ring is straight down from the centre; the point is placed at
+        // the middle of the ring's own band, so it is squarely on the ring.
+        let minute_radius = radius * (HOUR_HOLE + MINUTE_RING_INNER) / 2.0;
+        let half_past = Point::new(centre.x, centre.y + minute_radius as i32);
+        assert_eq!(
+            editor.hand_at_point(half_past),
+            Some(ClockHand::Minute),
+            "the fixture must aim at the minute ring, or the assertion below proves nothing"
+        );
+        editor.handle_event(&Event::MousePress { pos: half_past, button: 1 });
+        assert_eq!(
+            editor.time().minute(),
+            5,
+            "a ring click that would leave the range is refused, not clamped"
+        );
+
+        // And a value *inside* the same range is accepted, so the refusal above is about the range and
+        // not about the face being inert. The minute ring's steps are five minutes apart, so :05 is the
+        // step 30 degrees clockwise from the top. The point is placed at the *middle* of the minute
+        // ring's own band, not at a fraction of its outer edge, so it is squarely on the ring rather
+        // than on the hub boundary.
+        let minute_radius = radius * (HOUR_HOLE + MINUTE_RING_INNER) / 2.0;
+        let five_past = Point::new(
+            centre.x + (minute_radius * 0.5) as i32,
+            centre.y - (minute_radius * 0.866) as i32,
+        );
+        assert_eq!(
+            editor.hand_at_point(five_past),
+            Some(ClockHand::Minute),
+            "the fixture must aim at the minute ring"
+        );
+        editor.handle_event(&Event::MousePress { pos: five_past, button: 1 });
+        assert_eq!(
+            editor.time().minute(),
+            5,
+            "the :05 position is inside the range, so it is accepted"
+        );
+
+        // A step the range forbids is refused, leaving the accepted value in place -- the two clicks
+        // differ only in the value they select, so the range is what decided.
+        let quarter = Point::new(centre.x + minute_radius as i32, centre.y);
+        editor.handle_event(&Event::MousePress { pos: quarter, button: 1 });
+        assert_eq!(
+            editor.time().minute(),
+            5,
+            "the :15 position is past the range's :10, so it is refused"
+        );
     }
 }

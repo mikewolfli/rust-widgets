@@ -519,7 +519,14 @@ impl Draw for EmojiPicker {
         // the glyph cells are content (the caller's symbols), and those are drawn in the
         // resolved ink rather than a fixed colour.
         let (panel, ink, border, field, strip) = self.chrome_colors();
-        context.fill_rect(rect, panel);
+        let style = self.base.style();
+        context.face(
+            rect,
+            panel,
+            style.surface.unwrap_or_default(),
+            style.border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         context.draw_rect(rect, border);
         self.draw_search(context, field, ink);
         self.draw_tabs(context, strip, ink, panel);
@@ -607,7 +614,13 @@ impl EmojiPicker {
     fn draw_tabs(&self, context: &mut RenderContext, strip_bg: Color, ink: Color, panel: Color) {
         let rect = self.geometry();
         let strip = Rect::new(rect.x, rect.y + SEARCH_HEIGHT as i32, rect.width, TAB_HEIGHT);
-        context.fill_rect(strip, strip_bg);
+        context.face(
+            strip,
+            strip_bg,
+            self.base.style().surface.unwrap_or_default(),
+            self.base.style().border_radius.unwrap_or(0),
+            crate::core::Color::BLACK,
+        );
         let tabs = self.tabs();
         for (index, tab) in tabs.iter().enumerate() {
             let tab_rect = Rect::new(

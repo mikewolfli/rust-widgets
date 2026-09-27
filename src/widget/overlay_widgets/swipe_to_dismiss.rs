@@ -620,11 +620,20 @@ mod tests {
     ///
     /// # Why the minimum of every subpath, and not the first one
     ///
-    /// A glyph run is emitted as one `<path>` holding an axis-aligned subpath per ink bit, so the
-    /// row's ink is the union of all of them and its left edge is the least `M`-origin in the
-    /// document. Taking the *first* origin (the first draft of this helper) read `0` for a seated
-    /// row and a larger number once it moved — because the first subpath is not the leftmost once
-    /// the run is offset. The minimum is stable under that and is exactly "where the row is".
+    /// A glyph run is emitted as one `<path>` holding one subpath per ink region, so the row's ink
+    /// is the union of all of them and its left edge is the least `M`-origin in the document. Taking
+    /// the *first* origin (the first draft of this helper) read `0` for a seated row and a larger
+    /// number once it moved — because the first subpath is not the leftmost once the run is offset.
+    /// The minimum is stable under that and is exactly "where the row is".
+    ///
+    /// # Why the origin is read as a float
+    ///
+    /// The bitmap face writes whole-pixel origins (`M8 8h...`), but an **outline** face writes
+    /// fractional ones (`M18.30 59.24L...`) because sub-pixel precision is the point of an outline.
+    /// The first form parsed the origin as an `i32`, so every outline origin failed to parse, the
+    /// minimum stayed empty, and the caller got the "nothing painted" sentinel for a row that was
+    /// plainly on screen — the `x=-2147483648` the test reported. Reading a float and truncating
+    /// keeps the integer comparison the caller wants while accepting both spellings.
     ///
     /// Reading the drawing rather than `swipe_offset` is what makes the frame assertions properties
     /// of the picture: a mutation that stopped *using* the transition in `draw` would leave a
@@ -634,13 +643,15 @@ mod tests {
         let svg = crate::widget::svg::render_widget_to_svg(sw, rect);
         let mut leftmost: Option<i32> = None;
         let mut rest = svg.as_str();
-        while let Some(i) = rest.find("M") {
+        while let Some(i) = rest.find('M') {
             let window = &rest[i + 1..];
-            // A subpath origin is `M<int> ` — the following character must be a digit or `-`, which
-            // excludes the `M`s inside attribute names and the `xmlns` URI.
-            if window.starts_with(|c: char| c.is_ascii_digit() || c == '-') {
+            // A subpath origin is `M<x> <y>` — the following character must be a digit, `-` or `.`,
+            // which excludes the `M`s inside attribute names and the `xmlns` URI. A leading `.` is
+            // possible for an origin that rounds to a value below one, so it is accepted too.
+            if window.starts_with(|c: char| c.is_ascii_digit() || c == '-' || c == '.') {
                 let end = window.find(' ').unwrap_or(window.len());
-                if let Ok(x) = window[..end].trim().parse::<i32>() {
+                if let Ok(x) = window[..end].trim().parse::<f32>() {
+                    let x = x.floor() as i32;
                     leftmost = Some(leftmost.map_or(x, |l: i32| l.min(x)));
                 }
             }

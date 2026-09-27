@@ -471,7 +471,13 @@ impl Draw for ChartWidget {
             .or_else(|| crate::style::resolved_theme_style("chart").and_then(|t| t.border_color))
             .unwrap_or_else(|| surface.blend(&ink, 0.2));
         // Draw chart background
-        context.fill_rect(rect, surface);
+        context.face(
+            rect,
+            surface,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         // Draw border to make chart area visible
         context.draw_rect(rect, border);
 

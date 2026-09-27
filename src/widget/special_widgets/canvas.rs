@@ -264,7 +264,13 @@ impl Draw for Canvas {
             .unwrap_or_else(|| background.blend(&Color::BLACK, 0.2));
 
         // Draw canvas background
-        context.fill_rect(rect, background);
+        context.face(
+            rect,
+            background,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         // Replay all stored commands
         for cmd in &self.commands {
             context.execute_command(cmd.clone());

@@ -427,7 +427,13 @@ impl Draw for WizardDialog {
             .unwrap_or(Color::rgb(52, 199, 89));
 
         // Background
-        context.fill_rect(rect, surface);
+        context.face(
+            rect,
+            surface,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
 
         // The wizard's chrome needs 98 px before any content exists: the 50 px step
         // indicator, the 48 px navigation band and a separator. A shorter control used to

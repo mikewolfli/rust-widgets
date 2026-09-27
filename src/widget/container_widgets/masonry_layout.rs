@@ -195,7 +195,13 @@ impl Draw for MasonryLayout {
 
         // The panel is drawn first so an empty layout still shows where the control is
         // rather than being indistinguishable from the frame behind it.
-        context.fill_rect(rect, container_bg);
+        context.face(
+            rect,
+            container_bg,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
 
         // A masonry column runs as tall as its items make it, so a list longer than the control
         // would paint cards past the bottom edge — and nothing clips a widget at this layer, so

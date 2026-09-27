@@ -228,7 +228,13 @@ impl Draw for ColorHistory {
         } else {
             background
         };
-        context.fill_rect(rect, background);
+        context.face(
+            rect,
+            background,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
 
         // A history with nothing recorded still gets a placeholder swatch row, so the
         // control has a body the user can see. Without it the constructor's empty

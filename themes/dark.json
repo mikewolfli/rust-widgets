@@ -199,23 +199,9 @@
     "radius": 4,
     "shadow": true
   },
+  "flat_surfaces": true,
   "overrides": {
     "styles": {
-      "button": {
-        "background": null,
-        "foreground": null,
-        "border": null,
-        "border_width": null,
-        "radius": null,
-        "font": null,
-        "opacity": null,
-        "shadow": "Inherit",
-        "touch_target": null,
-        "elevation": null,
-        "bevel": "none",
-        "material": null,
-        "hairline": null
-      },
       "button:disabled": {
         "background": {
           "r": 80,
@@ -331,21 +317,6 @@
         "material": null,
         "hairline": null
       },
-      "combo_box": {
-        "background": null,
-        "foreground": null,
-        "border": null,
-        "border_width": null,
-        "radius": null,
-        "font": null,
-        "opacity": null,
-        "shadow": "Inherit",
-        "touch_target": null,
-        "elevation": null,
-        "bevel": "none",
-        "material": null,
-        "hairline": null
-      },
       "combo_box:error": {
         "background": null,
         "foreground": null,
@@ -363,21 +334,6 @@
         "touch_target": null,
         "elevation": null,
         "bevel": "inherit",
-        "material": null,
-        "hairline": null
-      },
-      "combo_box_edit": {
-        "background": null,
-        "foreground": null,
-        "border": null,
-        "border_width": null,
-        "radius": null,
-        "font": null,
-        "opacity": null,
-        "shadow": "Inherit",
-        "touch_target": null,
-        "elevation": null,
-        "bevel": "none",
         "material": null,
         "hairline": null
       },
@@ -421,21 +377,6 @@
         "material": null,
         "hairline": null
       },
-      "editable_combo_box": {
-        "background": null,
-        "foreground": null,
-        "border": null,
-        "border_width": null,
-        "radius": null,
-        "font": null,
-        "opacity": null,
-        "shadow": "Inherit",
-        "touch_target": null,
-        "elevation": null,
-        "bevel": "none",
-        "material": null,
-        "hairline": null
-      },
       "editable_combo_box:error": {
         "background": null,
         "foreground": null,
@@ -453,21 +394,6 @@
         "touch_target": null,
         "elevation": null,
         "bevel": "inherit",
-        "material": null,
-        "hairline": null
-      },
-      "line_edit": {
-        "background": null,
-        "foreground": null,
-        "border": null,
-        "border_width": null,
-        "radius": null,
-        "font": null,
-        "opacity": null,
-        "shadow": "Inherit",
-        "touch_target": null,
-        "elevation": null,
-        "bevel": "none",
         "material": null,
         "hairline": null
       },
@@ -511,21 +437,6 @@
         "material": null,
         "hairline": null
       },
-      "push_button": {
-        "background": null,
-        "foreground": null,
-        "border": null,
-        "border_width": null,
-        "radius": null,
-        "font": null,
-        "opacity": null,
-        "shadow": "Inherit",
-        "touch_target": null,
-        "elevation": null,
-        "bevel": "none",
-        "material": null,
-        "hairline": null
-      },
       "radio_button:checked": {
         "background": {
           "r": 100,
@@ -548,21 +459,6 @@
         "touch_target": null,
         "elevation": null,
         "bevel": "inherit",
-        "material": null,
-        "hairline": null
-      },
-      "spin_box": {
-        "background": null,
-        "foreground": null,
-        "border": null,
-        "border_width": null,
-        "radius": null,
-        "font": null,
-        "opacity": null,
-        "shadow": "Inherit",
-        "touch_target": null,
-        "elevation": null,
-        "bevel": "none",
         "material": null,
         "hairline": null
       },
@@ -676,21 +572,6 @@
         "material": null,
         "hairline": null
       },
-      "text_area": {
-        "background": null,
-        "foreground": null,
-        "border": null,
-        "border_width": null,
-        "radius": null,
-        "font": null,
-        "opacity": null,
-        "shadow": "Inherit",
-        "touch_target": null,
-        "elevation": null,
-        "bevel": "none",
-        "material": null,
-        "hairline": null
-      },
       "text_area:error": {
         "background": null,
         "foreground": null,
@@ -708,21 +589,6 @@
         "touch_target": null,
         "elevation": null,
         "bevel": "inherit",
-        "material": null,
-        "hairline": null
-      },
-      "text_edit": {
-        "background": null,
-        "foreground": null,
-        "border": null,
-        "border_width": null,
-        "radius": null,
-        "font": null,
-        "opacity": null,
-        "shadow": "Inherit",
-        "touch_target": null,
-        "elevation": null,
-        "bevel": "none",
         "material": null,
         "hairline": null
       },
@@ -763,21 +629,6 @@
         "touch_target": null,
         "elevation": null,
         "bevel": "inherit",
-        "material": null,
-        "hairline": null
-      },
-      "toggle_button": {
-        "background": null,
-        "foreground": null,
-        "border": null,
-        "border_width": null,
-        "radius": null,
-        "font": null,
-        "opacity": null,
-        "shadow": "Inherit",
-        "touch_target": null,
-        "elevation": null,
-        "bevel": "none",
         "material": null,
         "hairline": null
       },
@@ -843,21 +694,6 @@
         "touch_target": null,
         "elevation": null,
         "bevel": "inherit",
-        "material": null,
-        "hairline": null
-      },
-      "tool_button": {
-        "background": null,
-        "foreground": null,
-        "border": null,
-        "border_width": null,
-        "radius": null,
-        "font": null,
-        "opacity": null,
-        "shadow": "Inherit",
-        "touch_target": null,
-        "elevation": null,
-        "bevel": "none",
         "material": null,
         "hairline": null
       },

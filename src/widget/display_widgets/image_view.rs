@@ -167,7 +167,13 @@ impl Draw for ImageView {
                 .background_color
                 .or(self.background)
                 .unwrap_or(Color::rgb(240, 240, 240));
-            context.fill_rect(rect, bg);
+            context.face(
+                rect,
+                bg,
+                self.style().surface.unwrap_or_default(),
+                self.style().border_radius.unwrap_or(0),
+                Color::BLACK,
+            );
 
             // Draw a border to make the placeholder visible.
             let border = self.style().border_color.unwrap_or(Color::rgb(200, 200, 200));

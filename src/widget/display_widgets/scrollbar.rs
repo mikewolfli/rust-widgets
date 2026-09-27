@@ -799,7 +799,13 @@ impl Draw for ScrollBar {
         let slider_border_color = faded(slider_border_color);
         let arrow_color = faded(arrow_color);
         // Draw background (the trough)
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), trough);
+        context.face(
+            Rect::new(rect.x, rect.y, rect.width, rect.height),
+            trough,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         // Draw border
         context.draw_rect(
             Rect::new(rect.x, rect.y, rect.width, rect.height),

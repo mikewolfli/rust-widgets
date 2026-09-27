@@ -1040,6 +1040,29 @@ pub struct FrameStats {
     /// repainted, which is why "no anonymous repaint" (BLUE24 §8 criterion 4) is a statement
     /// about this list being complete rather than about it being non-empty.
     pub last_repaint_reason: alloc::vec::Vec<(ObjectId, RepaintReason)>,
+    /// Image decodes the frame avoided, by sharing a decode an earlier frame already did.
+    ///
+    /// # Why an image decode belongs in a frame's account
+    ///
+    /// A decode is the most expensive thing a control can do inside `draw` — a full PNG inflate, or
+    /// a JPEG pass, on the thread that is supposed to be presenting. "This frame was slow" is not
+    /// answerable without knowing whether it decoded a photograph, and "is the cache helping" is not
+    /// answerable without knowing whether the decodes went away. Both are one number.
+    ///
+    /// # These are deltas, and the counters they come from are cumulative
+    ///
+    /// [`crate::image::cache::stats`] is process-wide and monotonic, because it answers "what has
+    /// this process saved". A frame reports its own share: the difference between the two readings
+    /// taken around the frame's work. `decode_hits + decode_misses <= decode_requests` holds within a
+    /// frame; across the process the counters balance exactly.
+    ///
+    /// A build without the `image` feature reports zeros rather than omitting the fields, so a host
+    /// that reads them does not have to be compiled differently to do it.
+    pub decode_requests: u64,
+    /// Decode requests answered without decoding.
+    pub decode_hits: u64,
+    /// Decode requests that had to decode — the ones that cost this frame real time.
+    pub decode_misses: u64,
 }
 
 /// Performs every library-side task of one frame, in a fixed order, exactly once.
@@ -1090,6 +1113,10 @@ pub struct FrameStats {
 /// host sleeps until the next event. That property is what lets the loop run at the
 /// display's rate while the window is still, and it is asserted by this module's tests.
 pub fn drive_frame(delta_ms: u32) -> FrameOutcome {
+    // The decode counters, read before anything else in the frame so this frame's share is exactly
+    // the work done between here and the reading below -- and not whatever a previous frame left.
+    let decodes_before = crate::image::cache::stats();
+
     // Step 0 -- the device facts, so every control in this frame sees one set of them.
     crate::style::environment::refresh_environment();
 
@@ -1112,6 +1139,18 @@ pub fn drive_frame(delta_ms: u32) -> FrameOutcome {
     let last_repaint_reason = take_frame_repaint_reasons();
     let index = FRAME_INDEX.try_with(|frame| frame.replace(frame.get() + 1)).unwrap_or(0);
 
+    // This frame's share of the process-wide decode accounting. A delta rather than the totals,
+    // because the question a frame ledger answers is about *this* frame; see `FrameStats`.
+    //
+    // Read **after** the draw work rather than with the repaint numbers above, because a decode
+    // happens inside `draw` and the whole point is to account for it. (The repaint counts are taken
+    // before painting for the opposite reason: they report what the *input* steps invalidated, and a
+    // submission made while painting belongs to the frame that will paint it.)
+    let decodes_after = crate::image::cache::stats();
+    let decode_requests = decodes_after.requests.saturating_sub(decodes_before.requests);
+    let decode_hits = decodes_after.hits.saturating_sub(decodes_before.hits);
+    let decode_misses = decodes_after.misses.saturating_sub(decodes_before.misses);
+
     let _ = LAST_FRAME_STATS.try_with(|slot| {
         slot.replace(Some(FrameStats {
             index,
@@ -1121,6 +1160,9 @@ pub fn drive_frame(delta_ms: u32) -> FrameOutcome {
             controls_drawn: repaints_submitted,
             repaints_coalesced,
             last_repaint_reason,
+            decode_requests,
+            decode_hits,
+            decode_misses,
         }));
     });
 

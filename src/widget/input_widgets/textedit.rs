@@ -474,7 +474,13 @@ impl Draw for TextEdit {
             .unwrap_or_else(|| field.blend(&ink, 0.22));
 
         // Draw background
-        context.fill_rect(rect, field);
+        context.face(
+            rect,
+            field,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         // Draw border
         context.draw_rect(rect, border);
         // Draw text or placeholder

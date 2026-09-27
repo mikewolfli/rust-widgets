@@ -345,7 +345,13 @@ impl Draw for BezierCurveEditor {
         // A disabled editor is the same surface, faded: derived from the resolved
         // colour rather than a second literal so it still follows the appearance.
         let bg = if !is_enabled { surface.with_alpha(100) } else { surface.with_alpha(255) };
-        context.fill_rect(rect, bg);
+        context.face(
+            rect,
+            bg,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
 
         // ── Grid ──
         if self.show_grid && is_enabled {

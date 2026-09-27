@@ -1109,44 +1109,25 @@ mod tests {
     ///
     /// # Why the ink and not the string
     ///
-    /// Text leaves the SVG backend as the `font8x8` rectangles the rasteriser fills — one
-    /// axis-aligned subpath per set bitmap bit — so neither the label nor the arrow is in the
-    /// document in any form, and a test has to locate a run by *where* it is. That is the
+    /// Text leaves the SVG backend as glyph **geometry** — axis-aligned rectangles for a `font8x8`
+    /// run, flattened outline polygons for a vector face — so neither the label nor the arrow is in
+    /// the document as a string, and a test has to locate a run by *where* it is. That is the
     /// stronger check: the old form matched `>Sample</text>` and read the element's `x`, so a
     /// glyph placed off its column's centre with a correct attribute would have passed it.
     ///
-    /// One element is one `draw_text`, so this is one box per run. Subpaths are not
-    /// deduplicated: a glyph box wider than the 8 bitmap columns maps two columns to one pixel
-    /// and emits the same rectangle twice, exactly as the rasteriser fills it twice.
+    /// # Why the shared reader, and not a local one
+    ///
+    /// This used to parse the bitmap rectangles itself — `numbers[0..4]` read as `(x, y, w, h)` of
+    /// an `M{x} {y}h{w}v{h}` subpath. That parser could only ever see 1-bit glyph ink: an outline is
+    /// `M{a.b} {c.d}L...Z`, whose first four numbers are two *points*, not an origin and a size, so
+    /// the local reader found nothing and the test reported "the arrow painted no ink". The bug was
+    /// in the reader, not the control: it duplicated a parse the crate already has, with the same
+    /// bitmap assumption that `widget::svg::is_text_path` had to be taught out of.
+    ///
+    /// Delegating means this test measures whatever the backend actually emits, bitmap or outline,
+    /// and it cannot drift from the crate's own notion of "where is the text ink".
     fn text_run_boxes(svg: &str) -> Vec<(i32, i32, i32, i32)> {
-        let mut boxes = Vec::new();
-        for line in svg.lines() {
-            let Some(path_at) = line.find("<path ") else { continue };
-            let Some(d_at) = line[path_at..].find("d=\"") else { continue };
-            let start = path_at + d_at + 3;
-            let Some(end) = line[start..].find('"') else { continue };
-            let mut bounds: Option<(i32, i32, i32, i32)> = None;
-            for subpath in line[start..start + end].split('M').skip(1) {
-                let numbers: Vec<i32> = subpath
-                    .split(|c: char| !c.is_ascii_digit() && c != '-')
-                    .filter(|part| !part.is_empty())
-                    .filter_map(|part| part.parse().ok())
-                    .collect();
-                if numbers.len() < 4 {
-                    continue;
-                }
-                let (x, y, w, h) = (numbers[0], numbers[1], numbers[2], numbers[3]);
-                let bit = (x, y, x + w, y + h);
-                bounds = Some(match bounds {
-                    None => bit,
-                    Some((l, t, r, b)) => (l.min(bit.0), t.min(bit.1), r.max(bit.2), b.max(bit.3)),
-                });
-            }
-            if let Some(union) = bounds {
-                boxes.push(union);
-            }
-        }
-        boxes
+        crate::widget::svg::text_ink_boxes(svg)
     }
 
     /// The trigger's label is centred in the trigger, and the arrow in its own column.

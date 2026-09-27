@@ -777,7 +777,13 @@ impl Draw for DateEdit {
             .filter(|resolved| *resolved != surface)
             .unwrap_or_else(|| surface.blend(&ink, 0.35));
 
-        context.fill_rect(rect, surface);
+        context.face(
+            rect,
+            surface,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         context.draw_rect(rect, border);
         // The value is spelled by the caller's `display_format` when that pattern is one this control
         // can render, and by `Date`'s own `YYYY-MM-DD` otherwise. The fallback is what keeps an

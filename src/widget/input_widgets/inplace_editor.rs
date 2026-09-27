@@ -442,7 +442,14 @@ impl Draw for InplaceEditor {
         let text_box = self.text_rect();
         if self.is_editing {
             // Draw editing mode
-            context.fill_rect(rect, surface);
+            let style = self.base.style().clone();
+            context.face(
+                rect,
+                surface,
+                style.surface.unwrap_or_default(),
+                style.border_radius.unwrap_or(0),
+                Color::BLACK,
+            );
             context.draw_rect_stroke(rect, accent, 2);
 
             // Draw text, on the field's own line box. The old anchor was
@@ -473,7 +480,14 @@ impl Draw for InplaceEditor {
             }
         } else {
             // Draw display mode
-            context.fill_rect(rect, surface);
+            let style = self.base.style().clone();
+            context.face(
+                rect,
+                surface,
+                style.surface.unwrap_or_default(),
+                style.border_radius.unwrap_or(0),
+                Color::BLACK,
+            );
             context.draw_rect_stroke(rect, border, 1);
 
             let text_x = text_box.x;

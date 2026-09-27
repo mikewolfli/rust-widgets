@@ -1742,16 +1742,14 @@ candidate gaps: 25
 | `accordion` | ❌ 不补 | `collapsible_pane` + `tool_box` 已覆盖 |
 | `context_menu` | ✅ **已覆盖**（原判⚠️**有误**）| `src/widget/mod.rs:470` 的 `pub type ContextMenu = Menu;` —— 它不是「缺构造器」，是一个**已存在的类型别名**。原表说「缺构造器 ⇒ M10」是**看错**：别名就是构造器的入口 |
 | `alert_dialog`/`confirm_dialog`/`about_dialog` | ❌ 不补 | `message_box` 用 `MessageBoxLevel` 表达 |
-| `time_picker`/`clock` | 🔶 **不补 kind，但弹出时钟未做** | `time_edit` **存在**（`advanced_widgets/time_edit.rs`），但 `grep -c popup time_edit.rs` = **0** —— 对比 `date_edit` 已在 BLUE23 建了 `calendar_popup`。原表写「已归入上表」是**过早结账**：**它仍是一个缺口**，只是缺口在「弹层」而非「kind」|
+| `time_picker`/`clock` | ✅ **已关闭**（原判⚠️过早）| `time_edit` 存在；`clock_popup` 弹层已在**轮 49** 补完（§A.9.1）—— 本表原写“已归入上表”是**过早结账**，后已完工 |
 | `tag` | ❌ 不补 | `chip` 已覆盖 |
 | `flex`/…/`intrinsic_width`（13 个）| ✅ **本仓优势，勿动** | 本仓把它们做成了 `src/layout/` 的 `Layout` 实现（更少类型、更可测）|
 | `gauge` | ✅ **已覆盖**（原判⚠️**已过时**）| `meter.rs:20` 的模块文档写明「the factory already accepts `gauge`」；刻度错相已在 **§A.4 修完**（`meter.rs` 现 110 处刻度相关代码）|
 | `phone_input`/`email_input` | ❌ 不补 | 属**校验规则**而非控件；应做成 `masked_edit` 的 preset |
 
 **结论（修正后）**：25 条中 **13 条是本仓的更优形态**（布局作为引擎而非 widget）、
-**1 条是「缺一个部件」**（`time_picker` 的弹层 —— 见下）、
-**1 条原本就已被覆盖**（`context_menu`，类型别名）、
-**1 条已随 §A.4 关闭**（`gauge`）、
+**0 条待补**（`time_picker` 的弹层已在轮 49 补完 —— §A.9.1；`context_menu` 与 `gauge` 原本就已覆盖）、
 **9 条是不该补的别名**。**控件数维持 188，不新增 kind**——
 与 `check_widget_kind_count.sh` 一致（实测：180 变体 / 22 份文档声明 180）。
 
@@ -1761,11 +1759,42 @@ candidate gaps: 25
 > 而反过来也错过一次：`time_picker` **名字存在**（`time_edit`），但**能力不存在**（无弹层）。
 > 判据：**差集工具报的是名字，裁定要回到能力。**
 
-### A.9.1 `time_picker` 的弹层：**仍未做，本计划不包**
+### A.9.1 `time_picker` 的弹层：**轮 49 已完成**
 
-与 §A.11.2 的 `combobox.max_visible_items` **同性质**（控件缺一个部件，不是接一条线）。
-要做需要：弹层容器 + 时钟表盘 + 键盘导航 + 失焦关闭 —— 与 `date_edit`
-的 `calendar_popup`（BLUE23 已建）同量级。**已显式登记，不当作已完成。**
+原本登记为「与 §A.11.2 的 `combobox.max_visible_items` 同性质（控件缺一个部件）」——
+轮 49 按同一个做法把它做完了：
+
+| 新增 | 作用 |
+|---|---|
+| `clock_popup` 字段 + `set_clock_popup` / `toggle_clock_popup` | 发布为 `clock_popup` 属性（schema + `access.rs` 默认值均已补）|
+| `ClockHand` 枚举 | 三态：外环（小时）/ 内环（分钟）/ 都不是。用 `bool` 会把「都不是」编成「内环」|
+| `clock_rect()` / `clock_centre()` | **正方形且有导出** —— 非正方形的圆是椭圆，角度就不再是数字说的那个角度 |
+| `hand_at_point()` | 按**半径**分环，而不是按角度 —— 角度只决定值 |
+| `value_at_point()` | 时钟约定：12 点在**上**、顺时针。`atan2 + π/2` 一次转换，两个符号错一个就整体镜像或差四分之一圈 |
+| `draw_clock_face()` | 两环各 12 个字，环间有内圈线；两根指针（时针短、分针长）|
+| `popup_visibility_changed` 信号 | 宿主可以关掉自己的其它弹层 |
+
+#### 三个设计决定
+
+1. **选完不关闭**。时钟是**两部分的答案**（小时 *和* 分钟），
+   第一次点击就关掉会让第二部分必须重新打开才能改。
+2. **点在面上但不在环上 = 吸收，不关闭**。差几像素就丢掉刚设的小时 *并且* 关掉控件，
+   一次误点两次损失。
+3. **早上/下午由字段现有的小时决定**。表盘分不出 09:00 与 21:00，
+   而字段知道 —— 所以在 21:xx 上点 9 位不会跳到早上。
+   例外是 12 位：上午半 ⇒ 0，下午半 ⇒ 12。
+
+#### 验收
+
+| 项 | 实测 |
+|---|---|
+| `time_edit` 定向 | ✅ **70 passed / 0 failed** |
+| 全量 | ✅ **5949 passed / 0 failed** |
+| 五 profile / clippy / 快照 | ✅ 全 OK / **0** / **零差异** |
+| 反向注入 | ✅ 抽掉 `draw` 的读取，`the_clock_popup_is_actually_painted` 转红 |
+
+> 本项与 `date_edit` 的 `calendar_popup`、`combobox` 的下拉列表**同形状**：
+> 一个已发布的布尔值，描述的部件从未写过。三处都是同一族缺陷，修法也是同一个形。
 
 ---
 
@@ -2015,11 +2044,10 @@ fn activate_combo(&mut self) {
 | 五 profile | ✅ 全 OK |
 | **快照** | ✅ **零差异**（列表默认关闭，`field_band` 未动 —— 安全绳成立）|
 
-#### 剩余：仍不属本计划的一件事
+#### 剩余
 
-| # | 项 | 性质 |
-|---|---|---|
-| 1 | `time_edit` 的**弹出时钟**（§A.9）| 与 `combobox` 原状同性质：控件缺一个部件（弹层容器 + 表盘 + 键盘 + 失焦关闭），与 `date_edit` 的 `calendar_popup` 同量级。**已显式登记在 §A.9.1，不假装已完成。**|
+**无。** 原本登记的 `time_edit` 弹出时钟已在轮 49 补完（见 §A.9.1）——
+它与 `combobox` 的下拉列表同形：一个已发布的布尔值描述了一个从未写过的部件。两处都不留底子。
 
 **曾经记录为“非本轮引入”的 6 条门禁失败，现已全部消失**：轮 47 实跑
 `run_all_gates.sh` 得到 **88 PASS / 0 FAIL** —— 其中 `bevel.rs` 阻塞的

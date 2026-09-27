@@ -2,7 +2,7 @@
 <!-- control: scroll_bar | appearance: light -->
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(240,240,240,1.00)" />
-  <rect x="0" y="56" width="240" height="8" fill="rgba(180,180,180,1.00)" />
+  <rect x="0" y="56" width="240" height="8" rx="4" ry="4" fill="rgba(180,180,180,1.00)" />
   <rect x="0" y="56" width="240" height="8" fill="none" stroke="rgba(158,158,158,1.00)" stroke-width="1" />
   <rect x="16" y="56" width="48" height="8" fill="rgba(158,158,158,1.00)" />
   <rect x="16" y="56" width="48" height="8" fill="none" stroke="rgba(169,169,169,1.00)" stroke-width="1" />

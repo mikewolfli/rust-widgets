@@ -431,7 +431,13 @@ impl Draw for SplashScreen {
         let muted_ink = fade(muted_ink);
         let track = fade(track);
 
-        context.fill_rect(rect, surface);
+        context.face(
+            rect,
+            surface,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
 
         let centre_x = rect.x + (rect.width / 2) as i32;
 

@@ -371,7 +371,13 @@ pub(crate) fn time_edit_capability() -> WidgetCapability {
         aliases: &["time_picker"],
         properties: TIME_EDIT_PROPERTIES,
         events: events_of!("time_edit"),
-        commands: &["set_time", "set_minimum_time", "set_maximum_time", "set_display_format"],
+        commands: &[
+            "set_time",
+            "set_minimum_time",
+            "set_maximum_time",
+            "set_display_format",
+            "set_clock_popup",
+        ],
     }
 }
 

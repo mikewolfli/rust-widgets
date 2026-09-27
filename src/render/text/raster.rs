@@ -44,15 +44,35 @@
 //! silently truncated. Refusing is the honest failure: a truncated outline draws a wrong glyph,
 //! which is the one outcome a font path must not have.
 
-use super::font_assets::{active_faces, FaceBytes};
+use super::font_assets::FaceBytes;
 use super::glyph_source::{Cell, GlyphSource, InkKind, Painted};
 
 /// Sub-samples per device pixel, on each axis.
 ///
-/// 4 gives 16 samples per pixel, which is the point where a curve's coverage stops visibly
-/// stepping. 1 would be a hard-edged bitmap with the outline's precision, and 8 quadruples the
-/// work for a difference no one can see at the sizes a UI uses.
-const SUBSAMPLES: u32 = 4;
+/// # Why this is 8 and not 4
+///
+/// The count decides how many distinct coverage values a glyph edge can produce, and that number is
+/// `SUBSAMPLES^2 + 1`:
+///
+/// | grid | samples | achievable levels | output levels used |
+/// |---|---|---|---|
+/// | 4x4 | 16 | 17 | **7 %** |
+/// | 8x8 | 64 | 65 | 25 % |
+///
+/// Measured on this crate's own coverage output, a 4x4 grid produced **exactly** the 16 values
+/// `15, 31, 47, 63, 79, 95, 111, 127, 143, 159, 175, 191, 207, 223, 239, 255` — every one a multiple
+/// of 16, with no intermediate value anywhere in the glyph. The step between adjacent levels is 16
+/// out of 255, which is a visible stair-step on a curve: it is what makes a large glyph's bowl look
+/// faceted rather than smooth.
+///
+/// 8 quadruples the sub-sample count and so the work per glyph. That is affordable here because the
+/// cost is bounded and the raster is not resident: a glyph is rasterised, blended and its scratch
+/// dropped, so this changes the arithmetic in a loop that already exists rather than adding a cache
+/// or a resident buffer.
+///
+/// 16 would give 257 levels, more than the 256 an 8-bit output can express, so beyond 8 the extra
+/// samples are no longer visible and 8 is where the ramp stops being the limit.
+const SUBSAMPLES: u32 = 8;
 
 /// Maximum flattened points across **all** contours of one glyph.
 ///
@@ -503,14 +523,19 @@ pub struct OutlinePoint {
 /// The outline must come from the **same face the layout measured with**. Measurement goes through
 /// [`crate::render::text::shape_line`], which selects a face with `shaping::face_for_family` — so a
 /// `Font::new("Arial", 11.0, …)` on a build that ships only Open Sans measures with the
-/// *estimate* model (0.6 em per Latin cluster) and is drawn by the default bitmap face. Emitting
-/// Open Sans outlines for it would draw a glyph the layout never reserved room for, and every
-/// "the ink is centred in its box" assertion would fail by the width difference between 0.6 em and
-/// a real advance.
+/// *estimate* model (0.6 em per Latin cluster) and asks this function for a face by that name.
 ///
 /// So this honours `family` for the same reason [`crate::render::text::shaping::face_for_family`]
-/// documents: the caller named the face, and a feature that silently re-laid-out every control
-/// would be a surprise rather than an upgrade.
+/// documents: a caller that **named** a face has said which face it wants, and a function that
+/// silently substituted another would be a surprise rather than an upgrade.
+///
+/// # When to reach for [`outline_by_coverage`] instead
+///
+/// When the question is "what shape would the **rasteriser** paint for this character" rather than
+/// "what shape does the face this caller named have". Those differ whenever the family is not one
+/// this build ships, and a backend whose output is compared against the pixels — the SVG snapshot
+/// backend — must ask the first question. See `outline_by_coverage` for the defect that made the
+/// distinction matter.
 pub fn outline(
     ch: char,
     cell: Cell,
@@ -518,12 +543,72 @@ pub fn outline(
     points: &mut [OutlinePoint],
     contours: &mut [(usize, usize)],
 ) -> Option<usize> {
-    if cell.is_empty() || points.len() < MAX_POINTS || contours.len() < MAX_CONTOURS {
-        return None;
-    }
     // The face the caller's `Font` names, if this build ships it — the same selection the shaper
     // makes, so measurement and drawing cannot disagree about which face is in play.
     let face_bytes = super::shaping::face_for_family(family)?;
+    outline_in_face(ch, cell, face_bytes, points, contours)
+}
+
+/// [`outline`], but selecting the face by **coverage** rather than by family name.
+///
+/// # Why this exists, and which callers want it
+///
+/// This is the outline the **rasteriser would draw**. `VectorSource` — the face the software and wgpu
+/// backends paint through — selects a face by asking "whose glyph table has this character?", and it
+/// ignores the `Font`'s family entirely. A backend that emits the shapes the pixels show must make
+/// the same choice, or the snapshot stops being a picture of the control.
+///
+/// It did not, and the consequence was visible. Every theme in this crate names `"Arial"` (and
+/// `"Courier New"`, and `"sans-serif"`), while the faces it ships are called `"Open Sans"` and
+/// `"Noto Sans SC"` — so `face_for_family("Arial")` answers `None` for every glyph of every control:
+///
+/// ```text
+/// $ cargo test --features fonts-vector-latin -- --nocapture
+/// family="Arial"       -> outline_selected=false
+/// family="Open Sans"   -> outline_selected=true
+/// family="sans-serif"  -> outline_selected=false
+/// ```
+///
+/// The SVG backend therefore took its 1-bit fallback for all 377 snapshots — every Latin glyph drawn
+/// as ~130 one-pixel rectangles from the 8x8 bitmap, which is the blocky text the snapshots showed —
+/// while the **runtime drew real outlines**: `paint_active('H')` reports `source=Open Sans
+/// ink=Coverage` on the very same build. A backend that disagrees with the rasteriser about which face
+/// is in play is the one thing this backend's module docs say it exists to prevent, so the answer is a
+/// shared lookup rather than a second rule.
+///
+/// # Why `outline` is kept
+///
+/// A caller that **has** a family and wants it honoured — a host that loaded its own face and named
+/// it — must still be able to ask for that face, and it is the family lookup that makes measurement
+/// and drawing agree for such a caller. The two entry points answer two different questions; what was
+/// wrong was one of them being used by a caller that meant the other.
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", feature = "fonts-cjk"))]
+pub fn outline_by_coverage(
+    ch: char,
+    cell: Cell,
+    points: &mut [OutlinePoint],
+    contours: &mut [(usize, usize)],
+) -> Option<usize> {
+    let face_bytes = super::font_assets::outline_face_for(ch)?;
+    outline_in_face(ch, cell, face_bytes, points, contours)
+}
+
+/// The geometry itself, once a face has been chosen.
+///
+/// Both [`outline`] and [`outline_by_coverage`] land here, so the two selectors cannot drift into
+/// producing differently-shaped ink for the same face — which is the failure mode of duplicating the
+/// body for the sake of one differing first line.
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", feature = "fonts-cjk"))]
+fn outline_in_face(
+    ch: char,
+    cell: Cell,
+    face_bytes: super::font_assets::FaceBytes,
+    points: &mut [OutlinePoint],
+    contours: &mut [(usize, usize)],
+) -> Option<usize> {
+    if cell.is_empty() || points.len() < MAX_POINTS || contours.len() < MAX_CONTOURS {
+        return None;
+    }
     let face = ttf_parser::Face::parse(face_bytes.bytes, 0).ok()?;
     let glyph = face.glyph_index(ch)?;
     let units_per_em = face.units_per_em() as f32;
@@ -583,13 +668,13 @@ impl VectorSource {
     pub const INSTANCE: Self = Self;
 
     /// The face that covers `ch`, if this build enabled one.
+    ///
+    /// Delegates to [`outline_face_for`] so the SVG backend's outline geometry and this rasteriser's
+    /// coverage come from the **same** face for every character. When these were two lookups they
+    /// disagreed — this one asked by coverage and the SVG backend asked by family name — and the
+    /// snapshots showed the 8x8 bitmap while the pixels showed Open Sans. See `outline_face_for`.
     fn face_for(&self, ch: char) -> Option<FaceBytes> {
-        active_faces().iter().copied().find(|face| {
-            ttf_parser::Face::parse(face.bytes, 0)
-                .ok()
-                .and_then(|parsed| parsed.glyph_index(ch))
-                .is_some()
-        })
+        super::font_assets::outline_face_for(ch)
     }
 }
 

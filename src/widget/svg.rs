@@ -133,15 +133,28 @@ pub fn text_ink_box(svg: &str) -> Option<(i32, i32, i32, i32)> {
 ///
 /// # Non-text paths are excluded
 ///
-/// A `font8x8` run is emitted as **one** `<path>` per `draw_text` call whose `d` is a run of
-/// axis-aligned rectangles (`M{x0} {y0}h{w}v{h}h-{w}z`). An icon, an arrow head or an arbitrary
-/// shape is also a `<path>`, and its `d` is a run of `M`/`L`/`C` commands. Both parse as "a path
-/// with bounds", so without a discriminator this function answered "the bounds of the first path in
-/// the document" — which is the arrow head of a popover, or a chevron, whenever one is painted
-/// before the first string. The discriminator is the **command set**: text is built from `h`/`v`
-/// only, so a `d` containing `L`, `C`, `Q` or `A` is not a text run and is skipped. A text path is
-/// additionally required to hold at least one complete `h`/`v` pair, so a one-command `d` cannot
-/// masquerade as a glyph.
+/// A control that draws a **shape** as a `<path>` — a triangle, a diamond, an elbow, an icon — is
+/// indistinguishable from a text run by geometry alone: both are `d` strings with bounds. Without a
+/// discriminator this function answered "the bounds of the first path in the document", which is the
+/// arrow head of a popover or a chevron whenever one is painted before the first string.
+///
+/// # The discriminator, and why it stopped being a guess
+///
+/// It used to read the **command set**: a glyph bitmap is `M{x} {y}h{w}v{h}h-{w}z`, so "text is built
+/// from `h`/`v` only, and a `d` containing `L` is a picture". That was correct exactly as long as the
+/// bitmap face was the only source of glyph geometry, and it broke the moment vector outlines were
+/// drawn — because an outline is `M{a.b} {c.d}L...Z`, and **so is a triangle**. The rule could not be
+/// repaired by adding cases: an outline glyph and a drawn shape are the same kind of data.
+///
+/// So the producer now **labels** its output (`data-text="1"`, emitted by
+/// [`crate::render::SvgPaintBackend`] for every run it writes), and this function reads the label.
+/// That is the difference between inferring a fact and being told it, and it is why the two paths
+/// below exist:
+///
+/// * a tagged path **is** text, whatever its command set;
+/// * an untagged path falls back to the command-letter test, so a document written before the tag
+///   existed — or by a hand-rolled producer — is still read the way it always was.
+///
 pub fn text_ink_boxes(svg: &str) -> Vec<(i32, i32, i32, i32)> {
     let mut boxes = Vec::new();
     for line in svg.lines() {
@@ -151,7 +164,7 @@ pub fn text_ink_boxes(svg: &str) -> Vec<(i32, i32, i32, i32)> {
         let Some(d) = attribute_str(line, "d") else {
             continue;
         };
-        if !is_text_path(d) {
+        if !is_text_path_element(line, d) {
             continue;
         }
         if let Some(bounds) = path_bounds(d) {
@@ -161,11 +174,44 @@ pub fn text_ink_boxes(svg: &str) -> Vec<(i32, i32, i32, i32)> {
     boxes
 }
 
+/// Whether one `<path>` element is a text run.
+///
+/// The element's own provenance tag decides it when present; otherwise the command set does, as it
+/// always did. Split from [`text_ink_boxes`] so both readers — that function and [`first_shape_bounds`]
+/// — ask one question, and so a document with a mix of tagged and untagged paths is read
+/// consistently.
+fn is_text_path_element(line: &str, d: &str) -> bool {
+    if line.contains(TEXT_PATH_TAG) {
+        return true;
+    }
+    is_text_path(d)
+}
+
+/// The attribute [`crate::render::SvgPaintBackend`] writes on a text run it emitted.
+///
+/// A single source for the spelling, because the producer and this reader are in different modules
+/// and a typo in either would silently disable the tag — which reads as "no text in the document"
+/// rather than as an error.
+const TEXT_PATH_TAG: &str = "data-text=\"1\"";
+
 /// Whether a `<path d>` is a texture of `font8x8` glyph rectangles rather than a drawn shape.
 ///
-/// See [`text_ink_boxes`] for why the distinction has to exist. Glyph rectangles close with `z` and
-/// step with `h`/`v`, in absolute or relative form; every other command (`L`, `l`, `C`, `c`, `Q`,
-/// `q`, `A`, `a`, `S`, `s`, `T`, `t`, `H`, `V`) means the path is a picture, not a run of text.
+/// # When this is consulted
+///
+/// Only when the element carries **no** provenance tag — see [`is_text_path_element`], which is the
+/// question readers should ask. This is the fallback for a document that predates the tag, and its
+/// rule is unchanged from when it was the only test:
+///
+/// Glyph rectangles close with `z` and step with `h`/`v`, in absolute or relative form; every other
+/// command (`L`, `l`, `C`, `c`, `Q`, `q`, `A`, `a`, `S`, `s`, `T`, `t`, `H`, `V`) means the path is a
+/// picture, not a run of text.
+///
+/// # Why it is not the primary test
+///
+/// An outline glyph is `M{a.b} {c.d}L...Z` — the same command set as a triangle. The rule above
+/// therefore answers "not text" for every vector-rendered run, which is a wrong answer it cannot be
+/// taught out of. Kept because a caller may hold a document this crate did not produce, and the
+/// bitmap case is still exactly what it describes.
 fn is_text_path(d: &str) -> bool {
     let mut closed = 0usize;
     let mut stepped = 0usize;
@@ -218,9 +264,12 @@ pub fn text_subpath_count(svg: &str) -> usize {
 pub fn first_shape_bounds(svg: &str) -> Option<(i32, i32, i32, i32)> {
     svg.lines()
         .filter(|line| line.contains("<path"))
-        .filter_map(|line| attribute_str(line, "d"))
-        .filter(|d| !is_text_path(d))
-        .find_map(path_bounds)
+        .filter_map(|line| {
+            let d = attribute_str(line, "d")?;
+            Some((line, d))
+        })
+        .filter(|(line, d)| !is_text_path_element(line, d))
+        .find_map(|(_, d)| path_bounds(d))
 }
 
 /// The bounds of an axis-aligned `<path d>` made of `M x y h w v h h -w z` subpaths.
@@ -362,6 +411,11 @@ mod tests {
     use crate::core::Rect;
     use crate::widget::Button;
 
+    /// The bitmap face fills its glyph box, so its ink top *is* the box top. An outline face draws a
+    /// real glyph whose ink is inset, so the ink top sits one or two pixels below the box top at these
+    /// sizes. Pinning the two equal encoded a property of the bitmap face, not of the layout.
+    const INK_INSET_TOLERANCE: i32 = 3;
+
     #[test]
     fn render_widget_to_svg_produces_valid_svg() {
         let mut btn = Button::new("OK".to_string(), Rect::new(0, 0, 80, 30));
@@ -430,11 +484,27 @@ mod tests {
             // The glyph box's top edge is where the rasteriser put it. The bottom edge is one
             // line height down, because the bitmap is stretched across the whole box.
             let height = font.size().max(1.0).round() as i32;
-            assert_eq!(top, origin.y, "size {size}: the glyph box top edge");
-            assert_eq!(bottom, origin.y + height, "size {size}: the glyph box bottom edge");
-            // And the ink starts at the left edge, because `Left` alignment anchors there and
-            // `S`'s bitmap has its leftmost set bit in column 0.
-            assert_eq!(left, origin.x, "size {size}: left-aligned ink starts at the origin");
+            // The box's top edge is the origin. Under the bitmap face the ink top *is* that edge
+            // (`font8x8` spans the box); under an outline face the glyph's ink is inset a pixel or
+            // two, so the box top is stated as "within the inset" rather than as an equality —
+            // which was a property of the typeface, not of the layout.
+            assert!(
+                top >= origin.y && top - origin.y <= INK_INSET_TOLERANCE,
+                "size {size}: the ink top {top} begins on the glyph box top edge {}",
+                origin.y
+            );
+            assert!(
+                bottom <= origin.y + height && origin.y + height - bottom <= INK_INSET_TOLERANCE,
+                "size {size}: the ink bottom {bottom} reaches the glyph box bottom edge {}",
+                origin.y + height
+            );
+            // And the ink starts at the left edge, because `Left` alignment anchors there; the
+            // outline face's ink is inset there too, by the same tolerance.
+            assert!(
+                left >= origin.x && left - origin.x <= INK_INSET_TOLERANCE,
+                "size {size}: left-aligned ink begins at the origin {}",
+                origin.x
+            );
             // The ink cannot be wider than the string's own advance. `estimate_cluster_advance`
             // charges one cluster at a time, so the run's advance is the sum over `"Sample"`'s
             // six clusters — the same sum `shape_text` performs.

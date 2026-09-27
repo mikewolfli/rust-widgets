@@ -360,7 +360,13 @@ impl Draw for MenuBar {
         let disabled_ink = ink.blend(&background, 0.5);
 
         // Menu bar background
-        context.fill_rect(rect, background);
+        context.face(
+            rect,
+            background,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         context.draw_line(
             Point::new(rect.x, rect.y + rect.height as i32 - 1),
             Point::new(rect.x + rect.width as i32, rect.y + rect.height as i32 - 1),

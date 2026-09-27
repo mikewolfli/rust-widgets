@@ -784,7 +784,13 @@ impl Draw for KanbanBoard {
             .unwrap_or(Color::BLACK);
         let background = resolved.blend(&text_color, 0.08);
 
-        context.fill_rect(rect, background);
+        context.face(
+            rect,
+            background,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
 
         // Every colour the board paints below is derived from this one resolved
         // triple, so a theme switch moves the whole board rather than the frame

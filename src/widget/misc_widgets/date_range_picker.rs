@@ -373,7 +373,13 @@ impl Draw for DateRangePicker {
             .and_then(|_| crate::style::semantic_color(crate::style::SemanticColor::Info))
             .unwrap_or(Color::BLUE);
 
-        context.fill_rect(rect, bg_color);
+        context.face(
+            rect,
+            bg_color,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
 
         // Layout parameters, resolved from the month and the rectangle. See
         // [`DateRangePicker::grid_layout`] for why the cell size is not a constant.

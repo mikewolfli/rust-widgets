@@ -910,7 +910,13 @@ impl Draw for ScrollArea {
         let rect = self.geometry();
         let style = self.style();
         // Draw background
-        context.fill_rect(rect, style.background_color.unwrap_or(Color::rgb(255, 255, 255)));
+        context.face(
+            rect,
+            style.background_color.unwrap_or(Color::rgb(255, 255, 255)),
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         // Draw border
         context.draw_rect(rect, style.border_color.unwrap_or(Color::rgb(200, 200, 200)));
         // The scroll bar's three surfaces, resolved from the style with the previous greys as

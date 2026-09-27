@@ -802,7 +802,13 @@ impl Draw for GridTableWidget {
         let outer_border = surface.blend(&ink, 0.35);
 
         // Background
-        context.fill_rect(rect, surface);
+        context.face(
+            rect,
+            surface,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
 
         let rnw = self.row_number_width as i32;
         let header_h = self.header_height as i32;

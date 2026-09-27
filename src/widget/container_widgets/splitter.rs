@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Splitter widget.
-use crate::core::{Orientation, Rect};
+use crate::core::{Color, Orientation, Rect};
 use crate::event::{DragPayload, DragSession};
 use crate::layout::{splitter::SplitterLayout, Layout};
 use crate::object::ObjectId;
@@ -268,7 +268,13 @@ impl Draw for Splitter {
 
         // The track is the surface the panes sit on, drawn before the panes so a splitter with no
         // panes yet — or one whose registry is empty — still shows where it is.
-        context.fill_rect(rect, track);
+        context.face(
+            rect,
+            track,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
 
         if let Some(ref registry) = self.registry {
             for (pane_id, pane_rect) in self.pane_rects() {

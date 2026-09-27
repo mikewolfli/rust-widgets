@@ -33,6 +33,28 @@ pub struct Font {
     /// every existing serialised theme means — so this field is additive.
     #[cfg_attr(feature = "serde", serde(default))]
     letter_spacing: f32,
+    /// Extra space inserted at each **whitespace** cluster, in logical pixels.
+    ///
+    /// # Why this is a second field and not folded into `letter_spacing`
+    ///
+    /// They are two different requests, and one number cannot express both. `letter_spacing` applies
+    /// to every inter-cluster gap, so a caller who wants looser *words* would have to loosen every
+    /// *letter* as well — which is a different (and usually unwanted) typographic change. CSS keeps
+    /// them apart as `letter-spacing` and `word-spacing` for exactly this reason, and a designer
+    /// moving between the two vocabularies should not have to relearn what the number means.
+    ///
+    /// # Why zero is the right default
+    ///
+    /// `0` means "the face's own space glyph", and that is the answer that stays correct across
+    /// scripts: a space's width is a property of the font, not of the layout, so letting the shaper
+    /// report it means the inter-word gap is right in Latin, in Arabic, and in a CJK face alike. A
+    /// fixed em fraction here would be the same class of mistake as the flat cluster advance this
+    /// crate already had to remove — correct for one script, wrong for the next.
+    ///
+    /// This field is therefore a **knob, not a correction**: it exists for a caller who wants to
+    /// change the gap deliberately (a sparse title, a dense table).
+    #[cfg_attr(feature = "serde", serde(default))]
+    word_spacing: f32,
     /// Line height (leading) in logical pixels, or `0` for "derive from the font's own size".
     ///
     /// # Why `0` rather than a default number
@@ -70,6 +92,13 @@ impl Font {
     pub fn letter_spacing(&self) -> f32 {
         self.letter_spacing
     }
+    /// Returns the extra space inserted at each whitespace cluster, in logical pixels.
+    ///
+    /// `0.0` means "the face's own space glyph" — see the field's documentation for why that, and
+    /// not a fraction of an em, is the default.
+    pub fn word_spacing(&self) -> f32 {
+        self.word_spacing
+    }
     /// Returns the explicit line height in logical pixels, or `0.0` for "derive from the size".
     pub fn line_height(&self) -> f32 {
         self.line_height
@@ -81,6 +110,15 @@ impl Font {
     /// style, and letting it through would make text overlap itself in a way no caller can debug.
     pub fn set_letter_spacing(&mut self, spacing: f32) -> &mut Self {
         self.letter_spacing = if spacing.is_finite() { spacing.max(-self.size) } else { 0.0 };
+        self
+    }
+    /// Sets the extra space at each whitespace cluster, and returns self for chaining.
+    ///
+    /// Clamped by the same rule as [`Self::set_letter_spacing`], and for the same reason: a negative
+    /// value tightens, and one large enough to consume a whole space would make two words overlap
+    /// with nothing to indicate that a word boundary was there at all.
+    pub fn set_word_spacing(&mut self, spacing: f32) -> &mut Self {
+        self.word_spacing = if spacing.is_finite() { spacing.max(-self.size) } else { 0.0 };
         self
     }
     /// Sets an explicit line height in logical pixels, and returns self for chaining.
@@ -157,6 +195,7 @@ impl Font {
             bold: normalized_weight >= Self::BOLD_WEIGHT,
             italic,
             letter_spacing: 0.0,
+            word_spacing: 0.0,
             line_height: 0.0,
         }
     }
@@ -403,6 +442,8 @@ struct FontSerde {
     #[serde(default)]
     letter_spacing: f32,
     #[serde(default)]
+    word_spacing: f32,
+    #[serde(default)]
     line_height: f32,
 }
 #[cfg(feature = "serde")]
@@ -421,6 +462,11 @@ impl From<FontSerde> for Font {
             italic: value.italic,
             letter_spacing: if value.letter_spacing.is_finite() {
                 value.letter_spacing.max(-value.size)
+            } else {
+                0.0
+            },
+            word_spacing: if value.word_spacing.is_finite() {
+                value.word_spacing.max(-value.size)
             } else {
                 0.0
             },
@@ -458,6 +504,7 @@ pub struct FontBuilder {
     weight: u16,
     italic: bool,
     letter_spacing: f32,
+    word_spacing: f32,
     line_height: f32,
 }
 impl FontBuilder {
@@ -468,6 +515,7 @@ impl FontBuilder {
             weight: Font::REGULAR_WEIGHT,
             italic: false,
             letter_spacing: 0.0,
+            word_spacing: 0.0,
             line_height: 0.0,
         }
     }
@@ -500,6 +548,15 @@ impl FontBuilder {
         self.letter_spacing = spacing;
         self
     }
+    /// Sets the extra space at each whitespace cluster, in logical pixels.
+    ///
+    /// `0` (the default) means "the face's own space glyph", which is the answer that stays correct
+    /// across scripts — see [`Font::word_spacing`]. The value is clamped by
+    /// [`Font::set_word_spacing`] when the font is built.
+    pub fn word_spacing(mut self, spacing: f32) -> Self {
+        self.word_spacing = spacing;
+        self
+    }
     /// Sets the line height in logical pixels; `0` means "derive from the size".
     ///
     /// The value is clamped by [`Font::set_line_height`] when the font is built.
@@ -514,6 +571,7 @@ impl FontBuilder {
         // disagree about what a legal value is: `build()` is the path a caller takes when it has not
         // read the setters, which is exactly when a silent difference would go unnoticed.
         font.set_letter_spacing(self.letter_spacing);
+        font.set_word_spacing(self.word_spacing);
         font.set_line_height(self.line_height);
         font
     }
@@ -726,6 +784,40 @@ mod tests {
             assert_eq!(font.line_height(), 0.0, "{bad} must mean 'derive from the size'");
             assert_eq!(font.letter_spacing(), 0.0, "{bad} must mean 'no tracking'");
         }
+    }
+
+    /// The word spacing must round-trip through the builder and through serde.
+    ///
+    /// # Why both paths, in one test
+    ///
+    /// The two are separate spellings of the same field, and a field that survives one but not the
+    /// other is the failure mode this crate has paid for before — a JSON-overridden control whose
+    /// property silently did nothing. `serde(default)` matters as much as the value: a theme written
+    /// before this field existed must load as "the face's own space", not fail to parse.
+    #[test]
+    fn word_spacing_survives_the_builder_and_serde() {
+        use crate::compat::MiniToString;
+
+        let built = Font::builder().size(12.0).word_spacing(3.0).build();
+        assert_eq!(built.word_spacing(), 3.0, "the builder carries it");
+
+        // The same clamp as letter spacing: a gap that could consume a whole space would leave two
+        // words touching with nothing to mark the boundary.
+        let mut clamped = Font::new("Arial", 10.0, false, false);
+        clamped.set_word_spacing(-999.0);
+        assert_eq!(clamped.word_spacing(), -10.0, "clamped to the point size");
+
+        // A theme from before the field existed: absent means `0.0`, which means the face's own space.
+        let old =
+            "{\"family\":\"Arial\",\"size\":12.0,\"weight\":400,\"bold\":false,\"italic\":false}";
+        let parsed: Font = serde_json::from_str(old).expect("an older theme must still load");
+        assert_eq!(parsed.word_spacing(), 0.0, "absent must mean 'no opinion'");
+
+        // And a theme that states it keeps the value it stated.
+        let stated = "{\"family\":\"Arial\",\"size\":12.0,\"weight\":400,\"bold\":false,\"italic\":false,\"word_spacing\":4.5}";
+        let parsed: Font = serde_json::from_str(stated).expect("it parses");
+        assert_eq!(parsed.word_spacing(), 4.5, "a stated value survives");
+        let _ = "".to_string();
     }
 
     /// A tracked font measures wider than the same font untracked, by exactly its tracking.

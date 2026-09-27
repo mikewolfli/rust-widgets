@@ -46,6 +46,29 @@ impl Image {
         Ok(Self { inner: decoded })
     }
 
+    /// Decode RGBA8 from bytes, reusing a decode another caller already did.
+    ///
+    /// The counterpart of [`Self::from_bytes_rgba8`] for a caller that does not need to own the
+    /// result: it goes through [`crate::image::cache`], so a picture shown in two image views — or in
+    /// an image view and an avatar — is decoded once. `from_bytes_rgba8` stays as the *uncached* entry
+    /// point for a caller that wants a private decode (loading a series of frames, say), and having
+    /// both means "do I want to share this" is a decision at the call site rather than a property of
+    /// `Image` that a caller cannot see.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::from_bytes_rgba8`]. A failure is not cached; see
+    /// [`crate::image::cache::decode_to_rgba8_cached`] for why.
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
+    pub fn from_bytes_rgba8_shared(data: &[u8]) -> Result<Self, String> {
+        let decoded = crate::image::cache::decode_to_rgba8_cached(data)?;
+        // The cache holds an `Arc`; `Image` owns its payload, so this clones out of it. The clone is
+        // the price of `Image`'s ownership model and is paid once per *caller* rather than once per
+        // request -- a caller that keeps the `Image` reuses it, and a caller that does not should use
+        // `crate::image::cache::pixels_rgba8_or_none` instead.
+        Ok(Self { inner: (*decoded).clone() })
+    }
+
     /// Create from a DecodedImage.
     pub fn from_decoded(decoded: DecodedImage) -> Self {
         Self { inner: decoded }

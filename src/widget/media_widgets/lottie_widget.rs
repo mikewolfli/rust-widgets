@@ -1097,7 +1097,13 @@ impl Draw for LottieWidget {
         // rather than being a second fixed grey, so the two states stay distinguishable in
         // any theme.
         let bg = if !is_enabled { base_bg.blend(&Color::WHITE, 0.35) } else { base_bg };
-        context.fill_rect(rect, bg);
+        context.face(
+            rect,
+            bg,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
 
         // Draw bounding box — a chrome edge around the composition, so it follows the
         // theme's border token rather than a fixed violet.

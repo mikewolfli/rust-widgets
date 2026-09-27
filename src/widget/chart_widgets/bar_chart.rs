@@ -625,38 +625,31 @@ mod tests {
     /// integer division, so the same rectangle is emitted twice. That is the rasteriser's own
     /// geometry — it fills that pixel twice — so collapsing it here would make this disagree with
     /// the drawing.
+    ///
+    /// # Why this delegates instead of parsing `d` itself
+    ///
+    /// The first form read the `font8x8` rectangle spelling directly: split `d` on `M` and take the
+    /// four integers of `M{x} {y}h{w}v{h}`. That is the *bitmap* path's grammar and only its grammar.
+    /// An outline face writes `M21.45 30.24L...Z` with fractional vertices, where the same split
+    /// reads `21` as `x`, `45` as `y`, `30` as `w` — geometry that is not ink and not where the glyph
+    /// is. The crate already has the correct reader, which knows both grammars (and the `data-text`
+    /// provenance tag that distinguishes a run from a drawn shape); duplicating it here was the
+    /// actual bug. One reader, so the two cannot disagree.
     #[cfg(feature = "chart")]
     fn ink_paths(svg: &str) -> Vec<(i32, i32, i32, i32)> {
-        let mut runs = Vec::new();
-        for line in svg.lines() {
-            let Some(path_at) = line.find("<path ") else { continue };
-            let Some(d_at) = line[path_at..].find("d=\"") else { continue };
-            let start = path_at + d_at + 3;
-            let Some(end) = line[start..].find('"') else { continue };
-            let mut bounds: Option<(i32, i32, i32, i32)> = None;
-            for subpath in line[start..start + end].split('M').skip(1) {
-                let numbers: Vec<i32> = subpath
-                    .split(|c: char| !c.is_ascii_digit() && c != '-')
-                    .filter(|part| !part.is_empty())
-                    .filter_map(|part| part.parse().ok())
-                    .collect();
-                if numbers.len() < 4 {
-                    continue;
-                }
-                let (x, y, w, h) = (numbers[0], numbers[1], numbers[2], numbers[3]);
-                bounds = Some(match bounds {
-                    None => (x, y, x + w, y + h),
-                    Some((left, top, right, bottom)) => {
-                        (left.min(x), top.min(y), right.max(x + w), bottom.max(y + h))
-                    }
-                });
-            }
-            if let Some(bounds) = bounds {
-                runs.push(bounds);
-            }
-        }
-        runs
+        crate::widget::svg::text_ink_boxes(svg)
     }
+
+    /// The bitmap face fills its whole glyph box (`font8x8` rectangles span the box), so a run's
+    /// ink left *is* the box left, exactly. An **outline** face draws a real glyph whose ink is
+    /// inset — a digit's stroke does not occupy the box's first column — so the ink's left edge sits
+    /// one or two pixels right of the box edge at these sizes. A lookup that required
+    /// `ink.left == box.left`, or an assertion that pinned the two equal, encoded a property of the
+    /// bitmap face rather than of the layout, and is false the moment an outline is drawn.
+    ///
+    /// The bound is deliberately tight: it has to absorb the outline inset (≤ 2 px) and nothing
+    /// more, so a run anchored a whole entry away still fails.
+    const INK_INSET_TOLERANCE: i32 = 3;
 
     /// The widget must render through the shared chart engine rather than its
     /// own copy of the axis/tick math — that duplication is what this refactor
@@ -694,16 +687,34 @@ mod tests {
             runs.len()
         );
         let (left, _, right, _) = runs[0];
-        assert_eq!(left, 20, "the topmost y-tick label starts at the engine's `plot_x - 44`");
-        assert_eq!(right - left, 17, "...and `100.0` is five characters of ink, not the bar label");
+        // The engine's anchor is where the glyph **box** starts, at `plot_x - 44`; under the bitmap
+        // face the ink's left edge *is* that box edge, but an outline glyph is inset a pixel or two
+        // (its leftmost column carries no set bit), so the ink starts `INK_INSET_TOLERANCE` within it.
+        // Pinning the two equal encoded a property of the bitmap face, not of the layout.
+        assert!(
+            (left - 20).abs() <= INK_INSET_TOLERANCE,
+            "the topmost y-tick label starts at the engine's `plot_x - 44`"
+        );
+        // An outline's ink is the glyph's **real** width, which is narrower than the advance, so the
+        // band is an upper bound rather than an equality: `100.0` is five characters and cannot
+        // exceed the five advances they occupy.
+        assert!(
+            right - left <= 17,
+            "...and `100.0` is at most five characters of ink, not the bar label"
+        );
         let (short_left, _, short_right, _) = runs[4];
-        assert_eq!(
-            (short_left, short_right - short_left),
-            (20, 29),
+        // `0.0` is three characters ellipsised to `0…`, whose bitmap ink spans the whole 29 px bar
+        // band; the outline face draws the real, narrower glyphs, so the band is an upper bound.
+        assert!(
+            (short_left - 20).abs() <= INK_INSET_TOLERANCE,
+            "the bottom y-tick label starts on the same anchor"
+        );
+        assert!(
+            short_right - short_left <= 29,
             "the bottom y-tick label is `0.0`, which the 29 px bar band ellipsises to `0…`"
         );
         assert!(
-            runs.iter().any(|run| run.0 == 20 && run.2 - run.0 == 17),
+            runs.iter().any(|run| (run.0 - 20).abs() <= INK_INSET_TOLERANCE && run.2 - run.0 <= 17),
             "at least one five-character label sits on the y-axis anchor"
         );
         // The two runs differ, so the engine drew a *value* label rather than repeating one

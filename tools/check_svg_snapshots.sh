@@ -126,12 +126,19 @@ print(0 if match is None else len(re.findall(r"\(\s*\x22[^\x22]+\x22\s*,", match
 PY
 )"
 COMMITTED="$(find "$SNAPSHOT_DIR" -maxdepth 1 -name '*.svg' | wc -l)"
-EXPECTED=$((CONTROLS * 2 + EXTRAS))
+# An extra appearance is rendered as a **pair**, like a default one.
+#
+# `EXTRAS * 2` and not `EXTRAS`: the exporter writes each extra under both appearances, because a
+# shape reachable only through a factory property needs its own light/dark comparison — the pair on
+# the default shape says nothing about, say, `draw_win_panel_frame`'s white/grey bevel, whose whole
+# purpose is an illusion of relief and which is only ever reachable by setting the property. A total
+# of `EXTRAS` here would have made this gate report every declared extra as an unaccounted file.
+EXPECTED=$((CONTROLS * 2 + EXTRAS * 2))
 if [[ "$COMMITTED" -ne "$EXPECTED" ]]; then
-    echo "  FAIL  expected $EXPECTED committed SVGs ($CONTROLS controls x 2 appearances + $EXTRAS extra state(s)), found $COMMITTED"
+    echo "  FAIL  expected $EXPECTED committed SVGs ($CONTROLS controls x 2 appearances + $EXTRAS extra state(s) x 2), found $COMMITTED"
     exit 1
 fi
-echo "  PASS  $CONTROLS controls x 2 appearances + $EXTRAS extra = $COMMITTED files"
+echo "  PASS  $CONTROLS controls x 2 appearances + $EXTRAS extra x 2 = $COMMITTED files"
 
 echo "[3b/5] every file has a drawing element, not just an svg skeleton"
 EMPTY="$("$PYTHON" - <<'PY'

@@ -640,7 +640,13 @@ impl Draw for ListBox {
         let bg = style.background_color.unwrap_or(Color::rgb(255, 255, 255));
         let text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
         // Draw background
-        context.fill_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), bg);
+        context.face(
+            Rect::new(rect.x, rect.y, rect.width, rect.height),
+            bg,
+            self.style().surface.unwrap_or_default(),
+            self.style().border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         // Draw border
         if let Some(border_color) = style.border_color {
             context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border_color);

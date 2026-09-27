@@ -726,7 +726,13 @@ impl Draw for MdiArea {
                 // No background
             }
             Background::Plain => {
-                context.fill_rect(rect, area);
+                context.face(
+                    rect,
+                    area,
+                    self.style().surface.unwrap_or_default(),
+                    self.style().border_radius.unwrap_or(0),
+                    Color::BLACK,
+                );
             }
             Background::Gradient => {
                 // Draw gradient background: the work area eased into its own border, so the ramp

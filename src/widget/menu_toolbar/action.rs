@@ -436,7 +436,13 @@ impl Draw for Action {
         }
 
         if self.base.is_hovered() {
-            context.fill_rect(rect, highlight);
+            context.face(
+                rect,
+                highlight,
+                self.style().surface.unwrap_or_default(),
+                self.style().border_radius.unwrap_or(0),
+                Color::BLACK,
+            );
         }
 
         let font = Font::simple("sans-serif", 13.0);
