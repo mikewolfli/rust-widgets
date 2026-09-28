@@ -724,6 +724,12 @@ macro_rules! impl_properties_other {
         #[cfg(not(alloc_frugal))]
         pub(crate) const SEGMENTED_BUTTON_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
+            // The whole selection, comma-joined, which is the spelling `list_box`'s
+            // `selected_indices` and `tag_input`'s `tags` already use. Published because
+            // `selected_index` is the *primary* selection and cannot express the multi-select set
+            // that `allows_multiple` creates — the same gap `list_box` documents.
+            PropertySchema::new("selected_indices", PropertyValueKind::String, true, true),
+            PropertySchema::new("allows_multiple", PropertyValueKind::Bool, true, true),
             PropertySchema::new("segment_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),

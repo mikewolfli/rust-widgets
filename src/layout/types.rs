@@ -129,6 +129,33 @@ pub trait Layout {
         self.update(rect, out);
     }
 
+    /// [`arrange`](Self::arrange) with the device context available to it.
+    ///
+    /// # Why this exists rather than a context on `arrange`
+    ///
+    /// `arrange` is implemented by several layouts and called from a dozen places; widening its
+    /// signature would be the "76 mechanical migrations" shape this crate has already paid for
+    /// twice, and the context is only *needed* by the layouts that scale (and by the composite
+    /// builder, which applies the touch floor). A default body forwards to `arrange`, so every
+    /// existing implementation and caller is untouched and gets exactly its current behaviour.
+    ///
+    /// # Why the default forwards rather than scaling
+    ///
+    /// A layout that has not been taught about the device lays out by its nominal numbers. That is
+    /// the correct answer for it — inventing scaling in a default would apply `layout_scale` twice
+    /// to a layout whose own body already reads the context, and there is no way for this method to
+    /// tell which kind it is forwarding to.
+    fn arrange_with_context(
+        &self,
+        rect: Rect,
+        children: &[ChildInfo],
+        context: &LayoutContext,
+        out: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        let _ = context;
+        self.arrange(rect, children, out);
+    }
+
     /// Recompute child geometries from explicit position/size primitives.
     fn update_from_position_size(
         &self,

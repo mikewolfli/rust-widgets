@@ -429,8 +429,16 @@ impl Draw for RichEdit {
                 let line_end = line_start + line.len();
                 // Clamp the selection to this line, so a range spanning several lines highlights
                 // each of them only over its own part.
-                let from = start.max(line_start).min(line_end) - line_start;
-                let to = end.max(line_start).min(line_end) - line_start;
+                //
+                // The four offsets are byte indices, and `set_selection` only clamps them to the
+                // value's length — this file's own module docs say they are "not guaranteed to
+                // land on character boundaries". Slicing `line` at them would panic on a
+                // multi-byte character, so each is floored first (and the pair is re-ordered,
+                // since flooring can in principle collapse one onto the other).
+                let from = (start.max(line_start).min(line_end) - line_start).min(line.len());
+                let to = (end.max(line_start).min(line_end) - line_start).min(line.len());
+                let from = floor_char_boundary(line, from);
+                let to = floor_char_boundary(line, to);
                 if from < to {
                     let left = rect.x
                         + padding
@@ -535,10 +543,18 @@ impl crate::event::EventHandler for RichEdit {
                         self.cursor_position_changed.emit(new_cursor);
                     }
                     127 if cursor < self.text.len() => {
-                        // Delete — delete char after cursor
-                        let end = floor_char_boundary(&self.text, cursor + 1);
-                        // Ensure we advance at least one char
-                        let end = if end == cursor { cursor + 1 } else { end };
+                        // Delete — remove the whole *character* after the cursor.
+                        //
+                        // `floor_char_boundary(cursor + 1)` floors **down**, so for a multi-byte
+                        // character it returns `cursor` itself; the old `if end == cursor {
+                        // cursor + 1 }` fallback then invented a mid-character bound and `drain`
+                        // panicked on `"é"`. The next boundary is found by taking the *end* of the
+                        // first character after the caret, which is total for every value.
+                        let end = self.text[cursor..]
+                            .chars()
+                            .next()
+                            .map(|ch| cursor + ch.len_utf8())
+                            .unwrap_or(self.text.len());
                         let mut next = self.text.clone();
                         next.drain(cursor..end.min(self.text.len()));
                         self.set_text(next);
@@ -562,8 +578,18 @@ impl crate::event::EventHandler for RichEdit {
                         self.cursor_position_changed.emit(boundary);
                     }
                     39 if *modifiers == 0 && cursor < self.text.len() => {
-                        // Right arrow — move cursor right by one char
-                        let next = floor_char_boundary(&self.text, cursor + 1);
+                        // Right arrow — move cursor right by one *character*.
+                        //
+                        // `floor_char_boundary(cursor + 1)` floors down, so on a multi-byte
+                        // character it returned the caret's own position and the key did nothing —
+                        // the caret was stuck at the start of every `é`/han character. Taking the
+                        // first character's length advances past it, matching the Left arm above
+                        // and the Backspace/Delete arms, which are all character steps.
+                        let next = self.text[cursor..]
+                            .chars()
+                            .next()
+                            .map(|ch| cursor + ch.len_utf8())
+                            .unwrap_or(self.text.len());
                         self.selection = Some((next, next));
                         self.cursor_position_changed.emit(next);
                     }
@@ -876,5 +902,44 @@ mod tests {
         let _ = &re.selection_changed;
         let _ = &re.read_only_changed;
         let _ = &re.cursor_position_changed;
+    }
+
+    /// Delete removes the whole character after the caret, whatever its byte width.
+    ///
+    /// `floor_char_boundary(cursor + 1)` floors **down**, so for a multi-byte character it
+    /// returned the caret itself; the old "advance at least one" fallback then produced a
+    /// mid-character bound and `drain` panicked. On `"é"` this took the frame down.
+    #[test]
+    fn delete_removes_a_whole_multibyte_character() {
+        let mut re = RichEdit::new(Rect::new(0, 0, 300, 100));
+        re.set_text("éa".to_string());
+        re.set_selection(0, 0);
+        re.handle_event(&crate::event::Event::key_press(127, 0)); // Delete
+        assert_eq!(re.text(), "a", "the whole 'é' goes, not one byte of it");
+    }
+
+    /// The Right arrow advances past a multi-byte character instead of sticking on it.
+    ///
+    /// The same floor-down arithmetic returned the caret's own position, so the key was a no-op
+    /// at the start of every `é`/han character — the caret could never leave it.
+    #[test]
+    fn the_right_arrow_moves_past_a_multibyte_character() {
+        let mut re = RichEdit::new(Rect::new(0, 0, 300, 100));
+        re.set_text("éa".to_string());
+        re.set_selection(0, 0);
+        let moved = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
+        re.cursor_position_changed.connect({
+            let flag = std::sync::Arc::clone(&moved);
+            move |position| flag.store(*position, std::sync::atomic::Ordering::SeqCst)
+        });
+        re.handle_event(&crate::event::Event::key_press(39, 0)); // Right
+        assert_eq!(
+            moved.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "the caret advances by one character (two bytes for 'é')"
+        );
+        // And back again, one character at a time.
+        re.handle_event(&crate::event::Event::key_press(37, 0)); // Left
+        assert_eq!(re.selection(), Some((0, 0)));
     }
 }

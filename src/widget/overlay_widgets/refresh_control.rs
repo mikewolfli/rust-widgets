@@ -128,7 +128,7 @@ impl RefreshControl {
             self.base.remove_child(old);
         }
         self.content = Some(widget);
-        self.base.add_child(widget);
+        self.base.add_child_linked(widget);
         self.base.request_redraw();
     }
 

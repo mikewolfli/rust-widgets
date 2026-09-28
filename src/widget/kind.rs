@@ -95,7 +95,12 @@ pub enum WidgetKind {
     /// kind-role: base — a `Frame` is the drawing shell specialised controls
     /// embed; it publishes no capability of its own.
     Frame,
-    /// Dockable container that arranges child panels into docked regions.
+    /// A single dockable panel that holds one child widget and can sit at a dock edge.
+    ///
+    /// Alias target: `DockWidget` (`pub type DockPanel = DockWidget`), so this variant names the
+    /// same single-panel type under the `panel` spelling. It is **not** a multi-region container
+    /// that arranges several panels — an earlier doc comment here described one, which no type in
+    /// this crate implements.
     #[cfg(widgets_unstripped)]
     DockPanel,
     /// Frame with a title label drawn over its top border, grouping related controls.
@@ -235,7 +240,12 @@ pub enum WidgetKind {
     /// Individual panel that can be detached and re-docked inside a DockPanel.
     #[cfg(widgets_unstripped)]
     DockWidget,
-    /// Animated indicator shown while a background operation is running.
+    /// Progress indicator for a background operation.
+    ///
+    /// Alias target: `ProgressBar` (`pub type ActivityIndicator = ProgressBar`), and that alias is
+    /// **not** an animated spinner — it is a plain progress bar whose value the caller advances.
+    /// The earlier "Animated indicator" wording promised an animation the type does not have; a
+    /// caller wanting a spinner wants [`Self::Spinner`].
     #[cfg(widgets_unstripped)]
     ActivityIndicator,
     /// Month grid for browsing and selecting calendar dates.
@@ -389,10 +399,12 @@ pub enum WidgetKind {
     /// MasonryLayout widget — a Pinterest-style waterfall grid layout.
     #[cfg(widgets_unstripped)]
     MasonryLayout,
-    /// CupertinoSwitch — iOS-style switch (alias for Switch with iOS coloring).
+    /// CupertinoSwitch — iOS-style switch.
     ///
-    /// kind-role: base — the kind is reported by the `switch` control when it is
-    /// configured with iOS styling; there is no separate constructor.
+    /// It **does** have its own capability row and constructor
+    /// (`cupertino_switch_capability` / `create_cupertino_switch`), and `switch_capability`
+    /// deliberately does not alias it. An earlier comment here claimed the kind was reported by
+    /// `switch` with iOS styling and that "there is no separate constructor" — both false.
     #[cfg(widgets_unstripped)]
     CupertinoSwitch,
     /// MaterialSnackbar — Material Design snackbar notification.
@@ -420,6 +432,12 @@ pub enum WidgetKind {
     #[cfg(widgets_unstripped)]
     Tooltip,
     /// SegmentedButton — a horizontal group of selectable segments (Material 3 style).
+    ///
+    /// Distinct from [`Self::SegmentedControl`]: this one's segments carry an `id` and an icon and
+    /// it supports multi-select, whereas `SegmentedControl`'s carry an id and a label and it is
+    /// single-select with a sliding indicator. `SegmentedControl` used to report **this** kind,
+    /// which made `capability_by_kind` ambiguous between two controls and gave the accessibility
+    /// role of a segmented control the answer for a toggle button.
     #[cfg(widgets_unstripped)]
     SegmentedButton,
     /// NavigationStack — a push/pop page navigation container.
@@ -624,4 +642,19 @@ pub enum WidgetKind {
     /// highlight while a compatible drag is over it.
     #[cfg(widgets_unstripped)]
     DropZone,
+    /// SegmentedControl — a single-select segmented bar whose indicator slides between segments.
+    ///
+    /// Distinct from [`Self::SegmentedButton`] (see there) and from
+    /// [`Self::CupertinoSegmentedControl`], which is the iOS-styled rendition of this control.
+    ///
+    /// # Why the variant is declared last
+    ///
+    /// `WidgetKind`'s declaration order reaches further than it looks: it is the iteration order of
+    /// several `match`-free scans and, through `kind_canonical_name`, the order names are produced
+    /// in. Inserting a variant in the middle therefore reshuffled unrelated controls' rendering —
+    /// measured: adding this one next to `SegmentedButton` moved `calendar`'s selected-day highlight
+    /// by one column in its snapshot. Appending keeps every previously-declared variant at its old
+    /// position, so adding a control cannot rearrange the ones already there.
+    #[cfg(widgets_unstripped)]
+    SegmentedControl,
 }

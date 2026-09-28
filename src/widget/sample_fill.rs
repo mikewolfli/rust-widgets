@@ -168,6 +168,13 @@ pub fn apply(name: &str, widget: &mut dyn Widget) -> bool {
                 match chrono::NaiveDate::from_ymd_opt(2026, 9, 16) {
                     Some(sample_day) => {
                         calendar.set_selected_date(sample_day);
+                        // `today` is pinned to the same day. It **used** to be read from the wall
+                        // clock inside `draw`, so the accent-tinted "today" cell moved at every
+                        // midnight and this file's committed bytes changed with no edit to explain
+                        // it — the same rotation the `selected_date` pin above exists to stop, left
+                        // unfixed for the other clock read. Pinning it makes the picture a function
+                        // of this fixture alone.
+                        calendar.set_today(sample_day);
                         // The week-number gutter is turned on for the sample: it is the one of the
                         // four visibility flags that is off by default, so leaving it off means the
                         // census never sees it painted at all -- and a feature no snapshot covers
@@ -691,6 +698,21 @@ mod tests {
         );
         // The displayed month follows the selection, so the grid shows the pinned month too.
         assert_eq!(calendar.display_month(), calendar.selected_date());
+        // And the **today** accent is pinned to the same day. `draw` used to read the wall clock
+        // itself, so this cell moved at every midnight even with the selection pinned above — the
+        // snapshot was still date-dependent, just less obviously so. Without this assertion that
+        // half of the rotation is free to come back.
+        assert_eq!(
+            calendar.today(),
+            chrono::NaiveDate::from_ymd_opt(2026, 9, 16).expect("a valid literal date"),
+            "the painted day must come from the fixture too, or the picture rotates nightly"
+        );
+
+        // Redrawing on a different wall-clock day must not change a single byte: that is the
+        // property the pin exists for. The `today` field is the only clock-derived input left.
+        let once = crate::widget::svg::render_to_svg(&mut calendar);
+        let twice = crate::widget::svg::render_to_svg(&mut calendar);
+        assert_eq!(once, twice, "a pinned calendar renders identically on every draw");
     }
 
     /// The table's two routes expose the same data, so `data_grid.svg` and `table_widget.svg` differ only

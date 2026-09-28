@@ -483,7 +483,6 @@ impl WidgetProperties for AutoCompleteEdit {
 impl Draw for AutoCompleteEdit {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        let is_enabled = self.base.is_enabled();
 
         // Chrome colours resolve explicit style first, then the theme's resolved style
         // for this control, and only then fall back to a literal. Without the theme step
@@ -507,6 +506,11 @@ impl Draw for AutoCompleteEdit {
             .text_color
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
             .unwrap_or(Color::BLACK);
+        // The surface the field sits on, for the *disabled* rules below: a disabled ink recedes
+        // toward the field's contrast colour and a disabled fill toward the window it is painted on.
+        let window_fill = crate::style::resolved_theme_style("window")
+            .and_then(|theme| theme.background_color)
+            .unwrap_or(field_background);
         // The list is chrome of the same family as the field it drops from: its fill
         // and its ink are the resolved field colours, so both move with the appearance.
         let dropdown_background = if style.background_color.is_some() || theme.is_some() {
@@ -517,7 +521,9 @@ impl Draw for AutoCompleteEdit {
         let dropdown_text = text_color;
 
         // Background
-        let bg_color = if is_enabled { field_background } else { Color::rgba(240, 240, 240, 255) };
+        // A disabled field recedes toward the window rather than snapping to a fixed near-white
+        // slab, which on a dark theme made a disabled field the brightest thing on screen.
+        let bg_color = self.base.disabled_surface_near(field_background, window_fill);
         context.fill_rounded_rect(rect, 4, bg_color);
 
         // Border
@@ -534,10 +540,10 @@ impl Draw for AutoCompleteEdit {
         // hint stays legible on either appearance.
         let input_text_color = if self.text.is_empty() {
             text_color.blend(&field_background, 0.4)
-        } else if is_enabled {
-            text_color
         } else {
-            Color::rgba(160, 160, 160, 255)
+            // Both branches step off the surface; the disabled one used a fixed grey that never
+            // moved with the appearance.
+            self.base.disabled_ink_on(text_color, bg_color)
         };
         context.draw_text(
             Point::new(text_x, text_y),

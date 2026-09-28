@@ -265,6 +265,95 @@ impl BaseWidget {
         let _ = self.try_add_child(child);
     }
 
+    /// Links `child` under this widget in **both** directions, and reports whether it was stored.
+    ///
+    /// # Why this exists next to [`BaseWidget::add_child`]
+    ///
+    /// `add_child` appends to this widget's list and, by its own documentation, deliberately does
+    /// not touch the child's parent link — and `set_parent` symmetrically does not update any child
+    /// list. That is the right design *for `BaseWidget`*: it owns no registry, so it cannot reach
+    /// the child to write the other half. The consequence, though, is that every host which puts a
+    /// child on the tree has to remember both writes, and BLUE22 §B.6 rule 5 exists because eight
+    /// of them did not:
+    ///
+    /// * `window`, `popup_window`, `tab_widget` (`add_tab`, `insert_tab`), `tool_box`
+    ///   (`add_item`, `insert_item`), `mdi_area` (`add_sub_window`), `collapsible_pane`,
+    ///   `stacked_widget` (`add_widget`, `insert_widget`) and `refresh_control` each wrote the
+    ///   child list alone.
+    ///
+    /// The visible effect is that the child believes it has no parent, so no tree walk descending
+    /// from the root — drawing, hit-testing, focus discovery, the accessibility submit — ever
+    /// reaches it. The control is on screen and unreachable.
+    ///
+    /// This is that second write, named, so a host has one call to make instead of a rule to
+    /// remember. It reports `false` when the child list refused the id (the mini profile's fixed
+    /// capacity), and in that case it does **not** set the parent: a child whose parent claims it
+    /// but whose name is in no list is the same orphan from the other side.
+    ///
+    /// # Why the child is reached through the runtime
+    ///
+    /// `BaseWidget` holds only an `ObjectId`, so the parent half lives on the *child's own* base.
+    /// The lookup is a no-op when the child is not mounted — a host built and linked before its
+    /// children exist is a supported order, and it must not panic.
+    ///
+    /// # Why the alloc-frugal profile refuses rather than half-links
+    ///
+    /// `widget::runtime` is compiled out of the mini/embedded profiles, so there is no registry to
+    /// reach a child through and the parent half of the link cannot be written at all. Recording
+    /// the id in the child list anyway would produce exactly the state this method exists to
+    /// prevent — a child that is on screen, in a list, and reachable by no walk — so the call
+    /// reports `false` and writes nothing. Callers already treat `false` as "the link was not
+    /// made" (the capacity arm returns it for the same reason), and those profiles pair children
+    /// through the platform's own container APIs instead of this base.
+    pub fn add_child_linked(&mut self, child: ObjectId) -> bool {
+        if child == 0 || child == self.id() {
+            return false;
+        }
+        #[cfg(alloc_frugal)]
+        {
+            // No registry to reach the child through — see the note above.
+            let _ = child;
+            false
+        }
+        #[cfg(not(alloc_frugal))]
+        {
+            if !self.try_add_child(child) {
+                return false;
+            }
+            let parent = self.id();
+            crate::widget::runtime::with_widget_mut(child, |child| {
+                child.set_parent(Some(parent));
+            });
+            true
+        }
+    }
+
+    /// Unlinks `child` from both directions, mirroring [`BaseWidget::add_child_linked`].
+    ///
+    /// # Why the parent link is cleared to `None` rather than left alone
+    ///
+    /// A removed child that still names a parent is an orphan that claims a home: a walk that
+    /// reaches it from anywhere else believes it is still attached, and `parent()` answers with a
+    /// container whose child list no longer contains it. Clearing the link is what makes removal
+    /// observable from both sides.
+    ///
+    /// The list half is written in every profile; only the parent half needs the registry, which
+    /// the alloc-frugal profiles compile out. There the entry is removed and the child's link is
+    /// left as it was — the best that profile can do, and stated here rather than silently skipped.
+    ///
+    /// Returns whether the child was in this widget's list.
+    pub fn remove_child_linked(&mut self, child: ObjectId) -> bool {
+        let removed = self.children().contains(&child);
+        self.remove_child(child);
+        #[cfg(not(alloc_frugal))]
+        if removed {
+            crate::widget::runtime::with_widget_mut(child, |child| {
+                child.set_parent(None);
+            });
+        }
+        removed
+    }
+
     /// Appends `child`, reporting whether it was stored.
     ///
     /// Returns `true` on desktop builds (unbounded) and on the mini profile while the list has
@@ -1098,6 +1187,67 @@ mod tests {
                 assert!(parent.try_add_child(9999));
             }
         }
+    }
+
+    /// **The BLUE22 §B.6 rule-5 defect this closes.** A paired link must be paired.
+    ///
+    /// `add_child` appends to the parent's list and, by its own documentation, leaves the child's
+    /// parent link alone; `set_parent` symmetrically does not walk back. A host that wrote one side
+    /// only left a child believing it had no parent — so no tree walk descending from the root
+    /// (drawing, hit-testing, focus, accessibility) could ever reach it. The control was on screen
+    /// and unreachable.
+    ///
+    /// Eight hosts were in exactly that state (`window`, `popup_window`, `tab_widget`, `tool_box`,
+    /// `mdi_area`, `collapsible_pane`, `stacked_widget`, `refresh_control`, plus `frame` and
+    /// `dock_widget`), which is why the pairing is now one call rather than a rule to remember.
+    ///
+    /// This drives the real registry, so it also proves the runtime lookup the primitive makes is
+    /// the one that finds the child.
+    #[test]
+    fn adding_a_child_linked_writes_both_directions() {
+        let parent_id = crate::widget::runtime::register(crate::compat::Box::new(
+            crate::widget::Panel::new(crate::core::Rect::new(0, 0, 10, 10)),
+        ))
+        .expect("a widget runtime exists in this profile");
+        let child_id = crate::widget::runtime::register(crate::compat::Box::new(
+            crate::widget::Panel::new(crate::core::Rect::new(0, 0, 4, 4)),
+        ))
+        .expect("a widget runtime exists in this profile");
+
+        let mut parent = make_base();
+        // `add_child_linked` reaches the child through the runtime, so it must be told the real id.
+        // The base under test is a standalone one, which is exactly the shape a host has before it
+        // is mounted; the primitive must therefore work from any base, not only a mounted one.
+        assert!(parent.add_child_linked(child_id), "the child list accepted the id");
+        assert!(parent.children().contains(&child_id), "the parent lists the child");
+        let reported = crate::widget::runtime::with_widget(child_id, |child| child.parent())
+            .expect("the child is mounted");
+        assert_eq!(
+            reported,
+            Some(parent.id()),
+            "the child must name the parent, or a walk from the root cannot reach it"
+        );
+
+        // Removal must clear both sides too: an orphan that still names a parent is the same
+        // defect from the other direction.
+        assert!(parent.remove_child_linked(child_id));
+        assert!(!parent.children().contains(&child_id));
+        let after = crate::widget::runtime::with_widget(child_id, |child| child.parent())
+            .expect("the child is mounted");
+        assert_eq!(after, None, "a removed child must not still claim a parent");
+
+        let _ = crate::widget::runtime::unregister(parent_id);
+        let _ = crate::widget::runtime::unregister(child_id);
+    }
+
+    /// A self-parent and the `0` sentinel are refused, so a link cannot make a cycle root.
+    #[test]
+    fn a_child_linked_cannot_be_zero_or_the_widget_itself() {
+        let mut parent = make_base();
+        assert!(!parent.add_child_linked(0), "0 addresses no widget");
+        assert!(parent.children().is_empty());
+        assert!(!parent.add_child_linked(parent.id()), "a widget cannot parent itself");
+        assert!(parent.children().is_empty());
     }
 
     /// A tooltip longer than the buffer keeps a prefix rather than vanishing.

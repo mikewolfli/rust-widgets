@@ -21,13 +21,14 @@ pub use app_core::{App, AppConfig};
 #[cfg(test)]
 pub(crate) use handle::set_widget_value_callback as handle_set_widget_value_callback;
 pub use handle::{
-    dispatch_trigger, drain_triggers, ButtonHandle, CheckBoxHandle, CheckState, ComboBoxHandle,
-    CustomWidgetHandle, CustomWidgetMountError, DialogHandle, EchoMode, FrameHandle,
-    GridWidgetHandle, LabelHandle, LineEditHandle, ListBoxHandle, ListModel, ListViewHandle,
-    MenuBarHandle, MenuHandle, MenuItemHandle, MessageBoxHandle, PanelHandle, ProgressBarHandle,
-    RadioButtonHandle, ScrollAreaHandle, ScrollBarHandle, SelectionMode, SliderHandle,
-    SpinBoxHandle, StatusBarHandle, SurfaceHandle, SurfaceMountError, TabWidgetHandle,
-    TextEditHandle, ToolBarHandle, WebViewHandle, WidgetHandle, WindowHandle,
+    dispatch_trigger, drain_triggers, reset_unwired_binding_count, unwired_binding_count,
+    ButtonHandle, CheckBoxHandle, CheckState, ComboBoxHandle, CustomWidgetHandle,
+    CustomWidgetMountError, DialogHandle, EchoMode, FrameHandle, GridWidgetHandle, LabelHandle,
+    LineEditHandle, ListBoxHandle, ListModel, ListViewHandle, MenuBarHandle, MenuHandle,
+    MenuItemHandle, MessageBoxHandle, PanelHandle, ProgressBarHandle, RadioButtonHandle,
+    ScrollAreaHandle, ScrollBarHandle, SelectionMode, SliderHandle, SpinBoxHandle, StatusBarHandle,
+    SurfaceHandle, SurfaceMountError, TabWidgetHandle, TextEditHandle, ToolBarHandle,
+    WebViewHandle, WidgetHandle, WindowHandle,
 };
 pub use lifecycle::*;
 

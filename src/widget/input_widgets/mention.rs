@@ -45,6 +45,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::text_utils::floor_char_boundary;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -277,12 +278,12 @@ impl Mention {
     }
 
     /// The byte offset of the character boundary before `index`.
+    ///
+    /// Delegates to the crate's shared [`floor_char_boundary`]: the walk is identical, and this
+    /// file already imports the byte/character helpers for `insert_char`. A second copy of the
+    /// same primitive is a second place for it to be wrong.
     fn previous_char_boundary(&self, index: usize) -> usize {
-        let mut cursor = index.saturating_sub(1);
-        while cursor > 0 && !self.text.is_char_boundary(cursor) {
-            cursor -= 1;
-        }
-        cursor
+        floor_char_boundary(&self.text, index.saturating_sub(1))
     }
 
     /// Moves the caret one character left.

@@ -27,6 +27,25 @@ pub enum RowSizing {
     Fixed(u32),
 }
 
+/// A child placed at an explicit cell, occupying `col_span` columns and `row_span` rows.
+///
+/// # Why a placement carries spans
+///
+/// The grid's cell array holds one widget per cell, so a widget that spans two columns
+/// has no single cell to sit in. The span was previously expressible in JSON (`col_span`,
+/// `row_span`) and parsed, but the layout had no way to receive it — so the keys were
+/// read and dropped. Keeping the span next to the origin makes "this widget occupies
+/// (row..row+row_span, col..col+col_span)" one fact rather than three that can disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GridPlacement {
+    /// The widget placed at the origin cell.
+    widget_id: ObjectId,
+    /// Columns covered — at least 1, clamped to the grid's column count at insertion.
+    col_span: u32,
+    /// Rows covered — at least 1, clamped to the grid's row count at insertion.
+    row_span: u32,
+}
+
 /// Fixed-grid layout manager with row/column cell placement.
 pub struct GridLayout {
     rows: u32,
@@ -36,7 +55,7 @@ pub struct GridLayout {
     column_stretches: Vec<u32>,
     row_stretches: Vec<u32>,
     row_sizing: RowSizing,
-    cells: Vec<Option<ObjectId>>,
+    cells: Vec<Option<GridPlacement>>,
 }
 impl GridLayout {
     /// Create a grid layout with fixed rows/columns.
@@ -73,19 +92,160 @@ impl GridLayout {
         self.row_sizing = sizing;
     }
 
+    /// Grows the grid so `row` is addressable, if it is not already.
+    ///
+    /// # Why a grid needs this at all
+    ///
+    /// A `Grid` is constructed with one row and "the row count grows as children are added"
+    /// — but the growth used to happen only inside `add_widget`'s own placement. A caller
+    /// placing a widget at an **explicit** cell bypasses that path entirely, so a document
+    /// saying `"row": 1` against the freshly built one-row grid was refused: the cell it named
+    /// did not exist yet, and the widget silently vanished from the arrangement. That is the
+    /// same class of defect as the dropped `col`/`row` keys — a placement the caller asked for
+    /// and did not get, with nothing said about it.
+    ///
+    /// Existing children and their stretches are preserved; a new column's stretch defaults to
+    /// the same `1` a fresh grid gives it. Shrinking is not offered, because discarding occupied
+    /// cells is a decision the caller must make explicitly through `remove_widget`.
+    ///
+    /// Returns whether the grid grew.
+    pub fn grow_to_fit(&mut self, row: u32, col: u32) -> bool {
+        let needed_rows = row.saturating_add(1);
+        let needed_cols = col.saturating_add(1);
+        if needed_rows <= self.rows && needed_cols <= self.cols {
+            return false;
+        }
+        let new_rows = self.rows.max(needed_rows);
+        let new_cols = self.cols.max(needed_cols);
+        let mut grown = vec![None; new_rows.saturating_mul(new_cols).min(1_000_000) as usize];
+        for r in 0..self.rows {
+            for c in 0..self.cols {
+                let from = r.saturating_mul(self.cols).saturating_add(c) as usize;
+                let to = r.saturating_mul(new_cols).saturating_add(c) as usize;
+                if let (Some(placement), Some(slot)) =
+                    (self.cells.get(from).copied().flatten(), grown.get_mut(to))
+                {
+                    *slot = Some(placement);
+                }
+            }
+        }
+        self.cells = grown;
+        self.rows = new_rows;
+        self.cols = new_cols;
+        self.row_stretches.resize(new_rows as usize, 1);
+        self.column_stretches.resize(new_cols as usize, 1);
+        true
+    }
+
     /// Returns the current row-sizing rule.
     pub fn row_sizing(&self) -> RowSizing {
         self.row_sizing
     }
 
-    /// Assign widget to explicit cell.
+    /// Assign widget to explicit cell, occupying one column and one row.
     pub fn set_widget(&mut self, row: u32, col: u32, widget_id: ObjectId) {
-        if row < self.rows && col < self.cols {
-            let index = row.saturating_mul(self.cols).saturating_add(col) as usize;
-            if index < self.cells.len() {
-                self.cells[index] = Some(widget_id);
+        self.set_widget_spanning(row, col, 1, 1, widget_id);
+    }
+
+    /// Assign widget to an explicit cell that spans `col_span` columns and `row_span` rows.
+    ///
+    /// A span is clamped to the space **still available** from the origin, not to the grid's
+    /// total: a widget declared at the last column with a `col_span` of 3 cannot reach past the
+    /// edge, and clamping to the total instead would silently place it over cells that belong to
+    /// other widgets. A span of `0` is read as `1` — "span no columns" is not a placement, and the
+    /// one honest reading of it is the single-cell default.
+    ///
+    /// A wide widget must occupy its whole rectangle, not just its origin cell, or a later
+    /// `set_widget` would place a second widget in the area the first already covers.
+    ///
+    /// # An out-of-range cell grows the grid
+    ///
+    /// A grid starts as one row and grows as children arrive; a caller that places at an
+    /// explicit cell is doing the growing itself, so an unreachable cell is grown up to rather
+    /// than refused. Refusing was the behaviour that lost the widget entirely.
+    ///
+    /// A **uniform** grid must not grow — its dimensions are the point of the type — so
+    /// [`UniformGridLayout`](crate::layout::UniformGridLayout) uses
+    /// [`place_within_extent`](Self::place_within_extent) instead.
+    pub fn set_widget_spanning(
+        &mut self,
+        row: u32,
+        col: u32,
+        col_span: u32,
+        row_span: u32,
+        widget_id: ObjectId,
+    ) {
+        self.grow_to_fit(row, col);
+        if row >= self.rows || col >= self.cols {
+            // `grow_to_fit` only fails to cover the cell in the truncated cell-array case, where
+            // the requested index is past the cap. There is genuinely no cell to write, so the
+            // placement is refused — and the cap is the reason, not the caller's index.
+            log::warn!(
+                "GridLayout: cell ({row}, {col}) is past the grid's cell cap of 1,000,000; the \
+                 placement is dropped"
+            );
+            return;
+        }
+        let col_span = col_span.max(1).min(self.cols - col);
+        let row_span = row_span.max(1).min(self.rows - row);
+        let placement = GridPlacement { widget_id, col_span, row_span };
+        for r in row..row + row_span {
+            for c in col..col + col_span {
+                let index = r.saturating_mul(self.cols).saturating_add(c) as usize;
+                if index < self.cells.len() {
+                    self.cells[index] = Some(placement);
+                }
             }
         }
+    }
+
+    /// Places a widget at an explicit cell that must already exist.
+    ///
+    /// # Why a caller would want the refusing variant
+    ///
+    /// [`set_widget_spanning`](Self::set_widget_spanning) grows the grid to reach the cell it was
+    /// given, which is right for a grid whose row count is "as many as there are children". It is
+    /// wrong for a grid whose dimensions are fixed by the caller — a uniform grid, where growing
+    /// would silently undo the sizes the caller chose. This variant refuses an out-of-range cell so
+    /// the fixed-dimension case can share the cell array without sharing the growth.
+    ///
+    /// Returns whether the placement was made.
+    pub fn place_within_extent(
+        &mut self,
+        row: u32,
+        col: u32,
+        col_span: u32,
+        row_span: u32,
+        widget_id: ObjectId,
+    ) -> bool {
+        if row >= self.rows || col >= self.cols {
+            return false;
+        }
+        let col_span = col_span.max(1).min(self.cols - col);
+        let row_span = row_span.max(1).min(self.rows - row);
+        let placement = GridPlacement { widget_id, col_span, row_span };
+        for r in row..row + row_span {
+            for c in col..col + col_span {
+                let index = r.saturating_mul(self.cols).saturating_add(c) as usize;
+                if index < self.cells.len() {
+                    self.cells[index] = Some(placement);
+                }
+            }
+        }
+        true
+    }
+
+    /// The cell `widget_id` is anchored at, as `(row, col)`, when it was placed.
+    ///
+    /// A spanning widget occupies several cells; this reports the top-left one — the position
+    /// its geometry is derived from — rather than whichever cell happens to be scanned first.
+    pub fn cell_of(&self, widget_id: ObjectId) -> Option<(u32, u32)> {
+        self.cells.iter().enumerate().find_map(|(index, cell)| match cell {
+            Some(placement) if placement.widget_id == widget_id => {
+                Some((index as u32 / self.cols, index as u32 % self.cols))
+            }
+            _ => None,
+        })
     }
     /// Returns the number of occupied cells (widgets placed in grid).
     pub fn cell_count(&self) -> usize {
@@ -175,23 +335,61 @@ impl Layout for GridLayout {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
+    /// Auto-placement: the next free cell, one cell in size. A child that wants an explicit
+    /// cell or a span is placed with `set_widget`/`set_widget_spanning` before the layout runs;
+    /// the declarative loader does exactly that for `col`/`row`/`col_span`/`row_span`.
+    ///
+    /// # Why this grows the grid
+    ///
+    /// A grid of `columns` columns and one row grows as children arrive, so a sixth child in a
+    /// two-column grid needs a third row to exist. Without the growth the cell it should occupy
+    /// is outside the array, and the child would be reported in `child_ids` (which reads the
+    /// array, so no) — it would simply disappear from the arrangement. The growth is here rather
+    /// than in the caller because auto-placement is the one path that *chooses* the cell.
     fn add_widget(&mut self, widget_id: ObjectId, _stretch: u32) {
-        if let Some(slot) = self.cells.iter_mut().find(|cell| cell.is_none()) {
-            *slot = Some(widget_id);
+        if let Some(index) = self.cells.iter().position(|cell| cell.is_none()) {
+            self.cells[index] = Some(GridPlacement { widget_id, col_span: 1, row_span: 1 });
+            return;
+        }
+        // Every existing cell is taken: append a fresh row and use its first cell. The new row
+        // is one cell wide per column, so the widget lands at `(rows - 1, 0)` after the grow.
+        let grown = self.grow_to_fit(self.rows, 0);
+        if !grown {
+            log::warn!(
+                "GridLayout: no free cell for widget {widget_id} and the grid cannot grow past its \
+                 cell cap; the widget was not placed"
+            );
+            return;
+        }
+        let index = self.rows.saturating_sub(1).saturating_mul(self.cols) as usize;
+        if let Some(slot) = self.cells.get_mut(index) {
+            *slot = Some(GridPlacement { widget_id, col_span: 1, row_span: 1 });
         }
     }
     fn remove_widget(&mut self, widget_id: ObjectId) {
+        // Every cell the widget occupies is cleared, not just its origin: a spanning widget
+        // would otherwise leave its other cells holding a placement for a widget that is no
+        // longer a child, so the cell would never be offered to an auto-placed sibling.
         for cell in &mut self.cells {
-            if *cell == Some(widget_id) {
+            if cell.is_some_and(|placement| placement.widget_id == widget_id) {
                 *cell = None;
             }
         }
     }
     fn child_ids(&self) -> Vec<ObjectId> {
-        self.cells.iter().filter_map(|cell| *cell).collect()
+        // One id per **widget**, not per occupied cell: a spanning widget covers several cells
+        // and must not be reported several times, which is what turns a child count into a
+        // number larger than the number of children.
+        let mut ids: Vec<ObjectId> = Vec::new();
+        for cell in self.cells.iter().flatten() {
+            if !ids.contains(&cell.widget_id) {
+                ids.push(cell.widget_id);
+            }
+        }
+        ids
     }
     fn has_child(&self, id: ObjectId) -> bool {
-        self.cells.contains(&Some(id))
+        self.cells.iter().flatten().any(|placement| placement.widget_id == id)
     }
     fn clear(&mut self) {
         self.cells.fill(None);
@@ -322,17 +520,37 @@ impl Layout for GridLayout {
             current_y += row_heights[row as usize] as i32 + spacing_y as i32;
         }
 
+        // A spanning widget covers several cells and therefore appears in each of them; it is
+        // emitted once, from its origin (top-left) cell, with the widths and heights of the
+        // cells it covers summed plus the spacing it bridges. Emitting it from every covered
+        // cell would report one widget several times at several positions, and the last write
+        // would win arbitrarily.
+        let mut emitted: Vec<ObjectId> = Vec::new();
         for row in 0..self.rows {
             for col in 0..self.cols {
-                if let Some(widget_id) =
+                let Some(placement) =
                     self.cells.get((row * self.cols + col) as usize).copied().flatten()
-                {
-                    let cell_width = col_widths[col as usize];
-                    let cell_height = row_heights[row as usize];
-                    let x = rect.x + margin as i32 + col_x_offsets[col as usize];
-                    let y = rect.y + margin as i32 + row_y_offsets[row as usize];
-                    widgets(widget_id, Rect::new(x, y, cell_width, cell_height));
+                else {
+                    continue;
+                };
+                if placement.widget_id == 0 || emitted.contains(&placement.widget_id) {
+                    continue;
                 }
+                if self.cell_of(placement.widget_id) != Some((row, col)) {
+                    continue;
+                }
+                emitted.push(placement.widget_id);
+
+                let last_col = (col + placement.col_span - 1).min(self.cols - 1);
+                let last_row = (row + placement.row_span - 1).min(self.rows - 1);
+                let cell_width: u32 = (col..=last_col).map(|c| col_widths[c as usize]).sum::<u32>()
+                    + spacing_x * (last_col - col);
+                let cell_height: u32 =
+                    (row..=last_row).map(|r| row_heights[r as usize]).sum::<u32>()
+                        + spacing_y * (last_row - row);
+                let x = rect.x + margin as i32 + col_x_offsets[col as usize];
+                let y = rect.y + margin as i32 + row_y_offsets[row as usize];
+                widgets(placement.widget_id, Rect::new(x, y, cell_width, cell_height));
             }
         }
     }
@@ -450,5 +668,147 @@ mod tests {
     #[test]
     fn the_default_row_sizing_is_fill() {
         assert_eq!(GridLayout::new(2, 2, 0, 0).row_sizing(), RowSizing::Fill);
+    }
+
+    /// **The defect this pins.** A widget placed with `col_span` must be as wide as the
+    /// cells it covers, plus the spacing it bridges.
+    ///
+    /// The span was previously unrepresentable: a cell held one `ObjectId`, so the only
+    /// possible answer for a spanning child was the width of its origin cell. A document
+    /// could write `col_span: 3` and get a third of the width it asked for, with nothing
+    /// reporting that the key had been discarded.
+    #[test]
+    fn a_spanning_widget_covers_every_cell_it_was_given() {
+        let spacing = 10;
+        let mut grid = GridLayout::new(2, 3, spacing, 0);
+        grid.set_widget_spanning(0, 0, 3, 1, 7);
+        grid.set_widget_spanning(1, 0, 1, 1, 8);
+        grid.set_widget_spanning(1, 1, 1, 1, 9);
+        grid.set_widget_spanning(1, 2, 1, 1, 10);
+
+        let page = Rect::new(0, 0, 320, 100);
+        let out = placed(&grid, page);
+
+        let span = rect_of(&out, 7);
+        let single_a = rect_of(&out, 8);
+        let single_c = rect_of(&out, 10);
+
+        assert_eq!(span.x, single_a.x, "a span starts at the left edge of its origin cell");
+        // Three cells plus the two gaps they bridge: the right edge of the last covered
+        // cell. Comparing edges rather than widths is what makes this a statement about
+        // coverage instead of about arithmetic that could be wrong in one place only.
+        assert_eq!(
+            span.x + span.width as i32,
+            single_c.x + single_c.width as i32,
+            "a three-column span must reach the right edge of the third column"
+        );
+        assert_eq!(
+            span.width,
+            3 * single_a.width + 2 * spacing,
+            "the span bridges the spacing between the cells it covers"
+        );
+    }
+
+    /// A widget is reported once, at its origin, however many cells it covers.
+    ///
+    /// A spanning widget occupies several cells; emitting it from each of them would
+    /// report one widget several times at overlapping positions, and whichever write
+    /// landed last would win arbitrarily.
+    #[test]
+    fn a_spanning_widget_is_reported_once_at_its_origin() {
+        let mut grid = GridLayout::new(2, 2, 0, 0);
+        grid.set_widget_spanning(0, 0, 2, 2, 42);
+
+        let out = placed(&grid, Rect::new(0, 0, 200, 200));
+        assert_eq!(out.len(), 1, "one widget, one geometry: {out:?}");
+        assert_eq!(out[0].0, 42);
+        assert_eq!(out[0].1, Rect::new(0, 0, 200, 200), "a 2x2 span fills the whole rect");
+
+        assert_eq!(grid.child_ids(), vec![42], "a spanning widget is one child, not four");
+        assert!(grid.has_child(42));
+        assert_eq!(grid.cell_of(42), Some((0, 0)));
+    }
+
+    /// A span is clamped to the space still available from its origin.
+    ///
+    /// Clamping to the grid's total instead let a widget at the last column claim three
+    /// columns' worth of width, so it overlapped cells that belong to other widgets.
+    #[test]
+    fn a_span_is_clamped_to_the_remaining_cells() {
+        let mut grid = GridLayout::new(1, 3, 0, 0);
+        grid.set_widget_spanning(0, 2, 5, 1, 5);
+        grid.set_widget(0, 0, 1);
+        grid.set_widget(0, 1, 2);
+
+        let out = placed(&grid, Rect::new(0, 0, 300, 100));
+        assert_eq!(rect_of(&out, 5), Rect::new(200, 0, 100, 100), "one column was left");
+        assert_eq!(rect_of(&out, 2).x + rect_of(&out, 2).width as i32, 200, "no overlap");
+    }
+
+    /// A zero span is read as one cell: "cover no cells" is not a placement.
+    #[test]
+    fn a_zero_span_is_read_as_one_cell() {
+        let mut grid = GridLayout::new(1, 2, 0, 0);
+        grid.set_widget_spanning(0, 0, 0, 0, 3);
+        let out = placed(&grid, Rect::new(0, 0, 200, 50));
+        assert_eq!(rect_of(&out, 3).width, 100);
+        assert_eq!(grid.cell_of(3), Some((0, 0)));
+    }
+
+    /// Removing a spanning widget frees every cell it covered.
+    ///
+    /// Clearing only the origin left the other cells holding a placement for a widget
+    /// that is no longer a child, so the cell was never offered to an auto-placed sibling.
+    #[test]
+    fn removing_a_spanning_widget_frees_all_of_its_cells() {
+        let mut grid = GridLayout::new(1, 3, 0, 0);
+        grid.set_widget_spanning(0, 0, 3, 1, 77);
+        grid.remove_widget(77);
+
+        assert_eq!(grid.cell_count(), 0, "every covered cell must be free again");
+        assert!(!grid.has_child(77));
+        assert!(grid.child_ids().is_empty());
+
+        // The freed cells are usable: an auto-placed child lands in the first of them.
+        grid.add_widget(78, 0);
+        assert_eq!(grid.cell_of(78), Some((0, 0)));
+    }
+
+    /// A placement past the current extent **grows** the grid rather than being refused.
+    ///
+    /// # The defect this pins
+    ///
+    /// A grid is built with one row and grows as children arrive — but the growth lived only in
+    /// `add_widget`'s auto-placement. A caller placing at an **explicit** cell bypasses that path,
+    /// so `"row": 1` against the freshly built one-row grid named a cell that did not exist and
+    /// the widget vanished from the arrangement without a diagnostic. That is the same failure as
+    /// the dropped `col`/`row` keys: a placement that was asked for and not delivered.
+    #[test]
+    fn a_placement_past_the_extent_grows_the_grid_instead_of_vanishing() {
+        let mut grid = GridLayout::new(1, 2, 0, 0);
+        grid.set_widget_spanning(3, 1, 1, 1, 99);
+
+        assert_eq!(grid.rows(), 4, "the grid must reach row 3");
+        assert_eq!(grid.cols(), 2, "the column count is already sufficient");
+        assert_eq!(grid.cell_of(99), Some((3, 1)), "the widget lands where it was asked to");
+        assert!(grid.has_child(99));
+        assert_eq!(grid.child_ids(), vec![99]);
+    }
+
+    /// Auto-placement appends a row when every existing cell is occupied.
+    ///
+    /// A six-child two-column grid needs three rows, and used to drop the children that had no
+    /// cell left — `add_widget`'s `find(|cell| cell.is_none())` simply found nothing and returned.
+    #[test]
+    fn auto_placement_grows_a_row_when_the_grid_is_full() {
+        let mut grid = GridLayout::new(1, 2, 0, 0);
+        for id in 1..=6 {
+            grid.add_widget(id, 1);
+        }
+
+        assert_eq!(grid.child_ids(), vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(grid.rows(), 3, "six children in two columns need three rows");
+        assert_eq!(grid.cell_of(5), Some((2, 0)));
+        assert_eq!(grid.cell_of(6), Some((2, 1)));
     }
 }

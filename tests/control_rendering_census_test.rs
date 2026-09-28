@@ -447,6 +447,27 @@ fn relative_rect_path_bounds(d: &str) -> Option<ElementBounds> {
                 ys.push(y + dy);
                 index = next;
             }
+            // Absolute/relative line-to. These were missing, and the omission was not benign: the
+            // `_` fallback below consumes exactly **one** number, so a compact `L{x} {y}` (the form
+            // the glyph emitter writes — `M102.74 61.75L102.58 60.75`) left the second coordinate to
+            // be re-read as a path verb, and the walk could then return `None` for a stream that is
+            // perfectly well formed. Every vector glyph is emitted this way, so the whole text
+            // layer was unmeasurable and P5 reported it as "bounds could not be determined".
+            b'L' => {
+                let (x, y, next) = number_pair(d, index)?;
+                pen = Some((x, y));
+                xs.push(x);
+                ys.push(y);
+                index = next;
+            }
+            b'l' => {
+                let (dx, dy, next) = number_pair(d, index)?;
+                let (x, y) = pen?;
+                pen = Some((x + dx, y + dy));
+                xs.push(x + dx);
+                ys.push(y + dy);
+                index = next;
+            }
             b'h' | b'H' | b'v' | b'V' => {
                 let (value, next) = number(d, index)?;
                 let (x, y) = pen?;
@@ -480,7 +501,14 @@ fn relative_rect_path_bounds(d: &str) -> Option<ElementBounds> {
     })
 }
 
-/// Reads a run of digits, with an optional sign, starting at `at`.
+/// Reads a run of digits, with an optional sign and an optional decimal part, starting at `at`.
+///
+/// # Why the fractional part is part of the number
+///
+/// This consumed digits only, so `102.74` parsed as `102` and stopped at the `.`. The `.74` was
+/// then re-read as a path verb by the caller's fallback, and the walk desynchronised from the
+/// stream — every compact glyph path (which is emitted with fractional coordinates) became
+/// unmeasurable, and P5 reported the whole text layer as "bounds could not be determined".
 fn number(text: &str, at: usize) -> Option<(f32, usize)> {
     let bytes = text.as_bytes();
     let mut index = at;
@@ -495,7 +523,20 @@ fn number(text: &str, at: usize) -> Option<(f32, usize)> {
     while index < bytes.len() && bytes[index].is_ascii_digit() {
         index += 1;
     }
-    if index == digits_start {
+    // A number with no integer digits is still valid if it has a fractional part (`.5`).
+    let mut has_fraction = false;
+    if index < bytes.len() && bytes[index] == b'.' {
+        let fraction_start = index + 1;
+        let mut scan = fraction_start;
+        while scan < bytes.len() && bytes[scan].is_ascii_digit() {
+            scan += 1;
+        }
+        if scan > fraction_start || index > digits_start {
+            index = scan;
+            has_fraction = true;
+        }
+    }
+    if !has_fraction && index == digits_start {
         return None;
     }
     text[start..index].parse::<f32>().ok().map(|value| (value, index))
@@ -819,4 +860,22 @@ fn known_theme_blind_matches_the_census() {
         }
     }
     assert!(regressed.is_empty(), "these controls stopped following the appearance: {regressed:?}");
+}
+
+/// The compact path walker must measure the SVG the glyph emitter actually writes.
+///
+/// The vector text layer emits `M{x} {y}L{x} {y}L…` with **no separator** between a verb and its
+/// first coordinate, which is valid SVG and is what the `L` arm exists for. This is the regression
+/// guard for that arm: without it the whole text layer is unmeasurable and P5 reports every label
+/// as "bounds could not be determined" instead of checking it.
+#[test]
+fn p5_compact_glyph_paths_are_measurable() {
+    // A real emitted shape, including the second subpath a two-contour glyph produces (a `Z`
+    // followed by another `M`), which is where a walker that handled one `M` stopped.
+    let d = "M102.74 61.75L102.58 60.75L102.13 60.00ZM141.00 57.70L141.80 57.86Z";
+    let bounds = path_bounds(d).expect("a compact M/L path must be measurable");
+    assert!((bounds.left - 102.13).abs() < 0.01, "left edge: {}", bounds.left);
+    assert!((bounds.top - 57.70).abs() < 0.01, "top edge: {}", bounds.top);
+    assert!((bounds.right - 141.80).abs() < 0.01, "right edge: {}", bounds.right);
+    assert!((bounds.bottom - 61.75).abs() < 0.01, "bottom edge: {}", bounds.bottom);
 }

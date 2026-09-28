@@ -30,7 +30,8 @@ use crate::core::{Alignment, Color, ObjectId, Orientation, Rect};
 use crate::json::properties::ApplyOutcome;
 use crate::json::{
     add_spacer_to_layout, add_widget_to_layout, apply_layout, create_layout_from_kind,
-    parse_layout_kind, store_layout, BoundJsonLayout, ChildLayoutAttrs,
+    parse_layout_kind, place_widget_in_layout, store_layout, BoundJsonLayout, ChildLayoutAttrs,
+    ChildPlacement,
 };
 use crate::layout::inspector::LayoutInspector;
 use crate::widget::{
@@ -138,12 +139,8 @@ impl JsonLoader {
                 }
                 Self::bind_one(
                     widget_id,
-                    crate::json::DeclaredHandler {
-                        handler: handler.to_owned(),
-                        // A published name is payload-free from the hub's point of view; the handler
-                        // already knows which name it was declared against, so no marker is invented.
-                        marker: crate::json::JsonTriggerMarker::Clicked,
-                    },
+                    crate::json::json_event_binding(widget_type, name),
+                    handler.to_owned(),
                 );
             }
         }
@@ -155,37 +152,84 @@ impl JsonLoader {
             };
             Self::bind_one(
                 widget_id,
-                crate::json::DeclaredHandler { handler: handler.to_owned(), marker: *marker },
+                crate::json::JsonEventBinding::Marker { key, marker: *marker },
+                handler.to_owned(),
             );
         }
     }
 
-    /// Subscribes one declared handler to `widget_id`.
+    /// Subscribes one declared handler to `widget_id` through the callback the event needs.
     ///
-    /// The two routes differ only in which callback they reach: a payload-free trigger
-    /// (`clicked`, `closed`) goes through `on_click`, and a payload-carrying one (`value_changed`,
-    /// `selection_changed`, focus) through `on_value_changed`. That choice is `marker`-driven, not
-    /// call-site-driven, so a new marker cannot pick the wrong callback by being added in one
-    /// place and not the other.
-    fn bind_one(widget_id: ObjectId, declared: crate::json::DeclaredHandler) {
-        let handler_name = declared.handler;
-        let ctx_marker = declared.marker;
+    /// # Why the callback is chosen from the *binding*, not from the call site
+    ///
+    /// A control's own signal and the loader's callback tables are two different channels, and
+    /// which one a published name travels on is a property of that name: a payload-free event
+    /// (`clicked`, `dismissed`) arrives through the click table, and one that carries a value
+    /// (`value_changed`, `text_edited`) through the value table. The first revision of this
+    /// function hard-coded [`JsonTriggerMarker::Clicked`] for **every** published name, so
+    /// `"events": {"value_changed": "h"}` was bound to the click callback: the handler ran when
+    /// the control was *pressed*, and never when its value changed. The name was validated, the
+    /// binding looked wired, and the signal it named was unreachable.
+    ///
+    /// Reading the decision off the binding is also what makes it checkable:
+    /// [`JsonEventBinding::Published`] carries the payload observation, so a test (and the gate
+    /// in `tools/check_json_event_route.py`) can assert the choice without a live control.
+    fn bind_one(widget_id: ObjectId, binding: crate::json::JsonEventBinding, handler_name: String) {
+        let marker = binding.marker();
         let handle: ButtonHandle = ButtonHandle::from_raw(widget_id);
-        match ctx_marker {
-            crate::json::JsonTriggerMarker::Clicked
-            | crate::json::JsonTriggerMarker::DoubleClicked
-            | crate::json::JsonTriggerMarker::Closed => {
-                handle.on_click(move || {
-                    let ctx = crate::json::context_for(widget_id, ctx_marker);
-                    crate::json::invoke_global_handler(&handler_name, &ctx);
-                });
-            }
-            _ => {
-                handle.on_value_changed(move |_value| {
-                    let ctx = crate::json::context_for(widget_id, ctx_marker);
-                    crate::json::invoke_global_handler(&handler_name, &ctx);
-                });
-            }
+        if binding.uses_value_callback() {
+            handle.on_value_changed(move |_value| {
+                let ctx = crate::json::context_for(widget_id, marker);
+                crate::json::invoke_global_handler(&handler_name, &ctx);
+            });
+        } else {
+            handle.on_click(move || {
+                let ctx = crate::json::context_for(widget_id, marker);
+                crate::json::invoke_global_handler(&handler_name, &ctx);
+            });
+        }
+    }
+
+    /// Places a child at the cell it declared, when it declared one and the parent can honour it.
+    ///
+    /// # Why this exists at all
+    ///
+    /// `ChildLayoutAttrs::from_value` parsed `col`, `row`, `col_span` and `row_span` into
+    /// [`ChildLayoutAttrs`], and both `add_widget_to_layout` call sites then read `attrs.stretch`
+    /// and dropped the other four fields. A document that placed a control at an explicit cell
+    /// therefore got auto-placement, silently — the parse was the only evidence the key had ever
+    /// been seen, and it was thrown away one line later. The keys were also absent from
+    /// [`is_loader_owned_key`], so the name-driven property pass additionally reported them as
+    /// *"no construction arm consumed it; the value was ignored"* — a warning about a value this
+    /// function now consumes.
+    ///
+    /// # Why a non-grid parent is reported rather than ignored
+    ///
+    /// `col`/`row` mean nothing to a box, form or flex layout; the trait's `add_widget` carries no
+    /// cell. The child is still placed (by the parent's own rule) rather than dropped, but the
+    /// mismatch is logged, because a document that wrote a cell on a non-grid parent asked for
+    /// something the parent cannot do and would otherwise read as "the grid ignored my column".
+    fn apply_child_placement(
+        child_id: ObjectId,
+        attrs: &ChildLayoutAttrs,
+        child_type: &str,
+        parent_id: ObjectId,
+    ) {
+        if attrs.col.is_none() && attrs.row.is_none() {
+            return;
+        }
+        let placement = ChildPlacement {
+            col: attrs.col.unwrap_or(0),
+            row: attrs.row.unwrap_or(0),
+            col_span: attrs.col_span.unwrap_or(1),
+            row_span: attrs.row_span.unwrap_or(1),
+        };
+        if !place_widget_in_layout(child_id, placement, parent_id) {
+            log::warn!(
+                "JSON layout: '{child_type}' declares col/row placement but its parent has no \
+                 cell-based layout (only 'grid' and 'uniform_grid' have cells); the child was \
+                 placed by the parent's own rule instead"
+            );
         }
     }
 
@@ -297,6 +341,12 @@ impl JsonLoader {
                                 // a declarative layout could compute geometries that no
                                 // widget ever received.
                                 add_widget_to_layout(child_id, attrs.stretch, layout_parent);
+                                Self::apply_child_placement(
+                                    child_id,
+                                    &attrs,
+                                    child_type,
+                                    layout_parent,
+                                );
                             }
                         }
                     }
@@ -309,6 +359,11 @@ impl JsonLoader {
 
         // Create the widget
         let mut widget: Box<dyn Widget> = Self::create_widget(widget_type, obj)?;
+
+        // The id the document wrote under `"id"`. Read here rather than after the
+        // mount because the mount is what makes the id real: a widget's own `id()` is
+        // only meaningful once it is registered, and the registry hands out the id.
+        let declared_id = if id_str.is_empty() { 0 } else { parse_declared_id(id_str) };
 
         // Apply stylesheet rules first, so explicit JSON keys below win over the
         // stylesheet — the same precedence a browser gives inline styles over an
@@ -325,8 +380,26 @@ impl JsonLoader {
         // Set parent
         widget.set_parent(parent_id);
 
-        // Register
-        let widget_id = widget.id();
+        // Register — **mounting** the control, not merely indexing it.
+        //
+        // # The defect this closes
+        //
+        // The loader used to record the widget's *own* `id()` in `WidgetRegistry` and
+        // `BoundJsonLayout` and drop the `Box<dyn Widget>` on the floor. Nothing reached
+        // `crate::widget::runtime`, which is what `with_widget`/`with_widget_mut` read —
+        // so every handle a caller resolved from this binding (`widget_by_name::<..>`, the
+        // `on_click`/`on_value_changed` wiring, `set_widget_text`) addressed an id the
+        // runtime had never heard of. Each of those paths *reports* the miss, but at
+        // `debug!`, so at the default log level a loaded document was a tree of controls
+        // that returned their defaults and ignored their handlers, with nothing said.
+        //
+        // The mount goes through the control backend's creation funnel, which is the one
+        // place that assigns an id, registers it, applies the active theme, records both
+        // directions of the parent/child relation, and gives a window its host surface.
+        // Doing it by hand here would be a second implementation of that, and the second
+        // one is the one that rots.
+        let widget_id = mount_declared_widget(widget, parent_id, declared_id, widget_type);
+
         // The **live control's** kind, not a value derived from the type name.
         //
         // `infer_kind` is a hand-written table covering about a hundred names, while
@@ -337,11 +410,13 @@ impl JsonLoader {
         // reported the wrong kind. The widget already knows its kind, so reading it
         // here removes the table's ability to disagree with reality.
         //
-        // `infer_kind` is still consulted for the one case the widget cannot answer:
-        // a name whose control has no kind-specific entry. Every `Widget` implements
-        // `kind()`, so that fallback is unreachable in practice; it is kept as the
-        // honest answer for a hypothetical widget that overrides nothing.
-        let kind = widget.kind();
+        // `infer_kind` is still the fallback for the case the live control cannot answer:
+        // a thread with no widget runtime, so nothing was mounted and there is no `kind()`
+        // to read. `Panel` is the neutral answer there — a control that did not mount has no
+        // kind this loader can observe, and reporting `Button` (what the old table's `_` arm
+        // did) was a claim about a widget that in fact does not exist.
+        let kind = crate::widget::runtime::with_widget(widget_id, |live| live.kind())
+            .unwrap_or(crate::index::WidgetKind::Panel);
 
         let label = if id_str.is_empty() {
             format!("{widget_type}_{widget_id}")
@@ -469,6 +544,9 @@ impl JsonLoader {
                                     // children are registered, or they are added to
                                     // nothing.
                                     add_widget_to_layout(child_id, attrs.stretch, widget_id);
+                                    Self::apply_child_placement(
+                                        child_id, &attrs, child_type, widget_id,
+                                    );
                                 }
                             }
                         }
@@ -1276,6 +1354,11 @@ fn is_loader_owned_key(key: &str) -> bool {
         // machinery: arrays and sub-objects that describe the widget's content
         // rather than a scalar state property.
         | "children" | "layout" | "items" | "stretch"
+        // Per-child cell placement, consumed by `apply_child_placement` (which forwards
+        // them to a layout that has cells). They belong here rather than being left out:
+        // they name no scalar property on any control, so the name-driven pass would
+        // otherwise warn that a value the loader just applied "was ignored".
+        | "col" | "row" | "col_span" | "row_span"
         // Construction-time scalar keys a `create_widget` arm reads directly, under
         // a spelling that is deliberately *not* the control's property name (an arm
         // may need to translate a JSON word into an enum, or set two fields from
@@ -1329,6 +1412,59 @@ fn json_geometry(obj: &serde_json::Map<String, Value>) -> Rect {
         obj.get("width").and_then(|value| value.as_i64()).unwrap_or(100),
         obj.get("height").and_then(|value| value.as_i64()).unwrap_or(100),
     )
+}
+
+/// Reads a document's `"id"` as an `ObjectId`.
+///
+/// A name that is not a number is hashed into a stable non-zero id rather than falling back
+/// to a shared sentinel: two nodes with different names must not resolve to one id, or the
+/// second registration would overwrite the first one's binding.
+fn parse_declared_id(id_str: &str) -> ObjectId {
+    if let Ok(numeric) = id_str.parse::<ObjectId>() {
+        return numeric;
+    }
+    let mut hash: ObjectId = 0xcbf2_9ce4_8422_2325;
+    for byte in id_str.as_bytes() {
+        hash ^= ObjectId::from(*byte);
+        hash = hash.wrapping_mul(0x100_0000_01b3);
+    }
+    hash | 1
+}
+
+/// Hands a created widget to the runtime and returns the id it is mounted under.
+///
+/// # Why the mount goes through the backend
+///
+/// `crate::control_backend::get_control_backend().mount_widget_box(..)` is the one funnel every
+/// created control passes through: it assigns and registers the id, applies the active theme,
+/// records the parent/child relation in both directions, and gives a window its host surface.
+/// A second implementation of that here would drift from it — and this loader's previous
+/// behaviour, which mounted nothing at all, is what that drift looks like when it has run its
+/// course.
+///
+/// # Why a failure is reported
+///
+/// On a thread with no widget runtime, or with a host that refuses the creation, there is no
+/// live control to address. The document still loads (the binding is intact and a caller can
+/// read its structure), but every handle resolved from it would silently answer with defaults
+/// and every handler it declared would be dropped. Saying so is what makes that queryable
+/// rather than mysterious.
+fn mount_declared_widget(
+    widget: Box<dyn Widget>,
+    parent_id: Option<ObjectId>,
+    declared_id: ObjectId,
+    widget_type: &str,
+) -> ObjectId {
+    let backend = crate::control_backend::get_control_backend();
+    let id = backend.mount_widget_box(widget, parent_id, declared_id);
+    if id == 0 {
+        log::warn!(
+            "JSON layout: the '{widget_type}' node could not be mounted (no live widget runtime \
+             on this thread, or its parent was refused); handles resolved from it will report \
+             defaults and its declared handlers will not fire"
+        );
+    }
+    id
 }
 
 /// Reads a numeric range from JSON, preferring the names the control publishes.
@@ -1687,6 +1823,130 @@ mod tests {
             dialog.set_current_font(font);
         }
         assert_eq!(dialog.current_font(), &before, "the dialog must keep its own font");
+    }
+
+    /// A `grid` layout's `col`/`row`/`col_span`/`row_span` must reach the grid.
+    ///
+    /// # Why this test exists
+    ///
+    /// `ChildLayoutAttrs::from_value` parsed all four keys, and both
+    /// `add_widget_to_layout` call sites then read `attrs.stretch` and dropped the rest. A
+    /// document that placed a control at an explicit cell got auto-placement instead, and
+    /// the four keys — absent from `is_loader_owned_key` — additionally drew a
+    /// *"no construction arm consumed it; the value was ignored"* warning about a value the
+    /// loader had in fact read. Nothing caught either half: the existing tests asserted that
+    /// loading succeeded, not where the widgets ended up.
+    ///
+    /// This drives the same call the loader makes and asserts the **applied geometries**, so
+    /// restoring the drop fails here.
+    #[test]
+    fn a_grid_places_a_child_at_the_cell_the_document_declared() {
+        let json = r#"{
+            "window": {
+                "title": "T",
+                "children": [
+                    { "layout": {
+                        "type": "grid",
+                        "columns": 3,
+                        "spacing": 10,
+                        "children": [
+                            { "label": {
+                                "id": "wide", "text": "W",
+                                "col": 0, "row": 0, "col_span": 3
+                            } },
+                            { "label": { "id": "a", "text": "A", "col": 0, "row": 1 } },
+                            { "label": { "id": "b", "text": "B", "col": 1, "row": 1 } },
+                            { "label": { "id": "c", "text": "C", "col": 2, "row": 1 } }
+                        ]
+                    } }
+                ]
+            }
+        }"#;
+
+        let binding = JsonLoader::load(json).expect("the grid document must load");
+        let window = binding.root().expect("the window is the root");
+
+        // The `layout` pseudo-widget is not a node of its own: it attaches a layout to its
+        // parent and its children hang off that parent. So the grid's cells are keyed by the
+        // window, and `preview_layout` must be asked about the window.
+        let geometries = crate::json::preview_layout(window, Rect::new(0, 0, 320, 100));
+        let width_of = |name: &str| {
+            let declared = binding.id(name).expect("the node is bound by its declared id");
+            let mounted = crate::widget::runtime::registry_id_of(declared).unwrap_or(declared);
+            geometries
+                .iter()
+                .find(|(placed, _)| *placed == mounted)
+                .map(|(_, rect)| *rect)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "'{name}' (declared {declared}, mounted {mounted}) was placed by the \
+                         layout; placed: {geometries:?}"
+                    )
+                })
+        };
+
+        let span = width_of("wide");
+        let a = width_of("a");
+        let b = width_of("b");
+        let c = width_of("c");
+
+        // Explicit placement, not auto-placement. Auto-placement fills cells in declaration
+        // order, which would put all four children on row 0 — so a one-row result would mean the
+        // keys were ignored. Two rows, with the second holding exactly the three children that
+        // declared `row: 1`, is only reachable if `row` was honoured.
+        assert_eq!(span.y, 0, "the span was declared on row 0");
+        assert!(a.y > span.y, "`row: 1` must be below `row: 0`: {span:?} then {a:?}");
+        assert_eq!(a.y, b.y, "`a` and `b` were both declared on row 1");
+        assert_eq!(b.y, c.y, "`c` was declared on row 1 too");
+
+        // `col` is honoured: the three row-1 children are ordered left to right by their
+        // declared columns, and the gaps between them are the declared `spacing`.
+        assert!(a.x < b.x && b.x < c.x, "`col` must order them: {a:?} {b:?} {c:?}");
+        assert_eq!(b.x - (a.x + a.width as i32), 10, "`spacing: 10` between columns");
+        assert_eq!(c.x - (b.x + b.width as i32), 10, "`spacing: 10` between columns");
+
+        // `col_span` is honoured: the span starts at column 0 and reaches the right edge of
+        // column 2, bridging the two gaps it covers.
+        assert_eq!(span.x, a.x, "the span starts at column 0");
+        assert_eq!(
+            span.width,
+            3 * a.width + 2 * 10,
+            "`col_span: 3` must bridge the two gaps it covers: {span:?} vs {a:?}"
+        );
+        assert_eq!(
+            span.x + span.width as i32,
+            c.x + c.width as i32,
+            "the span must reach the right edge of the third column"
+        );
+    }
+
+    /// A cell declared on a parent that has no cells is reported, not silently claimed.
+    ///
+    /// The child is still placed by the parent's own rule — a box layout has no cells to put it
+    /// in — but `place_widget_in_layout` answers `false`, which is what lets the loader log the
+    /// mismatch instead of letting a `col` on a `vbox` read as "the vbox ignored my column".
+    #[test]
+    fn declaring_a_cell_on_a_parent_without_cells_is_reported() {
+        /// A parent id no other test uses, so the thread-local layout map cannot collide.
+        const BOX_PARENT: crate::core::ObjectId = 0x5EED_0002;
+        const MISSING_PARENT: crate::core::ObjectId = 0x5EED_0003;
+
+        let placement = ChildPlacement { col: 0, row: 0, col_span: 1, row_span: 1 };
+
+        assert!(
+            !place_widget_in_layout(1, placement, MISSING_PARENT),
+            "an unknown parent must report the miss rather than claim the placement"
+        );
+
+        store_layout(
+            BOX_PARENT,
+            alloc::boxed::Box::new(crate::layout::BoxLayout::new(Orientation::Horizontal, 0, 0)),
+        );
+        assert!(
+            !place_widget_in_layout(1, placement, BOX_PARENT),
+            "a box layout has no cells, so it must answer `false` rather than accept the cell"
+        );
+        assert!(crate::json::forget_layout(BOX_PARENT));
     }
 
     /// Every key a `create_widget` arm reads must be resolvable by the layer that

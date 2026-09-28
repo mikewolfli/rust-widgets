@@ -329,12 +329,17 @@ impl SyntaxHighlighter for BuiltinHighlighter {
                 // scanned verbatim.
                 let escape_aware = quote.len() == 1 && ch != '`';
                 let end = if escape_aware {
-                    let bytes = rest.as_bytes();
                     let mut cursor = search_from;
                     let mut found = len;
                     while cursor < rest.len() {
-                        if bytes[cursor] == b'\\' {
-                            cursor += 2;
+                        if rest.as_bytes()[cursor] == b'\\' {
+                            // Skip the backslash **and the escaped character**, whose byte length
+                            // is not 1. Advancing by a literal two bytes assumed an ASCII escape,
+                            // so highlighting a line such as `"a\é"` left `cursor` inside the `é`
+                            // and the `rest[cursor..]` below panicked the whole frame.
+                            cursor += 1;
+                            cursor +=
+                                rest[cursor..].chars().next().map(|c| c.len_utf8()).unwrap_or(0);
                             continue;
                         }
                         if rest[cursor..].starts_with(quote) {
@@ -605,5 +610,25 @@ mod tests {
     fn empty_line_produces_no_spans() {
         let highlighter = BuiltinHighlighter::new(LanguageId::Rust);
         assert!(highlighter.highlight_line("").is_empty());
+    }
+
+    /// A backslash escape may protect a **multi-byte** character.
+    ///
+    /// The string scanner advanced `cursor += 2` on a backslash, assuming a one-byte escaped
+    /// character. Highlighting a line such as `"a\é"` therefore left the cursor inside the `é`
+    /// and the next `rest[cursor..]` panicked — on every frame that line was visible. The skip is
+    /// now the backslash's own byte plus the escaped character's real UTF-8 length.
+    #[test]
+    fn an_escape_may_protect_a_multibyte_character() {
+        let highlighter = BuiltinHighlighter::new(LanguageId::Rust);
+        for line in ["\"a\\é\"", "\"x\\世\"", "\"\\🎉\"", "'\\é'"] {
+            let spans = highlighter.highlight_line(line);
+            for span in &spans {
+                assert!(
+                    line.is_char_boundary(span.start) && line.is_char_boundary(span.end),
+                    "span {span:?} must sit on character boundaries of {line:?}"
+                );
+            }
+        }
     }
 }

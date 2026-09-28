@@ -12,7 +12,7 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
-use crate::widget::capability::coercion::expect_usize;
+use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -60,16 +60,29 @@ impl Segment {
 
 /// SegmentedButton widget — a horizontal group of selectable segments.
 ///
-/// Supports single-select (default) and multi-select modes. When a segment is
-/// clicked, its selection toggles. In single-select mode, clicking a segment
-/// selects it and deselects all others. The `selected_changed` signal emits
-/// with the index of the newly selected segment.
+/// Supports single-select (default) and **multi-select** modes. In single-select mode, clicking a
+/// segment selects it and deselects all others; in multi-select mode each click toggles that
+/// segment and the others are left alone.
+///
+/// # Why the selection is a set, not one slot
+///
+/// `allows_multiple` shipped as a flag over a single `selected_index: Option<usize>`, so
+/// "multi-select" could only ever hold **one** selection — the flag promised a behaviour the state
+/// could not represent (the doc claimed multi-select; clicking a second segment silently dropped
+/// the first). The selection is therefore a sorted `Vec<usize>`, which is also what `ListBox` uses
+/// for its multi-select. [`Self::selected_index`] keeps reporting the *primary* selection so the
+/// single-select API and its callers are unchanged.
 pub struct SegmentedButton {
     base: BaseWidget,
     segments: Vec<Segment>,
-    selected_index: Option<usize>,
+    /// Every selected segment index, ascending and deduplicated.
+    ///
+    /// In single-select mode it holds at most one entry, which is what makes the two modes one
+    /// model rather than two (the invariant is enforced by [`Self::set_selected_index`] and the
+    /// click handler).
+    selected: Vec<usize>,
     allows_multiple: bool,
-    /// Emitted when the selected segment changes. Payload is the new selected index.
+    /// Emitted when the selected segment changes. Payload is the newly selected index.
     pub selected_changed: Signal1<usize>,
 }
 
@@ -79,28 +92,73 @@ impl SegmentedButton {
         Self {
             base: BaseWidget::new(WidgetKind::SegmentedButton, geometry, "SegmentedButton"),
             segments: Vec::new(),
-            selected_index: None,
+            selected: Vec::new(),
             allows_multiple: false,
             selected_changed: Signal1::new(),
         }
     }
 
-    /// Returns the index of the currently selected segment, or `None` if none is selected.
+    /// Returns the **primary** selected segment index, or `None` if none is selected.
+    ///
+    /// In single-select mode this is the only selection. In multi-select mode it is the lowest
+    /// selected index — the one a caller that only knows the single-selection API should act on.
+    /// Use [`Self::selected_indices`] to read the whole set.
     pub fn selected_index(&self) -> Option<usize> {
-        self.selected_index
+        self.selected.first().copied()
     }
 
-    /// Sets the selected segment index. Clamps to valid range.
-    /// Pass `None` to deselect all. In single-select mode, only one segment can be selected.
+    /// Returns every selected segment index, ascending.
+    ///
+    /// The read-back for multi-select: `selected_index` cannot express a set, so a caller that
+    /// turned on [`Self::set_allows_multiple`] had no way to learn which segments were chosen.
+    pub fn selected_indices(&self) -> &[usize] {
+        &self.selected
+    }
+
+    /// Returns whether `index` is selected.
+    pub fn is_selected(&self, index: usize) -> bool {
+        self.selected.contains(&index)
+    }
+
+    /// Sets the selected segment index, replacing any previous selection.
+    ///
+    /// Pass `None` to deselect everything. An index past the last segment is ignored (the
+    /// selection is cleared), matching the previous clamping behaviour.
     pub fn set_selected_index(&mut self, index: Option<usize>) {
-        let old = self.selected_index;
-        self.selected_index = index.filter(|i| *i < self.segments.len());
-        if old != self.selected_index {
-            if let Some(idx) = self.selected_index {
+        let next: Vec<usize> = index.filter(|i| *i < self.segments.len()).into_iter().collect();
+        if next != self.selected {
+            self.selected = next;
+            if let Some(idx) = self.selected.first().copied() {
                 self.selected_changed.emit(idx);
             }
             self.base.request_redraw();
         }
+    }
+
+    /// Sets the whole selection at once, **ignoring `allows_multiple`**.
+    ///
+    /// A programmatic setter is not a gesture: a caller that wants two segments selected has said
+    /// so, and silently dropping the extra indices (as a mode-respecting setter would) is the same
+    /// "promised but not representable" defect in a different place. Indices past the last segment
+    /// are dropped, the set is sorted and deduplicated, and the signal fires once with the lowest
+    /// selected index.
+    pub fn set_selected_indices(&mut self, indices: impl IntoIterator<Item = usize>) {
+        let mut next: Vec<usize> =
+            indices.into_iter().filter(|i| *i < self.segments.len()).collect();
+        next.sort_unstable();
+        next.dedup();
+        if next != self.selected {
+            self.selected = next;
+            if let Some(idx) = self.selected.first().copied() {
+                self.selected_changed.emit(idx);
+            }
+            self.base.request_redraw();
+        }
+    }
+
+    /// Clears the selection.
+    pub fn clear_selection(&mut self) {
+        self.set_selected_index(None);
     }
 
     /// Returns whether multiple segments can be selected at once.
@@ -109,11 +167,14 @@ impl SegmentedButton {
     }
 
     /// Sets whether multiple segments can be selected.
+    ///
+    /// Turning multi-select **off** keeps the lowest selection and drops the rest, because a
+    /// single-select control holding several selections would paint several highlights that its
+    /// own click handler could not produce.
     pub fn set_allows_multiple(&mut self, allows: bool) {
         self.allows_multiple = allows;
-        if !allows && self.segments.len() > 1 {
-            // In single-select mode, deselect all but the first selected
-            self.selected_index = self.selected_index.filter(|i| *i < self.segments.len());
+        if !allows && self.selected.len() > 1 {
+            self.selected.truncate(1);
         }
         self.base.request_redraw();
     }
@@ -138,12 +199,13 @@ impl SegmentedButton {
     pub fn remove_segment(&mut self, index: usize) -> Option<Segment> {
         if index < self.segments.len() {
             let removed = self.segments.remove(index);
-            // Adjust selected index
-            if let Some(sel) = self.selected_index {
-                if sel == index {
-                    self.selected_index = None;
-                } else if sel > index {
-                    self.selected_index = Some(sel - 1);
+            // Re-base the selection: the removed index is dropped, everything above it shifts down
+            // by one. Doing this on the whole set is what keeps multi-select consistent (the old
+            // single-slot adjustment could only follow one row).
+            self.selected.retain(|sel| *sel != index);
+            for sel in &mut self.selected {
+                if *sel > index {
+                    *sel -= 1;
                 }
             }
             self.base.request_redraw();
@@ -228,6 +290,10 @@ impl Widget for SegmentedButton {
 /// the real selection (or `Null` when nothing is selected) rather than the legacy
 /// hardcoded zero, and `segment_count` is derived from the segment list, so it is
 /// readable but read-only.
+///
+/// `selected_indices` and `allows_multiple` are the multi-select pair: the first is the set as
+/// comma-joined indices (the spelling `list_box` uses), the second is the mode flag. Without them a
+/// host could turn multi-select on and then read back only *one* of the segments it had chosen.
 impl WidgetProperties for SegmentedButton {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
@@ -235,6 +301,14 @@ impl WidgetProperties for SegmentedButton {
                 Some(index) => Ok(CapabilityValue::UInt(index as u64)),
                 None => Ok(CapabilityValue::Null),
             },
+            "selected_indices" => Ok(CapabilityValue::String(
+                self.selected_indices()
+                    .iter()
+                    .map(|index| index.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            )),
+            "allows_multiple" => Ok(CapabilityValue::Bool(self.allows_multiple())),
             "segment_count" => Ok(CapabilityValue::UInt(self.segment_count() as u64)),
             _ => base_property_get(self, name),
         }
@@ -254,13 +328,36 @@ impl WidgetProperties for SegmentedButton {
                     Ok(())
                 }
             },
+            "selected_indices" => {
+                let text = expect_string(value)?;
+                let indices = text
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|part| !part.is_empty())
+                    .map(|part| {
+                        part.parse::<usize>().map_err(|_| CapabilityAccessError::TypeMismatch)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.set_selected_indices(indices);
+                Ok(())
+            }
+            "allows_multiple" => {
+                self.set_allows_multiple(expect_bool(value)?);
+                Ok(())
+            }
             "segment_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["selected_index", "segment_count", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "selected_index",
+            "selected_indices",
+            "allows_multiple",
+            "segment_count",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 
@@ -352,7 +449,7 @@ impl Draw for SegmentedButton {
                 track_rect.height,
             );
 
-            let is_selected = self.selected_index == Some(i);
+            let is_selected = self.is_selected(i);
             let seg_enabled = is_enabled && segment.enabled;
 
             // Determine colors. A selected segment carries the theme's primary so the selection is
@@ -463,18 +560,21 @@ impl EventHandler for SegmentedButton {
                 // cannot turn into a panic in an event handler.
                 if let Some(index) = self.hit_segment(*pos) {
                     if self.allows_multiple {
-                        // In multi-select, toggle the selection
-                        if self.selected_index == Some(index) {
-                            self.selected_index = None;
+                        // Multi-select: toggle this segment and leave the others alone. The state
+                        // is a set, so a second click adds a second selection rather than
+                        // replacing the first.
+                        if let Some(at) = self.selected.iter().position(|sel| *sel == index) {
+                            self.selected.remove(at);
                         } else {
-                            self.selected_index = Some(index);
+                            self.selected.push(index);
+                            self.selected.sort_unstable();
                         }
-                        self.selected_changed.emit(index);
                     } else {
-                        // Single-select: always set to clicked segment
-                        self.selected_index = Some(index);
-                        self.selected_changed.emit(index);
+                        // Single-select: the clicked segment becomes the only selection.
+                        self.selected.clear();
+                        self.selected.push(index);
                     }
+                    self.selected_changed.emit(index);
                     self.base.request_redraw();
                 }
             }
@@ -513,6 +613,63 @@ mod tests {
         assert!(removed.is_some());
         assert_eq!(removed.unwrap().text, "Week");
         assert_eq!(btn.segment_count(), 2);
+    }
+
+    /// Multi-select must be able to hold **more than one** selection.
+    ///
+    /// `allows_multiple` was a flag over a single `Option<usize>`, so turning it on promised a
+    /// behaviour the state could not represent: clicking a second segment replaced the first. The
+    /// selection is now a set, and this asserts the set really grows — which is the property the
+    /// flag's own name claims and the old shape could never satisfy.
+    #[test]
+    fn multi_select_holds_more_than_one_segment() {
+        let mut btn = SegmentedButton::new(Rect::new(0, 0, 300, 36));
+        for label in ["A", "B", "C"] {
+            btn.add_segment(Segment::new(label));
+        }
+        btn.set_allows_multiple(true);
+
+        // A click toggles; a second click adds rather than replaces.
+        let segment_width = 300 / 3;
+        btn.handle_event(&Event::MousePress { pos: Point::new(10, 18), button: 1 });
+        assert_eq!(btn.selected_indices(), &[0]);
+        btn.handle_event(&Event::MousePress { pos: Point::new(segment_width + 10, 18), button: 1 });
+        assert_eq!(
+            btn.selected_indices(),
+            &[0, 1],
+            "multi-select must be able to hold two segments, not one"
+        );
+        assert_eq!(btn.selected_index(), Some(0), "the primary selection is the lowest");
+
+        // Clicking a selected segment toggles it back off, leaving the others.
+        btn.handle_event(&Event::MousePress { pos: Point::new(10, 18), button: 1 });
+        assert_eq!(btn.selected_indices(), &[1]);
+
+        // Turning multi-select off keeps only the primary selection, so the control never paints
+        // two highlights its own click handler could not produce.
+        btn.set_allows_multiple(false);
+        assert_eq!(btn.selected_indices(), &[1]);
+        assert!(!btn.allows_multiple());
+    }
+
+    /// The multi-select set round-trips through the property contract.
+    #[test]
+    fn the_selection_set_round_trips_through_the_property_api() {
+        use crate::widget::capability::WidgetProperties;
+        let mut btn = SegmentedButton::new(Rect::new(0, 0, 300, 36));
+        for label in ["A", "B", "C"] {
+            btn.add_segment(Segment::new(label));
+        }
+        WidgetProperties::set(&mut btn, "allows_multiple", CapabilityValue::Bool(true)).unwrap();
+        WidgetProperties::set(&mut btn, "selected_indices", CapabilityValue::String("2,0".into()))
+            .unwrap();
+        let read = WidgetProperties::get(&btn, "selected_indices").unwrap();
+        assert_eq!(read, CapabilityValue::String("0,2".into()), "stored sorted and deduplicated");
+        assert_eq!(btn.selected_indices(), &[0, 2]);
+        // An out-of-range index is ignored rather than panicking.
+        WidgetProperties::set(&mut btn, "selected_indices", CapabilityValue::String("0,9".into()))
+            .unwrap();
+        assert_eq!(btn.selected_indices(), &[0]);
     }
 
     #[test]

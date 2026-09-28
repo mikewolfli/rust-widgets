@@ -875,6 +875,14 @@ pub fn default_widget_property_default_value(
             "text" => CapabilityValue::String(String::new()),
             "checked" => CapabilityValue::Bool(false),
             "state" => CapabilityValue::String("normal".to_string()),
+            _ => return None,
+        },
+        // `SegmentedControl` has its own kind and therefore its own arm. These two arms used to be
+        // one, because the control reported `WidgetKind::ToggleButton`: a segmentation control
+        // answering `selected_id` and a toggle answering `state` from the same match is how a kind
+        // collision hides — neither control declares the other's properties, but the shared arm
+        // made `capability_by_kind` unable to say which was which.
+        WidgetKind::SegmentedControl => match property_name {
             "item_count" => CapabilityValue::UInt(0),
             "selected_index" => CapabilityValue::Null,
             "selected_id" => CapabilityValue::Null,
@@ -1334,6 +1342,8 @@ pub fn default_widget_property_default_value(
         },
         WidgetKind::SegmentedButton => match property_name {
             "selected_index" => CapabilityValue::UInt(0),
+            "selected_indices" => CapabilityValue::String(String::new()),
+            "allows_multiple" => CapabilityValue::Bool(false),
             "segment_count" => CapabilityValue::UInt(0),
             _ => return None,
         },

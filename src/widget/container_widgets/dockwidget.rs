@@ -297,10 +297,19 @@ impl DockWidget {
         self.base.request_redraw();
     }
     /// Sets widget.
+    ///
+    /// The link is written in **both** directions, and a replacement unlinks the previous content
+    /// first — see BLUE22 §B.6 rule 5 and [`BaseWidget::add_child_linked`] for why `add_child`
+    /// alone leaves a child no tree walk can reach.
     pub fn set_widget(&mut self, widget: Option<ObjectId>) {
+        if let Some(previous) = self.widget {
+            if Some(previous) != widget {
+                self.base.remove_child_linked(previous);
+            }
+        }
         self.widget = widget;
         if let Some(widget_id) = widget {
-            self.base.add_child(widget_id);
+            self.base.add_child_linked(widget_id);
         }
         self.base.request_redraw();
     }

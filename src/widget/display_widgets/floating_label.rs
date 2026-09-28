@@ -498,7 +498,6 @@ impl WidgetProperties for FloatingLabel {
 impl Draw for FloatingLabel {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        let is_enabled = self.base.is_enabled();
 
         // Chrome colours resolve explicit style first, then the theme's resolved style
         // for this control, and only then fall back to a literal. Without the theme step
@@ -510,6 +509,17 @@ impl Draw for FloatingLabel {
         // accessor — the global manager's mutex is not re-entrant.
         let style = self.base.style().clone();
         let field_background = self.field_background_color();
+        // The surface the field sits on, which the *disabled* rules need: ink recedes toward the
+        // field's contrast colour and a fill recedes toward the window it is painted on. Falls back
+        // to the field's own background when the theme names no window role, which makes the rule a
+        // no-op rather than a wrong answer.
+        let window_fill = crate::style::resolved_theme_style("window")
+            .and_then(|theme| theme.background_color)
+            .or_else(|| {
+                crate::style::resolved_theme_style("floating_label")
+                    .and_then(|theme| theme.background_color)
+            })
+            .unwrap_or(field_background);
         // The label is a `Text` role, so its resolved ink is the theme's foreground; the
         // border colour carries the underline and the focused accent.
         let ink = style
@@ -529,7 +539,12 @@ impl Draw for FloatingLabel {
             .unwrap_or_else(|| ink.blend(&field_background, 0.55));
 
         // Draw the text field background
-        let bg_color = if is_enabled { field_background } else { Color::rgba(240, 240, 240, 255) };
+        //
+        // A disabled field **recedes toward the window** rather than jumping to a fixed near-white
+        // slab. `disabled_surface_near` is the shared rule for fills (as opposed to ink); the
+        // literal it replaces made a dark-theme disabled field the brightest thing on screen — the
+        // exact inversion the primitive's own documentation records.
+        let bg_color = self.base.disabled_surface_near(field_background, window_fill);
         context.fill_rounded_rect(rect, 4, bg_color);
 
         // Draw the underline/border. Focused is the resolved ink, undamped so it reads as
@@ -574,7 +589,9 @@ impl Draw for FloatingLabel {
 
         // Draw input text
         if !self.text.is_empty() {
-            let text_color = if is_enabled { ink } else { Color::rgba(160, 160, 160, 255) };
+            // Disabled ink steps off the surface it is painted on, so it stays legible on either
+            // appearance; a fixed `rgba(160,160,160,255)` did not move with the theme.
+            let text_color = self.base.disabled_ink_on(ink, bg_color);
             context.draw_text(
                 Point::new(rect.x + LABEL_PADDING, input_line.y),
                 &self.text,

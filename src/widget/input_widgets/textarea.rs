@@ -154,25 +154,42 @@ impl TextArea {
         self.cursor_pos
     }
 
-    /// Sets the cursor position, clamping it to the text length.
+    /// Sets the cursor position, clamped to the text length and snapped to a character boundary.
+    ///
+    /// # Why the snap is not optional
+    ///
+    /// The position is a **byte** index (that is what a slice needs), so an arbitrary value can
+    /// land inside a multi-byte character. Every reader of `cursor_pos` slices at it —
+    /// [`Self::delete_char`], and the caret's `cursor_screen_x`/`cursor_screen_y` on the *draw*
+    /// path — so a mid-character position panicked the paint, not merely the edit. Snapping here
+    /// means no reader has to defend itself, and it is the same guard [`Self::insert`] already
+    /// applies.
     pub fn set_cursor_pos(&mut self, pos: usize) {
-        let clamped = pos.min(self.text.len());
+        let clamped = floor_char_boundary(&self.text, pos.min(self.text.len()));
         if self.cursor_pos != clamped {
             self.cursor_pos = clamped;
             self.base.request_redraw();
         }
     }
 
-    /// Sets the maximum text length.
+    /// Sets the maximum text length, truncating the value if it exceeds the new limit.
     ///
-    /// A value of `0` means unlimited. If the current text exceeds the new limit
-    /// it is truncated and the cursor is adjusted accordingly.
+    /// # The limit is a **byte** budget, and the truncation must respect that
+    ///
+    /// Unlike `LineEdit`, whose limit counts characters, this control counts bytes — the value is
+    /// a multi-line document and the limit is a buffer bound. The truncation therefore has to
+    /// floor to a character boundary: `String::truncate` panics outright when the index falls
+    /// inside a character, so `set_max_length` on `"你好"` (six bytes) with a limit of four took
+    /// the process down. `set_text` already guarded its own truncation with
+    /// [`floor_char_boundary`]; this path did not.
     pub fn set_max_length(&mut self, max: usize) {
         let previous = self.max_length;
         self.max_length = max;
         if max > 0 && self.text.len() > max {
-            self.text.truncate(max);
-            self.cursor_pos = self.cursor_pos.min(max);
+            let boundary = floor_char_boundary(&self.text, max);
+            self.text.truncate(boundary);
+            // The caret must stay on a boundary inside what is left.
+            self.cursor_pos = floor_char_boundary(&self.text, self.cursor_pos.min(self.text.len()));
             self.changed.emit();
             self.base.request_redraw();
         } else if previous != max {
@@ -448,7 +465,12 @@ impl Draw for TextArea {
 
         // -- Text --
         let text_color = self.style().text_color.unwrap_or(Color::rgb(0, 0, 0));
-        let placeholder_color = Color::rgb(180, 180, 180);
+        // The placeholder is the value's own ink damped toward the field it sits on — the same
+        // derivation `line_edit` and `auto_complete_edit` use — rather than a fixed grey that
+        // ignored the appearance. A literal here rendered a light-theme hint over a dark field.
+        // The *disabled* ink is a different fact (see `disabled_ink_on`) and is not this colour.
+        let field_bg = bg;
+        let placeholder_color = text_color.blend(&field_bg, 0.55);
 
         // The first line's own glyph box, centred on a line-height band below the top edge.
         // The origin of a text run is the *top-left corner of its glyph box*, so the old
@@ -513,18 +535,28 @@ impl Draw for TextArea {
 
 impl TextArea {
     /// Computes the screen-space X coordinate of the cursor.
+    ///
+    /// The prefix is sliced through [`floor_char_boundary`] rather than at `cursor_pos` directly:
+    /// the caret is a byte index that `set_cursor_pos` now keeps on a boundary, and an *undo*
+    /// restore can replace the value under it, so slicing defensively here keeps the paint path
+    /// total whatever the caret holds. A draw that can panic is worse than a caret in the wrong
+    /// place — it takes the frame down.
     fn cursor_screen_x(&self, origin_x: i32) -> i32 {
-        // Find the character position within the current line
-        let text_before = &self.text[..self.cursor_pos];
+        let caret = floor_char_boundary(&self.text, self.cursor_pos.min(self.text.len()));
+        let text_before = &self.text[..caret];
         // Find the last newline before cursor
         let line_start = text_before.rfind('\n').map(|i| i + 1).unwrap_or(0);
-        let col = self.text[line_start..self.cursor_pos].len();
+        // `col` is a count of *characters*, because the run is drawn at a fixed advance per
+        // glyph: a byte length would over-count a multi-byte value and push the caret past its
+        // own text.
+        let col = self.text[line_start..caret].chars().count();
         origin_x + col as i32 * CHAR_W
     }
 
     /// Computes the screen-space Y coordinate of the cursor (top of cursor line).
     fn cursor_screen_y(&self, origin_y: i32) -> i32 {
-        let text_before = &self.text[..self.cursor_pos];
+        let caret = floor_char_boundary(&self.text, self.cursor_pos.min(self.text.len()));
+        let text_before = &self.text[..caret];
         let lines_before = text_before.chars().filter(|&c| c == '\n').count();
         origin_y + lines_before as i32 * LINE_H
     }
@@ -783,5 +815,37 @@ mod tests {
         ta.set_placeholder("hint".to_string());
 
         assert!(fired.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// `set_max_length` must not truncate inside a multi-byte character.
+    ///
+    /// The limit is a byte budget on this control (a document's buffer bound), but
+    /// `String::truncate` **panics** when the byte index is not a character boundary — so
+    /// `set_max_length(4)` on `"你好"` (six bytes) took the process down instead of trimming it.
+    #[test]
+    fn max_length_truncation_respects_character_boundaries() {
+        let mut ta = TextArea::new(String::new(), Rect::new(0, 0, 300, 200));
+        ta.set_text("你好");
+        ta.set_max_length(4);
+        assert!(ta.text().is_char_boundary(ta.text().len()));
+        assert_eq!(ta.text(), "你", "truncated to the last boundary at or before 4 bytes");
+        assert!(ta.text().is_char_boundary(ta.cursor_pos()));
+    }
+
+    /// A caret set to a mid-character byte is snapped, so the draw cannot slice through one.
+    ///
+    /// The editor passes an arbitrary byte index to `set_cursor_pos`; every reader slices at the
+    /// caret (`delete_char`, and the caret's own screen position on the **paint** path), so a
+    /// mid-character value used to panic the frame rather than merely misplace the marker.
+    #[test]
+    fn a_mid_character_cursor_is_snapped_to_a_boundary() {
+        let mut ta = TextArea::new(String::new(), Rect::new(0, 0, 300, 200));
+        ta.set_text("é");
+        ta.set_cursor_pos(1); // inside the two-byte 'é'
+        assert_eq!(ta.cursor_pos(), 0, "snapped down to a real character boundary");
+        // The paint path and the edit path must both survive it.
+        let _ = crate::widget::svg::render_to_svg(&mut ta);
+        ta.delete_char();
+        assert_eq!(ta.text(), "é", "nothing was deleted from position 0");
     }
 }

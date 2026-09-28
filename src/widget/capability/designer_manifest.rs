@@ -258,7 +258,7 @@ fn push_json_value(out: &mut String, value: &CapabilityValue) {
     match value {
         CapabilityValue::Null => out.push_str("null"),
         CapabilityValue::Bool(inner) => out.push_str(if *inner { "true" } else { "false" }),
-        CapabilityValue::Int(inner) => out.push_str(&format!("{inner}")),
+        CapabilityValue::Int(inner) => push_json_int(out, *inner),
         CapabilityValue::UInt(inner) => out.push_str(&format!("{inner}")),
         CapabilityValue::Float(inner) => push_json_float(out, *inner),
         CapabilityValue::String(inner) => push_json_string(out, inner),
@@ -276,6 +276,35 @@ fn push_json_value(out: &mut String, value: &CapabilityValue) {
             // representation rather than two that must be kept in step.
             out.push_str(&format!("\"{},{},{},{}\"", rect.x, rect.y, rect.width, rect.height));
         }
+    }
+}
+
+/// Appends a signed integer, ensuring the result re-reads as an `Int`.
+///
+/// # Why a non-negative `Int` needs more than its digits
+///
+/// JSON has one number type and no signed/unsigned distinction, so `Int(100)` and `UInt(100)` are
+/// the same three characters. The reader has to pick one, and it picks `UInt` for a non-negative
+/// value — `UInt` is the only arm that holds a non-negative integer without a lossy cast, and
+/// every non-negative integer default in the capability table is declared `UInt`. That made the
+/// round trip **partial**: `Int(100)` exported as `100` and reloaded as `UInt(100)`, so
+/// export → load → export produced a different value kind from its input.
+///
+/// That path is reachable, not hypothetical: `Slider`'s capability declares `minimum` as `Int(0)`
+/// and `maximum` as `Int(100)` (`access::...`), both non-negative.
+///
+/// A leading `+` is the marker. JSON's grammar allows it (`number = [ "-" ] int [ frac ] [ exp ]`,
+/// and an unsigned int is `digit1-9 *digit`), the reader records whether it saw one, and no
+/// capability default is written with a redundant `+` — so the two arms stay distinguishable
+/// without inventing a second document shape (a wrapper object, a `"100i"` string) that a
+/// consumer would have to learn. `UInt` keeps the bare spelling, so every existing document and
+/// the whole rest of the table is unchanged.
+fn push_json_int(out: &mut String, value: i64) {
+    if value < 0 {
+        out.push_str(&format!("{value}"));
+    } else {
+        out.push('+');
+        out.push_str(&format!("{value}"));
     }
 }
 
@@ -626,6 +655,24 @@ impl<'a> JsonReader<'a> {
         }
     }
 
+    /// Whether the number at the cursor is written with a **leading `+`**.
+    ///
+    /// # Why the sign is asked about separately
+    ///
+    /// [`read_number`](Self::read_number) returns a magnitude and nothing else, because that is
+    /// all a `f64` can carry. But JSON has no signed/unsigned distinction, so the magnitude alone
+    /// cannot say whether `100` means `Int(100)` or `UInt(100)` — and the writer emits the `UInt`
+    /// spelling for every non-negative value in the capability table, so the reader must be able to
+    /// tell the two apart or `Int(100)` reloads as a different kind than it was written as. This is
+    /// the other half of [`push_json_int`]: the marker is written there and observed here.
+    ///
+    /// It looks ahead without consuming, so it can be asked before or after `read_number` as long
+    /// as the cursor has not moved past the token.
+    fn peek_leading_plus(&mut self) -> bool {
+        self.skip_whitespace();
+        self.bytes.get(self.cursor) == Some(&b'+')
+    }
+
     /// Reads the key at the cursor and the colon after it.
     fn read_key(&mut self) -> Result<String, ManifestParseError> {
         let key = self.read_string()?;
@@ -795,14 +842,18 @@ fn read_value(reader: &mut JsonReader<'_>) -> Result<CapabilityValue, ManifestPa
     if reader.peek(b'"') {
         return Ok(CapabilityValue::String(reader.read_string()?));
     }
+    let leading_plus = reader.peek_leading_plus();
     let (number, is_float) = reader.read_number()?;
     if is_float {
         return Ok(CapabilityValue::Float(number));
     }
-    // An integral number carries no record of which arm wrote it. `UInt` is chosen for a
-    // non-negative value because it is the only kind that holds it without a lossy cast, and every
-    // non-negative integer default in the capability table is declared `UInt`.
-    if number < 0.0 {
+    // An integral number without a fractional part is `Int` when it is negative or carries the
+    // writer's leading `+`, and `UInt` otherwise. The reader must make the same distinction the
+    // writer did, or `Int(100)` — a value `Slider`'s `maximum` genuinely declares — would reload as
+    // `UInt(100)` and the round trip would not be a round trip. The marker is only consulted for a
+    // non-negative integral value: a `-3` is already unambiguous, and requiring a `-` *and* a `+`
+    // would be a marker no writer produces.
+    if number < 0.0 || leading_plus {
         return Ok(CapabilityValue::Int(number as i64));
     }
     Ok(CapabilityValue::UInt(number as u64))
@@ -1094,13 +1145,22 @@ mod tests {
     /// `Color`/`Rect` is the check that the writer did not invent a second representation.
     #[test]
     fn every_value_variant_round_trips() {
-        let cases: [(CapabilityValue, CapabilityValue); 9] = [
+        let cases: [(CapabilityValue, CapabilityValue); 12] = [
             (CapabilityValue::Null, CapabilityValue::Null),
             (CapabilityValue::Bool(true), CapabilityValue::Bool(true)),
             (CapabilityValue::Bool(false), CapabilityValue::Bool(false)),
             (CapabilityValue::UInt(7), CapabilityValue::UInt(7)),
+            (CapabilityValue::UInt(0), CapabilityValue::UInt(0)),
             (CapabilityValue::Float(1.5), CapabilityValue::Float(1.5)),
             (CapabilityValue::Int(-3), CapabilityValue::Int(-3)),
+            // **The cases that used to lose their kind.** `Int(0)` and `Int(100)` are exactly what
+            // `Slider`'s capability declares for `minimum`/`maximum`, and both were written as bare
+            // numbers, which the reader necessarily took for `UInt`. The round trip was therefore
+            // partial for the two defaults the table actually contains, not for a hypothetical
+            // value — and the old test's only `Int` case was `Int(-3)`, whose sign made it the one
+            // non-negative-free case that happened to work.
+            (CapabilityValue::Int(0), CapabilityValue::Int(0)),
+            (CapabilityValue::Int(100), CapabilityValue::Int(100)),
             (
                 CapabilityValue::String(String::from("a \"quoted\" \\ value\nwith a newline")),
                 CapabilityValue::String(String::from("a \"quoted\" \\ value\nwith a newline")),
@@ -1125,6 +1185,58 @@ mod tests {
                 "{written:?} did not survive the round trip"
             );
         }
+    }
+
+    /// A non-negative `Int` must not be written in the `UInt` spelling.
+    ///
+    /// The assertion above proves the *round trip* holds; this proves **how**, so a writer that
+    /// stopped distinguishing the two would be caught here rather than by whichever test happened
+    /// to compare the two kinds first.
+    #[test]
+    fn a_non_negative_int_carries_the_marker_that_distinguishes_it_from_a_uint() {
+        let mut manifest = sample();
+        manifest.properties[0].default_value = CapabilityValue::Int(100);
+        let int_json = manifest_to_json(&manifest);
+        assert!(
+            int_json.contains("\"default\":+100") || int_json.contains(": +100"),
+            "a non-negative `Int` must be marked with a leading `+`, or it is indistinguishable
+             from `UInt`: {int_json}"
+        );
+
+        manifest.properties[0].default_value = CapabilityValue::UInt(100);
+        let uint_json = manifest_to_json(&manifest);
+        assert!(
+            !uint_json.contains("+100"),
+            "`UInt` keeps the bare spelling — the marker is what distinguishes the two: {uint_json}"
+        );
+        assert_ne!(int_json, uint_json, "the two kinds must not export identically");
+
+        // A negative `Int` needs no marker: its sign is already unambiguous.
+        manifest.properties[0].default_value = CapabilityValue::Int(-100);
+        let negative_json = manifest_to_json(&manifest);
+        assert!(negative_json.contains("-100"));
+        assert!(!negative_json.contains("+-100"), "a negative must not also carry the marker");
+    }
+
+    /// Export → load → export must be a fixed point of the writer.
+    ///
+    /// The round-trip cases assert that one value survives; this asserts that a whole *document*
+    /// does, which is the property a designer's save/load cycle actually needs. A value that
+    /// reloads as a different kind re-exports to different bytes, so an equality check on the two
+    /// exports catches every such case at once instead of one per kind.
+    #[test]
+    fn exporting_a_reloaded_document_reproduces_it_byte_for_byte() {
+        let mut manifest = sample();
+        manifest.properties[0].default_value = CapabilityValue::Int(100);
+        let first = manifest_to_json(&manifest);
+        let reloaded =
+            DesignerManifest::from_json(&first).expect("a document this writer produced must load");
+        let second = manifest_to_json(&reloaded);
+        assert_eq!(
+            first, second,
+            "export → load → export must be stable; a value that changes kind on load is the
+             reason it is not"
+        );
     }
 
     /// A structured value must be written in the spelling the capability table uses.

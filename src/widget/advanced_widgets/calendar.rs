@@ -61,6 +61,18 @@ pub struct Calendar {
     /// The "displayed" month — the month currently shown in the grid
     /// (may differ from `selected_date` after month navigation).
     display_month: chrono::NaiveDate,
+    /// The date the control paints as **today** (the accent-tinted cell).
+    ///
+    /// # Why this is a field rather than a `Local::now()` call in `draw`
+    ///
+    /// `draw` read the wall clock directly, so the picture was a function of the day it was
+    /// rendered. A committed snapshot therefore changed at every midnight with no edit to explain
+    /// it — the same defect `selected_date` had, and the reason `sample_fill` pins that one. It
+    /// also made the control untestable for anything that depends on the today cell, because there
+    /// was no way to say which day "today" was. Seeding it from the clock at construction keeps the
+    /// host-visible behaviour (a calendar opens on today) while letting a caller — or a snapshot
+    /// fixture — state the day explicitly.
+    today: chrono::NaiveDate,
     minimum_date: chrono::NaiveDate,
     maximum_date: chrono::NaiveDate,
     first_day_of_week: chrono::Weekday,
@@ -82,6 +94,7 @@ impl Calendar {
             base: BaseWidget::new(WidgetKind::Calendar, geometry, "Calendar"),
             selected_date: today,
             display_month: today,
+            today,
             // SAFETY: 1900-01-01 is a valid Gregorian date.
             minimum_date: chrono::NaiveDate::from_ymd_opt(1900, 1, 1)
                 .expect("the calendar lower bound is the literal 1900-01-01, which is a valid Gregorian date"),
@@ -97,6 +110,24 @@ impl Calendar {
             date_format: "%Y-%m-%d".to_string(),
         }
     }
+    /// Returns the date this calendar paints as "today".
+    pub fn today(&self) -> chrono::NaiveDate {
+        self.today
+    }
+
+    /// Sets the date painted as "today", and repaints.
+    ///
+    /// The control's default is the wall clock's day at construction; this exists so a caller (or a
+    /// snapshot fixture) can state it. See [`Calendar::today`]'s field docs for why the day is a
+    /// field rather than a clock read in `draw`.
+    pub fn set_today(&mut self, date: chrono::NaiveDate) {
+        if self.today == date {
+            return;
+        }
+        self.today = date;
+        self.base.request_redraw();
+    }
+
     /// Returns selected date.
     pub fn selected_date(&self) -> chrono::NaiveDate {
         self.selected_date
@@ -185,8 +216,14 @@ impl Calendar {
         self.base.request_redraw();
     }
     /// Shows today's date and resets display to current month.
+    ///
+    /// Also re-reads the clock into the control's `today` field, which is what makes this the
+    /// "go back to the present" action rather than only a selection change: after a caller had
+    /// called [`Calendar::set_today`], the accent cell would otherwise keep pointing at the pinned
+    /// day.
     pub fn show_today(&mut self) {
         let today = chrono::Local::now().date_naive();
+        self.today = today;
         self.display_month = today;
         self.set_selected_date(today);
     }
@@ -630,7 +667,9 @@ impl Draw for Calendar {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
         let enabled = self.base.is_enabled();
-        let today = chrono::Local::now().date_naive();
+        // The day painted as "today" is the control's own field, not a clock read: see its field
+        // docs. Reading `Local::now()` here made every snapshot a function of the render date.
+        let today = self.today;
         // Read the style once. The chrome — the calendar's own surface, its ink, its
         // outlines — follows it; the literals stay as fallbacks so an unstyled
         // calendar looks exactly as before. What does *not* follow it is the set of

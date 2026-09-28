@@ -9,9 +9,9 @@
 use crate::compat::Vec;
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::render::pipeline::pixel_ops::{
-    blend_painted_glyph, blend_pixel, circle_fill_coverage_grid, circle_stroke_coverage_grid,
-    inset_rect, line_stroke_coverage_grid, pixel_visible, rounded_rect_coverage,
-    rounded_rect_coverage_grid, rounded_rect_effective_radius, set_pixel, GlyphDrawConfig,
+    blend_painted_glyph, circle_fill_coverage_grid, circle_stroke_coverage_grid, inset_rect,
+    line_stroke_coverage_grid, pixel_visible, rounded_rect_coverage, rounded_rect_coverage_grid,
+    rounded_rect_effective_radius, write_pixel_with_mode, GlyphDrawConfig,
 };
 // Imported separately because it only exists when a colour face does — see its own docs.
 #[cfg(feature = "fonts-emoji-color")]
@@ -20,17 +20,22 @@ use crate::render::text::{is_combining_mark, is_variation_selector};
 use crate::render::SoftwareSurface;
 
 macro_rules! set_pixel_clipped {
-    ($clip:expr, $frame:expr, $width:expr, $x:expr, $y:expr, $color:expr) => {
+    ($blend:expr, $clip:expr, $frame:expr, $width:expr, $x:expr, $y:expr, $color:expr) => {
         if pixel_visible($clip, $x as i32, $y as i32) {
-            set_pixel($frame, $width, $x as u32, $y as u32, $color);
+            // Every opaque primitive funnels through here, so this is where the backend's current
+            // `SetBlendMode` is applied. `Normal` composites the source verbatim (the old
+            // `set_pixel`, bit for bit); any other mode runs the W3C blend function first. Without
+            // this the software backend stored the mode and never read it, so a `SetBlendMode` frame
+            // was a no-op on the rasteriser while the SVG snapshot honoured it.
+            write_pixel_with_mode($blend, $frame, $width, $x as u32, $y as u32, $color, 1.0);
         }
     };
 }
 
 macro_rules! blend_pixel_clipped {
-    ($clip:expr, $frame:expr, $width:expr, $x:expr, $y:expr, $color:expr, $coverage:expr) => {
+    ($blend:expr, $clip:expr, $frame:expr, $width:expr, $x:expr, $y:expr, $color:expr, $coverage:expr) => {
         if pixel_visible($clip, $x as i32, $y as i32) {
-            blend_pixel($frame, $width, $x as u32, $y as u32, $color, $coverage);
+            write_pixel_with_mode($blend, $frame, $width, $x as u32, $y as u32, $color, $coverage);
         }
     };
 }
@@ -49,7 +54,7 @@ impl SoftwareSurface {
         let frame = self.buffer.back_mut();
         for y in y0..y1 {
             for x in x0..x1 {
-                set_pixel_clipped!(clip, frame, size.width, x, y, color);
+                set_pixel_clipped!(self.blend_mode, clip, frame, size.width, x, y, color);
             }
         }
     }
@@ -113,7 +118,16 @@ impl SoftwareSurface {
             for px in x0..=x1 {
                 let coverage = rounded_rect_coverage(px, py, rect, effective_radius);
                 if coverage > 0.0 {
-                    blend_pixel_clipped!(clip, frame, size.width, px, py, color, coverage);
+                    blend_pixel_clipped!(
+                        self.blend_mode,
+                        clip,
+                        frame,
+                        size.width,
+                        px,
+                        py,
+                        color,
+                        coverage
+                    );
                 }
             }
         }
@@ -139,7 +153,16 @@ impl SoftwareSurface {
                 let coverage =
                     rounded_rect_coverage_grid(px, py, rect, effective_radius, sample_grid);
                 if coverage > 0.0 {
-                    blend_pixel_clipped!(clip, frame, size.width, px, py, color, coverage);
+                    blend_pixel_clipped!(
+                        self.blend_mode,
+                        clip,
+                        frame,
+                        size.width,
+                        px,
+                        py,
+                        color,
+                        coverage
+                    );
                 }
             }
         }
@@ -181,7 +204,16 @@ impl SoftwareSurface {
                 };
                 let stroke_coverage = (outer_coverage - inner_coverage).clamp(0.0, 1.0);
                 if stroke_coverage > 0.0 {
-                    blend_pixel_clipped!(clip, frame, size.width, px, py, color, stroke_coverage);
+                    blend_pixel_clipped!(
+                        self.blend_mode,
+                        clip,
+                        frame,
+                        size.width,
+                        px,
+                        py,
+                        color,
+                        stroke_coverage
+                    );
                 }
             }
         }
@@ -225,7 +257,16 @@ impl SoftwareSurface {
                 };
                 let stroke_coverage = (outer_coverage - inner_coverage).clamp(0.0, 1.0);
                 if stroke_coverage > 0.0 {
-                    blend_pixel_clipped!(clip, frame, size.width, px, py, color, stroke_coverage);
+                    blend_pixel_clipped!(
+                        self.blend_mode,
+                        clip,
+                        frame,
+                        size.width,
+                        px,
+                        py,
+                        color,
+                        stroke_coverage
+                    );
                 }
             }
         }
@@ -267,7 +308,7 @@ impl SoftwareSurface {
                     let px = x0 + ox;
                     let py = y0 + oy;
                     if px >= 0 && py >= 0 && (px as u32) < width && (py as u32) < height {
-                        set_pixel_clipped!(clip, frame, width, px, py, color);
+                        set_pixel_clipped!(self.blend_mode, clip, frame, width, px, py, color);
                     }
                 }
             }
@@ -320,7 +361,16 @@ impl SoftwareSurface {
             for px in min_x..=max_x {
                 let coverage = line_stroke_coverage_grid(px, py, ax, ay, bx, by, half, sample_grid);
                 if coverage > 0.0 {
-                    blend_pixel_clipped!(clip, frame, size.width, px, py, color, coverage);
+                    blend_pixel_clipped!(
+                        self.blend_mode,
+                        clip,
+                        frame,
+                        size.width,
+                        px,
+                        py,
+                        color,
+                        coverage
+                    );
                 }
             }
         }
@@ -351,7 +401,7 @@ impl SoftwareSurface {
                 if px < 0 || px >= width {
                     continue;
                 }
-                set_pixel_clipped!(clip, frame, size.width, px, py, color);
+                set_pixel_clipped!(self.blend_mode, clip, frame, size.width, px, py, color);
             }
         }
     }
@@ -375,7 +425,16 @@ impl SoftwareSurface {
             for px in x0..=x1 {
                 let coverage = circle_fill_coverage_grid(px, py, center, r, sample_grid);
                 if coverage > 0.0 {
-                    blend_pixel_clipped!(clip, frame, size.width, px, py, color, coverage);
+                    blend_pixel_clipped!(
+                        self.blend_mode,
+                        clip,
+                        frame,
+                        size.width,
+                        px,
+                        py,
+                        color,
+                        coverage
+                    );
                 }
             }
         }
@@ -420,7 +479,16 @@ impl SoftwareSurface {
                     sample_grid,
                 );
                 if stroke_coverage > 0.0 {
-                    blend_pixel_clipped!(clip, frame, size.width, px, py, color, stroke_coverage);
+                    blend_pixel_clipped!(
+                        self.blend_mode,
+                        clip,
+                        frame,
+                        size.width,
+                        px,
+                        py,
+                        color,
+                        stroke_coverage
+                    );
                 }
             }
         }
@@ -551,7 +619,7 @@ impl SoftwareSurface {
                 let x_start = x_start.max(0);
                 let x_end = x_end.min(size.width as i32 - 1);
                 for x in x_start..=x_end {
-                    set_pixel_clipped!(clip, frame, size.width, x, y, color);
+                    set_pixel_clipped!(self.blend_mode, clip, frame, size.width, x, y, color);
                 }
                 i += 2;
             }
@@ -571,7 +639,7 @@ impl SoftwareSurface {
             let max_x = a.x.max(b.x).max(c.x);
             if max_x > min_x {
                 for x in min_x.max(0)..=max_x.min(size.width as i32 - 1) {
-                    set_pixel_clipped!(clip, frame, size.width, x, a.y, color);
+                    set_pixel_clipped!(self.blend_mode, clip, frame, size.width, x, a.y, color);
                 }
             }
             return;
@@ -611,7 +679,7 @@ impl SoftwareSurface {
                 let x_start = x_start.max(0);
                 let x_end = x_end.min(size.width as i32 - 1);
                 for x in x_start..=x_end {
-                    set_pixel_clipped!(clip, frame, size.width, x, y, color);
+                    set_pixel_clipped!(self.blend_mode, clip, frame, size.width, x, y, color);
                 }
             }
         }

@@ -66,7 +66,8 @@
 use crate::compat::Vec;
 use crate::core::{ObjectId, Rect, Size};
 use crate::layout::{
-    max_preferred, total_bounds, total_minimum, AxisHints, ChildInfo, Hints, Layout, LayoutParams,
+    max_preferred, total_bounds, total_minimum, AxisHints, ChildInfo, Hints, Layout, LayoutContext,
+    LayoutParams,
 };
 use crate::style::EdgeOffsets;
 use crate::widget::metrics::ControlMetrics;
@@ -481,6 +482,32 @@ impl CompositeBuilder {
     /// returns are the rectangles the children get, which is what makes "the layout
     /// owns placement" true rather than aspirational.
     ///
+    /// # The device context
+    ///
+    /// BLUE22 §B.6 rule 7 is that a composite's children are laid out with the device context, and
+    /// it was the rule quietly absent here: this called `Layout::arrange`, whose default body
+    /// forwards to `update` — the context-free path. Two device-scaling behaviours therefore never
+    /// happened inside a composite, because each lives in a layout's `update_with_context`:
+    ///
+    /// * `grow_to_min_touch_size` (`box_layout`, `flex` and `wrap`), so a 4 px sub-control did not
+    ///   get the profile's touch target — the composite's children were the one place the floor did
+    ///   not apply;
+    /// * the larger-of-`layout_scale`-and-`font_scale` gap growth, so a 2x text preference grew a
+    ///   composite's glyphs while leaving its gaps nominal.
+    ///
+    /// Both are restored by routing through `arrange_with_context`, whose default body forwards to
+    /// `arrange`, so a layout that has not been taught about the device behaves exactly as before.
+    ///
+    /// # Why the floor is **not** re-applied here as well
+    ///
+    /// An earlier revision of this method grew each rectangle through `grow_to_min_touch_size` a
+    /// second time, after the layout. That is the wrong layer twice over: the layouts that own the
+    /// context already apply it (so every child was grown twice, once in the layout's solver and
+    /// once in the round trip), and the layouts that do not apply it are the ones that have *said*
+    /// they do not scale — a caller's own `Layout`, or a child whose extent the composite pinned
+    /// (§B.6 rule 9 through `add_sized`/`add_flexible`). The floor belongs where the space is
+    /// allocated, which is the layout, and `arrange_with_context` is what now lets it run.
+    ///
     /// If the layout reports a child the builder did not register (or omits one), the
     /// omitted child keeps the geometry it already had rather than being moved to a
     /// zero rect — an invisible sub-control is a worse failure than a stale one, and
@@ -488,7 +515,8 @@ impl CompositeBuilder {
     pub fn arrange(&self, rect: Rect, out: &mut dyn FnMut(ObjectId, Rect)) {
         let content = ControlMetrics::content_box(rect, self.padding);
         let infos = self.child_infos();
-        self.layout.arrange(content, &infos, out);
+        let context = LayoutContext::default();
+        self.layout.arrange_with_context(content, &infos, &context, out);
     }
 
     /// The children's ids, in the order they were added.
@@ -885,6 +913,81 @@ mod tests {
             widths[1] > widths[0],
             "the `fill` child must be wider than the fixed one: {widths:?}"
         );
+    }
+
+    /// **The BLUE22 §B.6 rule-7 defect this closes.** A plain child gets the touch floor.
+    ///
+    /// # Why this test is written against the *profile's* floor
+    ///
+    /// The floor is not a constant: it is the device's recommended touch target
+    /// (`recommended_touch_target`), so pinning a number here would encode today's desktop profile
+    /// into a test that must hold on a phone. The assertion is therefore the invariant — a child
+    /// smaller than the profile's target comes back at least that large — which is exactly what
+    /// rule 7 asks for and what a composite did not do: `arrange` called the context-free path, so
+    /// `grow_to_min_touch_size` never ran and a tiny sub-control stayed a tiny *target*.
+    #[test]
+    fn a_plain_child_is_grown_to_the_profiles_touch_floor() {
+        let factory = WidgetFactory::new_with_defaults();
+        let mut builder = CompositeBuilder::new(row(0), EdgeOffsets::all(0), Size::new(0, 0));
+        builder
+            .add(&factory, "label", "tiny", Rect::new(0, 0, 4, 4), LayoutParams::new())
+            .expect("label is published");
+
+        let mut rects = Vec::new();
+        builder.arrange(Rect::new(0, 0, 400, 200), &mut |_, rect| rects.push(rect));
+        assert_eq!(rects.len(), 1);
+        let floor = crate::platform::profile::recommended_touch_target().dimensions();
+        let placed = rects[0];
+        assert!(
+            placed.width >= floor.width && placed.height >= floor.height,
+            "a 4x4 child must be grown to the profile's {}x{} touch target, got {}x{}",
+            floor.width,
+            floor.height,
+            placed.width,
+            placed.height
+        );
+        // Growing is centred, so the child keeps the place the layout gave it.
+        assert!(placed.x <= 0, "growth is centred on the child: {placed:?}");
+    }
+
+    /// A child whose size the *composite* stated is exempt from the touch floor.
+    ///
+    /// # Why the exemption is the point, not a loophole
+    ///
+    /// `add_sized`/`add_flexible` exist because a split button's arrow column is 22 px and a spin
+    /// box's step column is half the field's height — numbers the *composite* knows and the child
+    /// control cannot derive. The floor grows a rectangle toward the profile's target, so applying
+    /// it to such a column inflates exactly the axis the composite declared: the columns stop
+    /// tiling the face and overhang it. This asserts both halves — exempt where the composite
+    /// stated the size, floored where it did not — because either one alone would pass against a
+    /// builder that applied no floor at all, or against one that applied it everywhere.
+    #[test]
+    fn a_size_the_composite_stated_is_not_inflated_by_the_touch_floor() {
+        let factory = WidgetFactory::new_with_defaults();
+        let mut builder = CompositeBuilder::new(row(0), EdgeOffsets::all(0), Size::new(0, 0));
+        builder
+            .add_sized(&factory, "label", "col", Size::new(22, 40), LayoutParams::new())
+            .expect("label is published");
+        builder
+            .add_flexible(
+                &factory,
+                "label",
+                "fixed-height",
+                Rect::new(0, 0, 4, 4),
+                LayoutParams::new(),
+                FlexibleAxis::Height,
+            )
+            .expect("label is published");
+
+        let mut rects = Vec::new();
+        builder.arrange(Rect::new(0, 0, 200, 40), &mut |_, rect| rects.push(rect));
+        assert_eq!(rects.len(), 2);
+        assert_eq!(
+            rects[0].width, 22,
+            "the composite stated 22 px, so the floor must not widen it: {:?}",
+            rects[0]
+        );
+        assert_eq!(rects[0].height, 40, "nor heighten it: {:?}", rects[0]);
     }
 
     /// An unpublished child name yields `None` rather than failing the composite.

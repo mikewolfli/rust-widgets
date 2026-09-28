@@ -97,6 +97,40 @@ pub trait ControlBackend: Send + Sync {
         0
     }
 
+    /// Mount an already-built widget box under `parent`.
+    ///
+    /// # Why this exists alongside [`create_widget`](ControlBackend::create_widget)
+    ///
+    /// `create_widget` takes a *name* and builds the control inside the backend. A caller that
+    /// has already built the widget — the JSON layout loader, which applies a document's whole
+    /// property set before the control exists — cannot use it. Without this method that caller
+    /// had nowhere to hand the box over, and the JSON loader's answer was to index the widget's
+    /// own `id()` and drop the box: a registration the runtime never saw, so every handle the
+    /// document resolved addressed nothing.
+    ///
+    /// `parent` is `None` for a root (a window) and `Some(id)` for a child. `declared_id` is the
+    /// id the caller wants the widget *known by* (`0` for "assign one"), which is what keeps a
+    /// declarative document's `"id"` addressable rather than translated into a runtime id the
+    /// document has never heard of.
+    ///
+    /// Returns the id the widget is mounted under, or `0` when this backend has no widget
+    /// runtime to mount into — never a fabricated id.
+    ///
+    /// # Why the default reports `0`
+    ///
+    /// A backend whose controls *are* platform widgets (the native one) does not hold the
+    /// widget boxes at all; its `create_*` methods build the platform control directly. It
+    /// therefore cannot adopt a box, and saying `0` is the honest answer rather than pretending
+    /// to mount it somewhere the accessors will not look.
+    fn mount_widget_box(
+        &self,
+        _widget: crate::compat::Box<dyn crate::widget::Widget>,
+        _parent: Option<ObjectId>,
+        _declared_id: ObjectId,
+    ) -> ObjectId {
+        0
+    }
+
     // ── Concrete widget creation methods ──
 
     /// Destroy a previously created widget and release its resources.
@@ -2022,6 +2056,23 @@ pub trait ControlBackend: Send + Sync {
     }
     /// Create segmented button control.
     fn create_segmented_button(
+        &self,
+        _parent: ObjectId,
+        _x: i32,
+        _y: i32,
+        _width: u32,
+        _height: u32,
+    ) -> ObjectId {
+        0
+    }
+    /// Create segmented control (single-select segmented bar).
+    ///
+    /// Separate from [`Self::create_segmented_button`]: the two controls share a shape but not a
+    /// behaviour (multi-select with icons vs single-select with a sliding indicator), and they have
+    /// separate `WidgetKind`s. Omitting this entry left the control reachable from the registry but
+    /// not from the backend trait — a gap the earlier kind collision hid, because the control
+    /// answered `WidgetKind::ToggleButton` and inherited the toggle's entry.
+    fn create_segmented_control(
         &self,
         _parent: ObjectId,
         _x: i32,

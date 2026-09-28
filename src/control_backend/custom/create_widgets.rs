@@ -111,6 +111,37 @@ impl ControlBackend for super::CustomPaintControlBackend {
         self.create_qr_code(parent, x, y, width, height)
     }
 
+    /// Adopts a widget box a caller built itself, mounting it under the id it asked for.
+    ///
+    /// # Why the JSON layout loader needs this
+    ///
+    /// The loader applies a document's whole property set to a control *before* the control
+    /// exists, so it cannot use the name-based `create_widget`. Without this method it had
+    /// nowhere to hand the box over, and the answer it settled on — index the widget's own
+    /// `id()` in `WidgetRegistry` and drop the box — produced a tree of controls the runtime
+    /// had never mounted. Every handle a caller resolved from the binding then answered with
+    /// the control's *defaults*, and every `on_*` handler the document declared was dropped,
+    /// because both paths reach the widget through `with_widget`/`with_widget_mut`.
+    ///
+    /// Delegates to [`adopt_widget_box`](super::CustomPaintControlBackend::adopt_widget_box),
+    /// which is also the tail of the name-based path — one implementation of "mount this
+    /// box, record both directions of the parent relation, give a window its host surface".
+    ///
+    /// # Why the body is `0` on `alloc_frugal`
+    ///
+    /// That profile compiles `widget::runtime` out, so there is no registry to adopt the box
+    /// into. The trait's own default already answers `0` there, and it is the same honest answer a
+    /// backend with no host windows gives: no fabricated id.
+    #[cfg(not(alloc_frugal))]
+    fn mount_widget_box(
+        &self,
+        widget: crate::compat::Box<dyn crate::widget::Widget>,
+        parent: Option<ObjectId>,
+        declared_id: ObjectId,
+    ) -> ObjectId {
+        self.adopt_widget_box(widget, parent, declared_id)
+    }
+
     /// Drops every piece of host state this backend keeps for `widget_id`.
     ///
     /// The widget object itself is released through

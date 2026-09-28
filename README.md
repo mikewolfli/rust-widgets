@@ -14,7 +14,7 @@ Why self-drawn controls are worth the effort:
 | | Self-drawn (this library) | Native controls |
 |---|---|---|
 | Appearance | Identical on every OS | Differs per toolkit and version |
-| Control count | 180 kinds everywhere | Only what the toolkit offers |
+| Control count | 181 kinds everywhere | Only what the toolkit offers |
 | Dependencies | No GUI toolkit linked | GTK / AppKit / Win32 / Android SDK |
 | Headless / embedded | Runs with no OS at all (`mini`, SVG) | Impossible |
 | Tests | Pixel and SVG snapshots | Needs a real display |

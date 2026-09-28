@@ -1035,6 +1035,23 @@ fn published_enum_tokens_are_accepted_by_their_control() {
 /// be a subset of the writer's aliases, and forcing the two to be identical would forbid
 /// accepting `center` while reporting `centre`. What it refuses is the harmful direction —
 /// reporting a word that the schema never mentions.
+///
+/// # Why it also writes each published token before reading
+///
+/// Reading only a **freshly constructed** control answers the question for the *default* state
+/// alone, and every one of the mismatches below hid behind exactly that: the default is
+/// `Left`/`normal`/`Single`, all three of which are published, so the assertion stayed green
+/// while the control's real vocabulary drifted. Three defects shipped through this hole:
+///
+/// * `alignment` on **21 controls** — the shared reader emitted `center` where the schema
+///   publishes `centre`, so any centred field reported a token its own contract never mentions;
+/// * `toggle_button.state` — the reader emits `hover`/`pressed`, which the schema omitted, so a
+///   pointer merely arriving made the control quote an unpublished word;
+/// * `list_view.selection_mode` / `table_widget.selection_mode` — the reader emits `none`, which
+///   the schema omitted *and* the writer refused, so a `None` view could not round-trip.
+///
+/// The loop below therefore drives the control into every state its own published vocabulary
+/// names and re-reads, which is the state space a consumer can actually reach.
 #[test]
 fn readable_enum_properties_return_a_published_token() {
     let factory = WidgetFactory::new_with_defaults();
@@ -1047,44 +1064,69 @@ fn readable_enum_properties_return_a_published_token() {
             if !schema.readable || schema.accepted_tokens.is_empty() {
                 continue;
             }
-            let Some(mut widget) =
-                factory.create(capability.canonical_name, Rect::new(0, 0, 64, 48), "x")
-            else {
-                continue;
-            };
-            let Ok(value) = crate::widget::capability::properties_trait::widget_property_get(
-                widget.as_mut(),
-                schema.name,
-            ) else {
-                // Published-but-unanswerable is `assert_contract`'s finding, not this one.
-                continue;
-            };
-            let CapabilityValue::String(returned) = value else {
-                // A non-string value from a token-publishing property is a different
-                // mismatch; `schema_and_contract_publish_the_same_names` covers the shape.
-                continue;
-            };
-            checked_count += 1;
-            // Compared through the same normaliser the `set` parsers use, so `partially_checked`
-            // matches a published `partial_checked` and case/separator differences are not
-            // reported as vocabulary mismatches.
-            let normalised = crate::widget::capability::coercion::normalize_key(&returned);
-            let known = schema.accepted_tokens.iter().any(|token| {
-                crate::widget::capability::coercion::normalize_key(token) == normalised
-            });
-            if !known {
-                // The schema is `&'static`, so the first token is a stable label for "the
-                // published vocabulary"; the whole list is printed by the failure message
-                // through `tokens_debug` below when the list is short enough to read.
-                unexpected.push((
-                    capability.canonical_name,
+            // The default state, plus every state the control can be driven into through a token
+            // it publishes. A token the writer refuses is the write-direction test's business and
+            // is skipped here rather than counted twice.
+            let mut writes: alloc::vec::Vec<Option<&str>> = alloc::vec::Vec::new();
+            writes.push(None);
+            if schema.writable {
+                writes.extend(schema.accepted_tokens.iter().map(|t| Some(*t)));
+            }
+            for write in writes {
+                let Some(mut widget) =
+                    factory.create(capability.canonical_name, Rect::new(0, 0, 64, 48), "x")
+                else {
+                    continue;
+                };
+                if let Some(token) = write {
+                    let accepted =
+                        crate::widget::capability::properties_trait::widget_property_set(
+                            widget.as_mut(),
+                            schema.name,
+                            CapabilityValue::String(token.to_string()),
+                        )
+                        .is_ok();
+                    if !accepted {
+                        continue;
+                    }
+                }
+                let Ok(value) = crate::widget::capability::properties_trait::widget_property_get(
+                    widget.as_mut(),
                     schema.name,
-                    returned.clone(),
-                    schema.accepted_tokens.first().copied().unwrap_or(""),
-                ));
+                ) else {
+                    // Published-but-unanswerable is `assert_contract`'s finding, not this one.
+                    continue;
+                };
+                let CapabilityValue::String(returned) = value else {
+                    // A non-string value from a token-publishing property is a different
+                    // mismatch; `schema_and_contract_publish_the_same_names` covers the shape.
+                    continue;
+                };
+                checked_count += 1;
+                // Compared through the same normaliser the `set` parsers use, so `partially_checked`
+                // matches a published `partial_checked` and case/separator differences are not
+                // reported as vocabulary mismatches.
+                let normalised = crate::widget::capability::coercion::normalize_key(&returned);
+                let known = schema.accepted_tokens.iter().any(|token| {
+                    crate::widget::capability::coercion::normalize_key(token) == normalised
+                });
+                if !known {
+                    // The schema is `&'static`, so the first token is a stable label for "the
+                    // published vocabulary"; the whole list is printed by the failure message
+                    // through `tokens_debug` below when the list is short enough to read.
+                    unexpected.push((
+                        capability.canonical_name,
+                        schema.name,
+                        returned.clone(),
+                        schema.accepted_tokens.first().copied().unwrap_or(""),
+                    ));
+                }
             }
         }
     }
+
+    unexpected.sort();
+    unexpected.dedup();
 
     assert!(
         checked_count > 0,

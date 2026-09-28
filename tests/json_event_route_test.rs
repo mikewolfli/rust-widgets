@@ -19,13 +19,26 @@
 //! Driving `bind_declared_events` directly would test the helper rather than the loader's use of
 //! it. Every case below therefore goes through `load_layout_from_str`, which is the path a host
 //! actually takes.
+//!
+//! # Why these tests can now drive the signal
+//!
+//! An earlier revision of this file could not, and said so: `JsonLoader::load` registered metadata
+//! into `WidgetRegistry` and never mounted the widget into `crate::widget::runtime`, so no id a
+//! document produced addressed a live control and nothing could raise a signal on one. The tests
+//! settled for "the document loaded", which passes identically against a loader that wires every
+//! handler to nothing — and that is exactly what it was doing. The loader now mounts through the
+//! control backend's creation funnel, so each test below **raises the signal and counts
+//! invocations**, which is the only assertion that can tell a wired binding from a resolved name.
 
 #![cfg(all(feature = "desktop", not(alloc_frugal)))]
 
+use rust_widgets::app::dispatch_trigger;
+use rust_widgets::core::ObjectId;
 use rust_widgets::json::{
-    clear_global_handlers, invoke_global_handler, register_global_handler, EventHandlerContext,
-    JsonLoader,
+    clear_global_handlers, invoke_global_handler, json_event_binding, register_global_handler,
+    BoundJsonLayout, EventHandlerContext, JsonEventBinding, JsonLoader, JsonTriggerMarker,
 };
+use rust_widgets::platform::WidgetTriggerKind;
 use rust_widgets::widget::capability::WidgetFactory;
 use rust_widgets::WidgetTriggerEvent;
 
@@ -53,45 +66,85 @@ fn counting_handler(name: &str) -> Arc<AtomicUsize> {
     calls
 }
 
-/// Invokes `name` the way the loader's wiring does, and reports whether it was found.
-fn fire(name: &str, kind: rust_widgets::platform::WidgetTriggerKind) -> bool {
+/// The id a loaded node was **mounted** under.
+///
+/// # Why this is the document's id, not a translation of it
+///
+/// The loader *reserves* the document's `"id"` when it mounts, so the runtime registry and the
+/// document share one id space and no lookup is needed. The mount is still verified rather than
+/// assumed: if a future change reintroduced a second id space, a test that skipped the check would
+/// drive a signal into nothing and pass.
+fn mounted_id(bound: &BoundJsonLayout, name: &str) -> ObjectId {
+    let declared = bound.id(name).unwrap_or_else(|| panic!("'{name}' must be bound by its id"));
+    assert!(
+        rust_widgets::widget::runtime::is_mounted(declared),
+        "'{name}' (id {declared}) was not mounted, so no signal can be raised on it"
+    );
+    declared
+}
+
+/// Emits the control's own `clicked` signal — the channel `on_click` connects to.
+///
+/// Deliberately the widget's signal rather than `dispatch_trigger`: a real click arrives through
+/// `BaseWidget::clicked`, and the loader's click bindings are connected there. Driving
+/// `dispatch_trigger` instead would exercise the *legacy* table, which is a different channel and
+/// would let a regression in the connect step pass unnoticed.
+fn emit_click(bound: &BoundJsonLayout, name: &str) {
+    let id = mounted_id(bound, name);
+    rust_widgets::widget::runtime::with_widget_mut(id, |widget| {
+        widget.base().clicked.emit();
+    });
+}
+
+/// Invokes `name` the way a handler receives it, and reports whether it was found.
+///
+/// Used by the cases that assert something about the *hub* rather than about a control.
+#[allow(dead_code)]
+fn fire(name: &str, kind: WidgetTriggerKind) -> bool {
     let ctx = EventHandlerContext::new(WidgetTriggerEvent { widget_id: 1, kind });
     invoke_global_handler(name, &ctx)
 }
 
-/// The published route reaches a handler. This is the capability that did not exist before T-8.
+/// The published route fires on a real click, not merely resolves the name.
+///
+/// # What this asserts that the old version could not
+///
+/// The previous body fired the *handler* directly and asserted it had been registered. That passes
+/// against a loader that resolves the name and wires nothing, which is what the loader did. This
+/// loads the document, **emits the control's own `clicked` signal** — the channel `on_click`
+/// connects to — and asserts the handler ran exactly once.
 #[test]
 fn a_published_name_declared_under_events_is_wired() {
-    use rust_widgets::platform::WidgetTriggerKind;
-
     with_clean_handlers(|| {
         let calls = counting_handler("on_go");
         let json = r#"{"window":{"id":"w","title":"T","width":400,"height":300,"layout":{
-            "type":"vbox","children":[{"button":{"id":"b","text":"Go","events":{"clicked":"on_go"}}}]}}}"#;
+            "type":"vbox","children":[{"button":{"id":"b","text":"Go",
+                "events":{"clicked":"on_go"}}}]}}}"#;
 
-        JsonLoader::load(json).expect("a published-name binding must load");
+        let bound = JsonLoader::load(json).expect("a published-name binding must load");
+        emit_click(&bound, "b");
 
-        assert!(
-            fire("on_go", WidgetTriggerKind::Clicked),
-            "the handler named under `events.clicked` must be registered, or the published \
-             route resolves the name and then wires nothing"
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "`events.clicked` must reach the handler on a real click, or the published route \
+             resolves the name and then wires nothing"
         );
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
     });
 }
 
-/// The compatibility route still reaches a handler, so T-8 merged rather than replaced.
+/// The compatibility route fires through the callback its marker implies.
 #[test]
 fn a_compatibility_key_still_reaches_its_handler() {
-    use rust_widgets::platform::WidgetTriggerKind;
-
     with_clean_handlers(|| {
-        let calls = counting_handler("on_close_legacy");
-        let json = r#"{"window":{"id":"w","title":"T","width":400,"height":300,
-            "on_close":"on_close_legacy"}}"#;
+        let calls = counting_handler("on_change_legacy");
+        let json = r#"{"window":{"id":"w","title":"T","width":400,"height":300,"layout":{
+            "type":"vbox","children":[{"slider":{"id":"s","on_change":"on_change_legacy"}}]}}}"#;
 
-        JsonLoader::load(json).expect("a compatibility binding must load");
-        assert!(fire("on_close_legacy", WidgetTriggerKind::Closed));
+        let bound = JsonLoader::load(json).expect("a compatibility binding must load");
+        let fired = dispatch_trigger(mounted_id(&bound, "s"), WidgetTriggerKind::ValueChanged);
+
+        assert!(fired, "`on_change` must reach the value callback table");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     });
 }
@@ -101,8 +154,6 @@ fn a_compatibility_key_still_reaches_its_handler() {
 /// A loader that stopped after the first matching route would satisfy each test above on its own.
 #[test]
 fn both_routes_can_be_declared_on_one_node() {
-    use rust_widgets::platform::WidgetTriggerKind;
-
     with_clean_handlers(|| {
         let published = counting_handler("on_pub");
         let legacy = counting_handler("on_leg");
@@ -110,30 +161,137 @@ fn both_routes_can_be_declared_on_one_node() {
             "type":"vbox","children":[{"button":{"id":"b","text":"Go",
                 "events":{"clicked":"on_pub"},"on_change":"on_leg"}}]}}}"#;
 
-        JsonLoader::load(json).expect("both routes on one node must load");
+        let bound = JsonLoader::load(json).expect("both routes on one node must load");
+        emit_click(&bound, "b");
+        dispatch_trigger(mounted_id(&bound, "b"), WidgetTriggerKind::ValueChanged);
 
-        assert!(fire("on_pub", WidgetTriggerKind::Clicked), "the published route must be wired");
-        assert!(fire("on_leg", WidgetTriggerKind::ValueChanged), "the compatibility route too");
-        assert_eq!(published.load(Ordering::SeqCst), 1);
-        assert_eq!(legacy.load(Ordering::SeqCst), 1);
+        assert_eq!(published.load(Ordering::SeqCst), 1, "the published route must fire");
+        assert_eq!(legacy.load(Ordering::SeqCst), 1, "the compatibility route too");
     });
 }
 
-/// A binding the control cannot support must be refused **by the capability table**.
+/// Two bindings declared under one node **both** fire.
 ///
-/// # Why this is a capability assertion and not a loader assertion
+/// # The defect this pins
 ///
-/// The honest statement here is weaker than "the loader skips the typo", and pretending otherwise
-/// would be the vacuity this repository keeps hunting. `JsonLoader::load` registers metadata into
-/// `WidgetRegistry`; it does not mount the control into the runtime, so nothing in a test can drive
-/// a click through a loaded document and watch the binding fire or fail. A test that asserted "the
-/// handler was never called" would pass identically against a loader that wired the typo, because
-/// nothing in the test ever raises the signal.
+/// The callback tables were `HashMap<ObjectId, Rc<RefCell<..>>>`, so registering a second callback
+/// for one id **replaced** the first. A node declaring `clicked` and `on_click` — or two published
+/// names on one signal — kept whichever was written last, and the other handler silently did
+/// nothing. The tables now hold a `Vec` per id and `dispatch_trigger` fires every entry.
+#[test]
+fn two_bindings_on_one_node_both_fire() {
+    with_clean_handlers(|| {
+        let first = counting_handler("on_first");
+        let second = counting_handler("on_second");
+        let json = r#"{"window":{"id":"w","title":"T","width":400,"height":300,"layout":{
+            "type":"vbox","children":[{"button":{"id":"b","text":"Go",
+                "events":{"clicked":"on_first"},"on_click":"on_second"}}]}}}"#;
+
+        let bound = JsonLoader::load(json).expect("two bindings on one node must load");
+        emit_click(&bound, "b");
+
+        assert_eq!(
+            first.load(Ordering::SeqCst),
+            1,
+            "`on_click` must not have replaced the \
+                                                    published binding"
+        );
+        assert_eq!(
+            second.load(Ordering::SeqCst),
+            1,
+            "and the published binding must not have \
+                                                     replaced it either"
+        );
+    });
+}
+
+/// A value-binding is wired to the value callback, **not** to the click callback.
 ///
-/// So this pins the fact that *is* observable and that the fix depends on: the name `clikced` is
-/// not something the capability layer can subscribe, while `clicked` is. The loader's own refusal
-/// is structural and covered by `tools/check_json_event_route.sh` step 1, which requires the
-/// published route to resolve through this same table.
+/// # The defect this pins
+///
+/// `bind_declared_events` passed [`JsonTriggerMarker::Clicked`] for every published name, so
+/// `"events": {"value_changed": "h"}` was bound through `on_click`: the handler ran when the
+/// control was *pressed* and never when its value changed, and the name it declared was validated
+/// the whole time. The route now reads the event's declared payload — a payload-free name travels
+/// the click callback, a payload-carrying one the value callback — and this drives both channels
+/// to prove the choice landed on the right one.
+#[test]
+fn a_value_event_is_not_wired_to_the_click_callback() {
+    with_clean_handlers(|| {
+        let calls = counting_handler("on_slide");
+        let json = r#"{"window":{"id":"w","title":"T","width":400,"height":300,"layout":{
+            "type":"vbox","children":[{"slider":{"id":"s","min":0,"max":100,
+                "events":{"value_changed":"on_slide"}}}]}}}"#;
+
+        let bound = JsonLoader::load(json).expect("a payload-carrying published name must load");
+        let id = mounted_id(&bound, "s");
+
+        // The click channel must not reach it: that is the bug, stated as an assertion.
+        rust_widgets::widget::runtime::with_widget_mut(id, |widget| {
+            widget.base().clicked.emit();
+        });
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "`value_changed` must not be wired to the click callback"
+        );
+
+        // The value channel must.
+        assert!(dispatch_trigger(id, WidgetTriggerKind::ValueChanged));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    });
+}
+
+/// The route's callback choice follows the event's declared payload, for every published pair.
+///
+/// The behavioural tests above cover two names; this covers the *rule*, so a control that publishes
+/// an event the two do not mention cannot be wired through a hard-coded constant.
+#[test]
+fn the_callback_choice_follows_the_declared_payload() {
+    let factory = WidgetFactory::new_with_defaults();
+    let mut checked = 0usize;
+    for capability in factory.capabilities() {
+        for schema in capability.events {
+            let binding = json_event_binding(capability.canonical_name, schema.name);
+            let JsonEventBinding::Published { has_payload, name } = binding else {
+                panic!("a published name must produce a Published binding, not a marker");
+            };
+            assert_eq!(
+                name, schema.name,
+                "the binding must carry the table's own spelling of the name"
+            );
+            assert_eq!(
+                has_payload,
+                schema.payload.is_some(),
+                "`{}.{}` declares {} but the binding says {}",
+                capability.canonical_name,
+                schema.name,
+                if schema.payload.is_some() { "a payload" } else { "no payload" },
+                if has_payload { "a payload" } else { "no payload" }
+            );
+            assert_eq!(
+                binding.uses_value_callback(),
+                schema.payload.is_some(),
+                "`{}.{}` must be wired to the callback its payload implies",
+                capability.canonical_name,
+                schema.name
+            );
+            assert_eq!(
+                binding.marker(),
+                if schema.payload.is_some() {
+                    JsonTriggerMarker::ValueChanged
+                } else {
+                    JsonTriggerMarker::Clicked
+                }
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 300, "the table has 326 (control, event) pairs; only {checked} were checked");
+}
+
+/// A binding the control cannot support must be refused **by the capability table**, and the
+/// refusal must not un-wire the bindings that *are* supported on the same node.
 #[test]
 fn an_unpublished_name_cannot_be_subscribed_while_a_published_one_can() {
     let hub = rust_widgets::signal::CustomSignalHub::new();
@@ -150,42 +308,32 @@ fn an_unpublished_name_cannot_be_subscribed_while_a_published_one_can() {
     );
 }
 
-/// A document whose only binding is a typo still loads, with the rest of the tree intact.
+/// A typo in one event name must not cost the node its *other* binding.
 ///
-/// A binding the loader refuses is a *warning*, not a document-level error: refusing the whole
-/// layout because one handler name is misspelled would make the designer unusable, since the tree
-/// is otherwise valid. This pins that shape — the document loads, and the identified widget is
-/// still registered.
+/// A refused name is a warning, not a reason to abandon the node: the loop that walks the `events`
+/// object uses `continue`, so the sounds bindings around the bad one survive. This asserts that on
+/// the live signal rather than on the load result, because "the document loaded" is true either
+/// way.
 #[test]
-fn a_typo_in_an_event_name_does_not_fail_the_whole_document() {
+fn a_typo_in_an_event_name_does_not_cost_the_node_its_other_binding() {
     with_clean_handlers(|| {
+        let good = counting_handler("on_good");
         counting_handler("on_typo");
         let json = r#"{"window":{"id":"w","title":"T","width":400,"height":300,"layout":{
             "type":"vbox","children":[{"button":{"id":"b","text":"Go",
-                "events":{"clikced":"on_typo"}}}]}}}"#;
+                "events":{"clikced":"on_typo","clicked":"on_good"}}}]}}}"#;
 
-        let layout = JsonLoader::load(json).expect("a refused binding must not fail the load");
+        let bound = JsonLoader::load(json).expect("a refused binding must not fail the load");
         assert!(
-            layout.id("b").is_some(),
+            bound.id("b").is_some(),
             "the button must still be registered: one bad handler name is not a broken layout"
         );
-    });
-}
-
-/// A published payload-carrying name is declarable, so the route is not click-only.
-///
-/// The eight legacy keys reached `value_changed` only through `on_change`/`on_value_changed`;
-/// `events.slider_moved` has no legacy spelling at all, which is the gap the published route
-/// closes.
-#[test]
-fn a_payload_carrying_published_name_is_declarable() {
-    with_clean_handlers(|| {
-        counting_handler("on_moved");
-        let json = r#"{"window":{"id":"w","title":"T","width":400,"height":300,"layout":{
-            "type":"vbox","children":[{"slider":{"id":"s","min":0,"max":100,
-                "events":{"slider_moved":"on_moved"}}}]}}}"#;
-
-        JsonLoader::load(json).expect("a payload-carrying published name must be declarable");
+        emit_click(&bound, "b");
+        assert_eq!(
+            good.load(Ordering::SeqCst),
+            1,
+            "the correct binding on the same node must still fire"
+        );
     });
 }
 
@@ -202,7 +350,6 @@ fn a_declared_binding_is_not_reported_as_an_unknown_property() {
                 "events":{"clicked":"on_a"},"on_close":"on_b","on_selection_changed":"on_c"}}]}}}"#;
 
         let layout = JsonLoader::load(json).expect("the document must load");
-        // The window and the button are both registered by id.
         assert!(!layout.is_empty(), "the document's identified widgets must be registered");
     });
 }

@@ -5,7 +5,7 @@
 use crate::compat::{lock, vec, MiniToString, Mutex, OnceLock, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::render::pixel_bytes_len;
-use crate::render::{PaintBackend, RenderCommand, ShapedText, TextMetrics};
+use crate::render::{BlendMode, PaintBackend, RenderCommand, ShapedText, TextMetrics};
 
 /// Double-buffered 8-bit RGBA pixel storage used by software rendering.
 ///
@@ -105,6 +105,14 @@ pub struct SoftwareSurface {
     pub(crate) aa_samples_per_axis: u8,
     /// Active clip rectangle stack. An empty stack means no clipping.
     pub(crate) clip_stack: Vec<(i32, i32, u32, u32)>,
+    /// The blend mode the next pixel write composites through.
+    ///
+    /// Set by [`SoftwareSurface::set_blend_mode`] (driven by
+    /// [`crate::render::RenderCommand::SetBlendMode`]) and read by every pixel write. It lives on
+    /// the surface rather than on a primitive because a mode applies to *everything drawn until it
+    /// changes* — a sequential fact, exactly like the clip stack — and because every opaque and
+    /// antialiased primitive funnels its writes through [`SoftwareSurface::write_pixel`].
+    pub(crate) blend_mode: BlendMode,
 }
 /// Public software render configuration for quality-related knobs.
 ///
@@ -170,7 +178,7 @@ pub const TEXT_FIT_MARGIN: u32 = 3;
 /// with the `+ 1` so that the odd pixel goes to the left half rather than being dropped every
 /// time. A caller that wants a different inset changes `TEXT_FIT_MARGIN` and both the fit and
 /// the position follow, which is what the constant is named for.
-fn fitted_origin(bounds: Rect, advance: i32, alignment: HorizontalAlignment) -> Point {
+pub(crate) fn fitted_origin(bounds: Rect, advance: i32, alignment: HorizontalAlignment) -> Point {
     let inset = TEXT_FIT_MARGIN as i32;
     let left = bounds.x.saturating_add(inset);
     let right = (bounds.x + bounds.width as i32 - inset).max(left);
@@ -948,6 +956,68 @@ mod tests {
         assert_eq!(rgba[idx], 0); // R
         assert_eq!(rgba[idx + 1], 0); // G
         assert_eq!(rgba[idx + 2], 255); // B
+    }
+
+    /// `SetBlendMode` must actually composite on the software backend.
+    ///
+    /// The backend **stored** the mode and never read it, so a `SetBlendMode { Multiply }` frame
+    /// rendered as plain source-over on the rasteriser while the SVG snapshot emitted a real
+    /// `mix-blend-mode` group — one command, two pictures. This asserts the mode reaches the pixels.
+    ///
+    /// The expected value follows the W3C formula the SVG backend's `mix-blend-mode` also uses:
+    /// a white backdrop (`1.0`) times a mid grey source (`0x80 / 255`) is `0x80` per channel.
+    #[test]
+    fn set_blend_mode_composites_on_the_software_backend() {
+        use crate::render::RenderCommand;
+        let mut surface = SoftwareSurface::new(Size::new(8, 8), 1.0);
+        surface.begin_frame(Color::WHITE);
+        surface.set_blend_mode(BlendMode::Multiply);
+        surface.fill_rect(Rect::new(0, 0, 4, 8), Color::rgb(128, 128, 128));
+        surface.end_frame();
+
+        let rgba = surface.frame_rgba();
+        let blended = &rgba[..4];
+        assert_eq!(
+            (blended[0], blended[1], blended[2]),
+            (128, 128, 128),
+            "multiply against a white backdrop keeps the source colour"
+        );
+
+        // And against a non-white backdrop the two inputs genuinely multiply, which is the part a
+        // stored-but-unread field could never produce.
+        let mut dark = SoftwareSurface::new(Size::new(8, 8), 1.0);
+        dark.begin_frame(Color::rgb(128, 128, 128));
+        dark.set_blend_mode(BlendMode::Multiply);
+        dark.fill_rect(Rect::new(0, 0, 8, 8), Color::rgb(128, 128, 128));
+        dark.end_frame();
+        // 0.502 * 0.502 = 0.252 -> 64.
+        assert_eq!(dark.frame_rgba()[0], 64, "two mid greys multiply to a quarter of full");
+
+        // `Normal` restores plain source-over, and going back to it must undo the multiply.
+        let mut restored = SoftwareSurface::new(Size::new(8, 8), 1.0);
+        restored.begin_frame(Color::rgb(128, 128, 128));
+        restored.set_blend_mode(BlendMode::Multiply);
+        restored.set_blend_mode(BlendMode::Normal);
+        restored.fill_rect(Rect::new(0, 0, 8, 8), Color::rgb(128, 128, 128));
+        restored.end_frame();
+        assert_eq!(restored.frame_rgba()[0], 128, "Normal replaces the backdrop");
+
+        // `SetBlendMode` is frame state and reaches the backend through the `SoftwarePaintBackend`
+        // command, not only the direct setter, which is the path a real frame takes.
+        use crate::render::PaintBackend;
+        let mut via_command = crate::render::SoftwarePaintBackend::new(Size::new(8, 8), 1.0);
+        via_command.begin_frame(Color::rgb(128, 128, 128));
+        via_command.execute_command(&RenderCommand::SetBlendMode { mode: BlendMode::Multiply });
+        via_command.execute_command(&RenderCommand::FillRect {
+            rect: Rect::new(0, 0, 8, 8),
+            color: Color::rgb(128, 128, 128),
+        });
+        via_command.end_frame();
+        assert_eq!(
+            via_command.surface().frame_rgba()[0],
+            64,
+            "the command path must set the mode too"
+        );
     }
 
     #[test]

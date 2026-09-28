@@ -146,7 +146,7 @@ impl ToolBox {
         let mut item = ToolBoxItem::new(text);
         item.widget = widget;
         if let Some(widget_id) = widget {
-            self.base.add_child(widget_id);
+            self.base.add_child_linked(widget_id);
         }
         self.items.push(item);
         self.clamp_scroll();
@@ -158,7 +158,7 @@ impl ToolBox {
         let mut item = ToolBoxItem::new(text);
         item.widget = widget;
         if let Some(widget_id) = widget {
-            self.base.add_child(widget_id);
+            self.base.add_child_linked(widget_id);
         }
         self.items.insert(index, item);
         if !was_empty && self.current_index >= index {
@@ -170,7 +170,7 @@ impl ToolBox {
     pub fn remove_item(&mut self, index: usize) {
         if index < self.items.len() {
             if let Some(widget_id) = self.items[index].widget {
-                self.base.remove_child(widget_id);
+                self.base.remove_child_linked(widget_id);
             }
             self.items.remove(index);
             if self.current_index >= index && self.current_index > 0 {
@@ -231,7 +231,7 @@ impl ToolBox {
     pub fn clear(&mut self) {
         for item in self.items.drain(..) {
             if let Some(widget_id) = item.widget {
-                self.base.remove_child(widget_id);
+                self.base.remove_child_linked(widget_id);
             }
         }
         self.current_index = 0;

@@ -306,10 +306,19 @@ impl EventHandler for TimelineWidget {
 
         match event {
             Event::MouseMove { pos } => {
-                self.hovered_index = self.row_at(*pos);
+                // Hover is painted (the hovered row takes `hovered_background`), so it must
+                // repaint — and only when the hovered row actually changes. Without this the
+                // highlight lagged until an unrelated event repainted.
+                let hovered = self.row_at(*pos);
+                if hovered != self.hovered_index {
+                    self.hovered_index = hovered;
+                    self.base.request_redraw();
+                }
             }
             Event::MouseLeave { .. } => {
-                self.hovered_index = None;
+                if self.hovered_index.take().is_some() {
+                    self.base.request_redraw();
+                }
             }
             Event::MousePress { pos, button: 1 } => {
                 if let Some(index) = self.row_at(*pos) {

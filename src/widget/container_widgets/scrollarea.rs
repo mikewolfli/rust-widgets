@@ -275,11 +275,34 @@ impl ScrollArea {
         self.vertical_scroll_bar_policy = policy;
     }
     /// Sets widget.
+    ///
+    /// # Why this writes both sides of the link
+    ///
+    /// `BaseWidget::add_child` appends to *this* control's list "without touching the child's own
+    /// parent link" (its own documentation says so), and `set_parent` likewise does not update any
+    /// child list. BLUE22 §B.6 rule 5 is therefore a rule about *call sites*: a host that writes
+    /// one side only leaves a child that believes it has no parent — invisible to any tree walk
+    /// that descends from the root, which is every walk that draws, hit-tests or discovers focus.
+    ///
+    /// The previous version wrote the child list alone. A scroll area's content was consequently
+    /// unreachable from its own parent, so anything walking the window tree found the viewport and
+    /// nothing inside it.
+    ///
+    /// Replacing the content also **unlinks the old one**: `add_child` does not reject duplicates
+    /// and nothing else removes the previous id, so setting a second widget left the first in the
+    /// list forever — a stale id that a walk would still visit. Clearing its parent link keeps the
+    /// two sides consistent rather than leaving an orphan that claims a parent it no longer has.
     pub fn set_widget(&mut self, widget: Option<ObjectId>) {
+        if let Some(previous) = self.widget {
+            if Some(previous) != widget {
+                self.base.remove_child_linked(previous);
+            }
+        }
         self.widget = widget;
         if let Some(widget_id) = widget {
-            self.base.add_child(widget_id);
+            self.base.add_child_linked(widget_id);
         }
+        self.base.request_redraw();
     }
     /// Returns widget.
     pub fn widget(&self) -> Option<ObjectId> {

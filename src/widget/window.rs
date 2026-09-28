@@ -36,8 +36,15 @@ impl Window {
         }
     }
     /// Adds a child widget to the window.
+    ///
+    /// Both directions of the link are written: `BaseWidget::add_child` appends to *this* list and
+    /// deliberately leaves the child's own parent link alone, and `set_parent` symmetrically does
+    /// not walk back. Writing one side only is BLUE22 §B.6 rule 5's defect, and here it is the
+    /// window-level one: a child that believes it has no parent is unreachable from the root, so
+    /// nothing descending the tree — drawing, hit-testing, focus — finds it. This is the call every
+    /// host should make instead of `base.add_child`.
     pub fn add_child(&mut self, child: ObjectId) {
-        self.base.add_child(child);
+        self.base.add_child_linked(child);
     }
     /// Returns window title.
     pub fn title(&self) -> &str {

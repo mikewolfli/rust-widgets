@@ -60,13 +60,20 @@ impl PopupWindow {
     }
 
     /// Sets the content widget for this popup.
+    ///
+    /// Both directions of the link are maintained, including on **replacement**: the previous
+    /// content is unlinked rather than left in the child list. `add_child` does not reject
+    /// duplicates and nothing else removes the old id, so setting a second content widget used to
+    /// leave the first attached forever — a walk would still reach it. See BLUE22 §B.6 rule 5.
     pub fn set_content_widget(&mut self, widget: Option<ObjectId>) {
         if let Some(old) = self.content_widget {
-            self.base.remove_child(old);
+            if Some(old) != widget {
+                self.base.remove_child_linked(old);
+            }
         }
         self.content_widget = widget;
         if let Some(id) = widget {
-            self.base.add_child(id);
+            self.base.add_child_linked(id);
         }
         self.base.request_redraw();
     }

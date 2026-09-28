@@ -487,13 +487,13 @@ impl Draw for VirtualList {
                 );
             }
 
-            context.draw_text(
-                Point::new(rect.x + 4, y + rh / 2),
-                &text,
-                &Font::default(),
-                ink,
-                HorizontalAlignment::Left,
-            );
+            // The row text is a host-supplied `DataSource` string, so it is fitted into the row's
+            // own box rather than drawn at an unbounded length. `draw_text` places a string and
+            // never asks whether it fits; the sibling `list_view` already fits its rows, and this
+            // one let a long label run past the control's right edge.
+            let row_font = Font::default();
+            let row_box = Rect::new(rect.x + 4, y, rect.width.saturating_sub(8), self.row_height);
+            context.draw_text_line(row_box, &text, &row_font, ink, HorizontalAlignment::Left);
         }
     }
 }

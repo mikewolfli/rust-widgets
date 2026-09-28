@@ -777,10 +777,50 @@ impl Layout for FlexLayout {
     /// `padding`/`spacing` split — instead of something every call site has to re-derive, and
     /// it is why this path can honour `justify_content` as well: the leftover room is what
     /// remains after the margins, not after the content alone.
+    fn arrange_with_context(
+        &self,
+        rect: Rect,
+        children: &[ChildInfo],
+        context: &LayoutContext,
+        out: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        self.arrange_body(rect, children, context, out)
+    }
+
     fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect)) {
+        self.arrange_body(rect, children, &LayoutContext::default(), out)
+    }
+}
+
+impl FlexLayout {
+    /// The shared body of [`Layout::arrange`] and [`Layout::arrange_with_context`].
+    ///
+    /// # Why the context is threaded rather than defaulted
+    ///
+    /// `arrange` reuses `update`'s own solver instead of re-deriving sizes (see the note below),
+    /// and `update_with_context` is where `layout_scale`/`font_scale` widen the gaps. A context-free
+    /// `arrange` therefore returned nominal gaps where `update_with_context` returned scaled ones —
+    /// two answers to one question, on one layout and one rect. One body makes the pair agree by
+    /// construction; the solver is told the scale, so the geometry it produces carries it.
+    fn arrange_body(
+        &self,
+        rect: Rect,
+        children: &[ChildInfo],
+        context: &LayoutContext,
+        out: &mut dyn FnMut(ObjectId, Rect),
+    ) {
         if self.items.is_empty() {
             return;
         }
+        // # Why the scale reaches the solver through the content rect
+        //
+        // `update_with_context` scales `padding` and `gap` and hands the result to
+        // `compute_rects`. Scaling the content box here means this body runs the *same* solver on
+        // the *same* input, so the two entry points cannot produce different geometry. The
+        // alternative — re-deriving `compute_rects` with a scaled gap — would be a second solver,
+        // which is the `set_child_sizes` shape this method's compatibility contract forbids.
+        let scale = context.layout_scale.max(context.font_scale);
+        let scaled_padding = (self.padding as f32 * scale).round() as i32;
         // Which entry belongs to which item, resolved once so the two are never indexed by
         // position into two lists that could disagree. An item with no widget id (a spacer) or
         // with no `ChildInfo` gets `None` and keeps whatever size the caller last handed in,
@@ -803,11 +843,16 @@ impl Layout for FlexLayout {
             })
             .collect();
 
+        // The gap between children is scaled with the device, matching `update_with_context`'s
+        // reading (the larger of the two scales). Both entry points run through this body, so the
+        // reading is stated once.
+        let scaled_gap = (self.gap as f32 * scale).round() as i32;
+
         let content_rect = Rect::new(
-            rect.x + self.padding,
-            rect.y + self.padding,
-            rect.width.saturating_sub(2 * self.padding as u32),
-            rect.height.saturating_sub(2 * self.padding as u32),
+            rect.x + scaled_padding,
+            rect.y + scaled_padding,
+            rect.width.saturating_sub(2 * scaled_padding as u32),
+            rect.height.saturating_sub(2 * scaled_padding as u32),
         );
         if content_rect.width == 0 || content_rect.height == 0 {
             return;
@@ -887,7 +932,7 @@ impl Layout for FlexLayout {
             }
         }
         let (solved_main, _total_grow, _total_main) =
-            solver.compute_main_sizes(available_main, self.gap);
+            solver.compute_main_sizes(available_main, scaled_gap);
         // # A known defect this pass does **not** repair (BLUE22 · logged as G-1)
         //
         // The solver may return a box that exceeds the room, and the positions below are packed
@@ -928,7 +973,7 @@ impl Layout for FlexLayout {
         // The solver's own `gap` is a separate term and is *not* part of `solved_main`, so it is
         // still counted once here.
         let consumed: i32 = solved_main.iter().sum::<i32>()
-            + self.gap * (solved_main.len().saturating_sub(1)) as i32;
+            + scaled_gap * (solved_main.len().saturating_sub(1)) as i32;
         let leftover = (available_main - consumed).max(0);
         let first_offset = match self.justify_content {
             JustifyContent::FlexStart => 0,
@@ -1038,61 +1083,56 @@ impl Layout for FlexLayout {
                 )
             };
             if let Some(widget_id) = self.items[index].widget_id {
-                out(widget_id, child_rect);
-            }
-            // Backward on a reversed axis, forward otherwise -- so the next child is always placed
-            // against the one just emitted.
-            if reverse {
-                cursor -= solved + self.gap + inter_extra;
-            } else {
-                cursor += solved + self.gap + inter_extra;
-            }
-        }
-    }
-
-    fn update_with_context(
-        &self,
-        rect: Rect,
-        context: &LayoutContext,
-        widgets: &mut dyn FnMut(ObjectId, Rect),
-    ) {
-        // Spacing follows the **larger** of the layout scale and the text scale.
-        //
-        // `LayoutContext::font_scale` is the device's text-size preference, and the two are
-        // separate facts: a HiDPI screen needs more logical spacing, and a device whose text is set
-        // larger needs more room between controls even at the same DPI. Taking the maximum is the
-        // conservative reading — a control whose font grew but whose padding did not would have its
-        // text touching its own border, which is the defect the field exists to let a layout avoid.
-        //
-        // The field had no reader at all before this, so a 2x text preference grew the glyphs (via
-        // the theme's font token) and left every gap at its nominal size.
-        let scale = context.layout_scale.max(context.font_scale);
-        let scaled_padding = (self.padding as f32 * scale).round() as i32;
-        let scaled_gap = (self.gap as f32 * scale).round() as i32;
-
-        let content_rect = Rect::new(
-            rect.x + scaled_padding,
-            rect.y + scaled_padding,
-            rect.width.saturating_sub(2 * scaled_padding as u32),
-            rect.height.saturating_sub(2 * scaled_padding as u32),
-        );
-
-        let results = self.compute_rects(content_rect, Some(scaled_gap));
-        for (widget_id, child_rect) in results {
-            if let Some(wid) = widget_id {
-                // Every child gets at least the device class's minimum touch area. A flex row of
-                // small controls is the case this matters most for: the layout would otherwise
-                // place a 20 px control in a 20 px slot on a phone, where the neighbouring
-                // control's own expanded hit area overlaps it.
-                widgets(
-                    wid,
+                // Every child gets at least the device class's minimum touch area, exactly as
+                // `update_with_context` does. A flex row of small controls is the case this matters
+                // most for: the layout would otherwise place a 20 px control in a 20 px slot on a
+                // phone, where the neighbouring control's own expanded hit area overlaps it.
+                //
+                // Applying it here — in the one body both entry points run — is what makes the
+                // context-free `update` and the context-aware entry agree; leaving it in
+                // `update_with_context` alone is how a composite's children came to be the one
+                // place the floor did not reach.
+                out(
+                    widget_id,
                     crate::layout::types::grow_to_min_touch_size(
                         child_rect,
                         context.min_touch_size,
                     ),
                 );
             }
+            // Backward on a reversed axis, forward otherwise -- so the next child is always placed
+            // against the one just emitted.
+            if reverse {
+                cursor -= solved + scaled_gap + inter_extra;
+            } else {
+                cursor += solved + scaled_gap + inter_extra;
+            }
         }
+    }
+
+    /// Updates child geometry with the device context.
+    ///
+    /// # Why this now forwards to the hints-aware path
+    ///
+    /// This method cannot carry the `children` hints — its signature is the trait's and takes ids
+    /// — so it is not the entry the composite builder calls. Its body therefore used to be a second
+    /// implementation of the same arrangement: `compute_rects(content, Some(scaled_gap))` plus the
+    /// touch floor. Once `arrange_body` grew the same two steps (so `arrange` and
+    /// `arrange_with_context` would stop disagreeing), keeping this copy meant two solvers for one
+    /// question — and the floor existed in only one of them, which is how a composite's children
+    /// became the one place it did not apply.
+    ///
+    /// Forwarding with an empty hint list is what `Layout::arrange`'s own default does for the
+    /// reverse direction: a caller of this method has no hints to give, and `arrange_body` already
+    /// falls back to `child_sizes` — the same pre-hints channel this method's callers use — for
+    /// exactly that case.
+    fn update_with_context(
+        &self,
+        rect: Rect,
+        context: &LayoutContext,
+        widgets: &mut dyn FnMut(ObjectId, Rect),
+    ) {
+        self.arrange_body(rect, &[], context, widgets);
     }
 }
 

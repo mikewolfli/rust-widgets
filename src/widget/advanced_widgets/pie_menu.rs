@@ -9,8 +9,8 @@
 use std::f32::consts::TAU;
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
 use crate::event::key_codes;
+use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::{MotionSlot, PropertyDriver};
@@ -713,7 +713,20 @@ impl EventHandler for PieMenu {
         }
         match event {
             Event::MouseMove { pos } => {
-                self.hovered_index = self.hit_test(*pos);
+                // Hover is painted (the wedge under the pointer takes `hover_color`), so the field
+                // and the repaint are one step — and only on an actual change, because `MouseMove`
+                // fires far more often than the highlighted wedge changes. Without the repaint the
+                // highlight did not appear until an unrelated event (a `tick`, or a re-show).
+                let hovered = self.hit_test(*pos);
+                if hovered != self.hovered_index {
+                    self.hovered_index = hovered;
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseLeave { .. } => {
+                if self.hovered_index.take().is_some() {
+                    self.base.request_redraw();
+                }
             }
             Event::MousePress { pos, button: 1 } => {
                 if let Some(idx) = self.hit_test(*pos) {

@@ -39,7 +39,11 @@ impl UniformGridLayout {
     ///
     /// Does nothing if `(row, col)` is out of range.
     pub fn set_widget(&mut self, row: u32, col: u32, widget_id: ObjectId) {
-        self.inner.set_widget(row, col, widget_id);
+        // `place_within_extent`, not `set_widget_spanning`: a uniform grid's dimensions are what
+        // the caller asked for, so an out-of-range cell is refused rather than grown up to.
+        // Growing here would silently rewrite the row and column counts the caller chose, which
+        // is the one thing this type exists to keep fixed.
+        self.inner.place_within_extent(row, col, 1, 1, widget_id);
     }
 
     /// Returns the number of occupied cells (widgets placed in the grid).

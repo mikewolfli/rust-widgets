@@ -72,7 +72,7 @@ impl SegmentedControl {
     /// Creates an empty segmented control.
     pub fn new(geometry: Rect) -> Self {
         Self {
-            base: BaseWidget::new(WidgetKind::ToggleButton, geometry, "SegmentedControl"),
+            base: BaseWidget::new(WidgetKind::SegmentedControl, geometry, "SegmentedControl"),
             items: Vec::new(),
             selected_index: None,
             hovered_index: None,
@@ -336,10 +336,20 @@ impl EventHandler for SegmentedControl {
 
         match event {
             Event::MouseMove { pos } => {
-                self.hovered_index = self.hit_index(*pos);
+                // Hover is painted (the hovered segment takes `hovered_bg`), so it must repaint —
+                // and only when the hovered segment actually changes, since `MouseMove` fires far
+                // more often than the highlight moves. Without this the highlight lagged until an
+                // unrelated event repainted.
+                let hovered = self.hit_index(*pos);
+                if hovered != self.hovered_index {
+                    self.hovered_index = hovered;
+                    self.base.request_redraw();
+                }
             }
             Event::MouseLeave { .. } => {
-                self.hovered_index = None;
+                if self.hovered_index.take().is_some() {
+                    self.base.request_redraw();
+                }
             }
             Event::MousePress { pos, button: 1 } => {
                 if let Some(index) = self.hit_index(*pos) {

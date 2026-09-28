@@ -142,7 +142,7 @@ impl CollapsiblePane {
             self.base.remove_child(existing);
         }
         self.content_child = Some(child);
-        self.base.add_child(child);
+        self.base.add_child_linked(child);
         self.base.request_redraw();
     }
 

@@ -204,7 +204,13 @@ impl Draw for CommandLink {
             .current_theme()
             .map(|active| active.colors.primary)
             .unwrap_or(text_color);
-        let disabled_color = Color::GRAY;
+        // The disabled label steps off the *surface it is painted on*, like the description below,
+        // rather than substituting a fixed grey. `Color::GRAY` measured 2.48:1 on a light panel —
+        // under the 4.5:1 body-text floor — so a disabled command link read as *less* legible than
+        // an enabled one, which is the opposite of what "disabled" should say. The shared
+        // `disabled_ink_on` reads the control's `enabled` flag itself, so the two spellings of
+        // "is this enabled" cannot disagree.
+        let disabled_color = self.base.disabled_ink_on(text_color, bg_color);
         let is_hovered = self.base.is_hovered();
         let is_enabled = self.base.is_enabled();
         // Draw background (transparent by default)

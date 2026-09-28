@@ -20,7 +20,12 @@ macro_rules! impl_properties_view {
                 "selection_mode",
                 true,
                 true,
-                &["single", "multi", "extended"],
+                // `none` is a real, publicly reachable state (`SelectionMode::None`: the view
+                // accepts no selection at all, which is distinct from an empty selection).
+                // Omitting it made the reader report a token the schema never published *and*
+                // the writer refuse that same token — so a `none` view could not be round-tripped
+                // through its own contract.
+                &["none", "single", "multi", "extended"],
             ),
             PropertySchema::enumerated(
                 "view_mode",
@@ -53,11 +58,13 @@ macro_rules! impl_properties_view {
             PropertySchema::new("has_delegate", PropertyValueKind::Bool, true, false),
             PropertySchema::new("row_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("column_count", PropertyValueKind::UInt, true, false),
+            // `none` is published here for the same reason it is on `LIST_VIEW_PROPERTIES`:
+            // both controls share `SelectionMode`, so both must publish its whole vocabulary.
             PropertySchema::enumerated(
                 "selection_mode",
                 true,
                 true,
-                &["single", "multi", "extended"],
+                &["none", "single", "multi", "extended"],
             ),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),

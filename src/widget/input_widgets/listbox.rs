@@ -209,6 +209,11 @@ impl ListBox {
         self.selection_mode
     }
     /// Sets selection mode.
+    ///
+    /// Repaints, because the mode change can also *clear* visible state: switching to [`SelectionMode::None`]
+    /// empties the selection and the cursor row, and switching to `Single` can truncate a multi-row
+    /// selection. Both are what `draw` paints, so without this the previously highlighted rows stayed
+    /// highlighted until something unrelated repainted.
     pub fn set_selection_mode(&mut self, mode: SelectionMode) {
         self.selection_mode = mode;
         // Clear selection if mode doesn't allow current selection
@@ -231,6 +236,7 @@ impl ListBox {
             // No action needed for this transition
             _ => {}
         }
+        self.base.request_redraw();
     }
     /// Returns selected indices.
     pub fn selected_indices(&self) -> &[usize] {

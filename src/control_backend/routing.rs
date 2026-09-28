@@ -176,6 +176,7 @@ mod tests {
             | WidgetKind::MaterialNavigationRail
             | WidgetKind::Tooltip
             | WidgetKind::SegmentedButton
+            | WidgetKind::SegmentedControl
             | WidgetKind::NavigationStack
             | WidgetKind::ProgressCircle
             | WidgetKind::Icon

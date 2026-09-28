@@ -153,6 +153,126 @@ def check_published_names_exist() -> list[str]:
     return findings
 
 
+def check_callback_choice_is_payload_derived() -> list[str]:
+    """[6] The callback a published name reaches must be derived from its payload.
+
+    # The defect this catches
+
+    `bind_one` originally passed `JsonTriggerMarker::Clicked` for **every** published name, so
+    `"events": {"value_changed": "h"}` was bound through `on_click`: the handler ran when the
+    control was pressed and never when its value changed, while the name it declared had been
+    validated the whole time. A structural check on "the name resolves" cannot see that, because
+    the name *did* resolve — the wrong callback received it.
+
+    So this asserts the *decision* is data-driven. `uses_value_callback` must exist on the
+    binding and must read the payload; `bind_one` must branch on it rather than on a constant.
+    """
+    findings: list[str] = []
+    route = ROUTE.read_text()
+    loader = LOADER.read_text()
+
+    if "pub fn uses_value_callback" not in route:
+        findings.append(
+            "src/json/event_route.rs no longer exposes `uses_value_callback`, so nothing states "
+            "which callback a declared binding reaches"
+        )
+    else:
+        # The answer must come from the payload observation (`Published { has_payload, .. }`) or
+        # from a marker's kind -- never from a bare constant.
+        if "Self::Published { has_payload, .. } => has_payload" not in route:
+            findings.append(
+                "`JsonEventBinding::uses_value_callback` no longer derives from `has_payload`, "
+                "so a payload-carrying event can be wired to the click callback again"
+            )
+        if not re.search(r"Published \{[^}]*has_payload", route, re.S):
+            findings.append(
+                "`JsonEventBinding::Published` no longer records whether the event carries a "
+                "payload, so the choice cannot be made from the declaration"
+            )
+
+    # `bind_one` must branch on the binding, not pass a constant marker.
+    if "uses_value_callback()" not in loader:
+        findings.append(
+            "src/json/loader.rs no longer calls `uses_value_callback`, so the callback a "
+            "published name reaches is chosen some other way (a constant, most likely)"
+        )
+    if re.search(r"JsonTriggerMarker::Clicked\s*,\s*\n\s*}", loader):
+        findings.append(
+            "src/json/loader.rs constructs a `JsonEventBinding::Published` with a hard-coded "
+            "`Clicked` marker, which is the shape of the defect: every published name bound to "
+            "the click callback"
+        )
+
+    # The payload question must be asked of the capability table, not guessed.
+    if "schema.payload.is_some()" not in route:
+        findings.append(
+            "`json_event_binding` does not read `EventSchema::payload`, so `has_payload` is "
+            "not sourced from the capability table"
+        )
+    return findings
+
+
+def check_mounted_documents_are_wired() -> list[str]:
+    """[7] The loader must mount its widgets, or every handle it hands out addresses nothing.
+
+    # The defect this catches
+
+    `JsonLoader::load` built each control, recorded its id in `WidgetRegistry` and
+    `BoundJsonLayout`, and dropped the `Box<dyn Widget>`. Nothing reached
+    `crate::widget::runtime`, which is what `with_widget`/`with_widget_mut` read — so every
+    handle a binding resolved (`widget_by_name`, `on_click`, `set_widget_text`) addressed an id
+    the runtime had never issued. Every one of those paths *reports* the miss at `debug!`, so a
+    loaded document was a tree of controls that silently returned defaults and ignored their
+    handlers.
+
+    A gate cannot run the loader, but it can require the one call that makes the ids real.
+    """
+    findings: list[str] = []
+    loader = LOADER.read_text()
+    if "mount_widget_box" not in loader:
+        findings.append(
+            "src/json/loader.rs no longer mounts its widgets (no `mount_widget_box`), so the "
+            "ids it registers address no live control: handles resolve, are reported to have "
+            "resolved, and read nothing"
+        )
+    if "register_with_id" not in pathlib.Path("src/widget/runtime.rs").read_text():
+        findings.append(
+            "`crate::widget::runtime::register_with_id` is gone, so a document's `\"id\"` "
+            "cannot be reserved and its names and the runtime's ids are two id spaces again"
+        )
+    return findings
+
+
+def check_binding_handles_do_not_unwire_themselves() -> list[str]:
+    """[8] Installing a callback through a temporary handle must survive the handle.
+
+    # The defect this catches
+
+    `impl Drop for $handle` called `remove_callbacks(id)`, so `Handle::from_raw(id).on_click(f)`
+    — the idiomatic one-liner, and what the loader's binder does — installed `f` and then dropped
+    the handle, removing it. Both declarative routes were installed and uninstalled in the same
+    statement, so no document's handler ever ran. It also meant two handles for one widget shared
+    a fate they should not have shared.
+
+    The check is textual because the property is structural: a `Drop` that removes callbacks
+    cannot be told from one that does not by running anything short of an end-to-end test, and
+    `tests/json_event_route_test.rs` supplies that. This makes the shape visible in review.
+    """
+    findings: list[str] = []
+    handle = pathlib.Path("src/app/handle.rs").read_text()
+    # Find every `impl Drop for <Handle>` and require an empty body.
+    for match in re.finditer(r"impl Drop for (\w+)\s*\{\s*fn drop\(&mut self\)\s*\{(.*?)\n\s*\}", handle, re.S):
+        name, body = match.group(1), match.group(2)
+        if "remove_callbacks" in body:
+            findings.append(
+                f"`impl Drop for {name}` removes the widget's callbacks. A handle is a *view* "
+                f"of an id that any caller can build, so dropping one must not unsubscribe the "
+                f"widget — `Handle::from_raw(id).on_click(f)` would install `f` and immediately "
+                f"remove it. Use the explicit `remove_callbacks` method instead."
+            )
+    return findings
+
+
 def main() -> int:
     if not LOADER.exists() or not ROUTE.exists():
         print("❌ src/json/loader.rs or src/json/event_route.rs not found (run from the repo root)")
@@ -164,6 +284,9 @@ def main() -> int:
     findings += check_single_source_of_keys()
     findings += check_marker_kinds_are_real()
     findings += check_published_names_exist()
+    findings += check_callback_choice_is_payload_derived()
+    findings += check_mounted_documents_are_wired()
+    findings += check_binding_handles_do_not_unwire_themselves()
 
     table = marker_table()
     print(f"marker keys declared: {len(table)}")

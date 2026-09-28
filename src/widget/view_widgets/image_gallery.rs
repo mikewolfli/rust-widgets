@@ -436,19 +436,22 @@ impl Draw for ImageGallery {
                 .label
                 .as_deref()
                 .unwrap_or_else(|| image.path.rsplit('/').next().unwrap_or(&image.path));
-            let name_metrics = context.measure_text(display_name, &font);
-            let name_x =
-                preview_rect.x + (preview_rect.width as i32 - name_metrics.width as i32) / 2;
             // The origin is the glyph box's *top* edge, so the label reads as centred on the
             // band at one third of the preview rather than half a line below its middle.
+            let name_metrics = context.measure_text(display_name, &font);
             let name_y =
                 preview_rect.y + preview_rect.height as i32 / 3 - name_metrics.height as i32 / 2;
-            context.draw_text(
-                Point::new(name_x, name_y),
+            // The name is host-supplied, so a long one overflowed both edges of the preview: the
+            // centred origin was computed from the *measured* width, which put the overflow half
+            // beyond each side and made the label wider than the box it was centred on. Handing
+            // the fitter a preview-wide box keeps the horizontal centring and elides the name at
+            // the preview's edges.
+            context.draw_text_fitted(
+                Rect::new(preview_rect.x, name_y, preview_rect.width, name_metrics.height),
                 display_name,
                 &font,
                 name_ink,
-                HorizontalAlignment::Left,
+                HorizontalAlignment::Center,
             );
 
             // Draw dimensions.

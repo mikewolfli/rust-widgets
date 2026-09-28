@@ -392,10 +392,19 @@ pub fn expect_column_filters(
 }
 
 #[cfg(full_widgets)]
-/// Parses a list-view selection mode: `single`, `multi`, or `extended`.
+/// Parses a list-view / table selection mode: `none`, `single`, `multi`, or `extended`.
 ///
 /// A string payload is required; the match is case- and separator-insensitive.
 /// Any other value yields [`CapabilityAccessError::TypeMismatch`].
+///
+/// # Why `none` is accepted here
+///
+/// `SelectionMode::None` is a real state of both `ListView` and `TableWidget` — "the view
+/// accepts no selection at all", which is not the same as an empty selection. The reader
+/// ([`selection_mode_to_str`](super::access::selection_mode_to_str)) has always been able to
+/// produce it, so a writer that refused it made the contract one-way: a `none` view read back a
+/// token its own `set` rejected. The schema publishes it too, so a consumer that writes back a
+/// value it just read gets the same state rather than a `TypeMismatch`.
 pub fn expect_selection_mode(
     value: CapabilityValue,
 ) -> Result<SelectionMode, CapabilityAccessError> {
@@ -405,6 +414,7 @@ pub fn expect_selection_mode(
     };
 
     match token.as_str() {
+        "none" => Ok(SelectionMode::None),
         "single" => Ok(SelectionMode::Single),
         "multi" => Ok(SelectionMode::Multi),
         "extended" => Ok(SelectionMode::Extended),
@@ -525,14 +535,25 @@ pub fn expect_horizontal_alignment(
     }
 }
 
-/// Renders an [`Alignment`] as the token its horizontal axis names (`left`/`center`/`right`).
+/// Renders an [`Alignment`] as the token its horizontal axis names (`left`/`centre`/`right`).
 ///
-/// The mirror of [`expect_horizontal_alignment`] for a control that only ever stores a horizontal
-/// value, so the read-back spelling matches the accepted ones.
+/// # Why `centre`, not the American `center`
+///
+/// The mirror of [`expect_horizontal_alignment`] only earns its keep if the word it emits is one
+/// the schema actually publishes. Every `alignment` row declares
+/// `&["left", "centre", "right"]`, and [`Self::expect_horizontal_alignment`] accepts both
+/// spellings — so a reader that emitted `center` was **reading back a word its own contract never
+/// mentions**. That is the harmful direction the crate's vocabulary rule forbids: a designer
+/// building a combo box from `accepted_tokens` renders `centre`, and the control's current value
+/// then matches none of the offered choices. Twenty-two controls shared this one helper, which is
+/// exactly why the fix belongs here rather than at each `get` arm.
+///
+/// The write side still accepts `center` (see [`expect_alignment`]): a host is free to spell it
+/// either way, and forcing the two vocabularies to be identical would forbid that.
 pub fn horizontal_alignment_to_str(alignment: Alignment) -> &'static str {
     match alignment.to_horizontal() {
         Some(crate::core::HorizontalAlignment::Left) | None => "left",
-        Some(crate::core::HorizontalAlignment::Center) => "center",
+        Some(crate::core::HorizontalAlignment::Center) => "centre",
         Some(crate::core::HorizontalAlignment::Right) => "right",
     }
 }
@@ -831,11 +852,19 @@ pub fn normalize_key(input: &str) -> String {
 /// Formats an [`Alignment`] as its published token.
 ///
 /// The inverse of [`expect_alignment`] for the canonical values; it emits
-/// `"center"` (never `"centre"`).
+/// `"centre"` (never the American `"center"`).
+///
+/// # Why the spelling is `centre`
+///
+/// Every `alignment` row in the schema tables publishes `&["left", "centre", "right"]` (and
+/// `"top"`/`"bottom"` where the control consumes the vertical axis), so `centre` is the only
+/// spelling a reader may emit. [`expect_alignment`] still accepts `center` on the way in — a host
+/// may spell it either way — but a reader that *returned* `center` would be reporting a word its
+/// own contract never mentions, which is the harmful direction the vocabulary rule forbids.
 pub const fn alignment_to_str(alignment: Alignment) -> &'static str {
     match alignment {
         Alignment::Left => "left",
-        Alignment::Center => "center",
+        Alignment::Center => "centre",
         Alignment::Right => "right",
         Alignment::Top => "top",
         Alignment::Bottom => "bottom",

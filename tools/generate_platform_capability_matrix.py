@@ -270,6 +270,9 @@ WIDGETS: Dict[str, Tuple[str, List[str]]] = {
     "SearchBar": ("SearchBar", CELLS),
     "SearchBox": ("SearchBox", CELLS),
     "SegmentedButton": ("SegmentedButton", CELLS),
+    # Its own kind since 2.8.3: it used to report `ToggleButton`'s kind, which made
+    # `capability_by_kind` ambiguous between two controls and left this row with nowhere to land.
+    "SegmentedControl": ("SegmentedControl", CELLS),
     "ShortcutEditor": ("ShortcutEditor", CELLS),
     "SkeletonLoader": ("SkeletonLoader", CELLS),
     "Sparkline": ("Sparkline", CELLS),

@@ -437,19 +437,34 @@ impl ComboBox {
     /// Adds an item.
     pub fn add_item(&mut self, text: String) {
         self.items.push(text);
+        self.base.request_redraw();
     }
     /// Adds multiple items.
+    ///
+    /// Repaints: the popup list is what `draw` renders, so growing it without a redraw left the
+    /// control showing the old list until something unrelated repainted.
     pub fn add_items(&mut self, items: Vec<String>) {
+        if items.is_empty() {
+            return;
+        }
         self.items.extend(items);
+        self.base.request_redraw();
     }
     /// Replaces all items with the given items. Clears the current selection.
+    ///
+    /// Repaints: both the item list and the now-empty current text are painted, so a caller that
+    /// swapped the items saw the previous value and list until an unrelated event repainted.
     pub fn set_items(&mut self, items: Vec<String>) {
         self.items = items;
         self.current_index = None;
         self.current_index_changed.emit(None);
         self.current_text_changed.emit(String::new());
+        self.base.request_redraw();
     }
     /// Inserts an item at specified position.
+    ///
+    /// Repaints: the item list is painted, so a caller that grew it saw the old list until an
+    /// unrelated event repainted.
     pub fn insert_item(&mut self, index: usize, text: String) {
         if index <= self.items.len() {
             self.items.insert(index, text);
@@ -459,9 +474,13 @@ impl ComboBox {
                     *current += 1;
                 }
             }
+            self.base.request_redraw();
         }
     }
     /// Removes item at specified index.
+    ///
+    /// Repaints: both the item list and (when the removed row was the current one) the cleared
+    /// value are painted.
     pub fn remove_item(&mut self, index: usize) {
         if index < self.items.len() {
             self.items.remove(index);
@@ -475,14 +494,21 @@ impl ComboBox {
                     *current -= 1;
                 }
             }
+            self.base.request_redraw();
         }
     }
     /// Clears all items.
+    ///
+    /// Repaints: the list and the now-empty value are both painted.
     pub fn clear(&mut self) {
+        if self.items.is_empty() && self.current_index.is_none() {
+            return;
+        }
         self.items.clear();
         self.current_index = None;
         self.current_text_changed.emit(String::new());
         self.current_index_changed.emit(None);
+        self.base.request_redraw();
     }
     /// Returns current index.
     pub fn current_index(&self) -> Option<usize> {

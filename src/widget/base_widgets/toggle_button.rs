@@ -336,9 +336,14 @@ impl Widget for ToggleButton {
 
 /// `ToggleButton`'s property contract.
 ///
-/// `state` is the derived interaction state ("normal"/"checked"/"disabled") and
-/// is read-only, which is why it has a read arm but no write arm here — exactly
-/// as the previous centralised dispatch behaved.
+/// `state` is the derived interaction state, in the order `state()` resolves it:
+/// `"disabled"` (the control is off), `"checked"` (a latch — a value, not a gesture),
+/// `"pressed"` (held), `"hover"` (the pointer is over it), `"normal"`.
+///
+/// It is read-only, which is why it has a read arm but no write arm here — exactly as the
+/// previous centralised dispatch behaved. The published vocabulary is all five of those words:
+/// an earlier revision listed only `normal`/`checked`/`disabled` and so quoted a set the reader
+/// leaves as soon as the pointer arrives.
 impl WidgetProperties for ToggleButton {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {

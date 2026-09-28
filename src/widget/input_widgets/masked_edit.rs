@@ -27,6 +27,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::text_utils::byte_index_of_char;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -188,7 +189,12 @@ impl MaskedEdit {
             }
         }
         self.update_display_text();
-        self.cursor_pos = self.display_text.len();
+        // The caret is a **segment** index (see [`Self::display_to_raw_index`], which iterates the
+        // segments by index), not a byte offset into the display string. Assigning
+        // `display_text.len()` put the caret past the last segment on any mask whose literal
+        // separators are multi-byte, so the drawn caret vanished. `segments.len()` is the count of
+        // display positions the caret may occupy.
+        self.cursor_pos = self.segments.len();
         if !self.restoring_history {
             *self.history_target.borrow_mut() = self.raw_text.clone();
             self.undo_stack.push(Box::new(TextSnapshotCommand::new(
@@ -244,6 +250,14 @@ impl MaskedEdit {
     }
 
     /// Returns whether all required mask positions are filled.
+    ///
+    /// # Both sides count **characters**
+    ///
+    /// `required_count` counts input *segments*, and the value's length is therefore a character
+    /// count. `raw_text.len()` is a byte count, so on any multi-byte raw value the test reported
+    /// "valid" while the field was still short of required positions. The raw text is normally
+    /// ASCII (the mask's own character classes only admit ASCII), but `set_text` stores an
+    /// unmasked value verbatim, so the two frames can genuinely differ.
     pub fn is_valid(&self) -> bool {
         let required_count = self
             .segments
@@ -257,7 +271,7 @@ impl MaskedEdit {
                 )
             })
             .count();
-        self.raw_text.len() >= required_count && !self.mask.is_empty()
+        self.raw_text.chars().count() >= required_count && !self.mask.is_empty()
     }
 
     /// Returns the current cursor position in the display text.
@@ -266,8 +280,11 @@ impl MaskedEdit {
     }
 
     /// Sets the cursor position in the display text.
+    ///
+    /// The position is a **segment** index (a display position), so it is clamped to the number of
+    /// mask segments rather than to the display string's byte length.
     pub fn set_cursor_pos(&mut self, pos: usize) {
-        self.cursor_pos = pos.min(self.display_text.len());
+        self.cursor_pos = pos.min(self.segments.len());
         self.base.request_redraw();
     }
 
@@ -281,7 +298,11 @@ impl MaskedEdit {
         // Find the input segment at this raw index
         if let Some((seg_idx, kind)) = self.find_input_at_raw_index(raw_idx) {
             if mask_char_matches(kind, ch) {
-                self.raw_text.insert(raw_idx, ch);
+                // `raw_idx` counts input positions (characters); `String::insert` takes a byte
+                // offset. Converting here — rather than inserting at the character index — keeps
+                // the byte index on a character boundary, which is what `String::insert` requires.
+                let byte = byte_index_of_char(&self.raw_text, raw_idx);
+                self.raw_text.insert(byte, ch);
                 self.update_display_text();
                 // Move cursor past this input
                 self.cursor_pos = seg_idx + 1;
@@ -297,8 +318,13 @@ impl MaskedEdit {
             return;
         }
         let raw_idx = self.display_to_raw_index(self.cursor_pos);
-        if raw_idx > 0 && raw_idx <= self.raw_text.len() {
-            self.raw_text.remove(raw_idx - 1);
+        let char_count = self.raw_text.chars().count();
+        if raw_idx > 0 && raw_idx <= char_count {
+            // Remove the *nth* character, found by byte offset, so a multi-byte raw value loses a
+            // whole character instead of one byte of it.
+            let start = byte_index_of_char(&self.raw_text, raw_idx - 1);
+            let end = byte_index_of_char(&self.raw_text, raw_idx);
+            self.raw_text.replace_range(start..end, "");
             self.update_display_text();
             self.cursor_pos = self.segment_before_raw_index(raw_idx - 1);
             self.text_changed.emit(self.raw_text.clone());
@@ -309,8 +335,10 @@ impl MaskedEdit {
     /// Deletes the character at the cursor (delete).
     fn delete(&mut self) {
         let raw_idx = self.display_to_raw_index(self.cursor_pos);
-        if raw_idx < self.raw_text.len() {
-            self.raw_text.remove(raw_idx);
+        if raw_idx < self.raw_text.chars().count() {
+            let start = byte_index_of_char(&self.raw_text, raw_idx);
+            let end = byte_index_of_char(&self.raw_text, raw_idx + 1);
+            self.raw_text.replace_range(start..end, "");
             self.update_display_text();
             self.text_changed.emit(self.raw_text.clone());
             self.base.request_redraw();
@@ -685,12 +713,16 @@ impl Draw for MaskedEdit {
                         display_x += char_width as i32;
                     }
                     MaskSegment::Input { kind } => {
-                        let has_input = raw_idx < self.raw_text.len();
-                        let ch = if has_input {
-                            self.raw_text.as_bytes()[raw_idx] as char
-                        } else {
-                            placeholder_char(*kind)
-                        };
+                        // `raw_idx` counts input positions (**characters**), so it must index by
+                        // character: `as_bytes()[raw_idx]` read the nth *byte* of the raw value
+                        // and `as char` then produced the byte's Latin-1 glyph, so any multi-byte
+                        // raw character painted as mojibake.
+                        let ch = self
+                            .raw_text
+                            .chars()
+                            .nth(raw_idx)
+                            .unwrap_or_else(|| placeholder_char(*kind));
+                        let has_input = raw_idx < self.raw_text.chars().count();
 
                         let char_color = if !is_enabled {
                             disabled_ink

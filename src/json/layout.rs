@@ -129,7 +129,8 @@ impl DeclarativeLayoutKind {
 // loader and the ABI would then lay out the same tree differently.
 
 pub use crate::layout::declarative::{
-    add_spacer_to_layout, add_widget_to_layout, apply_layout, store_layout,
+    add_spacer_to_layout, add_widget_to_layout, apply_layout, forget_layout,
+    place_widget_in_layout, preview_layout, store_layout, ChildPlacement,
 };
 
 // ── Parsing ─────────────────────────────────────────────────

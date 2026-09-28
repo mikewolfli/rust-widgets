@@ -48,14 +48,14 @@ impl StackedWidget {
     }
     /// Adds a widget.
     pub fn add_widget(&mut self, widget: ObjectId) -> usize {
-        self.base.add_child(widget);
+        self.base.add_child_linked(widget);
         self.widgets.push(widget);
         self.widgets.len().saturating_sub(1)
     }
     /// Inserts a widget at position.
     pub fn insert_widget(&mut self, index: usize, widget: ObjectId) {
         let was_empty = self.widgets.is_empty();
-        self.base.add_child(widget);
+        self.base.add_child_linked(widget);
         self.widgets.insert(index, widget);
         if !was_empty && self.current_index >= index {
             self.current_index += 1;
@@ -64,7 +64,7 @@ impl StackedWidget {
     /// Removes a widget.
     pub fn remove_widget(&mut self, widget: ObjectId) {
         if let Some(index) = self.widgets.iter().position(|&id| id == widget) {
-            self.base.remove_child(widget);
+            self.base.remove_child_linked(widget);
             self.widgets.remove(index);
             if self.current_index >= index && self.current_index > 0 {
                 self.current_index -= 1;

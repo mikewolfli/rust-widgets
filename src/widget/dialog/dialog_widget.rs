@@ -112,18 +112,25 @@ impl Dialog {
 
     /// Sets the content widget this dialog hosts.
     ///
-    /// Replaces any previous content child and records the parent/child link so the
-    /// tree walk (and the modal subtree test) sees it.
+    /// Replaces any previous content child and records the link in **both** directions, so the tree
+    /// walk (and the modal subtree test) sees it. That pairing is BLUE22 §B.6 rule 5, and it is now
+    /// expressed through the shared [`BaseWidget::add_child_linked`]/[`remove_child_linked`] pair
+    /// rather than three inline writes: the inline form was correct here but was one of eleven
+    /// hand-written copies of the same rule, of which eight were incomplete.
+    ///
+    /// A replacement also **unlinks the previous content**. `add_child` does not reject duplicates
+    /// and nothing else removed the old id, so setting a second content widget left the first in
+    /// the child list forever — a stale id a tree walk would still visit, and one that also kept
+    /// claiming this dialog as its parent.
     pub fn set_content_widget(&mut self, widget: Option<ObjectId>) {
         if let Some(old) = self.content_widget {
-            self.base.remove_child(old);
+            if Some(old) != widget {
+                self.base.remove_child_linked(old);
+            }
         }
         self.content_widget = widget;
         if let Some(id) = widget {
-            self.base.add_child(id);
-            let _ = crate::widget::runtime::with_widget_mut(id, |child| {
-                child.set_parent(Some(self.id()));
-            });
+            self.base.add_child_linked(id);
         }
         self.base.request_redraw();
     }

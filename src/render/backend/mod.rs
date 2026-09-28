@@ -19,6 +19,10 @@ pub use surface::{
     default_software_render_config, set_default_software_render_config, text_line, BackBuffer,
     RenderContext, SoftwareRenderConfig, SoftwareSurface, VerticalAlignment, TEXT_FIT_MARGIN,
 };
+// `fitted_origin` is re-exported at the crate-internal level only: it is the one placement rule
+// the caret and the value must share, so `line_edit` reads it rather than restating the arithmetic
+// (which is how the two drifted apart). It is not part of the public surface.
+pub(crate) use surface::fitted_origin;
 
 #[cfg(all(test, feature = "desktop", widgets_unstripped))]
 pub(crate) use surface::software_render_config_test_lock;

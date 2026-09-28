@@ -4,6 +4,7 @@
 //! Pixel-level operations: blend_painted_glyph, glyph_rects, fill_pixels,
 //! blend_pixel, set_pixel, pixel_bytes_len, and anti-aliased coverage/geometry helpers.
 use crate::core::{Color, Point, Rect, Size};
+use crate::render::core::command::BlendMode;
 
 /// Where one glyph is painted, and into what.
 ///
@@ -454,6 +455,153 @@ pub(crate) fn glyph_coverage_weight(coverage: u8) -> f32 {
 /// as by text. Callers blending glyph ink should use [`blend_pixel`]'s coverage after passing it
 /// through [`glyph_coverage_weight`].
 pub fn blend_pixel(frame: &mut [u8], width: u32, x: u32, y: u32, color: Color, coverage: f32) {
+    blend_pixel_with_mode(frame, width, x, y, color, coverage, BlendMode::Normal);
+}
+
+/// The separable blend function of a [`BlendMode`], applied per RGB channel to the
+/// **backdrop** (`dst`) and the **source** (`src`), both in `0.0..=1.0`.
+///
+/// These are the formulas CSS `mix-blend-mode` and the PDF/`SVG` compositing spec define, which is
+/// the same table the SVG backend's `mix-blend-mode` maps onto — so a `SetBlendMode { Multiply }`
+/// frame composites identically through either backend. The non-separable modes (`Hue`,
+/// `Saturation`, `Color`, `Luminosity`) need the full RGB triple and are handled in
+/// [`blend_pixel_with_mode`] rather than here.
+///
+/// Returns `None` for the non-separable modes.
+fn separable_blend(mode: BlendMode, dst: f32, src: f32) -> Option<f32> {
+    Some(match mode {
+        BlendMode::Normal => src,
+        BlendMode::Multiply => dst * src,
+        BlendMode::Screen => dst + src - dst * src,
+        BlendMode::Overlay => hard_light(src, dst),
+        BlendMode::Darken => dst.min(src),
+        BlendMode::Lighten => dst.max(src),
+        BlendMode::ColorDodge => {
+            if dst <= 0.0 {
+                0.0
+            } else if src >= 1.0 {
+                1.0
+            } else {
+                (dst / (1.0 - src)).min(1.0)
+            }
+        }
+        BlendMode::ColorBurn => {
+            if dst >= 1.0 {
+                1.0
+            } else if src <= 0.0 {
+                0.0
+            } else {
+                1.0 - ((1.0 - dst) / src).min(1.0)
+            }
+        }
+        BlendMode::HardLight => hard_light(dst, src),
+        BlendMode::SoftLight => soft_light(dst, src),
+        BlendMode::Difference => (dst - src).abs(),
+        BlendMode::Exclusion => dst + src - 2.0 * dst * src,
+        // Non-separable: handled by the caller with all three channels.
+        BlendMode::Hue | BlendMode::Saturation | BlendMode::Color | BlendMode::Luminosity => {
+            return None
+        }
+    })
+}
+
+/// `HardLight`'s per-channel function: `Multiply`/`Screen` chosen by the **source**.
+fn hard_light(base: f32, blend: f32) -> f32 {
+    if blend <= 0.5 {
+        base * (2.0 * blend)
+    } else {
+        base + (2.0 * blend - 1.0) * (1.0 - base)
+    }
+}
+
+/// `SoftLight`'s per-channel function (the W3C compositing formula).
+fn soft_light(base: f32, blend: f32) -> f32 {
+    if blend <= 0.5 {
+        base - (1.0 - 2.0 * blend) * base * (1.0 - base)
+    } else {
+        let d = if base <= 0.25 { ((16.0 * base - 12.0) * base + 4.0) * base } else { base.sqrt() };
+        base + (2.0 * blend - 1.0) * (d - base)
+    }
+}
+
+/// Non-separable blend: `SetLum`, `SetSat`, `SetHue` … over the full RGB triple.
+///
+/// Returns the blended RGB for the four non-separable modes using the W3C compositing definitions.
+fn non_separable_blend(mode: BlendMode, cb: [f32; 3], cs: [f32; 3]) -> [f32; 3] {
+    let lum = |c: [f32; 3]| 0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2];
+    let clip_color = |mut c: [f32; 3]| {
+        let l = lum(c);
+        let n = c.iter().cloned().fold(f32::INFINITY, f32::min);
+        let x = c.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        if n < 0.0 {
+            for v in &mut c {
+                *v = l + (*v - l) * l / (l - n);
+            }
+        }
+        if x > 1.0 {
+            for v in &mut c {
+                *v = l + (*v - l) * (1.0 - l) / (x - l);
+            }
+        }
+        c
+    };
+    let set_lum =
+        |c: [f32; 3], l: f32| clip_color([c[0] + l - lum(c), c[1] + l - lum(c), c[2] + l - lum(c)]);
+    let sat = |c: [f32; 3]| {
+        c.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+            - c.iter().cloned().fold(f32::INFINITY, f32::min)
+    };
+    let set_sat = |mut c: [f32; 3], s: f32| {
+        let (mut lo, mut mid, mut hi) = (0usize, 1usize, 2usize);
+        if c[lo] > c[mid] {
+            core::mem::swap(&mut lo, &mut mid);
+        }
+        if c[mid] > c[hi] {
+            core::mem::swap(&mut mid, &mut hi);
+        }
+        if c[lo] > c[mid] {
+            core::mem::swap(&mut lo, &mut mid);
+        }
+        let (out_lo, out_hi) = (0.0, s);
+        let out_mid =
+            if c[hi] - c[lo] > 0.0 { (c[mid] - c[lo]) * s / (c[hi] - c[lo]) } else { 0.0 };
+        let mut out = [0.0f32; 3];
+        out[lo] = out_lo;
+        out[mid] = out_mid;
+        out[hi] = out_hi;
+        c = out;
+        c
+    };
+    match mode {
+        BlendMode::Hue => set_lum(set_sat(cs, sat(cb)), lum(cb)),
+        BlendMode::Saturation => set_lum(set_sat(cb, sat(cs)), lum(cb)),
+        BlendMode::Color => set_lum(cs, lum(cb)),
+        BlendMode::Luminosity => set_lum(cb, lum(cs)),
+        // The separable modes never reach here.
+        _ => cs,
+    }
+}
+
+/// Alpha-blends `color` over the pixel at `(x, y)`, compositing the source through `mode`'s blend
+/// function first.
+///
+/// This is [`blend_pixel`] with the backend's current [`RenderCommand::SetBlendMode`] applied. The
+/// SVG backend maps each mode onto a `mix-blend-mode` group; this is the rasteriser half of that
+/// pair, and both compute the same W3C formulas — which is what makes the two backends agree for
+/// one command. Before this existed the software backend *stored* the mode and never read it, so
+/// `SetBlendMode` was a silent no-op on the reference implementation while the snapshot honoured
+/// it: one command, two pictures.
+///
+/// [`RenderCommand::SetBlendMode`]: crate::render::RenderCommand::SetBlendMode
+pub fn blend_pixel_with_mode(
+    frame: &mut [u8],
+    width: u32,
+    x: u32,
+    y: u32,
+    color: Color,
+    coverage: f32,
+    mode: BlendMode,
+) {
     if coverage <= 0.0 {
         return;
     }
@@ -470,12 +618,11 @@ pub fn blend_pixel(frame: &mut [u8], width: u32, x: u32, y: u32, color: Color, c
         return;
     }
     let dst = &mut frame[idx..idx + 4];
-    let src = [color.r, color.g, color.b, color.a];
     let src_f: [f32; 4] = [
-        src[0] as f32 / 255.0,
-        src[1] as f32 / 255.0,
-        src[2] as f32 / 255.0,
-        src[3] as f32 / 255.0,
+        color.r as f32 / 255.0,
+        color.g as f32 / 255.0,
+        color.b as f32 / 255.0,
+        color.a as f32 / 255.0,
     ];
     let dst_f: [f32; 4] = [
         dst[0] as f32 / 255.0,
@@ -483,19 +630,65 @@ pub fn blend_pixel(frame: &mut [u8], width: u32, x: u32, y: u32, color: Color, c
         dst[2] as f32 / 255.0,
         dst[3] as f32 / 255.0,
     ];
+    // Blend the source against the backdrop **before** the alpha composite. For `Normal` this is
+    // the identity (`B(Cb, Cs) = Cs`), so the arithmetic below is bit-for-bit the old path.
+    let blended = if mode == BlendMode::Normal {
+        [src_f[0], src_f[1], src_f[2]]
+    } else if let Some(_f) = separable_blend(mode, dst_f[0], src_f[0]) {
+        [
+            separable_blend(mode, dst_f[0], src_f[0]).unwrap_or(src_f[0]),
+            separable_blend(mode, dst_f[1], src_f[1]).unwrap_or(src_f[1]),
+            separable_blend(mode, dst_f[2], src_f[2]).unwrap_or(src_f[2]),
+        ]
+    } else {
+        non_separable_blend(mode, [dst_f[0], dst_f[1], dst_f[2]], [src_f[0], src_f[1], src_f[2]])
+    };
     let out_a = src_a + dst_f[3] * (1.0 - src_a);
     if out_a <= f32::EPSILON {
         dst.copy_from_slice(&[0, 0, 0, 0]);
         return;
     }
-    let out_r = (src_f[0] * src_a + dst_f[0] * dst_f[3] * (1.0 - src_a)) / out_a;
-    let out_g = (src_f[1] * src_a + dst_f[1] * dst_f[3] * (1.0 - src_a)) / out_a;
-    let out_b = (src_f[2] * src_a + dst_f[2] * dst_f[3] * (1.0 - src_a)) / out_a;
+    let out_r = (blended[0] * src_a + dst_f[0] * dst_f[3] * (1.0 - src_a)) / out_a;
+    let out_g = (blended[1] * src_a + dst_f[1] * dst_f[3] * (1.0 - src_a)) / out_a;
+    let out_b = (blended[2] * src_a + dst_f[2] * dst_f[3] * (1.0 - src_a)) / out_a;
     dst[0] = (out_r * 255.0).round().clamp(0.0, 255.0) as u8;
     dst[1] = (out_g * 255.0).round().clamp(0.0, 255.0) as u8;
     dst[2] = (out_b * 255.0).round().clamp(0.0, 255.0) as u8;
     dst[3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
 }
+/// Writes one pixel through `mode`, used by every rasteriser primitive.
+///
+/// # Why every pixel goes through here
+///
+/// The rasteriser's primitives (`primitives.rs`) all end in a per-pixel write, and before this
+/// existed each one called `set_pixel`/`blend_pixel` directly — which meant a
+/// [`RenderCommand::SetBlendMode`](crate::render::RenderCommand::SetBlendMode) command had nowhere to
+/// take effect, so the software backend **stored** the mode and never read it while the SVG backend
+/// honoured it. Routing the writes through one function makes "the mode applies to what is drawn
+/// next" true for opaque fills, antialiased geometry, and glyphs alike.
+///
+/// `Normal` preserves the historical arithmetic bit for bit: a fully covered pixel is a
+/// replacement, a partial one an alpha blend, with no blend function in between.
+pub(crate) fn write_pixel_with_mode(
+    mode: BlendMode,
+    frame: &mut [u8],
+    width: u32,
+    x: u32,
+    y: u32,
+    color: Color,
+    coverage: f32,
+) {
+    if matches!(mode, BlendMode::Normal) {
+        if coverage >= 1.0 {
+            set_pixel(frame, width, x, y, color);
+        } else {
+            blend_pixel_with_mode(frame, width, x, y, color, coverage, BlendMode::Normal);
+        }
+        return;
+    }
+    blend_pixel_with_mode(frame, width, x, y, color, coverage, mode);
+}
+
 pub(crate) fn circle_fill_coverage(distance: f32, radius: f32) -> f32 {
     if radius <= 0.0 {
         return 0.0;

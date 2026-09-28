@@ -216,11 +216,15 @@ impl TabWidget {
         self.registry.as_ref()
     }
     /// Adds a tab.
+    ///
+    /// The tab's widget is linked in **both** directions (BLUE22 §B.6 rule 5): `add_child` alone
+    /// leaves the child believing it has no parent, so a tree walk from the root never reaches a
+    /// tab's page. `remove_tab` unlinks the same way, so removal is observable from both sides.
     pub fn add_tab(&mut self, title: String, widget: Option<ObjectId>) -> usize {
         let mut tab = Tab::new(title);
         tab.widget = widget;
         if let Some(widget_id) = widget {
-            self.base.add_child(widget_id);
+            self.base.add_child_linked(widget_id);
         }
         self.tabs.push(tab);
         self.tabs.len().saturating_sub(1)
@@ -231,7 +235,7 @@ impl TabWidget {
         let mut tab = Tab::new(title);
         tab.widget = widget;
         if let Some(widget_id) = widget {
-            self.base.add_child(widget_id);
+            self.base.add_child_linked(widget_id);
         }
         self.tabs.insert(index, tab);
         if !was_empty && self.current_index >= index {
@@ -242,7 +246,7 @@ impl TabWidget {
     pub fn remove_tab(&mut self, index: usize) {
         if index < self.tabs.len() {
             if let Some(widget_id) = self.tabs[index].widget {
-                self.base.remove_child(widget_id);
+                self.base.remove_child_linked(widget_id);
             }
             self.tabs.remove(index);
             if self.current_index >= index && self.current_index > 0 {

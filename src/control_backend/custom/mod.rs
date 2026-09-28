@@ -241,7 +241,62 @@ impl CustomPaintControlBackend {
         // `crate::apply_active_theme`), so this block carries no `cfg` of its
         // own to drift out of step with the theme module's gate.
         crate::apply_active_theme(&mut widget);
-        let id = crate::widget::runtime::register(widget).unwrap_or(0);
+        self.adopt_widget_box(widget, Some(parent), 0)
+    }
+
+    /// Mounts an already-built widget box: assigns and registers its id, records both
+    /// directions of the parent/child relation, and gives a window its host surface.
+    ///
+    /// # Why this is one function
+    ///
+    /// Both entry points — a caller naming a kind ([`mount_named_widget`](Self::mount_named_widget))
+    /// and a caller handing over a box it built itself
+    /// ([`mount_widget_box`](ControlBackend::mount_widget_box), which is what the JSON layout
+    /// loader uses) — must end up with the same mounted control. Splitting the bookkeeping in two
+    /// is how the loader's path came to register nothing while this path registered everything.
+    ///
+    /// `declared_id` is the id the caller wants the widget known by, or `0` to have one
+    /// assigned. It is *reserved* rather than merely written down: the runtime must hand out
+    /// that exact id, or a document's `"id"` would address a control the runtime never created.
+    ///
+    /// Returns `0` when there is no widget runtime on this thread, or when the reservation
+    /// loses a race with another producer.
+    ///
+    /// # Why every field of the widget is read rather than passed in
+    ///
+    /// The name-based path used to be handed the title, geometry and kind it had just built from,
+    /// because it built the control itself. This one is handed only the box, so those facts are
+    /// read back **from the control** — which is the more honest source anyway: what the host
+    /// should be told about a widget is what the widget says about itself.
+    /// # Why this is absent on `alloc_frugal`
+    ///
+    /// The alloc-frugal profile has no widget runtime at all (`widget::runtime` is compiled out
+    /// there), so there is no registry to mount into and no id to reserve. `mount_widget_box` on
+    /// the trait already answers `0` for such a backend, which is the honest answer.
+    #[cfg(not(alloc_frugal))]
+    pub(crate) fn adopt_widget_box(
+        &self,
+        widget: crate::compat::Box<dyn crate::widget::Widget>,
+        parent: Option<crate::core::ObjectId>,
+        declared_id: crate::core::ObjectId,
+    ) -> crate::core::ObjectId {
+        let id = if declared_id == 0 {
+            crate::widget::runtime::register(widget).unwrap_or(0)
+        } else {
+            match crate::widget::runtime::register_with_id(widget, declared_id) {
+                Ok(id) => id,
+                Err(existing) => {
+                    // The id is taken. Handing out a second id would leave the document's
+                    // `"id"` pointing at somebody else's control, so the request is refused
+                    // and the duplicate is named.
+                    log::warn!(
+                        "custom backend: id {existing} is already mounted; a widget asking to be \
+                         known by it was refused rather than given a different id"
+                    );
+                    return 0;
+                }
+            }
+        };
         if id == 0 {
             return 0;
         }
@@ -258,41 +313,69 @@ impl CustomPaintControlBackend {
         // controls, needed a window-level painter: that paints the window's child list,
         // and an empty list is why a window rendered as bare background.
         //
-        // Both writes happen here because this is the one funnel every created control
+        // Both writes happen here because this is the one funnel every mounted control
         // passes through, so the two lists cannot be updated on one path and forgotten on
         // another. A window is excluded: it is a root, and it has no parent id to record
         // (its own parent is `None`, set by the factory).
-        if kind != crate::widget::WidgetKind::Window {
-            crate::widget::runtime::with_widget_mut(parent, |host| {
+        if let Some(parent_id) = parent {
+            crate::widget::runtime::with_widget_mut(parent_id, |host| {
                 host.add_child(id);
             });
         }
 
-        // A window is not only a painted widget: it needs a host object for
-        // the platform to draw into, and that is what `mount_surface` resolves
-        // a parent through. Creating it here — on the one creation path — is
-        // what links the widget id the caller holds to the id the platform
-        // knows, instead of leaving two unreachable id spaces.
-        //
-        // A backend without host windows (state-only, e.g. no display) returns
-        // 0 and no association is recorded, so mounting onto that window is
-        // still refused honestly rather than appearing to succeed.
-        if kind == crate::widget::WidgetKind::Window {
-            // `text` carries the window's title, the same spelling the factory
-            // was given above for this kind.
-            let host = crate::platform::get_platform().create_window(text, x, y, width, height);
-            if host != 0 {
-                crate::widget::runtime::set_host_window(id, host);
-            } else {
-                log::debug!(
-                    "custom backend: backend '{}' built no host window for {id}; controls \
-                     cannot be mounted onto it",
-                    crate::platform::backend_name()
-                );
-            }
-        }
+        // The host window and the theme-driven title are `full_widgets` concerns: a stripped
+        // profile has no `crate::platform::get_platform` to ask and no `String` to name it with,
+        // and it mounts no controls for a host to draw. The registration above is ungated because
+        // those profiles *do* own a widget runtime (they are not `alloc_frugal`), so an id handed
+        // out there is a real id.
+        #[cfg(full_widgets)]
+        self.attach_window_host_if_needed(id);
 
         id
+    }
+
+    /// Gives a **window** control its host object on the platform, and a non-window nothing.
+    ///
+    /// # Why a window needs this and a control does not
+    ///
+    /// A window is not only a painted widget: it needs a host object for the platform to draw
+    /// into, and that is what `mount_surface` resolves a parent through. Creating it here — on the
+    /// one mounting path — is what links the widget id the caller holds to the id the platform
+    /// knows, instead of leaving two unreachable id spaces.
+    ///
+    /// A backend without host windows (state-only, e.g. no display) returns `0` and no association
+    /// is recorded, so mounting onto that window is still refused honestly rather than appearing to
+    /// succeed.
+    ///
+    /// Every fact the host needs is read **from the control**: its kind decides whether this runs
+    /// at all, its geometry is where the host window opens, and its accessible name is its title
+    /// (`accessible_name` resolves the kind's own label property, which for a window *is* the
+    /// title — read that way rather than through a downcast, because `Widget` publishes no title
+    /// accessor and one kind is not a reason to widen the trait).
+    #[cfg(full_widgets)]
+    fn attach_window_host_if_needed(&self, id: crate::core::ObjectId) {
+        let is_window = crate::widget::runtime::with_widget(id, |live| {
+            live.kind() == crate::widget::WidgetKind::Window
+        })
+        .unwrap_or(false);
+        if !is_window {
+            return;
+        }
+        let (x, y, width, height, title) = crate::widget::runtime::with_widget(id, |live| {
+            let rect = live.geometry();
+            (rect.x, rect.y, rect.width, rect.height, live.accessible_name())
+        })
+        .unwrap_or((0, 0, 0, 0, crate::compat::String::new()));
+        let host = crate::platform::get_platform().create_window(&title, x, y, width, height);
+        if host != 0 {
+            crate::widget::runtime::set_host_window(id, host);
+        } else {
+            log::debug!(
+                "custom backend: backend '{}' built no host window for {id}; controls cannot be \
+                 mounted onto it",
+                crate::platform::backend_name()
+            );
+        }
     }
 
     /// Runs `f` against the live widget registered under `widget_id`.

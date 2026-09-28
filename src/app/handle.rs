@@ -8,7 +8,7 @@
 //! via the `WidgetHandle` extension trait.
 
 use alloc::rc::Rc;
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 
 use crate::core::{ObjectId, Orientation, Rect};
 use crate::platform::{WidgetTriggerKind, WindowStateFlag};
@@ -491,8 +491,26 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 thread_local! {
-    static CLICK_CALLBACKS: RefCell<HashMap<ObjectId, ClickCallback>> = RefCell::new(HashMap::new());
-    static VALUE_CALLBACKS: RefCell<HashMap<ObjectId, ValueChangedCallback>> = RefCell::new(HashMap::new());
+    // # Why a *list* of callbacks per widget
+    //
+    // Both tables were `HashMap<ObjectId, Callback>` — one slot per widget. A node that declared
+    // two handlers (a published `events` binding plus an `on_*` one, or two published names) had
+    // the second `insert` **silently replace** the first, so a document could name two handlers and
+    // get one, with no warning and nothing to query. A list keeps every binding the document asked
+    // for; `remove_callbacks` still clears the whole list on drop, so the leak a rebuild would
+    // otherwise produce is unchanged.
+    static CLICK_CALLBACKS: RefCell<HashMap<ObjectId, Vec<ClickCallback>>> =
+        RefCell::new(HashMap::new());
+    static VALUE_CALLBACKS: RefCell<HashMap<ObjectId, Vec<ValueChangedCallback>>> =
+        RefCell::new(HashMap::new());
+
+    /// How many callbacks have been requested for an id with no mounted widget.
+    ///
+    /// Thread-local like the two tables it counts for: a widget id is only meaningful on the
+    /// thread that mounted it, so the same rule that makes the tables per-thread applies here.
+    /// A `Cell` rather than an `AtomicUsize` for that reason — sharing the count across threads
+    /// would make it a sum over threads whose ids do not refer to one another.
+    static UNWIRED_BINDINGS: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Registers `f` as the click callback for `widget_id`.
@@ -541,52 +559,92 @@ fn register_click_callback<F: FnMut() + Send + 'static>(widget_id: ObjectId, f: 
         })
     });
     if connected.is_none() {
-        log::debug!(
+        // `warn!`, not `debug!`. The condition is not routine: it means the caller asked for a
+        // callback that will never run, because there is no widget at this id. It happens for
+        // real — a handle built from an id the runtime never mounted (a declarative document
+        // loaded outside a window thread, a stale id after `unregister`) — and at `debug!` a
+        // program that wired its whole UI to nothing said so only to whoever had turned logging
+        // up. A handler that never fires is exactly the defect a subscriber cannot see from the
+        // outside, so it is reported at the level the default log filter shows.
+        log::warn!(
             "on_click ignored for id={widget_id}: it is not a live widget, so there is no \
-             signal for a click to arrive on"
+             signal for a click to arrive on. The callback will never run."
         );
+        record_unwired_binding(widget_id);
     }
 }
 
-/// Removes and returns the click callback for `widget_id`.
+/// Records that a callback was requested for an id with no live widget.
+///
+/// # Why a count and not just a log line
+///
+/// A log line answers "did this happen?" only for someone who was watching at the time. A program
+/// that loads a document off the UI thread wires every handler it declares to nothing, and the
+/// question "how many of my handlers are unwired?" has to be answerable *afterwards*, from the
+/// program. This is that answer, and it is the same shape for both callback tables because a
+/// caller asking the question is asking about the wiring as a whole.
+pub fn unwired_binding_count() -> usize {
+    UNWIRED_BINDINGS.with(|count| count.get())
+}
+
+/// Clears the unwired-binding count. Exists so a test can assert about one scenario rather than
+/// about every scenario that ran before it on the same thread.
+pub fn reset_unwired_binding_count() {
+    UNWIRED_BINDINGS.with(|count| count.set(0));
+}
+
+/// Bumps the unwired-binding counter. See [`unwired_binding_count`].
+fn record_unwired_binding(_widget_id: ObjectId) {
+    UNWIRED_BINDINGS.with(|count| count.set(count.get().saturating_add(1)));
+}
+
+/// Removes and returns every click callback for `widget_id`.
 ///
 /// `try_borrow_mut` rather than `borrow_mut`: this runs from [`dispatch_trigger`],
 /// which is itself reachable from inside a callback, and a refused borrow must not
 /// become a panic there. A refused borrow also means the map cannot be read, so the
-/// answer is "no callback" rather than a guess.
-fn take_click_callback(widget_id: ObjectId) -> Option<ClickCallback> {
-    CLICK_CALLBACKS.with(|map| map.try_borrow_mut().ok().and_then(|mut map| map.remove(&widget_id)))
+/// answer is "no callbacks" rather than a guess.
+fn take_click_callbacks(widget_id: ObjectId) -> Vec<ClickCallback> {
+    CLICK_CALLBACKS
+        .with(|map| map.try_borrow_mut().ok().and_then(|mut map| map.remove(&widget_id)))
+        .unwrap_or_default()
 }
 
-/// Removes and returns the value-changed callback for `widget_id`.
+/// Removes and returns every value-changed callback for `widget_id`.
 ///
-/// See [`take_click_callback`] for why the borrow is attempted rather than taken.
-fn take_value_callback(widget_id: ObjectId) -> Option<ValueChangedCallback> {
-    VALUE_CALLBACKS.with(|map| map.try_borrow_mut().ok().and_then(|mut map| map.remove(&widget_id)))
+/// See [`take_click_callbacks`] for why the borrow is attempted rather than taken.
+fn take_value_callbacks(widget_id: ObjectId) -> Vec<ValueChangedCallback> {
+    VALUE_CALLBACKS
+        .with(|map| map.try_borrow_mut().ok().and_then(|mut map| map.remove(&widget_id)))
+        .unwrap_or_default()
 }
 
-/// Puts a click callback back when it goes out of scope.
+/// Puts click callbacks back when they go out of scope.
 ///
-/// The job of this type is the unwind path: `dispatch_trigger` moves the callback
+/// The job of this type is the unwind path: `dispatch_trigger` moves the callbacks
 /// out of the map so a re-entrant `remove_callbacks` cannot double borrow, and a
-/// plain `insert` afterwards would be skipped if the callback panicked — leaving the
-/// widget registered as having a callback that is never invoked again. Holding it in
+/// plain `insert` afterwards would be skipped if a callback panicked — leaving the
+/// widget registered as having callbacks that are never invoked again. Holding them in
 /// a `Drop` type makes the restore unconditional.
 struct ClickCallGuard {
     widget_id: ObjectId,
-    callback: Option<ClickCallback>,
+    callbacks: Option<Vec<ClickCallback>>,
 }
 
 impl Drop for ClickCallGuard {
     fn drop(&mut self) {
-        if let Some(callback) = self.callback.take() {
+        if let Some(callbacks) = self.callbacks.take() {
             CLICK_CALLBACKS.with(|map| {
                 if let Ok(mut map) = map.try_borrow_mut() {
-                    map.insert(self.widget_id, callback);
+                    // **Prepend**, don't replace: a callback registered while the dispatch was in
+                    // flight (a handler that binds another handler) must survive. `insert` would
+                    // have dropped it, which is the same "second binding disappears" defect in a
+                    // different place.
+                    map.entry(self.widget_id).or_default().splice(0..0, callbacks);
                 } else {
                     log::warn!(
-                        "could not restore the click callback for widget {}: the registry is \
-                         already borrowed; the callback is dropped",
+                        "could not restore the click callbacks for widget {}: the registry is \
+                         already borrowed; the callbacks are dropped",
                         self.widget_id
                     );
                 }
@@ -595,25 +653,25 @@ impl Drop for ClickCallGuard {
     }
 }
 
-/// Puts a value-changed callback back when it goes out of scope.
+/// Puts value-changed callbacks back when they go out of scope.
 ///
 /// See [`ClickCallGuard`]; the two registries are separate, so each needs its own
 /// guard rather than one generic over the map.
 struct ValueCallGuard {
     widget_id: ObjectId,
-    callback: Option<ValueChangedCallback>,
+    callbacks: Option<Vec<ValueChangedCallback>>,
 }
 
 impl Drop for ValueCallGuard {
     fn drop(&mut self) {
-        if let Some(callback) = self.callback.take() {
+        if let Some(callbacks) = self.callbacks.take() {
             VALUE_CALLBACKS.with(|map| {
                 if let Ok(mut map) = map.try_borrow_mut() {
-                    map.insert(self.widget_id, callback);
+                    map.entry(self.widget_id).or_default().splice(0..0, callbacks);
                 } else {
                     log::warn!(
-                        "could not restore the value callback for widget {}: the registry is \
-                         already borrowed; the callback is dropped",
+                        "could not restore the value callbacks for widget {}: the registry is \
+                         already borrowed; the callbacks are dropped",
                         self.widget_id
                     );
                 }
@@ -642,6 +700,36 @@ pub fn remove_callbacks(id: ObjectId) {
     });
 }
 
+/// Registers `f` as a value-changed callback for `widget_id`.
+///
+/// # The check this performs that `register_click_callback` does not need
+///
+/// A value callback is *pushed into a table* rather than connected to a signal, because a
+/// control's value travels through the router rather than through one signal of its own. The
+/// table therefore has no widget to refuse the write — an id that addresses no widget still gets
+/// an entry, and nothing ever removes it, because the only remover is a handle's `Drop` and the
+/// handle may outlive the widget. The result is a callback that is registered, never fires, and
+/// keeps a closure alive.
+///
+/// Asking the runtime whether the id is mounted is what closes that window, and it is the same
+/// question `register_click_callback` gets answered for free by the connect. It costs one probe
+/// and is asked only while wiring, not per event.
+fn register_value_callback(widget_id: ObjectId, f: ValueChangedCallback) {
+    if !crate::widget::runtime::is_mounted(widget_id) {
+        // `warn!`, for the reason spelled out on `register_click_callback`: a handler that can
+        // never run is the failure a caller cannot see from the outside.
+        log::warn!(
+            "on_value_changed ignored for id={widget_id}: it is not a live widget, so no trigger \
+             will reach it. The callback will never run."
+        );
+        record_unwired_binding(widget_id);
+        return;
+    }
+    VALUE_CALLBACKS.with(|map| {
+        map.borrow_mut().entry(widget_id).or_default().push(f);
+    });
+}
+
 /// Registers a value-changed callback directly, without going through a handle.
 ///
 /// # Why this exists rather than a test reaching into the registry
@@ -658,7 +746,7 @@ pub fn remove_callbacks(id: ObjectId) {
 #[cfg(test)]
 pub(crate) fn set_widget_value_callback(id: ObjectId, callback: ValueChangedCallback) {
     VALUE_CALLBACKS.with(|map| {
-        map.borrow_mut().insert(id, callback);
+        map.borrow_mut().entry(id).or_default().push(callback);
     });
 }
 
@@ -690,38 +778,43 @@ pub(crate) fn set_widget_value_callback(id: ObjectId, callback: ValueChangedCall
 pub fn dispatch_trigger(widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
     match kind {
         WidgetTriggerKind::Clicked | WidgetTriggerKind::Unknown => {
-            let Some(cb) = take_click_callback(widget_id) else {
+            let callbacks = take_click_callbacks(widget_id);
+            if callbacks.is_empty() {
                 return false;
-            };
-            // The guard holds the callback and puts it back when it goes out of
+            }
+            // The guard holds the callbacks and puts them back when it goes out of
             // scope, including on unwind, so a panicking callback cannot silently
-            // unregister itself.
-            let _guard = ClickCallGuard { widget_id, callback: Some(cb) };
-            let callback = _guard.callback.as_ref().expect("set just above");
-            if let Ok(mut f) = callback.try_borrow_mut() {
-                f();
-            } else {
-                log::warn!(
-                    "the click callback for widget {widget_id} is already running; \
-                     refusing to re-enter it rather than panicking"
-                );
+            // unregister itself. **Every** callback runs: a widget with two handlers
+            // must fire both, which is what `Vec` here is for.
+            let guard = ClickCallGuard { widget_id, callbacks: Some(callbacks) };
+            for callback in guard.callbacks.as_ref().expect("set just above") {
+                if let Ok(mut f) = callback.try_borrow_mut() {
+                    f();
+                } else {
+                    log::warn!(
+                        "the click callback for widget {widget_id} is already running; \
+                         refusing to re-enter it rather than panicking"
+                    );
+                }
             }
             true
         }
         WidgetTriggerKind::ValueChanged | WidgetTriggerKind::SelectionChanged => {
-            let text = crate::get_widget_text(widget_id);
-            let Some(cb) = take_value_callback(widget_id) else {
+            let callbacks = take_value_callbacks(widget_id);
+            if callbacks.is_empty() {
                 return false;
-            };
-            let _guard = ValueCallGuard { widget_id, callback: Some(cb) };
-            let callback = _guard.callback.as_ref().expect("set just above");
-            if let Ok(mut f) = callback.try_borrow_mut() {
-                f(text);
-            } else {
-                log::warn!(
-                    "the value callback for widget {widget_id} is already running; \
-                     refusing to re-enter it rather than panicking"
-                );
+            }
+            let text = crate::get_widget_text(widget_id);
+            let guard = ValueCallGuard { widget_id, callbacks: Some(callbacks) };
+            for callback in guard.callbacks.as_ref().expect("set just above") {
+                if let Ok(mut f) = callback.try_borrow_mut() {
+                    f(text.clone());
+                } else {
+                    log::warn!(
+                        "the value callback for widget {widget_id} is already running; \
+                         refusing to re-enter it rather than panicking"
+                    );
+                }
             }
             true
         }
@@ -859,16 +952,12 @@ impl WidgetHandle for WindowHandle {
     }
 
     fn on_value_changed<F: FnMut(String) + 'static>(&self, f: F) {
-        VALUE_CALLBACKS.with(|map| {
-            map.borrow_mut().insert(self.id, Rc::new(RefCell::new(f)));
-        });
+        register_value_callback(self.id, Rc::new(RefCell::new(f)));
     }
 }
 
 impl Drop for WindowHandle {
-    fn drop(&mut self) {
-        remove_callbacks(self.id);
-    }
+    fn drop(&mut self) {}
 }
 
 impl WindowHandle {
@@ -1333,6 +1422,38 @@ macro_rules! impl_handle {
             pub fn from_raw(id: ObjectId) -> Self {
                 Self { id }
             }
+
+            /// Removes every callback registered against this handle's id.
+            ///
+            /// # Why this is explicit rather than automatic
+            ///
+            /// [`Drop`] used to call `remove_callbacks` unconditionally, on the reasoning that a
+            /// handle owns the callbacks it installed. It does not: a handle is a *view* of an
+            /// `ObjectId` that any number of callers can build from the same id, and the
+            /// callbacks are keyed by that id rather than by the handle. Three things followed,
+            /// all of them defects:
+            ///
+            /// 1. **A temporary handle wiped its own wiring.** `ButtonHandle::from_raw(id)
+            ///    .on_click(f)` — the idiomatic one-liner, and what the JSON loader's event
+            ///    binder does — installed `f` and then dropped the handle, which removed it.
+            ///    Every declarative `events:`/`on_*` binding was installed and uninstalled in
+            ///    the same statement, so no document's handler ever ran.
+            /// 2. **One handle's drop removed another's callbacks.** Two handles for the same
+            ///    widget (the loader's binding and the caller's `widget_by_name`) shared nothing
+            ///    but the id, so the first to drop unregistered both.
+            /// 3. **Dropping a handle for a live widget is ordinary.** A helper that resolves a
+            ///    handle, reads a property and returns is not a teardown, and removing
+            ///    subscriptions made it one.
+            ///
+            /// So a drop is now inert and unsubscribing is this call. It mirrors the widget
+            /// runtime itself, where `register` mounts a control that outlives whatever box
+            /// produced it — the id is the identity, and the handles are views of it.
+            ///
+            /// A caller that *is* tearing the widget down calls this; `destroy_widget` and the
+            /// window-close path already do, so no teardown path lost its cleanup.
+            pub fn remove_callbacks(&self) {
+                remove_callbacks(self.id);
+            }
         }
 
         impl WidgetHandle for $name {
@@ -1352,16 +1473,16 @@ macro_rules! impl_handle {
             }
 
             fn on_value_changed<F: FnMut(String) + 'static>(&self, f: F) {
-                VALUE_CALLBACKS.with(|map| {
-                    map.borrow_mut().insert(self.id, Rc::new(RefCell::new(f)));
-                });
+                register_value_callback(self.id, Rc::new(RefCell::new(f)));
             }
         }
 
+        /// Dropping a handle deliberately does nothing; use the `remove_callbacks` method.
+        ///
+        /// Written out rather than omitted so the *absence* is a documented decision: an empty
+        /// `impl Drop` is a statement, where no `impl` at all reads as "nobody thought about it".
         impl Drop for $name {
-            fn drop(&mut self) {
-                remove_callbacks(self.id);
-            }
+            fn drop(&mut self) {}
         }
     };
 }
@@ -1458,16 +1579,12 @@ impl WidgetHandle for MessageBoxHandle {
     }
 
     fn on_value_changed<F: FnMut(String) + 'static>(&self, f: F) {
-        VALUE_CALLBACKS.with(|map| {
-            map.borrow_mut().insert(self.id, Rc::new(RefCell::new(f)));
-        });
+        register_value_callback(self.id, Rc::new(RefCell::new(f)));
     }
 }
 
 impl Drop for MessageBoxHandle {
-    fn drop(&mut self) {
-        remove_callbacks(self.id);
-    }
+    fn drop(&mut self) {}
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -2972,7 +3089,7 @@ mod tests {
     fn remove_callbacks_cleans_up() {
         let id: ObjectId = 42;
         CLICK_CALLBACKS.with(|map| {
-            map.borrow_mut().insert(id, Rc::new(RefCell::new(|| {})));
+            map.borrow_mut().insert(id, alloc::vec![Rc::new(RefCell::new(|| {}))]);
             assert!(map.borrow().contains_key(&id));
         });
         remove_callbacks(id);
@@ -3002,10 +3119,10 @@ mod tests {
         CLICK_CALLBACKS.with(|map| {
             map.borrow_mut().insert(
                 id,
-                Rc::new(RefCell::new(move || {
+                alloc::vec![Rc::new(RefCell::new(move || {
                     *counter.borrow_mut() += 1;
                     panic!("callback body panics on purpose");
-                })),
+                }))],
             );
         });
 
@@ -3038,15 +3155,15 @@ mod tests {
         CLICK_CALLBACKS.with(|map| {
             map.borrow_mut().insert(
                 id,
-                Rc::new(RefCell::new(move || {
+                alloc::vec![Rc::new(RefCell::new(move || {
                     *counter.borrow_mut() += 1;
                     // Re-register under the same id, from inside the dispatch.
                     CLICK_CALLBACKS.with(|map| {
                         if let Ok(mut map) = map.try_borrow_mut() {
-                            map.insert(id, Rc::new(RefCell::new(|| {})));
+                            map.insert(id, alloc::vec![Rc::new(RefCell::new(|| {}))]);
                         }
                     });
-                })),
+                }))],
             );
         });
 
@@ -3066,13 +3183,12 @@ mod tests {
         let counter = Rc::clone(&calls);
 
         VALUE_CALLBACKS.with(|map| {
-            map.borrow_mut().insert(
-                id,
-                Rc::new(RefCell::new(move |_text: String| {
+            map.borrow_mut().entry(id).or_default().push(Rc::new(RefCell::new(
+                move |_text: String| {
                     *counter.borrow_mut() += 1;
                     panic!("value callback body panics on purpose");
-                })),
-            );
+                },
+            )));
         });
 
         let first =

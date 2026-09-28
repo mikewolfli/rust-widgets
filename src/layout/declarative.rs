@@ -107,6 +107,62 @@ pub fn add_widget_to_layout(child_id: ObjectId, stretch: u32, parent_id: ObjectI
     })
 }
 
+/// Where a declaratively placed child sits, for the layouts that accept explicit cells.
+///
+/// # Why this is a separate call from [`add_widget_to_layout`]
+///
+/// Only some layouts have cells. The `Layout` trait's `add_widget` takes a widget and a
+/// stretch factor and nothing else, and widening it for the one grid-shaped member would make
+/// every one of the fifteen implementations carry a parameter all but one ignores. The cell
+/// is therefore offered through the trait's downcasting door: a layout that understands cells
+/// implements it, and one that does not is told nothing rather than being handed a placement
+/// it would have to discard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChildPlacement {
+    /// Column of the child's top-left cell.
+    pub col: u32,
+    /// Row of the child's top-left cell.
+    pub row: u32,
+    /// Columns covered, at least 1.
+    pub col_span: u32,
+    /// Rows covered, at least 1.
+    pub row_span: u32,
+}
+
+/// Places `child_id` at an explicit cell of the layout stored for `parent_id`.
+///
+/// Returns `true` when the layout both exists and understands cells, so a caller can report
+/// a placement that would otherwise be silently dropped — the failure this exists to prevent.
+/// A layout that does not use cells (`BoxLayout`, `FlexLayout`, …) returns `false`, and the
+/// caller decides whether that is a problem: the declarative loader turns it into a warning,
+/// because a document that wrote `col`/`row` on a non-grid parent asked for something the
+/// parent cannot do.
+pub fn place_widget_in_layout(
+    child_id: ObjectId,
+    placement: ChildPlacement,
+    parent_id: ObjectId,
+) -> bool {
+    LAYOUT_MAP.with(|map| {
+        let mut map = map.borrow_mut();
+        let Some(layout) = map.get_mut(&parent_id) else {
+            return false;
+        };
+        match layout.as_any_mut().downcast_mut::<crate::layout::GridLayout>() {
+            Some(grid) => {
+                grid.set_widget_spanning(
+                    placement.row,
+                    placement.col,
+                    placement.col_span,
+                    placement.row_span,
+                    child_id,
+                );
+                true
+            }
+            None => false,
+        }
+    })
+}
+
 /// Removes a widget from the layout stored for `parent_id`.
 ///
 /// Returns `true` when a layout was found and told about the removal.

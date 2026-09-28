@@ -169,11 +169,11 @@ impl Frame {
         // Remove old child from widget tree before replacing
         if let Some(old) = self.widget {
             self.base.request_redraw();
-            self.base.remove_child(old);
+            self.base.remove_child_linked(old);
         }
         self.widget = widget;
         if let Some(widget_id) = widget {
-            self.base.add_child(widget_id);
+            self.base.add_child_linked(widget_id);
         }
         self.base.request_redraw();
     }

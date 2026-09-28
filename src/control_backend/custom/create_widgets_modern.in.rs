@@ -957,6 +957,18 @@ macro_rules! impl_modern_widgets {
         }
 
         #[cfg(not(alloc_frugal))]
+        fn create_segmented_control(
+            &self,
+            parent: ObjectId,
+            x: i32,
+            y: i32,
+            width: u32,
+            height: u32,
+        ) -> ObjectId {
+            self.mount_widget_of_kind(WidgetKind::SegmentedControl, parent, "", x, y, width, height)
+        }
+
+        #[cfg(not(alloc_frugal))]
         fn create_shortcut_editor(
             &self,
             parent: ObjectId,

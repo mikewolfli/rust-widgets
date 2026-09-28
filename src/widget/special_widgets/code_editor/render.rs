@@ -14,6 +14,7 @@ use super::types::{
 };
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::render::RenderContext;
+use crate::widget::text_utils::floor_char_boundary;
 use crate::widget::{Draw, Widget};
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -1231,17 +1232,8 @@ fn row_height_of(line_advance: f32) -> i32 {
 /// Converts a line-relative byte offset into a character index.
 fn byte_to_char_index(editor: &CodeEditor, line: usize, byte: usize) -> usize {
     let text = editor.line_text(line).unwrap_or_default();
-    let byte = floor_boundary(&text, byte.min(text.len()));
+    let byte = floor_char_boundary(&text, byte.min(text.len()));
     text[..byte].chars().count()
-}
-
-/// Returns the largest `char` boundary at or below `byte`.
-fn floor_boundary(text: &str, byte: usize) -> usize {
-    let mut offset = byte.min(text.len());
-    while offset > 0 && !text.is_char_boundary(offset) {
-        offset -= 1;
-    }
-    offset
 }
 impl CodeEditor {
     pub(crate) fn line_height(&self) -> f32 {

@@ -130,20 +130,22 @@ fn blend_mode_to_css(mode: BlendMode) -> &'static str {
     }
 }
 
-/// Samples a conic ramp at fraction `t` (in `0.0..=1.0`), for a sweep beginning at `start_angle`.
+/// Samples a conic ramp at the screen angle `t` (in `0.0..=1.0`, measured from straight-up).
 ///
-/// The angle convention matches the software backend's per-pixel loop exactly: `t` is measured from
-/// straight-up (screen) because the rasteriser computes `atan2(dy, dx) + PI`, so a wedge drawn here
-/// samples the colour the pixels would carry at the same angle.
+/// # The convention, and why `start_angle` is applied *here*
+///
+/// The software backend samples pixel by pixel as
+/// `pos = ((atan2(dy, dx) + PI) + start_angle) / TAU` — i.e. the caller's `start_angle` rotates the
+/// **ramp index**, not the wedge's position. This helper must therefore add `start_angle` to `t`
+/// itself. It previously ignored the parameter (`let _ = start_angle;`) while its one caller rotated
+/// the *geometry* by the same amount, which is a different rotation: the wedge landed in a new place
+/// but kept the colour it would have had where it used to sit, so an SVG snapshot disagreed with the
+/// rasteriser for the same command.
 fn conic_sample(stops: &[(f32, Color)], t: f32, start_angle: f32) -> Color {
-    // The caller passes a position already in `0.0..=1.0` measured from the sweep's start, so the
-    // `start_angle` only rotates *which* stop a screen angle lands on — the fan's geometry does that
-    // rotation, and this only needs the ramp. Kept as a parameter so a caller that samples by screen
-    // angle can pass it; today both callers pre-rotate.
-    let _ = start_angle;
     if stops.is_empty() {
         return Color::TRANSPARENT;
     }
+    let t = (t + start_angle / core::f32::consts::TAU).rem_euclid(1.0);
     if t <= stops[0].0 {
         return stops[0].1;
     }
@@ -197,6 +199,16 @@ fn radius_to_far_corner(centre: Point, width: u32, height: u32) -> f32 {
 /// ascending order. Shared by [`SvgPaintBackend`]'s two conic entry points (the standalone
 /// `DrawConicGradient` command and a [`GradientType::Conic`] `DrawGradient`) so one sweep is drawn
 /// one way.
+/// Draws a conic (sweep) gradient as a fan of wedges.
+///
+/// # The angle unit is **radians**, matching the command
+///
+/// `angle_origin` is the sweep's start angle in radians — the unit
+/// [`crate::render::RenderCommand::DrawConicGradient`] documents and the unit the software backend's
+/// per-pixel `atan2` loop adds it in. This function used to call `to_degrees()` on it, i.e. treat a
+/// radian value as degrees, while the *other* caller passed a degree value (from
+/// `Gradient::angle`). One parameter, two units: an SVG snapshot and the software surface therefore
+/// disagreed about where the sweep started. Each caller now converts at the boundary.
 fn draw_conic_fan(
     backend: &mut SvgPaintBackend,
     centre: Point,
@@ -210,11 +222,15 @@ fn draw_conic_fan(
     for i in 0..WEDGES {
         let t0 = i as f32 / WEDGES as f32;
         let t1 = (i + 1) as f32 / WEDGES as f32;
+        // Sample at the wedge's own screen angle; `conic_sample` applies `angle_origin` to the ramp
+        // index, which is what the rasteriser does.
         let colour = conic_sample(stops, (t0 + t1) * 0.5, angle_origin);
         // `t` grows from straight-up; SVG's arc angle grows clockwise from +x. Undo the `+180°`
-        // origin shift so the drawn wedge sits where the sampled angle says it does.
-        let a0 = (t0 * 360.0 - 180.0 - angle_origin.to_degrees()).rem_euclid(360.0);
-        let a1 = (t1 * 360.0 - 180.0 - angle_origin.to_degrees()).rem_euclid(360.0);
+        // origin shift so the drawn wedge sits where the sampled angle says it does. The ramp's own
+        // rotation is already carried by the sampled colour, so no `angle_origin` term belongs in
+        // the geometry.
+        let a0 = (t0 * 360.0 - 180.0).rem_euclid(360.0);
+        let a1 = (t1 * 360.0 - 180.0).rem_euclid(360.0);
         let (s0, c0) = (a0.to_radians().sin(), a0.to_radians().cos());
         let (s1, c1) = (a1.to_radians().sin(), a1.to_radians().cos());
         let x0 = cx + radius * c0;
@@ -1036,7 +1052,17 @@ impl PaintBackend for SvgPaintBackend {
                     ));
                     self.push_element(format!(r##"<g clip-path="url(#{clip_id})">"##));
                     let radius = radius_to_far_corner(gradient.center, rect.width, rect.height);
-                    draw_conic_fan(self, gradient.center, radius, 0.0, &pairs);
+                    // `Gradient::angle` is in **degrees**; `draw_conic_fan` takes radians (the unit
+                    // the `DrawConicGradient` command uses). This call hard-coded `0.0` before, so an
+                    // SVG snapshot dropped the caller's start angle entirely while the software
+                    // backend applied it — the two drew different pictures for one command.
+                    draw_conic_fan(
+                        self,
+                        gradient.center,
+                        radius,
+                        gradient.angle.to_radians(),
+                        &pairs,
+                    );
                     self.push_element("</g>".to_string());
                     return;
                 }
@@ -1092,13 +1118,33 @@ impl PaintBackend for SvgPaintBackend {
 
             // ── Arc ─────────────────────────────────────────────────────
             RenderCommand::DrawArc { center, radius, start_angle, end_angle, color, filled } => {
-                // Convert arc to SVG path element.
-                let large_arc =
-                    if (end_angle - start_angle).abs() > core::f32::consts::PI { 1 } else { 0 };
-                let start_x = center.x + (*radius as f32 * start_angle.cos()) as i32;
-                let start_y = center.y + (*radius as f32 * start_angle.sin()) as i32;
-                let end_x = center.x + (*radius as f32 * end_angle.cos()) as i32;
-                let end_y = center.y + (*radius as f32 * end_angle.sin()) as i32;
+                // The sweep is the **short** way round when `end <= start`: the command's own
+                // contract says a `start` of 350° and an `end` of 10° sweeps 20°, not 340°.
+                //
+                // `large-arc-flag` used to be computed from `|end - start|` on the raw angles, so a
+                // wraparound pair such as (350°, 10°) measured ~5.93 rad > π and set the flag to 1 —
+                // which selects the **≥180°** arc. SVG then drew 340° where the software backend
+                // (`pipeline::primitives::draw_arc`, which has an explicit wraparound branch) drew
+                // 20°. The sweep is now normalised first, exactly as the rasteriser does, so the flag
+                // describes the arc that is actually drawn.
+                const TWO_PI: f32 = core::f32::consts::TAU;
+                let norm = |angle: f32| {
+                    let mut a = angle % TWO_PI;
+                    if a < 0.0 {
+                        a += TWO_PI;
+                    }
+                    a
+                };
+                let start = norm(*start_angle);
+                let end = norm(*end_angle);
+                let sweep = if end >= start { end - start } else { (end + TWO_PI) - start };
+                let large_arc = if sweep > core::f32::consts::PI { 1 } else { 0 };
+                // Rounded, not truncated, so the endpoints match the rasteriser's `.round()` and the
+                // two backends cannot disagree by a pixel for the same command.
+                let start_x = center.x + (*radius as f32 * start.cos()).round() as i32;
+                let start_y = center.y + (*radius as f32 * start.sin()).round() as i32;
+                let end_x = center.x + (*radius as f32 * end.cos()).round() as i32;
+                let end_y = center.y + (*radius as f32 * end.sin()).round() as i32;
                 let fill = if *filled { color_to_rgba(color) } else { "none".to_string() };
                 let stroke = if *filled { "none".to_string() } else { color_to_rgba(color) };
                 if *filled {
@@ -1749,6 +1795,66 @@ mod tests {
             !document.contains("h1v1h-1z") && !document.contains("h1v2h-1z"),
             "a covered glyph whose outline clips away must not fall back to bitmap ink; got: {document}"
         );
+    }
+
+    /// A wraparound arc must be the **short** sweep, as the command's own contract states.
+    ///
+    /// `DrawArc`'s docs say a `start` of 350° and an `end` of 10° sweeps 20°, not 340°. The software
+    /// backend has an explicit wraparound branch for that; the SVG backend computed
+    /// `large-arc-flag` from the raw `|end - start|`, so the pair measured ~5.93 rad > π and set the
+    /// flag to 1 — selecting the **≥180°** arc. One `RenderCommand` therefore drew 340° in a snapshot
+    /// and 20° on the rasteriser.
+    #[test]
+    fn a_wraparound_arc_is_the_short_sweep() {
+        fn arc_path(start_deg: f32, end_deg: f32) -> String {
+            let mut svg = SvgPaintBackend::new(Size::new(100, 100));
+            svg.begin_frame(Color::TRANSPARENT);
+            svg.execute_command(&RenderCommand::DrawArc {
+                center: Point::new(50, 50),
+                radius: 30,
+                start_angle: start_deg.to_radians(),
+                end_angle: end_deg.to_radians(),
+                color: Color::BLACK,
+                filled: false,
+            });
+            svg.end_frame();
+            svg.finish().lines().find(|line| line.contains("<path")).unwrap_or_default().to_string()
+        }
+
+        // 350° -> 10° is a 20° sweep: under half a turn, so `large-arc-flag` must be 0.
+        let wrap = arc_path(350.0, 10.0);
+        assert!(
+            wrap.contains("A 30 30 0 0 1"),
+            "a 20-degree wraparound arc must not set large-arc-flag; got: {wrap}"
+        );
+        // The mirrored case is the same fact from the other side: it must still be the long way
+        // round when the sweep really is more than half a turn.
+        let long = arc_path(10.0, 350.0);
+        assert!(
+            long.contains("A 30 30 0 1 1"),
+            "a 340-degree sweep must set large-arc-flag; got: {long}"
+        );
+    }
+
+    /// The conic ramp's start angle is applied to the **sampled index**, not the wedge geometry.
+    ///
+    /// That is what the software backend does (`pos = ((atan2 + PI) + start) / TAU`), and matching it
+    /// is what makes a snapshot agree with the rasteriser. Rotating the geometry instead — as the fan
+    /// once did — moves each wedge but leaves it carrying the colour of the place it came from.
+    #[test]
+    fn a_conic_start_angle_rotates_the_ramp_not_the_geometry() {
+        let stops = [
+            (0.0, Color::rgb(255, 0, 0)),
+            (0.5, Color::rgb(0, 255, 0)),
+            (1.0, Color::rgb(0, 0, 255)),
+        ];
+        // Sampling straight-up with no offset and with a half-turn offset must differ; if the
+        // parameter were ignored (as it once was) they would be identical.
+        let plain = conic_sample(&stops, 0.25, 0.0);
+        let turned = conic_sample(&stops, 0.25, core::f32::consts::PI);
+        assert_ne!(plain, turned, "the start angle must reach the sampled ramp index");
+        // A full turn is the identity, which pins the units (radians) as well.
+        assert_eq!(plain, conic_sample(&stops, 0.25, core::f32::consts::TAU));
     }
 
     #[test]

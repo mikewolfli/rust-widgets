@@ -84,10 +84,19 @@ macro_rules! impl_properties_base {
             // contradiction immediately. Callers change the state through `enabled` and
             // `checked`, which are the two properties it is computed from.
             //
-            // The tokens are `normal`/`checked`/`disabled` because that is what `get` returns;
-            // this row previously published the *checkbox's* `off`/`indeterminate`/`on`, a
-            // vocabulary this control has never used.
-            PropertySchema::enumerated("state", true, false, &["normal", "checked", "disabled"]),
+            // The tokens are `normal`/`hover`/`pressed`/`checked`/`disabled` because that is what
+            // `get` returns; this row previously published `normal`/`checked`/`disabled` while the
+            // reader could also produce `hover` and `pressed` — the two momentary states a pointer
+            // drives, which a `state()` read reaches as soon as the control is hovered or held.
+            //
+            // `state` stays read-only: it is derived from `enabled`, `checked` and the base's
+            // hover/press flags, none of which is a `state` write.
+            PropertySchema::enumerated(
+                "state",
+                true,
+                false,
+                &["normal", "hover", "pressed", "checked", "disabled"],
+            ),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

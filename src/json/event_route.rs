@@ -34,7 +34,6 @@
 //! `on_*` key the loader reads must carry a trigger marker, and every `events:` name must be a
 //! name the capability publishes.
 
-use crate::compat::String;
 use crate::json::EventHandlerContext;
 use crate::WidgetTriggerEvent;
 
@@ -46,7 +45,9 @@ use crate::WidgetTriggerEvent;
 /// table (`clicked`, `value_changed` — rule #101's published route), and two are **trigger
 /// markers** that the loader's marker callback recognises (`Closed`, `SelectionChanged`), which
 /// are not published names at all. Keeping the distinction in the data rather than in a `match`
-/// is what lets the gate in `tools/check_json_event_route.py` check it.
+/// is what lets the gate in `tools/check_json_event_route.py` check it — and it is what lets
+/// [`JsonEventBinding::uses_value_callback`] answer "which of the two callback tables does this
+/// reach?" without asking a live control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JsonEventBinding {
     /// A name the capability table publishes. Wired to the control's own signal, so a control
@@ -54,10 +55,13 @@ pub enum JsonEventBinding {
     Published {
         /// The published event name, spelled exactly as `connect_event` accepts it.
         name: &'static str,
-        /// The trigger marker reported to the handler. `None` for a payload-free published name,
-        /// because the handler already knows which name it was bound to; a marker would be a
-        /// second spelling of the same fact.
-        marker: Option<JsonTriggerMarker>,
+        /// Whether the event's declared payload is non-empty.
+        ///
+        /// Read from the capability's [`EventSchema`](crate::widget::capability::EventSchema) at
+        /// declaration time rather than assumed. A payload-free name travels the click callback and
+        /// a payload-carrying one the value callback; binding a name to the wrong one is what made
+        /// `"events": {"value_changed": "h"}` fire on a *press*.
+        has_payload: bool,
     },
     /// A compatibility key whose meaning is a trigger *intent*, not a published name.
     Marker {
@@ -66,6 +70,45 @@ pub enum JsonEventBinding {
         /// The marker the handler receives.
         marker: JsonTriggerMarker,
     },
+}
+
+impl JsonEventBinding {
+    /// Whether this binding must reach the **value** callback table rather than the click table.
+    ///
+    /// # The rule, in one place
+    ///
+    /// A published name's answer comes from its payload: a value travels only on `on_value_changed`,
+    /// and a payload-free event only on `on_click`. A marker key carries its own answer, because a
+    /// marker is a trigger *intent* — `on_close` is a dismissal, not a value, and `on_blur` is a
+    /// focus change, which the pointer path cannot report.
+    ///
+    /// This is the single place the choice is made, so the wiring and any test that asserts the
+    /// wiring cannot disagree about it.
+    pub fn uses_value_callback(self) -> bool {
+        match self {
+            Self::Published { has_payload, .. } => has_payload,
+            Self::Marker { marker, .. } => marker.uses_value_callback(),
+        }
+    }
+
+    /// The marker the handler is told about.
+    ///
+    /// For a published name the marker is derived from the payload rather than stored: there is
+    /// exactly one marker a payload-free name can mean ([`JsonTriggerMarker::Clicked`]) and one a
+    /// payload-carrying name can mean ([`JsonTriggerMarker::ValueChanged`]), so storing a third
+    /// copy of that fact would be a second thing to keep in step.
+    pub fn marker(self) -> JsonTriggerMarker {
+        match self {
+            Self::Published { has_payload, .. } => {
+                if has_payload {
+                    JsonTriggerMarker::ValueChanged
+                } else {
+                    JsonTriggerMarker::Clicked
+                }
+            }
+            Self::Marker { marker, .. } => marker,
+        }
+    }
 }
 
 /// The trigger a JSON handler is told about.
@@ -92,6 +135,30 @@ pub enum JsonTriggerMarker {
 }
 
 impl JsonTriggerMarker {
+    /// Whether this marker's handler must be reached through the **value** callback table.
+    ///
+    /// # Why some markers share a kind
+    ///
+    /// `DoubleClicked`, `FocusGained` and `FocusLost` all report `Clicked` or `ValueChanged`
+    /// because the routing callback they arrive through cannot carry a finer distinction: the
+    /// pointer path only tells the loader "a press arrived" and the value path only "a value
+    /// arrived". Stating that here — rather than at each call site — is what keeps two keys with
+    /// the same limitation from appearing to behave differently.
+    ///
+    /// That same limitation is what decides the callback: a marker the pointer path produces
+    /// (`Clicked`, `DoubleClicked`, `Closed`) travels on `on_click`, and one the value path
+    /// produces (`ValueChanged`, `SelectionChanged`, both focus markers) on `on_value_changed`.
+    /// Deriving it from [`Self::trigger_kind`] keeps the two answers from disagreeing, which is
+    /// how `on_double_click` came to be wired to a callback that could never report a double
+    /// click.
+    pub fn uses_value_callback(self) -> bool {
+        matches!(
+            self.trigger_kind(),
+            crate::platform::WidgetTriggerKind::ValueChanged
+                | crate::platform::WidgetTriggerKind::SelectionChanged
+        )
+    }
+
     /// The `WidgetTriggerKind` this marker reports as.
     ///
     /// # Why some markers share a kind
@@ -152,16 +219,52 @@ pub fn marker_for_key(key: &str) -> Option<JsonTriggerMarker> {
     MARKER_KEYS.iter().find(|(candidate, _)| *candidate == key).map(|(_, marker)| *marker)
 }
 
-/// A handler named in a layout, resolved against the node it was declared on.
+/// The binding a published event name declares, resolved against `widget_type`'s capability.
 ///
-/// Owned rather than borrowed: the loader hands this to a closure that outlives the JSON
-/// document, so a `&str` into the parsed tree would not compile.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeclaredHandler {
-    /// The global handler name to invoke.
-    pub handler: String,
-    /// The trigger the handler is told about.
-    pub marker: JsonTriggerMarker,
+/// # Why the name is copied into a `&'static str`
+///
+/// The capability table's event names **are** `&'static str` (the table is a `static`, produced by
+/// `events_of!` from a generated schema), so the name already outlives the JSON document and can be
+/// stored by reference. A name the control does not publish cannot reach here: the caller checks
+/// `control_publishes` first and reports the miss.
+///
+/// # Why the payload question is asked here
+///
+/// Which callback a published name reaches is decided by whether it carries a value, and the only
+/// authority on that is the control's own [`EventSchema`](crate::widget::capability::EventSchema).
+/// Asking here — once, at bind time — means the wiring never has to guess, and the answer travels
+/// with the binding so a test can assert it without a live control.
+pub fn json_event_binding(widget_type: &str, name: &str) -> JsonEventBinding {
+    let factory = crate::widget::capability::WidgetFactory::new_with_defaults();
+    let normalized = crate::widget::capability::normalize_key(name);
+    let has_payload = factory
+        .capability(widget_type)
+        .and_then(|capability| {
+            capability
+                .events
+                .iter()
+                .find(|schema| crate::widget::capability::normalize_key(schema.name) == normalized)
+        })
+        .is_some_and(|schema| schema.payload.is_some());
+    JsonEventBinding::Published {
+        // The event's own spelling from the table, which is what `connect_event` accepts — a
+        // document that wrote a differently-cased name still binds to the published one.
+        name: published_event_name(widget_type, name).unwrap_or("clicked"),
+        has_payload,
+    }
+}
+
+/// The published spelling of `name` on `widget_type`, or `None` when it is not published.
+pub fn published_event_name(widget_type: &str, name: &str) -> Option<&'static str> {
+    let factory = crate::widget::capability::WidgetFactory::new_with_defaults();
+    let normalized = crate::widget::capability::normalize_key(name);
+    factory.capability(widget_type).and_then(|capability| {
+        capability
+            .events
+            .iter()
+            .find(|schema| crate::widget::capability::normalize_key(schema.name) == normalized)
+            .map(|schema| schema.name)
+    })
 }
 
 /// Builds the [`EventHandlerContext`] for a declared handler.

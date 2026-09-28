@@ -217,7 +217,7 @@ impl MdiArea {
     pub fn add_sub_window(&mut self, widget: ObjectId, geometry: Rect) -> usize {
         let mut subwindow = MdiSubWindow::new(widget, geometry);
         subwindow.z_order = self.subwindows.len() as i32;
-        self.base.add_child(widget);
+        self.base.add_child_linked(widget);
         self.subwindows.push(subwindow);
         let index = self.subwindows.len().saturating_sub(1);
         if self.active_subwindow.is_none() {
@@ -229,7 +229,7 @@ impl MdiArea {
     /// Removes a sub-window.
     pub fn remove_sub_window(&mut self, widget: ObjectId) {
         if let Some(index) = self.subwindows.iter().position(|sw| sw.widget == widget) {
-            self.base.remove_child(widget);
+            self.base.remove_child_linked(widget);
             self.subwindows.remove(index);
             if self.active_subwindow == Some(index) {
                 self.active_subwindow = None;

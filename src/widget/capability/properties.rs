@@ -959,7 +959,10 @@ pub(crate) fn split_button_capability() -> WidgetCapability {
 #[cfg(not(alloc_frugal))]
 pub(crate) fn segmented_control_capability() -> WidgetCapability {
     WidgetCapability {
-        kind: WidgetKind::ToggleButton,
+        // Its own kind. This row used to declare `WidgetKind::ToggleButton`, which left
+        // `capability_by_kind(ToggleButton)` ambiguous between two controls and made the
+        // accessibility role of a segmented bar answer "button".
+        kind: WidgetKind::SegmentedControl,
         canonical_name: "segmented_control",
         aliases: &[],
         properties: SEGMENTED_CONTROL_PROPERTIES,

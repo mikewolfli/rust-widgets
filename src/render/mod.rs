@@ -85,6 +85,11 @@ pub use core::{BlendMode, RenderCommand, ShapedText, TextCluster, TextMetrics};
 pub use svg::SvgPaintBackend;
 
 // Backend
+//
+// `fitted_origin` is the one placement rule a value and its caret must share, so it is re-exported
+// at the crate-internal level rather than restated by `line_edit` (restating it is how the two
+// drifted apart). It is not part of the public surface.
+pub(crate) use backend::fitted_origin;
 #[cfg(feature = "quality-management")]
 pub use backend::{average_frame_time, current_fps, current_quality_level, set_quality_level};
 pub use backend::{
@@ -98,7 +103,7 @@ pub use backend::{
 pub(crate) use backend::software_render_config_test_lock;
 
 // Pixel ops
-pub use pipeline::{blend_pixel, fill_pixels};
+pub use pipeline::{blend_pixel, blend_pixel_with_mode, fill_pixels};
 
 // Text shaping
 pub use text_shaper::{ShapedGlyphRun, SimpleTextShaper, TextShaper};

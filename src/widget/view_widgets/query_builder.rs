@@ -824,11 +824,15 @@ impl QueryBuilder {
         }
         x += 16;
 
-        // Field name.
+        // Field name. The label is host-supplied, so it is fitted to the column it owns rather
+        // than placed and left to run: `x` is the column's leading edge and the column is 84 px
+        // wide, so a long field name must elide at 80 rather than spill into the operator. The
+        // box top is the old origin (`row_rect.y + 19`), which keeps the label at the same
+        // height while the fit supplies the horizontal bound.
         let field_label =
             self.fields.get(row.field).map_or("(field)".to_string(), |field| field.label.clone());
-        context.draw_text(
-            Point::new(x, row_rect.y + 19),
+        context.draw_text_fitted(
+            Rect::new(x, row_rect.y + 19, 80, 11),
             &field_label,
             &Font::simple("Sans", 11.0),
             chrome.text(),
@@ -855,8 +859,17 @@ impl QueryBuilder {
         } else {
             (row.operand.clone(), chrome.text())
         };
-        context.draw_text(
-            Point::new(operand_box.x + 5, operand_box.y + 13),
+        // The operand is host-supplied too, and it is the value most likely to be long, so it is
+        // fitted to its own input box: the placement origin was `operand_box.y + 13`, so the box
+        // keeps that top edge and a value wider than the box elides at its trailing edge instead
+        // of painting over the row's remove button.
+        context.draw_text_fitted(
+            Rect::new(
+                operand_box.x + 5,
+                operand_box.y + 13,
+                operand_box.width.saturating_sub(8),
+                11,
+            ),
             &text,
             &Font::simple("Sans", 11.0),
             color,

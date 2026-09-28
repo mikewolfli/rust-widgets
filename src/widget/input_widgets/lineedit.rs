@@ -279,25 +279,57 @@ impl LineEdit {
         self.placeholder_text = text;
         self.base.request_redraw();
     }
-    /// Returns maximum text length.
+    /// Returns maximum text length **in characters**.
     pub fn max_length(&self) -> Option<usize> {
         self.max_length
     }
-    /// Sets maximum text length.
+    /// Sets maximum text length, **in characters**, truncating the value if needed.
+    ///
+    /// # `max_length` counts characters, so this cannot truncate by byte
+    ///
+    /// The limit is a character budget: it is what the user typing sees and what
+    /// [`Self::counter_text`] reports. An earlier revision truncated with
+    /// `self.text.truncate(max)`, which is a **byte** index — so `"héllo"` (5 chars, 6 bytes)
+    /// under a limit of 3 was cut to `"hé"` (2 chars) rather than `"hél"`, and a limit that
+    /// happened to fall inside a multi-byte character would have split it. The truncation
+    /// therefore goes through [`byte_index_of_char`], the same conversion `insert_text` and
+    /// `set_text` use, so all three agree about what the limit means.
     pub fn set_max_length(&mut self, max_length: Option<usize>) {
         self.max_length = max_length;
         // Truncate if needed
         if let Some(max) = max_length {
-            if self.text.len() > max {
-                self.text.truncate(max);
-                self.cursor_position = self.cursor_position.min(max);
-                if let Some(start) = &mut self.selection_start {
-                    *start = (*start).min(max);
-                }
+            if self.text.chars().count() > max {
+                let byte = byte_index_of_char(&self.text, max);
+                self.text.truncate(byte);
+                self.clamp_caret();
                 self.text_changed.emit(self.text.clone());
             }
         }
         self.base.request_redraw();
+    }
+
+    /// The current value's length **in characters**.
+    ///
+    /// The frame `max_length` and the counter are expressed in, so a limit test never has to
+    /// compare a character budget against a byte length.
+    fn char_count(&self) -> usize {
+        self.text.chars().count()
+    }
+
+    /// Snaps the caret and the selection anchor to a real character boundary inside the value.
+    ///
+    /// The caret is a **byte** offset (that is what a slice needs), while every move the user makes
+    /// — Left, Right, Backspace, Delete — is a **character** step. Rounding the stored offset down to
+    /// a boundary after any of those keeps `&text[..cursor]` total without making the caret's own
+    /// arithmetic guess where a character begins, which is what a bare `+= 1` did: on `"é"` a single
+    /// Right put the caret *inside* the character, and the next insert then snapped to the end
+    /// instead of at the position the user had moved to.
+    fn clamp_caret(&mut self) {
+        let len = self.text.len();
+        self.cursor_position = floor_char_boundary(&self.text, self.cursor_position.min(len));
+        if let Some(start) = self.selection_start {
+            self.selection_start = Some(floor_char_boundary(&self.text, start.min(len)));
+        }
     }
     /// Returns echo mode.
     pub fn echo_mode(&self) -> EchoMode {
@@ -312,9 +344,13 @@ impl LineEdit {
     pub fn cursor_position(&self) -> usize {
         self.cursor_position
     }
-    /// Sets cursor position.
+    /// Sets cursor position (a byte offset into the value), snapped to a character boundary.
+    ///
+    /// The offset is a byte index because that is what a slice needs, but a caller passing an
+    /// arbitrary number must not be able to leave the caret inside a character — otherwise the next
+    /// insert would silently round to the end of the value instead of landing where it was put.
     pub fn set_cursor_position(&mut self, position: usize) {
-        self.cursor_position = position.min(self.text.len());
+        self.cursor_position = floor_char_boundary(&self.text, position.min(self.text.len()));
         self.selection_start = None;
         self.base.request_redraw();
     }
@@ -323,10 +359,14 @@ impl LineEdit {
         self.selection_start
     }
     /// Returns selected text.
+    ///
+    /// The two offsets are snapped to character boundaries before slicing, so a caret left inside a
+    /// character (by a caller's `set`, or by an older `+= 1` step) reads the characters it actually
+    /// covers instead of panicking.
     pub fn selected_text(&self) -> String {
         if let Some(start) = self.selection_start {
-            let start = start.min(self.text.len());
-            let end = self.cursor_position.min(self.text.len());
+            let start = floor_char_boundary(&self.text, start.min(self.text.len()));
+            let end = floor_char_boundary(&self.text, self.cursor_position.min(self.text.len()));
             let (start, end) = if start < end { (start, end) } else { (end, start) };
             self.text[start..end].to_string()
         } else {
@@ -343,22 +383,29 @@ impl LineEdit {
         self.selection_start = None;
     }
     /// Inserts text at cursor position.
+    ///
+    /// # The limit is in characters, so the room left is too
+    ///
+    /// `max_length` is a **character** budget (it is what the user sees and what the counter
+    /// reports), but this compared it against `self.text.len()`, a byte length. On `"héllo"` — five
+    /// characters, six bytes — a limit of six therefore computed `6 - 6 == 0` bytes of room and
+    /// refused a perfectly legal insert. Counting both sides in characters makes the field accept
+    /// exactly the value its own counter says it is allowed to hold.
     pub fn insert_text(&mut self, text: &str) {
         if text.is_empty() {
             return;
         }
         // Check max length and truncate if needed
-        // SAFETY: `available` is bounded by `text.len()`, and we check
-        // `text.len() > available` before slicing, so no panic occurs.
-        // However, to avoid splitting a multi-byte UTF-8 character, we
-        // use `floor_char_boundary` to ensure the slice is on a char boundary.
+        // The slice is taken through `byte_index_of_char` because the budget is in characters and
+        // the slice is in bytes, so cutting at the budget's byte offset could split a character.
         let effective_text = if let Some(max) = self.max_length {
-            let available = max.saturating_sub(self.text.len());
+            let available = max.saturating_sub(self.char_count());
             if available == 0 {
                 return;
             }
-            if text.len() > available {
-                let boundary = floor_char_boundary(text, available);
+            let incoming = text.chars().count();
+            if incoming > available {
+                let boundary = byte_index_of_char(text, available);
                 &text[..boundary]
             } else {
                 text
@@ -369,17 +416,21 @@ impl LineEdit {
         // Handle selection
         let mut new_text = self.text.clone();
         if let Some(start) = self.selection_start {
-            let start = start.min(new_text.len());
-            let end = self.cursor_position.min(new_text.len());
+            let start = floor_char_boundary(&new_text, start.min(new_text.len()));
+            let end = floor_char_boundary(&new_text, self.cursor_position.min(new_text.len()));
             let (start, end) = if start < end { (start, end) } else { (end, start) };
             new_text.replace_range(start..end, effective_text);
             self.cursor_position = start + effective_text.len();
         } else {
-            new_text.insert_str(self.cursor_position, effective_text);
-            self.cursor_position += effective_text.len();
+            let at = floor_char_boundary(&new_text, self.cursor_position.min(new_text.len()));
+            new_text.insert_str(at, effective_text);
+            self.cursor_position = at + effective_text.len();
         }
         self.selection_start = None;
         self.set_text(new_text);
+        // `set_text` may have clamped the value to `max_length`, which can move the caret it
+        // recomputed; snap it back onto a boundary inside whatever the field now holds.
+        self.clamp_caret();
     }
     /// Starts or updates an input-method composition without changing the field's value.
     ///
@@ -448,35 +499,58 @@ impl LineEdit {
         had
     }
 
-    /// Deletes selected text or character before cursor.
+    /// Deletes selected text or the character before the caret.
+    ///
+    /// # The deletion is one *character*, not one byte
+    ///
+    /// `new_text.remove(self.cursor_position - 1)` removes the byte before the caret, which on a
+    /// multi-byte character deletes a fragment of it — and panics outright when the caret sits
+    /// immediately after a multi-byte character, because `cursor_position - 1` is then inside that
+    /// character and `String::remove` requires a boundary. Stepping back to the previous character's
+    /// start deletes the whole thing, which is what a user means by “backspace”.
     pub fn backspace(&mut self) {
         if let Some(start) = self.selection_start {
             // Delete selection
-            let start = start.min(self.text.len());
-            let end = self.cursor_position.min(self.text.len());
+            let start = floor_char_boundary(&self.text, start.min(self.text.len()));
+            let end = floor_char_boundary(&self.text, self.cursor_position.min(self.text.len()));
             let (start, end) = if start < end { (start, end) } else { (end, start) };
+            if start == end {
+                // An empty selection is not a deletion; fall through to the character case.
+                self.selection_start = None;
+                self.backspace();
+                return;
+            }
             let mut new_text = self.text.clone();
             new_text.replace_range(start..end, "");
             self.cursor_position = start;
             self.selection_start = None;
             self.set_text(new_text);
         } else if self.cursor_position > 0 {
-            // Delete character before cursor
+            // Delete the character before the caret, from its own start to the caret.
+            let caret = floor_char_boundary(&self.text, self.cursor_position.min(self.text.len()));
+            let previous =
+                self.text[..caret].char_indices().next_back().map(|(index, _)| index).unwrap_or(0);
             let mut new_text = self.text.clone();
-            new_text.remove(self.cursor_position - 1);
-            self.cursor_position -= 1;
+            new_text.replace_range(previous..caret, "");
+            self.cursor_position = previous;
             self.set_text(new_text);
         }
     }
-    /// Deletes selected text or character after cursor.
+    /// Deletes selected text or the character after the caret.
     pub fn delete(&mut self) {
         if let Some(_start) = self.selection_start {
             // Delete selection
             self.backspace(); // Same logic
         } else if self.cursor_position < self.text.len() {
-            // Delete character after cursor
+            // Delete the *character* after the caret, not the single byte it starts on.
+            let caret = floor_char_boundary(&self.text, self.cursor_position.min(self.text.len()));
+            let next = self.text[caret..]
+                .char_indices()
+                .nth(1)
+                .map(|(index, _)| caret + index)
+                .unwrap_or(self.text.len());
             let mut new_text = self.text.clone();
-            new_text.remove(self.cursor_position);
+            new_text.replace_range(caret..next, "");
             self.set_text(new_text);
         }
     }
@@ -486,8 +560,17 @@ impl LineEdit {
     }
 
     /// Sets the read-only state.
+    ///
+    /// Repaints because the state is draw-visible: a read-only field suppresses the caret (see
+    /// [`Draw`]), so toggling it without a redraw left the marker on a field that had just become
+    /// uneditable — or, going the other way, left the user with no caret in a field they could now
+    /// type into.
     pub fn set_read_only(&mut self, ro: bool) {
+        if self.read_only == ro {
+            return;
+        }
         self.read_only = ro;
+        self.base.request_redraw();
     }
 
     /// Clears all text.
@@ -894,7 +977,9 @@ impl EventHandler for LineEdit {
                         self.editing_finished.emit();
                     }
                     37 => {
-                        // Left arrow
+                        // Left arrow — one *character* back, not one byte. A byte step on a
+                        // multi-byte character put the caret inside it, and the next edit then
+                        // snapped to the end of the value rather than to where the user had moved.
                         if self.cursor_position > 0 {
                             if modifiers & 1 != 0 {
                                 if self.selection_start.is_none() {
@@ -903,11 +988,19 @@ impl EventHandler for LineEdit {
                             } else {
                                 self.selection_start = None;
                             }
-                            self.cursor_position -= 1;
+                            let caret = floor_char_boundary(
+                                &self.text,
+                                self.cursor_position.min(self.text.len()),
+                            );
+                            self.cursor_position = self.text[..caret]
+                                .char_indices()
+                                .next_back()
+                                .map(|(index, _)| index)
+                                .unwrap_or(0);
                         }
                     }
                     39 => {
-                        // Right arrow
+                        // Right arrow — one character forward (see the Left arm above).
                         if self.cursor_position < self.text.len() {
                             if modifiers & 1 != 0 {
                                 if self.selection_start.is_none() {
@@ -916,7 +1009,15 @@ impl EventHandler for LineEdit {
                             } else {
                                 self.selection_start = None;
                             }
-                            self.cursor_position += 1;
+                            let caret = floor_char_boundary(
+                                &self.text,
+                                self.cursor_position.min(self.text.len()),
+                            );
+                            self.cursor_position = self.text[caret..]
+                                .char_indices()
+                                .nth(1)
+                                .map(|(index, _)| caret + index)
+                                .unwrap_or(self.text.len());
                         }
                     }
                     36 => {
@@ -1040,11 +1141,12 @@ impl Draw for LineEdit {
         // ── The decorated layout ──
         //
         // Every box below comes from **one** derivation, measured against the renderer's own font. The
-        // value's origin, the two slots and the support row cannot disagree, because they are the same
-        // answer read for different purposes. `text_x` used to be `rect.x + padding` regardless of any
-        // slot, so a `$` would have been drawn *over* the value it marks.
+        // value's origin, the caret, the two slots and the support row cannot disagree, because they
+        // are the same answer read for different purposes. The value's origin used to be
+        // `rect.x + padding` regardless of any slot, so a `$` would have been drawn *over* the value
+        // it marks; and the caret measured from that same fixed inset, so it sat at the wrong end of
+        // a centred or right-aligned field.
         let layout = self.decoration_layout(context);
-        let text_x = layout.value.x;
         // Draw background
         let bg = style.background_color.unwrap_or(Color::rgb(255, 255, 255));
         context.face(
@@ -1085,35 +1187,32 @@ impl Draw for LineEdit {
         let font = style.font.as_ref().unwrap_or(&default_font);
         let value_line = context.text_line(rect, font);
         let text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
+        // The box the value is laid out in, and the alignment it uses within that box.
+        //
+        // Resolved **once**, outside the `if` that draws the string, because the caret below needs
+        // the exact same two facts: it rides with the glyphs, so it must be placed from the origin
+        // the glyphs were placed from. Computing them in two places is how the caret and the value
+        // drifted apart in the first place.
+        //
+        // `draw_text_fitted` insets its box by `TEXT_FIT_MARGIN` at each end, which is right for
+        // a label that must not touch its frame but wrong for a field value: left-aligned ink
+        // would then begin `TEXT_FIT_MARGIN` past the field's own padding. Handing it a box
+        // widened by that same inset on both sides puts the left edge back on the padding, so
+        // `Left` is byte-identical to the pre-alignment `draw_text` and the other two alignments
+        // measure from the same true box.
+        let fit = crate::render::TEXT_FIT_MARGIN as i32;
+        let value_box = Rect::new(
+            layout.value.x - fit,
+            value_line.y,
+            layout.value.width + (fit * 2) as u32,
+            value_line.height,
+        );
+        let value_align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
         if !display_text.is_empty() {
             // The field's own line box. A glyph origin is the box's top-left edge, so the
             // previous `rect.y + rect.height / 2` placed that edge on the field's middle line
             // and drew the value half a line low.
-            //
-            // The value (and the placeholder, which shares this run) sits in the value's own box,
-            // not from `text_x`, so a centred or right-aligned value is positioned against the box
-            // it is aligned within rather than against a fixed inset.
-            //
-            // `draw_text_fitted` insets its box by `TEXT_FIT_MARGIN` at each end, which is right for
-            // a label that must not touch its frame but wrong for a field value: left-aligned ink
-            // would then begin `TEXT_FIT_MARGIN` past the field's own padding. Handing it a box
-            // widened by that same inset on both sides puts the left edge back on the padding, so
-            // `Left` is byte-identical to the pre-alignment `draw_text` and the other two alignments
-            // measure from the same true box.
-            let fit = crate::render::TEXT_FIT_MARGIN as i32;
-            let value_box = Rect::new(
-                layout.value.x - fit,
-                value_line.y,
-                layout.value.width + (fit * 2) as u32,
-                value_line.height,
-            );
-            context.draw_text_fitted(
-                value_box,
-                display_text,
-                font,
-                text_color,
-                self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
-            );
+            context.draw_text_fitted(value_box, display_text, font, text_color, value_align);
         }
 
         // ── The in-field slots ──
@@ -1199,9 +1298,25 @@ impl Draw for LineEdit {
             // The slice is taken through `floor_char_boundary` because `cursor_position` indexes
             // bytes and the value may be multi-byte; slicing mid-character would panic, which is
             // why the import for it was already present in this file.
+            //
+            // # Why the origin is the same `fitted_origin` the value was drawn with
+            //
+            // A centred or right-aligned value does **not** start at `text_x`: the fit path lays it
+            // out from `fitted_origin(value_box, advance, alignment)`. Measuring the caret from
+            // `text_x` therefore put the marker at the left edge of a right-aligned field while its
+            // own text sat at the right edge. Rather than duplicate that arithmetic here — the two
+            // would drift exactly as the value's origin and the caret's once did — the whole value's
+            // advance is measured and run through the same origin function, so the caret rides with
+            // the glyphs it belongs to.
             let caret_byte = floor_char_boundary(self.text.as_str(), self.cursor_position);
             let prefix = &self.text[..caret_byte];
-            let caret_x = text_x + context.measure_text(prefix, font).width as i32;
+            // The value's own advance, run through the same `fitted_origin` `draw_text_fitted`
+            // uses, so a centred or right-aligned value keeps its caret on the glyphs instead of at
+            // the field's leading edge.
+            let value_advance = context.measure_text(display_text, font).width as i32;
+            let value_origin = crate::render::fitted_origin(value_box, value_advance, value_align);
+            let prefix_advance = context.measure_text(prefix, font).width as i32;
+            let caret_x = value_origin.x + prefix_advance;
             // The marker is clipped to the **value's** box. A caret beyond the visible text (a value
             // wider than the room it has) belongs at the last pixel a user can see, not outside the
             // control and not under the suffix. Clipping to the whole field instead would let the caret
@@ -1955,6 +2070,119 @@ mod tests {
             at_start < at_three && at_three < at_end,
             "the caret must advance with the cursor position, not jump to the end \
              ({at_start}, {at_three}, {at_end})"
+        );
+    }
+
+    /// `max_length` is a **character** budget, so truncating at it must count characters.
+    ///
+    /// The limit is what the user sees and what `counter_text` reports, but an earlier revision
+    /// truncated with `String::truncate(max)` — a **byte** index. On `"héllo"` (five characters,
+    /// six bytes) a limit of three cut to `"hé"`, dropping a legal character; and a limit that
+    /// landed inside a multi-byte character split it, which `String::truncate` panics on rather
+    /// than permitting.
+    #[test]
+    fn max_length_truncates_whole_characters_not_bytes() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_text("héllo");
+        assert_eq!(le.text().chars().count(), 5);
+        le.set_max_length(Some(3));
+        assert_eq!(le.text(), "hél", "three *characters* are kept, not three bytes");
+        assert!(le.text().is_char_boundary(le.cursor_position()));
+
+        // A limit that falls inside a character must not panic and must not split it.
+        let mut wide = LineEdit::new(Rect::new(0, 0, 200, 24));
+        wide.set_text("éééé");
+        wide.set_max_length(Some(2));
+        assert_eq!(wide.text(), "éé");
+    }
+
+    /// The limit is compared against the value in the *same* frame it is expressed in.
+    ///
+    /// `insert_text` computed its remaining room as `max - self.text.len()`, mixing a character
+    /// budget with a byte length: on `"héllo"` a limit of eight left `8 - 6 == 2` characters of
+    /// room instead of three, and a limit of six — which the counter shows as "5/6", i.e. one
+    /// character free — left **zero**, so the field refused every further keystroke.
+    #[test]
+    fn insert_text_measures_the_remaining_room_in_characters() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_text("héllo");
+        le.set_max_length(Some(6));
+        le.insert_text("z");
+        assert_eq!(le.text(), "hélloz", "the counter said 5/6, so one more character fits");
+        assert_eq!(le.text().chars().count(), 6);
+
+        // A multi-character insert is clipped to the room that remains, by character.
+        let mut clipped = LineEdit::new(Rect::new(0, 0, 200, 24));
+        clipped.set_text("éé");
+        clipped.set_max_length(Some(4));
+        clipped.insert_text("wxyz");
+        assert_eq!(clipped.text(), "ééwx");
+    }
+
+    /// The caret and the edit keys step by **character**, not by byte.
+    ///
+    /// A bare `cursor_position += 1` landed inside a multi-byte character, so `insert_text`'s
+    /// `floor_char_boundary` then rounded forward to the end of the value: on `"éé"` a single
+    /// Right followed by a keystroke appended instead of inserting one character in. The same
+    /// arithmetic made `backspace`/`delete` slice mid-character.
+    #[test]
+    fn caret_and_edit_keys_step_by_character() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_text("éé");
+        le.set_cursor_position(0);
+        le.handle_event(&Event::key_press(39, 0)); // Right
+        assert_eq!(le.cursor_position(), 2, "one character forward is two bytes for 'é'");
+        le.insert_text("x");
+        assert_eq!(le.text(), "éxé", "the insert lands at the caret, not at the end");
+
+        // Backspace removes the whole character before the caret.
+        let mut back = LineEdit::new(Rect::new(0, 0, 200, 24));
+        back.set_text("aé");
+        back.set_cursor_position(back.text().len());
+        back.backspace();
+        assert_eq!(back.text(), "a");
+
+        // Delete removes the whole character after the caret.
+        let mut fwd = LineEdit::new(Rect::new(0, 0, 200, 24));
+        fwd.set_text("éa");
+        fwd.set_cursor_position(0);
+        fwd.delete();
+        assert_eq!(fwd.text(), "a");
+    }
+
+    /// The caret rides with the glyphs of a centred or right-aligned value.
+    ///
+    /// The value is laid out from `fitted_origin(value_box, advance, alignment)`; the caret was
+    /// measured from the field's fixed leading inset instead, so on a right-aligned field the
+    /// marker sat at the left edge while its own text sat at the right edge. The two now read the
+    /// same origin function, which is what keeps them together.
+    #[test]
+    fn the_caret_follows_a_non_left_aligned_value() {
+        let _theme_guard = crate::style::theme_test_guard();
+        fn caret_x(alignment: crate::core::Alignment) -> i32 {
+            let mut field = LineEdit::new(Rect::new(0, 0, 200, 24));
+            field.set_text("Sample".to_string());
+            field.set_alignment(alignment);
+            field.set_focused(true);
+            field.set_cursor_position(0);
+            let svg = crate::widget::svg::render_to_svg(&mut field);
+            svg.lines()
+                .filter(|line| line.contains("<line"))
+                .find_map(|line| {
+                    let x1 = line.split("x1=\"").nth(1)?.split('"').next()?;
+                    let x2 = line.split("x2=\"").nth(1)?.split('"').next()?;
+                    (x1 == x2).then(|| x1.parse::<i32>().ok())?
+                })
+                .expect("a focused, editable field must draw its caret as a vertical line")
+        }
+
+        let left = caret_x(crate::core::Alignment::Left);
+        let centre = caret_x(crate::core::Alignment::Center);
+        let right = caret_x(crate::core::Alignment::Right);
+        assert!(
+            left < centre && centre < right,
+            "a caret at position 0 must follow the value's own alignment \
+             (left={left}, centre={centre}, right={right})"
         );
     }
 

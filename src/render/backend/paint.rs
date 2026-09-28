@@ -7,7 +7,7 @@ use crate::compat::vec;
 use crate::core::{Color, Font, Size};
 use crate::render::pipeline::set_pixel;
 use crate::render::{
-    BlendMode, RenderCommand, ShapedText, SoftwareRenderConfig, SoftwareSurface, TextMetrics,
+    RenderCommand, ShapedText, SoftwareRenderConfig, SoftwareSurface, TextMetrics,
 };
 
 /// Pluggable paint backend strategy used by render scene composition.
@@ -83,16 +83,11 @@ pub trait PaintBackend {
 pub struct SoftwarePaintBackend {
     pub(crate) surface: SoftwareSurface,
     pub(crate) batch_state: BatchState,
-    pub(crate) current_blend_mode: BlendMode,
 }
 impl SoftwarePaintBackend {
     /// Creates a software paint backend with a target size and DPI scale.
     pub fn new(size: Size, dpi_scale: f32) -> Self {
-        Self {
-            surface: SoftwareSurface::new(size, dpi_scale),
-            batch_state: BatchState::new(),
-            current_blend_mode: BlendMode::Normal,
-        }
+        Self { surface: SoftwareSurface::new(size, dpi_scale), batch_state: BatchState::new() }
     }
     /// Returns immutable access to the underlying software surface.
     pub fn surface(&self) -> &SoftwareSurface {
@@ -267,7 +262,9 @@ impl PaintBackend for SoftwarePaintBackend {
                 }
             }
             RenderCommand::SetBlendMode { mode } => {
-                self.current_blend_mode = *mode;
+                // Frame state, like the clip stack: it applies to everything drawn until it changes.
+                // The writes it governs each go through the surface's blend-aware pixel path.
+                self.surface.set_blend_mode(*mode);
             }
             RenderCommand::DrawConicGradient { center, start_angle, stops } => {
                 if stops.is_empty() {

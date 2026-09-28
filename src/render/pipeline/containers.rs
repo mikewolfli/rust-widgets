@@ -10,8 +10,10 @@
 use crate::compat::Vec;
 use crate::core::{Color, Font, Rect, Size};
 use crate::render::default_software_render_config;
-use crate::render::pipeline::pixel_ops::{fill_pixels, pixel_visible, set_pixel};
-use crate::render::{BackBuffer, ShapedText, SoftwareRenderConfig, SoftwareSurface, TextMetrics};
+use crate::render::pipeline::pixel_ops::{fill_pixels, pixel_visible, write_pixel_with_mode};
+use crate::render::{
+    BackBuffer, BlendMode, ShapedText, SoftwareRenderConfig, SoftwareSurface, TextMetrics,
+};
 use crate::style::Gradient;
 use crate::style::GradientType;
 
@@ -23,7 +25,22 @@ impl SoftwareSurface {
             buffer: BackBuffer::new(size, dpi_scale),
             aa_samples_per_axis: config.aa_samples_per_axis,
             clip_stack: Vec::new(),
+            blend_mode: BlendMode::Normal,
         }
+    }
+
+    /// Sets the blend mode every subsequent pixel write composites through.
+    ///
+    /// Driven by [`crate::render::RenderCommand::SetBlendMode`]. The mode is frame state, like the
+    /// clip stack, because it applies to everything drawn until it changes rather than to one
+    /// primitive. `Normal` restores plain source-over compositing.
+    pub fn set_blend_mode(&mut self, mode: BlendMode) {
+        self.blend_mode = mode;
+    }
+
+    /// The mode the next pixel write will composite through.
+    pub fn blend_mode(&self) -> BlendMode {
+        self.blend_mode
     }
     /// Get current software render configuration.
     pub fn render_config(&self) -> SoftwareRenderConfig {
@@ -133,14 +150,25 @@ impl SoftwareSurface {
                     GradientType::Conic => {
                         let dx = x as f32 - gradient.center.x as f32;
                         let dy = y as f32 - gradient.center.y as f32;
+                        // The per-pixel angle is in **radians** (that is what `atan2` returns),
+                        // while `Gradient::angle` is documented in **degrees** — so it is converted
+                        // before being added. Adding it raw rotated the ramp by `angle` *radians*
+                        // (~117° for the common `conic(center, 90.0)`) and made a caller's degree
+                        // value meaningless. The same conversion is applied by the SVG backend's
+                        // `conic_sample`, so the two agree.
                         let angle = dy.atan2(dx) + core::f32::consts::PI;
-                        let angle = (angle + gradient.angle) % (2.0 * core::f32::consts::PI);
-                        angle / (2.0 * core::f32::consts::PI)
+                        let start = gradient.angle.to_radians();
+                        let angle = (angle + start) % core::f32::consts::TAU;
+                        let angle =
+                            if angle < 0.0 { angle + core::f32::consts::TAU } else { angle };
+                        angle / core::f32::consts::TAU
                     }
                 };
                 let color = gradient.interpolate(pos);
                 if pixel_visible(clip, x as i32, y as i32) {
-                    set_pixel(frame, size.width, x, y, color);
+                    // Through the blend-aware write, so a gradient drawn under a `SetBlendMode`
+                    // composites the same way an opaque fill does.
+                    write_pixel_with_mode(self.blend_mode, frame, size.width, x, y, color, 1.0);
                 }
             }
         }

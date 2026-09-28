@@ -317,6 +317,91 @@ pub fn register(widget: Box<dyn Widget>) -> Option<ObjectId> {
     Some(id)
 }
 
+/// Hands ownership of `widget` to the registry under `declared_id`, a **reserved** id.
+///
+/// # Why a caller needs to choose the id
+///
+/// `register` assigns an id from the runtime's own counter. A caller that holds a document's
+/// `"id"` — the JSON layout loader — needs the control to be mounted under *that* id, or every
+/// name lookup resolves to an id the runtime never issued. Reserving the id is what makes a
+/// declarative document's names and the runtime's registry the same id space.
+///
+/// # Why it can fail
+///
+/// The id may already be taken. Returning a *different* id would be worse than failing: the
+/// caller would record the control under a name whose handle addresses somebody else's widget.
+/// `Err(occupied)` therefore names the id that was in the way, and the caller decides — it
+/// must not silently fall back to a fresh id.
+///
+/// A `declared_id` of `0` is refused for the same reason: `0` is the API's "no widget"
+/// sentinel, so mounting a live control there would make it unreachable by design.
+pub fn register_with_id(
+    widget: Box<dyn Widget>,
+    declared_id: ObjectId,
+) -> Result<ObjectId, ObjectId> {
+    if declared_id == 0 {
+        return Err(0);
+    }
+    // A host with no widget runtime cannot hold the control; say so rather than
+    // reporting a success that `with_widget` would then deny.
+    if MOUNTED.try_with(|_| ()).is_err() {
+        return Err(declared_id);
+    }
+
+    // The reservation has to be atomic with respect to the duplicate check: the map is
+    // thread-local, so a single borrow covers both the "is it free?" question and the
+    // "then it is mine" answer. Asking and then inserting would let a nested mount take
+    // the id in between, which is exactly the collision this function exists to prevent.
+    let reserved = MOUNTED.try_with(|map| {
+        let mut map = map.borrow_mut();
+        if map.contains_key(&declared_id) {
+            return Err(declared_id);
+        }
+        map.insert(declared_id, Mounted { widget });
+        Ok(declared_id)
+    });
+    match reserved {
+        Ok(Ok(id)) => {
+            let _ = id;
+        }
+        Ok(Err(occupied)) => return Err(occupied),
+        Err(_) => return Err(declared_id),
+    }
+
+    // The reservation must not be undone by a later `next_widget_id` handing the same id to
+    // another producer, so the allocator is told the id is spent: if the counter is sitting on
+    // exactly this id, it advances past it. Ids below the counter are already spent, and an id
+    // far above it is reserved correctly on its own (the counter will walk up to it and find it
+    // occupied), so advancing past it here would only skip ids for no reason.
+    let _ = NEXT_ID.try_with(|next| {
+        let counter = next.borrow();
+        if *counter == declared_id {
+            drop(counter);
+            *next.borrow_mut() = declared_id.wrapping_add(1);
+        }
+    });
+
+    // Every step `register` does after the insert, repeated here rather than extracted, so
+    // the two entry points cannot drift: a caller reading `register` sees the same list.
+    // See `register` for why each one exists.
+    if let Some(own_id) = with_widget(declared_id, |widget| widget.base().id()) {
+        let _ = OWN_IDS.try_with(|map| {
+            map.borrow_mut().insert(own_id, declared_id);
+        });
+    }
+    let focusable = with_widget(declared_id, |widget| widget.is_focusable()).unwrap_or(false);
+    if focusable {
+        register_focusable(declared_id);
+    }
+    let _ = enable_damage_tracking_if_useful(declared_id);
+    if let Some(state) =
+        with_widget(declared_id, crate::platform::accessibility::A11yState::from_widget)
+    {
+        crate::widget::a11y_submit::submit_mounted(declared_id, &state);
+    }
+    Ok(declared_id)
+}
+
 /// Removes a mounted widget, dropping it. Returns whether it was present.
 pub fn unregister(id: ObjectId) -> bool {
     // Drop any host-window association with the widget it belonged to, so a

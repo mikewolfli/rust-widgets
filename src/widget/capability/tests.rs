@@ -169,7 +169,9 @@ fn factory_creates_registered_widgets_by_alias() {
     let segmented = factory
         .create("segmentedcontrol", rect, "")
         .expect("segmented control must be created via alias");
-    assert_eq!(segmented.kind(), WidgetKind::ToggleButton);
+    // Its own kind, not `ToggleButton`'s: the two share no behaviour, and reporting the
+    // toggle's kind made `capability_by_kind` answer two controls for one kind.
+    assert_eq!(segmented.kind(), WidgetKind::SegmentedControl);
 
     let chips = factory.create("chips", rect, "").expect("chip must be created via alias");
     // A `Chip` is its own kind. It previously reported `CheckListBox` — a type alias
