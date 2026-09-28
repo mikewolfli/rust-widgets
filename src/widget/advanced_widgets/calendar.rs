@@ -14,7 +14,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::dimensions;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use chrono::Datelike;
 
@@ -703,11 +703,10 @@ impl Draw for Calendar {
             );
             // ◄ button
             //
-            // Every run in this bar is positioned by the shared line box, so the two arrows
-            // and the title share one centre line instead of each carrying its own literal
-            // `+ 7` offset. The literal was correct only for a 14 px font in a 30 px bar; a
-            // 13 px bold title next to it landed a pixel off the arrows' baseline, which is
-            // the kind of drift that a per-run constant always eventually produces.
+            // Every run in this bar shares one centre line; the arrows are `ChevronLeft` /
+            // `ChevronRight` **icon outlines**, not the `◀`/`▶` text glyphs (U+25C0/U+25B6 are
+            // covered by no bundled face, so those drew as 8x8 bitmap blocks). Centring comes from
+            // `arrow_line`, the bar's own line box, so the arrows and the title keep one baseline.
             let arrow_color = style.text_color.unwrap_or(if enabled {
                 Color::rgb(60, 60, 60)
             } else {
@@ -717,13 +716,9 @@ impl Draw for Calendar {
             let arrow_line = context.text_line(nav, &arrow_font);
             // The arrows' own box width, used to reserve the span the title may use.
             let btn_w = 30i32;
-            context.draw_text(
-                Point::new(nav.x + 8, arrow_line.y),
-                "◀",
-                &arrow_font,
-                arrow_color,
-                HorizontalAlignment::Left,
-            );
+            let arrow_side = arrow_line.height.max(1);
+            let prev_box = Rect::new(nav.x + 8, arrow_line.y, arrow_side, arrow_side);
+            crate::widget::draw_icon_at(context, prev_box, arrow_color, IconName::ChevronLeft);
             // Month/year title: fitted into the band between the two arrow buttons.
             //
             // A centred string at the navigation bar's midpoint is bounded by nothing, and a
@@ -757,13 +752,13 @@ impl Draw for Calendar {
                 HorizontalAlignment::Center,
             );
             // ► button
-            context.draw_text(
-                Point::new(nav.x + nav.width as i32 - 8 - btn_w, arrow_line.y),
-                "▶",
-                &arrow_font,
-                arrow_color,
-                HorizontalAlignment::Left,
+            let next_box = Rect::new(
+                nav.x + nav.width as i32 - 8 - arrow_side as i32,
+                arrow_line.y,
+                arrow_side,
+                arrow_side,
             );
+            crate::widget::draw_icon_at(context, next_box, arrow_color, IconName::ChevronRight);
         }
 
         // ── 2. Weekday headers ──

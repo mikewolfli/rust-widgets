@@ -360,6 +360,10 @@ pub fn default_widget_property_default_value(
             "current_row" => CapabilityValue::Null,
             "item_height" => CapabilityValue::Float(20.0),
             "selected_count" => CapabilityValue::UInt(0),
+            "selected_indices" => CapabilityValue::String(String::new()),
+            "hovered_row" => CapabilityValue::Null,
+            "font_size" => CapabilityValue::Float(14.0),
+            "alignment" => CapabilityValue::String("left".to_string()),
             _ => return None,
         },
         WidgetKind::SpinBox => match property_name {
@@ -384,6 +388,7 @@ pub fn default_widget_property_default_value(
             // requires every declared property to answer its own default — a name the designer offers
             // and the control cannot answer is the defect that gate exists to find.
             "direction" => CapabilityValue::String("ltr".to_string()),
+            "alignment" => CapabilityValue::String("left".to_string()),
             _ => return None,
         },
         WidgetKind::ComboBox => match property_name {
@@ -396,6 +401,7 @@ pub fn default_widget_property_default_value(
             // default has to say the same thing or a manifest reset would silently mirror a field
             // the caller had never asked to change.
             "direction" => CapabilityValue::String("ltr".to_string()),
+            "alignment" => CapabilityValue::String("left".to_string()),
             _ => return None,
         },
         WidgetKind::Dial => match property_name {
@@ -459,6 +465,7 @@ pub fn default_widget_property_default_value(
             "current_index" => CapabilityValue::Int(-1),
             "editable" => CapabilityValue::Bool(false),
             "max_visible_items" => CapabilityValue::Int(10),
+            "alignment" => CapabilityValue::String("left".to_string()),
             _ => return None,
         },
         WidgetKind::Action => match property_name {
@@ -507,6 +514,7 @@ pub fn default_widget_property_default_value(
             "maximum_date" => CapabilityValue::String("9999-12-31".to_string()),
             "display_format" => CapabilityValue::String("yyyy-MM-dd".to_string()),
             "calendar_popup" => CapabilityValue::Bool(false),
+            "alignment" => CapabilityValue::String("left".to_string()),
             _ => return None,
         },
         WidgetKind::TimePicker => match property_name {
@@ -515,6 +523,7 @@ pub fn default_widget_property_default_value(
             "maximum_time" => CapabilityValue::String("23:59:59".to_string()),
             "display_format" => CapabilityValue::String("HH:mm:ss".to_string()),
             "clock_popup" => CapabilityValue::Bool(false),
+            "alignment" => CapabilityValue::String("left".to_string()),
             _ => return None,
         },
         WidgetKind::LineEdit => match property_name {
@@ -528,6 +537,7 @@ pub fn default_widget_property_default_value(
             "prefix" | "suffix" | "helper" | "error" => CapabilityValue::String(String::new()),
             "counter" => CapabilityValue::Null,
             "over_limit" => CapabilityValue::Bool(false),
+            "alignment" => CapabilityValue::String("left".to_string()),
             _ => return None,
         },
         WidgetKind::ListView => match property_name {
@@ -548,6 +558,7 @@ pub fn default_widget_property_default_value(
             "unread_count" => CapabilityValue::UInt(0),
             "selected_index" => CapabilityValue::Null,
             "row_height" => CapabilityValue::UInt(24),
+            "alignment" => CapabilityValue::String("left".to_string()),
             _ => return None,
         },
         WidgetKind::TreeView => match property_name {
@@ -791,6 +802,7 @@ pub fn default_widget_property_default_value(
             "line_wrap" => CapabilityValue::Bool(true),
             "output_line_count" => CapabilityValue::UInt(0),
             "input_line" => CapabilityValue::String(String::new()),
+            "alignment" => CapabilityValue::String("left".to_string()),
             _ => return None,
         },
 
@@ -923,6 +935,7 @@ pub fn default_widget_property_default_value(
             "selected_index" => CapabilityValue::UInt(0),
             "item_count" => CapabilityValue::UInt(0),
             "expanded" => CapabilityValue::Bool(false),
+            "alignment" => CapabilityValue::String("left".to_string()),
             _ => return None,
         },
         WidgetKind::TextArea => match property_name {
@@ -1157,12 +1170,14 @@ pub fn default_widget_property_default_value(
             "calendar_popup" => CapabilityValue::Bool(false),
             "minimum" => CapabilityValue::Null,
             "maximum" => CapabilityValue::Null,
+            "alignment" => CapabilityValue::String("left".to_string()),
             _ => return None,
         },
         // ── Group A widgets (non-mini) ─────────────────────
         WidgetKind::SearchBox => match property_name {
             "text" => CapabilityValue::String(String::new()),
             "placeholder" => CapabilityValue::String("Search...".to_string()),
+            "alignment" => CapabilityValue::String("left".to_string()),
             _ => return None,
         },
         WidgetKind::Badge => match property_name {
@@ -1249,6 +1264,7 @@ pub fn default_widget_property_default_value(
         WidgetKind::TagInput => match property_name {
             "tags" => CapabilityValue::String(String::new()),
             "placeholder" => CapabilityValue::String("Add tag...".to_string()),
+            "alignment" => CapabilityValue::String("left".to_string()),
             _ => return None,
         },
         WidgetKind::ImePreedit => match property_name {
@@ -1345,11 +1361,13 @@ pub fn default_widget_property_default_value(
             "item_count" => CapabilityValue::UInt(0),
             "selected_index" => CapabilityValue::UInt(0),
             "expanded" => CapabilityValue::Bool(false),
+            "alignment" => CapabilityValue::String("left".to_string()),
             _ => return None,
         },
         WidgetKind::MaskedEdit => match property_name {
             "text" => CapabilityValue::String(String::new()),
             "mask" => CapabilityValue::String(String::new()),
+            "alignment" => CapabilityValue::String("left".to_string()),
             _ => return None,
         },
         WidgetKind::MenuButton => match property_name {
@@ -1375,11 +1393,13 @@ pub fn default_widget_property_default_value(
             "max_visible" => CapabilityValue::UInt(5),
             "can_undo" => CapabilityValue::Bool(false),
             "can_redo" => CapabilityValue::Bool(false),
+            "alignment" => CapabilityValue::String("left".to_string()),
             _ => return None,
         },
         WidgetKind::MultiSelectComboBox => match property_name {
             "selected_count" => CapabilityValue::UInt(0),
             "expanded" => CapabilityValue::Bool(false),
+            "alignment" => CapabilityValue::String("left".to_string()),
             _ => return None,
         },
         WidgetKind::RangeSlider => match property_name {
@@ -1447,6 +1467,7 @@ pub fn default_widget_property_default_value(
         WidgetKind::EditableComboBox => match property_name {
             "text" => CapabilityValue::String(String::new()),
             "item_count" => CapabilityValue::UInt(0),
+            "alignment" => CapabilityValue::String("left".to_string()),
             _ => return None,
         },
         WidgetKind::DateRangePicker => match property_name {
@@ -1474,6 +1495,7 @@ pub fn default_widget_property_default_value(
         WidgetKind::SearchBar => match property_name {
             "text" => CapabilityValue::String(String::new()),
             "placeholder" => CapabilityValue::String("Search...".to_string()),
+            "alignment" => CapabilityValue::String("left".to_string()),
             _ => return None,
         },
         WidgetKind::ShortcutEditor => match property_name {

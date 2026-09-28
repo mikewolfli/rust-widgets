@@ -42,9 +42,6 @@ const DEFAULT_LENGTH: usize = 6;
 const MIN_LENGTH: usize = 1;
 const MAX_LENGTH: usize = 12;
 
-/// Glyph drawn in a filled box when `masked` is on.
-const MASK_GLYPH: char = '\u{2022}';
-
 /// A row of single-character boxes for entering a verification code.
 ///
 /// The value is positional: box `i` holds the `i`th character of the code, and
@@ -671,29 +668,29 @@ impl Draw for OtpInput {
                 context.draw_rect(slot, hairline);
             }
 
-            let glyph = match filled {
-                Some(ch) => {
-                    if self.masked {
-                        MASK_GLYPH
-                    } else {
-                        *ch
-                    }
-                }
-                None => continue,
-            };
-
-            // Reached only for a filled cell — the `None` arm above already left the loop
-            // — so the old `else if filled.is_some()` / `else` pair was unfalsifiable: the
-            // `else` could never run and the whole chain reduced to this two-way choice
-            // between the disabled ink and the real text colour.
+            // A masked cell draws a **filled dot**, not the `U+2022` bullet: no bundled face
+            // covers the bullet's block with an outline that clips inside a box cell, so the
+            // character fell back to an 8x8 bitmap and read as a blob. The dot is geometry both
+            // backends agree on. An unmasked cell still draws its real character.
             let color = if !enabled { background.blend(&text_color, 0.45) } else { text_color };
-            context.draw_text(
-                Point::new(slot.x + (slot.width as i32) / 2, line.y),
-                &glyph.to_string(),
-                &font,
-                color,
-                HorizontalAlignment::Center,
-            );
+            if self.masked {
+                let radius = (line.height as f32 * 0.18).round().max(1.0) as u32;
+                let center =
+                    Point::new(slot.x + (slot.width as i32) / 2, line.y + line.height as i32 / 2);
+                context.fill_circle_aa(center, radius, color);
+            } else {
+                let glyph = match filled {
+                    Some(ch) => *ch,
+                    None => continue,
+                };
+                context.draw_text(
+                    Point::new(slot.x + (slot.width as i32) / 2, line.y),
+                    &glyph.to_string(),
+                    &font,
+                    color,
+                    HorizontalAlignment::Center,
+                );
+            }
 
             // Separator after the box, except past the last one.
             if let Some(sep) = self.separator {
@@ -1144,18 +1141,12 @@ mod tests {
 
         otp.set_masked(true);
         let masked_svg = render_to_svg(&mut otp);
-        // A masked box draws the mask glyph instead of the digit. The string is emitted as
-        // glyph geometry now, so "did it draw the right character" is asked of the drawing:
-        // masking must change what is drawn, and the masked form must still have ink.
+        // A masked box draws a filled dot instead of the digit. The dot is a `FillCircleAA`
+        // command, not a glyph, so masking must change what is drawn and the masked form must
+        // still have ink — the two facts this test is about. It must NOT emit the digit's glyph
+        // geometry either: a mask that still drew the code would be the defect.
         assert_ne!(masked_svg, svg, "masking must change what is drawn");
-        assert!(masked_svg.contains("<path d=\"M"), "the mask glyph must be drawn as geometry");
-        // The mask glyph's bitmap differs from the digit's, so the two forms cannot be the
-        // same drawing: compare the subpath counts as a proxy for "a different glyph".
-        let masked_subpaths = masked_svg.matches('M').count();
-        let plain_subpaths = svg.matches('M').count();
-        assert!(
-            masked_subpaths > 0 && plain_subpaths > 0,
-            "both forms must draw glyphs: masked {masked_subpaths}, plain {plain_subpaths}"
-        );
+        assert!(masked_svg.contains("<circle"), "the mask dot must be drawn as geometry");
+        assert!(!masked_svg.contains("data-text"), "a masked cell must not draw the code as text");
     }
 }

@@ -30,7 +30,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// The width of the bar's leading zone, which holds the back arrow.
@@ -271,7 +271,10 @@ impl Draw for AppBar {
             // A disabled border is derived from the bar's own fill rather than a fixed grey:
             // a fixed `DISABLED_FOREGROUND` measures 2.48:1 against a light bar, so the rule
             // all but vanished on that appearance while staying legible on the dark one.
-            background.blend(&background.contrast_color(), crate::widget::BaseWidget::disabled_ink_weight())
+            background.blend(
+                &background.contrast_color(),
+                crate::widget::BaseWidget::disabled_ink_weight(),
+            )
         };
         let text_color = if is_enabled {
             style
@@ -279,7 +282,10 @@ impl Draw for AppBar {
                 .or_else(|| theme.as_ref().and_then(|t| t.text_color))
                 .unwrap_or(Color::FOREGROUND)
         } else {
-            background.blend(&background.contrast_color(), crate::widget::BaseWidget::disabled_ink_weight())
+            background.blend(
+                &background.contrast_color(),
+                crate::widget::BaseWidget::disabled_ink_weight(),
+            )
         };
         context.face(
             rect,
@@ -314,27 +320,27 @@ impl Draw for AppBar {
             (bar_height as f32 * 0.32 * text_scale).clamp(12.0, 18.0 * text_scale);
 
         // ── Back arrow (the bar's leading zone) ──
+        //
+        // The arrow is an **icon outline**, not the `←` (U+2190) text glyph: no bundled face covers
+        // the arrows block, so `draw_text("←")` fell back to an 8x8 bitmap and drew a blocky arrow.
+        // An icon is geometry both backends agree on, and the same shape an
+        // `Icon::new(.., IconName::ArrowLeft)` widget draws.
+        //
+        // `icon_side` is also the arrow's *reserved width*: the boxes below read it to keep their
+        // layout clear of the icon rather than of a glyph's advance.
+        let icon_side = ((action_font_size + 2.0).round() as i32).clamp(16, 28);
         if self.show_back {
-            let back_font = Font::new("sans-serif", action_font_size + 2.0, false, false);
-            let back_text = "←";
-            let metrics = context.measure_text(back_text, &back_font);
             // The arrow sits `APP_BAR_ARROW_INSET` from the bar's *leading* edge, whichever edge that
-            // is. Vertically the glyph origin is the box's top edge, so centring is half the
-            // difference of the line boxes — the `bar/2 + ascent/2 - descent/2` form that used to be
-            // here began the glyph box roughly a third of a line below the bar's middle.
+            // is: the inset is measured from the edge to the icon box, and the box is squared, so the
+            // RTL placement subtracts its side rather than a glyph advance.
             let back_x = if self.direction.is_right_to_left() {
-                rect.right() - APP_BAR_ARROW_INSET - metrics.width as i32
+                rect.right() - APP_BAR_ARROW_INSET - icon_side
             } else {
                 rect.x + APP_BAR_ARROW_INSET
             };
-            let back_y = rect.y + (bar_height as i32 - metrics.height as i32) / 2;
-            context.draw_text(
-                Point::new(back_x, back_y),
-                back_text,
-                &back_font,
-                text_color,
-                HorizontalAlignment::Left,
-            );
+            let back_y = rect.y + (bar_height as i32 - icon_side) / 2;
+            let back_rect = Rect::new(back_x, back_y, icon_side as u32, icon_side as u32);
+            crate::widget::draw_icon_at(context, back_rect, text_color, IconName::ArrowLeft);
         }
 
         // ── Centered title ──
@@ -403,7 +409,10 @@ impl Draw for AppBar {
             let action_color = if is_enabled {
                 text_color.blend(&background, 0.25)
             } else {
-                background.blend(&background.contrast_color(), crate::widget::BaseWidget::disabled_ink_weight())
+                background.blend(
+                    &background.contrast_color(),
+                    crate::widget::BaseWidget::disabled_ink_weight(),
+                )
             };
             context.draw_text(
                 Point::new(action_x, action_y),
@@ -707,9 +716,11 @@ mod tests {
     /// extent of the run the bar emitted. Giving each affordance its own render keeps the two apart
     /// without inventing a text layout.
     ///
-    /// The title is empty in both cases, so each render holds exactly one text run and its ink box
-    /// is read with the crate reader — which knows both the `font8x8` grammar and an outline face's
-    /// fractional `M…L…Z`, and the `data-text` provenance tag.
+    /// The two affordances are located by **different readers**, because they are now different
+    /// kinds of drawing: the action is a text run (`text_ink_boxes`, which knows the `font8x8`
+    /// grammar, an outline face's fractional `M…L…Z` and the `data-text` tag), while the back arrow
+    /// is an **icon** — a non-text `<path>` — read with `first_shape_bounds`. Reading the arrow with
+    /// the text reader would find nothing, which is the honest report that it stopped being text.
     #[test]
     fn a_right_to_left_bar_mirrors_both_affordances() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
@@ -731,6 +742,13 @@ mod tests {
             (left, right)
         }
 
+        /// The back arrow's ink, read as the non-text shape it now is.
+        fn icon_x(svg: &str) -> (i32, i32) {
+            let (left, _, right, _) =
+                crate::widget::svg::first_shape_bounds(svg).expect("the arrow icon draws a shape");
+            (left, right)
+        }
+
         // The title is useless for this comparison because it is centred and must not move, so each
         // case is rendered with one affordance only.
         fn only_back(direction: TextDirection) -> String {
@@ -746,11 +764,18 @@ mod tests {
             render_to_svg(&mut bar)
         }
 
-        let (ltr_back_left, _) = glyph_xs(&only_back(TextDirection::LeftToRight));
-        let (rtl_back_left, _) = glyph_xs(&only_back(TextDirection::RightToLeft));
+        let (ltr_back_left, ltr_back_right) = icon_x(&only_back(TextDirection::LeftToRight));
+        let (rtl_back_left, _) = icon_x(&only_back(TextDirection::RightToLeft));
+        // The icon's **box** left is the inset; the glyph's *ink* sits inside that box, because a
+        // Material arrow does not touch its own 24-unit grid's edge. The band below therefore
+        // allows the box (side up to 28) to sit at the inset: the ink must fall inside
+        // `inset .. inset + side`, which holds the placement the rule is about without asserting a
+        // property of the glyph's internal padding.
         assert!(
-            (ltr_back_left - APP_BAR_ARROW_INSET).abs() <= INK_INSET_TOLERANCE,
-            "LTR draws the arrow at the left inset: ink left {ltr_back_left}, inset {APP_BAR_ARROW_INSET}"
+            (APP_BAR_ARROW_INSET..=APP_BAR_ARROW_INSET + 28).contains(&ltr_back_left)
+                && ltr_back_right > ltr_back_left,
+            "LTR draws the arrow box at the left inset {APP_BAR_ARROW_INSET}; its ink spanned \
+             {ltr_back_left}..{ltr_back_right}"
         );
         assert!(
             rtl_back_left > 400 / 2,

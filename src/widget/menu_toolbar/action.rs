@@ -16,7 +16,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Represents a user action (command, toggle, etc.) used in menus and toolbars.
 ///
@@ -479,14 +479,18 @@ impl Draw for Action {
         // follows the appearance instead of a literal grey.
         let ink = self.base.disabled_ink_on(ink, highlight);
         if self.is_checked() && self.is_checkable() {
-            let check_x = rect.x + rect.width as i32 - 16;
-            context.draw_text(
-                Point::new(check_x, baseline),
-                "\u{2713}",
-                &font,
-                ink,
-                HorizontalAlignment::Left,
+            // The tick is an `IconName` outline, not the `✓` (U+2713) character: no bundled face
+            // covers the dingbats block, so the character fell back to an 8x8 bitmap and the check
+            // read as a blob. An icon is geometry both backends agree on.
+            let line_height = context.measure_text("M", &font).height;
+            let side = line_height.max(1);
+            let check_rect = Rect::new(
+                rect.x + rect.width as i32 - 16,
+                baseline + (line_height as i32 - side as i32) / 2,
+                side,
+                side,
             );
+            crate::widget::draw_icon_at(context, check_rect, ink, IconName::Check);
         }
         if !self.shortcut.is_empty() {
             let metrics = context.measure_text(&self.shortcut, &font);

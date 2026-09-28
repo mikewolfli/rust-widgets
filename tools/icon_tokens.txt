@@ -123,3 +123,6 @@ chat | Chat | A speech bubble, for a conversation.
 call | Call | A telephone handset, for a voice call.
 send | Send | A paper plane, for sending.
 notifications_off | NotificationsOff | A bell with a cross, for muted notifications.
+
+# ── View ──
+fullscreen | Fullscreen | A four-corner expand mark, for fullscreen.

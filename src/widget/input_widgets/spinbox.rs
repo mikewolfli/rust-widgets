@@ -38,8 +38,8 @@ use crate::widget::decorations::{
 use crate::widget::metrics::{dimensions, ControlMetrics};
 
 use crate::widget::capability::coercion::{
-    expect_bool, expect_f64, expect_i64, expect_string, expect_text_direction,
-    text_direction_to_str,
+    expect_bool, expect_f64, expect_horizontal_alignment, expect_i64, expect_string,
+    expect_text_direction, horizontal_alignment_to_str, text_direction_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -133,6 +133,14 @@ pub struct SpinBox {
     /// are properties of **one** value read by every box below, so the column and the text cannot
     /// disagree about which edge they are anchored to.
     direction: crate::core::TextDirection,
+    /// How the value is aligned within its own box.
+    ///
+    /// Horizontal only: the value's box is centred vertically in the row band by the row's own
+    /// layout, so a `top`/`bottom` value would be one this control could never honour —
+    /// [`crate::widget::capability::coercion::expect_horizontal_alignment`] refuses those rather
+    /// than accepting a write that does nothing. Defaults to left, so a caller that never asks
+    /// behaves exactly as it did.
+    alignment: crate::core::Alignment,
     /// Emitted with the new value after any change, including clamping by
     /// `minimum` / `maximum`. Not emitted when the value is set to the value it
     /// already had.
@@ -354,6 +362,25 @@ impl SpinBox {
         self.base.request_layout();
     }
 
+    /// How the value is aligned within its own box.
+    pub fn alignment(&self) -> crate::core::Alignment {
+        self.alignment
+    }
+
+    /// Sets how the value is aligned within its own box.
+    ///
+    /// Horizontal only. A `top`/`bottom` alignment is **ignored**, because the value's box is
+    /// centred vertically in the row band by the row's own layout — the property route refuses it
+    /// through [`crate::widget::capability::coercion::expect_horizontal_alignment`], and this setter
+    /// matching that keeps the two entry points from disagreeing.
+    pub fn set_alignment(&mut self, alignment: crate::core::Alignment) {
+        if alignment.to_horizontal().is_none() || self.alignment == alignment {
+            return;
+        }
+        self.alignment = alignment;
+        self.base.request_redraw();
+    }
+
     /// Creates a spin box with default range 0-99 and integer precision.
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -370,6 +397,7 @@ impl SpinBox {
             // Left-to-right is the default because the crate's default locale is; a host in an RTL
             // locale sets it, and every box below follows.
             direction: crate::core::TextDirection::LeftToRight,
+            alignment: crate::core::Alignment::Left,
             value_changed: Signal1::new(),
             editing_finished: GenericSignal::new(),
         }
@@ -782,6 +810,9 @@ impl WidgetProperties for SpinBox {
             "direction" => {
                 Ok(CapabilityValue::String(text_direction_to_str(self.direction()).to_string()))
             }
+            "alignment" => Ok(CapabilityValue::String(
+                horizontal_alignment_to_str(self.alignment()).to_string(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -848,6 +879,10 @@ impl WidgetProperties for SpinBox {
                 self.set_direction(expect_text_direction(value)?);
                 Ok(())
             }
+            "alignment" => {
+                self.set_alignment(expect_horizontal_alignment(value)?);
+                Ok(())
+            }
             // Both are derived from the value and the two slots, so a writer would be a second way to
             // say something the control already answers — and one of the two could disagree.
             "display_text" | "value_text" => Err(CapabilityAccessError::ReadOnlyProperty),
@@ -868,6 +903,7 @@ impl WidgetProperties for SpinBox {
             "special_value_text",
             "wrapping",
             "direction",
+            "alignment",
             "display_text",
             "value_text",
             BASE_PROPERTY_NAMES
@@ -1079,14 +1115,11 @@ impl Draw for SpinBox {
         let value_text = self.value_text();
         if !value_text.is_empty() {
             let line = context.text_line(editable, font);
-            // The value is anchored to the **leading** edge of its own box, which is the right in an
-            // RTL field. Reading it off the same `direction` the layout used is what keeps the text
-            // and the step column on the same side of the field.
-            let align = if self.direction.is_right_to_left() {
-                HorizontalAlignment::Right
-            } else {
-                HorizontalAlignment::Left
-            };
+            // The value's horizontal alignment is the control's own setting, so a centred or
+            // right-aligned number is painted against the value's box rather than from its
+            // leading inset. The vertical is the row band's business, so only the horizontal
+            // axis is read here.
+            let align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
             context.draw_text_fitted(
                 Rect::new(layout.value.x, line.y, layout.value.width, line.height),
                 &value_text,

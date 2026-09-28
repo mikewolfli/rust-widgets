@@ -99,7 +99,7 @@ chosen = next((n for n in names if n in profiles), "desktop")
 print(",".join([chosen] + [n for n in names if n not in profiles]))
 PY
 )"
-echo "        exporting with --features $DEFAULT_FEATURES (the manifest's `default`)"
+echo "        exporting with --features $DEFAULT_FEATURES (the manifest's \`default\`)"
 if ! rw_cargo_cached "$STEP_BUDGET" run \
     --no-default-features --features "$DEFAULT_FEATURES" \
     --example export_control_svgs > "$SCRATCH/export.log" 2>&1; then
@@ -342,7 +342,7 @@ if ! diff -u "$GALLERY_SCRATCH/committed.md" control.md > "$GALLERY_SCRATCH/gall
     echo "        regenerate with: $PYTHON tools/generate_control_index.py"
     exit 1
 fi
-echo "  PASS  control.md matches the generated index ($(grep -c '^### ' control.md) controls listed)"
+echo "  PASS  control.md matches the generated index ($(grep -c 'light\.svg) |$' control.md) control rows listed)"
 
 echo ""
 echo "check_svg_snapshots: checked=$CONTROLS skipped=0 failed=0 (each with a dark and a light snapshot)"

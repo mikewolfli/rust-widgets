@@ -8,12 +8,14 @@
 //! select a suggestion with the keyboard (Enter) or by clicking.
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
-use crate::event::{Event, EventHandler};
 use crate::event::key_codes;
+use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::undo::{TextSnapshotCommand, UndoStack};
-use crate::widget::capability::coercion::{expect_string, expect_usize};
+use crate::widget::capability::coercion::{
+    expect_horizontal_alignment, expect_string, expect_usize, horizontal_alignment_to_str,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -35,6 +37,13 @@ pub struct AutoCompleteEdit {
     show_dropdown: bool,
     selected_suggestion: Option<usize>,
     max_visible: usize,
+    /// How the field's text is aligned within its own box.
+    ///
+    /// Horizontal only: the text is centred vertically in the field, so a `top`/`bottom` value
+    /// would be one this control could never honour —
+    /// [`crate::widget::capability::coercion::expect_horizontal_alignment`] refuses those rather
+    /// than accepting a write that does nothing. Defaults to left.
+    alignment: crate::core::Alignment,
     /// Emitted when the text content changes.
     pub text_changed: Signal1<String>,
     /// Emitted when a suggestion is selected from the dropdown.
@@ -55,6 +64,7 @@ impl AutoCompleteEdit {
             show_dropdown: false,
             selected_suggestion: None,
             max_visible: 5,
+            alignment: crate::core::Alignment::Left,
             text_changed: Signal1::new(),
             suggestion_selected: Signal1::new(),
             undo_stack: UndoStack::new(),
@@ -66,6 +76,25 @@ impl AutoCompleteEdit {
     /// Returns the current text content.
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// How the field's text is aligned within its own box.
+    pub fn alignment(&self) -> crate::core::Alignment {
+        self.alignment
+    }
+
+    /// Sets how the field's text is aligned within its own box.
+    ///
+    /// Horizontal only. A `top`/`bottom` alignment is **ignored**, because the text is centred
+    /// vertically in the field by the field's own layout — the property route refuses it through
+    /// [`crate::widget::capability::coercion::expect_horizontal_alignment`], and this setter
+    /// matching that keeps the two entry points from disagreeing.
+    pub fn set_alignment(&mut self, alignment: crate::core::Alignment) {
+        if alignment.to_horizontal().is_none() || self.alignment == alignment {
+            return;
+        }
+        self.alignment = alignment;
+        self.base.request_redraw();
     }
 
     /// Sets the text content, updates the filtered suggestions list,
@@ -376,6 +405,9 @@ impl WidgetProperties for AutoCompleteEdit {
             // A consumer that only reads `suggestion_count > 0` is guessing.
             "dropdown_visible" => Ok(CapabilityValue::Bool(self.is_showing_dropdown())),
             "max_visible" => Ok(CapabilityValue::UInt(self.max_visible as u64)),
+            "alignment" => Ok(CapabilityValue::String(
+                horizontal_alignment_to_str(self.alignment()).to_string(),
+            )),
             // Publishing undo/redo availability is what lets a toolbar button bind to it; the
             // commands exist regardless, so a driver that cannot ask ends up issuing a no-op.
             "can_undo" => Ok(CapabilityValue::Bool(self.can_undo())),
@@ -406,6 +438,10 @@ impl WidgetProperties for AutoCompleteEdit {
                 self.set_max_visible(expect_usize(value)?);
                 Ok(())
             }
+            "alignment" => {
+                self.set_alignment(expect_horizontal_alignment(value)?);
+                Ok(())
+            }
             // Derived or read-only: the two counts describe the list, and the two booleans describe
             // what the control has already done.
             "suggestion_count"
@@ -425,6 +461,7 @@ impl WidgetProperties for AutoCompleteEdit {
             "selected_suggestion",
             "dropdown_visible",
             "max_visible",
+            "alignment",
             "can_undo",
             "can_redo",
             BASE_PROPERTY_NAMES
@@ -507,7 +544,7 @@ impl Draw for AutoCompleteEdit {
             display_text,
             &font,
             input_text_color,
-            HorizontalAlignment::Left,
+            self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
 
         // Draw dropdown if visible

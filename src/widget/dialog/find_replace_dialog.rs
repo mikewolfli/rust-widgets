@@ -17,7 +17,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Padding inside the dialog.
@@ -660,18 +660,32 @@ impl Draw for FindReplaceDialog {
         );
         x += BTN_SIZE as i32 + GAP;
 
-        // Find Previous button
+        // Find Previous button. The glyph is an `IconName` outline rather than the `U+25B2`
+        // character it used to be: no bundled face covers the geometric-shapes block, so the
+        // character fell back to an 8x8 bitmap block and the SVG showed a coarse arrow where the
+        // pixels showed nothing. An icon is geometry, and both backends already agree on it.
         let fp_rect = Rect::new(x, find_row.y, ARROW_BTN, find_row.height);
         context.fill_rect(fp_rect, muted);
-        let fp_line = self.text_line(fp_rect, &font, context);
-        context.draw_text_fitted(fp_line, "\u{25B2}", &font, muted_ink, HorizontalAlignment::Left);
+        let arrow_side = find_row.height.min(ARROW_BTN);
+        crate::widget::draw_icon_centered(
+            context,
+            fp_rect,
+            arrow_side,
+            muted_ink,
+            IconName::ArrowUp,
+        );
         x += ARROW_BTN as i32 + GAP;
 
         // Find Next button
         let fn_rect = Rect::new(x, find_row.y, ARROW_BTN, find_row.height);
         context.fill_rect(fn_rect, accent);
-        let fn_line = self.text_line(fn_rect, &font, context);
-        context.draw_text_fitted(fn_line, "\u{25BC}", &font, accent_ink, HorizontalAlignment::Left);
+        crate::widget::draw_icon_centered(
+            context,
+            fn_rect,
+            arrow_side,
+            accent_ink,
+            IconName::ArrowDown,
+        );
 
         // ── Replace row: label + input + buttons ──
         //
@@ -1214,10 +1228,20 @@ mod tests {
         dialog.show();
         let svg = render_to_svg(&mut dialog);
 
-        assert!(
-            !svg.contains("width=\"0\"") && !svg.contains("height=\"0\""),
-            "a zero-extent rect is emitted by the SVG backend and skipped by the rasteriser: {svg}"
-        );
+        // The defect was a **zero-extent shape**: `<rect … width="0" …>`, which the SVG backend
+        // emits and the rasteriser skips. `stroke-width="0"` on a filled path is *not* that — a
+        // stroke width is a paint property, and the element paints no stroke — so only the shape
+        // elements are inspected, and only their own `width`/`height`.
+        for element in ["<rect", "<image", "<circle", "<ellipse"] {
+            for chunk in svg.split(element).skip(1) {
+                let attrs = chunk.split('>').next().unwrap_or("");
+                assert!(
+                    !attrs.contains("width=\"0\"") && !attrs.contains("height=\"0\""),
+                    "{element} has a zero-extent dimension, which the SVG backend emits and the \
+                     rasteriser skips: {element}{attrs}"
+                );
+            }
+        }
         assert!(
             !svg.contains("></text>"),
             "an empty <text> element is a silent divergence between the two backends: {svg}"

@@ -7,14 +7,18 @@
 # ============================================================================
 # The rule this guards (BLUE23 §0A.4, constraint 1 — "三条不可让的约束" first):
 #
-#   **The default build carries no font data.** Coverage beyond Latin/ASCII is an opt-in
-#   feature, never something a `mini`/`embedded` profile pays for by accident. "Perfect is
-#   optional" is the whole contract.
+#   **Font data ships in the capable device profiles (`desktop`/`tablet`/`mobile`) and
+#   never in `default` or the sized profiles (`embedded`/`mini`).**
+#
+# "Perfect is optional" is the whole contract, and it is the *sized* profiles that express it: a
+# `mini`/`embedded` build must never pay for a face it did not ask for. A `desktop`/`tablet`/`mobile`
+# host, by contrast, has the bytes and a reason to want antialiased text, so the vector faces are
+# part of the profile rather than a separate opt-in.
 #
 # # Why this is a gate
 #
 # Font data is invisible where it enters and expensive where it lands. Adding
-# `"fonts-cjk-bitmap"` to the `desktop` list — or to `default` — is a one-word edit that
+# `"fonts-cjk-bitmap"` to `default` — or to a sized profile — is a one-word edit that
 # compiles, passes every test, and silently grows every binary by ~85 KB and every `--all-features`
 # snapshot's font coverage. Nothing else in the tree would notice: the tests that assert the
 # Latin boundary are written to pass with the data on *and* off, precisely so they cannot be used
@@ -25,8 +29,9 @@
 #
 # # What this gate proves
 #
-#   * No `fonts-*` feature is a member of `default`, `desktop`, `tablet`, `mobile`, `embedded`
-#     or `mini`, directly or through one level of feature indirection.
+#   * Every capable profile (`desktop`, `tablet`, `mobile`) names a `fonts-*` feature, directly or
+#     through one level of feature indirection.
+#   * No `fonts-*` feature is a member of `default`, `embedded` or `mini`.
 #   * Every `fonts-*` feature is declared in `[features]` (so a gate can name it), and at least
 #     one exists (so the scan is not vacuous).
 #   * Every `include_bytes!` of a font payload lives under `src/render/text/font_assets/`, the
@@ -47,7 +52,7 @@
 # finding, so a parser that silently found nothing cannot pass.
 #
 # Usage: tools/check_font_data_is_opt_in.sh
-# Exit 0 = no profile carries font data.
+# Exit 0 = the capable profiles carry font data and the sized ones do not.
 # Exit 1 = a finding is printed above.
 # ============================================================================
 
@@ -64,14 +69,18 @@ case "$OUT" in
     *"findings=0"*) ;;
     *)
         echo ""
-        echo "  A profile enables font data, or a payload sits outside the gated directory."
-        echo "  Font data is opt-in (BLUE23 §0A.4 constraint 1): remove it from the profile and"
-        echo "  let the caller ask for it by name."
+        echo '  A sized profile enables font data, a capable profile names none, or a payload'
+        echo '  sits outside the gated directory. Font data belongs in desktop/tablet/mobile'
+        echo '  (BLUE23 §0A.4 constraint 1, as revised): remove it from the sized profile, or'
+        echo '  add it to the capable one.'
         exit 1
         ;;
 esac
 
 # ── Reverse injection ───────────────────────────────────────────────────────────────────────────
+# Two injections, one per half of the contract: adding font data to `default` must fail, and
+# removing the only font feature from `desktop` must fail. A parser that silently found nothing
+# fails both.
 INJECT_DIR="$(mktemp -d)"
 trap 'rm -rf "$INJECT_DIR"' EXIT
 sed 's/^default = \[/default = ["fonts-cjk-bitmap", /' Cargo.toml > "$INJECT_DIR/Cargo.toml"
@@ -83,6 +92,20 @@ if grep -q '^default = \["fonts-cjk-bitmap"' "$INJECT_DIR/Cargo.toml"; then
     fi
 else
     echo "FAIL: could not construct the injection; the `default = [` line moved"
+    exit 1
+fi
+# The other half: strip the vector faces out of `desktop` and the scan must notice that a capable
+# profile now carries no font data. `desktop` lists the faces one per line, so deleting those lines
+# is a faithful "someone removed the opt-in" edit.
+sed '/^    "fonts-vector-latin",$/d; /^    "fonts-complex",$/d; /^    "fonts-cjk",$/d; /^    "fonts-emoji-color",$/d' \
+    Cargo.toml > "$INJECT_DIR/Cargo.no-desktop-fonts.toml"
+if diff -q Cargo.toml "$INJECT_DIR/Cargo.no-desktop-fonts.toml" >/dev/null; then
+    echo "FAIL: could not construct the injection; no `fonts-*` line was removed from `desktop`"
+    exit 1
+fi
+if "$PYTHON" tools/font_data_opt_in_scan.py --manifest="$INJECT_DIR/Cargo.no-desktop-fonts.toml" \
+        | grep -q "findings=0"; then
+    echo "FAIL: a capable profile with no font data did not fail the scan"
     exit 1
 fi
 

@@ -153,6 +153,12 @@ ICONS: dict[str, str] = {
     "call": "call",
     "send": "send",
     "notifications_off": "notifications_off",
+    # ── View ──
+    # A four-corner expand mark, for fullscreen. It exists because a control needs it: the
+    # video player used to draw the Unicode `⛶` (U+26F6) through `draw_text`, a codepoint no
+    # bundled face covers, so it fell back to an 8x8 bitmap block. Every symbol a control
+    # draws as an "icon" belongs here, where it is a real outline rather than a font gamble.
+    "fullscreen": "fullscreen",
 }
 
 # `cross` and `close` are two *distinct* declared icons, so they must not share one upstream

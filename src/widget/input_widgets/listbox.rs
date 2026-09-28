@@ -9,7 +9,8 @@ use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 
 use crate::widget::capability::coercion::{
-    expect_f32, expect_list_box_selection_mode, expect_usize,
+    expect_f32, expect_horizontal_alignment, expect_list_box_selection_mode, expect_usize,
+    horizontal_alignment_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -47,6 +48,19 @@ pub struct ListBox {
     anchor: Option<usize>,
     item_height: f32,
     scroll_offset: usize,
+    /// The row the pointer is currently over, or `None`.
+    ///
+    /// Transient pointer state, deliberately separate from [`Self::current_row`] (the committed
+    /// selection the keyboard moves): the draw gives them different weights for exactly that
+    /// reason, the same distinction `list_view` makes.
+    hovered_row: Option<usize>,
+    /// How each row's label is aligned within its row.
+    ///
+    /// Horizontal only: a row's label is vertically centred in its band by the row's own layout, so
+    /// a `top`/`bottom` value would be one this control could never honour —
+    /// [`crate::widget::capability::coercion::expect_horizontal_alignment`] refuses those. Defaults
+    /// to left, so a caller that never asks behaves exactly as it did.
+    alignment: crate::core::Alignment,
     /// Emitted when the cursor row changes to a valid item, with that item's
     /// index. Also emitted when programmatically setting the current row.
     pub item_selected: Signal1<usize>,
@@ -100,6 +114,8 @@ impl ListBox {
             anchor: None,
             item_height: 20.0,
             scroll_offset: 0,
+            hovered_row: None,
+            alignment: crate::core::Alignment::Left,
             item_selected: Signal1::new(),
             item_activated: Signal1::new(),
             selection_changed: GenericSignal::new(),
@@ -405,46 +421,123 @@ impl ListBox {
     /// Sets item height.
     pub fn set_item_height(&mut self, height: f32) {
         self.item_height = height.max(1.0);
+        self.base.request_redraw();
     }
     /// Returns all items.
     pub fn items(&self) -> &[String] {
         &self.items
     }
-    /// Returns visible item range based on scroll position.
-    fn visible_range(&self) -> (usize, usize) {
-        let rect = self.geometry();
-        let visible_items = (rect.height as f32 / self.item_height).ceil() as usize;
-        let start = self.scroll_offset.min(self.items.len().saturating_sub(1));
-        let end = self.items.len().min(start + visible_items);
-        (start, end)
+
+    /// The row the pointer is currently over, or `None`.
+    pub fn hovered_row(&self) -> Option<usize> {
+        self.hovered_row
     }
-    /// Returns the absolute index of the item drawn at widget-relative `y`.
+
+    /// How each row's label is aligned within its row.
+    pub fn alignment(&self) -> crate::core::Alignment {
+        self.alignment
+    }
+
+    /// Sets how each row's label is aligned within its row.
     ///
-    /// `draw` maps absolute item `i` to `y = i * item_height` (see
-    /// [`visible_range`](Self::visible_range), which yields absolute indices and is
-    /// what `draw` iterates). Scrolling therefore pushes items off the **top** of the
-    /// widget rather than shifting the remainder down, so the row index derived from a
-    /// click *is* the absolute item index and `scroll_offset` must not be added again.
+    /// Horizontal only. A `top`/`bottom` alignment is **ignored** because a row's label is centred
+    /// vertically in its band by the row's own layout; the property route refuses those through
+    /// [`crate::widget::capability::coercion::expect_horizontal_alignment`], and this setter
+    /// matching that keeps the two entry points from disagreeing.
+    pub fn set_alignment(&mut self, alignment: crate::core::Alignment) {
+        if alignment.to_horizontal().is_none() || self.alignment == alignment {
+            return;
+        }
+        self.alignment = alignment;
+        self.base.request_redraw();
+    }
+
+    /// The inset between the control's border and the rows it draws.
     ///
-    /// It used to be: with `scroll_offset = 3`, a click on the row painted as item 3
-    /// selected item 6 — every click off by exactly `scroll_offset` rows.
-    fn item_index_at_y(&self, pos: Point) -> Option<usize> {
+    /// # Why the rows are inset at all
+    ///
+    /// The border stroke and a rounded `face` are drawn on the control's outer rectangle, and a
+    /// row painted from `rect.y` covers both — the first row sat on the border and the rounded
+    /// corners clipped nothing. One inset applied to every edge keeps the ink wholly inside the
+    /// chrome, which is the "never paint outside your own frame" rule the other controls follow.
+    const CONTENT_INSET: i32 = 1;
+
+    /// The rectangle the rows occupy: the control's box, inset past its own border.
+    fn content_rect(&self) -> Rect {
         let rect = self.geometry();
-        if !rect.contains(pos) || self.item_height <= 0.0 {
+        let inset = Self::CONTENT_INSET.min(rect.width as i32 / 2).min(rect.height as i32 / 2);
+        Rect::new(
+            rect.x + inset,
+            rect.y + inset,
+            rect.width.saturating_sub(2 * inset as u32),
+            rect.height.saturating_sub(2 * inset as u32),
+        )
+    }
+
+    /// The row height actually used to draw and hit-test, floored so at least one row is legible.
+    fn row_height(&self) -> f32 {
+        self.item_height.max(1.0)
+    }
+
+    /// The font the rows are drawn with, **scaled to the row height** so a larger `item_height`
+    /// gets larger text and a small one does not overflow the row.
+    ///
+    /// The scaling is a fraction of the row height rather than a fixed point size, so a control
+    /// resized or given a different `item_height` keeps its text in proportion — which is what
+    /// "auto-scaling" means for a list whose row height is settable. The fraction leaves a small
+    /// vertical margin so a descender is not clipped at the row's own edge.
+    fn row_font(&self) -> Font {
+        let size = (self.row_height() * 0.7).clamp(8.0, 32.0);
+        Font::new("sans-serif", size, false, false)
+    }
+
+    /// The band item `index` occupies, in device space, or `None` when it is scrolled out.
+    ///
+    /// # One derivation, three consumers
+    ///
+    /// `draw`, [`Self::item_index_at_y`] and the hover test all read this, so the row a click or a
+    /// hover resolves to is the row that was painted. Before this they each recomputed
+    /// `rect.y + i * item_height` and the origin they measured from had already drifted once (a
+    /// press selected the row `scroll_offset` below the one under the cursor).
+    fn row_rect(&self, index: usize) -> Option<Rect> {
+        let content = self.content_rect();
+        let height = self.row_height();
+        let y = content.y as f32 + (index as f32 - self.scroll_offset as f32) * height;
+        let row = Rect::from_f32(content.x as f32, y, content.width as f32, height);
+        // A row wholly outside the content box is not visible at all rather than drawn clipped to
+        // a sliver: the same "refuse rather than truncate" rule the sibling list controls use.
+        if row.y + row.height as i32 <= content.y || row.y >= content.y + content.height as i32 {
             return None;
         }
-        let row = ((pos.y - rect.y) as f32 / self.item_height).floor();
-        // A click in the widget's bottom padding, or above its top edge, addresses no
-        // row. Without the lower-bound check a negative offset casts to a huge index.
+        Some(row)
+    }
+
+    /// Returns the absolute index of the item drawn at widget-relative `y`.
+    ///
+    /// The inverse of [`Self::row_rect`], deliberately built on it: a point is a row's when it is
+    /// inside that row's band, so the two directions cannot disagree about where a row begins.
+    fn item_index_at_y(&self, pos: Point) -> Option<usize> {
+        let content = self.content_rect();
+        if !content.contains(pos) || self.row_height() <= 0.0 {
+            return None;
+        }
+        let height = self.row_height();
+        let row = ((pos.y - content.y) as f32 / height).floor() + self.scroll_offset as f32;
         if !(0.0..).contains(&row) {
             return None;
         }
         let index = row as usize;
-        if index < self.items.len() {
-            Some(index)
-        } else {
-            None
-        }
+        (index < self.items.len()).then_some(index)
+    }
+
+    /// Returns visible item range based on scroll position.
+    fn visible_range(&self) -> (usize, usize) {
+        let content = self.content_rect();
+        let height = self.row_height();
+        let visible_items = (content.height as f32 / height).ceil().max(1.0) as usize;
+        let start = self.scroll_offset.min(self.items.len().saturating_sub(1));
+        let end = self.items.len().min(start + visible_items);
+        (start, end)
     }
 
     /// Scrolls the list by the given delta (positive = down, negative = up).
@@ -498,6 +591,24 @@ impl WidgetProperties for ListBox {
             },
             "item_height" => Ok(CapabilityValue::Float(self.item_height() as f64)),
             "selected_count" => Ok(CapabilityValue::UInt(self.selected_indices().len() as u64)),
+            // The selected rows as a comma-joined list of indices, in visual order.
+            "selected_indices" => Ok(CapabilityValue::String(
+                self.selected_indices()
+                    .iter()
+                    .map(|index| index.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            )),
+            "hovered_row" => match self.hovered_row() {
+                Some(row) => Ok(CapabilityValue::UInt(row as u64)),
+                None => Ok(CapabilityValue::Null),
+            },
+            // The size the rows draw at, which scales with `item_height`; reporting the value the
+            // draw uses keeps the contract and the picture from disagreeing.
+            "font_size" => Ok(CapabilityValue::Float(f64::from(self.row_font().size()))),
+            "alignment" => Ok(CapabilityValue::String(
+                horizontal_alignment_to_str(self.alignment()).to_string(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -519,8 +630,15 @@ impl WidgetProperties for ListBox {
                 self.set_item_height(expect_f32(value)?);
                 Ok(())
             }
-            // `item_count` and `selected_count` are derived from the item list.
-            "item_count" | "selected_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "alignment" => {
+                self.set_alignment(expect_horizontal_alignment(value)?);
+                Ok(())
+            }
+            // `item_count`, `selected_count`, `selected_indices`, `hovered_row` and `font_size`
+            // are derived from the item list, the selection or the row height.
+            "item_count" | "selected_count" | "selected_indices" | "hovered_row" | "font_size" => {
+                Err(CapabilityAccessError::ReadOnlyProperty)
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -533,6 +651,10 @@ impl WidgetProperties for ListBox {
             "current_row",
             "item_height",
             "selected_count",
+            "selected_indices",
+            "hovered_row",
+            "font_size",
+            "alignment",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -570,6 +692,22 @@ impl EventHandler for ListBox {
         match event {
             Event::MousePress { pos, button } if *button == 1 => {
                 self.select_at_pos(*pos);
+            }
+            Event::MouseMove { pos } => {
+                // Hover is the row the pointer is over, from the same `row_rect` the paint and the
+                // press use, so a highlight cannot land on a different row than a click would.
+                // `MouseMove` fires far more often than the highlight changes, so the redraw is
+                // requested only on an actual change.
+                let hovered = self.item_index_at_y(*pos);
+                if hovered != self.hovered_row {
+                    self.hovered_row = hovered;
+                    self.base.request_redraw();
+                }
+            }
+            Event::MouseLeave { .. } => {
+                if self.hovered_row.take().is_some() {
+                    self.base.request_redraw();
+                }
             }
             Event::MouseDoubleClick { pos, button } if *button == 1 => {
                 self.activate_at_pos(*pos);
@@ -636,64 +774,110 @@ impl EventHandler for ListBox {
 
 impl Draw for ListBox {
     fn draw(&mut self, context: &mut RenderContext) {
-        // Draw base widget
         let rect = self.geometry();
-        let padding = 2;
-        let style = self.style();
-        let bg = style.background_color.unwrap_or(Color::rgb(255, 255, 255));
-        let text_color = style.text_color.unwrap_or(Color::rgb(0, 0, 0));
-        // Draw background
+        // Chrome resolved style-first, then the theme role for this control, then a literal. The
+        // theme step is what makes an appearance switch visible; the previous form hardcoded the
+        // selection blue, the current-row fill and the separator, so the control was theme-blind.
+        let style = self.style().clone();
+        let theme = crate::style::resolved_theme_style("list_box");
+        let surface = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(Color::WHITE);
+        let ink = style
+            .text_color
+            .or_else(|| theme.as_ref().and_then(|t| t.text_color))
+            .unwrap_or(Color::BLACK);
+        // A border that would coincide with the surface is a border nobody can see, so it steps
+        // off the surface instead of being painted invisible.
+        let border = style
+            .border_color
+            .or_else(|| theme.as_ref().and_then(|t| t.border_color))
+            .filter(|resolved| *resolved != surface)
+            .unwrap_or_else(|| surface.blend(&ink, 0.20));
+        // A selected row is a committed selection, so it reads the theme's accent token rather
+        // than a second literal blue; a focused row is the same accent at a lighter weight, and a
+        // hovered row lighter still — a pointer position rather than a selection, so it must read
+        // as "a click would land here" without competing with the row actually chosen.
+        let accent = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.primary)
+            .unwrap_or(Color::PRIMARY);
+        let selected_bg = surface.blend(&accent, 0.85);
+        let focused_bg = surface.blend(&accent, 0.30);
+        let hovered_bg = surface.blend(&accent, 0.12);
+        let separator = surface.blend(&ink, 0.14);
+
         context.face(
-            Rect::new(rect.x, rect.y, rect.width, rect.height),
-            bg,
-            self.style().surface.unwrap_or_default(),
-            self.style().border_radius.unwrap_or(0),
+            rect,
+            surface,
+            style.surface.unwrap_or_default(),
+            style.border_radius.unwrap_or(0),
             Color::BLACK,
         );
-        // Draw border
-        if let Some(border_color) = style.border_color {
-            context.draw_rect(Rect::new(rect.x, rect.y, rect.width, rect.height), border_color);
-        }
-        // Draw items
-        let (start, end) = self.visible_range();
-        for i in start..end {
-            let item_y_f = rect.y as f32 + (i as f32 * self.item_height);
-            let item_rect =
-                Rect::from_f32(rect.x as f32, item_y_f, rect.width as f32, self.item_height);
-            // Draw item background
-            if self.is_selected(i) {
-                context.fill_rect(
-                    Rect::new(item_rect.x, item_rect.y, item_rect.width, item_rect.height),
-                    Color::rgb(0, 120, 215),
-                );
-            } else if Some(i) == self.current_row {
-                context.fill_rect(
-                    Rect::new(item_rect.x, item_rect.y, item_rect.width, item_rect.height),
-                    Color::rgb(240, 240, 240),
-                );
+        // The border is drawn on the control's outer rectangle, so the rows must not paint over it
+        // — `row_rect` insets them by `CONTENT_INSET` inside this stroke.
+        context.draw_rect(rect, border);
+
+        let font = self.row_font();
+        let text_inset = 6;
+        // Read once so the loop body only compares integers.
+        let current_row = self.current_row;
+        let hovered_row = self.hovered_row;
+        for i in self.visible_range().0..self.visible_range().1 {
+            let Some(row) = self.row_rect(i) else { continue };
+            // Hover is painted *under* focus and selection: a row that is both hovered and chosen
+            // keeps the stronger weight, so the persistent fact is not displaced by the pointer.
+            let fill = if self.is_selected(i) {
+                Some(selected_bg)
+            } else if Some(i) == current_row {
+                Some(focused_bg)
+            } else if Some(i) == hovered_row {
+                Some(hovered_bg)
+            } else {
+                None
+            };
+            if let Some(fill) = fill {
+                context.fill_rect(row, fill);
             }
-            // Draw item text
             if let Some(text) = self.item(i) {
-                let text_color =
-                    if self.is_selected(i) { Color::rgb(255, 255, 255) } else { text_color };
-                context.draw_text(
-                    Point::new(
-                        item_rect.x + padding,
-                        (item_rect.y as f32 + self.item_height / 2.0) as i32,
-                    ),
-                    text,
-                    &Font::default(),
-                    text_color,
-                    HorizontalAlignment::Left,
-                );
+                if !text.is_empty() {
+                    // The label's colour is taken from the row's own fill so the two cannot
+                    // collide when a theme changes hue, and falls back to the control's ink on a
+                    // row with no highlight.
+                    let label_ink = fill.map_or(ink, |fill| fill.contrast_color());
+                    // The line box is measured from the same font the ink is drawn with and centred
+                    // in the row, so the glyph box's top edge lands where the text renders. The old
+                    // `row.y + item_height / 2` put that edge on the row's middle line, half a line
+                    // low, and ignored the font entirely.
+                    let line = context.text_line(row, &font);
+                    // Fitted into the row's inner width, so an item longer than the row is elided
+                    // rather than drawn across the border and out of the control. The alignment is
+                    // the control's own; a right-aligned row keeps the same inner inset on both
+                    // sides, so the elision bound and the anchor move together.
+                    let label_align =
+                        self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
+                    context.draw_text_fitted(
+                        Rect::new(
+                            row.x + text_inset,
+                            line.y,
+                            row.width.saturating_sub(text_inset as u32 * 2),
+                            line.height,
+                        ),
+                        text,
+                        &font,
+                        label_ink,
+                        label_align,
+                    );
+                }
             }
-            // Draw item separator
-            if i < end - 1 {
-                let sep_y = item_rect.y + item_rect.height as i32;
+            // A separator only belongs *between* rows, so it is skipped on the last visible one.
+            if i + 1 < self.visible_range().1 {
+                let sep_y = row.y + row.height as i32;
                 context.draw_line(
-                    Point::new(item_rect.x, sep_y),
-                    Point::new(item_rect.x + item_rect.width as i32, sep_y),
-                    Color::rgb(230, 230, 230),
+                    Point::new(row.x, sep_y),
+                    Point::new(row.x + row.width as i32, sep_y),
+                    separator,
                 );
             }
         }
@@ -819,39 +1003,40 @@ mod tests {
 
     /// A click must select the row `draw` paints under the pointer.
     ///
-    /// `draw` maps absolute item `i` to `y = i * item_height`, so scrolling pushes
-    /// items off the top and the row index derived from a click is already the absolute
-    /// item index. The hit-test added `scroll_offset` a second time, so every click on a
-    /// scrolled list selected an item `scroll_offset` rows away from the one visible.
+    /// The assertion drives the test off [`ListBox::row_rect`] — the same derivation `draw` uses —
+    /// rather than off hand-computed `y` values. A row's `y` therefore follows whatever the real
+    /// content inset and scroll are, so the test cannot rot when those change (it did: it used to
+    /// hard-code the pre-inset geometry and assert a mapping the paint loop no longer performed).
     #[test]
     fn listbox_click_selects_the_row_that_is_drawn_there() {
         let geometry = Rect::new(0, 0, 200, 100);
-        let mut lb = ListBox::new(geometry);
-        for i in 0..20 {
-            lb.add_item(format!("item {i}"));
-        }
-        lb.set_item_height(20.0);
-        lb.scroll(3);
-
-        // `draw` paints item 3 at y = 60 and item 6 at y = 120 (below the widget).
-        let click = |y: i32| {
-            let mut list = ListBox::new(geometry);
+        let build = || {
+            let mut lb = ListBox::new(geometry);
             for i in 0..20 {
-                list.add_item(format!("item {i}"));
+                lb.add_item(format!("item {i}"));
             }
-            list.set_item_height(20.0);
-            list.scroll(3);
+            lb.set_item_height(20.0);
+            lb.scroll(3);
+            lb
+        };
+
+        let click = |y: i32| {
+            let mut list = build();
             list.handle_event(&Event::MousePress { pos: Point::new(50, y), button: 1 });
             list.current_row()
         };
 
-        assert_eq!(click(10), Some(0), "y=10 is row 0, painted as item 0");
-        assert_eq!(click(30), Some(1), "y=30 is row 1, painted as item 1");
-        assert_eq!(click(60), Some(3), "y=60 is row 3, painted as item 3");
-        // Below the last drawn row: no selection rather than a wrapped index.
-        assert_eq!(click(100), None);
-        assert_eq!(click(120), None);
-        // Above the widget's own top edge must not wrap through `as usize`.
+        // Every visible row resolves to its own index when clicked at its centre — the row the
+        // press lands on is the row that was painted.
+        let probe = build();
+        for index in probe.visible_range().0..probe.visible_range().1 {
+            let row = probe.row_rect(index).expect("a visible index has a row");
+            let mid = row.y + row.height as i32 / 2;
+            assert_eq!(click(mid), Some(index), "the centre of painted row {index} selects it");
+        }
+        // Below the content box, above the control, and below the last drawn row: no selection
+        // rather than a wrapped or off-by-scroll index.
+        assert_eq!(click(geometry.height as i32 + 5), None);
         assert_eq!(click(-5), None);
     }
 

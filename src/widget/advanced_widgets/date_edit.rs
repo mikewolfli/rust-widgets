@@ -27,7 +27,10 @@ use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
 use crate::widget::capability::access::date_to_string;
-use crate::widget::capability::coercion::{expect_bool, expect_date, expect_string};
+use crate::widget::capability::coercion::{
+    expect_bool, expect_date, expect_horizontal_alignment, expect_string,
+    horizontal_alignment_to_str,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -394,6 +397,13 @@ pub struct DateEdit {
     /// offers. The flag was stored, published and round-tripped from the day it was added, and the
     /// draw never read it -- so `calendar_popup: true` changed nothing on screen.
     calendar_popup: bool,
+    /// How the field's value is aligned within its own box.
+    ///
+    /// Horizontal only: the value is centred vertically in the field, so a `top`/`bottom` value
+    /// would be one this control could never honour —
+    /// [`crate::widget::capability::coercion::expect_horizontal_alignment`] refuses those rather
+    /// than accepting a write that does nothing. Defaults to left.
+    alignment: crate::core::Alignment,
     /// Emitted with the new date after every accepted change, including changes
     /// produced by [`DateEdit::undo`] and [`DateEdit::redo`]. Not emitted when a
     /// change is rejected or when the date is already the requested value.
@@ -416,6 +426,7 @@ impl DateEdit {
             maximum: Date::new(9999, 12, 31),
             display_format: "yyyy-MM-dd".to_string(),
             calendar_popup: false,
+            alignment: crate::core::Alignment::Left,
             date_changed: Signal1::new(),
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(Date::today())),
@@ -425,6 +436,24 @@ impl DateEdit {
     /// Returns the current date.
     pub fn date(&self) -> Date {
         self.date
+    }
+    /// How the field's value is aligned within its own box.
+    pub fn alignment(&self) -> crate::core::Alignment {
+        self.alignment
+    }
+
+    /// Sets how the field's value is aligned within its own box.
+    ///
+    /// Horizontal only. A `top`/`bottom` alignment is **ignored**, because the value is centred
+    /// vertically in the field by the field's own layout — the property route refuses it through
+    /// [`crate::widget::capability::coercion::expect_horizontal_alignment`], and this setter
+    /// matching that keeps the two entry points from disagreeing.
+    pub fn set_alignment(&mut self, alignment: crate::core::Alignment) {
+        if alignment.to_horizontal().is_none() || self.alignment == alignment {
+            return;
+        }
+        self.alignment = alignment;
+        self.base.request_redraw();
     }
     /// Returns the inclusive lower bound accepted by [`DateEdit::set_date`].
     ///
@@ -667,6 +696,9 @@ impl WidgetProperties for DateEdit {
             "maximum_date" => Ok(CapabilityValue::String(date_to_string(self.maximum_date()))),
             "display_format" => Ok(CapabilityValue::String(self.display_format().to_string())),
             "calendar_popup" => Ok(CapabilityValue::Bool(self.calendar_popup())),
+            "alignment" => Ok(CapabilityValue::String(
+                horizontal_alignment_to_str(self.alignment()).to_string(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -693,6 +725,10 @@ impl WidgetProperties for DateEdit {
                 self.set_calendar_popup(expect_bool(value)?);
                 Ok(())
             }
+            "alignment" => {
+                self.set_alignment(expect_horizontal_alignment(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -704,6 +740,7 @@ impl WidgetProperties for DateEdit {
             "maximum_date",
             "display_format",
             "calendar_popup",
+            "alignment",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -817,7 +854,7 @@ impl Draw for DateEdit {
             &text,
             &font,
             ink,
-            HorizontalAlignment::Left,
+            self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
 
         if self.calendar_popup {

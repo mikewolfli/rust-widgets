@@ -20,7 +20,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 
 /// VideoPlayer — simulated video player widget with playback controls.
 ///
@@ -382,20 +382,16 @@ impl Draw for VideoPlayer {
             return;
         }
 
-        // Play icon overlay in center when paused.
+        // Play icon overlay in center when paused — the `Play` **icon outline**, not the `▶`
+        // text glyph (U+25B6 is covered by no bundled face, so it drew as an 8x8 bitmap block).
         if !self.is_playing {
-            let play_icon = "▶";
-            let icon_metrics = context.measure_text(play_icon, &font);
-            let icon_x = rect.x + (rect.width as i32 - icon_metrics.width as i32) / 2;
-            // Origin is the glyph box's top edge, so the centre is half the difference of
-            // the *line boxes*; `+ ascent` began the box half a line low.
-            let icon_y = rect.y + (rect.height as i32 - icon_metrics.height as i32) / 2;
-            context.draw_text(
-                Point::new(icon_x, icon_y),
-                play_icon,
-                &font,
+            let side = (rect.height / 3).clamp(24, 96);
+            crate::widget::draw_icon_centered(
+                context,
+                rect,
+                side,
                 Color::rgba(255, 255, 255, 180),
-                HorizontalAlignment::Left,
+                IconName::Play,
             );
         }
 
@@ -412,21 +408,15 @@ impl Draw for VideoPlayer {
         let control_bar_y = control_bar_rect.y;
         context.fill_rect(control_bar_rect, Color::rgba(0, 0, 0, 160));
 
-        // Play/Pause button.
-        let btn_text = if self.is_playing { "⏸" } else { "▶" };
-        let btn_metrics = context.measure_text(btn_text, &font);
-        let btn_x = rect.x + 8;
-        let btn_y = control_bar_y + (control_bar_height as i32 - btn_metrics.height as i32) / 2;
-        context.draw_text(
-            Point::new(btn_x, btn_y),
-            btn_text,
-            &font,
-            Color::WHITE,
-            HorizontalAlignment::Left,
-        );
+        // Play/Pause button: a `Play`/`Pause` **icon outline**, not the `▶`/`⏸` text glyphs
+        // (U+25B6 and U+23F8 are covered by no bundled face).
+        let btn_icon = if self.is_playing { IconName::Pause } else { IconName::Play };
+        let btn_side = 16u32;
+        let btn_box = Rect::new(rect.x + 8, control_bar_y, btn_side, control_bar_height);
+        crate::widget::draw_icon_centered(context, btn_box, btn_side, Color::WHITE, btn_icon);
 
         // Seek bar: the shared thickness, centred on the transport bar's own middle line.
-        let seek_bar_x = btn_x + btn_metrics.width as i32 + 12;
+        let seek_bar_x = rect.x + 8 + btn_side as i32 + 12;
         let seek_bar_y = control_bar_y
             + (control_bar_height as i32 - dimensions::VIDEO_SEEK_BAR_HEIGHT as i32) / 2;
         let seek_bar_width = rect.width.saturating_sub((seek_bar_x - rect.x + 80) as u32);
@@ -464,30 +454,25 @@ impl Draw for VideoPlayer {
             HorizontalAlignment::Left,
         );
 
-        // Volume icon and mute button.
-        let vol_text = if self.muted || self.volume < 0.01 {
-            "🔇"
-        } else if self.volume < 0.5 {
-            "🔉"
-        } else {
-            "🔊"
-        };
-        let vol_metrics = context.measure_text(vol_text, &font);
-        let vol_x = rect.x + rect.width as i32 - vol_metrics.width as i32 - 8;
-        let vol_y = control_bar_y + (control_bar_height as i32 - vol_metrics.height as i32) / 2;
-        context.draw_text(
-            Point::new(vol_x, vol_y),
-            vol_text,
-            &font,
-            Color::WHITE,
-            HorizontalAlignment::Left,
+        // Volume icon and mute button: a `VolumeOff`/`VolumeUp` **icon outline**, not the
+        // `🔇`/`🔉`/`🔊` emoji (no bundled face covers them, and a colour emoji here is not what a
+        // transport bar wants). Muted is the crossed speaker; otherwise the plain speaker.
+        let vol_icon =
+            if self.muted || self.volume < 0.01 { IconName::VolumeOff } else { IconName::VolumeUp };
+        let vol_side = 16u32;
+        let vol_box = Rect::new(
+            rect.x + rect.width as i32 - vol_side as i32 - 8,
+            control_bar_y,
+            vol_side,
+            control_bar_height,
         );
+        crate::widget::draw_icon_centered(context, vol_box, vol_side, Color::WHITE, vol_icon);
 
         // Playback rate indicator.
         if (self.playback_rate - 1.0).abs() > 0.01 {
             let rate_text = format!("{:.1}x", self.playback_rate);
             let rate_metrics = context.measure_text(&rate_text, &font);
-            let rate_x = vol_x - rate_metrics.width as i32 - 8;
+            let rate_x = vol_box.x - rate_metrics.width as i32 - 8;
             let rate_y =
                 control_bar_y + (control_bar_height as i32 - rate_metrics.height as i32) / 2;
             context.draw_text(
@@ -499,17 +484,17 @@ impl Draw for VideoPlayer {
             );
         }
 
-        // Fullscreen button.
-        let fs_text = "⛶";
-        let fs_metrics = context.measure_text(fs_text, &font);
-        let fs_x = vol_x - fs_metrics.width as i32 - 24;
-        let fs_y = control_bar_y + (control_bar_height as i32 - fs_metrics.height as i32) / 2;
-        context.draw_text(
-            Point::new(fs_x, fs_y),
-            fs_text,
-            &font,
+        // Fullscreen button: a `Fullscreen` **icon outline**, not the `⛶` text glyph (U+26F6 is
+        // covered by no bundled face).
+        let fs_side = 16u32;
+        let fs_box =
+            Rect::new(vol_box.x - fs_side as i32 - 24, control_bar_y, fs_side, control_bar_height);
+        crate::widget::draw_icon_centered(
+            context,
+            fs_box,
+            fs_side,
             Color::WHITE,
-            HorizontalAlignment::Left,
+            IconName::Fullscreen,
         );
     }
 }
@@ -535,14 +520,11 @@ impl EventHandler for VideoPlayer {
                         && pos.y < rect.y + rect.height as i32
                         && self.controls_visible
                     {
-                        // Play/pause button click area.
-                        let font = Font::default();
-                        let btn_text = if self.is_playing { "⏸" } else { "▶" };
-                        let btn_metrics = context::private::measure_text_static(&font, btn_text);
-                        let btn_x = rect.x + 8;
-                        let btn_w = btn_metrics.width as i32 + 4;
-                        let btn_h = btn_metrics.height as i32 + 4;
-                        let btn_rect = Rect::new(btn_x, control_bar_y, btn_w as u32, btn_h as u32);
+                        // Play/pause button click area. The box matches the drawn button: a
+                        // 16 px icon in a strip at `x + 8`, full transport-bar height, so the hit
+                        // target and the ink are the same object (a glyph-measured box here and a
+                        // fixed icon box in `draw` would disagree on where the button is).
+                        let btn_rect = Rect::new(rect.x + 8, control_bar_y, 16, control_bar_height);
                         if btn_rect.contains_point(*pos) {
                             self.toggle_play();
                             return;
@@ -591,18 +573,6 @@ impl EventHandler for VideoPlayer {
             _ => {
                 self.base.handle_event(event);
             }
-        }
-    }
-}
-
-/// Internal helper module for static text metrics (avoiding RenderContext dependency in event handler).
-mod context {
-    pub mod private {
-        use crate::core::Font;
-        use crate::render::TextMetrics;
-        pub fn measure_text_static(_font: &Font, text: &str) -> TextMetrics {
-            // Simple approximation: width ≈ chars * 8, height = 16
-            TextMetrics { width: (text.len() as u32) * 8, height: 16, ascent: 12, descent: 4 }
         }
     }
 }

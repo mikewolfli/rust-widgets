@@ -145,7 +145,9 @@ pub(crate) mod icon_data;
 /// the fallback with nothing to draw from, which is the situation the hand-written `draw_*`
 /// methods used to fill. Gating it on the same condition as `icon.rs` keeps a stripped profile
 /// (`mini`/`embedded`, where `Icon` is not compiled at all) from linking a table nothing reads.
-#[cfg(widgets_unstripped)]
+///
+/// It *is* compiled there now: a control on a stripped profile still paints its disclosure chevron
+/// and its star through `draw_icon_at`, which reads this table when the `icons` feature is off.
 pub(crate) mod icon_fallback_data;
 
 /// Host-registered icons: a name and its outline, added at runtime (`register_icon`).
@@ -345,7 +347,14 @@ pub use display_widgets::floating_label::FloatingLabel;
 #[cfg(widgets_unstripped)]
 pub use display_widgets::font_preview::FontPreview;
 #[cfg(widgets_unstripped)]
-pub use display_widgets::icon::{Icon, IconData, IconName};
+#[cfg(widgets_unstripped)]
+pub use display_widgets::icon::{
+    draw_icon_at, draw_icon_centered, draw_icon_named, Icon, IconData, IconName,
+};
+#[cfg(not(widgets_unstripped))]
+pub use display_widgets::icon::{
+    draw_icon_at, draw_icon_centered, draw_icon_named, IconData, IconName,
+};
 
 // Host-registered icons. Re-exported at `widget::` because that is where the icon surface lives,
 // and because reaching into `widget::icon_registry::register_icon` exposes a module the caller has

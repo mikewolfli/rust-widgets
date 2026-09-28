@@ -26,18 +26,18 @@ PNG 或 SVG。桌面、平板、移动、嵌入式，以及最小化的 `mini` �
 
 ```toml
 [dependencies]
-rust_widgets = "2.8.1"
+rust_widgets = "2.8.2"
 ```
 
 设备配置**只能选一个**。它们互斥——`mini` 和 `embedded` 会把 crate 的一部分**编译掉**，所以把
 它们和 `desktop` 叠在一起不是「取最小公分母」，而是构建失败：
 
 ```toml
-rust_widgets = { version = "2.8.1", features = ["desktop"] }                       # 默认
-rust_widgets = { version = "2.8.1", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "2.8.1", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "2.8.1", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "2.8.1", default-features = false, features = ["mini"] }
+rust_widgets = { version = "2.8.2", features = ["desktop"] }                       # 默认
+rust_widgets = { version = "2.8.2", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "2.8.2", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "2.8.2", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "2.8.2", default-features = false, features = ["mini"] }
 ```
 
 > `cargo check --features embedded` 是**错的**：`desktop` 是默认特性，这条命令会同时打开两个互斥
@@ -348,7 +348,7 @@ MIT —— 见 [LICENSE](LICENSE)。
 - 问题反馈：[GitHub Issues](https://github.com/mikewolfli/rust-widgets/issues)
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.8.1)]()
+[![version](https://img.shields.io/badge/version-2.8.2)]()
 [![tests](https://img.shields.io/badge/tests-5600%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 

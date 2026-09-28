@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Tool button widget.
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
@@ -12,7 +12,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::path::{Path, PathBuf};
 
@@ -688,24 +688,20 @@ impl Draw for ToolButton {
         }
         if has_popup {
             // The arrow lives in the trailing strip `content_box` already removed from the content,
-            // so its x is derived from that strip rather than from another literal. It is centred on
-            // the button's middle line like the label, which is what makes a menu button read as one
-            // row rather than two baselines.
+            // so its x is derived from that strip rather than from another literal. It is a
+            // `ChevronDown` **icon outline**, not the `▾` text glyph (U+25BE is covered by no
+            // bundled face, so the glyph drew as an 8x8 bitmap block), centred in the strip so it
+            // reads on the button's middle line like the label.
             let strip = dimensions::TOOL_BUTTON_POPUP_ARROW_RESERVE as i32;
             let arrow_x = rect.x + rect.width as i32 - strip;
-            // The origin is a glyph box's **top** edge, so `rect.y + height / 2` would put that edge
-            // on the middle line and draw the arrow half a line low (the defect
-            // `tools/check_text_vertically_centred.sh` names). `text_line` answers the question
-            // directly: it is the band's own line box, centred, measured from the same font the ink
-            // is drawn with — which is what the sibling label above already uses.
-            let arrow_box =
-                context.text_line(Rect::new(arrow_x, rect.y, strip as u32, rect.height), &font);
-            context.draw_text(
-                Point::new(arrow_box.x + strip / 2, arrow_box.y),
-                "▾",
-                &font,
+            let arrow_box = Rect::new(arrow_x, rect.y, strip.max(1) as u32, rect.height.max(1));
+            let side = strip as u32;
+            crate::widget::draw_icon_centered(
+                context,
+                arrow_box,
+                side.min(arrow_box.height),
                 fg,
-                HorizontalAlignment::Center,
+                IconName::ChevronDown,
             );
         }
     }

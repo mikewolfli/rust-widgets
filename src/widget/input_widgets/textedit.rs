@@ -2,13 +2,16 @@
 // SPDX-License-Identifier: MIT
 
 //! Multi-line text edit widget.
-use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
+use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::undo::{TextSnapshotCommand, UndoStack};
+use crate::widget::capability::coercion::{
+    expect_horizontal_alignment, horizontal_alignment_to_str,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -25,6 +28,14 @@ pub struct TextEdit {
     max_length: Option<usize>,
     read_only: bool,
     line_wrap: bool,
+    /// How each line of the document is aligned within the editor's interior.
+    ///
+    /// Horizontal only: the document is laid out as rows down the interior, so a `top`/`bottom`
+    /// value would be one this control could never honour —
+    /// [`crate::widget::capability::coercion::expect_horizontal_alignment`] refuses those rather
+    /// than accepting a write that does nothing. Defaults to left, so a caller that never asks
+    /// behaves exactly as it did.
+    alignment: crate::core::Alignment,
     undo_stack: UndoStack,
     history_target: Rc<RefCell<String>>,
     restoring_history: bool,
@@ -43,6 +54,7 @@ impl TextEdit {
             max_length: None,
             read_only: false,
             line_wrap: true,
+            alignment: crate::core::Alignment::Left,
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(String::new())),
             restoring_history: false,
@@ -52,6 +64,25 @@ impl TextEdit {
     /// Returns current text.
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// How each line of the document is aligned within the editor's interior.
+    pub fn alignment(&self) -> crate::core::Alignment {
+        self.alignment
+    }
+
+    /// Sets how each line of the document is aligned within the editor's interior.
+    ///
+    /// Horizontal only. A `top`/`bottom` alignment is **ignored**, because the document is laid
+    /// out as rows down the interior by the editor's own layout — the property route refuses it
+    /// through [`crate::widget::capability::coercion::expect_horizontal_alignment`], and this setter
+    /// matching that keeps the two entry points from disagreeing.
+    pub fn set_alignment(&mut self, alignment: crate::core::Alignment) {
+        if alignment.to_horizontal().is_none() || self.alignment == alignment {
+            return;
+        }
+        self.alignment = alignment;
+        self.base.request_redraw();
     }
     /// Sets text and emits text_changed signal if different.
     ///
@@ -294,6 +325,9 @@ impl WidgetProperties for TextEdit {
             },
             "read_only" => Ok(CapabilityValue::Bool(self.read_only)),
             "line_wrap" => Ok(CapabilityValue::Bool(self.line_wrap)),
+            "alignment" => Ok(CapabilityValue::String(
+                horizontal_alignment_to_str(self.alignment()).to_string(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -341,6 +375,10 @@ impl WidgetProperties for TextEdit {
                 }
                 _ => return Err(CapabilityAccessError::TypeMismatch),
             },
+            "alignment" => {
+                self.set_alignment(expect_horizontal_alignment(value)?);
+                return Ok(());
+            }
             _ => {}
         }
         base_property_set(self, name, value)
@@ -357,6 +395,7 @@ impl WidgetProperties for TextEdit {
             "max_length",
             "read_only",
             "line_wrap",
+            "alignment",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -546,6 +585,11 @@ impl TextEdit {
     ) {
         let line_height = context.measure_text("M", font).height.max(1) as i32;
         let mut pen_y = interior.y;
+        // Each laid-out row is placed by this control's horizontal alignment, so a centred or
+        // right-aligned document is positioned within the interior rather than always flush with
+        // its leading edge. The rows are laid out as one block below, so the alignment is a
+        // property of every row rather than of the run.
+        let align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
         // A row is skipped rather than clipped when it would cross the interior's bottom: a
         // half-height row of glyphs reads as a rendering error, the same rule the list view's rows
         // follow.
@@ -557,12 +601,13 @@ impl TextEdit {
                 pen_y = Self::flush_row(
                     context,
                     &row,
-                    interior.x,
+                    interior,
                     pen_y,
                     line_height,
                     bottom,
                     font,
                     color,
+                    align,
                 );
                 row.clear();
                 row_width = 0.0;
@@ -580,12 +625,13 @@ impl TextEdit {
                 pen_y = Self::flush_row(
                     context,
                     &row,
-                    interior.x,
+                    interior,
                     pen_y,
                     line_height,
                     bottom,
                     font,
                     color,
+                    align,
                 );
                 row.clear();
                 row_width = 0.0;
@@ -594,7 +640,17 @@ impl TextEdit {
             row_width += advance as f32;
         }
         if !row.is_empty() {
-            Self::flush_row(context, &row, interior.x, pen_y, line_height, bottom, font, color);
+            Self::flush_row(
+                context,
+                &row,
+                interior,
+                pen_y,
+                line_height,
+                bottom,
+                font,
+                color,
+                align,
+            );
         }
     }
 
@@ -602,21 +658,33 @@ impl TextEdit {
     ///
     /// Returns `pen_y` unchanged when the row would cross `bottom`, so the caller needs no bound of
     /// its own and cannot advance the pen past the interior it was given.
+    ///
+    /// `align` is the control's own horizontal alignment, applied to the row's `interior` rather
+    /// than to a private origin, so a centred or right-aligned row is measured against the same box
+    /// the wrap used. `draw_text_fitted` is what turns that alignment into an origin, and it fits
+    /// the row into the interior so a run wider than the box is clipped at its trailing edge.
     #[allow(clippy::too_many_arguments)]
     fn flush_row(
         context: &mut RenderContext,
         row: &str,
-        x: i32,
+        interior: Rect,
         pen_y: i32,
         line_height: i32,
         bottom: i32,
         font: &Font,
         color: Color,
+        align: HorizontalAlignment,
     ) -> i32 {
         if pen_y + line_height > bottom {
             return pen_y;
         }
-        context.draw_text(Point::new(x, pen_y), row, font, color, HorizontalAlignment::Left);
+        context.draw_text_fitted(
+            Rect::new(interior.x, pen_y, interior.width, line_height as u32),
+            row,
+            font,
+            color,
+            align,
+        );
         pen_y + line_height
     }
 }

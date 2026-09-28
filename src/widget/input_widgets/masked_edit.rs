@@ -20,7 +20,9 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::undo::{TextSnapshotCommand, UndoStack};
-use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::coercion::{
+    expect_horizontal_alignment, expect_string, horizontal_alignment_to_str,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -76,6 +78,15 @@ pub struct MaskedEdit {
     cursor_pos: usize,
     /// Whether this widget currently has keyboard focus.
     focused: bool,
+    /// How the field's content is aligned within its own box.
+    ///
+    /// Horizontal only: the field is a fixed-height band and the characters are centred vertically
+    /// in it as a matter of the field's own layout, so a `top`/`bottom` value would be one this
+    /// control could never honour —
+    /// [`crate::widget::capability::coercion::expect_horizontal_alignment`] refuses those rather
+    /// than accepting a write that does nothing. Defaults to left, so a caller that never asks
+    /// behaves exactly as it did.
+    alignment: crate::core::Alignment,
     /// Emitted when the text changes, providing the raw text.
     pub text_changed: Signal1<String>,
     undo_stack: UndoStack,
@@ -96,6 +107,7 @@ impl MaskedEdit {
             display_text: String::new(),
             cursor_pos: 0,
             focused: false,
+            alignment: crate::core::Alignment::Left,
             text_changed: Signal1::new(),
             undo_stack: UndoStack::new(),
             history_target: Rc::new(RefCell::new(String::new())),
@@ -117,6 +129,25 @@ impl MaskedEdit {
     /// Returns the current mask pattern.
     pub fn mask(&self) -> &str {
         &self.mask
+    }
+
+    /// How the field's content is aligned within its own box.
+    pub fn alignment(&self) -> crate::core::Alignment {
+        self.alignment
+    }
+
+    /// Sets how the field's content is aligned within its own box.
+    ///
+    /// Horizontal only. A `top`/`bottom` alignment is **ignored**, because the field's characters
+    /// are centred vertically in the field band by the field's own layout — the property route
+    /// refuses it through [`crate::widget::capability::coercion::expect_horizontal_alignment`], and
+    /// this setter matching that keeps the two entry points from disagreeing.
+    pub fn set_alignment(&mut self, alignment: crate::core::Alignment) {
+        if alignment.to_horizontal().is_none() || self.alignment == alignment {
+            return;
+        }
+        self.alignment = alignment;
+        self.base.request_redraw();
     }
 
     /// Returns the raw user input text (without mask literals).
@@ -385,6 +416,9 @@ impl WidgetProperties for MaskedEdit {
         match name {
             "text" => Ok(CapabilityValue::String(self.text().to_string())),
             "mask" => Ok(CapabilityValue::String(self.mask().to_string())),
+            "alignment" => Ok(CapabilityValue::String(
+                horizontal_alignment_to_str(self.alignment()).to_string(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -399,12 +433,16 @@ impl WidgetProperties for MaskedEdit {
                 self.set_mask(&expect_string(value)?);
                 Ok(())
             }
+            "alignment" => {
+                self.set_alignment(expect_horizontal_alignment(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["text", "mask", BASE_PROPERTY_NAMES]
+        property_names_of!["text", "mask", "alignment", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `masked_edit` publishes.
@@ -582,16 +620,44 @@ impl Draw for MaskedEdit {
                     &self.raw_text,
                     &font,
                     text_color,
-                    HorizontalAlignment::Left,
+                    self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
                 );
             }
             return;
         }
 
+        // The horizontal alignment the field's content is painted with. Each character below is
+        // positioned from its own cell, so a centred or right-aligned run needs the cells moved as
+        // one block rather than per glyph: the run is measured in the painter's own space (one
+        // `char_width` per segment) and the whole block is offset from the leading inset. Left is
+        // the identity, so the common case is unchanged.
+        let value_align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
+        // One cell's advance in the painter's own space, which is the unit the segment walk below
+        // advances by. Declared here because the alignment shift and the walk both read it.
+        let char_width = 8u32;
+        // The run the segments walk to the field's trailing edge, in the painter's own unit; the
+        // number of character cells a mask can fill.
+        let max_cells = (geom.width.saturating_sub(padding as u32 * 2)) / char_width;
+        // Where the run begins. `Right`/`Center` hang the whole run off the trailing edge by the
+        // cells it would fill, and a mask wider than the field is left as-is so the overflow is
+        // clipped at the trailing edge rather than pushed off the leading one.
+        let start_shift = if self.segments.len() as u32 <= max_cells {
+            match value_align {
+                HorizontalAlignment::Left => 0,
+                HorizontalAlignment::Center => {
+                    (max_cells - self.segments.len() as u32) as i32 / 2 * char_width as i32
+                }
+                HorizontalAlignment::Right => {
+                    (max_cells - self.segments.len() as u32) as i32 * char_width as i32
+                }
+            }
+        } else {
+            0
+        };
+
         // Draw each segment
         let mut raw_idx = 0;
-        let mut display_x = text_x;
-        let char_width = 8u32;
+        let mut display_x = text_x + start_shift;
 
         for (seg_idx, seg) in self.segments.iter().enumerate() {
             // A segment only starts inside the inner rectangle. With one character per segment
@@ -614,7 +680,7 @@ impl Draw for MaskedEdit {
                             &ch.to_string(),
                             &font,
                             mask_ink,
-                            HorizontalAlignment::Left,
+                            value_align,
                         );
                         display_x += char_width as i32;
                     }
@@ -650,7 +716,7 @@ impl Draw for MaskedEdit {
                                 &ch.to_string(),
                                 &font,
                                 caret_ink,
-                                HorizontalAlignment::Left,
+                                value_align,
                             );
                         } else {
                             context.draw_text(
@@ -658,7 +724,7 @@ impl Draw for MaskedEdit {
                                 &ch.to_string(),
                                 &font,
                                 char_color,
-                                HorizontalAlignment::Left,
+                                value_align,
                             );
                         }
 

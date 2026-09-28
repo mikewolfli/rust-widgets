@@ -13,12 +13,14 @@ use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
 use crate::signal::Signal1;
-use crate::widget::capability::coercion::{expect_bool, expect_usize};
+use crate::widget::capability::coercion::{
+    expect_bool, expect_horizontal_alignment, expect_usize, horizontal_alignment_to_str,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::menu_toolbar::popup_reveal::{PopupReveal, RevealDirection};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Default height of the dropdown list when expanded.
@@ -96,6 +98,17 @@ pub struct DropdownMenu {
     reveal: PopupReveal,
     /// Scroll offset for the item list.
     scroll_offset: usize,
+    /// How the field's value and each item's label are aligned within their own row.
+    ///
+    /// Both runs take the same value because they are the same column of text seen twice -- what the
+    /// field shows and what the list offers below it -- so aligning one and not the other would make
+    /// the selected value and the row it was chosen from disagree about where the column starts.
+    /// Horizontal only: a row is centred vertically in its band by the row's own layout, so a
+    /// `top`/`bottom` value would be one this control could never honour --
+    /// [`crate::widget::capability::coercion::expect_horizontal_alignment`] refuses those rather
+    /// than accepting a write that does nothing. Defaults to left, so a caller that never asks
+    /// behaves exactly as it did.
+    alignment: crate::core::Alignment,
     /// Emitted when an item is selected, providing the item's value.
     pub item_selected: Signal1<String>,
 }
@@ -110,6 +123,7 @@ impl DropdownMenu {
             expanded: false,
             reveal: PopupReveal::new(false),
             scroll_offset: 0,
+            alignment: crate::core::Alignment::Left,
             item_selected: Signal1::new(),
         }
     }
@@ -235,6 +249,25 @@ impl DropdownMenu {
         }
     }
 
+    /// How the field's value and each item's label are aligned within their own row.
+    pub fn alignment(&self) -> crate::core::Alignment {
+        self.alignment
+    }
+
+    /// Sets how the field's value and each item's label are aligned within their own row.
+    ///
+    /// Horizontal only. A `top`/`bottom` alignment is **ignored** because a row is centred
+    /// vertically in its band by the row's own layout -- the property route refuses it through
+    /// [`crate::widget::capability::coercion::expect_horizontal_alignment`], and this setter
+    /// matching that keeps the two entry points from disagreeing.
+    pub fn set_alignment(&mut self, alignment: crate::core::Alignment) {
+        if alignment.to_horizontal().is_none() || self.alignment == alignment {
+            return;
+        }
+        self.alignment = alignment;
+        self.base.request_redraw();
+    }
+
     /// Computes the dropdown list rectangle below the text field.
     fn dropdown_rect(&self) -> Rect {
         let geom = self.geometry();
@@ -323,6 +356,9 @@ impl WidgetProperties for DropdownMenu {
                 None => Ok(CapabilityValue::Null),
             },
             "expanded" => Ok(CapabilityValue::Bool(self.is_expanded())),
+            "alignment" => Ok(CapabilityValue::String(
+                horizontal_alignment_to_str(self.alignment()).to_string(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -340,12 +376,22 @@ impl WidgetProperties for DropdownMenu {
             }
             // Derived from the item list, which owns it.
             "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "alignment" => {
+                self.set_alignment(expect_horizontal_alignment(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["item_count", "selected_index", "expanded", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "item_count",
+            "selected_index",
+            "expanded",
+            "alignment",
+            BASE_PROPERTY_NAMES
+        ]
     }
 }
 
@@ -415,12 +461,22 @@ impl Draw for DropdownMenu {
         // that top edge on the field's middle line and drew the label half a line low. The
         // shared primitive returns the line box itself, centred in the field.
         let line = context.text_line(geom, &font);
-        context.draw_text(
-            Point::new(geom.x + PADDING, line.y),
+        // The value is aligned within the field's inner box (its own padding inset at both ends),
+        // so a right- or centre-aligned value moves the run while the field it sits in does not.
+        // Fitted rather than drawn at a point, because an anchor alone cannot express centre/right
+        // over a width.
+        let value_align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
+        context.draw_text_fitted(
+            Rect::new(
+                geom.x + PADDING,
+                line.y,
+                geom.width.saturating_sub(PADDING as u32 * 2),
+                line.height,
+            ),
             &display_text,
             &font,
             text_color,
-            HorizontalAlignment::Left,
+            value_align,
         );
 
         // ── Draw dropdown arrow ──
@@ -517,12 +573,24 @@ impl Draw for DropdownMenu {
 
                 // Item label
                 let item_line = context.text_line(ir, &item_font);
-                context.draw_text(
-                    Point::new(item_x, item_line.y),
+                // The label is aligned in the same inner box the field's value uses, so the two
+                // columns line up. The band starts where the icon (if any) pushed it, so an icon
+                // shifts the whole label run rather than only its left-aligned form. Fitted rather
+                // than drawn at a point, so centre/right are expressible over the remaining width.
+                let label_band = Rect::new(
+                    item_x,
+                    item_line.y,
+                    (ir.x + ir.width as i32 - PADDING - item_x).max(0) as u32,
+                    item_line.height,
+                );
+                let label_align =
+                    self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
+                context.draw_text_fitted(
+                    label_band,
                     &item.label,
                     &item_font,
                     item_text_color,
-                    HorizontalAlignment::Left,
+                    label_align,
                 );
 
                 // Submenu indicator if item has children
@@ -552,25 +620,28 @@ impl Draw for DropdownMenu {
                 }
             }
 
-            // Scroll indicators if content is scrollable
+            // Scroll indicators if content is scrollable. Each is a `ChevronUp`/`ChevronDown`
+            // **icon outline**, not the `▲`/`▼` text glyph (U+25B2/U+25BC are covered by no
+            // bundled face, so those drew as 8x8 bitmap blocks).
             if self.scroll_offset > 0 {
-                let scroll_font = Font::simple("sans-serif", 10.0);
-                context.draw_text(
-                    Point::new(drop.x + drop.width as i32 / 2, drop.y + 2),
-                    "▲",
-                    &scroll_font,
+                let box_ = Rect::new(drop.x, drop.y, drop.width.max(1), 12);
+                crate::widget::draw_icon_centered(
+                    context,
+                    box_,
+                    10,
                     disabled_text_color,
-                    HorizontalAlignment::Left,
+                    IconName::ChevronUp,
                 );
             }
             if end < self.items.len() {
-                let scroll_font = Font::simple("sans-serif", 10.0);
-                context.draw_text(
-                    Point::new(drop.x + drop.width as i32 / 2, drop.y + drop.height as i32 - 12),
-                    "▼",
-                    &scroll_font,
+                let box_ =
+                    Rect::new(drop.x, drop.y + drop.height as i32 - 12, drop.width.max(1), 12);
+                crate::widget::draw_icon_centered(
+                    context,
+                    box_,
+                    10,
                     disabled_text_color,
-                    HorizontalAlignment::Left,
+                    IconName::ChevronDown,
                 );
             }
             // The clip is popped on the same path it was pushed, so the reveal cannot leak a clip

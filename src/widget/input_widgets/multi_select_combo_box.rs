@@ -20,12 +20,14 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::style::EdgeOffsets;
-use crate::widget::capability::coercion::expect_bool;
+use crate::widget::capability::coercion::{
+    expect_bool, expect_horizontal_alignment, horizontal_alignment_to_str,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::collections::HashSet;
 
@@ -106,6 +108,13 @@ pub struct MultiSelectComboBox {
     items: Vec<MultiSelectItem>,
     selected: HashSet<usize>,
     expanded: bool,
+    /// How the field's summary is aligned within its own box.
+    ///
+    /// Horizontal only: the summary is centred vertically in the field, so a `top`/`bottom`
+    /// value would be one this control could never honour —
+    /// [`crate::widget::capability::coercion::expect_horizontal_alignment`] refuses those rather
+    /// than accepting a write that does nothing. Defaults to left.
+    alignment: crate::core::Alignment,
     /// Emitted when the selection changes, with the list of selected item IDs.
     pub selection_changed: Signal1<Vec<u64>>,
 }
@@ -135,6 +144,7 @@ impl MultiSelectComboBox {
             items: Vec::new(),
             selected: HashSet::new(),
             expanded: false,
+            alignment: crate::core::Alignment::Left,
             selection_changed: Signal1::new(),
         }
     }
@@ -178,6 +188,25 @@ impl MultiSelectComboBox {
     /// Returns the number of items.
     pub fn item_count(&self) -> usize {
         self.items.len()
+    }
+
+    /// How the field's summary is aligned within its own box.
+    pub fn alignment(&self) -> crate::core::Alignment {
+        self.alignment
+    }
+
+    /// Sets how the field's summary is aligned within its own box.
+    ///
+    /// Horizontal only. A `top`/`bottom` alignment is **ignored**, because the summary is centred
+    /// vertically in the field by the field's own layout — the property route refuses it through
+    /// [`crate::widget::capability::coercion::expect_horizontal_alignment`], and this setter
+    /// matching that keeps the two entry points from disagreeing.
+    pub fn set_alignment(&mut self, alignment: crate::core::Alignment) {
+        if alignment.to_horizontal().is_none() || self.alignment == alignment {
+            return;
+        }
+        self.alignment = alignment;
+        self.base.request_redraw();
     }
 
     /// Returns a reference to the list of items.
@@ -346,6 +375,9 @@ impl WidgetProperties for MultiSelectComboBox {
         match name {
             "selected_count" => Ok(CapabilityValue::UInt(self.selected_count() as u64)),
             "expanded" => Ok(CapabilityValue::Bool(self.is_expanded())),
+            "alignment" => Ok(CapabilityValue::String(
+                horizontal_alignment_to_str(self.alignment()).to_string(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -357,12 +389,16 @@ impl WidgetProperties for MultiSelectComboBox {
                 Ok(())
             }
             "selected_count" => Err(CapabilityAccessError::ReadOnlyProperty),
+            "alignment" => {
+                self.set_alignment(expect_horizontal_alignment(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["selected_count", "expanded", BASE_PROPERTY_NAMES]
+        property_names_of!["selected_count", "expanded", "alignment", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `multi_select_combo_box` publishes.
@@ -468,19 +504,23 @@ impl Draw for MultiSelectComboBox {
             &summary,
             &font,
             ink,
-            HorizontalAlignment::Left,
+            self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
 
         // Draw the dropdown indicator inside its own derived box. It is the affordance that
         // tells a user the field opens, so it is held to the text floor rather than dimmed by a
         // fixed fraction — `0.45` toward the background measured 3.45:1 on the dark field.
-        let arrow_text = if self.expanded { "▲" } else { "▼" };
-        context.draw_text_fitted(
+        // The disclosure arrow is a `ChevronUp`/`ChevronDown` **icon outline** rather than the
+        // `▲`/`▼` text glyph: no bundled face covers U+25B2/U+25BC, so those fell back to 8x8
+        // bitmap blocks. It is centred in the box the field geometry reserved for it.
+        let arrow_icon = if self.expanded { IconName::ChevronUp } else { IconName::ChevronDown };
+        let arrow_color = ink.legible_on(bg_color, 4.5).blend(&bg_color, 0.15);
+        crate::widget::draw_icon_centered(
+            context,
             geometry.box_rect,
-            arrow_text,
-            &font,
-            ink.legible_on(bg_color, 4.5).blend(&bg_color, 0.15),
-            HorizontalAlignment::Center,
+            geometry.box_rect.height.min(geometry.box_rect.width),
+            arrow_color,
+            arrow_icon,
         );
 
         // Draw dropdown if expanded
@@ -521,15 +561,17 @@ impl Draw for MultiSelectComboBox {
             context.draw_rounded_rect_stroke(checkbox_rect, 2, checkbox_color, 1);
 
             if self.selected.contains(&i) {
-                // Draw checkmark
-                let check_font = Font::simple("sans-serif", 11.0);
-                context.draw_text(
-                    Point::new(checkbox_x + 2, checkbox_y + 12),
-                    "✓",
-                    &check_font,
-                    checkbox_color,
-                    HorizontalAlignment::Left,
+                // The tick is the `Check` **icon outline**, not the `✓` text glyph: no bundled face
+                // covers U+2713, so the glyph fell back to an 8x8 bitmap block. It is inset inside
+                // the box just drawn so the outline reads as a mark *in* the box.
+                let inset = checkbox_rect.width / 4;
+                let tick = Rect::new(
+                    checkbox_rect.x + inset as i32,
+                    checkbox_rect.y + inset as i32,
+                    checkbox_rect.width - inset * 2,
+                    checkbox_rect.height - inset * 2,
                 );
+                crate::widget::draw_icon_at(context, tick, checkbox_color, IconName::Check);
             }
 
             // Item text

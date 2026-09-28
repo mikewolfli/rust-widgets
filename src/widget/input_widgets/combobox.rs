@@ -31,7 +31,8 @@ use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::style::EdgeOffsets;
 use crate::widget::capability::coercion::{
-    expect_bool, expect_string, expect_text_direction, expect_usize, text_direction_to_str,
+    expect_bool, expect_horizontal_alignment, expect_string, expect_text_direction, expect_usize,
+    horizontal_alignment_to_str, text_direction_to_str,
 };
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -298,6 +299,14 @@ pub struct ComboBox {
     /// [`crate::core::TextDirection`] documents: a vertical control ignores it. Defaults to
     /// left-to-right, so a caller that never asks behaves exactly as it did.
     direction: crate::core::TextDirection,
+    /// How the field's value is aligned within its own box.
+    ///
+    /// Horizontal only: the value is centred vertically in the field band as a matter of the
+    /// field's own layout, so a `top`/`bottom` value would be one this control could never honour —
+    /// [`crate::widget::capability::coercion::expect_horizontal_alignment`] refuses those rather
+    /// than accepting a write that does nothing. Defaults to left, so a caller that never asks
+    /// behaves exactly as it did.
+    alignment: crate::core::Alignment,
     /// Whether the drop-down list is showing.
     ///
     /// # Why this is the field the list needed
@@ -375,6 +384,25 @@ impl ComboBox {
         self.base.request_layout();
     }
 
+    /// How the field's value is aligned within its own box.
+    pub fn alignment(&self) -> crate::core::Alignment {
+        self.alignment
+    }
+
+    /// Sets how the field's value is aligned within its own box.
+    ///
+    /// Horizontal only. A `top`/`bottom` alignment is **ignored**, because the value is centred
+    /// vertically in the field band by the field's own layout — the property route refuses it
+    /// through [`crate::widget::capability::coercion::expect_horizontal_alignment`], and this setter
+    /// matching that keeps the two entry points from disagreeing.
+    pub fn set_alignment(&mut self, alignment: crate::core::Alignment) {
+        if alignment.to_horizontal().is_none() || self.alignment == alignment {
+            return;
+        }
+        self.alignment = alignment;
+        self.base.request_redraw();
+    }
+
     /// Creates an empty combo box with geometry.
     pub fn new(geometry: Rect) -> Self {
         Self {
@@ -384,6 +412,7 @@ impl ComboBox {
             editable: false,
             max_visible_items: 10,
             direction: crate::core::TextDirection::LeftToRight,
+            alignment: crate::core::Alignment::Left,
             open: false,
             hovered_item: None,
             first_visible_item: 0,
@@ -798,6 +827,9 @@ impl WidgetProperties for ComboBox {
             "direction" => {
                 Ok(CapabilityValue::String(text_direction_to_str(self.direction()).to_string()))
             }
+            "alignment" => Ok(CapabilityValue::String(
+                horizontal_alignment_to_str(self.alignment()).to_string(),
+            )),
             "max_visible_items" => Ok(CapabilityValue::UInt(self.max_visible_items() as u64)),
             _ => base_property_get(self, name),
         }
@@ -824,6 +856,10 @@ impl WidgetProperties for ComboBox {
                 self.set_direction(expect_text_direction(value)?);
                 Ok(())
             }
+            "alignment" => {
+                self.set_alignment(expect_horizontal_alignment(value)?);
+                Ok(())
+            }
             "max_visible_items" => {
                 self.set_max_visible_items(expect_usize(value)?);
                 Ok(())
@@ -843,6 +879,7 @@ impl WidgetProperties for ComboBox {
             "editable",
             "max_visible_items",
             "direction",
+            "alignment",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1070,22 +1107,14 @@ impl Draw for ComboBox {
             geometry.text_box.width,
             value_line.height,
         );
+        // The value's alignment is the control's own horizontal alignment; the vertical is the
+        // field band's business, so only the horizontal axis is read here. The placeholder takes
+        // the same alignment, so the field reads as one column whichever value it is showing.
+        let value_align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
         if !current_text.is_empty() {
-            context.draw_text_fitted(
-                text_box,
-                &current_text,
-                font,
-                text_color,
-                HorizontalAlignment::Left,
-            );
+            context.draw_text_fitted(text_box, &current_text, font, text_color, value_align);
         } else if self.items.is_empty() {
-            context.draw_text_fitted(
-                text_box,
-                "(Empty)",
-                font,
-                text_color,
-                HorizontalAlignment::Left,
-            );
+            context.draw_text_fitted(text_box, "(Empty)", font, text_color, value_align);
         }
 
         // ── The drop-down list ──

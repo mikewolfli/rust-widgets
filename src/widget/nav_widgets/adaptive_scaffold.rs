@@ -351,19 +351,28 @@ impl AdaptiveScaffold {
             let total_content_height = icon_metrics.height + label_metrics.height + 4;
             let content_y = tab_rect.y + (tab_rect.height as i32 - total_content_height as i32) / 2;
 
-            // Icon
-            let icon_x = tab_rect.x + (tab_rect.width as i32 - icon_metrics.width as i32) / 2;
+            // Icon. The string is resolved as an **icon** first (`draw_icon_named`), falling back to
+            // text only when it names no icon at all — so a host passing `"star"` gets the real
+            // outline while one still passing `"★"` keeps the text path it always had.
+            //
             // `content_y` is the *top* of the icon+label stack and the glyph origin is itself
             // the box's top edge, so the ascent term that used to be added here pushed the
             // icon a full line down and the label with it, walking the pair out of the bar.
-            let icon_y = content_y;
-            context.draw_text(
-                Point::new(icon_x, icon_y),
-                &item.icon,
-                &icon_font,
-                icon_color,
-                HorizontalAlignment::Left,
+            let icon_box = Rect::new(
+                tab_rect.x + (tab_rect.width as i32 - icon_metrics.width as i32) / 2,
+                content_y,
+                icon_metrics.width.max(1),
+                icon_metrics.height.max(1),
             );
+            if !crate::widget::draw_icon_named(context, icon_box, icon_color, &item.icon) {
+                context.draw_text(
+                    Point::new(icon_box.x, icon_box.y),
+                    &item.icon,
+                    &icon_font,
+                    icon_color,
+                    HorizontalAlignment::Left,
+                );
+            }
 
             // Label
             let label_x = tab_rect.x + (tab_rect.width as i32 - label_metrics.width as i32) / 2;

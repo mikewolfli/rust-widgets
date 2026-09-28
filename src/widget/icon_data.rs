@@ -23,13 +23,13 @@
 // without the `icons` feature can still name the type (its table is what is gated).
 use super::display_widgets::icon::IconData;
 
-/// Every icon's data, indexed by `IconName`'s declaration order. 68 entries.
+/// Every icon's data, indexed by `IconName`'s declaration order. 69 entries.
 ///
 /// `IconName::data` indexes this with the variant's discriminant, and
 /// `tests/icon_data_integrity_test.rs` asserts the names line up, so the order is checked
 /// in every build rather than only asserted in a debug one.
 #[rustfmt::skip]
-pub(crate) static ICON_DATA: [IconData; 68] = [
+pub(crate) static ICON_DATA: [IconData; 69] = [
     IconData {
         name: "check",
         grid: 960,
@@ -369,5 +369,10 @@ pub(crate) static ICON_DATA: [IconData; 68] = [
         name: "notifications_off",
         grid: 960,
         paths: &["M160-200v-80h80v-280q0-33 8.5-65t25.5-61l60 60q-7 16-10.5 32.5T320-560v280h248L56-792l56-56 736 736-56 56-146-144H160Zm560-154-80-80v-126q0-66-47-113t-113-47q-26 0-50 8t-44 24l-58-58q20-16 43-28t49-18v-28q0-25 17.5-42.5T480-880q25 0 42.5 17.5T540-820v28q80 20 130 84.5T720-560v206Zm-276-50Zm36 324q-33 0-56.5-23.5T400-160h160q0 33-23.5 56.5T480-80Zm33-481Z"],
+    },
+    IconData {
+        name: "fullscreen",
+        grid: 960,
+        paths: &["M120-120v-200h80v120h120v80H120Zm520 0v-80h120v-120h80v200H640ZM120-640v-200h200v80H200v120h-80Zm640 0v-120H640v-80h200v200h-80Z"],
     },
 ];

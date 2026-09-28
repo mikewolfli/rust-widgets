@@ -11,7 +11,10 @@ use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::undo::{TextSnapshotCommand, UndoStack};
 
-use crate::widget::capability::coercion::{expect_bool, expect_string, expect_usize};
+use crate::widget::capability::coercion::{
+    expect_bool, expect_horizontal_alignment, expect_string, expect_usize,
+    horizontal_alignment_to_str,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -70,6 +73,14 @@ pub struct LineEdit {
     /// value must not change (a `text_changed` per keystroke would fire a form's validation on a word
     /// the user has not finished typing), and cancelling must restore the text exactly as it was.
     composition: Option<String>,
+    /// How the field's value is aligned within its own box.
+    ///
+    /// Horizontal only: the value is centred vertically in the field band as a matter of the
+    /// field's own layout, so a `top`/`bottom` value would be one this control could never honour —
+    /// [`crate::widget::capability::coercion::expect_horizontal_alignment`] refuses those rather
+    /// than accepting a write that does nothing. Defaults to left, so a caller that never asks
+    /// behaves exactly as it did.
+    alignment: crate::core::Alignment,
     /// Emitted after the widget's text changes: on edit commits, and after an
     /// undo/redo restores a snapshot. Not emitted when a programmatic
     /// `set_text` is given the text the field already holds.
@@ -114,6 +125,7 @@ impl LineEdit {
             decorations: DecorationSlots::default(),
             cursor_blink: crate::style::CursorBlink::new(),
             composition: None,
+            alignment: crate::core::Alignment::Left,
             text_changed: Signal1::new(),
             editing_finished: GenericSignal::new(),
             return_pressed: GenericSignal::new(),
@@ -122,6 +134,25 @@ impl LineEdit {
     /// Returns current text.
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// How the field's value is aligned within its own box.
+    pub fn alignment(&self) -> crate::core::Alignment {
+        self.alignment
+    }
+
+    /// Sets how the field's value is aligned within its own box.
+    ///
+    /// Horizontal only. A `top`/`bottom` alignment is **ignored**, because the value is centred
+    /// vertically in the field band by the field's own layout — the property route refuses it
+    /// through [`crate::widget::capability::coercion::expect_horizontal_alignment`], and this setter
+    /// matching that keeps the two entry points from disagreeing.
+    pub fn set_alignment(&mut self, alignment: crate::core::Alignment) {
+        if alignment.to_horizontal().is_none() || self.alignment == alignment {
+            return;
+        }
+        self.alignment = alignment;
+        self.base.request_redraw();
     }
     /// Returns whether this field currently has keyboard focus.
     pub fn is_focused(&self) -> bool {
@@ -730,6 +761,9 @@ impl WidgetProperties for LineEdit {
                 None => Ok(CapabilityValue::Null),
             },
             "over_limit" => Ok(CapabilityValue::Bool(self.is_over_limit())),
+            "alignment" => Ok(CapabilityValue::String(
+                horizontal_alignment_to_str(self.alignment()).to_string(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -778,6 +812,10 @@ impl WidgetProperties for LineEdit {
                 self.set_cursor_position(expect_usize(value)?);
                 Ok(())
             }
+            "alignment" => {
+                self.set_alignment(expect_horizontal_alignment(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -796,6 +834,7 @@ impl WidgetProperties for LineEdit {
             "error",
             "counter",
             "over_limit",
+            "alignment",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -1050,12 +1089,30 @@ impl Draw for LineEdit {
             // The field's own line box. A glyph origin is the box's top-left edge, so the
             // previous `rect.y + rect.height / 2` placed that edge on the field's middle line
             // and drew the value half a line low.
-            context.draw_text(
-                Point::new(text_x, value_line.y),
+            //
+            // The value (and the placeholder, which shares this run) sits in the value's own box,
+            // not from `text_x`, so a centred or right-aligned value is positioned against the box
+            // it is aligned within rather than against a fixed inset.
+            //
+            // `draw_text_fitted` insets its box by `TEXT_FIT_MARGIN` at each end, which is right for
+            // a label that must not touch its frame but wrong for a field value: left-aligned ink
+            // would then begin `TEXT_FIT_MARGIN` past the field's own padding. Handing it a box
+            // widened by that same inset on both sides puts the left edge back on the padding, so
+            // `Left` is byte-identical to the pre-alignment `draw_text` and the other two alignments
+            // measure from the same true box.
+            let fit = crate::render::TEXT_FIT_MARGIN as i32;
+            let value_box = Rect::new(
+                layout.value.x - fit,
+                value_line.y,
+                layout.value.width + (fit * 2) as u32,
+                value_line.height,
+            );
+            context.draw_text_fitted(
+                value_box,
                 display_text,
                 font,
                 text_color,
-                HorizontalAlignment::Left,
+                self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
             );
         }
 

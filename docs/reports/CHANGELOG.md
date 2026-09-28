@@ -5,6 +5,94 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.8.2 (2026-09-28) — The SVG snapshot tells the truth again: fonts, icons, alignment, and a gated gallery
+
+Backward compatible for every public signature; one new public helper is added. The theme of this
+release is **the snapshot is a picture of the control, not of the renderer's shortcuts**. Three
+classes of defect made `snapshots/svg/` disagree with the pixels, and each is now closed at its
+root rather than patched per control.
+
+### 1. The `desktop` profile carried no vector font, so every snapshot was bitmap
+
+`snapshots/svg/` is exported with `--features desktop`, and that profile listed **no `fonts-*`
+feature** — so the SVG backend's outline branch was compiled out and every glyph fell through to
+the `font8x8` **bitmap**. `button.svg` rendered as `M96 53h1v1h-1zM97 53h1v1h-1z…` (one 1×1
+rectangle per set bit) while the same build's rasteriser reported `source=Open Sans ink=Coverage`.
+The file and the pixels disagreed about which control they described.
+
+Fixed by moving the font/icon payload into the **device profiles** (`desktop`/`tablet`/`mobile`),
+leaving the *sized* profiles (`embedded`/`mini`) free of it, and inverting the two opt-in gates to
+match. `default` reaches the payload through `desktop`, so a plain `cargo build` and the snapshot
+exporter finally render the same control.
+
+### 2. Sixteen — then five more — controls drew a Unicode *symbol* where they meant an icon
+
+A control that wanted a tick, a chevron or an arrow called `draw_text("▼")`. No bundled face
+covers the Geometric Shapes / Arrows / Dingbats blocks, so each fell through the outline path to an
+8×8 **bitmap**, and the character carried no geometry contract for any test to assert on.
+
+Fixed with an `IconName` outline at every site. Two shared free functions are the mechanism,
+reexported at `crate::widget`:
+
+| Function | Use |
+|---|---|
+| `draw_icon_at(ctx, rect, color, name)` | paint an `IconName` outline into a rect |
+| `draw_icon_centered(ctx, box, side, color, name)` | a centred square inside a control's box |
+| `draw_icon_named(ctx, rect, color, name)` | resolve a **host string** to an outline, returning `false` when it names no icon |
+
+`draw_icon_named` is the new public helper. It closes the one remaining gap — controls whose icon
+is a caller-supplied string (`BottomNavigationBar::add_nav_item`, `AdaptiveScaffold::add_nav_item`)
+— **without** changing that API: a token like `"star"` now draws a real outline, a host-registered
+name still draws the host's outline, and a legacy symbol string keeps the text path it always had.
+The migration is a change a host opts into, not one this crate forces.
+
+A new gate, `tools/check_icons_not_symbol_glyphs.sh`, scans every `draw_text` for a symbol-block
+character so the class cannot return; it found two further sites (`action`, `menu_button`) the
+moment it was switched on.
+
+### 3. Three `RenderCommand`s were silently dropped by the SVG backend
+
+`SetBlendMode` and `DrawConicGradient` were `// skip`ed, `Blur` emitted a `<filter>` **no element
+referenced**, and a conic gradient was silently **downgraded to a linear** one — a wrong picture
+rather than a missing one. `BoxShadow` drew at twice the software backend's alpha and with a
+rounded corner the rasteriser never draws.
+
+All four now emit their equivalent, and a compile-time-plus-runtime test
+(`every_render_command_variant_reaches_the_svg_backend`) makes a newly added variant fail the
+build until the backend handles it. A separate case — a glyph that *is* covered but whose outline
+clips away in a narrow cell — used to fall back to a bitmap letter inside a vector word; it now
+draws nothing, which is what the rasteriser draws.
+
+### 4. Content alignment for every content-bearing control
+
+Twenty-one controls took a new `alignment` property (`left` / `centre` / `right`), resolved through
+one shared coercion helper so the accepted set and its spelling cannot drift. Table families are
+deliberately excluded: column alignment is a column-model concern, not a per-control one.
+
+`list_box` was rebuilt on the `list_view` pattern while adding it — its current row had been
+white-on-white, its colours hard-coded and theme-blind, and it had no hover, no truncation and no
+content inset.
+
+### 5. `control.md` is now a multi-column gallery
+
+The generated gallery listed one control per section as two **stacked** images, which put a
+screenful between any two comparisons in a page whose whole purpose is comparison. Each family is
+now a table — `控件 | 深色 | 浅色` — one row per registry name, 188 rows across 17 families, and the page
+fell from ≈1500 lines to 360. The snapshot gate counts rows instead of headings for the same check.
+
+### Verification
+
+```
+cargo test  --no-default-features --features desktop --lib   → 6145 passed / 0 failed
+cargo clippy --all-targets --no-default-features --features desktop -- -D warnings → 0 warning
+five profiles (desktop/tablet/mobile/embedded/mini)          → all Finished
+tools/check_svg_snapshots.sh        → checked=188 skipped=0 failed=0
+tools/check_icons_not_symbol_glyphs.sh → passed (with reverse injection)
+tools/check_icon_data_is_opt_in.sh / check_font_data_is_opt_in.sh / check_icon_licences.sh → all pass
+```
+
+`snapshots/svg/` holds no 8×8 text-bitmap run in any file, on either appearance.
+
 ## 2.8.1 (2026-09-28) — Disabled-state contrast, a Cupertino collapse, and signature-pad fidelity
 
 Backward compatible for every public signature. This release is **defects removed from paths that

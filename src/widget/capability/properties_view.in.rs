@@ -28,6 +28,7 @@ macro_rules! impl_properties_view {
                 true,
                 &["list", "icon", "details", "thumbnails"],
             ),
+            PropertySchema::enumerated("alignment", true, true, &["left", "centre", "right"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

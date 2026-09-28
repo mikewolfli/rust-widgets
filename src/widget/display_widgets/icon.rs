@@ -8,14 +8,23 @@
 //! Warning, Error, etc.). Each icon is drawn using basic shapes — lines, circles,
 //! rectangles, and paths — through the render context.
 
-use crate::core::{Color, HorizontalAlignment, Point, Rect};
+#[cfg(widgets_unstripped)]
+use crate::core::HorizontalAlignment;
+use crate::core::{Color, Point, Rect};
+#[cfg(widgets_unstripped)]
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
+#[cfg(widgets_unstripped)]
 use crate::widget::capability::coercion::{expect_f64, expect_string};
+#[cfg(widgets_unstripped)]
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
+#[cfg(widgets_unstripped)]
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
+#[cfg(widgets_unstripped)]
 use crate::widget::capability::WidgetProperties;
+#[cfg(widgets_unstripped)]
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+#[cfg(widgets_unstripped)]
 use crate::{impl_widget_property_hooks, property_names_of};
 
 // The `IconName` type is generated from `tools/icon_tokens.txt` — see
@@ -26,6 +35,190 @@ use crate::{impl_widget_property_hooks, property_names_of};
 #[path = "icon_names.rs"]
 mod icon_names;
 pub use icon_names::IconName;
+
+/// Draws `name`'s icon outline into `rect`, in `color`.
+///
+/// # Why this is a free function and not a method on [`Icon`]
+///
+/// A control often needs to paint an *icon glyph* inside its own `draw` — a disclosure
+/// chevron on a combo box, a star on a rating, a play/pause mark on a media bar. Those
+/// controls own their layout and cannot hand a sub-`Icon` widget to the tree, so they need the
+/// outline-drawing primitive itself rather than the widget.
+///
+/// They used to fake it with `draw_text("▼")` — a Unicode *symbol glyph* passed through the
+/// text pipeline. That is wrong on two counts: no bundled face covers those codepoints
+/// (measured: U+25B2/U+25B6/U+25BC/U+25BE/U+25C0/U+2605/U+2606/U+2713 are absent from every
+/// shipped face), so each fell back to an 8x8 bitmap block; and a symbol is a font shape the
+/// viewer's engine may substitute, whereas an icon is geometry.
+///
+/// # The two sources, resolved in the same order the widget uses
+///
+/// With the `icons` feature on, `name.data_opt()` gives the bundled Material Symbols outline,
+/// flattened through the shared [`flatten_paths`](crate::render::path::flatten_paths) the
+/// rasteriser and the SVG backend already agree on. Without the feature (or for a name that
+/// is not a token), the generated fallback geometry draws instead. Both paths are the ones
+/// [`Icon::draw_icon`] takes, so an inline icon and an [`Icon`] widget cannot render
+/// differently.
+///
+/// A `rect` with zero width or height draws nothing, and a name that neither the data nor the
+/// fallback table knows draws the question-mark placeholder — the same honest degradation the
+/// widget gives.
+pub fn draw_icon_at(ctx: &mut RenderContext, rect: Rect, color: Color, name: IconName) {
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+    #[cfg(feature = "icons")]
+    if let Some(data) = name.data_opt() {
+        draw_outline_in(ctx, rect, color, &data);
+        return;
+    }
+    draw_fallback_in(ctx, rect, color, name.as_str());
+}
+
+/// Draws the icon named `name` into `rect`, in `color`, reporting whether an icon was drawn.
+///
+/// # Why this exists alongside [`draw_icon_at`]
+///
+/// Some controls take their icon as a **host-supplied string** rather than an [`IconName`] —
+/// `BottomNavigationBar::add_nav_item(icon, label)` and `AdaptiveScaffold::add_nav_item` are the
+/// two in this crate. The string API is deliberate: it is how a host names an icon it registered
+/// itself with [`register_icon`](crate::widget::register_icon), which an `IconName` enum cannot
+/// express. It is also the API's weakness: the string may be anything, including a *symbol
+/// character* (`★`, `☰`, `✉`) that no bundled face covers, which then degrades to an 8x8 bitmap
+/// through the text path.
+///
+/// This function closes that gap without changing the API: it resolves `name` exactly the way
+/// [`Icon::draw_icon`] does (a bundled token, then a host registration, then the generated
+/// fallback), and **returns `false` when it resolved nothing** so the caller can keep whatever text
+/// behaviour it had. A host that passes `"star"` now gets a real outline; a host that still passes
+/// `"★"` keeps the old result rather than losing its icon.
+///
+/// # The return value is the compatibility contract
+///
+/// `false` means "this string is not an icon I know" — not an error. The caller decides what a
+/// non-icon string means, which is what lets the migration from symbol strings to token names be a
+/// change a host opts into rather than one this crate forces on it.
+pub fn draw_icon_named(ctx: &mut RenderContext, rect: Rect, color: Color, name: &str) -> bool {
+    if rect.width == 0 || rect.height == 0 {
+        return false;
+    }
+    // The bundled outline and the host registration both draw through `draw_outline_in`, which
+    // exists only where an outline can be drawn at all. Gating this block the same way keeps a
+    // build without an outline path compiling: there the token/registration lookups are skipped
+    // and the generated fallback below answers instead, exactly as `Icon::draw_icon` does.
+    #[cfg(any(feature = "icons", widgets_unstripped))]
+    {
+        #[cfg(feature = "icons")]
+        if let Some(known) = IconName::from_name(name) {
+            if let Some(data) = known.data_opt() {
+                draw_outline_in(ctx, rect, color, &data);
+                return true;
+            }
+        }
+        if let Some(data) = crate::widget::display_widgets::icon_data_set::lookup_registered(name) {
+            draw_outline_in(ctx, rect, color, &data);
+            return true;
+        }
+    }
+    // The generated fallback geometry is the answer on a build with no outline path, and the
+    // last resort everywhere else. A name it does not know was never an icon, which is what `false`
+    // reports to the caller.
+    if crate::widget::icon_fallback_data::ICON_FALLBACK.iter().any(|entry| entry.name == name) {
+        draw_fallback_in(ctx, rect, color, name);
+        return true;
+    }
+    false
+}
+
+/// Draws `name` as a **square** icon centred within `box_rect`, `side` device pixels across.
+///
+/// # Why the square is separate from the box
+///
+/// Every control that paints a disclosure arrow, a check mark or a star has a *box* for it —
+/// the column a combo box reserves, the cell a rating gives a star — and the icon must be a
+/// centred square inside that box, not stretched to its aspect ratio. A stretched icon is a
+/// distorted icon, so the two measurements are taken apart here rather than at each call site.
+///
+/// The `side` is clamped to the box so an over-large request cannot paint outside the slot
+/// the control reserved.
+pub fn draw_icon_centered(
+    ctx: &mut RenderContext,
+    box_rect: Rect,
+    side: u32,
+    color: Color,
+    name: IconName,
+) {
+    let side = side.min(box_rect.width).min(box_rect.height) as i32;
+    if side <= 0 {
+        return;
+    }
+    let rect = Rect::new(
+        box_rect.x + (box_rect.width as i32 - side) / 2,
+        box_rect.y + (box_rect.height as i32 - side) / 2,
+        side as u32,
+        side as u32,
+    );
+    draw_icon_at(ctx, rect, color, name);
+}
+
+/// Draws `data`'s outline into `rect`, the geometry path shared by [`Icon`] and [`draw_icon_at`].
+///
+/// Needed whenever either caller exists: the free `draw_icon_at` uses it when the `icons` feature
+/// is on, and `Icon::draw_outline_data` uses it for a host-registered outline even with the feature
+/// off (registering one must not require the bundled table).
+#[cfg(any(feature = "icons", widgets_unstripped))]
+fn draw_outline_in(ctx: &mut RenderContext, rect: Rect, color: Color, data: &IconData) {
+    use crate::render::path::{
+        flatten_paths, IconPlacement, MAX_OUTLINE_CONTOURS, MAX_OUTLINE_POINTS,
+    };
+
+    let placement = IconPlacement::new(rect.x, rect.y, rect.width as f32, data.grid);
+    let mut points = [Point::new(0, 0); MAX_OUTLINE_POINTS];
+    let mut contours = [(0usize, 0usize); MAX_OUTLINE_CONTOURS];
+    let Ok(count) = flatten_paths(data.paths, placement, &mut points, &mut contours) else {
+        return;
+    };
+    for &(start, end) in &contours[..count] {
+        let Some(contour) = points.get(start..end) else {
+            continue;
+        };
+        // `filled` is true, so this is a fill and the stroke width is unused. Passing `0` keeps the
+        // emitted `DrawPath` honest about that: the SVG backend reflects the argument into
+        // `stroke-width`, and a filled icon carrying `stroke-width="1"` was attribute noise that
+        // said a stroke existed when none is painted.
+        ctx.draw_path(contour, true, color, true, 0);
+    }
+}
+
+/// Draws `token`'s generated fallback geometry into `rect`; unknown tokens draw nothing here
+/// (the caller falls back to the placeholder).
+fn draw_fallback_in(ctx: &mut RenderContext, rect: Rect, color: Color, token: &str) {
+    use crate::widget::icon_fallback_data::ICON_FALLBACK;
+
+    let Some(fallback) = ICON_FALLBACK.iter().find(|entry| entry.name == token) else {
+        return;
+    };
+    let grid = f32::from(fallback.grid);
+    let scale = rect.width as f32 / grid;
+    let origin_x = rect.x as f32;
+    let origin_y = rect.y as f32;
+    for contour in fallback.contours {
+        if contour.len() < 3 {
+            continue;
+        }
+        let points: crate::compat::Vec<Point> = contour
+            .iter()
+            .map(|&(gx, gy)| {
+                Point::new(
+                    (origin_x + gx as f32 * scale).round() as i32,
+                    (origin_y + (gy as f32 + grid) * scale).round() as i32,
+                )
+            })
+            .collect();
+        // Filled, so the stroke width is unused; see `draw_outline_in` for why it is `0`.
+        ctx.draw_path(&points, true, color, true, 0);
+    }
+}
 
 /// One icon's outline, as SVG path data on a square design grid.
 ///
@@ -53,6 +246,10 @@ pub struct IconData {
 }
 
 /// Icon widget — renders a simple geometric icon.
+///
+/// Gated on `widgets_unstripped`: this is a *widget*, and the reduced profiles do not carry the
+/// widget set. The `IconName` vocabulary and the `draw_icon_at` / `draw_icon_centered` primitives
+/// above are **not** gated, because a control on any profile paints an inline icon through them.
 ///
 /// The icon is drawn using basic shapes (lines, circles, filled rects) through
 /// the render context. The widget supports all common icon names defined in
@@ -85,6 +282,7 @@ pub struct IconData {
 /// of the resolved colour (the mean of its R, G, and B channels) at half the
 /// original alpha. The resolved colour is recomputed on the next draw, so the
 /// stored value is unaffected.
+#[cfg(widgets_unstripped)]
 pub struct Icon {
     base: BaseWidget,
     icon_name: String,
@@ -93,6 +291,7 @@ pub struct Icon {
     color: Option<Color>,
 }
 
+#[cfg(widgets_unstripped)]
 impl Icon {
     /// Creates a new Icon widget with the given geometry.
     ///
@@ -264,41 +463,19 @@ impl Icon {
     /// the grid-to-device mapping is the same one [`Self::draw_outline`] uses, so the fallback and
     /// the data path place an icon identically.
     fn draw_fallback(&self, ctx: &mut RenderContext) {
-        use crate::widget::icon_fallback_data::ICON_FALLBACK;
-
-        let token = self.icon_name.as_str();
-        // The table is indexed by `IconName`'s declaration order, exactly like `ICON_DATA`, so a
-        // linear scan by name is the honest lookup for a string that may not be a token at all.
-        let Some(fallback) = ICON_FALLBACK.iter().find(|entry| entry.name == token) else {
-            self.draw_unknown(ctx);
-            return;
-        };
         let rect = self.icon_rect();
         if rect.width == 0 || rect.height == 0 {
             return;
         }
-        let color = self.resolve_color();
-        let grid = f32::from(fallback.grid);
-        let scale = rect.width as f32 / grid;
-        let origin_x = rect.x as f32;
-        let origin_y = rect.y as f32;
-        for contour in fallback.contours {
-            if contour.len() < 3 {
-                continue;
-            }
-            // Map on the fly rather than through a scratch buffer: a fallback contour is at most a
-            // few dozen points, and a fixed scratch would have to be sized for the largest one.
-            let points: Vec<Point> = contour
-                .iter()
-                .map(|&(gx, gy)| {
-                    Point::new(
-                        (origin_x + gx as f32 * scale).round() as i32,
-                        (origin_y + (gy as f32 + grid) * scale).round() as i32,
-                    )
-                })
-                .collect();
-            ctx.draw_path(&points, true, color, true, 1);
+        let token = self.icon_name.as_str();
+        // A name that is not a token has no fallback geometry, so the placeholder is the honest
+        // answer — the same decision the shared helper leaves to its caller.
+        if !crate::widget::icon_fallback_data::ICON_FALLBACK.iter().any(|entry| entry.name == token)
+        {
+            self.draw_unknown(ctx);
+            return;
         }
+        draw_fallback_in(ctx, rect, self.resolve_color(), token);
     }
 
     /// Draws an icon from outline data — the one path both a bundled and a host icon take.
@@ -315,27 +492,13 @@ impl Icon {
     /// without the crate's bundled table — that is the whole point of registering one. Only
     /// [`Self::draw_outline`], the bundled-table convenience, needs the feature.
     fn draw_outline_data(&self, ctx: &mut RenderContext, data: &IconData) {
-        use crate::render::path::{
-            flatten_paths, IconPlacement, MAX_OUTLINE_CONTOURS, MAX_OUTLINE_POINTS,
-        };
-
         let rect = self.icon_rect();
         if rect.width == 0 || rect.height == 0 {
             return;
         }
-        let color = self.resolve_color();
-        let placement = IconPlacement::new(rect.x, rect.y, rect.width as f32, data.grid);
-        let mut points = [Point::new(0, 0); MAX_OUTLINE_POINTS];
-        let mut contours = [(0usize, 0usize); MAX_OUTLINE_CONTOURS];
-        let Ok(count) = flatten_paths(data.paths, placement, &mut points, &mut contours) else {
-            return;
-        };
-        for &(start, end) in &contours[..count] {
-            let Some(contour) = points.get(start..end) else {
-                continue;
-            };
-            ctx.draw_path(contour, true, color, true, 1);
-        }
+        // One geometry path, shared with the free `draw_icon_at` a control uses to paint an icon
+        // inline, so an `Icon` widget and a control-drawn icon cannot render differently.
+        draw_outline_in(ctx, rect, self.resolve_color(), data);
     }
 
     /// Draws an icon from the crate's **bundled** outline table.
@@ -365,6 +528,7 @@ impl Icon {
     }
 }
 
+#[cfg(widgets_unstripped)]
 impl Widget for Icon {
     fn base(&self) -> &BaseWidget {
         &self.base
@@ -389,6 +553,7 @@ impl Widget for Icon {
 /// Read/write semantics are carried over unchanged from the centralised
 /// `access_read_other.in.rs` / `access_write_other.in.rs` dispatch, so callers see
 /// the same coercions and the same errors as before.
+#[cfg(widgets_unstripped)]
 impl WidgetProperties for Icon {
     fn get(&self, name: &str) -> Result<CapabilityValue, CapabilityAccessError> {
         match name {
@@ -440,6 +605,7 @@ impl WidgetProperties for Icon {
     }
 }
 
+#[cfg(widgets_unstripped)]
 impl Draw for Icon {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
@@ -468,13 +634,14 @@ impl Draw for Icon {
     }
 }
 
+#[cfg(widgets_unstripped)]
 impl EventHandler for Icon {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, widgets_unstripped))]
 mod tests {
     use super::*;
 

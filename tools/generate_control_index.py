@@ -11,6 +11,15 @@ registry. A hand-maintained index would drift the moment a control was added or 
 and the drift is silent: the page would simply stop mentioning a control. Generating it
 makes the index a *view* of the registry rather than a second copy of it (rule #101).
 
+# Why each family is a table
+
+Each family renders as a multi-column table — one row per control, with the dark and the
+light snapshot side by side — rather than a heading and two stacked images per control.
+The gallery exists for *comparing* controls, and side-by-side columns are what make a
+family scannable; a stacked form put a screenful between any two comparisons. A Markdown
+table is the only multi-column layout GitHub renders without raw HTML, so the page stays a
+document. The row count is also what the snapshot gate counts to check the set.
+
 # How a control's family is decided
 
 By the module that implements it, read from the source tree: `src/widget/<family>/<file>.rs`
@@ -365,8 +374,9 @@ def main() -> int:
     out.append("# 控件图像总览 / Control gallery")
     out.append("")
     out.append(
-        f"本仓一共有 **{len(names)}** 个控件，每个控件有两个外观（深色 / 浅色），"
-        f"共 **{len(names) * 2}** 张 SVG。"
+        f"本页共 **{len(names)}** 张控件快照名（每个两种外观，共 **{len(names) * 2}** 张 SVG）。\n"
+        "这些名字来自控件注册表（`factory.widget_names()`），其中包含少量**别名**\n"
+        "（如 `wizard_dialog` 同时以 `wizard` 注册），因此快照名数多于 `WidgetKind` 的枚举数（**180**）。"
     )
     if extras:
         out.append("")
@@ -399,6 +409,11 @@ def main() -> int:
         "| 分组依据 | 控件实现所在的模块目录（`src/widget/<family>/`），由本脚本自动推导 |"
     )
     out.append("")
+    out.append(
+        "每个分组下面是一张**多列表格**，每行一个控件，深色与浅色并排，便于横向对比；"
+        "控件名即快照文件名（去掉 `.svg` / `.light.svg`）。"
+    )
+    out.append("")
     out.append("## 分组统计 / Families")
     out.append("")
     out.append("| 分组 | 控件数 | 本节 |")
@@ -417,13 +432,23 @@ def main() -> int:
         out.append("")
         out.append(f"`{family}` — {len(controls)} 个控件。")
         out.append("")
+        # A **multi-column table**, one row per control, rather than the previous one-heading-plus-two-
+        # stacked-images-per-control form. The old form spent four blocks on a single control and ran
+        # to ~1500 lines, so comparing two controls — the thing the page exists for — meant scrolling
+        # past a screenful per comparison. A table puts the whole family's dark/light pairs side by
+        # side, which is how a reader actually scans a gallery.
+        #
+        # A Markdown table is the only multi-column layout GitHub renders without raw HTML, and it
+        # keeps the page a *document* rather than a fragment. One row per control is also what lets
+        # the gate count rows to check the set, the same way it counted `### ` headings before.
+        out.append("| 控件 | 深色 | 浅色 |")
+        out.append("|---|---|---|")
         for name in controls:
-            out.append(f"### `{name}`")
-            out.append("")
-            out.append(f"![{name} (dark)](snapshots/svg/{name}.svg)")
-            out.append("")
-            out.append(f"![{name} (light)](snapshots/svg/{name}.light.svg)")
-            out.append("")
+            out.append(
+                f"| `{name}` | ![{name} (dark)](snapshots/svg/{name}.svg) "
+                f"| ![{name} (light)](snapshots/svg/{name}.light.svg) |"
+            )
+        out.append("")
 
     output = DEFAULT_OUTPUT
     # `newline=""` is what keeps this byte-stable across hosts.

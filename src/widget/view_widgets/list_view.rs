@@ -16,7 +16,10 @@ use crate::core::Rect;
 use crate::render::RenderContext;
 use crate::signal::{ConnectionScope, GenericSignal, Signal1};
 use crate::widget::capability::access::{selection_mode_to_str, view_mode_to_str};
-use crate::widget::capability::coercion::{expect_selection_mode, expect_usize, expect_view_mode};
+use crate::widget::capability::coercion::{
+    expect_horizontal_alignment, expect_selection_mode, expect_usize, expect_view_mode,
+    horizontal_alignment_to_str,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -302,6 +305,20 @@ pub struct ListView {
     hovered_row: Option<usize>,
     /// View mode for rendering items.
     view_mode: ViewMode,
+    /// How an item's label is aligned within its row.
+    ///
+    /// # Why only the single-column modes read this
+    ///
+    /// The grid modes ([`ViewMode::Icon`] and [`ViewMode::Thumbnails`]) lay their labels out as
+    /// captions centred under a tile, which is the mode's own geometry rather than the row's; a
+    /// single alignment value cannot express a per-column placement, so those modes keep their
+    /// placement and only the single-column layouts ([`ViewMode::List`] and [`ViewMode::Details`])
+    /// honour the value. Horizontal only: a label is centred vertically in its row band by the row's
+    /// own layout, so a `top`/`bottom` value would be one this control could never honour --
+    /// [`crate::widget::capability::coercion::expect_horizontal_alignment`] refuses those rather
+    /// than accepting a write that does nothing. Defaults to left, so a caller that never asks
+    /// behaves exactly as it did.
+    alignment: crate::core::Alignment,
     /// Emitted when selected row changes.
     pub selection_changed: Signal1<usize>,
     /// Emitted when focused row changes.
@@ -318,6 +335,7 @@ impl ListView {
             focused_row: None,
             hovered_row: None,
             view_mode: ViewMode::default(),
+            alignment: crate::core::Alignment::Left,
             selection_changed: Signal1::new(),
             focused_row_changed: Signal1::new(),
         }
@@ -418,6 +436,27 @@ impl ListView {
     /// Sets the view mode.
     pub fn set_view_mode(&mut self, mode: ViewMode) {
         self.view_mode = mode;
+        self.base.request_redraw();
+    }
+
+    /// How an item's label is aligned within its row.
+    pub fn alignment(&self) -> crate::core::Alignment {
+        self.alignment
+    }
+
+    /// Sets how an item's label is aligned within its row.
+    ///
+    /// Horizontal only, and read by the single-column layouts; the grid modes place their captions
+    /// by their own tile geometry, as [`Self::alignment`] documents. A `top`/`bottom` alignment is
+    /// **ignored** because a label is centred vertically in its row band by the row's own layout --
+    /// the property route refuses those through
+    /// [`crate::widget::capability::coercion::expect_horizontal_alignment`], and this setter
+    /// matching that keeps the two entry points from disagreeing.
+    pub fn set_alignment(&mut self, alignment: crate::core::Alignment) {
+        if alignment.to_horizontal().is_none() || self.alignment == alignment {
+            return;
+        }
+        self.alignment = alignment;
         self.base.request_redraw();
     }
     fn normalize_projection_state(&mut self) {
@@ -636,6 +675,9 @@ impl WidgetProperties for ListView {
             "view_mode" => {
                 Ok(CapabilityValue::String(view_mode_to_str(self.view_mode()).to_string()))
             }
+            "alignment" => Ok(CapabilityValue::String(
+                horizontal_alignment_to_str(self.alignment()).to_string(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -667,6 +709,10 @@ impl WidgetProperties for ListView {
                 self.set_view_mode(expect_view_mode(value)?);
                 Ok(())
             }
+            "alignment" => {
+                self.set_alignment(expect_horizontal_alignment(value)?);
+                Ok(())
+            }
             "has_model" => Err(CapabilityAccessError::ReadOnlyProperty),
             "row_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
@@ -680,6 +726,7 @@ impl WidgetProperties for ListView {
             "focused_row",
             "selection_mode",
             "view_mode",
+            "alignment",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -809,7 +856,11 @@ impl Draw for ListView {
                                     cell.width.saturating_sub(layout.text_inset as u32),
                                     cell.height,
                                 ),
-                                HorizontalAlignment::Left,
+                                // A beside-label is a single run in a single-column row, so it is the
+                                // one placement the control's own alignment governs. The caption modes
+                                // below centre their label as part of their tile geometry, which is a
+                                // per-tile decision rather than a row one.
+                                self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
                             )
                         };
                         context.draw_text_fitted(

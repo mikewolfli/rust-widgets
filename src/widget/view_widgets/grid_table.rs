@@ -842,18 +842,9 @@ impl Draw for GridTableWidget {
                 let cell_rect = Rect::new(hx, rect.y, cw as u32, self.header_height);
                 context.draw_rect(cell_rect, grid_color);
 
-                // Sort indicator
+                // Which way this column is sorted, if at all.
                 let sort_desc =
                     self.sort_specs.iter().find(|s| s.column == ci).map(|s| s.descending);
-                let label = if let Some(desc) = sort_desc {
-                    if desc {
-                        " ▼"
-                    } else {
-                        " ▲"
-                    }
-                } else {
-                    ""
-                };
 
                 // The header names a *data* column, so the label is derived from the column's
                 // real index in the source — the same index the cells below are fetched with —
@@ -875,8 +866,12 @@ impl Draw for GridTableWidget {
                 // re-borrow of `self.data_source` is the same value either way.
                 let data_source = self.data_source.as_ref();
                 let header_text = match data_source.and_then(|source| source.column_name(ci)) {
-                    Some(name) if !name.is_empty() => alloc::format!("{name}{label}"),
-                    _ => alloc::format!("Column {}{label}", ci + 1),
+                    // A named column shows its name **alone**: the index is the fallback for a
+                    // projection that has no names, not a suffix every header carries. Appending it
+                    // unconditionally made a named column read "Name 3", which is the placeholder
+                    // this control stopped printing once the source could be asked.
+                    Some(name) if !name.is_empty() => name,
+                    _ => alloc::format!("Column {}", ci + 1),
                 };
                 context.draw_text_fitted(
                     context.text_line(cell_rect, &Font::default()),
@@ -885,6 +880,26 @@ impl Draw for GridTableWidget {
                     header_text_color,
                     HorizontalAlignment::Left,
                 );
+
+                // The direction was once a `▼`/`▲` appended to the header text, but no bundled
+                // face covers the geometric-shapes block, so both glyphs degraded to an 8x8 bitmap
+                // block. An icon is geometry both backends agree on, so it draws the same arrow the
+                // text path could not.
+                if let Some(desc) = sort_desc {
+                    let icon_side = cell_rect.height.min(10);
+                    let icon_rect = Rect::new(
+                        cell_rect.x + cell_rect.width as i32 - icon_side as i32 - 4,
+                        cell_rect.y + (cell_rect.height as i32 - icon_side as i32) / 2,
+                        icon_side,
+                        icon_side,
+                    );
+                    let icon_name = if desc {
+                        crate::widget::IconName::ArrowDown
+                    } else {
+                        crate::widget::IconName::ArrowUp
+                    };
+                    crate::widget::draw_icon_at(context, icon_rect, header_text_color, icon_name);
+                }
 
                 hx += cw;
             }

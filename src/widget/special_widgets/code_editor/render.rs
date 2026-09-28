@@ -219,11 +219,13 @@ impl CodeEditor {
             let model = self.model.borrow();
             let dirty = index == active && model.saved != *model.text.borrow();
             drop(model);
-            let label = if index == active && dirty {
-                format!("{} •", buffer.title)
-            } else {
-                buffer.title.clone()
-            };
+            // The dirty marker is a **drawn dot**, not the `U+2022` bullet the label used to
+            // carry. No bundled face covers the general-punctuation bullet's block with an outline
+            // that clips inside a tab's narrow cell, so the character fell back to an 8x8 bitmap
+            // and the tab read as a blob. Keeping it out of the label also keeps the *title* the
+            // title: the marker is state, and state drawn as text is state the next reader has to
+            // parse out of a string.
+            let label = buffer.title.clone();
             let width = ((label.chars().count() as f32 + 3.0) * advance).round() as u32;
             if x + width as i32 > rect.x + rect.width as i32 {
                 break;
@@ -251,6 +253,15 @@ impl CodeEditor {
                 if index == active { chrome.ink } else { chrome.dim_ink },
                 HorizontalAlignment::Left,
             );
+            if index == active && dirty {
+                // Centred on the label's own line box, in the trailing slot the width above
+                // reserved for the marker, so the dot sits beside the title rather than over it.
+                let line = context.measure_text(&label, &Font::default());
+                let radius = (line.height as f32 * 0.16).round().max(1.0) as u32;
+                let dot_x = tab_rect.x + tab_rect.width as i32 - 6 - radius as i32;
+                let dot_y = tab_rect.y + strip_height - 6 + (line.height as i32 / 2) - 1;
+                context.fill_circle_aa(Point::new(dot_x, dot_y), radius, chrome.ink);
+            }
             x += width as i32 + 2;
         }
         context.draw_line(

@@ -350,18 +350,29 @@ impl Draw for BottomNavigationBar {
                 context.fill_rounded_rect(pill, pill_height / 2, accent.blend(&bar_color, 0.24));
             }
 
-            // Draw icon. `content_y` is the top of the icon+label stack and the glyph origin is
+            // Draw icon. The string is resolved as an **icon** first (`draw_icon_named`), and only
+            // falls back to text when it names no icon at all. This is what lets a host pass
+            // `"star"` and get the real outline; a host still passing the old `"★"` symbol keeps
+            // the text path it always had, so the migration is opt-in rather than breaking.
+            //
+            // `content_y` is the top of the icon+label stack and the glyph origin is
             // the box's top edge, so no ascent term belongs here — the one that used to be
             // added pushed the icon a full line down and the label with it.
-            let icon_x = tab_rect.x + (tab_rect.width as i32 - icon_metrics.width as i32) / 2;
-            let icon_y = content_y;
-            context.draw_text(
-                Point::new(icon_x, icon_y),
-                &item.icon,
-                &icon_font,
-                icon_color,
-                HorizontalAlignment::Left,
+            let icon_box = Rect::new(
+                tab_rect.x + (tab_rect.width as i32 - icon_metrics.width as i32) / 2,
+                content_y,
+                icon_metrics.width.max(1),
+                icon_metrics.height.max(1),
             );
+            if !crate::widget::draw_icon_named(context, icon_box, icon_color, &item.icon) {
+                context.draw_text(
+                    Point::new(icon_box.x, icon_box.y),
+                    &item.icon,
+                    &icon_font,
+                    icon_color,
+                    HorizontalAlignment::Left,
+                );
+            }
 
             // Draw label
             let label_x = tab_rect.x + (tab_rect.width as i32 - label_metrics.width as i32) / 2;
@@ -615,6 +626,45 @@ mod tests {
         assert!(svg.ends_with("</svg>"));
         assert!(svg.contains("width=\"375\""));
         assert!(svg.contains("height=\"56\""));
+    }
+
+    #[test]
+    fn a_token_icon_name_draws_an_outline_and_a_legacy_symbol_still_draws_text() {
+        // The item `icon` is a host string, so this is the compatibility contract of
+        // `draw_icon_named`: a name that resolves to an icon draws real geometry (and carries no
+        // `data-text` tag), while a name that resolves to nothing keeps the text path so a host
+        // still passing the old symbol does not lose its icon.
+        let _theme_guard = crate::style::theme_test_guard();
+
+        let mut token_bar = BottomNavigationBar::new(Rect::new(0, 0, 375, 56));
+        token_bar.add_item("star", "Favorites");
+        let token_svg = render_to_svg(&mut token_bar);
+        // The icon is a filled outline (`stroke-width="0"`, no `data-text` tag), which the text
+        // path never emits. The *label* below it is still text, so the assertion is about the icon
+        // shape rather than about the whole document having no text run.
+        assert!(
+            token_svg.contains("stroke-width=\"0\""),
+            "a token icon name must draw outline geometry: {token_svg}"
+        );
+        let outline_paths = token_svg.matches("stroke-width=\"0\"").count();
+        assert!(
+            outline_paths >= 2,
+            "the star is a two-contour outline, so both contours must be drawn: {outline_paths}"
+        );
+
+        // The legacy symbol resolves to no icon, so the text path still runs — the behaviour a
+        // pre-existing host depends on.
+        let mut symbol_bar = BottomNavigationBar::new(Rect::new(0, 0, 375, 56));
+        symbol_bar.add_item("★", "Favorites");
+        let symbol_svg = render_to_svg(&mut symbol_bar);
+        assert!(
+            !symbol_svg.contains("stroke-width=\"0\""),
+            "a symbol string must keep the text path rather than gaining an icon: {symbol_svg}"
+        );
+        assert!(
+            symbol_svg.contains("data-text"),
+            "the symbol is still drawn as text, so the host does not lose its icon: {symbol_svg}"
+        );
     }
 
     #[test]

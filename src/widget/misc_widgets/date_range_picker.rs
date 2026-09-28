@@ -19,7 +19,7 @@ use crate::widget::capability::coercion::expect_string;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// A selected date range: `(start_date, end_date)` each as `(year, month, day)`.
@@ -425,21 +425,31 @@ impl Draw for DateRangePicker {
         // Both strips are anchored to the control's edges and the glyph is inset inside its
         // strip, so the drawn extent is bounded by the rectangle rather than by the glyph's
         // advance.
+        // The previous comment chose the filled triangles over `<`/`>` so the drawn extent and the
+        // emitted text would agree; that reasoning is what led here. The triangles were themselves
+        // the wrong character — no bundled face covers U+25C0/U+25B6, so they drew as 8x8 bitmap
+        // blocks. Both ends are now `ChevronLeft`/`ChevronRight` **icon outlines**, each inside its
+        // own strip anchored to the control's edge, so the drawn extent is bounded by the strip
+        // rather than by any glyph's advance.
+        //
+        // The height the square is sized from is the **line box** of a representative character, not
+        // a symbol glyph the control no longer draws: measuring `"◀"` sized the icon from a
+        // character that was about to become a bitmap block, which is a measurement of something the
+        // frame does not contain.
         let nav_font = Font::new("sans-serif", 12.0, true, false);
-        let nav_height = context.measure_text("◀", &nav_font).height;
-        context.draw_text_fitted(
-            Rect::new(rect.x + 6, rect.y + 8, 14, nav_height),
-            "◀",
-            &nav_font,
+        let nav_height = context.measure_text("M", &nav_font).height;
+        let arrow_side = nav_height.max(1);
+        crate::widget::draw_icon_at(
+            context,
+            Rect::new(rect.x + 6, rect.y + 8, arrow_side, arrow_side),
             text_color,
-            HorizontalAlignment::Center,
+            IconName::ChevronLeft,
         );
-        context.draw_text_fitted(
-            Rect::new(rect.x + rect.width as i32 - 20, rect.y + 8, 14, nav_height),
-            "▶",
-            &nav_font,
+        crate::widget::draw_icon_at(
+            context,
+            Rect::new(rect.x + rect.width as i32 - 20, rect.y + 8, arrow_side, arrow_side),
             text_color,
-            HorizontalAlignment::Center,
+            IconName::ChevronRight,
         );
 
         // ── Day-of-week header ──

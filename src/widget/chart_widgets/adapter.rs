@@ -119,7 +119,10 @@ impl ChartContext for ChartContextAdapter<'_, '_> {
             .iter()
             .map(|p| Point { x: Self::px(p.x as f32), y: Self::px(p.y as f32) })
             .collect();
-        self.inner.draw_path(&rounded, true, color, true, 1);
+        // A polygon is filled, so the stroke width is unused. Passing `0` keeps the emitted
+        // `DrawPath` honest: the SVG backend mirrors the argument into `stroke-width`, and a filled
+        // polygon carrying `stroke-width="1"` claimed a stroke that is never painted.
+        self.inner.draw_path(&rounded, true, color, true, 0);
     }
 
     fn draw_path_segment(&mut self, start: Point, end: Point, width: f32, color: Color) {

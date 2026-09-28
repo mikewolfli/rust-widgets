@@ -163,6 +163,8 @@ pub enum IconName {
     Send,
     /// A bell with a cross, for muted notifications.
     NotificationsOff,
+    /// A four-corner expand mark, for fullscreen.
+    Fullscreen,
 }
 
 impl IconName {
@@ -241,6 +243,7 @@ impl IconName {
             Self::Call => "call",
             Self::Send => "send",
             Self::NotificationsOff => "notifications_off",
+            Self::Fullscreen => "fullscreen",
         }
     }
 
@@ -320,6 +323,7 @@ impl IconName {
             "call" => Some(Self::Call),
             "send" => Some(Self::Send),
             "notifications_off" => Some(Self::NotificationsOff),
+            "fullscreen" => Some(Self::Fullscreen),
             _ => None,
         }
     }
@@ -328,8 +332,8 @@ impl IconName {
     ///
     /// The table's own view of [`IconName::ALL`], so a test can compare the two lists rather
     /// than compare each against a third copy.
-    pub fn all_tokens() -> [&'static str; 68] {
-        let mut tokens = [""; 68];
+    pub fn all_tokens() -> [&'static str; 69] {
+        let mut tokens = [""; 69];
         let mut index = 0;
         let mut variant_index = 0;
         while variant_index < Self::ALL.len() {
@@ -344,7 +348,7 @@ impl IconName {
     ///
     /// Indexed directly by the enum's discriminant — `data()` and `data_opt()` rely on that
     /// order matching the generated tables, which the integrity tests assert by name.
-    pub const ALL: [IconName; 68] = [
+    pub const ALL: [IconName; 69] = [
         Self::Check,
         Self::Cross,
         Self::ArrowLeft,
@@ -413,6 +417,7 @@ impl IconName {
         Self::Call,
         Self::Send,
         Self::NotificationsOff,
+        Self::Fullscreen,
     ];
 
     /// This icon's bundled outline data, indexed by declaration order.

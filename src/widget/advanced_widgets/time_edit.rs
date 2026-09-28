@@ -29,7 +29,10 @@ use crate::signal::Signal1;
 use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
 
 use crate::widget::capability::access::time_to_string;
-use crate::widget::capability::coercion::{expect_bool, expect_string, expect_time};
+use crate::widget::capability::coercion::{
+    expect_bool, expect_horizontal_alignment, expect_string, expect_time,
+    horizontal_alignment_to_str,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -221,6 +224,13 @@ pub struct TimeEdit {
     /// what makes the picker reachable, and the picker is what makes `TimeEdit` a time *picker*
     /// rather than a text field with a formatter.
     clock_popup: bool,
+    /// How the field's value is aligned within its own box.
+    ///
+    /// Horizontal only: the value is centred vertically in the field, so a `top`/`bottom` value
+    /// would be one this control could never honour —
+    /// [`crate::widget::capability::coercion::expect_horizontal_alignment`] refuses those rather
+    /// than accepting a write that does nothing. Defaults to left.
+    alignment: crate::core::Alignment,
     /// Which of the clock's two rings the pointer is over, while the popup is open.
     ///
     /// The hand a click would move: the outer ring sets the hour and the inner one the minute, so
@@ -266,6 +276,7 @@ impl TimeEdit {
             maximum: Time::new(23, 59, 59, 999),
             display_format: "HH:mm:ss".to_string(),
             clock_popup: false,
+            alignment: crate::core::Alignment::Left,
             hovered_hand: None,
             popup_visibility_changed: Signal1::new(),
             time_changed: Signal1::new(),
@@ -277,6 +288,25 @@ impl TimeEdit {
     /// Returns the current time.
     pub fn time(&self) -> Time {
         self.time
+    }
+
+    /// How the field's value is aligned within its own box.
+    pub fn alignment(&self) -> crate::core::Alignment {
+        self.alignment
+    }
+
+    /// Sets how the field's value is aligned within its own box.
+    ///
+    /// Horizontal only. A `top`/`bottom` alignment is **ignored**, because the value is centred
+    /// vertically in the field by the field's own layout — the property route refuses it through
+    /// [`crate::widget::capability::coercion::expect_horizontal_alignment`], and this setter
+    /// matching that keeps the two entry points from disagreeing.
+    pub fn set_alignment(&mut self, alignment: crate::core::Alignment) {
+        if alignment.to_horizontal().is_none() || self.alignment == alignment {
+            return;
+        }
+        self.alignment = alignment;
+        self.base.request_redraw();
     }
 
     /// Whether the field draws its clock face under itself.
@@ -725,6 +755,9 @@ impl WidgetProperties for TimeEdit {
             "maximum_time" => Ok(CapabilityValue::String(time_to_string(self.maximum_time()))),
             "display_format" => Ok(CapabilityValue::String(self.display_format().to_string())),
             "clock_popup" => Ok(CapabilityValue::Bool(self.clock_popup())),
+            "alignment" => Ok(CapabilityValue::String(
+                horizontal_alignment_to_str(self.alignment()).to_string(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -751,6 +784,10 @@ impl WidgetProperties for TimeEdit {
                 self.set_clock_popup(expect_bool(value)?);
                 Ok(())
             }
+            "alignment" => {
+                self.set_alignment(expect_horizontal_alignment(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -762,6 +799,7 @@ impl WidgetProperties for TimeEdit {
             "maximum_time",
             "display_format",
             "clock_popup",
+            "alignment",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -937,7 +975,7 @@ impl Draw for TimeEdit {
             &text,
             &font,
             ink,
-            HorizontalAlignment::Left,
+            self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
 
         if self.clock_popup {

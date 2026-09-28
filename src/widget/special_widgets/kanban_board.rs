@@ -43,7 +43,7 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{draw_icon_at, BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// The drag payload type every card of this control carries.
@@ -1000,16 +1000,32 @@ impl KanbanBoard {
         } else {
             chrome.text().with_alpha(alpha)
         };
-        let title = if card.done { format!("✓ {}", card.title) } else { card.title.clone() };
+        let title = card.title.clone();
         // The title and the description are placed from the card's own box: the literals
         // `+ 20` and `+ 38` described a 48 px card, so any other `CARD_HEIGHT` drew the
         // description past the card's bottom edge. A card is `CARD_HEIGHT` tall by contract.
         let title_font = Font::simple("Sans", 12.0);
         let desc_font = Font::simple("Sans", 10.0);
         let title_line = context.text_line(card_rect, &title_font);
+        // The done marker used to be a `✓` (U+2713) prefix on the title string. No bundled
+        // face covers that code point, so the text path fell back to an 8x8 bitmap and drew a
+        // blocky check mark. An `IconName::Check` is real geometry both backends agree on, and
+        // drawing it in its own square keeps it independent of the label's glyph coverage.
+        let mut title_x = card_rect.x + CARD_PADDING;
+        if card.done {
+            let icon_side: u32 = 10;
+            let icon_rect = Rect::new(
+                title_x,
+                title_line.y + (title_line.height as i32 - icon_side as i32) / 2,
+                icon_side,
+                icon_side,
+            );
+            draw_icon_at(context, icon_rect, title_color, IconName::Check);
+            title_x += icon_side as i32 + 4;
+        }
         if !title.is_empty() {
             context.draw_text(
-                Point::new(card_rect.x + CARD_PADDING, title_line.y),
+                Point::new(title_x, title_line.y),
                 &title,
                 &title_font,
                 title_color,

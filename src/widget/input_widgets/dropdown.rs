@@ -9,17 +9,19 @@
 
 use crate::compat::{String, ToString, Vec};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
 use crate::event::key_codes;
+use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::GenericSignal;
 use crate::style::EdgeOffsets;
-use crate::widget::capability::coercion::{expect_bool, expect_usize};
+use crate::widget::capability::coercion::{
+    expect_bool, expect_horizontal_alignment, expect_usize, horizontal_alignment_to_str,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Height of each item row in the expanded dropdown list (pixels).
@@ -101,6 +103,13 @@ pub struct Dropdown {
     selected_index: usize,
     /// Whether the dropdown list is expanded.
     expanded: bool,
+    /// How the selected label is aligned within its own box.
+    ///
+    /// Horizontal only: the label is centred vertically in the field, so a `top`/`bottom` value
+    /// would be one this control could never honour —
+    /// [`crate::widget::capability::coercion::expect_horizontal_alignment`] refuses those rather
+    /// than accepting a write that does nothing. Defaults to left.
+    alignment: crate::core::Alignment,
     /// Signal emitted when the selection changes.
     pub changed: GenericSignal,
 }
@@ -115,6 +124,7 @@ impl Dropdown {
             base: BaseWidget::new(WidgetKind::Dropdown, rect, "Dropdown"),
             selected_index: 0,
             expanded: false,
+            alignment: crate::core::Alignment::Left,
             changed: GenericSignal::new(),
             items,
         }
@@ -123,6 +133,25 @@ impl Dropdown {
     /// Returns the full list of option strings.
     pub fn items(&self) -> &[String] {
         &self.items
+    }
+
+    /// How the selected label is aligned within its own box.
+    pub fn alignment(&self) -> crate::core::Alignment {
+        self.alignment
+    }
+
+    /// Sets how the selected label is aligned within its own box.
+    ///
+    /// Horizontal only. A `top`/`bottom` alignment is **ignored**, because the label is centred
+    /// vertically in the field by the field's own layout — the property route refuses it through
+    /// [`crate::widget::capability::coercion::expect_horizontal_alignment`], and this setter
+    /// matching that keeps the two entry points from disagreeing.
+    pub fn set_alignment(&mut self, alignment: crate::core::Alignment) {
+        if alignment.to_horizontal().is_none() || self.alignment == alignment {
+            return;
+        }
+        self.alignment = alignment;
+        self.base.request_redraw();
     }
 
     /// Replaces all option strings and resets the selection to the first item
@@ -276,6 +305,9 @@ impl WidgetProperties for Dropdown {
             "selected_index" => Ok(CapabilityValue::UInt(self.selected_index() as u64)),
             "item_count" => Ok(CapabilityValue::UInt(self.items().len() as u64)),
             "expanded" => Ok(CapabilityValue::Bool(self.is_expanded())),
+            "alignment" => Ok(CapabilityValue::String(
+                horizontal_alignment_to_str(self.alignment()).to_string(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -290,6 +322,10 @@ impl WidgetProperties for Dropdown {
                 self.set_expanded(expect_bool(value)?);
                 Ok(())
             }
+            "alignment" => {
+                self.set_alignment(expect_horizontal_alignment(value)?);
+                Ok(())
+            }
             // `text` follows the selection and `item_count` the item list.
             "text" | "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
@@ -298,7 +334,14 @@ impl WidgetProperties for Dropdown {
 
     fn property_names(&self) -> &'static [&'static str] {
         // Mirrors `DROPDOWN_PROPERTIES`.
-        property_names_of!["text", "selected_index", "item_count", "expanded", BASE_PROPERTY_NAMES]
+        property_names_of![
+            "text",
+            "selected_index",
+            "item_count",
+            "expanded",
+            "alignment",
+            BASE_PROPERTY_NAMES
+        ]
     }
 
     /// Runs one of the commands `dropdown` publishes.
@@ -363,7 +406,8 @@ impl EventHandler for Dropdown {
             Event::KeyPress { key, modifiers: _ } => {
                 if !self.expanded {
                     // Up / Down arrow keys open the list
-                    if (*key == key_codes::DOWN || *key == key_codes::UP) && !self.items.is_empty() {
+                    if (*key == key_codes::DOWN || *key == key_codes::UP) && !self.items.is_empty()
+                    {
                         self.expanded = true;
                     }
                     return;
@@ -468,9 +512,7 @@ impl Draw for Dropdown {
         // field's middle line and drew the value and the indicator half a line low.
         let field_line = context.text_line(geo, &Font::default());
         let geometry = self.field_geometry(field_line.height);
-        let indicator = "▼";
         let label_line = context.text_line(geometry.label_box, &Font::default());
-        let indicator_line = context.text_line(geometry.indicator_box, &Font::default());
 
         let (label, color) = match self.selected_text() {
             Some(text) => (text, text_color),
@@ -488,19 +530,17 @@ impl Draw for Dropdown {
             label,
             &Font::default(),
             color,
-            HorizontalAlignment::Left,
+            self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
-        context.draw_text_fitted(
-            Rect::new(
-                geometry.indicator_box.x,
-                indicator_line.y,
-                geometry.indicator_box.width,
-                indicator_line.height,
-            ),
-            indicator,
-            &Font::default(),
+        // The disclosure arrow is the `ChevronDown` **icon outline**, not the `▼` text glyph: no
+        // bundled face covers U+25BC, so the glyph fell back to an 8x8 bitmap block. The icon is
+        // centred in the indicator box the field geometry reserved for it.
+        crate::widget::draw_icon_centered(
+            context,
+            geometry.indicator_box,
+            geometry.indicator_box.height.min(geometry.indicator_box.width),
             color,
-            HorizontalAlignment::Left,
+            IconName::ChevronDown,
         );
 
         // ── Expanded list ───────────────────────────────────────────────
@@ -924,10 +964,9 @@ mod tests {
                 let to = element[at..].find('"')? + at;
                 element[at..to].parse().ok()
             };
-            if let (Some(y), Some(key)) = (
-                attr("y"),
-                element.find("fill=\"rgba(").map(|i| i + "fill=\"rgba(".len()),
-            ) {
+            if let (Some(y), Some(key)) =
+                (attr("y"), element.find("fill=\"rgba(").map(|i| i + "fill=\"rgba(".len()))
+            {
                 if y >= field_bottom {
                     let to = element[key..].find(')').map(|e| e + key).unwrap_or(key);
                     rows.push(element[key..to].to_string());

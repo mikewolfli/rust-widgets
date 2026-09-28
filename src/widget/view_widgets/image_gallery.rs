@@ -16,7 +16,7 @@ use crate::widget::capability::coercion::expect_usize;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Metadata for a single image in the gallery.
@@ -198,6 +198,26 @@ impl ImageGallery {
     /// Returns whether there is a previous image available.
     pub fn has_previous(&self) -> bool {
         self.current_index > 0 && !self.images.is_empty()
+    }
+
+    /// The navigation-arrow hit boxes inside `preview`, `(previous, next)`, each `None` when that
+    /// direction is unavailable.
+    ///
+    /// # Why the boxes are derived here and not at each site
+    ///
+    /// The arrows are painted by `draw` and hit-tested by `handle_event`. Measuring the glyph at
+    /// each site meant the two could disagree about where an arrow is (this file has had that
+    /// defect class before), and a glyph measurement also depended on the font. A fixed 24 px
+    /// square anchored to the preview's own edges is the same object for both, so an arrow is
+    /// clickable exactly where it is drawn.
+    fn arrow_boxes(&self, preview: Rect, side: u32) -> (Option<Rect>, Option<Rect>) {
+        let side = side.min(preview.height).max(1);
+        let y = preview.y + (preview.height as i32 - side as i32) / 2;
+        let previous = self.has_previous().then(|| Rect::new(preview.x + 8, y, side, side));
+        let next = self
+            .has_next()
+            .then(|| Rect::new(preview.x + preview.width as i32 - side as i32 - 8, y, side, side));
+        (previous, next)
     }
 
     /// Sets the thumbnail size in pixels.
@@ -471,39 +491,26 @@ impl Draw for ImageGallery {
                 HorizontalAlignment::Left,
             );
 
-            // Navigation arrows.
-            if self.has_previous() {
-                let arrow_left = "◀";
-                let arrow_metrics = context.measure_text(arrow_left, &font);
-                let arrow_x = preview_rect.x + 8;
-                // The origin is the glyph box's top edge, so centring on the preview's middle
-                // means subtracting half the line box — the old `+ ascent/2` pushed the arrow
-                // half a line down.
-                let arrow_y =
-                    preview_rect.y + (preview_rect.height as i32 - arrow_metrics.height as i32) / 2;
-                context.draw_text(
-                    Point::new(arrow_x, arrow_y),
-                    arrow_left,
-                    &font,
+            // Navigation arrows: `ChevronLeft`/`ChevronRight` **icon outlines**, not the `◀`/`▶`
+            // text glyphs (U+25C0/U+25B6 are covered by no bundled face, so those drew as 8x8
+            // bitmap blocks). The boxes come from `arrow_boxes`, so the ink and the hit test are
+            // the same object.
+            if let Some(left) = self.arrow_boxes(preview_rect, 24).0 {
+                crate::widget::draw_icon_centered(
+                    context,
+                    left,
+                    24,
                     arrow_ink,
-                    HorizontalAlignment::Left,
+                    IconName::ChevronLeft,
                 );
             }
-
-            if self.has_next() {
-                let arrow_right = "▶";
-                let arrow_metrics = context.measure_text(arrow_right, &font);
-                let arrow_x =
-                    preview_rect.x + preview_rect.width as i32 - arrow_metrics.width as i32 - 8;
-                // Far arrow: same centring, origin at the glyph box's top edge.
-                let arrow_y =
-                    preview_rect.y + (preview_rect.height as i32 - arrow_metrics.height as i32) / 2;
-                context.draw_text(
-                    Point::new(arrow_x, arrow_y),
-                    arrow_right,
-                    &font,
+            if let Some(right) = self.arrow_boxes(preview_rect, 24).1 {
+                crate::widget::draw_icon_centered(
+                    context,
+                    right,
+                    24,
                     arrow_ink,
-                    HorizontalAlignment::Left,
+                    IconName::ChevronRight,
                 );
             }
         }
@@ -635,50 +642,23 @@ impl EventHandler for ImageGallery {
                     let preview_height = rect.height.saturating_sub(thumb_strip_height);
                     let preview_rect = Rect::new(rect.x, rect.y, rect.width, preview_height);
 
-                    // Check if clicked on navigation arrows in preview area.
+                    // Check if clicked on navigation arrows in preview area. The boxes come from
+                    // `arrow_boxes`, the same derivation `draw` paints through, so an arrow is
+                    // clickable exactly where it is drawn.
                     if pos.y >= preview_rect.y && pos.y < preview_rect.y + preview_height as i32 {
-                        let font = Font::default();
-
-                        if self.has_previous() {
-                            let arrow_left = "◀";
-                            let arrow_metrics =
-                                context::private::measure_text_static(&font, arrow_left);
-                            let arrow_x = preview_rect.x + 8;
-                            // Must match the draw site exactly: the centred arrow sits at
-                            // `middle - height/2`, and the old `+ ascent/2` target left this
-                            // hit box half a line under the glyphs.
-                            let arrow_y = preview_rect.y
-                                + (preview_height as i32 - arrow_metrics.height as i32) / 2;
-                            let arrow_w = arrow_metrics.width as i32 + 8;
-                            let arrow_h = arrow_metrics.height as i32 + 8;
-                            let arrow_rect =
-                                Rect::new(arrow_x - 4, arrow_y - 4, arrow_w as u32, arrow_h as u32);
-                            if arrow_rect.contains_point(*pos) {
+                        let (previous, next) = self.arrow_boxes(preview_rect, 24);
+                        if let Some(arrow) = previous {
+                            if arrow.contains_point(*pos) {
                                 self.previous_image();
                                 return;
                             }
                         }
-
-                        if self.has_next() {
-                            let arrow_right = "▶";
-                            let arrow_metrics =
-                                context::private::measure_text_static(&font, arrow_right);
-                            let arrow_x = preview_rect.x + preview_rect.width as i32
-                                - arrow_metrics.width as i32
-                                - 8;
-                            // Far arrow: mirrors the draw site's centred origin.
-                            let arrow_y = preview_rect.y
-                                + (preview_height as i32 - arrow_metrics.height as i32) / 2;
-                            let arrow_w = arrow_metrics.width as i32 + 8;
-                            let arrow_h = arrow_metrics.height as i32 + 8;
-                            let arrow_rect =
-                                Rect::new(arrow_x - 4, arrow_y - 4, arrow_w as u32, arrow_h as u32);
-                            if arrow_rect.contains_point(*pos) {
+                        if let Some(arrow) = next {
+                            if arrow.contains_point(*pos) {
                                 self.next_image();
                                 return;
                             }
                         }
-
                         return;
                     }
 
@@ -751,17 +731,6 @@ impl EventHandler for ImageGallery {
             _ => {
                 self.base.handle_event(event);
             }
-        }
-    }
-}
-
-/// Internal helper module for static text metrics (avoiding RenderContext dependency in event handler).
-mod context {
-    pub mod private {
-        use crate::core::Font;
-        use crate::render::TextMetrics;
-        pub fn measure_text_static(_font: &Font, text: &str) -> TextMetrics {
-            TextMetrics { width: (text.len() as u32) * 8, height: 16, ascent: 12, descent: 4 }
         }
     }
 }

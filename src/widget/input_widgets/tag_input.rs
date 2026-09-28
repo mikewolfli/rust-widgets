@@ -12,7 +12,9 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
-use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::coercion::{
+    expect_horizontal_alignment, expect_string, horizontal_alignment_to_str,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -96,6 +98,13 @@ pub struct TagInput {
     input_buffer: String,
     placeholder: String,
     focused: bool,
+    /// How the field's placeholder and typed text are aligned within the input area.
+    ///
+    /// Horizontal only: the text is centred vertically in the input band, so a `top`/`bottom`
+    /// value would be one this control could never honour —
+    /// [`crate::widget::capability::coercion::expect_horizontal_alignment`] refuses those rather
+    /// than accepting a write that does nothing. Defaults to left.
+    alignment: crate::core::Alignment,
     /// The input caret's blink state, advanced by [`TagInput::tick`].
     cursor_blink: crate::style::CursorBlink,
     /// Emitted when the tags list changes, providing the full list of tags.
@@ -113,6 +122,7 @@ impl TagInput {
             input_buffer: String::new(),
             placeholder: "Type and press Enter\u{2026}".to_string(),
             focused: false,
+            alignment: crate::core::Alignment::Left,
             cursor_blink: crate::style::CursorBlink::new(),
             tags_changed: Signal1::new(),
             undo_stack: UndoStack::new(),
@@ -161,6 +171,25 @@ impl TagInput {
     /// Returns the placeholder shown while the input area is empty.
     pub fn placeholder(&self) -> &str {
         &self.placeholder
+    }
+
+    /// How the field's placeholder and typed text are aligned within the input area.
+    pub fn alignment(&self) -> crate::core::Alignment {
+        self.alignment
+    }
+
+    /// Sets how the field's placeholder and typed text are aligned within the input area.
+    ///
+    /// Horizontal only. A `top`/`bottom` alignment is **ignored**, because the text is centred
+    /// vertically in the input band by the field's own layout — the property route refuses it
+    /// through [`crate::widget::capability::coercion::expect_horizontal_alignment`], and this
+    /// setter matching that keeps the two entry points from disagreeing.
+    pub fn set_alignment(&mut self, alignment: crate::core::Alignment) {
+        if alignment.to_horizontal().is_none() || self.alignment == alignment {
+            return;
+        }
+        self.alignment = alignment;
+        self.base.request_redraw();
     }
 
     /// Sets the placeholder shown while the input area is empty.
@@ -422,6 +451,9 @@ impl WidgetProperties for TagInput {
         match name {
             "tags" => Ok(CapabilityValue::String(self.tags().join(","))),
             "placeholder" => Ok(CapabilityValue::String(self.placeholder().to_string())),
+            "alignment" => Ok(CapabilityValue::String(
+                horizontal_alignment_to_str(self.alignment()).to_string(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -433,12 +465,16 @@ impl WidgetProperties for TagInput {
                 self.set_placeholder(&expect_string(value)?);
                 Ok(())
             }
+            "alignment" => {
+                self.set_alignment(expect_horizontal_alignment(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
-        property_names_of!["tags", "placeholder", BASE_PROPERTY_NAMES]
+        property_names_of!["tags", "placeholder", "alignment", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `tag_input` publishes.
@@ -648,7 +684,7 @@ impl Draw for TagInput {
             display_text,
             &default_font,
             input_text_color,
-            HorizontalAlignment::Left,
+            self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
 
         // ── Cursor (when focused and input is active) ──

@@ -4,10 +4,13 @@
 //! Rating widget — a star rating control (like 1-5 stars).
 //!
 //! The Rating widget displays a horizontal row of stars that the user can click
-//! to set a rating value. Filled stars (★) are drawn in gold for the rated
-//! portion, while unrated stars (☆) are drawn in gray outline.
+//! to set a rating value. Stars are the `Star` **icon outline** (Material Symbols), not the
+//! `★`/`☆` text glyphs: those codepoints are covered by no bundled face, so drawing them through
+//! the text pipeline fell back to 8x8 bitmap blocks. The rated portion is the accent colour and
+//! the unrated remainder is a muted tint of the same solid star, which is how Material 3 draws a
+//! rating rather than with a separate hollow glyph.
 
-use crate::core::{Color, Font, HorizontalAlignment, Rect};
+use crate::core::{Color, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -16,7 +19,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Star rating widget for selecting a rating from 1 to N stars.
@@ -365,14 +368,12 @@ impl Draw for Rating {
             return;
         }
 
-        // A star is a glyph, so its cell is the star's own line box centred in the row —
-        // not the control's middle line. `center_y` was used directly as the glyph origin,
-        // which is the box's top edge, so every star sat half a line low (and `★` is a wide
-        // glyph, so it read as a full line). The line box is measured, so a theme with a larger
-        // font moves the stars with their own ink.
-        let font = Font::default();
-        let line = context.text_line(row, &font);
-        let center_y = line.y;
+        // A star is an **icon**, not a glyph: `★`/`☆` (U+2605/U+2606) are absent from every
+        // bundled face, so `draw_text("★")` fell back to an 8x8 bitmap block. The cell is the
+        // star's own square box centred in the row, and the outline is drawn through the shared
+        // `draw_icon_at` primitive so a star here and an `Icon::new(.., IconName::Star)` widget
+        // are the same shape.
+        let star_side = self.star_size.min(row.height) as i32;
 
         // A filled star is the theme's accent — the slot the palette reserves for a
         // value indicator — so it moves with the appearance instead of staying a
@@ -386,6 +387,8 @@ impl Draw for Rating {
         // keeps it; the accent is what an unstyled control uses.
         let explicit = self.base.style();
         let filled_color = explicit.border_color.or(explicit.background_color).unwrap_or(accent);
+        // Material 3 has no hollow star: the unselected mark is the *same* solid star at lower
+        // emphasis, which is why there is one `Star` icon rather than a `Star`/`StarBorder` pair.
         let empty_color = if is_enabled {
             text_color.blend(&background, 0.35)
         } else {
@@ -400,53 +403,36 @@ impl Draw for Rating {
                 continue;
             };
             let fill = self.star_fill(i);
-            let glyph_rect =
-                Rect { x: cell.x, y: center_y, width: cell.width, height: line.height };
+            // The star's square box, centred vertically in the control's band.
+            let icon_rect = Rect {
+                x: cell.x,
+                y: row.y + (row.height as i32 - star_side) / 2,
+                width: star_side as u32,
+                height: star_side as u32,
+            };
 
-            // The empty glyph is always drawn first, so a partial star is a full outline with a
+            // The unselected star is always drawn first, so a partial star is a full outline with a
             // filled portion inside it rather than a narrower star: a half-star is the same
             // object as a whole one, seen half-rated.
-            //
-            // `Center` positions the glyph from the cell's own midpoint, so the star needs a
-            // cell — the previous form passed the cell's midpoint as a *left-origin* point and
-            // then asked for `Center`, which shifted every star right by half its own advance.
-            context.draw_text_fitted(
-                glyph_rect,
-                "☆",
-                &font,
-                empty_color,
-                HorizontalAlignment::Center,
-            );
+            crate::widget::draw_icon_at(context, icon_rect, empty_color, IconName::Star);
             if fill <= 0.0 {
                 continue;
             }
             if fill >= 1.0 {
-                // A whole star needs no clip: the filled glyph exactly covers the outline.
-                context.draw_text_fitted(
-                    glyph_rect,
-                    "★",
-                    &font,
-                    filled_color,
-                    HorizontalAlignment::Center,
-                );
+                // A whole star needs no clip: the filled star exactly covers the outline.
+                crate::widget::draw_icon_at(context, icon_rect, filled_color, IconName::Star);
                 continue;
             }
-            // A partial star is the filled glyph clipped to the rated share of the cell. The
-            // filled glyph is drawn in the *whole* cell and the clip cuts it, so the filled
+            // A partial star is the filled star clipped to the rated share of the cell. The
+            // filled star is drawn in the *whole* cell and the clip cuts it, so the filled
             // half is registered with the outline rather than squeezed into half a cell —
             // squeezing it would draw a smaller star, not a half-filled one.
-            let filled_width = (cell.width as f32 * fill).round() as u32;
+            let filled_width = (icon_rect.width as f32 * fill).round() as u32;
             if filled_width == 0 {
                 continue;
             }
-            context.push_clip(cell.x, cell.y, filled_width, cell.height);
-            context.draw_text_fitted(
-                glyph_rect,
-                "★",
-                &font,
-                filled_color,
-                HorizontalAlignment::Center,
-            );
+            context.push_clip(icon_rect.x, icon_rect.y, filled_width, icon_rect.height);
+            crate::widget::draw_icon_at(context, icon_rect, filled_color, IconName::Star);
             context.pop_clip();
         }
     }
@@ -669,12 +655,13 @@ mod tests {
         );
     }
 
-    /// A half-rated star paints the filled glyph clipped to the rated share of its cell.
+    /// A half-rated star paints the filled star clipped to the rated share of its cell.
     ///
     /// The assertion is on the *clip*, because that is what makes a partial star a full outline
-    /// with a filled part inside it rather than a smaller star: the filled glyph is drawn in the
-    /// whole cell and the clip cuts it. Glyphs reach the SVG as outlines rather than characters,
-    /// so the assertion counts the clip and the filled-coloured paths.
+    /// with a filled part inside it rather than a smaller star: the filled star is drawn in the
+    /// whole cell and the clip cuts it. A star is an **icon outline**, not a text glyph, so the
+    /// filled/empty marks are counted in *contours* and halved to stars — the `Star` outline is
+    /// two contours, so three painted stars is six filled paths, not three.
     #[test]
     fn a_half_rated_star_is_painted_with_a_clip() {
         // Holds the crate-wide theme guard: this test renders, and a concurrent
@@ -696,12 +683,18 @@ mod tests {
             .expect("the clip must carry a width");
         assert_eq!(clip_width, 12, "half of a 24 px cell: {svg}");
 
-        // Three filled glyphs (two whole stars and the clipped half) at the filled colour, and
-        // five outlines at the empty colour; every star keeps its outline.
+        // The `Star` outline is a two-contour shape, so each painted star is two `<path>`
+        // elements of one colour. Three painted stars (two whole and the clipped half) at the
+        // filled colour, five outlines at the empty colour; every star keeps its outline.
+        const CONTOURS_PER_STAR: usize = 2;
         let filled = svg.matches("rgba(255,193,7,1.00)").count();
         let empty = svg.matches("rgba(63,63,63,1.00)").count();
-        assert_eq!(filled, 3, "two whole stars and one clipped half: {svg}");
-        assert_eq!(empty, 5, "every star keeps its outline: {svg}");
+        assert!(
+            filled.is_multiple_of(CONTOURS_PER_STAR),
+            "filled marks must come in whole stars: {svg}"
+        );
+        assert_eq!(filled / CONTOURS_PER_STAR, 3, "two whole stars and one clipped half: {svg}");
+        assert_eq!(empty / CONTOURS_PER_STAR, 5, "every star keeps its outline: {svg}");
     }
 
     /// `star_size` is reachable from the contract, so the setter is no longer unreachable.

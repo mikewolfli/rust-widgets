@@ -499,6 +499,44 @@ pub fn expect_alignment(value: CapabilityValue) -> Result<Alignment, CapabilityA
     }
 }
 
+/// Parses an [`Alignment`] that is **horizontal only**: `left`, `center`/`centre`, or `right`.
+///
+/// # Why a narrower entry point than [`expect_alignment`]
+///
+/// A control whose vertical placement is its own layout's business — a text field whose value is
+/// centred in its band, a list whose rows are rows — has nothing to do with `top`/`bottom`. Those
+/// tokens are accepted by [`expect_alignment`] because a `Label` consumes them, so a control that
+/// does **not** consume them must refuse them here rather than accept a value it can never honour.
+/// An accepted-but-ignored write is a property that cannot be told from a broken one, which is the
+/// defect class this crate treats as worse than a refusal.
+///
+/// The token spellings are exactly [`expect_alignment`]'s, so a host sees one spelling for
+/// horizontal alignment whichever control it writes to.
+pub fn expect_horizontal_alignment(
+    value: CapabilityValue,
+) -> Result<Alignment, CapabilityAccessError> {
+    let alignment = expect_alignment(value)?;
+    // `top`/`bottom` are a valid `Alignment` but not a horizontal one, and `to_horizontal`
+    // returning `None` is the single source of that fact.
+    if alignment.to_horizontal().is_some() {
+        Ok(alignment)
+    } else {
+        Err(CapabilityAccessError::TypeMismatch)
+    }
+}
+
+/// Renders an [`Alignment`] as the token its horizontal axis names (`left`/`center`/`right`).
+///
+/// The mirror of [`expect_horizontal_alignment`] for a control that only ever stores a horizontal
+/// value, so the read-back spelling matches the accepted ones.
+pub fn horizontal_alignment_to_str(alignment: Alignment) -> &'static str {
+    match alignment.to_horizontal() {
+        Some(crate::core::HorizontalAlignment::Left) | None => "left",
+        Some(crate::core::HorizontalAlignment::Center) => "center",
+        Some(crate::core::HorizontalAlignment::Right) => "right",
+    }
+}
+
 /// Parses a tri-state [`CheckState`].
 ///
 /// Accepts `unchecked`/`off`, `partiallychecked`/`partial`/`indeterminate`,

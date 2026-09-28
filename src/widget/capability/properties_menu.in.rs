@@ -69,6 +69,7 @@ macro_rules! impl_properties_menu {
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
             PropertySchema::new("expanded", PropertyValueKind::Bool, true, true),
+            PropertySchema::enumerated("alignment", true, true, &["left", "centre", "right"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

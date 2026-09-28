@@ -18,7 +18,7 @@ use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 
 /// The value type for a Rive state machine input.
 #[derive(Debug, Clone, PartialEq)]
@@ -667,7 +667,11 @@ impl Draw for RiveWidget {
         // Disabled steps the resolved fill toward its own contrast colour rather than toward a
         // fixed white, which on a dark surface made the disabled state *more* prominent than the
         // enabled one.
-        let bg = if !is_enabled { self.base.disabled_surface_near(base_bg, window_fill) } else { base_bg };
+        let bg = if !is_enabled {
+            self.base.disabled_surface_near(base_bg, window_fill)
+        } else {
+            base_bg
+        };
         context.face(
             rect,
             bg,
@@ -772,20 +776,21 @@ impl Draw for RiveWidget {
             HorizontalAlignment::Left,
         );
 
-        // Play/pause icon. The two colours are deliberately not themed: green versus amber
-        // *is* the state encoding — "playing" versus "paused" — and a theme would recolour
-        // both to whatever roles they happened to match.
-        let status = if self.is_playing { "▶" } else { "⏸" };
-        context.draw_text(
-            Point::new(rect.x + 4, rect.y + rect.height as i32 - 4),
-            status,
-            &font,
-            if self.is_playing {
-                Color::rgba(40, 160, 40, 200)
-            } else {
-                Color::rgba(180, 100, 40, 200)
-            },
-            HorizontalAlignment::Left,
+        // Play/pause icon: a `Play`/`Pause` **icon outline**, not the `▶`/`⏸` text glyphs
+        // (covered by no bundled face). The two colours are deliberately not themed: green
+        // versus amber *is* the state encoding — "playing" versus "paused" — and a theme would
+        // recolour both to whatever roles they happened to match.
+        let status_icon = if self.is_playing { IconName::Play } else { IconName::Pause };
+        let status_color = if self.is_playing {
+            Color::rgba(40, 160, 40, 200)
+        } else {
+            Color::rgba(180, 100, 40, 200)
+        };
+        crate::widget::draw_icon_at(
+            context,
+            Rect::new(rect.x + 4, rect.y + rect.height as i32 - 16, 12, 12),
+            status_color,
+            status_icon,
         );
 
         // State machine inputs count.

@@ -87,6 +87,23 @@ macro_rules! impl_properties_input {
             PropertySchema::new("current_row", PropertyValueKind::UInt, true, true),
             PropertySchema::new("item_height", PropertyValueKind::Float, true, true),
             PropertySchema::new("selected_count", PropertyValueKind::UInt, true, false),
+            // The selected rows as a comma-joined list of indices, in visual order.
+            // `selected_count` answers only *how many* rows are chosen; a multi-select list whose
+            // contract cannot say *which* ones leaves a host unable to read back the selection it
+            // just made. Comma-joined is the same spelling `tag_input`'s `tags` and the table's
+            // sort/filter properties use, until an array variant exists.
+            PropertySchema::new("selected_indices", PropertyValueKind::String, true, false),
+            // The row the pointer is over, or `null`. Read-only: hover is the pointer's fact, not
+            // a host's to set. Published so a host can drive an affordance from it.
+            PropertySchema::new("hovered_row", PropertyValueKind::UInt, true, false),
+            // The size the rows are drawn at, which auto-scales with `item_height`. Read-only and
+            // derived: it reports the number the draw actually uses rather than a second knob that
+            // could disagree with it.
+            PropertySchema::new("font_size", PropertyValueKind::Float, true, false),
+            // The rows' horizontal alignment. Only the three horizontal tokens are accepted: a row's
+            // label is centred vertically in its band by the row's own layout, so a `top`/`bottom`
+            // write would be one the control could never honour.
+            PropertySchema::enumerated("alignment", true, true, &["left", "centre", "right"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -117,6 +134,10 @@ macro_rules! impl_properties_input {
             // whose number sits beside the buttons that change it. Declared in both directions so
             // it can be read back as well as written.
             PropertySchema::enumerated("direction", true, true, &["ltr", "rtl"]),
+            // The value's horizontal alignment. Only the three horizontal tokens are accepted: the
+            // value is centred vertically in the row band by the row's own layout, so a `top`/`bottom`
+            // write would be one the control could never honour.
+            PropertySchema::enumerated("alignment", true, true, &["left", "centre", "right"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -133,6 +154,10 @@ macro_rules! impl_properties_input {
             // the other edge — a fact a host and a designer panel have to be able to read and set
             // rather than infer from the drawing.
             PropertySchema::new("direction", PropertyValueKind::String, true, true),
+            // The value's horizontal alignment. Only the three horizontal tokens are accepted: the
+            // value is centred vertically in the field band by the field's own layout, so a
+            // `top`/`bottom` write would be one the control could never honour.
+            PropertySchema::enumerated("alignment", true, true, &["left", "centre", "right"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -171,6 +196,7 @@ macro_rules! impl_properties_input {
             PropertySchema::new("item_count", PropertyValueKind::Int, true, false),
             PropertySchema::new("current_index", PropertyValueKind::Int, true, true),
             PropertySchema::new("editable", PropertyValueKind::Bool, true, true),
+            PropertySchema::enumerated("alignment", true, true, &["left", "centre", "right"]),
             PropertySchema::new("max_visible_items", PropertyValueKind::Int, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
@@ -193,6 +219,10 @@ macro_rules! impl_properties_input {
             // Derived from the value's length and `max_length`, so readable but not writable.
             PropertySchema::new("counter", PropertyValueKind::String, true, false),
             PropertySchema::new("over_limit", PropertyValueKind::Bool, true, false),
+            // The value's horizontal alignment. Only the three horizontal tokens are accepted: the
+            // value is centred vertically in the field band by the field's own layout, so a
+            // `top`/`bottom` write would be one the control could never honour.
+            PropertySchema::enumerated("alignment", true, true, &["left", "centre", "right"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -211,6 +241,10 @@ macro_rules! impl_properties_input {
             PropertySchema::new("max_length", PropertyValueKind::UInt, true, true),
             PropertySchema::new("read_only", PropertyValueKind::Bool, true, true),
             PropertySchema::new("line_wrap", PropertyValueKind::Bool, true, true),
+            // Each line's horizontal alignment. Only the three horizontal tokens are accepted: the
+            // document is laid out as rows down the interior, so a `top`/`bottom` write would be one
+            // the control could never honour.
+            PropertySchema::enumerated("alignment", true, true, &["left", "centre", "right"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -243,6 +277,7 @@ macro_rules! impl_properties_input {
             PropertySchema::new("selected_index", PropertyValueKind::UInt, true, true),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("expanded", PropertyValueKind::Bool, true, true),
+            PropertySchema::enumerated("alignment", true, true, &["left", "centre", "right"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -297,6 +332,10 @@ macro_rules! impl_properties_input {
         pub(crate) const SEARCH_BOX_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("text", PropertyValueKind::String, true, true),
             PropertySchema::new("placeholder", PropertyValueKind::String, true, true),
+            // The value's horizontal alignment. Only the three horizontal tokens are accepted: the
+            // value is centred vertically in the field band by the field's own layout, so a
+            // `top`/`bottom` write would be one the control could never honour.
+            PropertySchema::enumerated("alignment", true, true, &["left", "centre", "right"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -307,6 +346,7 @@ macro_rules! impl_properties_input {
         pub(crate) const TAG_INPUT_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("tags", PropertyValueKind::String, true, false),
             PropertySchema::new("placeholder", PropertyValueKind::String, true, true),
+            PropertySchema::enumerated("alignment", true, true, &["left", "centre", "right"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -348,6 +388,10 @@ macro_rules! impl_properties_input {
         pub(crate) const MASKED_EDIT_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("text", PropertyValueKind::String, true, true),
             PropertySchema::new("mask", PropertyValueKind::String, true, true),
+            // The field's content horizontal alignment. Only the three horizontal tokens are accepted:
+            // the characters are centred vertically in the field band by the field's own layout, so a
+            // `top`/`bottom` write would be one the control could never honour.
+            PropertySchema::enumerated("alignment", true, true, &["left", "centre", "right"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -364,6 +408,7 @@ macro_rules! impl_properties_input {
             PropertySchema::new("selected_suggestion", PropertyValueKind::String, true, false),
             PropertySchema::new("dropdown_visible", PropertyValueKind::Bool, true, false),
             PropertySchema::new("max_visible", PropertyValueKind::UInt, true, true),
+            PropertySchema::enumerated("alignment", true, true, &["left", "centre", "right"]),
             PropertySchema::new("can_undo", PropertyValueKind::Bool, true, false),
             PropertySchema::new("can_redo", PropertyValueKind::Bool, true, false),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
@@ -376,6 +421,7 @@ macro_rules! impl_properties_input {
         pub(crate) const MULTI_SELECT_COMBO_BOX_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("selected_count", PropertyValueKind::UInt, true, false),
             PropertySchema::new("expanded", PropertyValueKind::Bool, true, true),
+            PropertySchema::enumerated("alignment", true, true, &["left", "centre", "right"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -448,6 +494,7 @@ macro_rules! impl_properties_input {
         pub(crate) const EDITABLE_COMBO_BOX_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("text", PropertyValueKind::String, true, true),
             PropertySchema::new("item_count", PropertyValueKind::UInt, true, false),
+            PropertySchema::enumerated("alignment", true, true, &["left", "centre", "right"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),
@@ -469,6 +516,10 @@ macro_rules! impl_properties_input {
         pub(crate) const SEARCH_BAR_PROPERTIES: &[PropertySchema] = &[
             PropertySchema::new("text", PropertyValueKind::String, true, true),
             PropertySchema::new("placeholder", PropertyValueKind::String, true, true),
+            // The value's horizontal alignment. Only the three horizontal tokens are accepted: the
+            // value is centred vertically in the field band by the field's own layout, so a
+            // `top`/`bottom` write would be one the control could never honour.
+            PropertySchema::enumerated("alignment", true, true, &["left", "centre", "right"]),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

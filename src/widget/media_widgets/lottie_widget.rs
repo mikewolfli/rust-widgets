@@ -18,7 +18,7 @@ use crate::widget::capability::coercion::expect_bool;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 
 // ──────────────────────────────────────────────
 // Lottie shape data model
@@ -1107,7 +1107,11 @@ impl Draw for LottieWidget {
         // colour rather than toward a fixed white: a dark surface moved 0.35 of the way to white
         // gets **more** prominent, not less (measured 1.13:1 against the window when enabled and
         // 3.63:1 when disabled), so the state read backwards on the dark appearance.
-        let bg = if !is_enabled { self.base.disabled_surface_near(base_bg, window_fill) } else { base_bg };
+        let bg = if !is_enabled {
+            self.base.disabled_surface_near(base_bg, window_fill)
+        } else {
+            base_bg
+        };
         context.face(
             rect,
             bg,
@@ -1148,22 +1152,21 @@ impl Draw for LottieWidget {
             HorizontalAlignment::Left,
         );
 
-        // Play/pause indicator at top-left. The two colours are deliberately not themed:
-        // green versus amber *is* the state encoding — "playing" versus "paused" — and a
-        // theme would recolour both to whatever roles they happened to match.
-        let status = if self.playing { "▶" } else { "⏸" };
-        // Origin is the glyph box's top edge, so the ascent term is dropped: adding it
-        // dropped the play/pause chip half a line below its top-left corner.
-        context.draw_text(
-            Point::new(rect.x + 4, rect.y + 2),
-            status,
-            &font,
-            if self.playing {
-                Color::rgba(40, 160, 40, 230)
-            } else {
-                Color::rgba(180, 100, 40, 230)
-            },
-            HorizontalAlignment::Left,
+        // Play/pause indicator at top-left: a `Play`/`Pause` **icon outline**, not the `▶`/`⏸`
+        // text glyphs (covered by no bundled face). The two colours are deliberately not themed:
+        // green versus amber *is* the state encoding — "playing" versus "paused" — and a theme
+        // would recolour both to whatever roles they happened to match.
+        let status_icon = if self.playing { IconName::Play } else { IconName::Pause };
+        let status_color = if self.playing {
+            Color::rgba(40, 160, 40, 230)
+        } else {
+            Color::rgba(180, 100, 40, 230)
+        };
+        crate::widget::draw_icon_at(
+            context,
+            Rect::new(rect.x + 4, rect.y + 2, 12, 12),
+            status_color,
+            status_icon,
         );
 
         // Progress bar at bottom.

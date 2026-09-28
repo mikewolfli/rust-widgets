@@ -2,8 +2,17 @@
 // SPDX-License-Identifier: MIT
 //
 // GENERATED FILE — DO NOT EDIT BY HAND.
-// Produced by `tools/gen_icon_data.py`. Regenerate with:
-//     python3 tools/gen_icon_data.py
+//
+// # How this file is produced, and why the provenance is stated honestly
+//
+// The entries are a coarse flattening of the **same** Material Symbols outlines as
+// `icon_data.rs`, taken from `tools/material_symbols/<token>.svg`. Unlike `icon_data.rs`,
+// there is no generator for this table: `tools/gen_icon_data.py` writes `icon_data.rs` and
+// nothing else, so an earlier header that named it as this file's producer was wrong. The
+// flattening is mechanical (parse the `d`, walk the contours) and is applied by hand when a
+// token is added — see the round log. A `gen_icon_fallback.py` that removes the by-hand step
+// is a known follow-up; until then this comment states what is actually true rather than
+// what a generator *would* do.
 //
 // The hand-drawn fallback (`Icon::draw` with the `icons` feature off), derived from the
 // **same** Material Symbols outlines as `icon_data.rs`.
@@ -29,9 +38,9 @@ pub(crate) struct IconFallback {
     pub contours: &'static [&'static [(i16, i16)]],
 }
 
-/// Every icon's fallback geometry, indexed by `IconName`'s declaration order. 68 entries.
+/// Every icon's fallback geometry, indexed by `IconName`'s declaration order. 69 entries.
 #[rustfmt::skip]
-pub(crate) static ICON_FALLBACK: [IconFallback; 68] = [
+pub(crate) static ICON_FALLBACK: [IconFallback; 69] = [
     IconFallback {
         name: "check",
         grid: 960,
@@ -645,6 +654,16 @@ pub(crate) static ICON_FALLBACK: [IconFallback; 68] = [
             &[(160, -200), (160, -280), (240, -280), (240, -560), (241, -576), (242, -593), (245, -609), (248, -625), (253, -641), (259, -656), (266, -671), (274, -686), (334, -626), (331, -618), (328, -610), (325, -602), (324, -594), (322, -585), (321, -577), (320, -568), (320, -560), (320, -280), (568, -280), (56, -792), (112, -848), (848, -112), (792, -56), (646, -200), (160, -200), (160, -200)],
             &[(720, -354), (640, -434), (640, -560), (637, -592), (628, -621), (614, -648), (593, -673), (568, -694), (541, -708), (512, -717), (480, -720), (467, -720), (454, -718), (442, -716), (430, -712), (418, -708), (407, -702), (396, -696), (386, -688), (328, -746), (338, -754), (349, -761), (360, -768), (371, -774), (383, -780), (395, -784), (407, -789), (420, -792), (420, -820), (421, -832), (424, -843), (430, -853), (438, -862), (447, -870), (457, -876), (468, -879), (480, -880), (492, -879), (503, -876), (513, -870), (522, -862), (530, -853), (536, -843), (539, -832), (540, -820), (540, -792), (578, -779), (612, -761), (643, -737), (670, -708), (692, -674), (708, -638), (717, -600), (720, -560), (720, -354), (720, -354)],
             &[(480, -80), (464, -81), (449, -86), (436, -93), (424, -104), (413, -116), (406, -129), (401, -144), (400, -160), (560, -160), (559, -144), (554, -129), (547, -116), (536, -104), (524, -93), (511, -86), (496, -81), (480, -80), (480, -80)],
+        ],
+    },
+    IconFallback {
+        name: "fullscreen",
+        grid: 960,
+        contours: &[
+            &[(120, -120), (120, -320), (200, -320), (200, -200), (320, -200), (320, -120), (120, -120), (120, -120)],
+            &[(640, -120), (640, -200), (760, -200), (760, -320), (840, -320), (840, -120), (640, -120), (640, -120)],
+            &[(120, -640), (120, -840), (320, -840), (320, -760), (200, -760), (200, -640), (120, -640), (120, -640)],
+            &[(760, -640), (760, -760), (640, -760), (640, -840), (840, -840), (840, -640), (760, -640), (760, -640)],
         ],
     },
 ];

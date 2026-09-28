@@ -13,7 +13,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::dimensions;
-use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -464,14 +464,14 @@ impl Draw for CollapsiblePane {
         // while staying legible, and it is the same weight the disabled veil uses.
         let disabled_ink = self.base.disabled_ink_on(text_color, header_bg);
         let arrow_color = if self.base.is_enabled() { text_color } else { disabled_ink };
-        let arrow_char = if self.collapsed { "▶" } else { "▼" };
-        context.draw_text(
-            Point::from_f32(arrow_x as f32, arrow_y as f32),
-            arrow_char,
-            &header_font,
-            arrow_color,
-            HorizontalAlignment::Left,
-        );
+        // The disclosure arrow is a `ChevronRight`/`ChevronDown` **icon outline**, not the
+        // `▶`/`▼` text glyph: no bundled face covers U+25B6/U+25BC, so those drew as 8x8 bitmap
+        // blocks. It sits in the leading gutter the header reserves for it.
+        let arrow_icon =
+            if self.collapsed { IconName::ChevronRight } else { IconName::ChevronDown };
+        let arrow =
+            Rect::new(arrow_x, arrow_y, header_line.height.max(1), header_line.height.max(1));
+        crate::widget::draw_icon_at(context, arrow, arrow_color, arrow_icon);
 
         // --- Draw title text ---
         if !self.title.is_empty() {

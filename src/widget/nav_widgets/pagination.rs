@@ -23,7 +23,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Ellipsis glyph used to mark a collapsed run of page numbers.
@@ -505,11 +505,13 @@ impl Draw for Pagination {
                 context.fill_rect(cell_rect, selected_background);
             }
 
-            let label = match cell {
-                Cell::Page(page) => (page + 1).to_string(),
-                Cell::Gap { .. } => ELLIPSIS.to_string(),
-                Cell::Previous => "\u{2039}".to_string(),
-                Cell::Next => "\u{203a}".to_string(),
+            // The previous/next ends are `ChevronLeft`/`ChevronRight` **icon outlines**, not the
+            // `‹`/`›` text glyphs (U+2039/U+203A are covered by no bundled face, so those drew as
+            // 8x8 bitmap blocks). Page numbers and the ellipsis stay text, because they *are* text.
+            let nav_icon = match cell {
+                Cell::Previous => Some(IconName::ChevronLeft),
+                Cell::Next => Some(IconName::ChevronRight),
+                _ => None,
             };
             let color = if is_current {
                 // The label sits on the filled cell, so it must contrast with **that**
@@ -524,6 +526,24 @@ impl Draw for Pagination {
                 background.blend(&text_color, 0.6)
             } else {
                 text_color
+            };
+            if let Some(icon) = nav_icon {
+                let line = context.text_line(cell_rect, &font);
+                let side = line.height.max(1);
+                let icon_rect = Rect::new(
+                    cell_rect.x + (cell_rect.width as i32 - side as i32) / 2,
+                    line.y,
+                    side,
+                    side,
+                );
+                crate::widget::draw_icon_at(context, icon_rect, color, icon);
+                continue;
+            }
+            let label = match cell {
+                Cell::Page(page) => (page + 1).to_string(),
+                Cell::Gap { .. } => ELLIPSIS.to_string(),
+                // Handled above; unreachable, but the match must stay total.
+                Cell::Previous | Cell::Next => String::new(),
             };
             // The origin is the glyph's top-left, so the vertical centre is reached by
             // subtracting half the *measured line box* rather than by halving the cell — the

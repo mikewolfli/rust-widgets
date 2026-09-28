@@ -29,7 +29,7 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::composite::CompositeBuilder;
 use crate::widget::menu_toolbar::popup_reveal::{PopupReveal, RevealDirection};
 use crate::widget::metrics::dimensions;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetFactory, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetFactory, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// A single item in a menu.
 #[derive(Debug, Clone)]
@@ -1105,14 +1105,20 @@ impl Draw for Menu {
             let indicator = self.indicator_box(row);
             let label = self.label_box(row, indicator);
             if item.is_checkable() {
-                let check_sym = if item.is_checked() { "✓" } else { " " };
-                context.draw_text_fitted(
-                    context.text_line(indicator, &Font::default()),
-                    check_sym,
-                    &Font::default(),
-                    fg,
-                    HorizontalAlignment::Center,
-                );
+                // The tick is the `Check` **icon outline**, not the `✓` text glyph (U+2713 is
+                // covered by no bundled face, so it drew as an 8x8 bitmap block). An unchecked row
+                // draws nothing, which is what the old blank-space string achieved.
+                if item.is_checked() {
+                    let line = context.text_line(indicator, &Font::default());
+                    let side = line.height.max(1);
+                    let tick = Rect::new(
+                        indicator.x + (indicator.width as i32 - side as i32) / 2,
+                        line.y,
+                        side,
+                        side,
+                    );
+                    crate::widget::draw_icon_at(context, tick, fg, IconName::Check);
+                }
             }
             context.draw_text_fitted(
                 context.text_line(label, &Font::default()),
@@ -1141,19 +1147,22 @@ impl Draw for Menu {
             if item.has_submenu() {
                 // Derived from the label box's own right edge, so a longer label shortens the
                 // room the arrow has instead of the two being placed from opposite ends of the
-                // row and colliding in the middle.
+                // row and colliding in the middle. The mark is the `ChevronRight` **icon outline**,
+                // not the `▶` text glyph (U+25B6 is covered by no bundled face, so it drew as an
+                // 8x8 bitmap block).
                 let arrow_box = Rect::new(
                     label.x + label.width as i32,
                     row.y,
                     (row.x + row.width as i32 - (label.x + label.width as i32)).max(0) as u32,
                     row.height,
                 );
-                context.draw_text_fitted(
-                    context.text_line(arrow_box, &Font::default()),
-                    "▶",
-                    &Font::default(),
+                let side = arrow_box.width.min(arrow_box.height).min(16);
+                crate::widget::draw_icon_centered(
+                    context,
+                    arrow_box,
+                    side,
                     fg,
-                    HorizontalAlignment::Center,
+                    IconName::ChevronRight,
                 );
             }
         }

@@ -3,8 +3,8 @@
 
 //! Key sequence editor widget for capturing keyboard shortcuts.
 use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
-use crate::event::{Event, EventHandler};
 use crate::event::key_codes;
+use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::undo::{CommandDescription, CommandId, UndoCommand, UndoStack};
@@ -169,6 +169,12 @@ pub struct KeySequenceEdit {
     base: BaseWidget,
     key_sequence: KeySequence,
     recording: bool,
+    /// How the field's value is aligned within its own box.
+    ///
+    /// Horizontal only: the value is centred vertically in the field by the field's own layout,
+    /// so a `top`/`bottom` value is one this control could never honour — the setter refuses it
+    /// rather than accepting a write that does nothing. Defaults to left.
+    alignment: crate::core::Alignment,
     /// Emitted once each time recording stops, whether the sequence changed or
     /// not (including when recording was cancelled with Escape, which emits
     /// nothing else). Carries no payload.
@@ -192,6 +198,7 @@ impl KeySequenceEdit {
             base: BaseWidget::new(WidgetKind::LineEdit, geometry, "KeySequenceEdit"),
             key_sequence: KeySequence::empty(),
             recording: false,
+            alignment: crate::core::Alignment::Left,
             editing_finished: GenericSignal::new(),
             key_sequence_changed: Signal1::new(),
             undo_stack: UndoStack::new(),
@@ -203,6 +210,24 @@ impl KeySequenceEdit {
     /// distinguish "unset" from "set".
     pub fn key_sequence(&self) -> &KeySequence {
         &self.key_sequence
+    }
+
+    /// How the field's value is aligned within its own box.
+    pub fn alignment(&self) -> crate::core::Alignment {
+        self.alignment
+    }
+
+    /// Sets how the field's value is aligned within its own box.
+    ///
+    /// Horizontal only. A `top`/`bottom` alignment is **ignored**, because the value is centred
+    /// vertically in the field by the field's own layout, so such a value is one this setter
+    /// cannot honour and it returns without writing it.
+    pub fn set_alignment(&mut self, alignment: crate::core::Alignment) {
+        if alignment.to_horizontal().is_none() || self.alignment == alignment {
+            return;
+        }
+        self.alignment = alignment;
+        self.base.request_redraw();
     }
     /// Returns whether the widget is currently capturing the next key press.
     pub fn is_recording(&self) -> bool {
@@ -456,7 +481,7 @@ impl Draw for KeySequenceEdit {
             &display,
             &font,
             text_color,
-            HorizontalAlignment::Left,
+            self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
     }
 }

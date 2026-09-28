@@ -18,7 +18,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::menu_toolbar::popup_reveal::{PopupReveal, RevealDirection};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Default width of the dropdown menu panel.
@@ -486,19 +486,24 @@ impl Draw for MenuButton {
                     HorizontalAlignment::Left,
                 );
 
-                // Checkmark for checked items
+                // Checkmark for checked items. Drawn as an `IconName` outline rather than the
+                // `✓` (U+2713) character: no bundled face covers the dingbats block, so the
+                // character fell back to an 8x8 bitmap and read as a blob.
                 if item.checked {
                     let check_x = item_rect.x + item_rect.width as i32 - PADDING - 12;
-                    let check_font = Font::simple("sans-serif", 12.0);
-                    // The tick sits on the item's own line, so it is centred by the same
-                    // primitive rather than by the row's raw midpoint.
-                    let check_line = context.text_line(item_rect, &check_font);
-                    context.draw_text(
-                        Point::new(check_x, check_line.y),
-                        "\u{2713}",
-                        &check_font,
+                    let check_line = context.text_line(item_rect, &item_font);
+                    let side = check_line.height.max(1);
+                    let check_rect = Rect::new(
+                        check_x,
+                        check_line.y + (check_line.height as i32 - side as i32) / 2,
+                        side,
+                        side,
+                    );
+                    crate::widget::draw_icon_at(
+                        context,
+                        check_rect,
                         accent.contrast_color(),
-                        HorizontalAlignment::Left,
+                        IconName::Check,
                     );
                 }
 

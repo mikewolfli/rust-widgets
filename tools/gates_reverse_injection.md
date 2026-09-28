@@ -15,6 +15,12 @@
 > **Status column.** `✔` = verified in this round or a recorded earlier round; `—` = not yet
 > injected. A `—` is an honest gap, not a pass.
 
+## Control-gallery and icon-gate round (2026-09-28)
+
+| gate | injected | reported |
+|---|---|---|
+| `check_icons_not_symbol_glyphs.sh` | reverted `app_bar`'s back affordance to the symbol glyph it no longer draws: `crate::widget::draw_icon_at(context, back_rect, text_color, IconName::ArrowLeft);` → `context.draw_text(Point::new(back_x, back_y), "\u{2190}", &Font::default(), text_color, HorizontalAlignment::Left);` in `src/widget/nav_widgets/app_bar.rs` | `finding: src/widget/nav_widgets/app_bar.rs:343: draws U+2190 '←' (Arrows) as text; use an IconName outline (crate::widget::draw_icon_at) instead — no bundled face covers Arrows, so the glyph degrades to an 8x8 bitmap` / `scanned=641 failed=1` |
+
 ## BLUE25 — gates added this round (2026-09-27)
 
 | gate | injected | reported |

@@ -17,7 +17,9 @@ use crate::event::{Event, EventHandler};
 
 use crate::signal::{GenericSignal, Signal1};
 use crate::style::EdgeOffsets;
-use crate::widget::capability::coercion::{expect_bool, expect_i64};
+use crate::widget::capability::coercion::{
+    expect_bool, expect_horizontal_alignment, expect_i64, horizontal_alignment_to_str,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -99,6 +101,13 @@ pub struct FontComboBox {
     edit_buffer: Option<String>,
     max_visible_items: i32,
     expanded: bool,
+    /// How the field's value is aligned within its own box.
+    ///
+    /// Horizontal only: the family name is centred vertically in the field, so a `top`/`bottom`
+    /// value would be one this control could never honour —
+    /// [`crate::widget::capability::coercion::expect_horizontal_alignment`] refuses those rather
+    /// than accepting a write that does nothing. Defaults to left.
+    alignment: crate::core::Alignment,
     /// Emitted with the new font whenever [`FontComboBox::set_current_font`]
     /// actually changes it — including as a side effect of changing the index.
     pub current_font_changed: Signal1<Font>,
@@ -157,6 +166,7 @@ impl FontComboBox {
             edit_buffer: None,
             max_visible_items: 10,
             expanded: false,
+            alignment: crate::core::Alignment::Left,
             current_font_changed: Signal1::new(),
             current_index_changed: Signal1::new(),
             activated: Signal1::new(),
@@ -190,6 +200,25 @@ impl FontComboBox {
     /// Always at least `1`; defaults to `10`.
     pub fn max_visible_items(&self) -> i32 {
         self.max_visible_items
+    }
+
+    /// How the field's value is aligned within its own box.
+    pub fn alignment(&self) -> crate::core::Alignment {
+        self.alignment
+    }
+
+    /// Sets how the field's value is aligned within its own box.
+    ///
+    /// Horizontal only. A `top`/`bottom` alignment is **ignored**, because the family name is
+    /// centred vertically in the field by the field's own layout — the property route refuses it
+    /// through [`crate::widget::capability::coercion::expect_horizontal_alignment`], and this
+    /// setter matching that keeps the two entry points from disagreeing.
+    pub fn set_alignment(&mut self, alignment: crate::core::Alignment) {
+        if alignment.to_horizontal().is_none() || self.alignment == alignment {
+            return;
+        }
+        self.alignment = alignment;
+        self.base.request_redraw();
     }
     /// Returns the number of fonts in the list; equivalent to `fonts().len()`
     /// narrowed to `i32`.
@@ -386,6 +415,9 @@ impl WidgetProperties for FontComboBox {
             "item_count" => Ok(CapabilityValue::Int(self.count() as i64)),
             "current_index" => Ok(CapabilityValue::Int(self.current_index() as i64)),
             "editable" => Ok(CapabilityValue::Bool(self.is_editable())),
+            "alignment" => Ok(CapabilityValue::String(
+                horizontal_alignment_to_str(self.alignment()).to_string(),
+            )),
             "max_visible_items" => Ok(CapabilityValue::Int(self.max_visible_items() as i64)),
             _ => base_property_get(self, name),
         }
@@ -405,6 +437,10 @@ impl WidgetProperties for FontComboBox {
                 self.set_max_visible_items(expect_i64(value)? as i32);
                 Ok(())
             }
+            "alignment" => {
+                self.set_alignment(expect_horizontal_alignment(value)?);
+                Ok(())
+            }
             // Derived from the font list.
             "current_font_family" | "item_count" => Err(CapabilityAccessError::ReadOnlyProperty),
             _ => base_property_set(self, name, value),
@@ -418,6 +454,7 @@ impl WidgetProperties for FontComboBox {
             "item_count",
             "current_index",
             "editable",
+            "alignment",
             "max_visible_items",
             BASE_PROPERTY_NAMES
         ]
@@ -646,7 +683,7 @@ impl Draw for FontComboBox {
             &font_name,
             &value_font,
             ink,
-            HorizontalAlignment::Left,
+            self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left),
         );
         // Draw popup list when expanded
         if self.expanded && !self.fonts.is_empty() {

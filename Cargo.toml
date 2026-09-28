@@ -1,6 +1,6 @@
 [package]
 name = "rust_widgets"
-version = "2.8.1"
+version = "2.8.2"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 180 widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
@@ -61,18 +61,26 @@ crate-type = ["lib", "cdylib"]
 # ═══════════════════════════════════════════════════════════════════════
 
 [features]
-# ── Default is full desktop, with the icon data ──
+# ── Default is full desktop ──
 #
-# `icons` is in `default` because an icon that is only a name is not useful to a caller who
-# never heard of the feature: a plain `cargo build` gets the real Material Symbols outlines.
+# `default` names the `desktop` profile and nothing else. The real font and icon payloads now live
+# **in the device profiles** (`desktop`/`tablet`/`mobile`) rather than in `default`:
 #
-# It is deliberately **not** in any device profile. A profile answers "what kind of machine is
-# this", and `mini`/`embedded` are *sized* — a payload the caller did not ask for is exactly
-# wrong there. So `default` (the convenience axis) carries it and the profiles (the sizing axis)
-# do not; a profile build that wants icons asks: `--features mini,icons`.
+#   * a profile answers "what kind of machine is this", and a desktop/tablet/mobile host is one
+#     that has the bytes to spare and *wants* antialiased text and real icon outlines;
+#   * `mini`/`embedded` are *sized*, so they still carry neither — a payload the caller did not ask
+#     for is exactly wrong there.
 #
-# `tools/check_icon_data_is_opt_in.sh` asserts both halves of that split.
-default = ["desktop", "icons"]
+# Carrying the data in the profiles (rather than in `default`) is what makes a plain
+# `--no-default-features --features desktop` build — the one this crate's own gates export and test
+# — render the same text and icons a plain `cargo build` does. Before this, the two disagreed: the
+# snapshots were produced by `--features desktop`, which carried no fonts, so every glyph fell back
+# to the 8x8 bitmap while the runtime (a `default` build) drew real outlines.
+#
+# `tools/check_icon_data_is_opt_in.sh` and `tools/check_font_data_is_opt_in.sh` assert both halves
+# of the new split: the data is present in `desktop`/`tablet`/`mobile`, absent from
+# `default`/`mini`/`embedded`.
+default = ["desktop"]
 
 # ── Axis 1: DEVICE PROFILES (mutually exclusive) ──
 
@@ -107,6 +115,21 @@ desktop = [
     "audio",
     "pdf-encryption",
     "js-engine",
+    # The real text and icon payloads. A desktop host has the bytes and wants the quality, so the
+    # vector faces and the Material Symbols outlines ship *in the profile* rather than in `default`.
+    # This is what makes `--features desktop` and the manifest's `default` render the same picture —
+    # the snapshots are exported with the former, so without this they showed 8x8 bitmap glyphs next
+    # to a runtime that drew outlines. `mini`/`embedded` deliberately do not, being sized profiles.
+    #
+    # `fonts-emoji-color` is **desktop-only**: it is a 1.53 MB colour-bitmap face (Noto Color Emoji,
+    # `CBDT` PNG glyphs), and emoji is a niche a tablet/mobile UI can drop without losing text
+    # quality. The Latin, Arabic and CJK faces are the ones that make ordinary UI text antialiased,
+    # so those go in all three capable profiles; emoji does not.
+    "fonts-vector-latin",
+    "fonts-complex",
+    "fonts-cjk",
+    "fonts-emoji-color",
+    "icons",
     # The designer's code generator (mode 2). On by default for `desktop` only,
     # because `desktop` is the profile a designer **host** runs on: it is the
     # profile that has a window, a filesystem and an editor beside it.
@@ -140,6 +163,14 @@ tablet = [
     "controls-custom",
     "image",
     "text-bidi",
+    # The real text and icon payloads, for the same reason `desktop` carries them: a tablet host is
+    # a sized-but-capable target that wants antialiased text and real outlines, not the 8x8 bitmap.
+    # `mini`/`embedded` remain the profiles that carry neither. `fonts-emoji-color` is desktop-only
+    # (see `desktop`), so it is deliberately absent here.
+    "fonts-vector-latin",
+    "fonts-complex",
+    "fonts-cjk",
+    "icons",
 ]
 
 ## Mobile: touch, GPU, mobile API, native controls.
@@ -158,6 +189,12 @@ mobile = [
     "controls-custom",
     "image",
     "text-bidi",
+    # The real text and icon payloads; see `tablet` above for why the profiles carry them now, and
+    # why `fonts-emoji-color` is desktop-only.
+    "fonts-vector-latin",
+    "fonts-complex",
+    "fonts-cjk",
+    "icons",
 ]
 
 ## Embedded: software raster, no GPU, no touch, low memory.
@@ -298,14 +335,18 @@ projection = []
 ## algorithm specifies. It is pure `no_std` + `alloc`, so it can be on in every profile.
 text-bidi = ["dep:unicode-bidi"]
 
-## ── Text data (opt-in) ──
+## ── Text data ──
 ##
-## The default build carries no font data beyond the crate's historical 8x8 face, so
-## it draws Latin/ASCII and the fallback glyph for everything else. Each feature below
-## appends one *face* to the fallback stack (`render::text::active_stack`) and never
-## replaces the base face, so Latin output stays byte-identical whether they are on or
-## off.
+## The `fonts-*` features each append one *face* to the fallback stack
+## (`render::text::active_stack`) and never replace the crate's historical 8x8 base face, so
+## Latin output stays byte-identical whether they are on or off.
 ##
+## `desktop`/`tablet`/`mobile` list the vector faces (Latin, Arabic, CJK, emoji) because a host
+## with the bytes wants antialiased text; `mini`/`embedded` list none, because they are *sized* and
+## a payload the caller did not ask for is exactly wrong there. `default` names `desktop` and
+## nothing else, so a plain `cargo build` gets the real faces *through the profile* — which is what
+## lets `--features desktop` (the crate's own export/test surface) and a plain `cargo build` render
+## the same picture. `tools/check_font_data_is_opt_in.sh` asserts the split.
 ## Real text shaping: ligatures, Arabic joining and kerning, from a face the caller enables.
 ##
 ## Shaping needs a face — it substitutes and positions glyphs by the font's own tables — so this
@@ -413,7 +454,11 @@ fonts-cjk-shard-han = ["text-shaping"]
 ## chosen in `tools/emoji_subset_codepoints.txt`. The much smaller
 ## `NotoColorEmoji-flagsonly.ttf` is *not* usable — see that generator's module docs.)
 ##
-## That size is why it is opt-in rather than a default.
+## That size — 1.53 MB, an order of magnitude more than the vector faces — is why it ships in
+## `desktop` alone rather than in every capable profile: emoji is a niche a tablet/mobile UI can
+## drop without losing text quality, while the Latin/Arabic/CJK faces are what make ordinary UI text
+## antialiased. It is still *not* in `default` directly (nothing is): `default` names `desktop`, and
+## only `desktop` carries this face. A tablet/mobile host that wants it asks: `--features tablet,fonts-emoji-color`.
 ##
 ## # Why it does not need `text-shaping`
 ##
@@ -450,21 +495,25 @@ runtime-fonts = ["text-shaping"]
 
 ## `icons` adds the Material Symbols icon data: one SVG path per `IconName` token.
 ##
-## # Why this is a default, and why it is not in a profile
+## # Why this is in the device profiles, and not in `default`
 ##
 ## The payload is upstream's outlines copied verbatim (see `NOTICE` and
-## `tools/material_symbols/`). It is **data**, and the two axes it sits between are different
-## questions:
+## `tools/material_symbols/`). It is **data**, and where it belongs is decided by what a build is:
 ##
-##   * `default` answers "what does a plain `cargo build` give me?". An icon name with only
-##     hand-drawn approximations behind it is a worse answer than the real outlines, so `icons`
-##     is in `default`.
-##   * a **device profile** answers "what kind of machine is this?". `mini` and `embedded` are
-##     *sized*, so a payload the caller did not ask for is exactly wrong there. No profile lists
-##     `icons`; a profile build that wants them says `--features mini,icons`.
+##   * a **device profile** answers "what kind of machine is this". `desktop`/`tablet`/`mobile` are
+##     hosts with the bytes to spare and a reason to want real outlines, so they list `icons`.
+##     `mini` and `embedded` are *sized*, so a payload the caller did not ask for is exactly wrong
+##     there — neither lists it.
+##   * `default` names `desktop` and nothing else, so a plain `cargo build` still gets the real
+##     outlines *through the profile*. Keeping the data in the profiles rather than in `default` is
+##     what makes `--features desktop` (which the crate's own gates export and test) agree with a
+##     plain `cargo build`.
 ##
-## A caller who does not want the payload builds without it — `--no-default-features`, or a
-## profile — which is the path `tools/check_icon_data_is_opt_in.sh` asserts still works.
+## A caller who does not want the payload builds a profile that omits it (`mini`/`embedded`), or a
+## `desktop` build with `--no-default-features --features desktop` no longer drops it — the rejection
+## path is now the sized profiles. `tools/check_icon_data_is_opt_in.sh` asserts all of this: `icons`
+## is present in `desktop`/`tablet`/`mobile`, absent from `default`/`embedded`/`mini`, and the crate
+## builds both with it and without it.
 ##
 ## # What it changes
 ##
@@ -473,8 +522,9 @@ runtime-fonts = ["text-shaping"]
 ## renders the icons it always did — that path is kept for exactly this reason, and it is what
 ## every snapshot taken before the data existed was drawn against.
 ##
-## `tools/check_icon_data_is_opt_in.sh` asserts all three facts: `icons` is in `default`,
-## `icons` is absent from every device profile, and the crate builds with it off and with it on.
+## `tools/check_icon_data_is_opt_in.sh` asserts all three facts: `icons` is in
+## `desktop`/`tablet`/`mobile`, `icons` is absent from `default` and from the sized profiles
+## (`embedded`/`mini`), and the crate builds with it off and with it on.
 ##
 ## # Licensing
 ##

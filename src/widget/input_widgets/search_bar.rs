@@ -13,7 +13,9 @@ use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::undo::{TextSnapshotCommand, UndoStack};
-use crate::widget::capability::coercion::expect_string;
+use crate::widget::capability::coercion::{
+    expect_horizontal_alignment, expect_string, horizontal_alignment_to_str,
+};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
@@ -33,6 +35,14 @@ pub struct SearchBar {
     placeholder: String,
     is_active: bool,
     cancel_button_visible: bool,
+    /// How the typed value is aligned within its own box.
+    ///
+    /// Horizontal only: the value is centred vertically in the field band as a matter of the
+    /// field's own layout, so a `top`/`bottom` value would be one this control could never honour —
+    /// [`crate::widget::capability::coercion::expect_horizontal_alignment`] refuses those rather
+    /// than accepting a write that does nothing. Defaults to left, so a caller that never asks
+    /// behaves exactly as it did.
+    alignment: crate::core::Alignment,
     /// Emitted when the text content changes.
     pub text_changed: Signal1<String>,
     /// Emitted when the user submits a search (Enter key).
@@ -53,6 +63,7 @@ impl SearchBar {
             placeholder: "Search".to_string(),
             is_active: false,
             cancel_button_visible: true,
+            alignment: crate::core::Alignment::Left,
             text_changed: Signal1::new(),
             search_submitted: Signal1::new(),
             canceled: GenericSignal::new(),
@@ -65,6 +76,25 @@ impl SearchBar {
     /// Returns the current search text.
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// How the typed value is aligned within its own box.
+    pub fn alignment(&self) -> crate::core::Alignment {
+        self.alignment
+    }
+
+    /// Sets how the typed value is aligned within its own box.
+    ///
+    /// Horizontal only. A `top`/`bottom` alignment is **ignored**, because the value is centred
+    /// vertically in the field band by the field's own layout — the property route refuses it
+    /// through [`crate::widget::capability::coercion::expect_horizontal_alignment`], and this setter
+    /// matching that keeps the two entry points from disagreeing.
+    pub fn set_alignment(&mut self, alignment: crate::core::Alignment) {
+        if alignment.to_horizontal().is_none() || self.alignment == alignment {
+            return;
+        }
+        self.alignment = alignment;
+        self.base.request_redraw();
     }
 
     /// Sets the search text. Emits `text_changed` signal.
@@ -204,6 +234,9 @@ impl WidgetProperties for SearchBar {
         match name {
             "text" => Ok(CapabilityValue::String(self.text().to_string())),
             "placeholder" => Ok(CapabilityValue::String(self.placeholder().to_string())),
+            "alignment" => Ok(CapabilityValue::String(
+                horizontal_alignment_to_str(self.alignment()).to_string(),
+            )),
             _ => base_property_get(self, name),
         }
     }
@@ -218,13 +251,17 @@ impl WidgetProperties for SearchBar {
                 self.set_placeholder(expect_string(value)?);
                 Ok(())
             }
+            "alignment" => {
+                self.set_alignment(expect_horizontal_alignment(value)?);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
 
     fn property_names(&self) -> &'static [&'static str] {
         // Mirrors `SEARCH_BAR_PROPERTIES`.
-        property_names_of!["text", "placeholder", BASE_PROPERTY_NAMES]
+        property_names_of!["text", "placeholder", "alignment", BASE_PROPERTY_NAMES]
     }
 
     /// Runs one of the commands `search_bar` publishes.
@@ -356,6 +393,9 @@ impl Draw for SearchBar {
             field_width.saturating_sub((text_left - rect.x) as u32 + 24)
         };
         let font = Font::simple("sans-serif", 14.0);
+        // The alignment this control's own value is drawn with. The placeholder shares it, so the
+        // field reads as one column whichever state it is in.
+        let value_align = self.alignment.to_horizontal().unwrap_or(HorizontalAlignment::Left);
 
         if self.text.is_empty() {
             // Draw placeholder text. Same centring fix as the typed branch below: `ascent` is
@@ -369,7 +409,7 @@ impl Draw for SearchBar {
                     &self.placeholder,
                     &font,
                     field_ink.blend(&field_color, 0.45),
-                    HorizontalAlignment::Left,
+                    value_align,
                 );
             }
         } else {
@@ -391,7 +431,7 @@ impl Draw for SearchBar {
                     &self.text,
                     &font,
                     field_ink,
-                    HorizontalAlignment::Left,
+                    value_align,
                 );
             }
 

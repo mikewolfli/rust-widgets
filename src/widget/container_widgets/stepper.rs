@@ -33,7 +33,7 @@ use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, ControlMetrics};
 use crate::widget::numeric::ordered_clamp_i32;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// Stepper widget for numeric increment/decrement with +/- buttons.
@@ -296,20 +296,22 @@ impl Draw for Stepper {
         let minus_color = if !is_enabled { disabled_button } else { button_color };
         context.fill_rounded_rect(minus_rect, 3, minus_color);
         context.draw_rounded_rect_stroke(minus_rect, 3, border, 1);
-        // Draw "-" symbol centered in the minus button through the shared line box: a
-        // glyph origin is the box's **top** edge, so `(height + metrics.height) / 2 -
-        // descent` placed that edge near the button's middle and drew the sign low.
-        let minus_label = "\u{2212}";
-        let minus_font = crate::core::Font::bold("Arial", 16.0);
-        let minus_metrics = context.measure_text(minus_label, &minus_font);
-        let minus_x = minus_rect.x + (minus_rect.width as i32 - minus_metrics.width as i32) / 2;
-        let minus_line = context.text_line(minus_rect, &minus_font);
-        context.draw_text(
-            Point::new(minus_x, minus_line.y),
-            minus_label,
-            &minus_font,
+        // The `−`/`+` marks are `Minus`/`Plus` **icon outlines**, not text glyphs. The typographic
+        // minus (U+2212) is covered by no bundled face, so it drew as an 8x8 bitmap while the ASCII
+        // plus beside it drew as a real vector — two paired buttons rendering in two different
+        // technologies. Both are icons of this control, so both are drawn the same way.
+        let inset = (minus_rect.width.min(minus_rect.height) / 4) as i32;
+        let minus_mark = Rect::new(
+            minus_rect.x + inset,
+            minus_rect.y + inset,
+            minus_rect.width.saturating_sub(inset as u32 * 2),
+            minus_rect.height.saturating_sub(inset as u32 * 2),
+        );
+        crate::widget::draw_icon_at(
+            context,
+            minus_mark,
             if !is_enabled { disabled_text } else { text_color },
-            HorizontalAlignment::Left,
+            IconName::Minus,
         );
 
         // --- Plus button (right) ---
@@ -317,18 +319,19 @@ impl Draw for Stepper {
         let plus_color = if !is_enabled { disabled_button } else { button_color };
         context.fill_rounded_rect(plus_rect, 3, plus_color);
         context.draw_rounded_rect_stroke(plus_rect, 3, border, 1);
-        // Draw "+" symbol centered in the plus button, same line box as the sign above.
-        let plus_label = "+";
-        let plus_font = crate::core::Font::bold("Arial", 16.0);
-        let plus_metrics = context.measure_text(plus_label, &plus_font);
-        let plus_x = plus_rect.x + (plus_rect.width as i32 - plus_metrics.width as i32) / 2;
-        let plus_line = context.text_line(plus_rect, &plus_font);
-        context.draw_text(
-            Point::new(plus_x, plus_line.y),
-            plus_label,
-            &plus_font,
+        // The same mark, the same inset, so the two buttons are mirror images rather than two
+        // independently-placed glyphs.
+        let plus_mark = Rect::new(
+            plus_rect.x + inset,
+            plus_rect.y + inset,
+            plus_rect.width.saturating_sub(inset as u32 * 2),
+            plus_rect.height.saturating_sub(inset as u32 * 2),
+        );
+        crate::widget::draw_icon_at(
+            context,
+            plus_mark,
             if !is_enabled { disabled_text } else { text_color },
-            HorizontalAlignment::Left,
+            IconName::Plus,
         );
 
         // --- Value text (center of the row, not of the control) ---

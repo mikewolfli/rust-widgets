@@ -17,7 +17,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, lerp_f32, lerp_i32, lerp_u32, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
 /// The width of a Cupertino navigation bar's leading back-control area.
@@ -25,6 +25,12 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// The affordance is the arrow plus a short label ("Back"), so it is fixed rather than
 /// proportional: a bar twice as wide does not make the back control twice as wide.
 const BACK_BUTTON_WIDTH: u32 = 80;
+
+/// The edge length of the back button's arrow icon box, in pixels.
+///
+/// A square sized to the label's cap height rather than the `←` glyph's 20 px text run, so the
+/// affordance reads as an icon beside the text instead of a stray character within it.
+const ARROW_ICON_SIZE: u32 = 18;
 
 /// iOS-style large title navigation bar.
 ///
@@ -347,31 +353,25 @@ impl Draw for CupertinoNavigationBar {
 
         // ── Back button (left side) ──
         if self.back_button_visible {
-            let arrow_font = Font::new("sans-serif", 20.0, false, false);
             let label_font = Font::new("sans-serif", 17.0, false, false);
-            let arrow_symbol = "\u{2190}"; // ←
-                                           // The affordance sits on the bar, so the theme's primary is contrast-checked
-                                           // against it rather than assumed legible.
+            // The affordance sits on the bar, so the theme's primary is contrast-checked
+            // against it rather than assumed legible.
             let action = primary.contrast_color().blend(&primary, 0.85);
 
-            let arrow_metrics = context.measure_text(arrow_symbol, &arrow_font);
+            // Drawn as an icon rather than the `←` text glyph: no bundled face covers
+            // U+2190, so it degraded to an 8x8 fallback bitmap and read as a blocky
+            // blob. The icon is geometry, so both backends agree on the same shape.
             let arrow_x = bar_rect.x + 8;
             // On the compact bar's own middle line, shared with the title; the removed
             // `+ 22` was a literal for the 44 px bar.
-            let arrow_line = context.text_line(bar_rect, &arrow_font);
-
-            // Draw arrow
-            context.draw_text(
-                Point::new(arrow_x, arrow_line.y),
-                arrow_symbol,
-                &arrow_font,
-                action,
-                HorizontalAlignment::Left,
-            );
+            let arrow_line = context.text_line(bar_rect, &label_font);
+            let icon_y = arrow_line.y + (arrow_line.height as i32 - ARROW_ICON_SIZE as i32) / 2;
+            let icon_rect = Rect::new(arrow_x, icon_y, ARROW_ICON_SIZE, ARROW_ICON_SIZE);
+            crate::widget::draw_icon_at(context, icon_rect, action, IconName::ArrowLeft);
 
             // Draw text label next to arrow
             if !self.back_button_text.is_empty() {
-                let label_x = arrow_x + arrow_metrics.width as i32 + 4;
+                let label_x = arrow_x + ARROW_ICON_SIZE as i32 + 4;
                 // Reads as a small title and shares the compact bar's middle line with the
                 // title and the arrow; no literal offset, which had moved it with the bar's
                 // height rather than its own line.

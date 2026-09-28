@@ -3,8 +3,8 @@
 
 //! Message box dialog widget.
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
 use crate::event::key_codes;
+use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::layout::hints::{ChildInfo, Hints, LayoutParams};
 use crate::layout::{FlexLayout, JustifyContent, Layout};
@@ -20,7 +20,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, ControlMetrics};
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 /// Message box icon type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageBoxIcon {
@@ -335,16 +335,19 @@ impl MessageBox {
             }
         }
     }
-    /// The glyph drawn for the current icon: `"ℹ"` for information, `"?"` for a
-    /// question, `"⚠"` for a warning, `"✗"` for critical, and an empty string for
+    /// The icon drawn for the current severity: `Info` for information, `Help` for a
+    /// question, `Warning` for a warning, `Error` for critical, and `None` for
     /// [`MessageBoxIcon::NoIcon`].
-    fn icon_symbol(&self) -> &'static str {
+    ///
+    /// These are `IconName` **outlines**, not text symbols: `ℹ`/`⚠`/`✗` are covered by no
+    /// bundled face, so drawing them through the text pipeline fell back to 8x8 bitmap blocks.
+    fn icon_name(&self) -> Option<IconName> {
         match self.icon {
-            MessageBoxIcon::Information => "ℹ",
-            MessageBoxIcon::Question => "?",
-            MessageBoxIcon::Warning => "⚠",
-            MessageBoxIcon::Critical => "✗",
-            MessageBoxIcon::NoIcon => "",
+            MessageBoxIcon::Information => Some(IconName::Info),
+            MessageBoxIcon::Question => Some(IconName::Help),
+            MessageBoxIcon::Warning => Some(IconName::Warning),
+            MessageBoxIcon::Critical => Some(IconName::Error),
+            MessageBoxIcon::NoIcon => None,
         }
     }
     /// The colour used to draw [`Self::icon_symbol`]: the theme's semantic token for
@@ -807,30 +810,22 @@ impl Draw for MessageBox {
         // message starts after it (or at the frame's own margin when there is no icon).
         let body =
             ControlMetrics::content_below_top_band(rect, dimensions::DIALOG_TITLE_BAR_HEIGHT);
-        let icon_sym = self.icon_symbol();
+        let icon = self.icon_name();
         let body_font = Font::default();
         let body_line_h = context.measure_text("M", &body_font).height.max(1) as i32;
-        // The icon column is measured from the glyph, not a fixed `rect.x + 60` written for
-        // a wide dialog, so a wide scalar cannot overlap the message beside it.
+        // The icon column is a fixed square at the frame's own margin, so a wide scalar cannot
+        // overlap the message beside it and the message's start is the same whether or not a
+        // severity icon is shown.
         let icon_left = 12.min(body.width as i32);
-        let gutter = if icon_sym.is_empty() {
-            icon_left
+        let icon_side = body_line_h.max(1) as u32;
+        let gutter = if let Some(name) = icon {
+            // Centred on the body band's first line, so the icon and the first message line share a
+            // centre line.
+            let icon_rect = Rect::new(body.x + icon_left, body.y, icon_side, icon_side);
+            crate::widget::draw_icon_at(context, icon_rect, self.icon_color(), name);
+            icon_left + icon_side as i32 + 8
         } else {
-            let icon_metrics = context.measure_text(icon_sym, &body_font);
-            let icon_line = context.text_line(body, &body_font);
-            context.draw_text_fitted(
-                Rect::new(
-                    body.x + icon_left,
-                    icon_line.y,
-                    icon_metrics.width.max(1),
-                    icon_line.height.max(1),
-                ),
-                icon_sym,
-                &body_font,
-                self.icon_color(),
-                HorizontalAlignment::Left,
-            );
-            icon_left + icon_metrics.width as i32 + 8
+            icon_left
         };
 
         // The button row is the bottom band; the message occupies what is left above it.
