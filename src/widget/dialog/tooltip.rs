@@ -491,40 +491,69 @@ impl Draw for Tooltip {
         // one step off the page — close enough in the light preset that a bubble painted in it
         // is hard to tell from the frame behind it (BLUE21 AR3's finding). `inverse_surface`
         // states the relationship directly: it is *deliberately* the far end of the axis, and
-        // it is the token a theme author tunes. A caller's own colour still wins outright.
-        // A caller's own colour wins outright; a *theme-derived* background is ignored here,
-        // because the resolved `Surface` role is exactly the too-close-to-the-page value this
-        // control must not adopt. The distinction is `theme_derived`, the same flag the rest
-        // of the crate uses to tell "the theme chose this" from "the caller chose this".
+        // it is the token a theme author tunes.
+        //
+        // # The defect this replaces (measured, not inferred)
+        //
+        // The branch that read `inverse_surface` was guarded by `own != window_fill`, where `own`
+        // is `self.background_color` — whose **default is `DEFAULT_BG_COLOR`, not the window
+        // fill** (`rgba(40,40,40,220)`). The guard was therefore taken on every default-constructed
+        // tooltip and the role below it was unreachable: the bubble painted the same
+        // `rgba(40,40,40,0.86)` in the dark appearance *and* the light one, and the light bubble
+        // sat on a `rgba(240,240,240)` window at 1.72:1 from it. Measured with
+        // `tests/tooltip_paint_probe.rs`, which shows the tooltip and settles the fade:
+        //
+        //     appearance=Dark   bubble fill=rgba(40,40,40,0.86)
+        //     appearance=Light  bubble fill=rgba(40,40,40,0.86)   <- the appearance is ignored
+        //
+        // That is BLUE21 AR3 exactly, and the fix is the same shape `snackbar` already uses: the
+        // role pair leads, the caller's own colour wins over it, and the old arithmetic survives
+        // only as the fallback for a theme that predates the roles.
+        //
+        // # Why the pair, and not just the surface
+        //
+        // `inverse_surface` names a surface whose ink is `on_inverse_surface`. Reading only the
+        // surface and then deriving the ink with `contrast_color()` throws away the second half
+        // of what the theme said: a theme that pairs a low-contrast surface with a deliberate
+        // ink would be overridden by the derivation, and `contrast_color()` picks black or white
+        // — neither of which is a colour a theme author chose.
         let caller_color = style.background_color.filter(|_| !style.theme_derived);
-        let bubble_color = match caller_color {
-            Some(explicit) => explicit,
-            None => {
-                let own = self.background_color;
-                if own != window_fill {
-                    own
-                } else {
-                    crate::style::layer_color(crate::style::LayerColor::InverseSurface)
-                        .or_else(|| theme.as_ref().and_then(|t| t.background_color))
-                        .unwrap_or_else(|| window_fill.blend(&ink, 0.85))
+        // The surface and its ink are decided **together**, before the fade: the ink belongs to
+        // the colour the theme stated, and the fade is a compositing step applied to the surface
+        // afterwards. Deriving the ink from the faded fill would make the label change colour as
+        // the bubble fades in, which is not what a fade is.
+        let inverse_surface = crate::style::layer_color(crate::style::LayerColor::InverseSurface);
+        let (bubble_fill, text_color) = match caller_color {
+            // A caller's own colour wins outright. Its ink is derived, because the caller chose
+            // only a surface and gave us no ink to honour.
+            Some(explicit) => (explicit, explicit.contrast_color()),
+            None => match inverse_surface {
+                // The theme states the pair, so both halves are honoured as stated.
+                Some(surface) => {
+                    let ink = crate::style::layer_color(crate::style::LayerColor::OnInverseSurface)
+                        .unwrap_or_else(|| surface.contrast_color());
+                    (surface, ink)
                 }
-            }
+                // A theme that predates the roles: the old derivation, kept so the control still
+                // has an answer. `theme_derived` backgrounds are ignored because the resolved
+                // `Surface` role is the too-close-to-the-page value this control must not adopt;
+                // `own` is only `DEFAULT_BG_COLOR` here, which is why the guard below reads the
+                // **caller's** colour rather than the field.
+                None => {
+                    let own = self.background_color;
+                    let surface =
+                        if own != window_fill { own } else { window_fill.blend(&ink, 0.85) };
+                    (surface, surface.contrast_color())
+                }
+            },
         };
+        let _ = theme;
         // The bubble is blended toward the window by however far the fade has run, so the
         // control still has a rendered body in every state instead of vanishing at rest — and a
         // mid-fade bubble is genuinely between the two, which is what a fade *means*. The old
         // form was a two-state dim (shown or 45% toward the window) with nothing in between;
         // the fade now comes from `tick`, so it moves over time rather than snapping.
-        let bubble_color = window_fill.blend(&bubble_color, self.fade.value());
-
-        // The label is chosen against the **bubble actually painted**, which is why this is
-        // computed after the dimming step and not before it. Deriving it from the undimmed
-        // bubble was wrong in exactly the hidden state: the at-rest bubble is the near-black
-        // `rgb(40,40,40)` dimmed 45% toward a light window, i.e. `rgb(150,150,150)`, while the
-        // ink had already been decided as the near-black bubble's white — measuring 2.78:1 on
-        // the surface it was really painted on. Deriving from the final fill makes the pairing
-        // correct in both states by construction.
-        let text_color = bubble_color.contrast_color();
+        let bubble_color = window_fill.blend(&bubble_fill, self.fade.value());
 
         let font = Font::simple("sans-serif", self.font_size);
 
@@ -808,5 +837,154 @@ mod tests {
         open.show();
         let shown = render_to_svg(&mut open);
         assert_ne!(svg, shown, "showing the tooltip must change what is painted");
+    }
+
+    /// A shown tooltip inverts: its bubble is at the *far* end of the theme's axis from the
+    /// window it sits on, so it is legible in either appearance.
+    ///
+    /// # The defect this pins
+    /// The bubble colour came from `self.background_color` whenever that differed from the
+    /// window fill — and it **always** did, because the field defaults to `DEFAULT_BG_COLOR`
+    /// (`rgba(40,40,40,220)`) rather than to the window. The branch that read the theme's
+    /// `inverse_surface` was therefore unreachable, and the bubble painted the same colour in
+    /// both appearances. Measured from the rendered SVG:
+    ///
+    /// ```text
+    /// appearance=Dark   bubble fill=rgba(40,40,40,0.86)   vs window rgba(18,18,18)  ->  1.27:1
+    /// appearance=Light  bubble fill=rgba(40,40,40,0.86)   -> the appearance was ignored
+    /// ```
+    ///
+    /// 1.27:1 is not a tooltip, it is a smudge — and in the light appearance the bubble was
+    /// dark while the theme's own stated `inverse_surface` was light, so the control was
+    /// contradicting the theme rather than merely ignoring it.
+    ///
+    /// # Why the assertion is a *relation* and not a colour
+    ///
+    /// Asserting `rgba(228,225,229)` would pin the preset, and the whole point of the fix is
+    /// that the value is the theme's to choose. What must hold for any theme is the
+    /// relationship the role states: the bubble is darker than its window in a light
+    /// appearance and lighter than it in a dark one, and its ink is legible on it.
+    #[test]
+    fn a_shown_bubble_inverts_against_its_window() {
+        use crate::style::AppearanceMode;
+        use crate::widget::svg::render_widget_to_svg_on;
+
+        // The luminance of the bubble: the one chrome `<rect>` that is inset from the frame.
+        // Identified by geometry rather than by colour, because the whole point is that the
+        // colour is what is under test — matching on "not the backdrop colour" silently picked
+        // the backdrop itself whenever the backdrop differed from the string passed in.
+        fn bubble_luminance(svg: &str, frame_width: i32, frame_height: i32) -> f64 {
+            luminance_of_inset_rect(svg, frame_width, frame_height)
+        }
+
+        let _guard = crate::style::theme_test_guard();
+        for (appearance, window_is_dark) in
+            [(AppearanceMode::Dark, true), (AppearanceMode::Light, false)]
+        {
+            crate::style::theme_manager().set_appearance(appearance);
+            // The window the bubble sits on is the active theme's own background — NOT the
+            // hard-coded white `render_to_svg` composites over.
+            //
+            // # The defect an earlier revision of this test had
+            //
+            // It rendered with `render_to_svg`, whose backdrop is a constant `Color::WHITE` (see
+            // that function's docs). So in the *dark* appearance the "window" this test compared
+            // against was white, the bubble was a light grey, and the two were **not** inverses —
+            // yet the assertion passed, because it only checked the bubble's absolute luminance
+            // and never once looked at the window. A test named `inverts_against_its_window` that
+            // does not read the window proves nothing about the inversion it claims to guard.
+            let window = crate::style::theme_manager()
+                .current_theme()
+                .map(|theme| theme.colors.background)
+                .unwrap_or(crate::core::Color::WHITE);
+            assert_eq!(
+                is_dark(window),
+                window_is_dark,
+                "the {appearance:?} appearance must have a {} window for this test to mean \
+                 anything; got {window:?}",
+                if window_is_dark { "dark" } else { "light" }
+            );
+
+            let bounds = Rect::new(0, 0, 140, 30);
+            let mut tooltip = Tooltip::new("hint", bounds);
+            tooltip.show();
+            let svg = render_widget_to_svg_on(&mut tooltip, bounds, window);
+
+            let bubble = bubble_luminance(&svg, 140, 30);
+            // The window is the endpoint of the axis, so "inverted" is simply "on the other side
+            // of the midpoint from the window".
+            if window_is_dark {
+                assert!(
+                    bubble > 0.5,
+                    "in the dark appearance the bubble must be LIGHT (inverse of the window), \
+                     got luminance {bubble:.3}:\n{svg}"
+                );
+            } else {
+                assert!(
+                    bubble < 0.5,
+                    "in the light appearance the bubble must be DARK (inverse of the window), \
+                     got luminance {bubble:.3}:\n{svg}"
+                );
+            }
+            // The relation, stated directly: the bubble and its window are on opposite sides of
+            // the midpoint. This is the assertion the test's name promises, and the one that
+            // fails if the bubble ever stops inverting (e.g. it is painted in the window's own
+            // colour).
+            let window_lum = luminance(window);
+            assert!(
+                (bubble > 0.5) != (window_lum > 0.5),
+                "the bubble (luminance {bubble:.3}) and its {appearance:?} window
+                 (luminance {window_lum:.3}) must be on opposite sides of the midpoint"
+            );
+        }
+    }
+
+    /// `true` when a colour reads as dark (its relative luminance is at or below the midpoint).
+    fn is_dark(color: crate::core::Color) -> bool {
+        luminance(color) <= 0.5
+    }
+
+    /// The WCAG relative luminance of a colour, on the same scale the assertions use.
+    fn luminance(color: crate::core::Color) -> f64 {
+        fn linear(channel: u8) -> f64 {
+            let c = f64::from(channel) / 255.0;
+            if c <= 0.03928 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+    }
+
+    /// The luminance of the one chrome `<rect>` inset from the frame — the bubble.
+    ///
+    /// Found by geometry (`x y width height`: the backdrop spans the whole frame, the bubble does
+    /// not) rather than by colour, because the colour is what is under test.
+    fn luminance_of_inset_rect(svg: &str, frame_width: i32, frame_height: i32) -> f64 {
+        let fill = svg
+            .lines()
+            .filter(|line| line.contains("<rect") && line.contains("fill="))
+            .find(|line| {
+                let numbers: Vec<i32> =
+                    line.split('"').filter_map(|part| part.parse::<i32>().ok()).collect();
+                numbers.len() >= 4 && (numbers[2] < frame_width || numbers[3] < frame_height)
+            })
+            .unwrap_or_else(|| panic!("no inset bubble rect in:\n{svg}"));
+        let rgb =
+            fill.split("rgba(").nth(1).and_then(|rest| rest.split(')').next()).expect("a fill");
+        let channels: Vec<f64> = rgb
+            .split(',')
+            .take(3)
+            .map(|c| c.trim().parse::<f64>().expect("a channel") / 255.0)
+            .collect();
+        let linear = |c: f64| {
+            if c <= 0.03928 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(channels[0]) + 0.7152 * linear(channels[1]) + 0.0722 * linear(channels[2])
     }
 }

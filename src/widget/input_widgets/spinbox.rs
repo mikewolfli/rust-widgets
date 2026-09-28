@@ -995,20 +995,56 @@ impl Draw for SpinBox {
         let button_bg = style.background_color.unwrap_or(Color::rgb(240, 240, 240));
         let button_border = style.border_color.unwrap_or(Color::rgb(200, 200, 200));
         let arrow_color = style.text_color.unwrap_or(Color::rgb(100, 100, 100));
+        // # Why the field and its buttons acknowledge the pointer
+        //
+        // The two step buttons are the whole affordance of a spin box — a user who does not
+        // know they are pressable has a read-only number — and they used to paint `button_bg`
+        // unconditionally, so hovering one changed nothing. Measured before this: of the 27
+        // controls in `input_widgets/`, only `command_link`, `line_edit` and `range_slider`
+        // read `is_hovered()` at all.
+        //
+        // The weight comes from [`crate::style::StateOverlay::fill_blend`] rather than a literal,
+        // so the overlay the preset theme's `"<kind>:hover"` / `"<kind>:pressed"` keys derive and
+        // the overlay painted here move a control by the **same** amount. A private constant here
+        // would drift the first time the theme's weight changed (the defect `slider`'s halo and
+        // `radiobutton`'s ring avoid by reading the same source).
+        //
+        // The pointer is not tracked per-button: `BaseWidget` owns `hovered`/`pressed` for the
+        // control as a whole, and `down_button`/`up_button` are disjoint halves of it, so "the
+        // control is hovered" and "the pointer is over a button" are the same fact for every
+        // point inside the band. Splitting them would need a second hover field to disagree
+        // with the first.
+        let overlay = crate::style::StateOverlay::from_base(
+            self.base.is_hovered(),
+            self.base.is_pressed(),
+            self.base.draws_focus_ring(),
+        );
+        let blend = overlay.fill_blend();
+        // The buttons step toward their own ink, which is `arrow_color`'s source — so a theme
+        // that recolours the arrows recolours the hover that reveals them.
+        let step_fill = |base: Color| {
+            if blend > 0.0 {
+                base.blend(&base.contrast_color(), blend)
+            } else {
+                base
+            }
+        };
         let default_font = Font::default();
         let font = style.font.as_ref().unwrap_or(&default_font);
-        // Draw background
-        context.fill_rect(band, bg);
+        // Draw background. The field also acknowledges the pointer, so the whole control reads
+        // as one interactive object rather than only its buttons doing so.
+        context.fill_rect(band, step_fill(bg));
         // Draw border
         if let Some(border_color) = style.border_color {
             context.draw_rect(band, border_color);
         }
         // Draw up/down buttons. Each is the half of the trailing column it owns, so the two
-        // are the same height whatever the band is, and neither can overlap the value.
-        context.fill_rect(down_button, button_bg);
+        // are the same height whatever the band is, and neither can overlap the value. Each
+        // steps toward its own ink while the pointer is on the control; see `step_fill`.
+        context.fill_rect(down_button, step_fill(button_bg));
         context.draw_rect(down_button, button_border);
         draw_step_arrow(context, down_button, false, arrow_color);
-        context.fill_rect(up_button, button_bg);
+        context.fill_rect(up_button, step_fill(button_bg));
         context.draw_rect(up_button, button_border);
         draw_step_arrow(context, up_button, true, arrow_color);
         // Draw text. The value is bounded to the **editable** box, so it is fitted into the

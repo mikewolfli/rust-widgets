@@ -244,7 +244,15 @@ impl Icon {
                 }
             }
         }
-        // PROBE
+        // A host-registered icon: the name is not one of this crate's tokens, so it can only have
+        // come from the registry. It is drawn through the same `draw_outline` a built-in uses, so a
+        // registered icon and a bundled one cannot render differently.
+        if let Some(data) =
+            crate::widget::display_widgets::icon_data_set::lookup_registered(&self.icon_name)
+        {
+            self.draw_outline_data(ctx, &data);
+            return;
+        }
         self.draw_fallback(ctx);
     }
 
@@ -830,20 +838,45 @@ mod tests {
 
     /// A name that is neither a built-in token nor registered still draws the placeholder.
     ///
-    /// The control for the test above: if the placeholder could not be reached, the previous test
-    /// would pass for the wrong reason (everything drawing a `<path>`).
+    /// The control for the test above: if any name reached real geometry, the previous test would
+    /// pass for the wrong reason.
+    ///
+    /// # Why the discriminator is the picture, not `<path>`
+    ///
+    /// `draw_unknown` draws a `?`, and the text layer rasterises a glyph to per-pixel `<path>`
+    /// rectangles — so "contains no `<path>`" would be false for the placeholder too, and an
+    /// earlier revision of this test asserted exactly that wrongly. The real difference is *what*
+    /// is drawn: a registered icon emits its own outline (many points, spanning the box), while
+    /// the placeholder emits the `?` glyph's pixels. Comparing against the placeholder's own output
+    /// is the honest check.
     #[test]
     fn an_unknown_name_still_draws_the_placeholder() {
         use crate::widget::clear_registered_icons;
         use crate::widget::svg::render_to_svg;
 
         clear_registered_icons();
-        let mut icon = Icon::new(Rect::new(0, 0, 24, 24));
-        icon.set_icon("definitely_not_a_token");
-        let svg = render_to_svg(&mut icon);
+        let mut unknown = Icon::new(Rect::new(0, 0, 24, 24));
+        unknown.set_icon("definitely_not_a_token");
+        let unknown_svg = render_to_svg(&mut unknown);
+
+        // A registered icon draws a *different* picture from the placeholder.
+        let mut registered = Icon::new(Rect::new(0, 0, 24, 24));
+        crate::widget::register_icon(
+            "probe_for_placeholder",
+            &["M480-200 240-440l480 480-240-240Z"],
+        );
+        registered.set_icon("probe_for_placeholder");
+        let registered_svg = render_to_svg(&mut registered);
+        clear_registered_icons();
+
+        assert_ne!(
+            unknown_svg, registered_svg,
+            "an unknown name must not draw what a registered icon draws"
+        );
+        // And the unknown name's picture must not be empty: a placeholder is still ink.
         assert!(
-            !svg.contains("<path"),
-            "an unknown name must draw the text placeholder, not geometry: {svg}"
+            unknown_svg.contains("<path") || unknown_svg.contains("<rect"),
+            "the placeholder must draw something: {unknown_svg}"
         );
     }
 }

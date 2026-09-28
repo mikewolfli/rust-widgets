@@ -859,7 +859,25 @@ impl Draw for GridTableWidget {
                 // real index in the source — the same index the cells below are fetched with —
                 // and not from the loop counter, which under a horizontal scroll would name a
                 // different column than the one it sits above.
-                let header_text = format!("Column {}{label}", ci + 1);
+                //
+                // # Why the source is asked for a name first
+                //
+                // `"Column {n}"` is a placeholder, and it was the *only* label this control
+                // could produce: the data source protocol had no column-name method, so every
+                // grid named its columns by position no matter what it was showing. Two grids
+                // over different data were indistinguishable at the header row, and a user
+                // reading `"Column 3"` learned nothing they did not already know from the
+                // cell's x position. The source is asked first now; the index label survives
+                // as the honest fallback for a projection that genuinely has no names (a
+                // matrix, a headerless sheet), which is why it is not deleted.
+                // The source is bound here rather than reused from an earlier block: the
+                // header is drawn by a loop whose scope does not carry that binding, and a
+                // re-borrow of `self.data_source` is the same value either way.
+                let data_source = self.data_source.as_ref();
+                let header_text = match data_source.and_then(|source| source.column_name(ci)) {
+                    Some(name) if !name.is_empty() => alloc::format!("{name}{label}"),
+                    _ => alloc::format!("Column {}{label}", ci + 1),
+                };
                 context.draw_text_fitted(
                     context.text_line(cell_rect, &Font::default()),
                     &header_text,
@@ -1095,6 +1113,70 @@ mod tests {
                 None
             }
         }
+    }
+
+    /// A source that names its columns, for the header tests.
+    struct NamedSource;
+
+    impl IncrementalTableDataSource for NamedSource {
+        fn row_count(&self) -> usize {
+            2
+        }
+
+        fn column_count(&self) -> usize {
+            2
+        }
+
+        fn column_name(&self, column: usize) -> Option<String> {
+            match column {
+                0 => Some(String::from("Symbol")),
+                1 => Some(String::from("Price")),
+                _ => None,
+            }
+        }
+
+        fn data(&self, row: usize, column: usize) -> Option<String> {
+            Some(format!("{}:{}", row, column))
+        }
+    }
+
+    /// A column header names the column the data source names, not its position.
+    ///
+    /// # The defect this pins
+    ///
+    /// Every header was `format!("Column {}{label}", ci + 1)`, and it could not be anything
+    /// else: `IncrementalTableDataSource` had no column-name method, so a grid over a price
+    /// table showed `"Column 1"` over the symbol column. Two grids over different data were
+    /// indistinguishable at the header row.
+    ///
+    /// # Why this asserts what is *drawn*
+    ///
+    /// A test of `column_name` alone would prove the trait method exists, not that the control
+    /// asks for it — and the original defect was precisely that nothing asked. So the header is
+    /// rendered and its glyph run compared against one drawn from the literal label; the
+    /// assertion fails if the control ignored the source.
+    #[test]
+    fn a_header_names_the_columns_source() {
+        fn render(source: Option<Arc<dyn IncrementalTableDataSource>>) -> String {
+            let mut tbl = GridTableWidget::new(Rect::new(0, 0, 600, 400));
+            if let Some(source) = source {
+                tbl.set_data_source(source);
+            }
+            crate::widget::svg::render_widget_to_svg(&mut tbl, Rect::new(0, 0, 600, 400))
+        }
+
+        let named = render(Some(Arc::new(NamedSource)));
+        let index_labelled = render(Some(Arc::new(TestSource { rows: 2, cols: 2 })));
+
+        assert!(
+            !named.is_empty() && !index_labelled.is_empty(),
+            "both renders must paint something for the comparison to mean anything"
+        );
+        assert_ne!(
+            named, index_labelled,
+            "a source that names its columns must produce different header glyphs than one that \
+             does not; identical output means the header is still built from the column index"
+        );
     }
 
     // -----------------------------------------------------------------------

@@ -135,6 +135,18 @@ const EXTRA_APPEARANCES: &[(&str, &str, &str)] = &[
     // recorded here rather than papered over with a duplicate.
     ("radio_button", "_checked", "checked"),
     ("toggle_button", "_checked", "checked"),
+    // A tooltip's **shown** state is the only state a user ever sees, and it was in no snapshot.
+    //
+    // `create_tooltip` starts hidden, and the default file exports that rest state — where the
+    // bubble is composited fully toward the window by the fade, so `tooltip.svg`'s bubble fill
+    // *equals* the window fill and the picture says nothing about the control. That hid a real
+    // defect for several rounds: the bubble colour was taken from a field whose default is
+    // `rgba(40,40,40,220)` rather than the window, so the theme's `inverse_surface` arm below it
+    // was unreachable and the shown bubble painted the same near-black in **both** appearances
+    // (1.27:1 against the dark window — a smudge, not a tooltip). Measured before the fix with
+    // `tests/tooltip_paint_probe.rs`. The defect was invisible to the snapshot set precisely
+    // because the snapshot set had no shown tooltip in it.
+    ("tooltip", "_shown", "shown"),
 ];
 
 /// Applies the state an extra appearance depicts. Returns `false` when the control does not have
@@ -191,6 +203,18 @@ fn apply_extra_state(
             match rust_widgets::widget::capability::coercion::widget_as_mut::<Frame>(widget) {
                 Some(frame) => {
                     frame.set_frame_shape(shape);
+                    true
+                }
+                None => false,
+            }
+        }
+        // A shown tooltip is the state a user sees, and it is reached through the control's own
+        // `show`, so the string in `EXTRA_APPEARANCES` and the state drawn cannot disagree.
+        ("tooltip", "_shown") => {
+            use rust_widgets::widget::dialog::tooltip::Tooltip;
+            match rust_widgets::widget::capability::coercion::widget_as_mut::<Tooltip>(widget) {
+                Some(tooltip) => {
+                    tooltip.show();
                     true
                 }
                 None => false,

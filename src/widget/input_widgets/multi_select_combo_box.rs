@@ -418,6 +418,22 @@ impl Draw for MultiSelectComboBox {
         // A disabled field is the resolved palette, one step toward the surface, rather
         // than a separate literal pair that could only ever suit a light theme.
         let bg_color = if is_enabled { field } else { field.blend(&ink, 0.08) };
+        // # Why the field acknowledges the pointer
+        //
+        // The same M1 gap as its `editable` sibling and `combo_box`: a closed multi-select is a
+        // field the user presses to open a list, and it painted one colour in every pointer
+        // state. `StateOverlay::fill_blend` is read so the weight matches the theme's own
+        // `"<kind>:hover"` key rather than a private constant that could drift from it.
+        let overlay = crate::style::StateOverlay::from_base(
+            self.base.is_hovered(),
+            self.base.is_pressed(),
+            self.base.draws_focus_ring(),
+        );
+        let bg_color = if is_enabled && !overlay.is_empty() {
+            bg_color.blend(&bg_color.contrast_color(), overlay.fill_blend())
+        } else {
+            bg_color
+        };
         context.fill_rounded_rect(rect, 4, bg_color);
 
         // Border

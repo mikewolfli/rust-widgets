@@ -287,8 +287,29 @@ impl Draw for SearchBar {
         let field_rect = Rect::new(rect.x, rect.y, field_width, rect.height);
         let base_field =
             style.background_color.or(themed_bg).unwrap_or(Color::rgba(200, 200, 205, 200));
-        let field_color =
-            if !is_enabled { base_field.blend(&Color::WHITE, 0.35) } else { base_field };
+        // # Why the field acknowledges the pointer
+        //
+        // Disabled is handled (faded toward white); hovered was not, so a pointer over the
+        // search field painted the resting fill and the field read as static. The weight comes
+        // from `StateOverlay::fill_blend`, which is the same source the preset theme's
+        // `"<kind>:hover"` key derives from — a private constant here would drift from it.
+        let hover = if is_enabled {
+            let overlay = crate::style::StateOverlay::from_base(
+                self.base.is_hovered(),
+                self.base.is_pressed(),
+                false,
+            );
+            overlay.fill_blend()
+        } else {
+            0.0
+        };
+        let field_color = if !is_enabled {
+            base_field.blend(&Color::WHITE, 0.35)
+        } else if hover > 0.0 {
+            base_field.blend(&base_field.contrast_color(), hover)
+        } else {
+            base_field
+        };
         // The field's ink: the typed text and the placeholder both read on `field_color`, so
         // they are derived from it rather than being two literals written for a light field.
         // The previous pair (`40,40,40` and `160,160,160`) rendered at 1.5:1 and 2.6:1 once the

@@ -548,8 +548,26 @@ impl EmojiPicker {
     fn chrome_colors(&self) -> (Color, Color, Color, Color, Color) {
         let style = self.base.style().clone();
         let theme = crate::style::resolved_theme_style("emoji_picker");
+        // # Why the panel does not fall back to the window fill
+        //
+        // `resolved_theme_style("emoji_picker")` cannot help here: `"emoji_picker"` is absent
+        // from `WidgetRole`'s table, so the lookup classifies it as `Surface` and resolves to
+        // `theme.colors.background` — the window's own colour. Reading that made the panel
+        // *equal* to the surface it opened over, i.e. the popup had no visible edge at all.
+        //
+        // The `surface_container` role is the one step up from the page, which is what a
+        // popup's face is: it reads as *on top of* the window rather than as a continuation of
+        // it. A window-fill resolution is treated as "no answer" and stepped away from, the
+        // same guard `drop_zone` and `otp_input` use, so a theme that genuinely wants the panel
+        // flush with the page can still set `background_color` explicitly.
+        let window_fill = {
+            let manager = crate::style::theme_manager();
+            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+        };
         let panel = style
             .background_color
+            .filter(|resolved| *resolved != window_fill)
+            .or_else(|| crate::style::layer_color(crate::style::LayerColor::SurfaceContainer))
             .or_else(|| theme.as_ref().and_then(|t| t.background_color))
             .unwrap_or(Color::rgb(252, 252, 254));
         let ink = style

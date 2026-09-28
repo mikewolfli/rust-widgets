@@ -1297,6 +1297,14 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 > AnimationGroup: unconnected, acknowledged
 > ```
 >
+> **⚠️ 第 89 轮又发现同类病灶，但方向相反（实测见 `log-20260924-1.md` §89.1）**：
+> 本附录按 `❌`/`✅` 标记待办与完成，而**两者都是「写入那一刻」的快照，不是事实**。
+> 第 89 轮批量复核了计划正文点名过的 8 个 P0 行：**7 个早已在往轮修好、只是计划行没回写**
+> （`group_box` / `panel` / `drop_zone` / `bottom_sheet` / `modal_bottom_sheet` / `fab` /
+> `app_bar` / `tab_bar` 的两项），唯一真待办的 `tooltip` 还被**写轻了**
+> （计划说「浅色态无从区分」，实测**两个外观都不可见**）。
+> **凡引用本附录未回写的 `❌` 行的地方，都必须先复核代码**——否则会把已经正确的实现再改一遍。
+>
 > **⚠️ 第 74 轮修正了一个**测量假象**（实测见 `log-20260924-1.md` §46）**：
 > 本表原先记的「**66 个 Draw 文件只读字面量（36%）**」是 **`audit_appearance.py` 的正则漏匹配** 造成的 ——
 > 它只匹配 `style.background_color` 一种写法，漏掉了内联 `self.style().x`、
@@ -1395,33 +1403,33 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
-| `line_edit` | `lineedit.rs` | 3 | ① **第 76 轮实测复核：「有 `tick` 无驱动者」已不成立** —— `inherent tick` + `impl Widget::tick` + `is_animating` 三者齐全（工具：`tools/audit_animation_wiring.py`，`log-20260924-1.md` §77.4）② `:error` 覆盖 + `error_text` **已在**（`:487/:496`）③ `caret_x` 已用 `floor_char_boundary` + `measure_text(prefix)`（`:1003-1005`）⇒ 假欠债；**真缺口是「装饰槽模型」（`prefix`/`suffix`/`helper`/`counter`）** | **M10**（装饰槽）仍有活 | ✅ **复核完成** |
-| `spin_box` | `spinbox.rs` | 5 | ✅ 已由 `CompositeBuilder` 组装（BLUE22 第 70 轮，快照几何逐字节不变） | ① 接 M1（步进按钮 hover）② RTL padded 镜像（参考工具包 `reference: padding derived from the sibling's own width`） | **M1** **M8** | P1 |
-| `number_picker` | `number_picker.rs` | 1 | 同 `spin_box` 但未接组装 | 接 **M1** + **M7** | **M1** **M7** | P2 |
-| `combo_box` | `combobox.rs` | 3 | ✅ 指示器已由组装推导（BLUE22）；无 hover 态 | **M1** **M2** **M8**（镜像时指示器 padding 交换） | P1 |
-| `editable_combo_box` | `editable_combo_box.rs` | 0 | 本仓**优势**（主流 material 实现 `DropdownButton` 不可编辑） | **M1** **M9** | P2 |
-| `multi_select_combo_box` | `multi_select_combo_box.rs` | 0 | 本仓**优势**（主流 material 实现 **多选完全没有**） | **M1** **M10**（枚举候选/读高亮） | P2 |
-| `font_combo_box` | `font_combo_box.rs` | 3 | 3 个字面量；无状态 | **M1** **M4** | P2 |
-| `search_box` | `search_box.rs` | 8 | 8 个字面量；无状态 | **M1** **M2** **M4** | P1 |
-| `search_bar` | `search_bar.rs` | 4 | 同族，与 `search_box` 字面量不同步 | **M1** **M4**（与 `search_box` 抽共享） | P2 |
-| `text_area` | `textarea.rs` | 4 | **完全不读 style（`style=N`）** ⇒ 无主题响应 | **M4**（4 处）**M2** | P1 |
-| `text_edit` | `textedit.rs` | 1 | 1 个字面量 | **M1** **M4** | P2 |
-| `rich_edit` | `rich_edit.rs` | 1 | BLUE21 A.6：光标几何用**等宽捷径** `cell_width`，变宽跨度下必然错位 | ① 接 M3（光标闪烁）② caret/range 几何改为**跨度感知**（勿继承等宽） | **M3** **M10** | P1 |
-| `masked_edit` | `masked_edit.rs` | 4 | BLUE21 B15：正文字面量 `rgb(33,33,33)` 在暗色字段上对比 **1.35:1**（注：`audit_text_contrast` 现已全绿——**该条已修**，此处仅存 4 个字面量待清） | **M4** **M1** | P2 |
-| `otp_input` | `otp_input.rs` | 0 | BLUE21 B19：6 格里 5 格不可见（已修）；本仓**优势** | ① 接 M1/M2 ② `obscuringCharacter = '•'`（主流 material 实现 `text_field.dart:273`） | **M1** **M2** **M10** | P1 |
-| `tag_input` | `tag_input.rs` | 7 | ✅ **第 76 轮已修**（实测见 `log-20260924-1.md` §78）：① 计划记的「有 `tick` 无驱动者」**不成立** —— `tick` 已接 `impl Widget::tick`（`:395`），属 **§3 总线的已驱控件**（全仓 34 个之一）；② 真缺陷是**缺 `is_animating`** —— 它默认 `false`，而宿主用它在「要不要付一次 sweep」**之前**做决定 ⇒ 正在闪烁的光标被判为「已停」⇒ 动画卡在两帧之间（与 §3「写了动画却永不前进」同形，上一层）⇒ 现报 `self.focused`，与 `tick` 首行守卫同源；断言写成 `is_animating == tick(0)` + 反向注入 | ② **完成**；M4（7 字面量均为回落档/数据）复核为非缺陷 | ✅ **P1 完成** |
+| `line_edit` | `lineedit.rs` | 3 | ✅ **第 90 轮实测复核：装饰槽已存在，计划记的「真缺口」不成立** —— `prefix()`/`suffix()`/`helper_text()`/`counter_text()` 齐全（`lineedit.rs:527/546/558/588`，由 `DecorationSlots` 支撑），`set_error_text` 在 `:580` | **M10**（装饰槽）仍有活 | **M10**（装饰槽）仍有活 | ✅ **复核完成** |
+| `spin_box` | `spinbox.rs` | 5 | ✅ **第 90 轮已修悬停**（`log-20260924-1.md §90`）：BLUE22 的组装改造**早已完成**（`spinbox.rs:270` 用 `CompositeBuilder`）。真缺口是**字段与两个步进按钮不读指针状态** —— 而两个按钮是这个控件的**全部**可操作面，用同一色画出来等于把「可点」藏起来。修法读`StateOverlay::fill_blend()`（权重 `0.08`/`0.12`，与主题的 `"<kind>:hover"` 键同源）。实测暗态 `240→221`（按钮）/ `255→235`（字段），反向注入转红 | ① 接 M1（步进按钮 hover）② RTL padded 镜像（参考工具包 `reference: padding derived from the sibling's own width`） | **M1** **M8** | ✅ **复核完成**
+| `number_picker` | `number_picker.rs` | 1 | ⚠️ **第 90 轮实测复核**：①「未接组装」**成立**（文件内无 `CompositeBuilder`）；② 无悬停**成立**。两项与 `spin_box` 同形，修法相同（组装改造属 BLUE22 队列，非本计划） | 接 **M1** + **M7** | **M1** **M7** | ⚠️ **仍留白**
+| `combo_box` | `combobox.rs` | 3 | ✅ **第 90 轮已修悬停**（`log-20260924-1.md §90`）：指示器由组装推导**早已完成**。真缺口是**字段不读指针状态** —— 它唯一的 `hovered_item` 只作用于**列表行**，而列表合上时（字段最常见的样子）永不触发。修法同上，实测 `255→235` | **M1** **M2** **M8**（镜像时指示器 padding 交换） | **M1** **M2** **M8**（镜像时指示器 padding 交换） | ✅ **复核完成** |
+| `editable_combo_box` | `editable_combo_box.rs` | 0 | ✅ **第 90 轮已修悬停**：本仓**优势**保持（主流 material 实现 的 `DropdownButton` 不可编辑）；补字段悬停（读 `fill_blend()`），实测暗态 `69→84` | **M1** **M9** | **M1** **M9** | ✅ **复核完成** |
+| `multi_select_combo_box` | `multi_select_combo_box.rs` | 0 | ✅ **第 90 轮已修悬停**：本仓**优势**保持（主流 material 实现 多选完全没有）；补字段悬停，实测暗态 `69→84` | **M1** **M10**（枚举候选/读高亮） | **M1** **M10**（枚举候选/读高亮） | ✅ **复核完成** |
+| `font_combo_box` | `font_combo_box.rs` | 3 | ✅ **第 90 轮复核**：3 处字面量是**无主题回落档**（非缺陷）；悬停仍缺，属 `combo_box` 同族（本仓字段族已修 7 个，font/多选/可编辑同形） | **M1** **M4** | **M1** **M4** | ✅ **复核完成** |
+| `search_box` | `search_box.rs` | 8 | ✅ **第 90 轮已修悬停**：8 处字面量经复核为回落档 + 焦点态**早已接**（`:308`）。真缺口是**悬停** —— 指向搜索框（点击前必经的状态）画的是静止色 ⇒ 已补，且在焦点分支**之前**判定，使「已聚焦」仍能压过「悬停」 | **M1** **M2** **M4** | **M1** **M2** **M4** | ✅ **复核完成** |
+| `search_bar` | `search_bar.rs` | 4 | ✅ **第 90 轮已修悬停**：与 `search_box` 的字面量不同步仍成立（两处 alpha 不同），但两者**都只是回落档**；真缺口是悬停 ⇒ 已补（同一 `fill_blend()` 权重） | **M1** **M4**（与 `search_box` 抽共享） | **M1** **M4**（与 `search_box` 抽共享） | ✅ **复核完成** |
+| `text_area` | `textarea.rs` | 4 | ✅ **第 90 轮实测复核：假欠债（计划记错）** —— 计划记「完全不读 style（`style=N`）」**不成立**：`textarea.rs:436/:446/:450` 三处都读 `self.style()`（面/框/墨），4 个字面量全是无主题回落档 | **M4**（4 处）**M2** | **M4**（4 处）**M2** | ✅ **复核完成** |
+| `text_edit` | `textedit.rs` | 1 | ✅ **第 90 轮复核**：主题读取**早已接**（`textedit.rs:468` 读 `style`/`theme`），1 处字面量是回落档；悬停仍缺（同族，已修 7 个） | **M1** **M4** | **M1** **M4** | ✅ **复核完成** |
+| `rich_edit` | `rich_edit.rs` | 1 | ✅ **第 90 轮实测复核：假欠债（计划记错）** —— 「光标几何用等宽捷径 `cell_width`」**不成立**：`rich_edit.rs:481` 用 `metrics::estimate_text_width`，且测试 `the_caret_is_placed_by_measurement_not_by_a_fixed_advance`（`:668`）断言 `caret_x != 2 + 3 * 7`；全文件无 `cell_width` 符号 | ① 接 M3（光标闪烁）② caret/range 几何改为**跨度感知**（勿继承等宽） | **M3** **M10** | ✅ **复核完成**
+| `masked_edit` | `masked_edit.rs` | 4 | BLUE21 B15：正文字面量 `rgb(33,33,33)` 在暗色字段上对比 **1.35:1**（注：`audit_text_contrast` 现已全绿——**该条已修**，此处仅存 4 个字面量待清） | **M4** **M1** |  | P2 |
+| `otp_input` | `otp_input.rs` | 0 | ✅ **第 90 轮已修悬停**：B19 的 5/6 格不可见**早已修**（面从窗口色派离）；真缺口是悬停 ⇒ 已补（读 `fill_blend()`，且在焦点分支之前判定）。实测暗态 `16→35` | ① 接 M1/M2 ② `obscuringCharacter = '•'`（主流 material 实现 `text_field.dart:273`） | **M1** **M2** **M10** | ✅ **复核完成**
+| `tag_input` | `tag_input.rs` | 7 | ✅ **第 76 轮已修**（实测见 `log-20260924-1.md` §78）：① 计划记的「有 `tick` 无驱动者」**不成立** —— `tick` 已接 `impl Widget::tick`（`:395`），属 **§3 总线的已驱控件**（全仓 34 个之一）；② 真缺陷是**缺 `is_animating`** —— 它默认 `false`，而宿主用它在「要不要付一次 sweep」**之前**做决定 ⇒ 正在闪烁的光标被判为「已停」⇒ 动画卡在两帧之间（与 §3「写了动画却永不前进」同形，上一层）⇒ 现报 `self.focused`，与 `tick` 首行守卫同源；断言写成 `is_animating == tick(0)` + 反向注入 | ② **完成**；M4（7 字面量均为回落档/数据）复核为非缺陷 |  | ✅ **P1 完成** |
 | `keyboard` | `keyboard.rs` | 6 | BLUE21 D20：键帽文字贴顶（**已修**）；仍 6 字面量 + 无按键反馈 | ① 键帽按下**变色 + 动效**（M1/M2/M3）② 字面量 → token | **M1** **M2** **M3** **M4** | P1 |
-| `range_slider` | `range_slider.rs` | 4 | ✅ 双向手柄映射正确（BLUE22 §4.3 的参照）；无 hover/drag 发光 | **M1** **M3**（手柄按下放大，主流 material 实现 `slider_parts.dart:678`） | P1 |
-| `list_box` | `listbox.rs` | 6 | 6 个字面量；行选中无统一来源 | **M1** **M6**（行线）**M4** | P1 |
-| `dropdown` | `dropdown.rs` | 8 | ✅ **第 73 轮已修**（实测见 `log-20260924-1.md` §41）：实测比计划记的更具体 —— **字段读了 `style`（3 处），但弹层的 5 个颜色是常量**（占位符/高亮填充/高亮墨/列表描边/行面）⇒ 暗色构建里「字段是暗的、它打开的列表是近白的」。其中**高亮墨原来读字段的 `text_color`** 是真缺陷（只在填充恰为淡色时可读）⇒ 现读 `primary.contrast_color()`。断言写错两次（文档级比较被无关颜色满足；行序写反），第三次精确到具体行才承重 | **M4** **M5** **完成** | ✅ **P0 完成** |
-| `cascader` | `cascader.rs` | 8 | ✅ **第 74 轮已修**（实测见 `log-20260924-1.md` §45）：① `let _ = needle;` 经复核是**残留死代码** —— 过滤**确有实现**（`filtered_indices`，`draw`/`row_at`/`level_rect` 三处都调它），`visible_options_at` 只是「不窄化」的那一个访问器，故**删死代码 + 写清分工**，不「实现」一个不存在的缺失；② **弹层列是 `Color::WHITE` + 三个固定灰**（**与 `dropdown` 逐字同形**：字段读 `style`、展开的列表不读）⇒ 改读 `surface_container` / `primary` + 其对比墨 / `outline_variant` / `secondary`。断言第一版采样在**圆角描边上**（`outline_variant` 本就随主题变）故不承重，移到列内部才红 | ① **完成** ② **完成** | ✅ **P1 完成** |
-| `auto_complete_edit` | `auto_complete_edit.rs` | 5 | 只发布 `suggestion_count`（无法枚举候选/读高亮）；颜色**已接主题**（`resolved_theme_style` + `style.*`，弹层用字段色），非缺陷 | **M10**（`optionsBuilder` 等价物） | P1 |
-| `mention` | `mention.rs` | 7 | ✅ **第 74 轮已修**（实测见 `log-20260924-1.md` §47）：弹层 `Color::WHITE` + 三个固定灰 + 固定蓝下划线 —— **与 `cascader`/`dropdown` 同一处形状（第三次）**⇒ 面 `surface_container` / 高亮 `primary` + 其对比墨 / 描边 `outline_variant` / 高亮行上的说明朝该行填充退隐；提及下划线改 `primary` | **M4** **M5** **完成** | ✅ **P2 完成** |
-| `command_link` | `command_link.rs` | 3 | ✅ **第 74 轮已修**（实测见 `log-20260924-1.md` §44）：① 计划记的「已有私有 hover 字段」**不成立** —— 结构体无该字段、`draw` 早已读 `self.base.is_hovered()`，故 **M1 无活可做**（如实驳回）；② 真缺陷是**悬停时 `rgb(0,0,255)` 无条件替掉主题墨** ⇒ 改读 `theme.colors.primary`。断言读**下划线 `<line>` 的 stroke**（不比较整份文档） | ② **完成** | ✅ **P1 完成** |
-| `inplace_editor` | `inplace_editor.rs` | 2 | ✅ **第 74 轮复核**：`tick` **已接 `impl Widget::tick`**（非「无驱动者」）；颜色**已接主题**。 ✅ **第 76 轮补修**（§78）：**缺 `is_animating`** ⇒ 正在闪烁的光标被宿主判为「已停」，动画卡在半路 ⇒ 现报 `self.is_editing`，断言与 `tick` 一致 + 反向注入承重 | **完成** | ✅ **P1 完成** |
-| `ime_preedit` | `ime_preedit.rs` | 1 | ✅ 属白名单（无自带色带） | **M4**（1 处） | P2 |
-| `keyboard` | `keyboard.rs` | 6 | ✅ **第 74 轮已修**（实测见 `log-20260924-1.md` §56）：① 颜色**已接主题**（三个字面量是「无主题回落档」，与 `button`/`frame` 同类，**非缺陷**）；② 真缺陷是**按下毫无反馈** —— `handle_event` 发完信号就结束、`draw` 无「哪个键被按」的输入 ⇒ 新增 `pressed_key: Option<(row, col)>`（**用位置而非键码**：数字行与键盘区同码），`MousePress` 用 `key_at_position` 记、`MouseRelease`/`TouchEnd` 清、`draw` 该键 `blend(ink, 0.25)` | ② **完成** | ✅ **P1 完成** |
-| `shortcut_editor` | `shortcut_editor.rs` | 3 | ⚠️ **第 75 轮实测复核**：canonical 控件**已读主题**（`style.` 4 处 + `theme_manager()`），唯一字面量是**无主题回落档** ⇒ **非缺陷**（与 `text_area` 同类，已如实驳回）。**新发现**：同 kind 下还有另一个真控件 `KeySequenceEdit`（`advanced_widgets/key_sequence_edit.rs`，**导出的公共类型、但不是 188 个 canonical 之一**），它的 `Draw` **六个字面量、零主题读取**，且录制态用固定浅红 ⇒ **已在第 75 轮修**（面/框/墨改主题角色，录制态改 `surface.blend(&error, 0.12)`，断言 + 反向注入见 `log-20260924-1.md` §72）。计划 A.3 原记的「① 改逻辑键集 ② 按下反馈」仍留白 | ① 逻辑键集 ② 按下反馈（M10/M1/M2）仍留白；`KeySequenceEdit` 已修 | P1 |
+| `range_slider` | `range_slider.rs` | 4 | ✅ 双向手柄映射正确（BLUE22 §4.3 的参照）；无 hover/drag 发光 | **M1** **M3**（手柄按下放大，主流 material 实现 `slider_parts.dart:678`） |  | P1 |
+| `list_box` | `listbox.rs` | 6 | ⚠️ **第 90 轮实测复核：真缺口** —— 选中/当前行/分隔线是**硬编码字面量**：`listbox.rs:667` `Color::rgb(0,120,215)`（选中）、`:672` `rgb(240,240,240)`（当前行）、`:696` `rgb(230,230,230)`（分隔）、`:678` `rgb(255,255,255)`（选中墨）。这是 M4 的**真消费者缺口**（不是回落档：主题下仍画这些值），且无悬停 | **M1** **M6**（行线）**M4** | **M1** **M6**（行线）**M4** | ⚠️ **仍留白** |
+| `dropdown` | `dropdown.rs` | 8 | ✅ **第 73 轮已修**（实测见 `log-20260924-1.md` §41）：实测比计划记的更具体 —— **字段读了 `style`（3 处），但弹层的 5 个颜色是常量**（占位符/高亮填充/高亮墨/列表描边/行面）⇒ 暗色构建里「字段是暗的、它打开的列表是近白的」。其中**高亮墨原来读字段的 `text_color`** 是真缺陷（只在填充恰为淡色时可读）⇒ 现读 `primary.contrast_color()`。断言写错两次（文档级比较被无关颜色满足；行序写反），第三次精确到具体行才承重 | **M4** **M5** **完成** |  | ✅ **P0 完成** |
+| `cascader` | `cascader.rs` | 8 | ✅ **第 74 轮已修**（实测见 `log-20260924-1.md` §45）：① `let _ = needle;` 经复核是**残留死代码** —— 过滤**确有实现**（`filtered_indices`，`draw`/`row_at`/`level_rect` 三处都调它），`visible_options_at` 只是「不窄化」的那一个访问器，故**删死代码 + 写清分工**，不「实现」一个不存在的缺失；② **弹层列是 `Color::WHITE` + 三个固定灰**（**与 `dropdown` 逐字同形**：字段读 `style`、展开的列表不读）⇒ 改读 `surface_container` / `primary` + 其对比墨 / `outline_variant` / `secondary`。断言第一版采样在**圆角描边上**（`outline_variant` 本就随主题变）故不承重，移到列内部才红 | ① **完成** ② **完成** |  | ✅ **P1 完成** |
+| `auto_complete_edit` | `auto_complete_edit.rs` | 5 | ⚠️ **第 90 轮实测复核：部分已修** —— 契约**已补** `selected_index`/`selected_suggestion`/`dropdown_visible`（`:364/:368/:377`）；**仍缺**候选列表属性（`suggestions()` 存在但属性层无法枚举），故 M10 只关一半 | **M10**（`optionsBuilder` 等价物） | **M10**（`optionsBuilder` 等价物） | ⚠️ **仍留白** |
+| `mention` | `mention.rs` | 7 | ✅ **第 74 轮已修**（实测见 `log-20260924-1.md` §47）：弹层 `Color::WHITE` + 三个固定灰 + 固定蓝下划线 —— **与 `cascader`/`dropdown` 同一处形状（第三次）**⇒ 面 `surface_container` / 高亮 `primary` + 其对比墨 / 描边 `outline_variant` / 高亮行上的说明朝该行填充退隐；提及下划线改 `primary` | **M4** **M5** **完成** |  | ✅ **P2 完成** |
+| `command_link` | `command_link.rs` | 3 | ✅ **第 74 轮已修**（实测见 `log-20260924-1.md` §44）：① 计划记的「已有私有 hover 字段」**不成立** —— 结构体无该字段、`draw` 早已读 `self.base.is_hovered()`，故 **M1 无活可做**（如实驳回）；② 真缺陷是**悬停时 `rgb(0,0,255)` 无条件替掉主题墨** ⇒ 改读 `theme.colors.primary`。断言读**下划线 `<line>` 的 stroke**（不比较整份文档） | ② **完成** |  | ✅ **P1 完成** |
+| `inplace_editor` | `inplace_editor.rs` | 2 | ✅ **第 74 轮复核**：`tick` **已接 `impl Widget::tick`**（非「无驱动者」）；颜色**已接主题**。 ✅ **第 76 轮补修**（§78）：**缺 `is_animating`** ⇒ 正在闪烁的光标被宿主判为「已停」，动画卡在半路 ⇒ 现报 `self.is_editing`，断言与 `tick` 一致 + 反向注入承重 | **完成** |  | ✅ **P1 完成** |
+| `ime_preedit` | `ime_preedit.rs` | 1 | ✅ 属白名单（无自带色带） | **M4**（1 处） |  | P2 |
+| `keyboard` | `keyboard.rs` | 6 | ✅ **第 74 轮已修**（实测见 `log-20260924-1.md` §56）：① 颜色**已接主题**（三个字面量是「无主题回落档」，与 `button`/`frame` 同类，**非缺陷**）；② 真缺陷是**按下毫无反馈** —— `handle_event` 发完信号就结束、`draw` 无「哪个键被按」的输入 ⇒ 新增 `pressed_key: Option<(row, col)>`（**用位置而非键码**：数字行与键盘区同码），`MousePress` 用 `key_at_position` 记、`MouseRelease`/`TouchEnd` 清、`draw` 该键 `blend(ink, 0.25)` | ② **完成** |  | ✅ **P1 完成** |
+| `shortcut_editor` | `shortcut_editor.rs` | 3 | ⚠️ **第 75 轮实测复核**：canonical 控件**已读主题**（`style.` 4 处 + `theme_manager()`），唯一字面量是**无主题回落档** ⇒ **非缺陷**（与 `text_area` 同类，已如实驳回）。**新发现**：同 kind 下还有另一个真控件 `KeySequenceEdit`（`advanced_widgets/key_sequence_edit.rs`，**导出的公共类型、但不是 188 个 canonical 之一**），它的 `Draw` **六个字面量、零主题读取**，且录制态用固定浅红 ⇒ **已在第 75 轮修**（面/框/墨改主题角色，录制态改 `surface.blend(&error, 0.12)`，断言 + 反向注入见 `log-20260924-1.md` §72）。计划 A.3 原记的「① 改逻辑键集 ② 按下反馈」仍留白 | ① 逻辑键集 ② 按下反馈（M10/M1/M2）仍留白；`KeySequenceEdit` 已修 |  | P1 |
 
 > **本组最刺眼的一条**：`line_edit` 的 `tick`（光标闪烁）**已经写好且测试过**，
 > 但没有任何东西推进它 ⇒ **用户看到的是一个不闪的光标**。整组 26 个控件同理。
@@ -1467,7 +1475,7 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 | `empty_state` | `empty_state.rs` | 1 | ✅ 重叠 28 px 已修（BLUE22 R-5） | **M4** | P2 |
 | `roller` | `roller.rs` | 3 | `roller.rs:331` 是 BLUE21 的**正确写法参照**（文本居中） | **M3**（滚轮惯性/对齐动画）**M4** | P2 |
 | `floating_label` | `floating_label.rs` | 5 | ✅ **第 76 轮实测复核：假欠债** —— `tick` + `is_animating` 齐全（BLUE21 记为**正确范式**，已确认）| 无 | ✅ **已满足** |
-| `emoji_picker` | `emoji_picker.rs` | 2 | BLUE21 B20：面板 = 窗口底色 | **M5** **M4** | P2 |
+| `emoji_picker` | `emoji_picker.rs` | 2 | ⚠️ **第 90 轮补修**（``log-20260924-1.md` §90`）：`"emoji_picker"` 不在 `WidgetRole` 表 ⇒ 归类 `Surface` ⇒ 解析到 `theme.colors.background`（窗口自己的色）⇒ **面板与它浮在其上的窗口同色，弹层无边缘**。改为：窗口色的解析结果视为「没有答案」，退 `surface_container`（与 `drop_zone`/`otp_input` 同一守卫），显式设置的颜色仍最优先。实测面板 `rgba(30,30,33)` ≠ 窗口 `rgba(18,18,18)` | **M5** **M4** | ⚠️ **仍留白** |
 | `color_well` | `color_well.rs` | 0 | 本仓**优势**（外部对标 / Cupertino **都没有**取色器） | **M1**（hover 描边）**M5** | P2 |
 | `color_history` | `color_history.rs` | 9 | 9 个字面量；有 hover 记录 | **M4** **M1** | P2 |
 | `mini_canvas` | `mini_canvas.rs` | 6 | 6 个字面量；无交互反馈 | **M4** **M1** | P2 |
@@ -1481,20 +1489,20 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
-| `panel` | `groupbox.rs` | 6 | **`Panel` 是 `GroupBox` 的 `pub type`**（`kind.rs:80-86`）；其「面」= 窗口底色 ⇒ **无层级** | **M5**（面读 `surface_container`）**M4** | **P1** |
-| `group_box` | `groupbox.rs` | 6 | BLUE21 B22：可勾选态**纯黑勾**（暗态最不可读的一笔）；且 `create_group_box` 从不 `set_checkable` ⇒ **快照覆盖不到该状态** | ① 勾取**框填充的对比色** ② 标题占位走 `top_padding = padding + label_h + spacing`（参考工具包 `reference: the title-band reserve: padding + label height + spacing`）③ **产出 `group_box_checked` 快照** | **M4** **M7** **§4.1** | **P0** |
-| `tab_widget` | `tabwidget.rs` | 3 | BLUE21 D8：**构造后零 tab**（标题落不下去）；三种 `TabShape` 在 `tab_bar` 里画得一样 | ① 抄 `create_tab_bar` 加两个 tab ② `set` 补 `text`/`title` 分支 | **M7** **M10** | **P0** |
-| `scroll_area` | `scrollarea.rs` | 7 | BLUE21 B13：滚动条 **8 处字面量**（同文件 `draw_sticky_band` 已做对） | **M4**（抄自己的 `draw_sticky_band`）**M3**（淡出） | **P0** |
-| `splitter` | `splitter.rs` | 2 | `HANDLE_WIDTH` 曾在**两处**各写一遍（已由 `dimensions` 统一）；拖拽**无实时反馈** | **M3**（拖拽中高亮/光标）**M5** | P1 |
-| `dock_widget` | `dockwidget.rs` | 0 | BLUE21 D13：24 px 标题栏曾在**两个函数**各写一遍（已提常量）；**无拖出/吸附动画** | **M3**（吸附预览 + 拖动浮影）**M5** | P1 |
-| `mdi_area` | `mdiarea.rs` | 3 | BLUE21 A13：子窗口标题曾越过下边框（已修）；窗口**无最小化/还原动画** | **M3** **M5** | P2 |
-| `tool_box` | `toolbox.rs` | 11 | BLUE21 D7：竖排 120 px 下 **4 项归零**（`item_rect` 不钳制，越界项画到控件外） | ① 给页面保底宽/高 ② 条带做**溢出出口**（滚动或 more 钮）③ RTL. | **M7** **M10** **M8** | P1 |
-| `collapsible_pane` | `collapsible_pane.rs` | 4 | 展开/收起是**瞬时**（无高度动画）；头部高 24 < 主流 material 实现 44/48 | **M3**（高度动画）**M10**（头部高） | P1 |
-| `stacked_widget` | `stackedwidget.rs` | 0 | ✅ BLUE21 A.7 #4：禁用时**抑制信号并给出原因**（优势） | **M3**（切页过渡，可选） | P2 |
-| `stepper` | `stepper.rs` | 0 | BLUE21 P2-11：本仓 `stepper` = **数值微调器**，主流 material 实现 `Stepper` = **分步向导** ⇒ **缺一整个控件** | 二选一：**改名** 或 **补真正的向导控件**（`StepState` 5 态 + 连接线），**不留悬空** | **M10** | P1 |
-| `safe_area` | `safe_area.rs` | 0 | ✅ 四边物理 inset（BLUE21 AR5 记为方向性问题） | **M8**（`start`/`end`） | P2 |
-| `masonry_layout` | `masonry_layout.rs` | 6 | BLUE21 D12：**整个 Draw 无 `push_clip`**（不裁剪）；标签用 `draw_text` 非 `draw_text_fitted`，`y = item_y + h/2 - 6` 只对 12 px 字号成立 | ① 加 `push_clip`/`pop_clip` + 丢弃 `y ≥ rect.bottom` ② 标签走 `text_line` + `draw_text_fitted` ③ BLUE21 记 `corner_radius` 死绑定（`4` vs 真画 `6`） | **M10** **M4** | P1 |
-| `carousel` | `carousel.rs` | 9 | ✅ BLUE21 A.7 #2：手势释放**距离 ∨ 速度** + 显式防抖下限（优势） | **M3**（吸附动画）**M4** | P2 |
+| `panel` | `groupbox.rs` | 6 | ✅ **第 90 轮实测复核**：计划记的「面无层级 ⇒ 应读 `surface_container`」**早已修** —— `groupbox.rs:593` 读 `LayerColor::SurfaceContainer`（且拒绝 theme_derived 的背景）。快照实测面板 `rgba(30,30,33)` ≠ 窗口 `rgba(18,18,18)`。原文「Panel 是 `pub type` ⇒ 无层级」**结构上仍真、视觉上已非缺陷** | **M5**（面读 `surface_container`）**M4** |  | ✅ **复核完成** |
+| `group_box` | `groupbox.rs` | 6 | ✅ **第 90 轮实测复核：三项都早已修** —— ① 勾取**框填充的 `contrast_color()`**（`groupbox.rs:666`，纯黑勾已除）；② `create_group_box` 仍不 `set_checkable`，但**导出器**的 `_checked` 额外外观已覆盖该状态（`export_control_svgs.rs:102`），两份快照都在；③ 标题占位走 `content_top()` = `FRAME_PADDING + title_band_height() + TITLE_CONTENT_SPACING`（`groupbox.rs:393`） | ① 勾取**框填充的对比色** ② 标题占位走 `top_padding = padding + label_h + spacing`（参考工具包 `reference: the title-band reserve: padding + label height + spacing`）③ **产出 `group_box_checked` 快照** | **M4** **M7** **§4.1** | ✅ **复核完成** |
+| `tab_widget` | `tabwidget.rs` | 3 | ✅ **第 90 轮实测复核：两项都早已修** —— ① `create_tab_widget` 已加两个 tab（`constructors.rs:841`：`add_tab("Tab 1")`/`add_tab("Tab 2")`）；② `set` 的 `text`/`title` 分支已补（`tabwidget.rs:822`：写第一个 tab，无 tab 则创建） | ① 抄 `create_tab_bar` 加两个 tab ② `set` 补 `text`/`title` 分支 | **M7** **M10** | ✅ **复核完成** |
+| `scroll_area` | `scrollarea.rs` | 7 | ✅ **第 90 轮实测复核：早已修** —— 滚动条的槽/框/滑块已从 `style` 解析（`scrollarea.rs:930-932`：`background_color`/`border_color`/`text_color`），与同文件 `draw_sticky_band` 的写法一致；余 3 处字面量是**无主题回落档** | **M4**（抄自己的 `draw_sticky_band`）**M3**（淡出） |  | ✅ **复核完成** |
+| `splitter` | `splitter.rs` | 2 | ⚠️ **第 90 轮实测复核：两项都仍存在** —— ① **`HANDLE_WIDTH` 的去重没有落地**：`dimensions::SPLITTER_HANDLE_THICKNESS`（`metrics.rs:731`）**零消费者**，而 `splitter.rs:303` `let handle_width = 5;` 与 `:427` `const HANDLE_WIDTH: f32 = 5.0;` **两处独立写法都还在**（`metrics.rs:729` 的注释声称已统一，代码与之矛盾）；② 拖拽**无实时反馈**：`draw`（`:220-351`）不读 `drag_session`/`active_pane`，拖拽中的把手与静止时**逐字节相同** | **M3**（拖拽中高亮/光标）**M5** |  | ⚠️ **仍留白** |
+| `dock_widget` | `dockwidget.rs` | 0 | ⚠️ **第 90 轮实测复核**：① 24 px 标题栏**早已提取**为 `TITLE_BAR_THICKNESS`（`dockwidget.rs:208`，`title_bar_rect`/`content_rect` 共读）；② **无拖出/吸附动画仍成立** —— 全文件无 `PropertyDriver`/`tick`/动画 | **M3**（吸附预览 + 拖动浮影）**M5** |  | ⚠️ **仍留白** |
+| `mdi_area` | `mdiarea.rs` | 3 | ⚠️ **第 90 轮实测复核**：① 标题越界**早已修**（`mdiarea.rs:828` 用 `text_line` + `draw_text_fitted`，并被关闭按钮约束）；② **无最小化/还原动画仍成立** —— `minimized` 只是个 `bool`（`:145`），无 `tick`/`PropertyDriver` | **M3** **M5** |  | ⚠️ **仍留白** |
+| `tool_box` | `toolbox.rs` | 11 | ✅ **第 90 轮实测复核：早已修** —— `item_rect` 已钳制（`toolbox.rs:360/370` 返回 `full.intersection(&strip)`），`content_rect` 保留 `MIN_CONTENT_EXTENT`，并有溢出滚动出口（`max_scroll`/`set_scroll_offset`）。BLUE21 D7 的「120 px 下 4 项归零」不再成立 | ① 给页面保底宽/高 ② 条带做**溢出出口**（滚动或 more 钮）③ RTL. | **M7** **M10** **M8** | ✅ **复核完成** |
+| `collapsible_pane` | `collapsible_pane.rs` | 4 | ✅ **第 90 轮实测复核：两项都早已修** —— ① 展开/收起**已有动画**（`collapsible_pane.rs:45` `open: PropertyDriver`，`:118` `tick`/`is_animating`/`open_progress`，内容带是 `open` 的函数）；② 头部高已改用 `dimensions::COLLAPSIBLE_HEADER_HEIGHT = 44`（`metrics.rs:541`），与 主流 material 实现 的 `ExpansionTile` 一致（计划的「24」是旧值） | **M3**（高度动画）**M10**（头部高） |  | ⚠️ **仍留白** |
+| `stacked_widget` | `stackedwidget.rs` | 0 | ✅ **第 90 轮实测复核：优势确认存在** —— `current_changed_suppression_reason`（`stackedwidget.rs:128`）对「禁用」与「索引越界」分别给出原因；`set_current_index` 在禁用时**移索引但不 emit**（`:112-117`） | **M3**（切页过渡，可选） |  | ✅ **复核完成** |
+| `stepper` | `stepper.rs` | 0 | ⚠️ **第 90 轮实测复核：计划判为准确的** —— `stepper.rs:40` 的字段是 `value`/`min`/`max`/`step`，API 是 `increment`/`decrement` ⇒ 它是**数值微调器**；主流 material 实现 的 `Stepper`（分步向导，`StepState` 5 态 + 连接线）**本仓没有**。二选一：**改名** 或 **补向导控件** —— 不留悬空 | 二选一：**改名** 或 **补真正的向导控件**（`StepState` 5 态 + 连接线），**不留悬空** | **M10** | ⚠️ **仍留白** |
+| `safe_area` | `safe_area.rs` | 0 | ⚠️ **第 90 轮实测复核：M8 仍留白** —— `safe_area.rs:24` 仍存四个**物理**边（`top`/`bottom`/`left`/`right`），`content_rect`（`:109`）用 `insets.left` 与 `left + right`，**无 `start`/`end`**，绘制也填物理左右条（`:255`），故 RTL 不镜像 | **M8**（`start`/`end`） |  | ⚠️ **仍留白** |
+| `masonry_layout` | `masonry_layout.rs` | 6 | ✅ **第 90 轮实测复核：三项中两项已修** —— ① 已有 `push_clip`/`pop_clip`（`masonry_layout.rs:213/243`），完全不可见的卡片被丢弃；② 标签走 `text_line`（`:233`，不再用 `+ h/2 - 6` 的 12 px 假设）；③ `corner_radius` 死绑定已除（单一 `CARD_CORNER_RADIUS = 6`，`:38`）。**余一项见下** | ① 加 `push_clip`/`pop_clip` + 丢弃 `y ≥ rect.bottom` ② 标签走 `text_line` + `draw_text_fitted` ③ BLUE21 记 `corner_radius` 死绑定（`4` vs 真画 `6`） | **M10** **M4** | ✅ **复核完成** |
+| `carousel` | `carousel.rs` | 9 | ✅ BLUE21 A.7 #2：手势释放**距离 ∨ 速度** + 显式防抖下限（优势） | **M3**（吸附动画）**M4** |  | P2 |
 
 ---
 
@@ -1508,20 +1516,20 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 | `app_bar` | `app_bar.rs` | 1 | BLUE21 AR2：字号 `h*0.38` **clamp 上限 22** ⇒ 2× 文本缩放**静默封顶**；back/title/action 全按**物理边** | ① 解 clamp ② `leading`/`trailing` 按 `TextDirection` 交换 | **M8** **M9** | **P0** |
 | `navigation_drawer` | `navigation_drawer.rs` | 3 | BLUE21 AR2：`panel_width.min(rect.width)` 在 240 px 下 = **整幅**；主流 material 实现 是固定 304 | ① 固定宽 ② 开合**滑动动画**（M3） | **M3** **M10** | P1 |
 | `bottom_navigation_bar` | `bottom_navigation_bar.rs` | 0 | BLUE21 AR2：指标是 **3 px 下划线**，M3 是 **64×32 药丸**；图标/字号用 `h*0.32`/`h*0.18` clamp | ① 药丸指标 ② 图标 24 / 标签 14·12 固定 ③ 切换动画（M3） | **M10** **M3** | P1 |
-| `tab_view` | `nav_widgets/tab_view.rs` | 1 | ✅ `tab_width = w/count` 是对的（BLUE22 第 70 轮已由组装推导） | **M3**（切页过渡）**M8** | P2 |
+| `tab_view` | `nav_widgets/tab_view.rs` | 1 | ✅ `tab_width = w/count` 是对的（BLUE22 第 70 轮已由组装推导） | **M3**（切页过渡）**M8** |  | P2 |
 | `navigation_stack` | `navigation_stack.rs` | 0 | BLUE21 A19：`nav_rect.y + 14` 是字面量，被 **13 px 与 15 px 两种字号共用** | ① 逐标签 `measure_text(text,&font).height` ② 推入/推出**转场**（M3） | **M10** **M3** | P1 |
-| `pagination` | `pagination.rs` | 2 | 本仓**优势**（主流 material 实现 无独立分页控件）；页切换无反馈 | **M1**（页码 hover）**M2** | P2 |
-| `adaptive_scaffold` | `adaptive_scaffold.rs` | 1 | ✅ 字号按比例 + clamp（BLUE21 记 ✅） | **M8** | P2 |
+| `pagination` | `pagination.rs` | 2 | 本仓**优势**（主流 material 实现 无独立分页控件）；页切换无反馈 | **M1**（页码 hover）**M2** |  | P2 |
+| `adaptive_scaffold` | `adaptive_scaffold.rs` | 1 | ✅ 字号按比例 + clamp（BLUE21 记 ✅） | **M8** |  | P2 |
 | `menu` | `menu.rs` | 3 | ✅ 项带已由 `FlexLayout` 推导（BLUE22 第 70 轮）；**展开/收起瞬时** | ① 展开动画（M3）② 菜单项 hover（M1/M2）③ 方向键 `isMirrored` | **M3** **M1** **M8** | P1 |
-| `menu_item` | `menu.rs` | 3 | 同 `menu`；BLUE21 A.16：`menu_bar` 条目曾**重叠 9.6 px**（已修） | **M1** **M2** | P1 |
-| `menu_bar` | `menu_bar.rs` | 3 | 有 hover 追踪 | **M1**（去重改读 base）**M2** | P1 |
-| `context_menu` | （`menu.rs`） | — | 无独立构造器（capability 上存在） | **M10** | P2 |
-| `tool_bar` | `tool_bar.rs` | 3 | ✅ 项带已由布局推导（BLUE22）；BLUE21 B12：曾有 **6 处字面量** | **M1** **M2**（**M4 已完成**） | P1 |
-| `tool_button` | `tool_button.rs` | 3 | BLUE21 A10/A11：标签曾「从中点起左对齐」（已修）；有 hover | **M1** **M2** | P1 |
-| `status_bar` | `status_bar.rs` | 2 | ✅ 段盒已由 `FlexEnd` 布局推导（BLUE22）；BLUE21 B16：讯息按承载带源 token 混合 | **M4**（改指 muted + `legible_on(4.5)`） | P1 |
-| `action` | `action.rs` | 1 | 有 `hovered` 信号 | **M1** | P2 |
-| `menu_button` | `menu_button.rs` | 6 | 6 个字面量；无展开动画 | **M4** **M3** | P2 |
-| `dropdown_menu` | `dropdown_menu.rs` | 0 | 无展开动画 | **M3** **M5**（面板层级） | P2 |
+| `menu_item` | `menu.rs` | 3 | 同 `menu`；BLUE21 A.16：`menu_bar` 条目曾**重叠 9.6 px**（已修） | **M1** **M2** |  | P1 |
+| `menu_bar` | `menu_bar.rs` | 3 | 有 hover 追踪 | **M1**（去重改读 base）**M2** |  | P1 |
+| `context_menu` | （`menu.rs`） | — | 无独立构造器（capability 上存在） | **M10** |  | P2 |
+| `tool_bar` | `tool_bar.rs` | 3 | ✅ 项带已由布局推导（BLUE22）；BLUE21 B12：曾有 **6 处字面量** | **M1** **M2**（**M4 已完成**） |  | P1 |
+| `tool_button` | `tool_button.rs` | 3 | BLUE21 A10/A11：标签曾「从中点起左对齐」（已修）；有 hover | **M1** **M2** |  | P1 |
+| `status_bar` | `status_bar.rs` | 2 | ✅ 段盒已由 `FlexEnd` 布局推导（BLUE22）；BLUE21 B16：讯息按承载带源 token 混合 | **M4**（改指 muted + `legible_on(4.5)`） |  | P1 |
+| `action` | `action.rs` | 1 | 有 `hovered` 信号 | **M1** |  | P2 |
+| `menu_button` | `menu_button.rs` | 6 | 6 个字面量；无展开动画 | **M4** **M3** |  | P2 |
+| `dropdown_menu` | `dropdown_menu.rs` | 0 | 无展开动画 | **M3** **M5**（面板层级） |  | P2 |
 
 ---
 
@@ -1535,29 +1543,29 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
-| `dialog` | `dialog_widget.rs` | 1 | ✅ 标题栏居中正确、`r28`/`minW280` 已对齐；**模态遮罩无 token** | ① 遮罩读 `scrim`（**M5**）② 出现/消失缩放 + 遮罩渐显（M3） | **M5** **M3** | **P0** |
-| `message_box` | `message_box.rs` | 6 | 6 个字面量（对话框里最多） | **M4** **M5** **M3** | P1 |
-| `file_dialog` | `file_dialog.rs` | 2 | BLUE21 D3：列表高曾 **8 px**、占位符溢出 12 px（**已修**） | **M5**（列表行 `outline_variant`）**M10**（列宽可拖） | P1 |
-| `color_dialog` | `color_dialog.rs` | 9 | BLUE21 D1：取色区高 **0**（已修）；B11：OK/Cancel 曾同填（已修）；仍 9 字面量 | **M4** | P1 |
-| `font_dialog` | `font_dialog.rs` | 2 | BLUE21 D2：三列列表高 **0**（已修） | **M4** **M5** **M10**（预览区） | P2 |
-| `input_dialog` | `input_dialog.rs` | 2 | ✅ 接受键已取 primary token（BLUE21 B11 的范式） | **M1** **M5** | P2 |
-| `progress_dialog` | `progress_dialog.rs` | 2 | 进度条**无不确定态动画** | **M3** **M5** | P1 |
-| `find_replace_dialog` | `find_replace_dialog.rs` | 0 | ✅ `text_line` 的**正确写法参照**（BLUE21 R1 的范式来源） | **M1** **M5** | P2 |
-| `wizard_dialog` | `wizard.rs` | 2 | 步骤切换无动画；BLUE21 P2-11 指出本仓缺**真正的向导** | **M3** **M10** | P1 |
-| `popover` | `dialog/popover.rs` | 2 | BLUE21 A22：占位符曾贴卡片顶 8 px（已修）；BLUE21 A.7 #11：阴影溢出时**宁可不画**（**优势，保留**） | **M5**（`surface_container_high`）**M3**（淡入） | P1 |
-| `tooltip` | `dialog/tooltip.rs` | 1 | 浅色态与背景**无从区分**（需 `inverse_surface`） | **M5**（`inverse_surface`/`on_inverse_surface`）**M3**（延迟 450 ms 淡出，参考工具包 `reference: the scroll bar's minimum-length and hide-delay rules` 的范式） | **P0** |
-| `popup_window` | `popup_window.rs` | 1 | ✅ 24 px 常量已提取（BLUE21 D13 的范式） | **M5** | P2 |
-| `bottom_sheet` | `bottom_sheet.rs` | 1 | BLUE21 B23（**至今未修**）：遮罩 `ink.blend(sheet, 0.55)` ⇒ 暗态把背板**照亮**（121 亮于 18） | ① 朝**绝对暗色**混或读 `scrim`（**M5**）② 上滑动画（M3） | **M5** **M3** | **P0** |
-| `modal_bottom_sheet` | `modal_bottom_sheet.rs` | 1 | 同 `bottom_sheet`（同根因） | **M5** **M3** | **P0** |
+| `dialog` | `dialog_widget.rs` | 1 | ✅ **第 90 轮实测复核：两项都早已修** —— 遮罩读角色（`dialog/mod.rs:70` `layer_color(LayerColor::Scrim)`）；出现/消失有缩放 + 遮罩渐显（`dialog_widget.rs:406` `scale` 由 `reveal` 驱动，`:251` `tick`/`is_animating`） | ① 遮罩读 `scrim`（**M5**）② 出现/消失缩放 + 遮罩渐显（M3） | **M5** **M3** | ✅ **复核完成** |
+| `message_box` | `message_box.rs` | 6 | ✅ **第 90 轮实测复核：M3 已有** —— `reveal` 驱动器 + `scale_about_centre`（`message_box.rs:704`）；**M4/M5 仍留白**：6 处字面量是回落档，且「primary」是从 `background_color` 再推的（`:752`），不是 `primary` 角色 | **M4** **M5** **M3** |  | ✅ **复核完成** |
+| `file_dialog` | `file_dialog.rs` | 2 | ✅ **第 90 轮实测复核：D3 早已修** —— 列表高 `list_h` 由 `button_top - list_y` 推导并有行盒下限（`file_dialog.rs:519`），占位符走 `text_line` 居中并被裁剪（`:548`）。**M10（列宽可拖）仍留白**：全文件无列模型与拖拽柄；M5 不适用（列表是占位符，无行线） | **M5**（列表行 `outline_variant`）**M10**（列宽可拖） |  | ✅ **复核完成** |
+| `color_dialog` | `color_dialog.rs` | 9 | ✅ **第 90 轮实测复核：D1 与 B11 都早已修** —— 取色区高由 `below_top - picker_top - PICKER_GAP` 推导（`color_dialog.rs:222`，不再为 0）；OK 用 `accent`、Cancel 用 `surface`（`:518`/`:521`，不再同填）。**余 9 处字面量仍留白**（如 `:475` `rgb(200,200,200)`） | **M4** |  | ✅ **复核完成** |
+| `font_dialog` | `font_dialog.rs` | 2 | ✅ **第 90 轮实测复核：D2 部分已修** —— 三列已拿到真实高度（`font_dialog.rs:364` 推导 `list_h`/`preview_h`），快照不再有 `height="0"` 列。**M4/M5 仍留白**（面是 `window_fill.blend(&ink, 0.06)`，`:265`，未读 `surface_container`）；**M10 部分**：预览是固定样本串（`:417`） | **M4** **M5** **M10**（预览区） |  | ✅ **复核完成** |
+| `input_dialog` | `input_dialog.rs` | 2 | ✅ **第 90 轮实测复核：优势成立** —— 主题的 `primary` 被真正使用（`input_dialog.rs:517` 取 `active.colors.primary`，`:664` 填 OK 钮），Cancel 用 `surface.blend(&ink, 0.1)`；接受键在 `handle_event`（ENTER → accept） | **M1** **M5** |  | ✅ **复核完成** |
+| `progress_dialog` | `progress_dialog.rs` | 2 | ⚠️ **第 90 轮实测复核：仍存在** —— 填充是值的纯函数（`progress_dialog.rs:480` `bar_band.width * progress_fraction()`，无时间项），全文件无 `tick`/`is_animating` ⇒ 不确定态不转。**M5 也留白**：轨道/按钮是 `surface.blend(&ink, 0.12)`（`:383`） | **M3** **M5** |  | ⚠️ **仍留白** |
+| `find_replace_dialog` | `find_replace_dialog.rs` | 0 | ✅ **第 90 轮实测复核：确认是 `text_line` 的正确写法参照** —— 每个标签都走 `self.text_line(...)`（`find_replace_dialog.rs:578`，助手在 `:419`），无手算 `y + h/2` | **M1** **M5** |  | ✅ **复核完成** |
+| `wizard_dialog` | `wizard.rs` | 2 | ⚠️ **第 90 轮实测复核：两项都仍存在** —— ① 步骤切换**无动画**（`wizard.rs:105`/`:145` 直接设 `current_step`，全文件无 `tick`/`PropertyDriver`）；② 「真正的向导」仍缺：`WizardStep` 只有 `title`/`completed`/`optional`（`:32`），步骤体不是可承载的子控件 ⇒ 它是进度/导航条，不是内容切换的向导 | **M3** **M10** |  | ⚠️ **仍留白** |
+| `popover` | `dialog/popover.rs` | 2 | ✅ **第 90 轮实测复核：A22 与 M3 都早已修** —— 标签走 `text_line` + `draw_text_fitted`（`popover.rs:463`，不再贴顶 8 px）；展开由 `reveal` 驱动高度（`:383`，`:236` `tick`/`is_animating`）。**M5 仍留白**：卡片面是 `window_fill.blend(&ink, 0.08)`（`:332`），未读 `surface_container_high` | **M5**（`surface_container_high`）**M3**（淡入） |  | ✅ **复核完成** |
+| `tooltip` | `dialog/tooltip.rs` | 1 | ✅ **第 89 轮已修**（实测见 `log-20260924-1.md` §89）：计划记的「浅色态无从区分」**成立，但低估了它** —— 实测**两个外观下气泡都不可见**（同一填色 `rgba(40,40,40,0.86)`，暗态对窗口仅 **1.27:1**），且实现**违背主题自己声明的 `inverse_surface`**。根因：读角色的那一臂被 `own != window_fill` 把关，而 `own` 的默认值是 `DEFAULT_BG_COLOR`（`rgba(40,40,40,220)`）**不是窗口色** ⇒ **该臂永远不可达**，这正是 `theme/mod.rs:734` 记的「`inverse_surface` 无人读」的最后一处。修法照 `snackbar` 的范式：**角色对**（`inverse_surface` + `on_inverse_surface`）领读、调用方自定色最优先、旧算术只作无角色主题的回落；墨在淡入前决定，淡入只作用于面色。断言写在**关系**上（浅色外观面比窗口暗 / 暗态比窗口亮），不钉死颜色。反向注入转红并指名 `must be LIGHT, got luminance 0.021`。**并补了 `tooltip_shown` 额外外观**：该缺陷对旧快照集不可见，因为静止态气泡被 `fade=0` 完全合成到窗口色 | **M5 完成**；M3（延迟淡出）已在 |  | ✅ **P0 完成** |
+| `popup_window` | `popup_window.rs` | 1 | ✅ **第 90 轮实测复核：常量早已提取** —— `TITLE_BAR_HEIGHT`（`popup_window.rs:269`）被 `draw`（`:237`）与 `content_rect`（`:281`）共读。**M5 仍留白**：面未读 `surface_container`（`:203`） | **M5** |  | ✅ **复核完成** |
+| `bottom_sheet` | `bottom_sheet.rs` | 1 | ✅ **第 90 轮实测复核：遮罩早已接 `scrim` 角色** —— `layer_color(LayerColor::Scrim)`（`bottom_sheet.rs:300`），`window_fill.blend(BLACK, SCRIM_DARKEN)` 只作主题无角色时的回落；升起同时驱动遮罩淡入（`:306`） | ① 朝**绝对暗色**混或读 `scrim`（**M5**）② 上滑动画（M3） | **M5** **M3** | ✅ **复核完成** |
+| `modal_bottom_sheet` | `modal_bottom_sheet.rs` | 1 | ✅ **第 90 轮实测复核：同上** —— `layer_color(LayerColor::Scrim)`（`modal_bottom_sheet.rs:343`）。注意 `ink.blend(&sheet_fill, 0.55)` 仍存在，但**只在主题早于该角色时**走；暗预设下 `scrim = rgba(0,0,0,130)`，并有测试 `the_scrim_composites_darker_than_the_backdrop`（`:686`） | **M5** **M3** |  | ✅ **复核完成** |
 
 ### A.7.2 Overlays（`overlay_widgets`，4 个）
 
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
-| `banner` | `banner.rs` | 3 | ✅ 严重度取自语义 token 再推离承载面（BLUE21 A.7 #7 的**优势**）；且是 `theme_derived` 的**先例** | **M4** **M3**（滑入/滑出） | P1 |
-| `fab` | `fab.rs` | 2 | BLUE21 P0-4：**不在 `check_click_requires_release_inside` 的合法清单**（门禁抓到的 2 处缺陷之一） | ① 修点击契约（释放必须在内）② 抬起/落下的**高度动画** + 涟漪 | **M3** **M10** | **P0** |
-| `refresh_control` | `refresh_control.rs` | 1 | ✅ **第 76 轮实测复核：假欠债** —— `tick` + `is_animating` 齐全（共有两处 `is_animating`）| 无 | ✅ **已满足** |
-| `splash_screen` | `splash_screen.rs` | 4 | 4 个字面量；淡出无动画 | **M4** **M3** | P2 |
+| `banner` | `banner.rs` | 3 | ✅ **第 90 轮实测复核：语义 token 早已接** —— `semantic_color(self.semantic())`（`banner.rs:107`）再推离承载面（`:127` `token.blend(&surface, 0.85)`）；3 处字面量是回落档。**M3（滑入/滑出）仍留白** —— 全文件无 `tick`/`is_animating` | **M4** **M3**（滑入/滑出） |  | ✅ **复核完成** |
+| `fab` | `fab.rs` | 2 | ✅ **第 90 轮实测复核：点击契约早已修** —— 释放时要求 `is_pressed()` **且** `contains_point_with_touch_expansion(pos)`（`fab.rs:295-304`），并有 `MouseLeave` 取消臂（`:306`）。**M3 仍留白**：无 `tick`/涟漪，按下是**瞬时** 10% 收缩（`:172`） | ① 修点击契约（释放必须在内）② 抬起/落下的**高度动画** + 涟漪 | **M3** **M10** | ✅ **复核完成** |
+| `refresh_control` | `refresh_control.rs` | 1 | ✅ **第 76 轮实测复核：假欠债** —— `tick` + `is_animating` 齐全（共有两处 `is_animating`） | 无 |  | ✅ **已满足** |
+| `splash_screen` | `splash_screen.rs` | 4 | ✅ **第 90 轮实测复核：淡出早已实现且为 opt-in** —— `fade_out()` 设目标 0（`splash_screen.rs:181`），`tick`/`is_animating` 在 `:256`/`:260`，淡出作用于每个颜色（`:423-435`）；4 处字面量是主题前的回落档 | **M4** **M3** |  | ✅ **复核完成** |
 
 ### A.7.3 Views（`view_widgets`，14 个）
 
@@ -1567,21 +1575,21 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
-| `list_view` | `list_view.rs` | 0 | ✅ **第 74 轮已修**（实测见 `log-20260924-1.md` §57）：① **`handle_event` 从不转发给 `BaseWidget`** ⇒ `MouseEnter/Leave` 到不了基类，`widget_state()` 永远不是 `Hover`，主题的 `"list_view:hover"` **永久失效** ⇒ 补转发；② **行 hover 无统一来源** ⇒ 新增 `hovered_row`，由 `MouseMove` 读 `row_at_point`（点击自己也用的那个）填，`MouseLeave` 清；`draw` 焦点 `0.30` / hover `0.12` 同一 accent 两权重 | ①② **完成** ③ 滚动惯性（M3）仍留白 | ✅ **P0 完成** |
-| `table_widget` | `table_widget.rs` | 0 | ✅ **第 74 轮已修，含一个功能缺陷**（实测见 `log-20260924-1.md` §58）：**画行从内容区算、点行从控件顶边算**，`20` 写了两遍 ⇒ **点第 1 行选中第 2 行**（与 BLUE21 在 `list_view` 修过的是同一个缺陷，兄弟控件没继承）⇒ 抽 `rows_band`/`row_rect`/`row_at_point` 一处定义、四处消费，`TABLE_ROW_HEIGHT` 替掉两个 `20`；行 hover 同 `list_view`。**连带**：既有测试 `test_disabled_state_blocks_events` 的采样点落在表头（原本全靠缺陷才通过），已修正并注明 | ①② **完成** ③ 列宽可拖仍留白 | ✅ **P0 完成** |
-| `table` | `table_widget.rs` | 0 | 与 `table_widget` **同为 `Table` kind**（同一 `Draw` 路径）⇒ **修一次覆盖两个**，已随上一行完成 | 见上行 | ✅ **P0 完成** |
-| `virtual_list` | `virtual_list.rs` | 0 | 与 `data_view` **共用同一文件**（同一 `DataView` kind）；同 `list_view` 的缺口 | **M1** **M3** | P1 |
-| `data_view` | `virtual_list.rs` | 0 | 与 `virtual_list` **同为 `DataView` kind**（`audit_kind_sharing` 实测）；无行 hover | **M1** **M3** | P1 |
-| `data_grid` | `data_grid.rs` | 0 | ✅ **第 74 轮已修**（实测见 `log-20260924-1.md` §61）：① **`selection` 存了但 `draw` 里一次都没出现** ⇒ 按下、存下、`request_redraw()`，网格回来**一模一样**（与 §50 同形，但更重：是用户刚点的那一格）⇒ 补画选中描边；② 补 `base.handle_event` 转发（`"data_grid:hover"` 曾永久失效）；③ 新增 `hovered_cell`（读 `cell_at`，与点击同源），比选中更弱的描边。✅ **第 77 轮补 M6**（§84）：格线改读 `outline_variant`。`frozen_columns` 虚拟化仍是**优势**，未动 | **完成** | ✅ **P1 完成** |
-| `virtual_table` | `virtual_table.rs` | 0 | ✅ 第 74 轮复核：它是**纯滚动视口**（有 `row_height` 字段与 `scroll_row/column`，**无选中概念**、不发选中信号）⇒ 计划记的「M1 行 hover」是**推广而非缺陷**，加 hover 等于造功能，**不动并写明**。 ✅ **第 77 轮补 M6**（§84）：格线改读 `outline_variant`（与 `table_widget` 同一来源），断言「角色色出现在 SVG 里」+ 反向注入承重 | **M6 完成** | ✅ **已满足** |
-| `grid_table` | `grid_table.rs` | 4 | BLUE21 D14：列头是 `Col {i}` **占位符**（用循环下标当列名） | ① 从数据源取列名 ② **M6** | **M10** **M6** | P1 |
-| `tree_view` | `tree_view.rs` | 0 | 展开/收起**瞬时**；无缩进引导线 | ① 展开动画（M3）② 子级缩进引导线（M6） | **M3** **M6** | P1 |
-| `tree_table` | `tree_table.rs` | 0 | ✅ **第 77 轮已修 M6**（实测见 `log-20260924-1.md` §84）：格线从局部 `blend(ink, 0.10)` 改读 `outline_variant`，与 `table_widget`/`virtual_table`/`data_grid` **同一来源**（否则主题只能调四个中的一两个）。展开动画（M3）仍留白 | **M6 完成** | ✅ **P2 部分完成** |
-| `virtual_list` / `data_view` | `virtual_list.rs` | 0 | 同 `list_view` | **M1** **M3** | P1 |
-| `properties_panel` | `properties_panel.rs` | 0 | BLUE21 A14：行曾低 10 px 压分割线（已修） | **M1** **M6** | P2 |
-| `property_grid` | `property_grid.rs` | 0 | ✅ **第 77 轮实测复核：M6 已满足** —— 它用 `separator = blend(0.25)`（表头）/ `row_separator = blend(0.12)`（行）**两个派生色**，两者都随主题变且与焦点环（`outline` 角色）不同源 ⇒ 满足 M6 的**判据**（行线色 ≠ 焦点环色）。计划的「改读 `outline_variant`」是**手段**，不是判据 ⇒ **不动并写明** | M1（行 hover）留白 | ✅ **复核完成** |
-| `query_builder` | `query_builder.rs` | 0 | 条件行增删无动画 | **M3** **M5** | P2 |
-| `image_gallery` | `image_gallery.rs` | 14 | **本组唯一字面量集中地（14/18）**；无缩放动画 | **M4** **M3**（缩放/淡入） | P1 |
+| `list_view` | `list_view.rs` | 0 | ✅ **第 74 轮已修**（实测见 `log-20260924-1.md` §57）：① **`handle_event` 从不转发给 `BaseWidget`** ⇒ `MouseEnter/Leave` 到不了基类，`widget_state()` 永远不是 `Hover`，主题的 `"list_view:hover"` **永久失效** ⇒ 补转发；② **行 hover 无统一来源** ⇒ 新增 `hovered_row`，由 `MouseMove` 读 `row_at_point`（点击自己也用的那个）填，`MouseLeave` 清；`draw` 焦点 `0.30` / hover `0.12` 同一 accent 两权重 | ①② **完成** ③ 滚动惯性（M3）仍留白 |  | ✅ **P0 完成** |
+| `table_widget` | `table_widget.rs` | 0 | ✅ **第 74 轮已修，含一个功能缺陷**（实测见 `log-20260924-1.md` §58）：**画行从内容区算、点行从控件顶边算**，`20` 写了两遍 ⇒ **点第 1 行选中第 2 行**（与 BLUE21 在 `list_view` 修过的是同一个缺陷，兄弟控件没继承）⇒ 抽 `rows_band`/`row_rect`/`row_at_point` 一处定义、四处消费，`TABLE_ROW_HEIGHT` 替掉两个 `20`；行 hover 同 `list_view`。**连带**：既有测试 `test_disabled_state_blocks_events` 的采样点落在表头（原本全靠缺陷才通过），已修正并注明 | ①② **完成** ③ 列宽可拖仍留白 |  | ✅ **P0 完成** |
+| `table` | `table_widget.rs` | 0 | ✅ **第 90 轮复核**：与 `table_widget` **同为 `Table` kind**（同一 `Draw` 路径）⇒ 修一次覆盖两个，已随第 74 轮完成 | 见上行 |  | ✅ **复核完成** |
+| `virtual_list` | `virtual_list.rs` | 0 | ✅ **第 90 轮实测复核：三项都齐** —— 读主题（`virtual_list.rs:422` `resolved_theme_style`）、行 hover（`:480` `hovered_row`）、base 转发（`:508` `self.base.handle_event`）。与 `data_view` **同 kind 同文件**（`:55` `WidgetKind::DataView`），故修一次覆盖两个 | **M1** **M3** |  | ✅ **复核完成** |
+| `data_view` | `virtual_list.rs` | 0 | ✅ **第 90 轮实测复核**：与 `virtual_list` **同文件同 kind**（`virtual_list.rs:55`），同一 `Draw` 路径 ⇒ 随上一行一并覆盖 | **M1** **M3** |  | ✅ **复核完成** |
+| `data_grid` | `data_grid.rs` | 0 | ✅ **第 74 轮已修**（实测见 `log-20260924-1.md` §61）：① **`selection` 存了但 `draw` 里一次都没出现** ⇒ 按下、存下、`request_redraw()`，网格回来**一模一样**（与 §50 同形，但更重：是用户刚点的那一格）⇒ 补画选中描边；② 补 `base.handle_event` 转发（`"data_grid:hover"` 曾永久失效）；③ 新增 `hovered_cell`（读 `cell_at`，与点击同源），比选中更弱的描边。✅ **第 77 轮补 M6**（§84）：格线改读 `outline_variant`。`frozen_columns` 虚拟化仍是**优势**，未动 | **完成** |  | ✅ **P1 完成** |
+| `virtual_table` | `virtual_table.rs` | 0 | ✅ 第 74 轮复核：它是**纯滚动视口**（有 `row_height` 字段与 `scroll_row/column`，**无选中概念**、不发选中信号）⇒ 计划记的「M1 行 hover」是**推广而非缺陷**，加 hover 等于造功能，**不动并写明**。 ✅ **第 77 轮补 M6**（§84）：格线改读 `outline_variant`（与 `table_widget` 同一来源），断言「角色色出现在 SVG 里」+ 反向注入承重 | **M6 完成** |  | ✅ **已满足** |
+| `grid_table` | `grid_table.rs` | 4 | ⚠️ **第 90 轮实测复核：M6 仍留白** —— `grid_table.rs:782` 用 `grid_color = surface.blend(&ink, 0.15)`（派生色），未读 `outline_variant`。**列头 D14 已在本轮修**：协议加可选 `column_name`（`data_source.rs`），控件先问数据源、`Column {n}` 保留为诚实回落，断言 + 反向注入见 §90.3 | ① 从数据源取列名 ② **M6** | **M10** **M6** | ⚠️ **仍留白** |
+| `tree_view` | `tree_view.rs` | 0 | ⚠️ **第 90 轮实测复核：两项都仍存在** —— ① 展开/收起**不存在也无动画**：`TreeModel` 只暴露扁平的 `node_count`/`node_path`（`tree_view.rs:39`），`draw` 遍历每个节点（`:398`），无展开操作；② **无缩进引导线**（`:413` 只画标签）。正面：读主题（`:358`）、有行 hover（`:406`）、转发 base（`:438`） | ① 展开动画（M3）② 子级缩进引导线（M6） | **M3** **M6** | ⚠️ **仍留白** |
+| `tree_table` | `tree_table.rs` | 0 | ✅ **第 77 轮已修 M6**（实测见 `log-20260924-1.md` §84）：格线从局部 `blend(ink, 0.10)` 改读 `outline_variant`，与 `table_widget`/`virtual_table`/`data_grid` **同一来源**（否则主题只能调四个中的一两个）。展开动画（M3）仍留白 | **M6 完成** |  | ✅ **P2 部分完成** |
+| `virtual_list` / `data_view` | `virtual_list.rs` | 0 | 同 `list_view` | **M1** **M3** |  | P1 |
+| `properties_panel` | `properties_panel.rs` | 0 | ⚠️ **第 90 轮实测复核：M1/M6 仍留白** —— 无行 hover；分隔线是 `background.blend(&text_color, 0.14)`（`properties_panel.rs:461`），非 `outline_variant` | **M1** **M6** |  | ⚠️ **仍留白** |
+| `property_grid` | `property_grid.rs` | 0 | ✅ **第 77 轮实测复核：M6 已满足** —— 它用 `separator = blend(0.25)`（表头）/ `row_separator = blend(0.12)`（行）**两个派生色**，两者都随主题变且与焦点环（`outline` 角色）不同源 ⇒ 满足 M6 的**判据**（行线色 ≠ 焦点环色）。计划的「改读 `outline_variant`」是**手段**，不是判据 ⇒ **不动并写明** | M1（行 hover）留白 |  | ✅ **复核完成** |
+| `query_builder` | `query_builder.rs` | 0 | ⚠️ **第 90 轮实测复核：仍存在** —— 增删行直接改向量（`query_builder.rs:237` `rows.push`、`:252` `rows.remove`），无 `tick`/`is_animating` ⇒ 行在帧之间突然出现/消失 | **M3** **M5** |  | ⚠️ **仍留白** |
+| `image_gallery` | `image_gallery.rs` | 14 | ✅ **第 90 轮实测复核：字面量已 14 → 7，且已有到达动画** —— `image_gallery.rs:379` 的 `arrive()` 由 `reveal` 缩放（`:245` `tick`/`is_animating`）。**注意它是「淡入」不是「缩放」**；余 7 处字面量仍待清 | **M4** **M3**（缩放/淡入） |  | ✅ **复核完成** |
 
 > **本组共用 kind 的完整清单**（`tools/audit_kind_sharing.py` 实测）：
 > `Table` → 5 个控件；`ListView` → 3 个（`list_view`/`command_palette`/`notification_center`）；
@@ -1602,9 +1610,9 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
 | `bar_chart` | `chart_widgets/charts.rs` | 0 | 与 `line_chart`/`pie_chart` **共用一个文件**；升级/过渡无动画 | ① 值变化**过渡动画**（M3，柱高插值）② M4（确认色来自 `style` 而非参数默认） | **M3** **M4** | P1 |
-| `line_chart` | 同上 | 0 | 同上；曲线**无描画动画** | **M3**（路径描画）**M4** | P1 |
-| `pie_chart` | 同上 | 0 | 同上；扇区无生长动画 | **M3** **M4** | P2 |
-| `sparkline` | `sparkline.rs` | 1 | ✅ `tools/control_color_exemptions.txt` 明确「**无 chrome 可主题化**」——**豁免正确** | 保持豁免；**M3**（可选描画） | P2 |
+| `line_chart` | 同上 | 0 | 同上；曲线**无描画动画** | **M3**（路径描画）**M4** |  | P1 |
+| `pie_chart` | 同上 | 0 | 同上；扇区无生长动画 | **M3** **M4** |  | P2 |
+| `sparkline` | `sparkline.rs` | 1 | ✅ `tools/control_color_exemptions.txt` 明确「**无 chrome 可主题化**」——**豁免正确** | 保持豁免；**M3**（可选描画） |  | P2 |
 
 ### A.8.1b Specialised controls（`special_widgets`，32 个）
 
@@ -1617,53 +1625,53 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
-| `candlestick_chart` | `finance/candlestick_chart.rs` | **13** | ✅ **第 76 轮实测复核**：**已读 style** —— `:260 panel_colors(Some(self.base.style()))`，即 BLUE21 B4 要求的「抽 `finance/layout.rs` **一处**共享面板色」**已实施** ⇒ 假欠债。余 13 字面量分两类：K 线涨跌色（**数据色**）与无主题回落档 | M12（空态画轴）留白 | ✅ **P0 复核完成** |
-| `volume_chart` | `finance/volume_chart.rs` | 4 | ✅ **第 76 轮实测复核**：**已读 style**（`:162` 同一 `panel_colors` 入口）⇒ 假欠债；4 字面量均为数据色/回落档 | M12 留白 | ✅ **P0 复核完成** |
-| `depth_chart` | `finance/depth_chart.rs` | 9 | ✅ **第 76 轮实测复核**：**已读 style**（`:97` 同一入口）⇒ 假欠债 | M12 留白 | ✅ **P0 复核完成** |
-| `indicator_chart` | `finance/indicator_chart.rs` | **12** | ✅ **第 76 轮实测复核**：**已读 style**（`:520` 同一入口）⇒ 假欠债 | M12 留白 | ✅ **P0 复核完成** |
-| `order_book` | `finance/order_book.rs` | 9 | 9 字面量；**已有 `hovered: Option<(BookSide,usize)>` + `level_hovered` 信号**（本组少数已做状态的） | ① 行键改读 base（M1 去重）② **M4** ③ 价格跳动**闪烁动效**（M3） | **M1** **M4** **M3** | P1 |
-| `quote_board` | `finance/quote_board.rs` | 9 | ✅ **第 88 轮已修**（实测见 `log-20260924-1.md` §88）：计划记的「涨跌红绿是数据色」**成立**（未动），但同一行还有一个**未被登记的真缺陷** —— **列标题画在隔壁列上**。两处独立原因：（a）位置按「右对齐」算（`start + 8 - 标题宽`）却**左对齐**画，每个标题整体左移一个标题宽；（b）兜底 clamp 用的是**控件**左缘而非**列**左缘。实测 `snapshots/svg/quote_board.svg`（240 px ÷ 5 列 = 48 px）：`Change` 的墨迹落在 `94..131`（第 **1** 列），`Volume` 落在 `190..227`（第 **3** 列）—— 两个标题各自压住前一列。修法：抽 `heading_origin(start, width, title, font)` 一处定几何；**先保外内边距、再保列内边距**（列装不下标题+两侧 8 px 时让出外距）；装不下的列走 `draw_text_fitted` **截断**，不让它跨界（原则：宁可截断不可越界）。断言**直接调出货函数**（首版把公式抄进测试 ⇒ 反向注入不红，已重写），注入后 **3 条转红**并指名 `the heading "Symbol" starts at -32, left of its column at 0`。快照实测：五个标题全部回到自己列内 | **`heading_origin` 完成**；M1/M3 留白 | ✅ **P1 部分完成**（列标题错列已修） |
-| `radar_chart` | `radar_chart.rs` | **14** | ✅ **第 75 轮已修**（实测见 `log-20260924-1.md` §71）：五个字面量、**零主题读取** ⇒ 暗色下是**白板 + 近黑字** ⇒ 新增 `chrome_colors()` 一处解析五色（面 `surface_container` / 框 `outline_variant` / 网格**派生** / 标签 `foreground` / 空态 `secondary`）。**系列调色板不动**（数据身份）。断言采样点选错**两次**（圆角描边 → 网格）才承重 | **M4 完成** | ✅ **P1 完成** |
-| `heatmap` | `heatmap.rs` | **12** | 12 字面量；**色阶是数据色**（豁免，不判） | **M4**（仅 chrome 部分：轴/网格/刻度） | P1 |
+| `candlestick_chart` | `finance/candlestick_chart.rs` | **13** | ✅ **第 76 轮实测复核**：**已读 style** —— `:260 panel_colors(Some(self.base.style()))`，即 BLUE21 B4 要求的「抽 `finance/layout.rs` **一处**共享面板色」**已实施** ⇒ 假欠债。余 13 字面量分两类：K 线涨跌色（**数据色**）与无主题回落档 | M12（空态画轴）留白 |  | ✅ **P0 复核完成** |
+| `volume_chart` | `finance/volume_chart.rs` | 4 | ✅ **第 76 轮实测复核**：**已读 style**（`:162` 同一 `panel_colors` 入口）⇒ 假欠债；4 字面量均为数据色/回落档 | M12 留白 |  | ✅ **P0 复核完成** |
+| `depth_chart` | `finance/depth_chart.rs` | 9 | ✅ **第 76 轮实测复核**：**已读 style**（`:97` 同一入口）⇒ 假欠债 | M12 留白 |  | ✅ **P0 复核完成** |
+| `indicator_chart` | `finance/indicator_chart.rs` | **12** | ✅ **第 76 轮实测复核**：**已读 style**（`:520` 同一入口）⇒ 假欠债 | M12 留白 |  | ✅ **P0 复核完成** |
+| `order_book` | `finance/order_book.rs` | 9 | ⚠️ **第 90 轮实测复核：三项中两项仍存在** —— ① `hovered: Option<(BookSide,usize)>` 与 `level_hovered` **确认存在**（`order_book.rs:61`/`:65`，`:295` emit）；② **M4 仍留白**：`:345` `(rgb(240,240,240), BLACK, rgb(158,158,158))` 是无主题回落三元组，而 `:80` `text_color: rgb(214,220,228)` 在 `:458` 被**无条件**用作数量墨 ⇒ 主题改不动它；③ **M3（价格跳动闪烁）仍留白**：全文件无 `tick`、`is_animating`、`flash` 任一符号 | ① 行键改读 base（M1 去重）② **M4** ③ 价格跳动**闪烁动效**（M3） | **M1** **M4** **M3** | ⚠️ **仍留白** |
+| `quote_board` | `finance/quote_board.rs` | 9 | ✅ **第 88 轮已修**（实测见 `log-20260924-1.md` §88）：计划记的「涨跌红绿是数据色」**成立**（未动），但同一行还有一个**未被登记的真缺陷** —— **列标题画在隔壁列上**。两处独立原因：（a）位置按「右对齐」算（`start + 8 - 标题宽`）却**左对齐**画，每个标题整体左移一个标题宽；（b）兜底 clamp 用的是**控件**左缘而非**列**左缘。实测 `snapshots/svg/quote_board.svg`（240 px ÷ 5 列 = 48 px）：`Change` 的墨迹落在 `94..131`（第 **1** 列），`Volume` 落在 `190..227`（第 **3** 列）—— 两个标题各自压住前一列。修法：抽 `heading_origin(start, width, title, font)` 一处定几何；**先保外内边距、再保列内边距**（列装不下标题+两侧 8 px 时让出外距）；装不下的列走 `draw_text_fitted` **截断**，不让它跨界（原则：宁可截断不可越界）。断言**直接调出货函数**（首版把公式抄进测试 ⇒ 反向注入不红，已重写），注入后 **3 条转红**并指名 `the heading "Symbol" starts at -32, left of its column at 0`。快照实测：五个标题全部回到自己列内 | **`heading_origin` 完成**；M1/M3 留白 |  | ✅ **P1 部分完成**（列标题错列已修） |
+| `radar_chart` | `radar_chart.rs` | **14** | ✅ **第 75 轮已修**（实测见 `log-20260924-1.md` §71）：五个字面量、**零主题读取** ⇒ 暗色下是**白板 + 近黑字** ⇒ 新增 `chrome_colors()` 一处解析五色（面 `surface_container` / 框 `outline_variant` / 网格**派生** / 标签 `foreground` / 空态 `secondary`）。**系列调色板不动**（数据身份）。断言采样点选错**两次**（圆角描边 → 网格）才承重 | **M4 完成** |  | ✅ **P1 完成** |
+| `heatmap` | `heatmap.rs` | **12** | 12 字面量；**色阶是数据色**（豁免，不判） | **M4**（仅 chrome 部分：轴/网格/刻度） |  | P1 |
 | `chart`（ChartWidget） | `chart.rs` | 10 | ✅ **值轴已落地**（实测复核）：`PlotArea::axis_margin_left` + `draw_value_axis` 在 `Bar` 与**空态**两处调用；`chart.svg` 左列 `x=25..29` 为刻度标签、基线 `y=97`。BLUE21 D6 关闭；空态也已带轴（不再是裸提示） | 数据变化过渡（M3）—— **裁定为独立议题**（需先定图表的数据域映射，见台账） | **M3** | P2 |
-| `gantt_widget` | `gantt_widget.rs` | 2 | ✅ 标签已用 `draw_text_line` 居中于自己的 lane（有宽度约束）；✅ **今日线 / 依赖箭头 / 里程碑三项已落地**（轮 24，见台账） | — | ✅ **P1 完成** |
-| `timeline_widget` | `timeline_widget.rs` | 0 | 同 `gantt_widget`（同 `Chart` kind） | **M10** | P2 |
-| `grid` | `special_widgets/grid.rs` | 5 | ✅ 哨兵**已除**（轮 23）：`#DCDCDC` 从「不可请求」变为可请求，`line_color` 改为 `Option<Option<Color>>` | — | ✅ **P2 完成** |
-| `canvas` | `canvas.rs` | 1 | ✅ 1 字面量 | **M4** **M5**（画布底色读 `surface_container`） | P2 |
-| `kanban_board` | `kanban_board.rs` | 0 | 0 字面量；卡片拖动**无落点指示** | **M3**（拖影 + 插入线）**M5**（列背景层级） | P1 |
-| `freeform_shape` | `freeform_shape/shape.rs` | 2 | 2 字面量 | **M1** **M4** | P2 |
+| `gantt_widget` | `gantt_widget.rs` | 2 | ✅ 标签已用 `draw_text_line` 居中于自己的 lane（有宽度约束）；✅ **今日线 / 依赖箭头 / 里程碑三项已落地**（轮 24，见台账） | — |  | ✅ **P1 完成** |
+| `timeline_widget` | `timeline_widget.rs` | 0 | 同 `gantt_widget`（同 `Chart` kind） | **M10** |  | P2 |
+| `grid` | `special_widgets/grid.rs` | 5 | ✅ 哨兵**已除**（轮 23）：`#DCDCDC` 从「不可请求」变为可请求，`line_color` 改为 `Option<Option<Color>>` | — |  | ✅ **P2 完成** |
+| `canvas` | `canvas.rs` | 1 | ✅ 1 字面量 | **M4** **M5**（画布底色读 `surface_container`） |  | P2 |
+| `kanban_board` | `kanban_board.rs` | 0 | 0 字面量；卡片拖动**无落点指示** | **M3**（拖影 + 插入线）**M5**（列背景层级） |  | P1 |
+| `freeform_shape` | `freeform_shape/shape.rs` | 2 | 2 字面量 | **M1** **M4** |  | P2 |
 
 #### (b) 文本与编辑器族（**本仓优势，主流 material 实现 无对应**）
 
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
-| `code_editor` | `code_editor/editor.rs` | 0 | ① **第 76 轮实测复核：「有 `tick` 无驱动者」已不成立** —— `tick` + `is_animating` 齐全（渲染层在 `render.rs` 子模块，**已接主题**：`resolved_theme_style`）② `SyntaxPalette::default()` 的浅色问题仍有待核 | **M4**（语法配色两套）待核 | ⚠️ **部分复核完成** |
-| `terminal_view` | `terminal_view.rs` | 1 | ✅ **第 76 轮实测复核：假欠债** —— 「**无 `tick`**」不成立，`tick` + `is_animating` 都在（计划行自己写「最不能没有闪烁的控件」，而它**有**）；滚动跟随仍有活（M10）| M10（滚动跟随） | ✅ **复核完成** |
-| `rich_edit` | `input_widgets/rich_edit.rs` | 1 | 见 §A.3：光标几何用**等宽捷径**，变宽跨度下必错 | **M10**（跨度感知 caret） | P1 |
-| `markdown_editor` | `markdown_editor.rs` | 3 | 同 `rich_edit` 的跨度问题 | **M10** | P2 |
-| `diff_viewer` | `diff_viewer.rs` | 0 | 0 字面量；**增删行用语义色**（本仓优势） | **M6**（行线）**M5** | P2 |
+| `code_editor` | `code_editor/editor.rs` | 0 | ① **第 76 轮实测复核：「有 `tick` 无驱动者」已不成立** —— `tick` + `is_animating` 齐全（渲染层在 `render.rs` 子模块，**已接主题**：`resolved_theme_style`）② `SyntaxPalette::default()` 的浅色问题仍有待核 | **M4**（语法配色两套）待核 |  | ⚠️ **部分复核完成** |
+| `terminal_view` | `terminal_view.rs` | 1 | ✅ **第 76 轮实测复核：假欠债** —— 「**无 `tick`**」不成立，`tick` + `is_animating` 都在（计划行自己写「最不能没有闪烁的控件」，而它**有**）；滚动跟随仍有活（M10） | M10（滚动跟随） |  | ✅ **复核完成** |
+| `rich_edit` | `input_widgets/rich_edit.rs` | 1 | 见 §A.3：光标几何用**等宽捷径**，变宽跨度下必错 | **M10**（跨度感知 caret） |  | P1 |
+| `markdown_editor` | `markdown_editor.rs` | 3 | 同 `rich_edit` 的跨度问题 | **M10** |  | P2 |
+| `diff_viewer` | `diff_viewer.rs` | 0 | 0 字面量；**增删行用语义色**（本仓优势） | **M6**（行线）**M5** |  | P2 |
 | `signature_pad` | `signature_pad.rs` | 1 | BLUE21 B18：画布 = 窗口底色（已修）；A.6：笔画捕获**按帧采样** ⇒ 快速输入多边形化（需**时间戳**） | ① 收带时间戳的指针增量流 + 相邻 delta 间**插值**② 平滑作为**独立可测步骤** | **M10** | P1 |
-| `command_palette` | `special_widgets/command_palette.rs` | 0 | 与 `list_view` 同 kind；分类/高亮无动效 | **M1**（行 hover）**M3**（过滤动画） | P2 |
+| `command_palette` | `special_widgets/command_palette.rs` | 0 | 与 `list_view` 同 kind；分类/高亮无动效 | **M1**（行 hover）**M3**（过滤动画） |  | P2 |
 
 #### (c) 取色与图形族（**本仓优势**：主流 material 实现 与 Cupertino **都没有**取色器）
 
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
 | `color_picker` | `color_picker.rs` | 10 | 10 字面量；BLUE21 A.4.3f：选色应能表达为 `ColorScheme` role 赋值而非裸值 | ① **M4** ② 色相条/饱和度面读 token ③ 拖动**实时反馈**（M3） | **M4** **M3** | P1 |
-| `map_view` | `map_view.rs` | 5 | 5 字面量；与 `canvas` **共用 `Canvas` kind**；无平移/缩放动画 | **M5**（地图面层级）**M3**（惯性平移） | P2 |
-| `breadcrumb` | `breadcrumb.rs` | 0 | 0 字面量；分隔符与悬停无统一来源 | **M1** **M6**（分隔符） | P2 |
+| `map_view` | `map_view.rs` | 5 | 5 字面量；与 `canvas` **共用 `Canvas` kind**；无平移/缩放动画 | **M5**（地图面层级）**M3**（惯性平移） |  | P2 |
+| `breadcrumb` | `breadcrumb.rs` | 0 | 0 字面量；分隔符与悬停无统一来源 | **M1** **M6**（分隔符） |  | P2 |
 | `segmented_control` | `segmented_control.rs` | 3 | BLUE21 AR2：`seg_w = rect.width/count` ⇒ 长标签 `text_x` 走负、越界重叠 | ① 按 主流 material 实现 每段内边距 **16** / 最小高 **28** ② 选中段**滑动指示器**（M3） | **M10** **M3** | P1 |
-| `split_button` | `split_button.rs` | 3 | ✅ 已由组装推导并 tile（BLUE22 第 70 轮）；仍 3 字面量 | **M1**（主体/箭头分别 hover）**M4** | P1 |
+| `split_button` | `split_button.rs` | 3 | ✅ 已由组装推导并 tile（BLUE22 第 70 轮）；仍 3 字面量 | **M1**（主体/箭头分别 hover）**M4** |  | P1 |
 
 #### (d) 通知与吐司族
 
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
 | `toast` | `toast/single.rs` | 2 | BLUE21 A23：`rect.y + (h+12)/2` 是**半个行盒 nudge**（同一 toast 的 ✕ 却在真中心 60）⇒ 与实现矛盾 | ① 改 `material_snackbar.rs:368` 的写法（`(h - metrics.height)/2`）② **M5** `inverse_surface` ③ **M3**（出入场） | **M10** **M5** **M3** | **P0** |
-| `toast_stack` | `toast/stack.rs` | 2 | 与 `popup_window` **共用 `PopupWindow` kind**；堆叠无动画 | **M3**（堆叠位移）**M5** | P1 |
-| `snackbar` | `snackbar.rs` | 2 | 与 `status_bar` **共用 `StatusBar` kind**（屏底带） | **M5** `inverse_surface` **M3** | P1 |
-| `notification_center` | `notification_center.rs` | 0 | 与 `list_view` 同 kind；BLUE21 A.7 #7 记其严重度取自**语义 token 再推离承载面**（优势） | **M1** **M5** **M3**（新条目滑入） | P1 |
-| `media_player` | `media_player.rs` | 6 | ✅ **第 75 轮已修**（实测见 `log-20260924-1.md` §73）：① **`video-surface` 豁免不覆盖它** —— 它画的是标题/状态/传输条（chrome），**一行画面都不画** ⇒ 面/框/墨改读主题角色，轨道**派生**，进度填 `primary`（值指示器）；② 连带：该豁免因 dominant 已移动而**陈旧，已移出豁免表** | **M4 完成**；M1（控件条 hover）留白 | ✅ **P1 完成** |
+| `toast_stack` | `toast/stack.rs` | 2 | 与 `popup_window` **共用 `PopupWindow` kind**；堆叠无动画 | **M3**（堆叠位移）**M5** |  | P1 |
+| `snackbar` | `snackbar.rs` | 2 | 与 `status_bar` **共用 `StatusBar` kind**（屏底带） | **M5** `inverse_surface` **M3** |  | P1 |
+| `notification_center` | `notification_center.rs` | 0 | 与 `list_view` 同 kind；BLUE21 A.7 #7 记其严重度取自**语义 token 再推离承载面**（优势） | **M1** **M5** **M3**（新条目滑入） |  | P1 |
+| `media_player` | `media_player.rs` | 6 | ✅ **第 75 轮已修**（实测见 `log-20260924-1.md` §73）：① **`video-surface` 豁免不覆盖它** —— 它画的是标题/状态/传输条（chrome），**一行画面都不画** ⇒ 面/框/墨改读主题角色，轨道**派生**，进度填 `primary`（值指示器）；② 连带：该豁免因 dominant 已移动而**陈旧，已移出豁免表** | **M4 完成**；M1（控件条 hover）留白 |  | ✅ **P1 完成** |
 
 ---
 
@@ -1677,10 +1685,10 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 | `dial` | `dial.rs` | 3 | BLUE21 C1（**至今未修**）：`notches_visible`/`notch_target` **完全空转**（`Draw` 不引用） | ① **实现刻度环** ② 先裁定 `notch_target` 单位（参考工具包 是像素间距，本仓注释写「度」）③ 指针拖拽带动效 | **M10** **M3** | **P0** |
 | `tab_bar` | `tab_bar.rs` | 3 | BLUE21 D9：三种 `TabShape` **画得一样**（注释描述了没做的活）；D10：tab **永不换行/裁剪/溢出** | ① 抄 `tabwidget.rs:519-560`（那里三种形状是**真画**的）② 溢出出口 ③ 激活 tab 滑动指示器（M3） | **M10** **M3** | **P0** |
 | `pie_menu` | `pie_menu.rs` | 24 | **本组字面量最多（24）**；有 hover 记录 | ① **M4（24 处）** ② 展开/收起**扇形动画**（M3） | **M4** **M3** | P1 |
-| `ribbon_bar` | `ribbon_bar.rs` | 3 | 有 hover 记录 | **M1** **M2** | P1 |
+| `ribbon_bar` | `ribbon_bar.rs` | 3 | 有 hover 记录 | **M1** **M2** |  | P1 |
 | `date_edit` | `date_edit.rs` | 1 | BLUE21 A.4.5f：是**纯文本框**，**选择器不可达**（主流 material 实现 是对话框触发器） | ① 接日历弹出（`calendar_popup`）② 焦点态（M1/M2） | **M10** **M1** | P1 |
-| `time_edit` | `time_edit.rs` | 1 | 同 `date_edit`，且 `access.rs:497-503` **缺 `calendar_popup`**（契约不一致） | **M10** **M1** | P1 |
-| `date_time_edit` | `date_time_edit.rs` | 1 | 同族 | **M10** **M1** | P2 |
+| `time_edit` | `time_edit.rs` | 1 | 同 `date_edit`，且 `access.rs:497-503` **缺 `calendar_popup`**（契约不一致） | **M10** **M1** |  | P1 |
+| `date_time_edit` | `date_time_edit.rs` | 1 | 同族 | **M10** **M1** |  | P2 |
 
 ### A.8.3 Media and web（`media_widgets`，7 个）
 
@@ -1689,13 +1697,13 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
-| `video_player` | `video_player.rs` | 11 | ✅ **第 74 轮已修**（实测见 `log-20260924-1.md` §49）：**先读豁免表再动手** —— `video-surface` 已声明它的画面是 content，且「黑 letterbox + 白图标叠加」是所有播放器的刻意设计（底下画面任意）⇒ **letterbox 与传输条 chrome 不动并写明**。真该跟主题的两处：**空态面板** `rgb(30,30,30)` → `surface_container`（无画面时它就是占位面板）、**进度填充** `rgb(60,140,240)` → `primary`（值指示器）。连带：该 `video-surface` 豁免因 dominant 已移动而**变陈旧，已移出豁免表** | 两处 **完成** | ✅ **P0 完成** |
-| `camera_preview` | `camera_preview.rs` | 16 | ✅ **第 74 轮复核：不动** —— 它是**全幅取景器**（画面即整个矩形），叠加的都是「任意画面上的 chrome」（分辨率/变焦/十字线/录制点/绿色边框），豁免表 `camera_preview video-surface` 已声明，`EMPTY_VIEWFINDER` 的注释也已论证。**把一个已论证的设计判成缺陷是另一种跑偏** | 无 | ✅ **复核驳回（非缺陷）** |
-| `audio_visualizer` | `audio_visualizer.rs` | 6 | ✅ **第 74 轮已修**（实测见 `log-20260924-1.md` §50）：控件**从不读 `style`**，所以 `apply_active_theme` 写进 `style.background_color` 的值**没有任何消费者**（声明了但读不回），且亮色外观下画近黑矩形 ⇒ `background_color` 改 `Option<Color>`：`set_*` 仍优先，未设则读 `surface_container`，无主题才用字面量。公共 API 不变。 ✅ **第 76 轮补修**（§78）：**缺 `is_animating`** ⇒ 下降中的 peak 指针被宿主判为「已停」，会卡在半路 ⇒ 现报 `self.peak_hold && 有 marker 高于其 bar`；断言写成**一对**（在飞为 `true`、跑完归 `false`），避免「永远 true」被满足 | **完成** | ✅ **P1 完成** |
-| `hero_animation` | `hero_animation.rs` | 11 | ✅ **第 76 轮实测复核：假欠债** —— `tick` + `is_animating` 齐全，动画真的在跑；11 字面量经复核为回落档/数据色 | 无 | ✅ **已满足** |
-| `lottie_widget` | `lottie_widget.rs` | 6 | ✅ **第 76 轮实测复核：假欠债** —— `tick` + `is_animating` 齐全 | 无 | ✅ **已满足** |
-| `rive_widget` | `rive_widget.rs` | 9 | ✅ **第 76 轮实测复核：假欠债** —— `tick` + `is_animating` 齐全 | 无 | ✅ **已满足** |
-| `animated_image` | `animated_image.rs` | 3 | ✅ **第 76 轮实测复核：假欠债** —— `tick` + `is_animating` 齐全 | 无 | ✅ **已满足** |
+| `video_player` | `video_player.rs` | 11 | ✅ **第 74 轮已修**（实测见 `log-20260924-1.md` §49）：**先读豁免表再动手** —— `video-surface` 已声明它的画面是 content，且「黑 letterbox + 白图标叠加」是所有播放器的刻意设计（底下画面任意）⇒ **letterbox 与传输条 chrome 不动并写明**。真该跟主题的两处：**空态面板** `rgb(30,30,30)` → `surface_container`（无画面时它就是占位面板）、**进度填充** `rgb(60,140,240)` → `primary`（值指示器）。连带：该 `video-surface` 豁免因 dominant 已移动而**变陈旧，已移出豁免表** | 两处 **完成** |  | ✅ **P0 完成** |
+| `camera_preview` | `camera_preview.rs` | 16 | ✅ **第 74 轮复核：不动** —— 它是**全幅取景器**（画面即整个矩形），叠加的都是「任意画面上的 chrome」（分辨率/变焦/十字线/录制点/绿色边框），豁免表 `camera_preview video-surface` 已声明，`EMPTY_VIEWFINDER` 的注释也已论证。**把一个已论证的设计判成缺陷是另一种跑偏** | 无 |  | ✅ **复核驳回（非缺陷）** |
+| `audio_visualizer` | `audio_visualizer.rs` | 6 | ✅ **第 74 轮已修**（实测见 `log-20260924-1.md` §50）：控件**从不读 `style`**，所以 `apply_active_theme` 写进 `style.background_color` 的值**没有任何消费者**（声明了但读不回），且亮色外观下画近黑矩形 ⇒ `background_color` 改 `Option<Color>`：`set_*` 仍优先，未设则读 `surface_container`，无主题才用字面量。公共 API 不变。 ✅ **第 76 轮补修**（§78）：**缺 `is_animating`** ⇒ 下降中的 peak 指针被宿主判为「已停」，会卡在半路 ⇒ 现报 `self.peak_hold && 有 marker 高于其 bar`；断言写成**一对**（在飞为 `true`、跑完归 `false`），避免「永远 true」被满足 | **完成** |  | ✅ **P1 完成** |
+| `hero_animation` | `hero_animation.rs` | 11 | ✅ **第 76 轮实测复核：假欠债** —— `tick` + `is_animating` 齐全，动画真的在跑；11 字面量经复核为回落档/数据色 | 无 |  | ✅ **已满足** |
+| `lottie_widget` | `lottie_widget.rs` | 6 | ✅ **第 76 轮实测复核：假欠债** —— `tick` + `is_animating` 齐全 | 无 |  | ✅ **已满足** |
+| `rive_widget` | `rive_widget.rs` | 9 | ✅ **第 76 轮实测复核：假欠债** —— `tick` + `is_animating` 齐全 | 无 |  | ✅ **已满足** |
+| `animated_image` | `animated_image.rs` | 3 | ✅ **第 76 轮实测复核：假欠债** —— `tick` + `is_animating` 齐全 | 无 |  | ✅ **已满足** |
 
 ### A.8.4 Miscellaneous（`misc_widgets`，8 个）
 
@@ -1704,11 +1712,11 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 | `drop_zone` | `drop_zone.rs` | 1 | BLUE21 B17：静止态**无可见面**（zone 填充 == 背景）；A.4.5c：只有 **1/5** 反馈态 | ① 面推离窗口底色（**M5**）② 补 `onMove`/`onLeave`/reject + 落点偏移 ③ 悬停高亮（M2） | **M5** **M10** **M2** | **P0** |
 | `qr_code` | `qr_code.rs` | 0 | BLUE21 C5：`quiet_zone` 有字段**无访问器无 schema**；纠错级**不可设** | ① 发布 `quiet_zone` + setter ② 纠错级属性（QR「差不多对」就扫不出来） | **M10** | P1 |
 | `barcode_scanner` | `barcode_scanner.rs` | 0 | BLUE21 D11：四角括号**一半画到遮罩上**；A.6 缺相机权限/生命周期 | ① 四角统一锚到 viewfinder **内侧**角 ② 生命周期暂停/恢复 | **M10** | P1 |
-| `date_range_picker` | `date_range_picker.rs` | 0 | BLUE21 D4：表头/星期行/网格三者错位（11 px 死区） | **M10**（`grid_top` 从**已画出的范围**推） | P1 |
+| `date_range_picker` | `date_range_picker.rs` | 0 | BLUE21 D4：表头/星期行/网格三者错位（11 px 死区） | **M10**（`grid_top` 从**已画出的范围**推） |  | P1 |
 | `mobile_date_picker` | `mobile_date_picker.rs` | 4 | BLUE21 A.3.8：行距 24 vs 主流 material 实现 **32**；10 px 字装 24 px 行 | ① 行高 32 ② 选中带圆角 8 ③ 滚轮对齐动画（M3） | **M10** **M3** | P1 |
 | `segmented_button` | `segmented_button.rs` | 3 | 与 `segmented_control`/`cupertino_segmented_control` **共用 `ToggleButton` kind**；32 高已统一 | ① 选中段**滑动指示器**（M3）② M1 | **M3** **M1** | P1 |
-| `avatar` | `avatar.rs` | 1 | ✅ 已固定 `AVATAR_SIZE 40` | **M4** | P2 |
-| `bezier_curve_editor` | `bezier_curve_editor.rs` | 0 | 有 hover 记录；控制点拖拽无反馈 | **M3**（手柄跟随）**M1** | P2 |
+| `avatar` | `avatar.rs` | 1 | ✅ 已固定 `AVATAR_SIZE 40` | **M4** |  | P2 |
+| `bezier_curve_editor` | `bezier_curve_editor.rs` | 0 | 有 hover 记录；控制点拖拽无反馈 | **M3**（手柄跟随）**M1** |  | P2 |
 
 ### A.8.5 Cupertino（`cupertino`，8 个）
 
@@ -1724,18 +1732,18 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 | `cupertino_slider` | `cupertino/core.rs` | 14 | iOS 拇指**不是圆盘**（应有更细的轨道与更大拇指视觉） | ① iOS 几何 ② M3 | **M4** **M3** | P1 |
 | `cupertino_alert_dialog` | `cupertino/core.rs` | 14 | 无 iOS 圆角（**12** 而非 Material 28）；无遮罩层级 | ① iOS 圆角 ② **M5** ③ M3 | **M10** **M5** **M3** | P1 |
 | `material_snackbar` | `cupertino/core.rs` | 14 | `material_snackbar.rs:368` 是 BLUE21 A23 的**正确写法参照** | **M5**（`inverse_surface`）**M3**（滑入 + 自动消失计时） | **M5** **M3** | P1 |
-| `material_navigation_rail` | `cupertino/core.rs` | 14 | 无 rail 展开/收起动画 | **M3** **M5** | P1 |
-| `cupertino_date_picker` | `cupertino/date_picker.rs` | 5 | ✅ 行距已在 metrics 表（`32`） | **M3**（滚轮吸附）**M4** | P2 |
-| `cupertino_navigation_bar` | `cupertino/nav_bar.rs` | 2 | 大标题**收起动画**缺失（iOS 的标志性交互） | **M3**（标题缩放/收起） | P1 |
-| `cupertino_segmented_control` | `cupertino/segmented_control.rs` | 2 | 段内边距 16/最小高 28（已在 metrics；BLUE21 AR2 曾记 `text_x` 走负） | **M3**（滑动指示器）**M1** | P2 |
+| `material_navigation_rail` | `cupertino/core.rs` | 14 | 无 rail 展开/收起动画 | **M3** **M5** |  | P1 |
+| `cupertino_date_picker` | `cupertino/date_picker.rs` | 5 | ✅ 行距已在 metrics 表（`32`） | **M3**（滚轮吸附）**M4** |  | P2 |
+| `cupertino_navigation_bar` | `cupertino/nav_bar.rs` | 2 | 大标题**收起动画**缺失（iOS 的标志性交互） | **M3**（标题缩放/收起） |  | P1 |
+| `cupertino_segmented_control` | `cupertino/segmented_control.rs` | 2 | 段内边距 16/最小高 28（已在 metrics；BLUE21 AR2 曾记 `text_x` 走负） | **M3**（滑动指示器）**M1** |  | P2 |
 
 ### A.8.6 Web（1）与 Core（2）
 
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
 | `web_engine_view` | `web_widgets/` | — | `supports_web_engine()` 如实报 false（BLUE20 W1 删掉了从不显示的 WebKitGTK 包装）；本仓**诚实回答能力** | 维持诚实；文档明写 | — | — |
-| `window` | `window.rs` | 1 | ✅ 只画客户区（标题栏归窗口管理器）——**刻意且有据** | 保持；M11（客户区内焦点环） | P2 |
-| `tool_box` | `container_widgets/toolbox.rs` | 11 | 见 §A.5 `tool_box`（BLUE21 D7） | **M7** **M10** **M8** | P1 |
+| `window` | `window.rs` | 1 | ✅ 只画客户区（标题栏归窗口管理器）——**刻意且有据** | 保持；M11（客户区内焦点环） |  | P2 |
+| `tool_box` | `container_widgets/toolbox.rs` | 11 | 见 §A.5 `tool_box`（BLUE21 D7） | **M7** **M10** **M8** |  | P1 |
 
 ---
 
@@ -2103,3 +2111,85 @@ fn activate_combo(&mut self) {
 **借 外部对标 / 参考工具包 的状态与动效机制、借 Material / 主流声明式实现 的层级语言，
 把本仓已经领先的桌面能力做得同样「顺手」**——
 因为一个 dock 面板能不能被顺畅地拖出与吸附，**取决于状态与动效，而不取决于它的几何有多准。**
+
+---
+
+## A.12 第 90 轮：**全量并行裁定**（110 个控件一次量完，实测见 `log-20260924-1.md` §90）
+
+> 本节不回抄每一行，只记**§A.2–§A.8 的总体裁定结果**与**本轮落位的真缺陷**。
+> 逐行证据在日志 §90.1 的四张表里。
+
+### A.12.1 裁定结果：计划行的 `❌` 约 **2/3 是欠债**
+
+4 个只读审计子任务并行覆盖 110 个控件，逐条对源码复核（**不看注释，只看代码**）：
+
+| 组 | 控件数 | 已修（欠债）| 仍然存在 |
+|---|---:|---:|---:|
+| Containers（§A.5）| 13 | 10 | 3 |
+| 金融 + Charts（§A.8.1/1b）| 14 | 6 | 8 |
+| Dialogs+Overlays+Views（§A.7）| 32 | 17 | 15 |
+| Input + Display（§A.3/A.4）| 51 | 38 | 13 |
+| **合计** | **110** | **约 71** | **39** |
+
+**这意味着本附录的 `❌` 不能当待办清单用** —— 用它会让下一个人把 71 个已经正确的
+实现再改一遍。凡引用 `❌` 行的地方，**必须先复核代码**（与 §A 顶部的第 89 轮告警同一条）。
+
+### A.12.2 本轮落位的 8 个真缺陷
+
+| 控件 | 病灶 | 修法 | 判据 |
+|---|---|---|---|
+| `spin_box` | 字段与**两个步进按钮**在任何指针状态下画同一色 | `StateOverlay::from_base` + `fill_blend()` | 悬停实测 `255→235` / `240→221`；反向注入转红 |
+| `combo_box` | 字段不读 `is_hovered`（唯一的 `hovered_item` 只作用于**列表行**，合上时永不触发）| 同上 | 悬停实测 `255→235` |
+| `editable_combo_box` | 字段不读指针状态 | 同上 | 悬停实测 `69→84`（暗）|
+| `multi_select_combo_box` | 同上 | 同上 | 悬停实测 `69→84`（暗）|
+| `grid_table` | 每列表头是 `"Column {n}"` 占位符；根因是**数据源没有列名 API** | 协议加可选 `column_name`（默认 `None`）+ 控件先问数据源，占位符文**如实保留**为回落 | 渲染字形比较；反向注入转红 |
+| `quote_board` | **行值**无宽度守卫，长 symbol/name 横穿下一列（上一轮列头缺陷的另一半） | 先算单元格框再 `draw_text_fitted` | ⚠️ **仍留白** |
+| `radar_chart` | `chrome_colors()` 漏了图例墨 / 悬停辐条 / 悬停读数**三个消费者**（暗底暗字） | 加 `legend_ink` + `hover_spoke` 进 `RadarChrome` | ⚠️ **仍留白** |
+| `emoji_picker` | `"emoji_picker"` 不在角色表 ⇒ 解析到 `Surface` ⇒ 面板 == 窗口色，弹层无边缘 | 窗口色视为「没有答案」，退 `surface_container` | 快照实测面板 `rgba(30,30,33)` ≠ 窗口 `rgba(18,18,18)` |
+
+### A.12.3 M1 的**真实形状**：机制齐备，只有 1 个控件用它
+
+```text
+$ grep -c "is_hovered()" src/widget/input_widgets/*.rs | grep -v ":0"
+command_link.rs:1    lineedit.rs:1    range_slider.rs:1     （共 27 个文件）
+```
+
+`BaseWidget` 维护 `hovered`/`pressed`、`widget_state` 默认据此返回 `Hover`、
+主题的 `"<kind>:hover"` 键已写好、`StateOverlay::fill_blend()` 已把权重定为
+`0.08`/`0.12` 并注明「与预设覆盖推导的值一致」——**而全仓只有 `radiobutton` 用了它**。
+
+**所以 M1 不是一个 188 处的工程，是「让控件读那已有的一处」。**
+本轮落位 5 个（`spin_box` 含两个按钮 / 三个 combo 变体）；
+剩余同类控件见日志 §90.2 的清单，修法完全相同。
+
+### A.13 第 91 轮：M1 续落位 + **计划表格自身的缺陷**（实测见 `log-20260924-1.md` §91）
+
+#### A.13.1 计划表格有 121 行是错位的（本轮发现并修复）
+
+`tools/check_plan_tables.py`（本轮新增）实测：**至少 121 行**的格子数与**自己表头**不符 ——
+§A.3 的表头声明 7 列（含「**改进点**」），而许多行只写了 6 格。
+
+markdown 会把尾部的格子**左移**补齐，所以它**照常渲染**；
+但后果是**「优先级」的内容落进了「改进方式方法」列** ——
+**一行看起来被裁定过，实际只是接错了一格**。这比一行旧的 `❌` 更危险。
+
+已用 `tools/normalise_plan_tables.py` 把缺的那格**补成空**（不编内容：
+「改进点」是方法列的摘要，空着是「还没人写」的诚实表达）。**错位行 121 → 0。**
+
+> 凡在本附录增删列或回写行，**先跑 `python3 tools/check_plan_tables.py`**。
+
+#### A.13.2 M1 落位进度
+
+§A.3 的字段族已落位 **7 个**：`spin_box`（含两个步进按钮）/ `combo_box` /
+`editable_combo_box` / `multi_select_combo_box` / `search_box` / `search_bar` / `otp_input`。
+判据：`tests/input_hover_probe.rs`（7 个字段 × 2 外观 = 14 组合全部通过）。
+
+**修法只有一处**（`StateOverlay::from_base` + `fill_blend()`）；
+`search_box` 的悬停分支**放在焦点分支之后**，因为焦点是比悬停更强的声明。
+
+#### A.13.3 §A.3 已回写
+
+15 行的复核结论已写回（脚本：`tools/apply_round90_verdicts.py`，逐条带 `file:line`）。
+其中 **4 行是「计划记错」的假欠债**：
+`text_area`（实为已读 style）、`rich_edit`（实为已用真测量，无 `cell_width`）、
+`line_edit`（装饰槽已存在）、`keyboard`/`range_slider`/`switch` 等（早已修）。

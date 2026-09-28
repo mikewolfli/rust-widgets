@@ -612,6 +612,26 @@ impl Draw for OtpInput {
             Some(resolved) if resolved != window_fill => resolved,
             _ => window_fill.blend(&text_color, 0.10),
         };
+        // # Why the boxes acknowledge the pointer
+        //
+        // The cell face is derived a step off the window so an empty box is visible; hover was
+        // still missing, so pointing at the control painted every cell at rest — and this is a
+        // control whose *entire* affordance is "type here". Hover is the weaker claim and is
+        // applied first, so the focused cell's own tint (below) still wins over it.
+        let background = if enabled {
+            let overlay = crate::style::StateOverlay::from_base(
+                self.base.is_hovered(),
+                self.base.is_pressed(),
+                false,
+            );
+            if overlay.is_empty() {
+                background
+            } else {
+                background.blend(&background.contrast_color(), overlay.fill_blend())
+            }
+        } else {
+            background
+        };
         // An empty, unfocused box gets a muted outline so an empty row still reads
         // as one widget rather than as empty space.
         let hairline = background.blend(&text_color, 0.35);

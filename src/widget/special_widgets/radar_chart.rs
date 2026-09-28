@@ -87,6 +87,20 @@ struct RadarChrome {
     label: Color,
     /// The "No data" caption.
     placeholder: Color,
+    /// The legend's text and the hover read-out's text.
+    ///
+    /// # Why these are chrome rather than data
+    ///
+    /// A legend's own words and a hover read-out name what the chart shows; they are not part
+    /// of what it plots. They used to be literals (`rgb(70,70,70)` and `rgb(60,60,60)`), which
+    /// were the only two places in this control a dark theme still produced dark-on-dark text —
+    /// the five colours resolved here simply did not cover them, so the legend and the read-out
+    /// bypassed the one derivation every other piece of chrome goes through.
+    legend_ink: Color,
+    /// The spoke drawn from the centre to the hovered dimension's vertex.
+    ///
+    /// Chrome, not data: it points at a dimension rather than plotting a value.
+    hover_spoke: Color,
 }
 
 /// Nudges a text box of `width`×`height` at `(x, y)` back inside `rect`.
@@ -540,6 +554,13 @@ impl RadarChart {
             grid: surface.blend(&divider, 0.55),
             label: ink,
             placeholder: muted,
+            // The legend text sits *on* the control's own surface, so it is the same ink the
+            // axis names use — one role, two consumers, and no way for the two to disagree.
+            legend_ink: ink,
+            // A hover spoke points at a dimension, so it belongs with the axis ink rather than
+            // with the series colours; a step toward the surface keeps it visibly weaker than
+            // the frame while still follows the appearance.
+            hover_spoke: ink.blend(&surface, 0.35),
         }
     }
 
@@ -688,6 +709,9 @@ impl RadarChart {
         const SWATCH: u32 = 10;
         const ROW_HEIGHT: i32 = 18;
         let font = Font::simple("Sans", 10.0);
+        // One derivation for the legend's ink, shared with every other piece of chrome.
+        let chrome = self.chrome_colors();
+        let legend_ink = chrome.legend_ink;
         let x = rect.x + rect.width as i32 - 90;
         let mut y = rect.y + 12;
         for index in 0..self.series.len() {
@@ -703,7 +727,12 @@ impl RadarChart {
                 row,
                 &label,
                 &font,
-                Color::rgb(70, 70, 70),
+                // The legend swatch's ink, taken from the same `chrome_colors()` the rest of
+                // the chart's chrome uses. A literal here was the one place a dark theme still
+                // produced dark-on-dark text: the five colours `chrome_colors()` resolves
+                // (surface, border, grid, label, placeholder) did not include the legend, so
+                // this arm bypassed them.
+                legend_ink,
                 HorizontalAlignment::Left,
             );
             y += ROW_HEIGHT;
@@ -727,7 +756,8 @@ impl RadarChart {
             center.x + (radius as f32 * angle.cos()) as i32,
             center.y + (radius as f32 * angle.sin()) as i32,
         );
-        context.draw_line_stroke(center, outer, Color::rgb(120, 120, 120), 1);
+        let chrome = self.chrome_colors();
+        context.draw_line_stroke(center, outer, chrome.hover_spoke, 1);
         // The read-out for every series on this dimension, which is what makes the
         // hover worth doing on a chart whose polygons overlap.
         let font = Font::simple("Sans", 9.0);
@@ -743,7 +773,7 @@ impl RadarChart {
                 Point { x: outer.x + 4, y: text_y },
                 &label,
                 &font,
-                Color::rgb(60, 60, 60),
+                chrome.legend_ink,
                 HorizontalAlignment::Left,
             );
             text_y += 12;

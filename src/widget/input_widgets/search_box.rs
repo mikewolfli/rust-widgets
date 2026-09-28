@@ -307,6 +307,21 @@ impl Draw for SearchBox {
             base_bg.blend(&Color::WHITE, 0.25)
         } else if self.focused {
             base_bg.blend(&accent.unwrap_or(Color::rgba(60, 140, 255, 200)), 0.18)
+        } else if self.base.is_hovered() || self.base.is_pressed() {
+            // # Why hover comes last
+            //
+            // Focus is a stronger claim than hover — a focused field is the one keystrokes go
+            // to — so a field that is both keeps the focus tint. This arm is what a *pointer*
+            // over an unfocused field gets, and without it the one state a user most often
+            // produces (pointing at the box before clicking it) painted the resting fill.
+            // The weight is `StateOverlay::fill_blend`, so it matches the theme's own
+            // `"<kind>:hover"` key rather than a private constant.
+            let overlay = crate::style::StateOverlay::from_base(
+                self.base.is_hovered(),
+                self.base.is_pressed(),
+                false,
+            );
+            base_bg.blend(&base_bg.contrast_color(), overlay.fill_blend())
         } else {
             base_bg
         };

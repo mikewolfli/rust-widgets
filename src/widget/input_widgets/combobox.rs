@@ -1017,6 +1017,23 @@ impl Draw for ComboBox {
 
         // Draw background
         let bg = style.background_color.unwrap_or(Color::rgb(255, 255, 255));
+        // # Why the field acknowledges the pointer
+        //
+        // A closed combo box is a field the user is invited to press to open a list, and it
+        // used to paint its resting fill whatever the pointer did — the only hover in this
+        // control was `hovered_item`, which applies to *list rows* and therefore cannot fire
+        // while the list is shut, i.e. in the state the field is normally seen in. The weight
+        // comes from `StateOverlay::fill_blend` so it matches the theme's `"<kind>:hover"` key.
+        let overlay = crate::style::StateOverlay::from_base(
+            self.base.is_hovered(),
+            self.base.is_pressed(),
+            self.base.draws_focus_ring(),
+        );
+        let bg = if overlay.is_empty() {
+            bg
+        } else {
+            bg.blend(&bg.contrast_color(), overlay.fill_blend())
+        };
         context.fill_rect(band, bg);
         // Draw border
         if let Some(border_color) = style.border_color {

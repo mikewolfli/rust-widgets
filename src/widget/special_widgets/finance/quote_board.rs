@@ -686,16 +686,26 @@ impl Draw for QuoteBoard {
                 // right-aligned number whose reserved width was a guess lands short of its
                 // column edge by the difference, and the guess drifts with every glyph that
                 // is not one em wide. See `estimate_width`'s removal for the measurement.
+                //
+                // # Why the cell is fitted rather than placed
+                //
+                // `cell_text` returns the quote's own `symbol` and `name` unbounded, and
+                // `draw_text` places a string without asking whether it fits. A symbol longer
+                // than its column therefore painted straight through the next column — the
+                // same defect the *heading* had, in the row below it. The heading was fixed by
+                // keeping the label inside its column; this is that fix's other half. Fitting
+                // is the honest reading: a clipped value reads as truncated, one that has run
+                // into its neighbour reads as a corrupted table.
                 let text_width = measure_body_text(&text, &font) as i32;
-                let text_x =
-                    if column.is_numeric() { start + width - 8 - text_width } else { start + 8 };
-                context.draw_text(
-                    Point { x: text_x, y: y + 5 },
-                    &text,
-                    &font,
-                    color,
-                    HorizontalAlignment::Left,
-                );
+                let cell = if column.is_numeric() {
+                    // Reserved from the trailing edge so the digits line up column-wise.
+                    Rect::new(start + width - 8 - text_width, y, text_width.max(1) as u32, 0)
+                } else {
+                    // Reserved from the leading inset to the column's edge.
+                    Rect::new(start + 8, y, (width - 16).max(1) as u32, 0)
+                };
+                let line = context.text_line(Rect { height: ROW_TEXT_HEIGHT, ..cell }, &font);
+                context.draw_text_fitted(line, &text, &font, color, HorizontalAlignment::Left);
             }
         }
     }
@@ -710,6 +720,13 @@ const BODY_FONT_SIZE: f32 = 11.0;
 
 /// The same size, named for the header row so the two call sites state one fact twice.
 const HEADING_FONT_SIZE: f32 = BODY_FONT_SIZE;
+
+/// The height of one row's text band, used to derive a value's line box.
+///
+/// The row pitch (`row_height`) is what the rows are spaced by; a value's *line box* is the
+/// font's own, so the two are separate facts and a band equal to the pitch would centre the
+/// text on the pitch rather than on the line.
+const ROW_TEXT_HEIGHT: u32 = 16;
 
 /// The drawn width of `text` at `font`.
 ///

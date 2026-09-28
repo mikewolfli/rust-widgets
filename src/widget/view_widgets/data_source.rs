@@ -19,6 +19,23 @@ pub trait IncrementalTableDataSource: Send + Sync {
     fn row_count(&self) -> usize;
     /// Total columns available in source.
     fn column_count(&self) -> usize;
+    /// The heading a column should be labelled with, if the source names its columns.
+    ///
+    /// # Why this is optional
+    ///
+    /// Not every projection has column names — a matrix, a sparse grid or a sheet without a
+    /// header row genuinely has none — but a *table* usually does, and without this the
+    /// consumer had no way to ask. `grid_table` therefore labelled every column from its index
+    /// (`"Column 1"`, `"Column 2"`, ...) regardless of the data, which is a placeholder a user
+    /// cannot act on: two grids over different data were indistinguishable at the header row.
+    ///
+    /// Returning `None` is the honest answer for a source that has no names, and lets the
+    /// consumer fall back to an index label rather than inventing one. The default is `None`,
+    /// so an existing implementor keeps working unchanged (principle #21).
+    fn column_name(&self, column: usize) -> Option<String> {
+        let _ = column;
+        None
+    }
     /// Returns cell text for a row/column if available.
     fn data(&self, row: usize, column: usize) -> Option<String>;
     /// Optional monotonic revision for cache invalidation.

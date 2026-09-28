@@ -62,39 +62,33 @@ from vendor_material_symbols import ICONS, UPSTREAM_SHA, UPSTREAM_REF_DESCRIPTIO
 # `IconName::data` indexes the table by discriminant. This is the single place the order is
 # stated, and `tests/icon_data_integrity_test.rs` asserts the table matches the enum at test
 # time — so a reorder on either side fails by name rather than drawing the wrong picture.
-DECLARATION_ORDER = [
-    "check",
-    "cross",
-    "arrow_left",
-    "arrow_right",
-    "arrow_up",
-    "arrow_down",
-    "star",
-    "heart",
-    "settings",
-    "home",
-    "search",
-    "menu",
-    "close",
-    "plus",
-    "minus",
-    "info",
-    "warning",
-    "error",
-    "user",
-    "mail",
-    "bell",
-    "edit",
-    "trash",
-    "share",
-    "refresh",
-    "more",
-    "filter",
-    "lock",
-    "unlock",
-    "download",
-    "upload",
-]
+def declaration_order() -> list[str]:
+    """The token column of `tools/icon_tokens.txt`, in file order.
+
+    `IconName`'s declaration order is what `ICON_DATA` and `ICON_FALLBACK` are indexed by, so this
+    generator and `gen_icon_names.py` must agree on it exactly. Rather than keep a second list here
+    (which would be a copy that drifts), both read the one token list — the single source of truth.
+    """
+    path = REPO_ROOT / "tools" / "icon_tokens.txt"
+    if not path.exists():
+        raise SystemExit(f"REFUSED: {path} is missing; there is no token order to generate from.")
+    tokens: list[str] = []
+    for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = [part.strip() for part in line.split("|")]
+        if len(parts) != 3 or not parts[0]:
+            raise SystemExit(
+                f"REFUSED: {path}:{lineno}: expected `token | Variant | doc`, got {line!r}"
+            )
+        tokens.append(parts[0])
+    if not tokens:
+        raise SystemExit(f"REFUSED: {path} parsed to an empty token set.")
+    return tokens
+
+
+DECLARATION_ORDER = declaration_order()
 
 PATH_RE = re.compile(r'<path[^>]*\bd="([^"]+)"')
 
