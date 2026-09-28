@@ -13,6 +13,7 @@ use crate::core::{Color, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::expect_usize;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -42,6 +43,22 @@ pub struct BottomNavigationBar {
     base: BaseWidget,
     items: Vec<NavItem>,
     selected_index: usize,
+    /// How far the selection pill has travelled, `0.0` just after leaving its tab and `1.0`
+    /// arrived.
+    ///
+    /// # Why this is a slide and not a repaint
+    ///
+    /// The pill used to be drawn inside the loop, at whichever tab was selected, so changing tab
+    /// made it disappear from one and appear under another with nothing in between. On a bar
+    /// whose entire job is to say *where you are*, that transition is the only thing that says
+    /// **which way** you moved — a hard cut leaves the user to re-read all five tabs.
+    ///
+    /// A fraction rather than a pixel offset, because a `PropertyDriver` interpolates a progress
+    /// (its target is clamped to `0..=1`) and because a fraction survives a relayout that moves
+    /// every tab.
+    slide: PropertyDriver,
+    /// The tab the current slide started from, so `slide`'s fraction has a left endpoint.
+    slide_from: usize,
     /// Emitted when the selected tab changes. The payload is the new index.
     pub selected_changed: Signal1<usize>,
 }
@@ -55,6 +72,8 @@ impl BottomNavigationBar {
             base: BaseWidget::new(WidgetKind::BottomNavigationBar, geometry, "BottomNavigationBar"),
             items: Vec::new(),
             selected_index: 0,
+            slide: PropertyDriver::at(1.0, MotionSlot::Normal),
+            slide_from: 0,
             selected_changed: Signal1::new(),
         }
     }
@@ -79,10 +98,35 @@ impl BottomNavigationBar {
     pub fn set_selected_index(&mut self, index: usize) {
         let clamped = if self.items.is_empty() { 0 } else { index.min(self.items.len() - 1) };
         if self.selected_index != clamped {
+            // The slide resumes from the pill's **fractional** position, not from the tab it left
+            // rounded to: a user who clicks tab 3 while the pill is 40% of the way to tab 1 would
+            // otherwise see it snap back to tab 0 first, which is the one thing an indicator of
+            // "where you are" must not do.
+            let from = self.indicator_position();
+            self.slide_from = from.floor().max(0.0) as usize;
+            let span = (clamped as f32 - self.slide_from as f32).abs();
+            let fraction = if span < f32::EPSILON {
+                1.0
+            } else {
+                ((from - self.slide_from as f32) / (clamped as f32 - self.slide_from as f32))
+                    .clamp(0.0, 1.0)
+            };
             self.selected_index = clamped;
+            self.slide.jump_to(fraction);
+            self.slide.set_target(1.0);
             self.selected_changed.emit(clamped);
             self.base.request_redraw();
         }
+    }
+
+    /// The tab index the pill is currently drawn at, as a **fractional** value.
+    ///
+    /// This is the value an animation test samples: strictly between two whole indices while the
+    /// pill is travelling, which is exactly what "the pill slid rather than jumped" means.
+    pub fn indicator_position(&self) -> f32 {
+        let from = self.slide_from as f32;
+        let to = self.selected_index as f32;
+        from + (to - from) * self.slide.value()
     }
 
     /// Returns the currently selected tab index.
@@ -120,6 +164,16 @@ impl Widget for BottomNavigationBar {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, 48)
     }
+
+    /// Advances the selection pill's slide; `true` while it still owes frames.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.slide.tick(delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.slide.is_moving()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -273,7 +327,18 @@ impl Draw for BottomNavigationBar {
                 const PILL_HEIGHT: u32 = 32;
                 let pill_width = PILL_WIDTH.min(tab_rect.width);
                 let pill_height = PILL_HEIGHT.min(tab_rect.height);
-                let pill_x = tab_rect.x + (tab_rect.width as i32 - pill_width as i32) / 2;
+                // # Why the pill is interpolated between tab *centres*
+                //
+                // The pill used to be centred on whichever tab was selected, so a change of tab
+                // moved it by teleport. It is now placed at `indicator_position()` — the tab index
+                // the slide has reached, as a fraction — applied to the **centre-to-centre**
+                // distance. Interpolating the centre rather than the left edge is what keeps the
+                // capsule the same width throughout: interpolating an edge would need a width that
+                // changed if the tabs ever did.
+                let centre_of =
+                    |index: f32| -> f32 { (rect.x as f32) + (index + 0.5) * tab_width as f32 };
+                let centre = centre_of(self.indicator_position()) as i32;
+                let pill_x = centre - pill_width as i32 / 2;
                 // Centred on the icon rather than on the tab, so the glyph is optically inside
                 // it: the label below must not make the pill drift downward.
                 let pill_y = content_y + (icon_metrics.height as i32 - pill_height as i32) / 2;

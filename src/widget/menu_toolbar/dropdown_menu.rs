@@ -9,14 +9,15 @@
 //! Selecting an item emits an `item_selected` signal with the item's value.
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
-use crate::event::{Event, EventHandler};
 use crate::event::key_codes;
+use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
 use crate::signal::Signal1;
 use crate::widget::capability::coercion::{expect_bool, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::menu_toolbar::popup_reveal::{PopupReveal, RevealDirection};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -87,6 +88,12 @@ pub struct DropdownMenu {
     selected_value: Option<String>,
     items: Vec<DropdownItem>,
     expanded: bool,
+    /// The list's open/close reveal, so the list grows out of the field rather than appearing.
+    ///
+    /// A `bool` cannot express a popup mid-open, and the draw path needs the fraction. The flag
+    /// above stays the *authority* (it is what `get("expanded")` answers, and what hit testing
+    /// consults); this only says how far the transition has got.
+    reveal: PopupReveal,
     /// Scroll offset for the item list.
     scroll_offset: usize,
     /// Emitted when an item is selected, providing the item's value.
@@ -101,6 +108,7 @@ impl DropdownMenu {
             selected_value: None,
             items: Vec::new(),
             expanded: false,
+            reveal: PopupReveal::new(false),
             scroll_offset: 0,
             item_selected: Signal1::new(),
         }
@@ -206,6 +214,7 @@ impl DropdownMenu {
     /// Expands the dropdown to show the item list.
     pub fn expand(&mut self) {
         self.expanded = true;
+        self.reveal.set_open(true);
         self.scroll_offset = 0;
         self.base.request_redraw();
     }
@@ -213,6 +222,7 @@ impl DropdownMenu {
     /// Collapses the dropdown to hide the item list.
     pub fn collapse(&mut self) {
         self.expanded = false;
+        self.reveal.set_open(false);
         self.base.request_redraw();
     }
 
@@ -279,6 +289,20 @@ impl Widget for DropdownMenu {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(200, 200)
     }
+
+    /// Advances the list's open/close reveal; `true` while it still owes frames.
+    ///
+    /// Forwarded to the trait so the animation bus drives it: `tick_animations` sweeps every
+    /// mounted control and asks `tick`/`is_animating`, so a control that keeps its tick inherent
+    /// is a control the host cannot advance — the defect the trait method exists to remove.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.reveal.tick(delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.reveal.is_animating()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -428,8 +452,27 @@ impl Draw for DropdownMenu {
         }
 
         // ── Draw dropdown list when expanded ──
+        //
+        // # Why the list is drawn clipped to a revealed rectangle
+        //
+        // The list used to appear at its full height on the frame `expanded` flipped, so opening a
+        // dropdown was a hard cut — no sense of the list coming *out of* the field. It is now drawn
+        // twice: once to establish the clip at the revealed extent, and once inside it. Clipping is
+        // what makes the reveal honest: a list that only translated would, mid-open, still print
+        // rows below its own edge, so the user would see items that are not yet reachable.
+        //
+        // `reveal.is_closed()` is checked rather than just the flag, so a list that is closing
+        // keeps painting until it has finished shrinking instead of vanishing on the click.
         if self.expanded && !self.items.is_empty() {
             let drop = self.dropdown_rect();
+            let revealed = self.reveal.revealed(
+                drop,
+                RevealDirection::Down,
+                PopupReveal::travel_cap_for(crate::core::Size::new(drop.width, drop.height)),
+            );
+            if !self.reveal.is_closed() {
+                context.push_clip(revealed.x, revealed.y, revealed.width, revealed.height);
+            }
             // Dropdown background with shadow
             context.fill_rounded_rect(drop, 4, background);
             context.draw_rounded_rect_stroke(drop, 4, border, 2);
@@ -524,6 +567,11 @@ impl Draw for DropdownMenu {
                     disabled_text_color,
                     HorizontalAlignment::Left,
                 );
+            }
+            // The clip is popped on the same path it was pushed, so the reveal cannot leak a clip
+            // onto whatever the host draws next.
+            if !self.reveal.is_closed() {
+                context.pop_clip();
             }
         }
     }

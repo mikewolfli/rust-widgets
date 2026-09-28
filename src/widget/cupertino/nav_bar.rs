@@ -11,11 +11,12 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, lerp_f32, lerp_i32, lerp_u32, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -33,6 +34,14 @@ pub struct CupertinoNavigationBar {
     base: BaseWidget,
     title: String,
     large_title: bool,
+    /// How far the large title is **shown**, `1.0` full and `0.0` collapsed to the compact bar.
+    ///
+    /// This is the *drawn* fraction, not a cache of [`Self::large_title`]: the bar's height, the
+    /// title's point size and the title's x/y are all read off it, so the collapse is a movement
+    /// through the intermediate sizes rather than a jump between the two ends (the defect this
+    /// field replaces -- BLUE23 §A.16.4 / §A.18). The target is the logical flag, so setting the
+    /// flag re-aims the driver and the tick and the "am I moving?" query cannot disagree.
+    collapse: PropertyDriver,
     back_button_visible: bool,
     back_button_text: String,
     /// Emitted when the back button is pressed.
@@ -48,6 +57,10 @@ impl CupertinoNavigationBar {
             base,
             title: String::new(),
             large_title: true,
+            // Born at the target end, because the default is a bar that is already large. A driver
+            // built at `0.0` would make a freshly constructed bar animate *away* from its own
+            // state on the first frame it is drawn -- the defect `PropertyDriver::at` documents.
+            collapse: PropertyDriver::at(1.0, MotionSlot::Normal),
             back_button_visible: false,
             back_button_text: "Back".to_string(),
             back_pressed: Signal1::new(),
@@ -77,9 +90,52 @@ impl CupertinoNavigationBar {
     }
 
     /// Enables or disables large title mode.
+    ///
+    /// This is the **logical** state; the bar animates to it rather than jumping. A bar being
+    /// told to collapse therefore owes frames for the duration of the movement, which is what
+    /// makes iOS's signature large-title collapse continuous instead of a one-frame swap.
+    ///
+    /// # Why the driver is aimed here and not in `tick`
+    ///
+    /// The frame bus asks [`Widget::is_animating`] *before* it decides whether to advance
+    /// anything, so a control that only aims its target inside `tick` reports "still" at the
+    /// moment it is asked and is never ticked at all -- the movement silently never happens.
+    /// Aiming here means the state change and the answer to "do I owe frames?" agree from the
+    /// same instant, which is the property `CollapsiblePane::set_collapsed` establishes for its
+    /// own disclosure.
     pub fn set_large_title(&mut self, enabled: bool) {
+        if self.large_title == enabled {
+            return;
+        }
         self.large_title = enabled;
+        self.collapse.set_target(if enabled { 1.0 } else { 0.0 });
         self.base.request_redraw();
+    }
+
+    /// How far the large title is shown, `1.0` full and `0.0` collapsed.
+    ///
+    /// This is the *drawn* fraction: the bar's height, the title's point size and its x/y are
+    /// all functions of it, so a test can assert the collapse slid rather than jumped by
+    /// sampling it at successive frames -- the same reading `CollapsiblePane::open_progress`
+    /// gives for its own disclosure.
+    pub fn collapse_progress(&self) -> f32 {
+        self.collapse.value()
+    }
+
+    /// Advances the large-title collapse by `delta_ms`; `true` while it is still moving.
+    ///
+    /// The target is re-derived from the logical flag as well as being aimed by
+    /// [`Self::set_large_title`], so a bar whose flag was set through a path that did not go
+    /// through the setter still converges, and the tick and the "am I moving?" query cannot
+    /// disagree about which end the flag means.
+    pub fn tick(&mut self, delta_ms: u32) -> bool {
+        self.collapse.set_target(if self.large_title { 1.0 } else { 0.0 });
+        self.collapse.tick(delta_ms)
+    }
+
+    /// Whether the bar is between two collapse fractions -- answers only, never advances.
+    pub fn is_animating(&self) -> bool {
+        self.collapse.is_moving()
     }
 
     /// Returns whether the back button is visible.
@@ -118,6 +174,17 @@ impl Widget for CupertinoNavigationBar {
     fn kind(&self) -> WidgetKind {
         WidgetKind::CupertinoNavigationBar
     }
+
+    // The collapse is the control's own; the trait spelling is what the frame bus reaches
+    // through `&mut dyn Widget`, which is the only way the movement actually happens.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        CupertinoNavigationBar::tick(self, delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.collapse.is_moving()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -220,11 +287,14 @@ impl Draw for CupertinoNavigationBar {
         // rule on the *canvas* edge rather than on the bar's. `top_band` is the shared
         // derivation for "a strip pinned to my top edge", and the hit test below reads the same
         // band so the back affordance and its ink cannot part company.
-        let bar_height = if self.large_title {
-            dimensions::NAV_BAR_LARGE_HEIGHT
-        } else {
-            dimensions::NAV_BAR_HEIGHT
-        };
+        //
+        // The two modes are the **ends of a movement**, so the height is read off the drawn
+        // fraction instead of the boolean: at `1.0` this is exactly `NAV_BAR_LARGE_HEIGHT` and at
+        // `0.0` exactly `NAV_BAR_HEIGHT`, so a settled bar is byte-identical to the un-animated
+        // one and only the frames in between are new.
+        let collapse = self.collapse.value();
+        let bar_height =
+            lerp_u32(dimensions::NAV_BAR_HEIGHT, dimensions::NAV_BAR_LARGE_HEIGHT, collapse);
         let bar_rect = ControlMetrics::top_band(rect, bar_height);
         context.fill_rect(bar_rect, bar);
 
@@ -243,42 +313,36 @@ impl Draw for CupertinoNavigationBar {
             border,
         );
 
-        if self.large_title {
-            // ── Large title ──
-            let title_font = Font::new("sans-serif", 34.0, true, false);
-            if !self.title.is_empty() {
-                let metrics = context.measure_text(&self.title, &title_font);
-                let title_x = bar_rect.x + 16;
-                // Centre the large title on the bar. The origin is the glyph box's top edge,
-                // so the offset is half the *line box*; the `ascent / 2` term began the glyph
-                // box half a line below the middle.
-                let title_y = bar_rect.y + (bar_rect.height as i32 - metrics.height as i32) / 2;
-                context.draw_text(
-                    Point::new(title_x, title_y),
-                    &self.title,
-                    &title_font,
-                    ink,
-                    HorizontalAlignment::Left,
-                );
-            }
-        } else {
-            // ── Compact title (centered in navigation bar area) ──
-            let title_font = Font::new("sans-serif", 18.0, false, false);
-            if !self.title.is_empty() {
-                let metrics = context.measure_text(&self.title, &title_font);
-                let title_x = bar_rect.x + (bar_rect.width as i32 - metrics.width as i32) / 2;
-                // Vertically centred through the shared primitive, so the title sits on the
-                // compact bar's middle line whatever height the band was clamped to; the `+ 22`
-                // it replaces was a literal for the 44 px bar and landed elsewhere on any other.
-                let line = context.text_line(bar_rect, &title_font);
-                context.draw_text(
-                    Point::new(title_x, line.y),
-                    &self.title,
-                    &title_font,
-                    ink,
-                    HorizontalAlignment::Left,
-                );
-            }
+        // ── Title ──
+        //
+        // The large and compact titles are two ends of one movement, so the point size and the
+        // x/y are interpolated off the drawn fraction rather than switched:
+        //
+        //   * **size** `18 -> 34`, so the title grows rather than swapping glyphs;
+        //   * **x** leading `+ 16` -> centred, which is the iOS large-title slide;
+        //   * **y** the text line of whatever band the height currently is, so the title stays on
+        //     the bar's middle line at every intermediate height.
+        //
+        // At `1.0` this is the old large-title branch and at `0.0` the old compact one, so a bar
+        // settled at either end draws exactly what it drew before.
+        if !self.title.is_empty() {
+            let title_font =
+                Font::new("sans-serif", lerp_f32(18.0, 34.0, collapse), collapse > 0.5, false);
+            let metrics = context.measure_text(&self.title, &title_font);
+            let leading_x = bar_rect.x + 16;
+            let centred_x = bar_rect.x + (bar_rect.width as i32 - metrics.width as i32) / 2;
+            let title_x = lerp_i32(centred_x, leading_x, collapse);
+            // Centre the title through the shared primitive, so it sits on the bar's middle line
+            // whatever height the band was clamped to; the `+ 22` this replaces was a literal for
+            // the 44 px bar and landed elsewhere on any other.
+            let line = context.text_line(bar_rect, &title_font);
+            context.draw_text(
+                Point::new(title_x, line.y),
+                &self.title,
+                &title_font,
+                ink,
+                HorizontalAlignment::Left,
+            );
         }
 
         // ── Back button (left side) ──

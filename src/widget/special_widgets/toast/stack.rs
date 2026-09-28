@@ -11,6 +11,7 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::menu_toolbar::popup_reveal::PopupReveal;
 use crate::widget::metrics::ControlMetrics;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -21,6 +22,16 @@ pub struct ToastStack {
     toasts: Vec<ToastItem>,
     selected_index: Option<usize>,
     row_height: u32,
+    /// The newest toast's rise-in reveal, so a toast arrives from the bottom edge instead of
+    /// appearing on the frame it was pushed.
+    ///
+    /// # Why one reveal and not one per toast
+    ///
+    /// Toasts are queued, so at most one is ever *arriving* — the others have already settled. A
+    /// per-toast driver would be N state machines for one visible movement, plus the lifetime
+    /// bookkeeping to retire them. One driver, re-aimed on every `push`, says the same thing: the
+    /// newest row rises, the rest sit still.
+    reveal: PopupReveal,
     /// Emitted when toast is activated.
     pub toast_activated: Signal1<String>,
     /// Emitted when toast is dismissed.
@@ -35,6 +46,7 @@ impl ToastStack {
             toasts: Vec::new(),
             selected_index: None,
             row_height: 30,
+            reveal: PopupReveal::new(true),
             toast_activated: Signal1::new(),
             toast_dismissed: Signal1::new(),
         }
@@ -49,6 +61,11 @@ impl ToastStack {
     pub fn push(&mut self, item: ToastItem) {
         self.toasts.push(item);
         self.selected_index = Some(self.toasts.len() - 1);
+        // The new row starts fully below its seat and rises into it. `jump_to(false)` before
+        // aiming at open, so the first painted frame is the start of the movement rather than a
+        // snap to the middle of it.
+        self.reveal.jump_to(false);
+        self.reveal.set_open(true);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -170,8 +187,18 @@ impl Widget for ToastStack {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(300, 48)
+        crate::core::Size::new(320, 200)
     }
+
+    /// Advances the newest toast's rise-in; `true` while it still owes frames.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.reveal.tick(delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.reveal.is_animating()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -355,6 +382,22 @@ impl Draw for ToastStack {
                 band.width.saturating_sub(8),
                 self.row_height.saturating_sub(4),
             );
+            // # Why only the newest row moves
+            //
+            // The reveal is re-aimed on every `push`, so applying it to every row would make the
+            // whole stack rise whenever one is added — the settled toasts would appear to be
+            // re-arriving, which says the opposite of what happened. Only the row that was just
+            // pushed is still on its way in, so only that one is offset; the rest are at rest by
+            // definition.
+            let is_arriving = index + 1 == self.toasts.len();
+            let row = if is_arriving && self.reveal.is_animating() {
+                // Rises from `row_height` below its seat to its seat, so a tall row travels
+                // proportionally further than a short one rather than a fixed number of pixels.
+                let offset = (self.row_height as f32 * (1.0 - self.reveal.value())) as i32;
+                Rect::new(row.x, row.y + offset, row.width, row.height)
+            } else {
+                row
+            };
             let bg = if self.selected_index == Some(index) {
                 selected_background
             } else {

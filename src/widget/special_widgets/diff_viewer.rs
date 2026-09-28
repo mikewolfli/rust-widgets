@@ -287,6 +287,17 @@ impl Draw for DiffViewer {
         // The split divider and the selection outline are secondary chrome, derived
         // from the resolved colours so they follow the appearance too.
         let divider = background.blend(&text_color, 0.15);
+        // # Why the row rule reads `outline_variant` and not the blend above
+        //
+        // A row rule separates two *rows* of content; the focus ring is a different role. M6's
+        // criterion is "the row line's colour is not the focus ring's", and the `outline_variant`
+        // token is exactly the row-divider role the theme declares for it — the same one
+        // `table_widget`, `virtual_table`, `data_table` and `tree_table` now read. A local blend
+        // of the surface is a colour no theme can tune independently; the role is.
+        let row_rule = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.outline_variant)
+            .unwrap_or(divider);
         let selection = crate::style::semantic_color(crate::style::SemanticColor::Info)
             .unwrap_or_else(|| background.blend(&text_color, 0.5));
         // Added / Removed / Changed are *states*, so they read the theme's semantic
@@ -371,6 +382,19 @@ impl Draw for DiffViewer {
                     HorizontalAlignment::Left,
                 );
             }
+
+            // # The rule this control was missing
+            //
+            // No row separator was drawn at all: rows were distinguished only by their fill, so an
+            // `Equal` row (which has none) ran straight into the next one and a reader counting
+            // lines in a long hunk had nothing to count against. The rule is drawn **after** the
+            // text so it sits under the glyphs rather than being overpainted by the next row's
+            // fill, and it spans the same inset as the fill so the table reads as one column.
+            context.draw_line(
+                Point::new(rect.x + 2, y + 7),
+                Point::new(rect.x + rect.width as i32 - 2, y + 7),
+                row_rule,
+            );
         }
     }
 }

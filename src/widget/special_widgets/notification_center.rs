@@ -10,6 +10,7 @@ use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::menu_toolbar::popup_reveal::PopupReveal;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -57,6 +58,14 @@ pub struct NotificationCenter {
     items: Vec<NotificationItem>,
     selected_index: Option<usize>,
     row_height: u32,
+    /// The newest notification's slide-in, so an arriving item is seen to arrive.
+    ///
+    /// # Why one reveal and not one per row
+    ///
+    /// Same reasoning as `toast::ToastStack`: notifications are queued, so at most one is ever
+    /// *arriving*. A driver per row would be N state machines for one visible movement plus the
+    /// bookkeeping to retire them; one driver re-aimed on `push` says the same thing.
+    reveal: PopupReveal,
     /// Emitted when selected notification changes. Payload is id.
     pub notification_selected: Signal1<String>,
     /// Emitted when notification is activated. Payload is id.
@@ -73,6 +82,7 @@ impl NotificationCenter {
             items: Vec::new(),
             selected_index: None,
             row_height: 36,
+            reveal: PopupReveal::new(true),
             notification_selected: Signal1::new(),
             notification_activated: Signal1::new(),
             unread_count_changed: Signal1::new(),
@@ -90,6 +100,10 @@ impl NotificationCenter {
         if self.selected_index.is_none() {
             self.selected_index = Some(0);
         }
+        // The arriving item slides in from the trailing edge. `jump_to(false)` first, so the first
+        // painted frame is the start of the movement rather than a snap into its middle.
+        self.reveal.jump_to(false);
+        self.reveal.set_open(true);
         self.unread_count_changed.emit(self.unread_count());
         self.base.request_layout();
         self.base.request_redraw();
@@ -226,8 +240,18 @@ impl Widget for NotificationCenter {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(300, 400)
+        crate::core::Size::new(320, 400)
     }
+
+    /// Advances the newest notification's slide-in; `true` while it still owes frames.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.reveal.tick(delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.reveal.is_animating()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -419,6 +443,21 @@ impl Draw for NotificationCenter {
                 break;
             }
             let row_rect = Rect::new(rect.x, y, rect.width, self.row_height);
+            // # Why only the newest row moves
+            //
+            // The reveal is re-aimed on every `push`, so applying it to every row would make the
+            // whole list slide whenever one item is added — the settled items would look like they
+            // are re-arriving, which says the opposite of what happened. Items are appended, so the
+            // one at `len - 1` is the only one still on its way in.
+            let is_arriving = index + 1 == self.items.len();
+            let row_rect = if is_arriving && self.reveal.is_animating() {
+                // Slides in from the trailing edge, so it reads as the list *growing* rather than
+                // as a row fading in place. Proportional to the row so a taller row travels further.
+                let offset = (self.row_height as f32 * (1.0 - self.reveal.value())) as i32;
+                Rect::new(row_rect.x + offset, row_rect.y, row_rect.width, row_rect.height)
+            } else {
+                row_rect
+            };
 
             let bg = if self.selected_index == Some(index) {
                 selected_background

@@ -2,8 +2,8 @@
 <!-- control: line_chart | appearance: dark -->
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
-  <line x1="64" y1="68" x2="216" y2="68" stroke="rgba(90,90,90,1.00)" stroke-width="1" />
-  <line x1="64" y1="32" x2="64" y2="68" stroke="rgba(90,90,90,1.00)" stroke-width="1" />
+  <line x1="64" y1="68" x2="216" y2="68" stroke="rgba(111,111,111,1.00)" stroke-width="1" />
+  <line x1="64" y1="32" x2="64" y2="68" stroke="rgba(111,111,111,1.00)" stroke-width="1" />
   <line x1="64" y1="68" x2="216" y2="68" stroke="rgba(51,51,51,1.00)" stroke-width="1" />
   <line x1="60" y1="68" x2="64" y2="68" stroke="rgba(111,111,111,1.00)" stroke-width="1" />
   <path d="M20 75h1v2h-1zM20 75h1v2h-1zM21 75h1v2h-1zM22 75h1v2h-1zM23 75h1v2h-1zM23 75h1v2h-1zM26 72h1v1h-1zM27 72h1v1h-1zM28 72h1v1h-1zM29 72h1v1h-1zM29 72h1v1h-1zM26 73h1v1h-1zM26 73h1v1h-1zM29 73h1v1h-1zM30 73h1v1h-1zM26 74h1v1h-1zM26 74h1v1h-1zM29 74h1v1h-1zM29 74h1v1h-1zM30 74h1v1h-1zM26 75h1v2h-1zM26 75h1v2h-1zM28 75h1v2h-1zM29 75h1v2h-1zM29 75h1v2h-1zM30 75h1v2h-1zM26 77h1v1h-1zM26 77h1v1h-1zM27 77h1v1h-1zM28 77h1v1h-1zM29 77h1v1h-1zM30 77h1v1h-1zM26 78h1v1h-1zM26 78h1v1h-1zM27 78h1v1h-1zM29 78h1v1h-1zM30 78h1v1h-1zM26 79h1v1h-1zM27 79h1v1h-1zM28 79h1v1h-1zM29 79h1v1h-1zM29 79h1v1h-1zM33 78h1v1h-1zM34 78h1v1h-1zM33 79h1v1h-1zM34 79h1v1h-1zM38 72h1v1h-1zM39 72h1v1h-1zM40 72h1v1h-1zM41 72h1v1h-1zM38 73h1v1h-1zM38 73h1v1h-1zM41 73h1v1h-1zM41 73h1v1h-1zM41 74h1v1h-1zM41 74h1v1h-1zM39 75h1v2h-1zM40 75h1v2h-1zM41 75h1v2h-1zM38 77h1v1h-1zM39 77h1v1h-1zM38 78h1v1h-1zM38 78h1v1h-1zM41 78h1v1h-1zM41 78h1v1h-1zM38 79h1v1h-1zM38 79h1v1h-1zM39 79h1v1h-1zM40 79h1v1h-1zM41 79h1v1h-1zM41 79h1v1h-1z" fill="rgba(163,163,163,1.00)" />

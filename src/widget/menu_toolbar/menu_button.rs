@@ -9,14 +9,15 @@
 //! Selecting a menu item emits an `item_triggered` signal with the item's ID.
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
-use crate::event::{Event, EventHandler};
 use crate::event::key_codes;
+use crate::event::{Event, EventHandler};
 use crate::render::{RenderCommand, RenderContext};
 use crate::signal::Signal1;
 use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
+use crate::widget::menu_toolbar::popup_reveal::{PopupReveal, RevealDirection};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -97,6 +98,8 @@ pub struct MenuButton {
     icon: Option<String>,
     /// Whether the dropdown menu is currently visible.
     menu_open: bool,
+    /// The menu's open/close reveal; see `menu::Menu` for why it is separate from `menu_open`.
+    reveal: PopupReveal,
     /// Emitted when a menu item is clicked, providing the item ID.
     pub item_triggered: Signal1<u64>,
 }
@@ -110,6 +113,7 @@ impl MenuButton {
             menu_items: Vec::new(),
             icon: None,
             menu_open: false,
+            reveal: PopupReveal::new(false),
             item_triggered: Signal1::new(),
         }
     }
@@ -188,18 +192,21 @@ impl MenuButton {
     /// Toggles the dropdown menu visibility.
     pub fn toggle_menu(&mut self) {
         self.menu_open = !self.menu_open;
+        self.reveal.set_open(self.menu_open);
         self.base.request_redraw();
     }
 
     /// Opens the dropdown menu.
     pub fn open_menu(&mut self) {
         self.menu_open = true;
+        self.reveal.set_open(true);
         self.base.request_redraw();
     }
 
     /// Closes the dropdown menu.
     pub fn close_menu(&mut self) {
         self.menu_open = false;
+        self.reveal.set_open(false);
         self.base.request_redraw();
     }
 
@@ -256,6 +263,16 @@ impl Widget for MenuButton {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(120, 28)
     }
+
+    /// Advances the menu's open/close reveal; `true` while it still owes frames.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.reveal.tick(delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.reveal.is_animating()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -397,8 +414,20 @@ impl Draw for MenuButton {
         });
 
         // ── Draw dropdown menu ──
-        if self.menu_open {
+        //
+        // Painted while the reveal has anything left to show, so a *closing* menu animates too:
+        // gating on `menu_open` alone would cut the close off at its first frame.
+        if self.menu_open || !self.reveal.is_closed() {
             let menu = self.menu_rect();
+            let revealed = self.reveal.revealed(
+                menu,
+                RevealDirection::Down,
+                PopupReveal::travel_cap_for(crate::core::Size::new(menu.width, menu.height)),
+            );
+            let clipped = !self.reveal.is_closed();
+            if clipped {
+                context.push_clip(revealed.x, revealed.y, revealed.width, revealed.height);
+            }
             // The popup panel is chrome: a popup that stayed white in a dark theme would be
             // the brightest object on screen. It reads the resolved surface, and the literal
             // it used to be stays as the fallback.
@@ -501,6 +530,9 @@ impl Draw for MenuButton {
                         item_rule,
                     );
                 }
+            }
+            if clipped {
+                context.pop_clip();
             }
         }
     }

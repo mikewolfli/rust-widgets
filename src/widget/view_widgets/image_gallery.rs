@@ -331,9 +331,24 @@ impl Draw for ImageGallery {
             // One step from the panel toward the panel's own contrast colour: a placeholder
             // should read as secondary, but "secondary" has to stay legible, and the light
             // grey it used to be was neither derived nor legible.
+            //
+            // # Why the disabled weight is the shared constant and not a smaller local blend
+            //
+            // This branch used to dim the disabled label to `0.38`, which measured **3.56:1** on
+            // the dark panel and **2.63:1** on the light one -- both under the 4.5:1 body-text
+            // floor, so "disabled" came out as "unreadable" rather than as "receded".
+            // `dimensions::DISABLED_VEIL_ALPHA` exists for exactly this and documents the same
+            // lesson from two other controls: the recede has to be one shared weight, or a
+            // disabled label, frame and button stop looking alike. At that weight the label is
+            // 5.91:1 on dark and 4.59:1 on light, i.e. still clearly secondary and still legible.
             let panel_ink = bg.contrast_color();
-            let label_color =
-                if is_enabled { bg.blend(&panel_ink, 0.62) } else { bg.blend(&panel_ink, 0.38) };
+            let disabled_weight =
+                crate::widget::metrics::dimensions::DISABLED_VEIL_ALPHA as f32 / 255.0;
+            let label_color = if is_enabled {
+                bg.blend(&panel_ink, 0.62)
+            } else {
+                bg.blend(&panel_ink, disabled_weight)
+            };
             context.draw_text_fitted(line, text, &font, label_color, HorizontalAlignment::Center);
             return;
         }
@@ -354,6 +369,10 @@ impl Draw for ImageGallery {
         // a host that set a *light* stage through the style got white-on-white labels and no error.
         let style = self.base.style().clone();
         let theme = crate::style::resolved_theme_style("image_gallery");
+        // The accent for the selected thumbnail, read from the role rather than from the gallery's
+        // own surface. See the selected-thumbnail block below for why the surface was wrong.
+        let accent_role =
+            crate::style::theme_manager().current_theme().map(|active| active.colors.primary);
         let stage_fallback =
             if !is_enabled { Color::rgba(30, 30, 30, 200) } else { Color::rgba(30, 30, 30, 255) };
         let stage = style
@@ -508,12 +527,19 @@ impl Draw for ImageGallery {
         let strip = stage.blend(&stage_ink, 0.05);
         context.fill_rect(strip_rect, strip);
         // The selected thumbnail is the **accent**, because "which of these is current" is exactly
-        // what the accent role is for; the unselected ones are a raised step on the strip. The old
-        // `rgba(80,140,220,200)` was a hand-picked blue that no theme could change — the census
-        // reported the two appearances byte-identical for this control.
-        let accent = theme
-            .as_ref()
-            .and_then(|t| t.background_color)
+        // what the accent role is for; the unselected ones are a raised step on the strip.
+        //
+        // # The defect this replaces
+        //
+        // The comment already said "accent", but the code read `theme.background_color` — the
+        // gallery's **own panel colour**. So the selected thumbnail was painted the same colour as
+        // the surface it sits on: on the default preset the "selection" was a rectangle
+        // indistinguishable from the strip behind it, and the hand-picked blue in the `unwrap_or`
+        // was only reached by a theme with no background colour at all, i.e. almost never. A
+        // comment naming one role while the code reads another is the shape this file's own
+        // history keeps producing; the fix is to read the role the comment names.
+        let accent = accent_role
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
             .unwrap_or(Color::rgba(80, 140, 220, 200));
         let thumb_selected = accent;
         let thumb_resting = strip.blend(&stage_ink, 0.22);

@@ -7,6 +7,7 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::expect_f32;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -49,6 +50,20 @@ pub struct MapView {
     zoom: f32,
     markers: Vec<MapMarker>,
     selected_marker: Option<usize>,
+    /// The **fraction** of the way from the previous zoom to the current one, so the painted
+    /// projection can be interpolated without pretending a `0..=1` progress driver is a general
+    /// value.
+    ///
+    /// # Why a progress and not a second zoom value
+    ///
+    /// `PropertyDriver` clamps its target to `0.0..=1.0` (`Transition::tick`), because every other
+    /// consumer of it animates a *fraction* — a reveal, a travel, a fade. Feeding it a zoom of
+    /// `4.0` therefore asks for a target it can never reach: `is_moving()` stays true forever and
+    /// the host schedules frames for the rest of the session. The fraction is the value the driver
+    /// can actually hold, and the zoom it corresponds to is derived from the two endpoints.
+    zoom_t: PropertyDriver,
+    /// The zoom the current transition started from, so `zoom_t` has a left endpoint.
+    zoom_from: f32,
     /// Emitted when center changes. Payload is (x, y).
     pub center_changed: Signal1<(f32, f32)>,
     /// Emitted when zoom changes.
@@ -65,6 +80,8 @@ impl MapView {
             center_x: 0.0,
             center_y: 0.0,
             zoom: 1.0,
+            zoom_t: PropertyDriver::at(1.0, MotionSlot::Normal),
+            zoom_from: 1.0,
             markers: Vec::new(),
             selected_marker: None,
             center_changed: Signal1::new(),
@@ -105,7 +122,20 @@ impl MapView {
         if (self.zoom - next).abs() < f32::EPSILON {
             return;
         }
+        // # Why the "from" endpoint is read before `self.zoom` moves
+        //
+        // `painted_zoom` interpolates between `zoom_from` and `self.zoom`. Reading it *after*
+        // assigning the new target makes the two endpoints the same number, so the interpolation
+        // is constant and the transition paints its destination on every frame — the control
+        // animates (`is_animating` is true, `tick` advances) while the picture never moves. That is
+        // the same split `segmented_control`'s teleporting pill had, and the grid-line count was
+        // the measurement that caught it: 28 lines before, 8 immediately, 8 forever.
+        self.zoom_from = self.painted_zoom();
         self.zoom = next;
+        // Resume from wherever the picture currently is, so a second zoom mid-flight does not
+        // snap back to the previous target — the continuity rule `segmented_control` follows.
+        self.zoom_t.jump_to(0.0);
+        self.zoom_t.set_target(1.0);
         self.zoom_changed.emit(next);
         self.base.request_redraw();
     }
@@ -140,10 +170,24 @@ impl MapView {
         self.markers.get(index).map(|marker| marker.id.as_str())
     }
 
+    /// The zoom the projection is actually painted at.
+    ///
+    /// Interpolates between the zoom the transition started from and the stored target by the
+    /// driver's fraction. At rest (`zoom_t == 1.0`, its settled value) this is exactly `self.zoom`,
+    /// so a settled map is byte-identical to the un-animated one.
+    fn painted_zoom(&self) -> f32 {
+        let t = self.zoom_t.value();
+        self.zoom_from + (self.zoom - self.zoom_from) * t
+    }
+
     fn world_to_screen(&self, world_x: f32, world_y: f32) -> (f32, f32) {
         let rect = self.geometry();
-        let sx = rect.x as f32 + rect.width as f32 / 2.0 + (world_x - self.center_x) * self.zoom;
-        let sy = rect.y as f32 + rect.height as f32 / 2.0 + (world_y - self.center_y) * self.zoom;
+        // The **painted** zoom, not the stored target: see `painted_zoom`. Everything below derives
+        // its scale from this one value, so the pane, the grid and the markers cannot disagree
+        // about how big the map currently is.
+        let zoom = self.painted_zoom();
+        let sx = rect.x as f32 + rect.width as f32 / 2.0 + (world_x - self.center_x) * zoom;
+        let sy = rect.y as f32 + rect.height as f32 / 2.0 + (world_y - self.center_y) * zoom;
         (sx, sy)
     }
 
@@ -221,8 +265,18 @@ impl Widget for MapView {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(400, 300)
+        crate::core::Size::new(320, 240)
     }
+
+    /// Advances the painted zoom toward its target; `true` while it still owes frames.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.zoom_t.tick(delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.zoom_t.is_moving()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -383,7 +437,22 @@ impl Draw for MapView {
         context.draw_rect(rect, border);
 
         // Draw coarse map grid for pan/zoom visual feedback.
-        let step = (40.0 * self.zoom.clamp(0.5, 2.0)) as i32;
+        //
+        // # Why the grid reads the *painted* zoom
+        //
+        // It read `self.zoom` — the stored target — so the one piece of this control's chrome that
+        // exists to show the scale snapped to the destination on the first frame while
+        // `is_animating` reported a transition in flight. That is the same split
+        // `segmented_control`'s teleporting pill had, and it is why the grid is the quantity the
+        // animation test samples: it is the only mark on the pane whose geometry follows the zoom.
+        //
+        // The step's floor keeps the lines from crowding into a solid field at low zoom; its
+        // **ceiling** is above the 8.0 `set_zoom` allows, because clamping it at 2.0 made the grid
+        // stop changing part-way through a zoom-in — the marks froze while the map was still
+        // scaling, which is the very stillness this line exists to avoid. The first version of this
+        // fix read the painted zoom but kept the old ceiling, and the probe still saw identical
+        // frames: a measurement that named the right quantity and then threw it away on a clamp.
+        let step = (40.0 * self.painted_zoom().clamp(0.5, 8.0)) as i32;
         if step > 8 {
             let mut x = rect.x;
             while x < rect.x + rect.width as i32 {

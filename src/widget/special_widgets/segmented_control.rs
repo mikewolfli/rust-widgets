@@ -489,7 +489,21 @@ impl Draw for SegmentedControl {
             // rectangles. Interpolating *rectangles* rather than two x offsets, so a segment that
             // changes width (the last one absorbs the remainder) still gives an indicator of the
             // right shape at both ends.
-            let t = 1.0; // injected: teleport to the target
+            //
+            // # The defect this replaces
+            //
+            // This read `let t = 1.0; // injected: teleport to the target` — a reverse-injection
+            // probe that was never removed from the shipping draw path. The consequence was a
+            // control whose *model* animated correctly (`tick` advanced the driver,
+            // `is_animating` reported true, `indicator_position()` interpolated) while the
+            // **pixels teleported**: reading the target fraction pins `lerp` to `to`, so the
+            // painted pill jumped to the destination on the first frame of a transition that
+            // then spent ~200 ms reporting itself as in-flight. A user saw a jump followed by a
+            // motionless wait; an animation test sampling the model saw a smooth slide.
+            //
+            // That is why the assertion for this belongs on the *paint*, not on
+            // `indicator_position`: see `the_indicator_is_painted_mid_slide`.
+            let t = self.slide.value();
             let lerp = |a: i32, b: i32| a + ((b - a) as f32 * t) as i32;
             let indicator = Rect::new(
                 lerp(from.x, to.x),
@@ -713,6 +727,75 @@ mod tests {
         while control.tick(60) {}
         assert_eq!(control.indicator_position(), 2.0, "and settle on the selected segment");
         assert!(!control.is_animating(), "a settled control owes no more frames");
+    }
+
+    /// The pill's **painted** rect takes an interior position mid-slide, not just the model.
+    ///
+    /// # The defect this pins
+    ///
+    /// `draw` read `let t = 1.0; // injected: teleport to the target` — a reverse-injection probe
+    /// left in the shipping draw path. Everything above this test still passed, because it samples
+    /// `indicator_position()`, which the *driver* feeds correctly: `tick` advanced, `is_animating`
+    /// reported true, and the model interpolated. Only the pixels were wrong — `t = 1.0` pins the
+    /// `lerp` to `to`, so the painted pill sat on the destination from the first frame of a
+    /// transition that then spend ~200 ms claiming to be in flight.
+    ///
+    /// # Why this reads the SVG
+    ///
+    /// The quantity that was broken is the rectangle handed to `fill_rect`, so the assertion is on
+    /// the rendered picture. Asserting `indicator_position()` is the mistake this test exists to
+    /// avoid: it is the same value the old test checked, and it was never wrong.
+    #[test]
+    fn the_indicator_is_painted_mid_slide() {
+        let mut control = SegmentedControl::new(Rect::new(0, 0, 240, 120));
+        control.set_items(sample_items());
+
+        // The pill at rest, from the picture rather than the model.
+        let settled = painted_indicator_x(&mut control);
+
+        assert!(control.set_selected_index(2));
+        assert!(control.tick(60), "still moving after one step");
+        let mid_slide = painted_indicator_x(&mut control);
+        assert!(
+            mid_slide > settled,
+            "the painted pill must have moved off its resting segment ({settled}) while the \
+             slide is in flight, but it is still painted at {mid_slide} — a `t` pinned to 1.0 \
+             draws the destination immediately and leaves the control reporting frames it is not \
+             using"
+        );
+
+        while control.tick(60) {}
+        let arrived = painted_indicator_x(&mut control);
+        assert!(
+            arrived > mid_slide,
+            "and it must finish further along than it was mid-slide ({mid_slide} -> {arrived})"
+        );
+    }
+
+    /// The x of the filled pill in the control's rendered SVG.
+    ///
+    /// The pill is the one filled `<rect>` that is neither the frame-spanning track nor a glyph
+    /// run, so it is found by geometry: it is inset from the control and taller than a hairline.
+    fn painted_indicator_x(control: &mut SegmentedControl) -> i32 {
+        let svg = crate::widget::svg::render_widget_to_svg(control, Rect::new(0, 0, 240, 120));
+        let mut found = None;
+        for line in svg.lines() {
+            let trimmed = line.trim();
+            if !trimmed.starts_with("<rect") || !trimmed.contains("fill=") {
+                continue;
+            }
+            let numbers: alloc::vec::Vec<i32> =
+                trimmed.split('"').filter_map(|part| part.parse::<i32>().ok()).collect();
+            // `x y width height`: the track spans the control, the pill does not; both are the
+            // band's height, so a glyph run (1x1 cells) is excluded by the height.
+            if numbers.len() >= 4 && numbers[2] < 240 && numbers[3] > 4 {
+                // Keep the last: the indicator is painted **over** the segments, so an earlier
+                // inset rect is a hover fill, and returning the first one reads the wrong box.
+                // (That mistake made this probe report "still at 0" for a pill that had moved.)
+                found = Some(numbers[0]);
+            }
+        }
+        found.unwrap_or_else(|| panic!("no pill rect found in:\n{svg}"))
     }
 
     /// A slide interrupted by a second selection stays continuous.

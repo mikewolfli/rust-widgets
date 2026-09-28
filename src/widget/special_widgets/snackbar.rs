@@ -12,6 +12,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::menu_toolbar::popup_reveal::{PopupReveal, RevealDirection};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
@@ -36,6 +37,13 @@ pub struct Snackbar {
     message: String,
     action_label: Option<String>,
     visible: bool,
+    /// The bar's enter/exit reveal, so it rises from the bottom edge rather than blinking in.
+    ///
+    /// A snackbar is the one surface in a window that arrives on its own initiative, so it is the
+    /// control where an entrance matters most: appearing instantly reads as a layout glitch, while
+    /// rising reads as "something has just been said to you". The flag above stays the authority
+    /// (it is what `is_visible` and `dismiss` answer with); this says how far the transition got.
+    reveal: PopupReveal,
     progress: Option<f32>,
     /// Emitted when action is triggered.
     pub action_triggered: Signal1<String>,
@@ -51,6 +59,7 @@ impl Snackbar {
             message: String::new(),
             action_label: None,
             visible: false,
+            reveal: PopupReveal::new(false),
             progress: None,
             action_triggered: Signal1::new(),
             dismissed: Signal1::new(),
@@ -72,6 +81,7 @@ impl Snackbar {
         self.message = message.into();
         self.action_label = None;
         self.visible = true;
+        self.reveal.set_open(true);
         self.base.request_redraw();
     }
 
@@ -84,6 +94,7 @@ impl Snackbar {
         self.message = message.into();
         self.action_label = Some(action_label.into());
         self.visible = true;
+        self.reveal.set_open(true);
         self.base.request_redraw();
     }
 
@@ -91,6 +102,9 @@ impl Snackbar {
     pub fn dismiss(&mut self) {
         if self.visible {
             self.visible = false;
+            // Aimed at closed before the signal, so a listener that immediately pushes a new
+            // message re-opens from wherever the exit had got to rather than from the bottom.
+            self.reveal.set_open(false);
             self.dismissed.emit(());
             self.base.request_redraw();
         }
@@ -161,6 +175,18 @@ impl Widget for Snackbar {
 
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(300, 48)
+    }
+
+    /// Advances the bar's enter/exit reveal; `true` while it still owes frames.
+    ///
+    /// Forwarded to the trait so the animation bus drives it: `tick_animations` sweeps every
+    /// mounted control, so a bar that kept its tick inherent is one the host cannot advance.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.reveal.tick(delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.reveal.is_animating()
     }
 
     impl_widget_property_hooks!();
@@ -327,12 +353,28 @@ impl Draw for Snackbar {
         // page, it does not paint the page. The band is the single derivation the message, the
         // action button and the progress rule are all placed from.
         let bar = ControlMetrics::full_width_band(rect, dimensions::SNACKBAR_HEIGHT);
-        context.fill_rect(bar, bar_background);
-        context.draw_rect(bar, bar_border);
-
-        if !self.visible {
+        // # Why the bar is painted while it is *either* shown or still leaving
+        //
+        // `visible` flips on the frame `dismiss` is called, but a `bool` cannot describe a bar
+        // halfway out. The bar is therefore drawn whenever the reveal has anything left to show,
+        // which is the shown state **and** the frames of an exit; testing the flag alone would cut
+        // the exit off at its first frame — the hard cut this control was fixing.
+        if !self.visible && self.reveal.is_closed() {
             return;
         }
+        // A snackbar rises from the bottom edge of its own band, so the reveal is anchored at the
+        // bottom: the bar's trailing edge stays put and its leading edge comes down to meet it.
+        let revealed = self.reveal.revealed(
+            bar,
+            RevealDirection::Up,
+            PopupReveal::travel_cap_for(crate::core::Size::new(bar.width, bar.height)),
+        );
+        let clipped = !self.reveal.is_closed();
+        if clipped {
+            context.push_clip(revealed.x, revealed.y, revealed.width, revealed.height);
+        }
+        context.fill_rect(bar, bar_background);
+        context.draw_rect(bar, bar_border);
 
         // Both labels are centred on their own band. The origins were fixed offsets
         // (`+ 16` and `+ 13`) written for one font size: a 14 px line in a 26 px bar spans
@@ -390,6 +432,11 @@ impl Draw for Snackbar {
                     progress_fill,
                 );
             }
+        }
+        // Popped on the same path it was pushed, so the reveal cannot leak a clip onto whatever
+        // the host draws after this bar.
+        if clipped {
+            context.pop_clip();
         }
     }
 }

@@ -103,6 +103,43 @@ pub fn estimate_line_height(font: &crate::core::Font, scale: f32) -> u32 {
     (font.effective_line_height().max(1.0) * scale).round().max(1.0) as u32
 }
 
+/// `t` of the way from `from` to `to`, for a geometry quantity.
+///
+/// # Why the crate interpolates in these three shapes and not with a generic `Lerp`
+///
+/// A control that animates between two layouts needs the *same* fraction applied to a height
+/// (`u32`), a coordinate (`i32`) and a point size (`f32`). This crate's `PropertyDriver` is a
+/// `f32` progress value, so every consumer already holds `t`; what it lacked was one agreed
+/// spelling for "apply `t` to this quantity", and each control had been writing its own closure
+/// for it (differently rounded, and differently clamped). These three are that spelling.
+///
+/// `t` is clamped to `0.0..=1.0` and the ends are **exact**: `t == 0.0` returns `from` and
+/// `t == 1.0` returns `to` without a round trip through floating point. That is what lets a
+/// settled control be byte-identical to the un-animated one, which is the safety rope the
+/// animation snapshots rely on.
+pub fn lerp_u32(from: u32, to: u32, t: f32) -> u32 {
+    lerp_f32(from as f32, to as f32, t).round().max(0.0) as u32
+}
+
+/// [`lerp_u32`] for a signed coordinate (a `Rect`'s `x`/`y`).
+pub fn lerp_i32(from: i32, to: i32, t: f32) -> i32 {
+    lerp_f32(from as f32, to as f32, t).round() as i32
+}
+
+/// [`lerp_u32`] for a continuous quantity such as a font point size.
+///
+/// The `t == 0.0`/`t == 1.0` ends are returned verbatim rather than through the arithmetic, so
+/// a point size of `34.0` is exactly `34.0` at the end of a collapse and not `33.999998`.
+pub fn lerp_f32(from: f32, to: f32, t: f32) -> f32 {
+    if t <= 0.0 {
+        return from;
+    }
+    if t >= 1.0 {
+        return to;
+    }
+    from + (to - from) * t
+}
+
 /// Content-driven sizing for a single control.
 ///
 /// Both functions are pure, and the width one walks clusters through one reused buffer, so

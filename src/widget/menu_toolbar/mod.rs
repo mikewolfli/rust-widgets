@@ -7,6 +7,8 @@ pub mod dropdown_menu;
 pub mod menu;
 pub mod menu_bar;
 pub mod menu_button;
+/// The shared open/close reveal the popup family animates with.
+pub mod popup_reveal;
 pub mod status_bar;
 pub mod tool_bar;
 pub mod tool_button;
@@ -16,6 +18,7 @@ pub use dropdown_menu::{DropdownItem, DropdownMenu};
 pub use menu::Menu;
 pub use menu_bar::MenuBar;
 pub use menu_button::{MenuButton, MenuItem};
+pub use popup_reveal::{PopupReveal, RevealDirection};
 pub use status_bar::StatusBar;
 pub use tool_bar::ToolBar;
 pub use tool_button::ToolButton;

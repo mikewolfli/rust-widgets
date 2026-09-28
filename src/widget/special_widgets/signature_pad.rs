@@ -9,6 +9,7 @@
 //! points so a jittery finger produces a clean line rather than a cloud of
 //! specks. The pad supports undo, clear, and export to a plain point list.
 
+use crate::compat::Instant;
 use crate::core::{Color, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -79,6 +80,29 @@ pub struct SignaturePad {
     /// Minimum distance, in pixels, a new point must be from the previous one
     /// before it is recorded. Points closer than this are dropped.
     min_point_distance: f32,
+    /// Minimum time, in milliseconds, between recorded points.
+    ///
+    /// # Why distance alone was not enough
+    ///
+    /// A distance-only filter has no way to tell "the pointer is moving slowly and
+    /// has already produced enough points" from "the pointer is moving fast and has
+    /// produced too few". Sampling a fast stroke at one point per input event left
+    /// every segment long, so a curve drawn quickly came out as a **polygon**: the
+    /// pad recorded where the pointer *was*, never where it *went*. Time is the
+    /// missing dimension -- a point is now recorded when it is far enough away *or*
+    /// when enough time has passed, and a gap wider than this interval is filled by
+    /// interpolating along the segment so the curve is smooth at any speed.
+    min_point_interval_ms: u64,
+    /// When the most recently recorded point was taken, from the OS monotonic clock.
+    ///
+    /// `None` until a stroke begins. The clock is read *inside* the widget when a
+    /// pointer event arrives (see [`Self::extend_stroke`]): the event payloads carry
+    /// position, pressure and tilt but no time, and a drawing surface must not
+    /// acquire a network dependency for a value the operating system already
+    /// provides. A network timestamp answers a different question -- *provenance*,
+    /// "when was this signed" -- which is the caller's to attach and must not gate
+    /// whether ink can be drawn.
+    last_point_at: Option<Instant>,
     /// Emitted with no payload whenever the committed stroke set changes.
     pub changed: GenericSignal,
     /// Emitted with the final stroke when a drag is released and committed.
@@ -95,6 +119,8 @@ impl SignaturePad {
             stroke_color: Color::rgb(20, 20, 20),
             stroke_width: 2,
             min_point_distance: 1.5,
+            min_point_interval_ms: 10,
+            last_point_at: None,
             changed: GenericSignal::new(),
             stroke_completed: Signal1::new(),
         }
@@ -132,6 +158,10 @@ impl SignaturePad {
         if !self.strokes.is_empty() {
             self.strokes.clear();
             self.current = None;
+            // The interval is measured from the last recorded point, so clearing must
+            // forget it too -- otherwise the next stroke's first move is compared
+            // against a moment that belongs to a stroke no longer on the pad.
+            self.last_point_at = None;
             self.changed.emit();
             self.base.request_redraw();
         }
@@ -170,6 +200,30 @@ impl SignaturePad {
         self.min_point_distance = distance.max(0.0);
     }
 
+    /// Returns the minimum interval between recorded points, in milliseconds.
+    ///
+    /// This is the time half of the sampling rule; see
+    /// [`Self::set_min_point_interval_ms`] for why distance alone polygonised fast
+    /// strokes.
+    pub fn min_point_interval_ms(&self) -> u64 {
+        self.min_point_interval_ms
+    }
+
+    /// Sets the minimum interval between recorded points, in **milliseconds**.
+    ///
+    /// A point is recorded when it is at least [`Self::min_point_distance`] from the
+    /// last one **or** at least this long after it, and a gap wider than this
+    /// interval is subdivided by interpolation so a fast stroke stays a curve
+    /// rather than becoming a polygon.
+    ///
+    /// `0` records every input event, which is the pre-existing behaviour of a pad
+    /// with no smoothing; there is no upper bound because the interval only ever
+    /// makes the pad *sparser*, and a caller asking for a very long one is asking
+    /// for a deliberately coarse capture.
+    pub fn set_min_point_interval_ms(&mut self, interval_ms: u64) {
+        self.min_point_interval_ms = interval_ms;
+    }
+
     /// Exports every committed stroke's points as a flat list, each stroke
     /// followed by a `(-1, -1)` sentinel so the caller can reconstruct stroke
     /// boundaries from a single vector.
@@ -190,21 +244,65 @@ impl SignaturePad {
         let mut stroke = SignatureStroke::new();
         stroke.push(point);
         self.current = Some(stroke);
+        // The clock starts with the stroke, so the first interval is measured
+        // against the press rather than against whenever a pointer last moved.
+        self.last_point_at = Some(Instant::now());
     }
 
     fn extend_stroke(&mut self, point: Point) {
+        // The clock is read once, before the borrow of `self.current`, so the event's
+        // arrival time is a fact about this call rather than about the point's fate.
+        let now = Instant::now();
+        let elapsed_ms = self
+            .last_point_at
+            .map(|last| now.saturating_duration_since(last).as_millis() as u64)
+            // A move with no press behind it (a synthetic event, or a stroke removed
+            // under the pointer) has no interval to measure; treating it as `0` keeps
+            // the point on the distance rule rather than fabricating a timestamp.
+            .unwrap_or(0);
+        // Read out as values before the mutable borrow of `self.current` below, so the
+        // sampling rule and its resolution are snapshots of this call rather than reads
+        // through a borrow that outlives them.
+        let min_distance = self.min_point_distance;
+        let min_interval_ms = self.min_point_interval_ms;
+
         let Some(current) = self.current.as_mut() else {
             return;
         };
-        // Drop points closer than the configured threshold (smoothing).
-        if let Some(last) = current.points().last() {
-            let dx = (point.x - last.x) as f32;
-            let dy = (point.y - last.y) as f32;
-            if (dx * dx + dy * dy).sqrt() < self.min_point_distance {
-                return;
+        let Some(last) = current.points().last().copied() else {
+            // A stroke always begins with a point, but a caller-built empty `current`
+            // must not silently swallow the move.
+            current.push(point);
+            self.last_point_at = Some(now);
+            self.base.request_redraw();
+            return;
+        };
+
+        let dx = (point.x - last.x) as f32;
+        let dy = (point.y - last.y) as f32;
+        let distance = (dx * dx + dy * dy).sqrt();
+        let far_enough = distance >= min_distance;
+        let long_enough = elapsed_ms >= min_interval_ms;
+        if !far_enough && !long_enough {
+            // Too close *and* too soon: this is the jitter the smoothing exists to
+            // drop. The clock is deliberately **not** advanced, so the interval is
+            // measured against the last point actually recorded rather than against
+            // the last event seen -- otherwise a stream of dropped jitter would keep
+            // pushing the next accepted point further away.
+            return;
+        }
+
+        // A long gap is filled in rather than cut across. This is the half that makes
+        // a fast stroke smooth: without it, a pointer that travelled 60 px between
+        // two events would deposit two points and the pad would draw one straight
+        // edge, which is the polygonisation this control was reported for.
+        if distance > min_distance && min_interval_ms > 0 {
+            for step in interpolation_steps(last, point, distance, min_distance) {
+                current.push(step);
             }
         }
         current.push(point);
+        self.last_point_at = Some(now);
         self.base.request_redraw();
     }
 
@@ -248,6 +346,7 @@ impl WidgetProperties for SignaturePad {
             "stroke_width" => Ok(CapabilityValue::UInt(self.stroke_width() as u64)),
             "stroke_color" => Ok(CapabilityValue::Color(self.stroke_color())),
             "min_point_distance" => Ok(CapabilityValue::Float(self.min_point_distance() as f64)),
+            "min_point_interval_ms" => Ok(CapabilityValue::UInt(self.min_point_interval_ms())),
             _ => base_property_get(self, name),
         }
     }
@@ -270,6 +369,10 @@ impl WidgetProperties for SignaturePad {
                 self.set_min_point_distance(expect_f64(value)? as f32);
                 Ok(())
             }
+            "min_point_interval_ms" => {
+                self.set_min_point_interval_ms(expect_usize(value)? as u64);
+                Ok(())
+            }
             _ => base_property_set(self, name, value),
         }
     }
@@ -280,6 +383,7 @@ impl WidgetProperties for SignaturePad {
             "stroke_width",
             "stroke_color",
             "min_point_distance",
+            "min_point_interval_ms",
             BASE_PROPERTY_NAMES
         ]
     }
@@ -411,6 +515,40 @@ impl Draw for SignaturePad {
     }
 }
 
+/// The intermediate points to lay between `from` and `to` so that no drawn segment is
+/// longer than `min_distance`.
+///
+/// The count is `ceil(distance / min_distance) - 1`, which spaces the inserted points at
+/// the same resolution the pad accepts directly: a slow stroke and a fast one therefore
+/// produce strokes of the **same** geometric fidelity, which is the property the old
+/// distance-only rule could not express. When `min_distance` is `0` there is no resolution
+/// to honour and nothing is inserted.
+///
+/// # Why a free function
+///
+/// It is called from the one place that appends to a stroke, and it reads nothing from the
+/// widget: taking the threshold as a parameter is what lets the caller hold a mutable
+/// borrow of the stroke while the count is computed, and it makes the spacing rule testable
+/// without constructing a pad.
+fn interpolation_steps(from: Point, to: Point, distance: f32, min_distance: f32) -> Vec<Point> {
+    if min_distance <= 0.0 || !distance.is_finite() || !min_distance.is_finite() {
+        return Vec::new();
+    }
+    let steps = (distance / min_distance).ceil() as usize;
+    if steps <= 1 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(steps - 1);
+    for i in 1..steps {
+        let t = i as f32 / steps as f32;
+        out.push(Point::new(
+            from.x + ((to.x - from.x) as f32 * t).round() as i32,
+            from.y + ((to.y - from.y) as f32 * t).round() as i32,
+        ));
+    }
+    out
+}
+
 /// Draws a single stroke as a connected polyline.
 fn draw_stroke(context: &mut RenderContext, stroke: &SignatureStroke, color: Color, width: u32) {
     let points = stroke.points();
@@ -458,8 +596,14 @@ mod tests {
 
         assert_eq!(p.stroke_count(), 1);
         assert!(!p.is_empty());
-        assert_eq!(p.strokes()[0].len(), 3);
-        assert_eq!(p.strokes()[0].points()[0], Point::new(10, 20));
+        // The **ends** are asserted rather than the length: the moves above are 20 and ~30 px
+        // apart, so they are now filled in by interpolation and the count is a function of the
+        // distance threshold, not of how many events arrived. What must not change is that the
+        // stroke begins at the press and ends at the release.
+        let stroke = &p.strokes()[0];
+        assert_eq!(stroke.points()[0], Point::new(10, 20));
+        assert_eq!(stroke.points().last().copied(), Some(Point::new(60, 50)));
+        assert!(stroke.len() >= 3, "the real points survive interpolation");
     }
 
     #[test]
@@ -476,6 +620,61 @@ mod tests {
         // Only the starting press survived; the near-duplicate moves were dropped.
         assert_eq!(stroke.len(), 1);
         assert_eq!(stroke.points()[0], Point::new(10, 20));
+    }
+
+    /// `interpolation_steps` spaces inserted points at the pad's own resolution.
+    ///
+    /// The count is asserted exactly, because the *rule* is the point: `ceil(d / min) - 1`
+    /// inserted points is what makes a fast stroke and a slow one land at the same fidelity.
+    #[test]
+    fn interpolation_spaces_points_at_the_pads_own_resolution() {
+        // 10 px at a 1.5 px threshold: `ceil(10 / 1.5) = 7` steps, so 6 inserted points, the
+        // first at `t = 1/7` (x = 1.43 -> 1) and the last at `t = 6/7` (x = 8.57 -> 9).
+        let steps = interpolation_steps(Point::new(0, 0), Point::new(10, 0), 10.0, 1.5);
+        assert_eq!(steps.len(), 6);
+        assert_eq!(steps[0], Point::new(1, 0));
+        assert_eq!(steps[5], Point::new(9, 0));
+
+        // A hop shorter than the threshold has no interior to fill.
+        assert!(interpolation_steps(Point::new(0, 0), Point::new(1, 0), 1.0, 1.5).is_empty());
+
+        // A zero threshold means "no resolution to honour", not "divide by zero".
+        assert!(interpolation_steps(Point::new(0, 0), Point::new(100, 0), 100.0, 0.0).is_empty());
+    }
+
+    /// The interval rule accepts a point that has not moved, once enough time has passed.
+    ///
+    /// This is the half the old distance-only rule could not express, and the reason a
+    /// **stationary** pen still produces a record of how long it rested there.
+    #[test]
+    fn a_stationary_point_is_recorded_once_the_interval_passes() {
+        let mut p = pad();
+        // Nothing moves, so the default 10 ms interval is what admits the second point. The
+        // test sleeps rather than scaling time, because the clock is the OS's and the point of
+        // the rule is that it reads that clock.
+        p.handle_event(&Event::mouse_press(10, 20, 1));
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        p.handle_event(&Event::mouse_move(10, 20));
+
+        let current_points = p.current.as_ref().expect("a stroke is in progress").len();
+        assert_eq!(
+            current_points, 2,
+            "a point held in place past the interval must be recorded, so a pause is visible \
+             in the stroke rather than being silently swallowed"
+        );
+    }
+
+    /// The interval rule can be switched off, restoring the pre-existing distance-only
+    /// behaviour, and setting it is reflected by the capability contract.
+    #[test]
+    fn the_interval_is_configurable_and_reported() {
+        let mut p = pad();
+        assert_eq!(p.min_point_interval_ms(), 10, "the shipped default");
+        p.set_min_point_interval_ms(0);
+        assert_eq!(p.min_point_interval_ms(), 0);
+        assert_eq!(p.get("min_point_interval_ms").expect("readable"), CapabilityValue::UInt(0));
+        p.set("min_point_interval_ms", CapabilityValue::UInt(40)).expect("writable");
+        assert_eq!(p.min_point_interval_ms(), 40);
     }
 
     #[test]
@@ -527,10 +726,14 @@ mod tests {
         p.handle_event(&Event::mouse_release(50, 60, 1));
 
         let flat = p.export_polylines();
-        // Stroke 1 (2 points) + sentinel + stroke 2 (1 point) + sentinel.
-        assert_eq!(flat.len(), 2 + 1 + 1 + 1);
-        assert_eq!(flat[2], Point::new(-1, -1));
-        assert_eq!(flat[4], Point::new(-1, -1));
+        // The structure is what this test is about: two strokes, each terminated by a sentinel.
+        // The stroke lengths are a function of the distance threshold now that moves are
+        // interpolated, so they are read back rather than hardcoded.
+        let first = p.strokes()[0].len();
+        let second = p.strokes()[1].len();
+        assert_eq!(flat.len(), first + 1 + second + 1);
+        assert_eq!(flat[first], Point::new(-1, -1));
+        assert_eq!(flat[first + 1 + second], Point::new(-1, -1));
     }
 
     #[test]

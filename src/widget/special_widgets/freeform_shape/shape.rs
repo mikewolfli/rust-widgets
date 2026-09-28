@@ -824,9 +824,32 @@ impl Draw for FreeformShapeWidget {
         let background = resolved.blend(&text_color, 0.08);
 
         // A caller who set a fill owns it — that colour is the datum, so it is used
-        // verbatim. Only the *default* fill follows the theme, which is what makes
+        // verbatim, and hover still acknowledges the pointer by stepping toward that colour's own
+        // contrast. Only the *default* fill follows the theme, which is what makes
         // an untouched shape respond to an appearance switch.
-        let fill = if self.fill_overridden { self.fill_color } else { text_color };
+        let base_fill = if self.fill_overridden { self.fill_color } else { text_color };
+
+        // # Why the pointer state changes what is painted
+        //
+        // `hovered_item` and `pressed_item` were tracked, signalled (`hovered_changed`,
+        // `pressed_changed`) and **never read by `draw`** — so a shape reported a hover to every
+        // listener while looking exactly like a shape nothing was pointing at. That is the same
+        // defect `segmented_control`'s teleporting pill was: the mechanism exists, the signal is
+        // honest, and the pixels ignore both. A user who has to *guess* whether their pointer is
+        // on a shape cannot drag it with any confidence.
+        //
+        // The weights come from `StateOverlay::fill_blend`, the crate's one source for "how far
+        // does a hover move a surface" — it is what the preset theme's `"<kind>:hover"` key
+        // derives from, so an overlaid control and a theme-driven one move by the same amount.
+        // Press is the firmer step, and a press already implies the pointer is down on the shape,
+        // so the two are mutually exclusive here exactly as they are in the overlay.
+        let overlay =
+            crate::style::StateOverlay::from_base(self.hovered_item, self.pressed_item, false);
+        let fill = if overlay.is_empty() {
+            base_fill
+        } else {
+            base_fill.blend(&base_fill.contrast_color(), overlay.fill_blend())
+        };
         let stroke = match (self.stroke_overridden, self.stroke_color) {
             (true, Some(color)) => Some(color),
             // An explicit `None` from the caller stays `None`; the default derives

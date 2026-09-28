@@ -214,7 +214,13 @@ fn svg_snapshot_line_chart_stable() {
     chart.draw(Rect { x: 0, y: 0, width: 640, height: 360 }, &mut context);
     let svg = context.to_svg_string();
     let got = stable_hash64(&svg);
-    let expected = 15495645154630907480u64;
+    // Re-pinned by BLUE23 §93: the engine's cartesian axes, titles and labels used to be struct
+    // literals written for a "light" chart (`Color { r: 90, g: 90, b: 90 }` and friends), so this
+    // hash was pinned against a picture that ignored the appearance. They now come from
+    // `axis_chrome`/`axis_chrome_color`, so the same chart renders differently under light and
+    // dark — which is the fix, not a regression. The pin is kept, and re-pinned deliberately:
+    // dropping it would remove the only tripwire that notices an unintended chart change.
+    let expected = 16115582051530855050u64;
     assert_eq!(got, expected, "line snapshot hash changed: {got}");
 }
 #[test]
@@ -239,6 +245,8 @@ fn svg_snapshot_bar_chart_stable() {
     chart.draw(Rect { x: 0, y: 0, width: 640, height: 360 }, &mut context);
     let svg = context.to_svg_string();
     let got = stable_hash64(&svg);
-    let expected = 16338446596914158824u64;
+    // Re-pinned by BLUE23 §93, for the same reason as the line chart's: the engine's chrome is now
+    // theme-derived rather than a light-mode literal. See that pin for the full note.
+    let expected = 17304285755429598833u64;
     assert_eq!(got, expected, "bar snapshot hash changed: {got}");
 }

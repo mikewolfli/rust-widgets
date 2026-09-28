@@ -826,12 +826,27 @@ struct BoardChrome {
 }
 
 impl BoardChrome {
-    /// A column's fill: a step away from the board so the columns read as lanes.
+    /// A column's fill: the `surface_container` role when the theme offers one, so a theme can
+    /// tune the lane colour independently of the board it sits on.
     ///
-    /// The step is large enough to survive 8-bit rounding: at the default palette a
-    /// 4% step rounds to the board's own bytes, which leaves the columns invisible.
+    /// # Why the role comes first (BLUE23 §93, M5)
+    ///
+    /// The lane was a local blend of the board's own colour, which is a value no theme can address:
+    /// changing the board moved the lanes with it, so "the board is dark but its lanes should be
+    /// lighter" was not expressible. `surface_container` is the role the crate already declares for
+    /// exactly this — one step up from the page — and it is what `panel`, `group_box` and
+    /// `emoji_picker` read for the same purpose. The blend survives as the fallback for a theme
+    /// that predates the role.
+    ///
+    /// It still steps *away* from the board rather than adopting the role verbatim when the role
+    /// has resolved to the board's own colour, which is the same guard `drop_zone` and `otp_input`
+    /// use: a lane indistinguishable from the board is not a lane.
     fn column(&self) -> Color {
-        self.background.blend(&self.text_color, 0.18)
+        let role = crate::style::layer_color(crate::style::LayerColor::SurfaceContainer);
+        match role {
+            Some(role) if role != self.background => role,
+            _ => self.background.blend(&self.text_color, 0.18),
+        }
     }
 
     /// The column a dragged card is hovering over, tinted toward the text colour

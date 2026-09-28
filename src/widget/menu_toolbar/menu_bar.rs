@@ -3,8 +3,8 @@
 
 //! Menu bar widget.
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
-use crate::event::{Event, EventHandler};
 use crate::event::key_codes;
+use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
@@ -71,6 +71,20 @@ pub struct MenuBar {
     base: BaseWidget,
     entries: Vec<MenuBarEntry>,
     active_index: Option<usize>,
+    /// The entry under the pointer, or `None` when the bar is not hovered at all.
+    ///
+    /// # Why this is still a field, and what changed (BLUE23 §93, M1)
+    ///
+    /// M1's shape is "delete the private state and read `BaseWidget`" — but `BaseWidget` knows
+    /// *whether* the pointer is over the control, not **which entry** it is over, and a menu bar is
+    /// a row of targets. What was wrong was not the field's existence but its having a second,
+    /// independent source: every `MouseMove` wrote it directly, so the bar's idea of "hovered"
+    /// could disagree with `BaseWidget`'s — and the theme's `"menu_bar:hover"` key, which the base
+    /// flag drives, could be true while no entry was highlighted.
+    ///
+    /// It is now **derived** from the base flag plus the same `hit_entry` the press path uses:
+    /// one pointer fact, one hit test. A move that arrives while the base says "not hovered"
+    /// (or a `MouseLeave`) clears it, so the two cannot diverge.
     hovered_index: Option<usize>,
     /// Emitted with the clicked entry's title when an enabled entry is pressed
     /// with the primary mouse button. The payload is the title text, not the
@@ -292,8 +306,13 @@ impl EventHandler for MenuBar {
         }
         match event {
             Event::MouseMove { pos } => {
+                // Derived rather than assigned: the entry under the pointer is only meaningful while
+                // `BaseWidget` agrees the pointer is on the bar, and re-testing on every move is
+                // what keeps this from going stale when the pointer leaves without a `MouseLeave`
+                // (a host that stopped forwarding moves, a window that lost focus).
+                let next = if self.base.is_hovered() { self.hit_entry(*pos) } else { None };
                 let prev = self.hovered_index;
-                self.hovered_index = self.hit_entry(*pos);
+                self.hovered_index = next;
                 if self.hovered_index != prev {
                     if let Some(idx) = self.hovered_index {
                         if self.entries[idx].is_enabled() {
@@ -302,6 +321,11 @@ impl EventHandler for MenuBar {
                         }
                     }
                 }
+            }
+            // The bar's own pointer fact is the source, so leaving it must clear the entry too —
+            // otherwise the last entry stays highlighted on a bar the pointer has left.
+            Event::MouseLeave { .. } => {
+                self.hovered_index = None;
             }
             Event::MousePress { pos, button: 1 } => {
                 if let Some(idx) = self.hit_entry(*pos) {

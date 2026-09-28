@@ -25,10 +25,28 @@ pub struct ColorPicker {
     alpha: u8,
     show_alpha: bool,
     presets: Vec<Color>,
+    /// Which rail a drag in progress is editing, if any.
+    ///
+    /// The three rails are disjoint, but a drag is not: the pointer is free to leave the rail it
+    /// started in. Remembering the *target* rather than re-hit-testing on every move is what keeps
+    /// a sweep that strays one pixel past the hue rail's edge from silently switching to the alpha
+    /// rail — the region a drag edits is the region the press began in.
+    drag_target: Option<ColorDragTarget>,
     /// Emitted when selected color changes.
     pub color_changed: Signal1<Color>,
     /// Emitted when hex text changes.
     pub hex_changed: Signal1<String>,
+}
+
+/// The rail a colour-picker drag is currently editing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColorDragTarget {
+    /// The saturation/value square.
+    Palette,
+    /// The hue rail.
+    Hue,
+    /// The alpha rail.
+    Alpha,
 }
 
 impl ColorPicker {
@@ -42,6 +60,7 @@ impl ColorPicker {
             value: 255,
             alpha: 255,
             show_alpha: true,
+            drag_target: None,
             presets: vec![
                 Color::rgb(244, 67, 54),
                 Color::rgb(33, 150, 243),
@@ -325,12 +344,41 @@ impl EventHandler for ColorPicker {
                 }
 
                 if Self::point_in_rect(*pos, self.palette_rect()) {
+                    self.drag_target = Some(ColorDragTarget::Palette);
                     self.set_from_palette_point(*pos);
                 } else if Self::point_in_rect(*pos, self.hue_rect()) {
+                    self.drag_target = Some(ColorDragTarget::Hue);
                     self.set_from_hue_point(*pos);
                 } else if self.show_alpha && Self::point_in_rect(*pos, self.alpha_rect()) {
+                    self.drag_target = Some(ColorDragTarget::Alpha);
                     self.set_from_alpha_point(*pos);
                 }
+            }
+            // # The defect this replaces
+            //
+            // Only `MousePress` was handled, so a picker was a **click-only** control: dragging
+            // inside the palette, the hue rail or the alpha rail moved nothing until the pointer
+            // was released and pressed again. Every other draggable control in the crate
+            // (`slider`, `range_slider`, `dial`, `scroll_bar`) reads a move, and a colour picker is
+            // the one control where the gesture is unambiguously a drag — the user is looking for
+            // a colour, which means sweeping until the swatch looks right.
+            //
+            // The arm re-uses the press helpers rather than adding three more hit tests, so the
+            // region a drag updates is by construction the region the press started in: a pointer
+            // that wanders out of the hue rail does not silently start editing the alpha.
+            Event::MouseMove { pos } | Event::PointerMove { pos, .. } => match self.drag_target {
+                Some(ColorDragTarget::Palette) => self.set_from_palette_point(*pos),
+                Some(ColorDragTarget::Hue) => self.set_from_hue_point(*pos),
+                Some(ColorDragTarget::Alpha) => self.set_from_alpha_point(*pos),
+                None => {}
+            },
+            Event::MouseRelease { .. } | Event::PointerRelease { .. } => {
+                self.drag_target = None;
+            }
+            // A pointer that has left the control must not keep editing it: the drag target is
+            // cleared, which is the same latch-clear `fab` does for its press.
+            Event::MouseLeave { .. } => {
+                self.drag_target = None;
             }
             Event::KeyPress { key, modifiers: _ } => match *key {
                 37 => {

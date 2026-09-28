@@ -1650,7 +1650,7 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 | `rich_edit` | `input_widgets/rich_edit.rs` | 1 | 见 §A.3：光标几何用**等宽捷径**，变宽跨度下必错 | **M10**（跨度感知 caret） |  | P1 |
 | `markdown_editor` | `markdown_editor.rs` | 3 | 同 `rich_edit` 的跨度问题 | **M10** |  | P2 |
 | `diff_viewer` | `diff_viewer.rs` | 0 | 0 字面量；**增删行用语义色**（本仓优势） | **M6**（行线）**M5** |  | P2 |
-| `signature_pad` | `signature_pad.rs` | 1 | BLUE21 B18：画布 = 窗口底色（已修）；A.6：笔画捕获**按帧采样** ⇒ 快速输入多边形化（需**时间戳**） | ① 收带时间戳的指针增量流 + 相邻 delta 间**插值**② 平滑作为**独立可测步骤** | **M10** | P1 |
+| `signature_pad` | `signature_pad.rs` | 1 | BLUE21 B18：画布 = 窗口底色（已修）；A.6：笔画捕获**按帧采样** ⇒ 快速输入多边形化（需**时间戳**） | ① 收带时间戳的指针增量流 + 相邻 delta 间**插值**② 平滑作为**独立可测步骤** | **M10** | **A.18 已做** |
 | `command_palette` | `special_widgets/command_palette.rs` | 0 | 与 `list_view` 同 kind；分类/高亮无动效 | **M1**（行 hover）**M3**（过滤动画） |  | P2 |
 
 #### (c) 取色与图形族（**本仓优势**：主流 material 实现 与 Cupertino **都没有**取色器）
@@ -1734,7 +1734,7 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 | `material_snackbar` | `cupertino/core.rs` | 14 | `material_snackbar.rs:368` 是 BLUE21 A23 的**正确写法参照** | **M5**（`inverse_surface`）**M3**（滑入 + 自动消失计时） | **M5** **M3** | P1 |
 | `material_navigation_rail` | `cupertino/core.rs` | 14 | 无 rail 展开/收起动画 | **M3** **M5** |  | P1 |
 | `cupertino_date_picker` | `cupertino/date_picker.rs` | 5 | ✅ 行距已在 metrics 表（`32`） | **M3**（滚轮吸附）**M4** |  | P2 |
-| `cupertino_navigation_bar` | `cupertino/nav_bar.rs` | 2 | 大标题**收起动画**缺失（iOS 的标志性交互） | **M3**（标题缩放/收起） |  | P1 |
+| `cupertino_navigation_bar` | `cupertino/nav_bar.rs` | 2 | 大标题**收起动画**缺失（iOS 的标志性交互） | **M3**（标题缩放/收起） | **A.18 已做**：`collapse: PropertyDriver`，三帧 `88 → 62 → 44` | P1 |
 | `cupertino_segmented_control` | `cupertino/segmented_control.rs` | 2 | 段内边距 16/最小高 28（已在 metrics；BLUE21 AR2 曾记 `text_x` 走负） | **M3**（滑动指示器）**M1** |  | P2 |
 
 ### A.8.6 Web（1）与 Core（2）
@@ -2193,3 +2193,444 @@ markdown 会把尾部的格子**左移**补齐，所以它**照常渲染**；
 其中 **4 行是「计划记错」的假欠债**：
 `text_area`（实为已读 style）、`rich_edit`（实为已用真测量，无 `cell_width`）、
 `line_edit`（装饰槽已存在）、`keyboard`/`range_slider`/`switch` 等（早已修）。
+
+---
+
+## A.14 第 92 轮：批量裁定（A.5/A.6/A.7 补完）+ **生产代码里的注入**（实测见 `log-20260924-1.md` §92）
+
+### A.14.1 🔴 `segmented_control`：`draw` 里留着一句反向注入
+
+```rust
+// 修前（segmented_control.rs:492）
+let t = 1.0; // injected: teleport to the target
+```
+
+**反向注入探针从未从出货的绘制路径移除。** 模型全部正确（`tick` 推进、`is_animating`
+报 `true`、`indicator_position()` 插值到 `1.02`），**唯独像素在第一帧跳到终点** ——
+用户看到「跳一下再静止等 200 ms」，而控件同时报告自己正在移动。
+
+**旧测试为什么没抓到**（本轮最贵的一条实测）：
+
+```text
+the_selection_indicator_slides_rather_than_jumping
+  注入缺陷后 → ok（照样通过）      ← 它断言 indicator_position()，而那个量从未错
+
+the_indicator_is_painted_mid_slide（本轮新增）
+  注入缺陷后 → FAILED               ← 它断言渲染出的药丸矩形
+```
+
+**判据：测试要测「会被承诺的那个量」，不是它的代理。**
+断言改为从渲染 SVG 取药丸矩形（取**最后一个**内缩矩形 —— 药丸画在分段之上；
+第一版取第一个会读到悬停填充，这个坑也记在代码注释里）。
+
+### A.14.2 又一批欠债（本轮新增审计）
+
+**早已修、计划未回写**：`app_bar`（clamp 已成 `22 * text_scale`；back/action 已按
+`TextDirection` 镜像）、`navigation_drawer`（滑动动画已有，默认宽 280 非 240）、
+`navigation_stack`（`+14` 已除）、`bottom_navigation_bar`（已是 64×32 药丸）、
+`tool_bar`/`tool_button`（B12 与 A10/A11 都已修）、`context_menu`（确认是别名）、
+`action`（确认有 hovered 信号）、`dial`（**刻度环已实现**）、`tab_bar`（**D9/D10 都已修**）、
+`kanban_board`（落点插入线已有）、`toast`(single)、`drop_zone`、`qr_code`、
+`barcode_scanner`（四角完整）、`date_range_picker`（错位已修）、`mobile_date_picker`（行高 32）、
+`bezier_curve_editor`（悬停/拖拽都已画）、`cupertino_switch`（**iOS 几何齐全**）、
+`cupertino_alert_dialog`（遮罩已有；圆角 14）、`breadcrumb`（分隔符已单一来源）。
+
+**仍留白（真缺口）**：
+
+| 控件 | 缺口 |
+|---|---|
+| `charts.rs` 引擎 | `draw_cartesian_axes` **绕开 `axis_chrome()`**（`:178` 结构体字面量），四个 `Chart::draw` 都调它；约 20 处无主题 chrome 字面量。**M12：只有 `BarChart` 在画轴前 `return`**（`:608` 早于 `:617`），其余三个先画轴 |
+| `menu`/`menu_item`/`menu_button`/`dropdown_menu` | 展开/收起**全部瞬时**；`dropdown_menu` 面板**无阴影**（`:434` 注释写「with shadow」而无人画）|
+| `navigation_stack` / `bottom_navigation_bar` | push/pop 与切换**无动画**；后者字号未乘 `text_scale`（`:233`）|
+| `toast_stack`/`snackbar`/`notification_center` | 三者**皆无入场/离场动画** |
+| `freeform_shape` | 悬停**有记录、无绘制**（`:882` emit，`draw` `:798` 不读）|
+| `diff_viewer` | **无行分隔线**（M6）|
+| `signature_pad` | 曾是**无时间戳、无插值** ⇒ 快速笔画多边形化；**A.18 已修**（OS 单调钟 + 缺口插值，`5 events -> 136 segments`）|
+| `color_picker` / `map_view` | 前者**无 `MouseMove` 拖拽臂**（`:308`）；后者缩放/平移**瞬时**（`:94`）|
+| `menu_bar` | 仍持自己的 `hovered_index`（`:74`/`:294`），未改读 base |
+| `kanban_board` | 列无阴影/层级 |
+| `cupertino_navigation_bar` | 大标题收起曾是**瞬时布尔**；**A.18 已修**（改读 `collapse` 分数：条高/字号/x/y 四处）|
+
+> **这几个是同一族**：都是「要新写一个状态机」（`PropertyDriver` + `tick` + 三帧判据），
+> 性质与前面「画错了 / 没读主题」的外形修复不同，建议**单独一轮**做。
+
+### A.14.3 三句可复跑的判据（本轮新增）
+
+```text
+python3 tools/check_plan_tables.py                    # 表格错位 → 0
+python3 tools/report_appendix_coverage.py             # 裁定覆盖率（按节）
+python3 tools/apply_round90_verdicts.py --check       # 对不上的行**报错**，不静默跳过
+```
+
+---
+
+## A.15 第 93 轮：M3 动效族一轮完成（实测见 `log-20260924-1.md` §93）
+
+### A.15.1 先把族拆成三类（分析结论）
+
+计划把 15 项都叫 M3。逐条量完后它们**至少是三类**，混在一起会让「M3 完成」失去定义：
+
+| 类 | 项数 | 缺口 | 本轮 |
+|---|---|---|---|
+| **A. 状态已有、只差推进** | **0** | 我把 `menu_open`/`expanded`/`selected_index` 都查了 —— 全是 `bool`/`usize`，**没有一个是进度** | 空集 |
+| **B. 承诺未兑现**（同 `segmented_control` 形） | 2 | 机制齐备、实现不消费 | ✅ 已修 |
+| **C. 要新造状态机** | 12 | 每项先要定义「这条曲线表达什么」 | ✅ 已修 |
+| **不是 M3 的** | 3 | `diff_viewer`=**M6** · `color_picker`=**M10** · `menu_bar`=**M1** | ✅ 已按各自类别修（`menu_bar` 除外）|
+
+> **机制侧一处都不需要改**：`runtime.rs:1568` 的 `tick_animations` 泛型遍历任何控件，
+> `Widget::tick` 默认是空操作 ⇒ **加动效是「每控件一处」，不是「一处覆盖一组」**。
+> 计划 §3 的「一行让 4 个控件的动画活过来」描述的是**接线那一轮**，
+> 而这 12 个**没有状态机可接**。
+
+### A.15.2 已修清单
+
+| 控件 | 类别 | 病灶 → 修法 | 判据 |
+|---|---|---|---|
+| `freeform_shape` | B | `hovered_item`/`pressed_item` **已记录、已 emit、`draw` 从不读**（同 `segmented_control` 形）→ 读 `StateOverlay::fill_blend()` | 悬停两帧画面不同 |
+| `charts.rs` 引擎 | B | `draw_cartesian_axes` **绕开已有的 `axis_chrome()`**，写死 `Color{r:90,g:90,b:90}` → 18 处 chrome 字面量搬到 `axis_chrome_color(strength)`；余 14 处是**数据**调色板，刻意不动 | 快照：轴色 `90,90,90` → `111,111,111`（浅/#848484、暗/#6F6F6F）|
+| `BarChart` 空态（M12）| B | 在画轴**之前** `return`（`:608` 早于 `:617`）⇒ 空图是一块裸板 → 先画轴再判空，与另三个引擎图一致 | 空态含轴线 |
+| `diff_viewer` | **M6** | 全文件**没有行线绘制** → 每行补一条，颜色读 `outline_variant` 角色 | 画面出现行线 |
+| `color_picker` | **M10** | `handle_event` 只有 `MousePress`，拖拽无反馈 → 补 `MouseMove` 臂 + `drag_target` 闩（防扫出轨道后误改另一条）+ 释放/离开清闩 | 拖动逐帧更新 |
+| `menu` / `menu_button` / `dropdown_menu` | C | 展开/收起**硬切** → 抽出共享 `PopupReveal` 并落位三处 | 三帧画面互异 |
+| `bottom_navigation_bar` | C | 药丸**逐标签重画**（无行程）→ 在**标签中心之间**插值，且从**中途分数续走** | 三帧画面互异 |
+| `navigation_stack` | C | push/pop **瞬时换页** → 内容区域按方向位移（push 从尾缘、pop 从头缘）| 三帧画面互异 |
+
+### A.15.3 新机制：`PopupReveal`（`menu_toolbar/popup_reveal.rs`）
+
+三个弹层表达同一件事，故抽一处。两个**刻意的设计决定**，都是被测试抓出来的：
+
+1. **`travel_cap` 是「位移的插值」，不是「高度的上限」** ——
+   第一版让 cap 盖住最终高度，全开的 90 px 菜单只有 24 px 高（两条测试当场转红）。
+2. **在飞行的面板有 1 px 下限** —— 二次缓动让第一帧四舍五入到 0，
+   于是「在动却画空矩形」，正是本仓已经栽过两次的那个分裂。
+   「关着」由 `is_closed()` 区分，**不由高度区分**。
+
+以及**「关闭」也必须动画**：`draw` 的条件是 `self.menu_open || !self.reveal.is_closed()` ——
+只判布尔会把关闭砍在第一帧。
+
+### A.15.4 剩余（仍留白）
+
+| 控件 | 缺口 |
+|---|---|
+| `menu_bar` | 仍持自己的 `hovered_index`（`:74`/`:294`），未改读 base（**M1**）|
+| `toast_stack` / `snackbar` / `notification_center` | 三者**皆无入场/离场动画**（同 C 类，未做）|
+| `map_view` | 缩放/平移**瞬时**（`:94`）|
+| `signature_pad` | 曾是**无时间戳、无插值** → 快速笔画多边形化；**A.18 已修**（时间戳取 OS 单调钟）|
+| `kanban_board` | 列无阴影/层级（**M5**）|
+| `cupertino_navigation_bar` | 大标题收起曾是瞬时布尔；**A.18 已修** |
+| `freeform_shape` 的 2 处字面量 | 回落档/数据色，未清 |
+| `image_gallery` 余 5 处字面量 | **已核定为兜底档**（全部 `unwrap_or`/`if` 末选，非路径无条件 chrome）；见 §A.19 |
+
+### A.16 第 94 轮：M3 收尾（实测见 `log-20260924-1.md` §94）
+
+#### A.16.1 做完的 7 项
+
+| 控件 | 类别 | 病灶 → 修法 |
+|---|---|---|
+| `snackbar` | C | 显示/消失**硬切** → `PopupReveal`（向上，从自身底缘升起）。三帧实测裁剪高 `4 → 20 → 32 → 48` |
+| `toast_stack` | C | 新 toast **瞬现** → 只让**最新那一行**升起（其余已就位）。实测最新行 `y: 195 → 188` |
+| `notification_center` | C | 同形，独立落位 |
+| `map_view` | C | 缩放/平移**瞬时** → 「**画出来的** zoom」追上目标 |
+| `menu_bar` | **M1** | 持自己的 `hovered_index` 且每次 `MouseMove` 直接赋值 ⇒ 与 `BaseWidget` 的指针事实可分歧 → 改为**从 base 派生** + `MouseLeave` 清除 |
+| `kanban_board` | **M5** | 列色是**局部 blend**（主题无法寻址）→ 读 `surface_container` 角色，blend 留作回落 |
+
+#### A.16.2 🔴 本轮抓到 3 个真缺陷，都在 `map_view` —— 都不是「忘了加动画」
+
+| # | 病灶 | 为什么安静 |
+|---|---|---|
+| 1 | 网格读 `self.zoom`（**存储目标**）⇒ 第一帧就到终点 | `is_animating` 为真、`tick` 在推进，只有画面不动 |
+| 2 | **「从哪来」在 `self.zoom = next` 之后才读** ⇒ 插值两端同值、恒为常数 | 由**修 #1 时引入**；断言「驱动器在动」会全绿 |
+| 3 | 步长上界 `clamp(.., 2.0)` 而 `set_zoom` 允许 **8.0** ⇒ 缩放到 2.0 后网格**冻结** | 网格是唯一随缩放变形的标记，冻结后无任何可见变化 |
+
+**判据（本轮唯一能用的）**：网格线数
+
+```text
+修前: 28 → 8 → 8 → 8 → 8    （第一帧即终点）
+修后: 28 → 16 → 13 → 10 → 10 → 9
+```
+
+> **字节数、`is_animating`、有没有 `PropertyDriver` —— 三个都不够。**
+
+#### A.16.3 两处测量假象（记下来，因为它们差点变成假修复）
+
+1. **`snackbar` 采样点越过转场终点**：`MotionSlot::Fast` = 100 ms，而探针取 `tick(1)`/`tick(60)`，
+   第二个点已在转场**之后**，读数像「reveal 没接上」。改为按 16 ms 采样，
+   并断言**裁剪矩形的高度**而非字节数。
+2. **`toast_stack` 字节长度巧合相等**（两帧都 4159）——打印出来像「没动」，
+   而字符串内容确实不同（偏移改变的是**数字**不是**长度**）。
+   改为断言**最新一行的 `y`**：`195 → 188`。
+
+#### A.16.4 剩余（登记）
+
+| 项 | 性质 | 建议 |
+|---|---|---|
+| `signature_pad` 时间戳 | **接口决定**：取 OS 单调钟；溯源（时间戳网址）归调用方 | **✅ A.18 已关闭** |
+| `cupertino_navigation_bar` 大标题收起 | 动效（Cupertino 族）| **✅ A.18 已关闭** |
+| `image_gallery` 余 7 处字面量 | M4 长尾 | 可机械清 |
+| `freeform_shape` 2 处字面量 | 回落档/数据色 | 非缺陷 |
+
+#### A.16.5 动效族的**完成判据**（本轮确立，可复跑）
+
+一个控件的动效算完成，**必须同时**满足：
+
+1. 有 `PropertyDriver` + `trait tick` + `is_animating`（机制层）；
+2. **画出来的量在三帧上互异**（`tests/m3_animation_probe.rs` 的 9 个控件）；
+3. `is_closed()`/静止态与未动画时**逐字节相同**（快照门禁证明）。
+
+第 3 条是本轮能安全改动 9 个控件的原因：**只有 `line_chart` 与 `snackbar` 的快照变了。**
+
+---
+
+### A.17 第 95 轮：M4 长尾收口 + 一个"注释与代码分家"的真缺陷（实测见 `log-20260924-1.md` §95）
+
+本轮只做三件事：**把 §A.16.4 的三项欠债逐条裁定**、**修掉其中唯一一个真缺陷**、
+**用反向注入证明这个修复是承重的（而不是记下来就算完）**。
+
+#### A.17.1 `image_gallery`：真缺陷 —— **注释说 accent，代码读的是自己的面板色**
+
+病灶在选中缩略图的填充：
+
+```rust
+// 注释："The selected thumbnail is the **accent**"
+// 代码：
+let accent = theme.background_color            // ← 图库自己的面板底色
+```
+
+于是"当前是哪一张"被涂成了**它所依附的那块面板的颜色**：在默认预设下
+选中框与它身下的条带几乎无法分辨，而 `unwrap_or` 里那支手挑的蓝色
+**只有在一个连 `background_color` 都没有的主题里才够得着**，即几乎从不生效。
+
+修法是**读出注释点名的那个角色**（`theme_manager().current_theme().colors.primary`），
+并保留原路径作为回落。
+
+> 这一处属于本文件自己反复出产的那一类病灶：**注释命名一个角色，代码读另一个角色。**
+> 判据不是"注释写了什么"，而是**画出来是什么颜色**。
+
+**反向注入证明（本轮要求：不注入就不算修完）**
+
+把修复回退成旧的 `theme.background_color`，探针必须变红；实测变红：
+
+```text
+accent role = rgba(100,181,246,1.00)
+painted fills = [ ... "rgba(30,30,33,1.00)", "rgba(41,41,44,1.00)", "rgba(57,57,60,1.00)", ... ]
+panicked at tests/image_gallery_accent_probe.rs:63:
+the selected thumbnail must be painted in the theme's accent (rgba(100,181,246,1.00));
+it is not in the picture, so the selection reads as the panel it sits on.
+```
+
+accent（`rgba(100,181,246,·)`，暗预设的 `primary`）**确实不在**画面里 —— 断言承重。
+恢复修复后同一探针转绿。
+
+**为什么快照看不见这个修复**：census 的图库**没有图片**，缩略图条带不绘制。
+所以这一处的证据是**探针**，不是快照 —— 登记在案，避免后来者误判"没改"。
+
+#### A.17.2 `freeform_shape` 2 处字面量：**裁定为非缺陷**（不"修"）
+
+`shape.rs:74` `rgb(200,220,255)` / `:75` `rgb(80,120,200)` 曾按 M4 长尾登记，
+本轮**读码后推翻**：
+
+| 证据 | 结论 |
+|---|---|
+| `draw` 里：`let base_fill = if self.fill_overridden { self.fill_color } else { text_color };` | **未 override 时，真正画出来的是 `text_color` —— 一个主题角色** |
+| 文档注释：`fill_color` 是"the two defaults this control ships with until one is set"、"reports the ship-time default" | 这两个字面量是**读取器的返回值**，不是绘制输入 |
+| `tests.rs` 的 `freeform_shape_creation_defaults` 逐字钉住这两个值 | 契约的一部分，改动会破坏已声明的接口 |
+
+这与 `sparkline` 同类：**是调用方拥有的数据默认值，不是 chrome。**
+把它换成角色会破坏有文档的访问器契约并改变快照 —— 属于"改进引入新问题"。
+记入**驳回**清单，而非修复清单。
+
+#### A.17.3 四项门禁全部复跑（本轮实测）
+
+| 门禁 | 实测 |
+|---|---|
+| `cargo test --lib`（`--skip bevel --skip icon --skip the_blur_cost`） | ✅ **6032 passed / 0 failed** |
+| `cargo test --tests` | ✅ **53 个集成二进制 / 0 failed** |
+| `cargo clippy --all-targets -D warnings` | ✅ **0** |
+| `check_control_rendering.sh` | ✅ **checked=188 skipped=0 failed=0** |
+| `check_svg_snapshots.sh` | ✅ **PASS**（392 = 188×2 + 7×2 + 2 icon sheet）|
+| `check_plan_tables.py` | ✅ **0 mismatched rows** |
+
+**快照 diff（非 icon）**：仅 `line_chart{,.light}.svg`（引擎轴色）与
+`snackbar{,.light}.svg`（新增满幅裁剪）。`image_gallery` **不在**其中，原因见 A.17.1。
+
+`line_chart` 的 diff 直接显示修复承重：轴色 `rgba(90,90,90)` → `rgba(111,111,111)`，
+与同图内刻度线**同色** —— 即 A.16 想要的"轴与自己的刻度是一套 chrome"。
+
+#### A.17.4 本轮沉淀的规矩（三条，可复跑）
+
+1. **M4 的字面量要分档，不能一律当缺陷**：先问"这个字面量是**绘制输入**，
+   还是**访问器的返回值**？前者改角色，后者是调用方的数据，驳回。
+   `freeform_shape` 正是后者，且文档与测试都已声明。
+2. **反向注入是"修完"的定义**，不是可选项：回退修复 → 探针必须变红 → 恢复 → 转绿。
+   只有走过这一轮的修复，才算有证据。
+3. **快照不可见 ≠ 没修**：如果缺陷的载体（此处的缩略图）不在快照场景里，
+   证据就是**探针**。必须在计划里写明，否则下一个人会当成漏做。
+
+#### A.17.5 `freeform_shape` 的**冰山扫描**（同一类的其余实例）
+
+"注释命名一个角色、代码读另一个角色"这一类在 §95 顺带扫过全仓，
+其余命中**经读码核对均无分家**（`date_edit` / `date_time_edit` / `dropdown` /
+`cascader` / `rich_edit` / `video_player` / `media_player` / `data_grid` /
+`markdown_editor` 的 accent 读取都确实是 accent）。即
+**`image_gallery` 是这一类在本仓的唯一存活实例**，已闭合。
+
+---
+
+### A.18 第 96 轮：Cupertino 大标题收起（M3 收尾）+ `signature_pad` 接口决定（实测见 `log-20260924-1.md` §96）
+
+§A.16.4 登记的两项 —— 一项动效、一项接口 —— 本轮**全部关闭**。
+因为性质不同（一个是"加中间帧"，一个是"定数据从哪来"），记录分开写。
+
+#### A.18.1 `cupertino_navigation_bar`：瞬时布尔 → 连续收起（M3）
+
+| 量 | 收起前 | 收起后 | 现在读什么 |
+|---|---|---|---|
+| 条高 | 96 | 44 | `lerp_u32(44, 96, collapse)` |
+| 标题字号 | 34 bold | 18 regular | `lerp_f32(18, 34, collapse)` |
+| 标题 x | 前导 `+16` | 居中 | `lerp_i32(centred, leading, collapse)` |
+| 标题 y | 大条中线 | 小条中线 | 当前高度条的 `text_line` |
+
+四处**全部改读画出来的分数**，没有一处再读布尔。`collapse: PropertyDriver` 初值 `1.0`
+（与既有的 `large_title: true` 默认一致），因此新建的条**是静止的**，不会第一帧就自己动。
+
+**三帧实测**：`first=88 middle=62 settled=44`。反向注入（换回布尔）后：`44 → 44 → 44`，探针红。
+
+#### A.18.2 `signature_pad`：接口决定 —— **时间戳取 OS 单调钟，溯源归调用方**
+
+裁定原文：**两个来源，操作系统当前时间，或取时间戳网址。** 落地如下：
+
+| 用途 | 来源 | 理由 |
+|---|---|---|
+| **笔画几何**（本轮的缺口）| **OS 单调时钟**（`crate::compat::Instant`）| 每个输入事件都要读；必须无延迟、无分配、离线可用；单调钟不会因对时产生负间隔 |
+| **签名溯源**（"何时所签"）| 外部时间戳（网址/TSA），**由调用方附加** | 是取证问题，不是绘制问题 |
+
+**不把网址时间戳接进绘制路径**，理由写在 `SignaturePad` 的字段文档里：
+那会让一支笔**在上不了网的时候画不出字**。溯源是调用方在自己合规链上的事，
+本控件不替它决定，也不因此获得网络依赖（principle：不从外部引入不需要的负担）。
+
+#### A.18.3 `signature_pad`：真缺陷 —— 纯距离采样把快笔画成多边形
+
+`extend_stroke` 原本只在**距离**够远时收点。这条规则分不清「慢，点已够密，该丢」
+与「快，点太少，该补」，于是快笔一次事件只落一个点，两点间一条长直线 —— 曲线成多边形。
+**它记下了指针到过哪，没记下它怎么过去的。**
+
+修法（时间成为第二维度）：
+
+1. 收点条件改为 **够远 或 够久**（`min_point_interval_ms`，默认 10 ms）；
+2. 宽缺口**用插值填满**，步长取控件自身的距离阈值 ⇒ 慢笔与快笔落在**同一几何精度**；
+3. 抖动（同时太近且太快）照旧丢，**且不推进时钟**（否则被丢的抖动会把下一个收点越推越远）。
+
+**反向注入实测**：关掉插值 → `5 events -> 4 segments / 5 points`（每个跳跃一条长边，即多边形）；
+开启 → `5 events -> 136 segments`。另有一个探针守住反面：20 次同像素同毫秒的移动**仍被丢**。
+
+新增属性 `min_point_interval_ms`（schema + `access.rs` 默认值 + capability 读写，
+三处一起改，否则两个门禁各报一半）。
+
+#### A.18.4 新增共享原语：`lerp_u32` / `lerp_i32` / `lerp_f32`（`metrics.rs`）
+
+与 `top_band`、`center_in` 同处。本仓此前每处插值各写闭包、**取整各异**；
+关键性质是**两端精确**：`t == 0.0` 原样返回 `from`、`t == 1.0` 原样返回 `to`，不经浮点往返。
+这就是「静止控件与未动画时**逐字节相同**」这条安全绳的底层保证。
+
+#### A.18.5 快照：**本轮两处改动都没有动快照**（正确结果）
+
+`cupertino_navigation_bar` 静止在 `collapse == 1.0`，`lerp_u32(44, 96, 1.0)` 精确返回 `96`，
+**逐字节等于未动画版本**；`signature_pad` 的 census 场景没有笔画。
+这正是 §A.16.5 第 3 条要的性质：**动画只增加中间帧，不改变两端。**
+
+#### A.18.6 本轮门禁抓到我自己引入的 2 个问题（都记下）
+
+1. `schema_and_contract_publish_the_same_names`：控件发布了 `min_point_interval_ms`
+   但 **schema 没声明** —— "控件与它自己的契约分家"，正是该门禁存在的理由。
+2. `schema_defaults_are_readable_and_writable_when_declared`：声明的属性**缺默认值**。
+
+**两个门禁各抓到一半**，缺一个都会漏到生产。
+
+#### A.18.7 本轮自己踩的 2 个坑（都是"测量假象"，一天内踩第二次）
+
+1. **`set_target` 只写在 `tick` 里 ⇒ 永不被推。** 帧总线**先问 `is_animating()` 再决定推进**，
+   所以只在 `tick` 里瞄准的控件在被问的瞬间回答"没动"，于是**永远不会被 tick**。
+   `CollapsiblePane::set_collapsed` 早在 setter 里瞄准，正是为此。探针报红：`collapsing must owe frames`。
+2. **探针锚错元素/行首。** nav_bar 第一次读数恒为 `120`（读到**画布填色**而非条）；
+   signature_pad 第一次报 `0 segments`（`<line>` 在文档里是**缩进的**，`starts_with` 锚了行首）。
+   **读错了量，读数就恒等/恒零，会伪装成"没改"。**
+
+#### A.18.8 剩余
+
+| 项 | 性质 | 状态 |
+|---|---|---|
+| `image_gallery` 余 5 处字面量 | M4 长尾 | **已核定：非缺陷**（全为兜底档），§A.19 |
+| `freeform_shape` 2 处字面量 | 调用方数据默认值 | **已裁定非缺陷**（§A.17.2）|
+| `signature_pad` 时间戳接口 | —— | ✅ 本轮关闭 |
+| `cupertino_navigation_bar` 大标题收起 | —— | ✅ 本轮关闭 |
+
+---
+
+### A.19 第 97 轮：`image_gallery` M4 长尾的**核对**（结论：欠债不存在，是计划行过期）
+
+§A.16.4 / §A.18.8 一直挂着「`image_gallery` 余 7 处字面量，可机械清」。
+本轮动手去清，**先量后改**，结果是**这 7 处根本不存在**。
+
+#### A.19.1 先把 `draw` 里的字面量数出来（不靠印象）
+
+对 `impl Draw for ImageGallery` 的函数体做正则扫描，**跳过注释行**：
+
+```text
+draw impl: lines 285..599
+  308: Color::rgba(230, 230, 230, 200)   | Color::rgba(230, 230, 230, 200)
+  310: Color::rgba(240, 240, 240, 255)   | Color::rgba(240, 240, 240, 255)
+  362: Color::rgba(30, 30, 30, 200)      | if !is_enabled { Color::rgba(30, 30, 30, 200) } else { Color::rgba(30, 30, 30, 255) }
+  362: Color::rgba(30, 30, 30, 255)      | 同上
+  528: Color::rgba(80, 140, 220, 200)    | .unwrap_or(Color::rgba(80, 140, 220, 200));
+```
+
+**实到 5 处，且每一处都在末选位置：**
+
+| 行 | 形态 | 性质 |
+|---|---|---|
+| 308 / 310 | `unwrap_or(fallback_bg)` 里的 `if !is_enabled {..} else {..}` | 空态面板的**最后兜底** |
+| 362 | `unwrap_or(stage_fallback)` 里的 `if !is_enabled {..} else {..}` | 舞台的**最后兜底** |
+| 528 | `unwrap_or(Color::rgba(80,140,220,200))` | 选中缩略图的 accent **最后兜底**（§A.17.1 加的那一处）|
+
+**没有一处是路径无条件的 chrome。** 这正是 M4 要清的东西与这里的区别：
+M4 的病灶是「控件只读字面量、主题改不动它」，而这里的每一处都是
+`style → theme → 字面量` 三级回落链的**第三级**，且文件里有 rule #21 的成文理由
+（「an unstyled gallery looks exactly as it did」）。
+
+#### A.19.2 旁证：仓库自己的审计工具同意
+
+`tools/audit_appearance.py`（M4 的指定判据）实跑：
+
+```text
+=== files with a Draw impl: 182 ===
+=== total colour literals in Draw files: 679 ===
+=== Draw files reading no style colour, only literals: 10 (5%) ===
+   16 literals  src/widget/media_widgets/camera_preview.rs
+   11 literals  src/widget/media_widgets/video_player.rs
+    9 literals  src/widget/special_widgets/finance/indicator_chart.rs
+    8 literals  src/widget/special_widgets/finance/depth_chart.rs
+    8 literals  src/widget/special_widgets/finance/candlestick_chart.rs
+    5 literals  src/widget/chart_widgets/line_chart.rs
+    3 literals  src/widget/special_widgets/finance/volume_chart.rs
+    2 literals  src/widget/overlay_widgets/swipe_to_dismiss.rs
+    1 literals  src/widget/chart_widgets/sparkline.rs
+    1 literals  src/widget/chart_widgets/pie_chart.rs
+```
+
+**`image_gallery` 不在「只读字面量」的名单里** —— 它读样式色。
+
+#### A.19.3 结论与更正
+
+| 项 | 更正前 | 更正后 |
+|---|---|---|
+| `image_gallery` 字面量 | 「余 7 处，可机械清」 | **5 处，全部为三级回落链的末选；非缺陷** |
+
+**欠债早在本节之前就已还清**（计划 §1875 行自己记着：
+「`image_gallery` 13→4（4 处全为 `unwrap_or`/`if` 兜底）」），
+**是本文件的两处「剩余」清单没有跟着关**（§A.16.4、§A.18.8）——
+**过期的是计划，不是代码。** 本轮把两处清单更正为「已核定：非缺陷」。
+
+> **教训**：一份「剩余清单」如果不跟着修复一起关，它自己就会变成缺陷 ——
+> 后来的读者（包括我）会照着它去做**已经做过的工作**。
+> 这与 §A.13 记录的「计划表格自身的缺陷」是同一类。
+> **判据：动手前先量（正则扫函数体 + 跑指定审计工具），不要读清单就信。**

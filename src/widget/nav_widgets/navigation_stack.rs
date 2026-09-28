@@ -11,6 +11,7 @@ use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
+use crate::style::{MotionSlot, PropertyDriver};
 use crate::widget::capability::coercion::expect_usize;
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
@@ -41,6 +42,12 @@ pub struct NavigationStack {
     base: BaseWidget,
     pages: Vec<Box<dyn Widget>>,
     navigation_bar_title: String,
+    /// How far the content region is slid, `-1.0` arriving from the left (a pop) through `0.0`
+    /// settled to `1.0` arriving from the right (a push).
+    ///
+    /// See `draw` for why this is the content *frame* and not the page: the page's own widgets are
+    /// laid out by the host, so this control animates the region they sit in.
+    slide: PropertyDriver,
     /// Emitted when the navigation state changes.
     pub navigation_changed: Signal1<NavigationEvent>,
 }
@@ -52,6 +59,7 @@ impl NavigationStack {
             base: BaseWidget::new(WidgetKind::NavigationStack, geometry, "NavigationStack"),
             pages: Vec::new(),
             navigation_bar_title: String::new(),
+            slide: PropertyDriver::at(0.0, MotionSlot::Normal),
             navigation_changed: Signal1::new(),
         }
     }
@@ -60,6 +68,10 @@ impl NavigationStack {
     /// The new page becomes the visible topmost page.
     pub fn push(&mut self, page: Box<dyn Widget>) {
         self.pages.push(page);
+        // The new page arrives from the trailing edge, then settles. `jump_to` sets the starting
+        // offset so the next frame is the first frame of the movement rather than a snap.
+        self.slide.jump_to(1.0);
+        self.slide.set_target(0.0);
         self.navigation_changed.emit(NavigationEvent::Pushed);
         self.base.request_redraw();
     }
@@ -77,6 +89,11 @@ impl NavigationStack {
             return None;
         }
         let popped = self.pages.pop();
+        // A pop arrives from the *leading* edge, which is the opposite of a push: that difference
+        // is the whole information content of the transition, and a single direction would make a
+        // back gesture look identical to a forward one.
+        self.slide.jump_to(-1.0);
+        self.slide.set_target(0.0);
         self.navigation_changed.emit(NavigationEvent::Popped);
         self.base.request_redraw();
         popped
@@ -167,6 +184,16 @@ impl Widget for NavigationStack {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, 600)
     }
+
+    /// Advances the content region's push/pop slide; `true` while it still owes frames.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.slide.tick(delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.slide.is_moving()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -339,9 +366,25 @@ impl Draw for NavigationStack {
         );
 
         // ── Draw content area background ──
+        //
+        // # Why the content slides rather than swapping
+        //
+        // A push or pop changed the page in one frame: `pages.push`/`pages.pop` then a redraw, with
+        // nothing in between. On a control whose entire purpose is *spatial* — the stack is a
+        // history, and the back affordance means "the page to the left" — a hard swap gives the user
+        // no way to see which direction they moved. The content region is therefore drawn slid
+        // toward the edge the transition came from, which is the one thing `draw` can honestly
+        // animate: the page's own contents are composed by the host's layout, so this control moves
+        // the *frame* they sit in and the host moves the contents with it.
         let content = self.content_rect();
         if content.width > 0 && content.height > 0 {
+            // `slide` runs from `-1` (a pop, arriving from the left) through `0` (settled) to `1`
+            // (a push, arriving from the right). Multiplying by the content width gives the offset,
+            // so the movement is proportional to the region rather than a fixed number of pixels.
+            let offset = (self.slide.value() * content.width as f32) as i32;
+            context.push_offset(offset, 0);
             context.fill_rect(content, content_surface);
+            context.pop_offset();
         }
     }
 }

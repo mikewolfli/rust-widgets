@@ -128,6 +128,11 @@ macro_rules! impl_properties_other {
             PropertySchema::new("stroke_width", PropertyValueKind::UInt, true, true),
             PropertySchema::new("stroke_color", PropertyValueKind::Color, true, true),
             PropertySchema::new("min_point_distance", PropertyValueKind::Float, true, true),
+            // The time half of the sampling rule: a point is kept when it is far enough from
+            // the last one **or** this long after it, and a wider gap is filled by
+            // interpolation. Without it a fast stroke was recorded once per input event and
+            // drawn as a polygon.
+            PropertySchema::new("min_point_interval_ms", PropertyValueKind::UInt, true, true),
             PropertySchema::new("enabled", PropertyValueKind::Bool, true, true),
             PropertySchema::new("visible", PropertyValueKind::Bool, true, true),
             PropertySchema::new("tooltip", PropertyValueKind::String, true, true),

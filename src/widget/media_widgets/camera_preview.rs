@@ -28,6 +28,16 @@ use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 /// against it, so both must read the same value.
 const EMPTY_VIEWFINDER: Color = Color::rgba(50, 50, 60, 255);
 
+/// The active viewfinder's fill, used when neither the style nor the theme names one.
+///
+/// A camera feed is judged against a neutral dark ground in every camera application, so the
+/// stage keeps this cave-dark default rather than following the appearance. What *does* follow is
+/// the ink drawn on it: the overlay labels are derived from whatever stage is painted, so a host
+/// that sets a light stage through the style still gets legible annotation. It is a named
+/// constant for the same reason as [`EMPTY_VIEWFINDER`] — the stage and its fallback must be one
+/// value, not two that can drift.
+const ACTIVE_VIEWFINDER: Color = Color::rgba(30, 30, 40, 255);
+
 /// Camera preview widget — draws a simulated camera viewfinder area with controls.
 ///
 /// Renders a self-drawn camera viewfinder and optional control overlay buttons.
@@ -240,10 +250,37 @@ impl Draw for CameraPreview {
         let small_font = Font::new("sans-serif", 11.0, false, false);
         let normal_font = Font::new("sans-serif", 13.0, false, false);
 
+        // ── Viewfinder chrome ────────────────────────────────────────────
+        //
+        // The overlay ink and the viewfinder fill are **chrome**: a resolution readout, a camera
+        // id, a zoom label and a crosshair are annotations *about* the picture, not the picture.
+        // They were eight hardcoded `rgba(2xx,2xx,2xx)` values, so a light appearance produced
+        // white-on-near-white labels — measured at **1.15:1**, i.e. invisible — with nothing
+        // reported, and a theme switch moved nothing but the page behind them. This is the same
+        // defect shape `image_gallery`'s stage overlay had.
+        //
+        // The active viewfinder stays dark on purpose: a camera feed is judged against a neutral
+        // dark ground, and every camera app does this. So the *stage* keeps its dark default,
+        // while the ink on it is derived from that stage — which is what keeps the escape hatch
+        // the old literals were reaching for (a light stage still gets legible ink) without the
+        // theme being unable to move anything.
+        let style = self.base.style().clone();
+        let theme = crate::style::resolved_theme_style("camera_preview");
+        // A host that gave the control an explicit colour wins; otherwise the dark stage default.
+        let viewfinder = style
+            .background_color
+            .or_else(|| theme.as_ref().and_then(|t| t.background_color))
+            .unwrap_or(ACTIVE_VIEWFINDER);
+        // One step from the stage toward its own contrast colour, so the overlay is legible on
+        // whatever stage is painted. On the default stage this is the old near-white.
+        let stage_ink = viewfinder.contrast_color();
+        let label_ink = viewfinder.blend(&stage_ink, 0.78);
+        let strong_ink = viewfinder.blend(&stage_ink, 0.86);
+        let crosshair_ink = viewfinder.blend(&stage_ink, 0.55);
+
         if self.is_active {
             // Draw active camera view — dark viewfinder area
-            let viewfinder_color = Color::rgba(30, 30, 40, 255);
-            context.fill_rect(rect, viewfinder_color);
+            context.fill_rect(rect, viewfinder);
 
             // Draw resolution info text
             let res_text = format!("{}x{}", self.resolution.0, self.resolution.1);
@@ -251,7 +288,7 @@ impl Draw for CameraPreview {
                 Point::new(rect.x + 6, rect.y + 14),
                 &res_text,
                 &small_font,
-                Color::rgba(200, 200, 200, 200),
+                label_ink,
                 HorizontalAlignment::Left,
             );
 
@@ -261,7 +298,7 @@ impl Draw for CameraPreview {
                 Point::new(rect.x + 6, rect.y + h - 10),
                 &id_text,
                 &small_font,
-                Color::rgba(200, 200, 200, 200),
+                label_ink,
                 HorizontalAlignment::Left,
             );
 
@@ -271,7 +308,7 @@ impl Draw for CameraPreview {
                 Point::new(rect.x + w - 40, rect.y + 14),
                 &zoom_text,
                 &normal_font,
-                Color::rgba(255, 255, 255, 220),
+                strong_ink,
                 HorizontalAlignment::Left,
             );
 
@@ -281,7 +318,7 @@ impl Draw for CameraPreview {
                     Point::new(rect.x + w / 2 - 20, rect.y + h - 10),
                     "MIRROR",
                     &small_font,
-                    Color::rgba(100, 200, 255, 200),
+                    viewfinder.blend(&stage_ink, 0.68),
                     HorizontalAlignment::Left,
                 );
             }
@@ -289,7 +326,7 @@ impl Draw for CameraPreview {
             // Draw a subtle crosshair
             let cx = rect.x + w / 2;
             let cy = rect.y + h / 2;
-            let crosshair_color = Color::rgba(100, 100, 100, 100);
+            let crosshair_color = crosshair_ink;
             context.draw_line(Point::new(cx, cy - 15), Point::new(cx, cy + 15), crosshair_color);
             context.draw_line(Point::new(cx - 15, cy), Point::new(cx + 15, cy), crosshair_color);
 

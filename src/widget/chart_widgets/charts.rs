@@ -175,7 +175,16 @@ pub fn compute_cartesian_layout(
 /// 1.0 px wide in a fixed grey. Tick marks, gridlines, and labels are drawn by
 /// [`draw_y_ticks`] / [`draw_x_ticks`], not here.
 pub fn draw_cartesian_axes(context: &mut dyn ChartContext, layout: &CartesianLayout) {
-    let axis_color = Color { r: 90, g: 90, b: 90, a: 255 };
+    // # Why this reads `axis_chrome` rather than a literal
+    //
+    // The axes were the one piece of chart chrome this file still painted with a fixed mid-grey
+    // (`Color { r: 90, g: 90, b: 90, a: 255 }`), which was written for a *light* chart and is
+    // therefore nearly invisible on a dark one — the darkest possible axes on the darkest surface.
+    // Every other consumer in the engine had already been moved onto `axis_chrome`
+    // (`draw_y_ticks`/`draw_x_ticks`), so the axes were the remaining hole in an otherwise
+    // consistent derivation, and the *control*-layer charts (`bar_chart`, `line_chart`,
+    // `pie_chart`) had fixed this on their own paths without the engine following.
+    let (axis_color, _label_color, _grid_color) = axis_chrome();
     context.draw_line(
         Point::from_f32(layout.plot_x, layout.plot_y + layout.plot_h),
         Point::from_f32(layout.plot_x + layout.plot_w, layout.plot_y + layout.plot_h),
@@ -322,7 +331,7 @@ pub fn draw_legend(
             &truncate_legend_label(&item.name, max_label_chars),
             Point::from_f32(layout.legend_x + 26.0, cursor_y + 4.0),
             11.0,
-            Color { r: 40, g: 40, b: 40, a: 255 },
+            axis_chrome_color(0.45),
         );
         cursor_y += 18.0;
     }
@@ -461,12 +470,12 @@ impl Chart for LineChart {
         self.y_axis_label = label;
     }
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
-        context.draw_rect(rect, Color { r: 230, g: 230, b: 230, a: 255 });
+        context.draw_rect(rect, axis_chrome_color(0.0));
         context.draw_text(
             &self.title,
             Point::new(rect.x + 8, rect.y + 16),
             14.0,
-            Color { r: 20, g: 20, b: 20, a: 255 },
+            axis_chrome_color(0.70),
         );
         let visible_series: Vec<&ChartSeries> =
             self.series.iter().filter(|series| series.visible).collect();
@@ -504,7 +513,7 @@ impl Chart for LineChart {
                     layout.plot_y + layout.plot_h + 36.0,
                 ),
                 11.0,
-                Color { r: 40, g: 40, b: 40, a: 255 },
+                axis_chrome_color(0.45),
             );
         }
         if !self.y_axis_label.is_empty() {
@@ -512,7 +521,7 @@ impl Chart for LineChart {
                 &self.y_axis_label,
                 Point::from_f32(layout.plot_x - 56.0, layout.plot_y - 10.0),
                 11.0,
-                Color { r: 40, g: 40, b: 40, a: 255 },
+                axis_chrome_color(0.45),
             );
         }
         for series in &visible_series {
@@ -596,25 +605,34 @@ impl Chart for BarChart {
         self.y_axis_label = label;
     }
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
-        context.draw_rect(rect, Color { r: 240, g: 240, b: 240, a: 255 });
+        context.draw_rect(rect, axis_chrome_color(0.0));
         context.draw_text(
             &self.title,
             Point::new(rect.x + 8, rect.y + 16),
             14.0,
-            Color { r: 20, g: 20, b: 20, a: 255 },
+            axis_chrome_color(0.70),
         );
         let visible_series: Vec<&ChartSeries> =
             self.series.iter().filter(|series| series.visible).collect();
-        if visible_series.is_empty() {
-            return;
-        }
         let layout = compute_cartesian_layout(
             rect,
             !self.x_axis_label.is_empty(),
             !self.y_axis_label.is_empty(),
             visible_series.len(),
         );
+        // # Why the axes are drawn before the empty check
+        //
+        // This used to `return` here, before `draw_cartesian_axes`, so a bar chart with no series was
+        // a bare plate with a title — no axes, no `"No data"`, nothing that says "a chart is here and
+        // it has nothing to show". An empty chart that draws its frame and its axes reads as "no data
+        // yet"; one that draws nothing reads as a rendering failure, which is the same distinction
+        // the finance panes' M12 state draws. The other three engine charts (`LineChart`,
+        // `ScatterChart`, `AreaChart`) already draw their axes first and then bail, so this also
+        // removes the one inconsistency between them.
         draw_cartesian_axes(context, &layout);
+        if visible_series.is_empty() {
+            return;
+        }
         let mut max_y = 1.0f64;
         let mut min_x = f64::MAX;
         let mut max_x = f64::MIN;
@@ -641,7 +659,7 @@ impl Chart for BarChart {
                     layout.plot_y + layout.plot_h + 36.0,
                 ),
                 11.0,
-                Color { r: 40, g: 40, b: 40, a: 255 },
+                axis_chrome_color(0.45),
             );
         }
         if !self.y_axis_label.is_empty() {
@@ -649,7 +667,7 @@ impl Chart for BarChart {
                 &self.y_axis_label,
                 Point::from_f32(layout.plot_x - 56.0, layout.plot_y - 10.0),
                 11.0,
-                Color { r: 40, g: 40, b: 40, a: 255 },
+                axis_chrome_color(0.45),
             );
         }
         let point_slots = points_per_series.max(1) * visible_series.len();
@@ -734,7 +752,7 @@ impl Chart for PieChart {
             &self.title,
             Point::new(title_band.x + 8, title_line.y),
             title_font_size,
-            Color { r: 20, g: 20, b: 20, a: 255 },
+            axis_chrome_color(0.70),
         );
         let center =
             Point { x: rect.x + rect.width as i32 / 2, y: rect.y + rect.height as i32 / 2 };
@@ -845,12 +863,12 @@ impl Chart for ScatterChart {
         self.y_axis_label = label;
     }
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
-        context.draw_rect(rect, Color { r: 240, g: 240, b: 240, a: 255 });
+        context.draw_rect(rect, axis_chrome_color(0.0));
         context.draw_text(
             &self.title,
             Point::new(rect.x + 8, rect.y + 16),
             14.0,
-            Color { r: 20, g: 20, b: 20, a: 255 },
+            axis_chrome_color(0.70),
         );
         let visible_series: Vec<&ChartSeries> =
             self.series.iter().filter(|series| series.visible).collect();
@@ -888,7 +906,7 @@ impl Chart for ScatterChart {
                     layout.plot_y + layout.plot_h + 36.0,
                 ),
                 11.0,
-                Color { r: 40, g: 40, b: 40, a: 255 },
+                axis_chrome_color(0.45),
             );
         }
         if !self.y_axis_label.is_empty() {
@@ -896,7 +914,7 @@ impl Chart for ScatterChart {
                 &self.y_axis_label,
                 Point::from_f32(layout.plot_x - 56.0, layout.plot_y - 10.0),
                 11.0,
-                Color { r: 40, g: 40, b: 40, a: 255 },
+                axis_chrome_color(0.45),
             );
         }
         for series in &visible_series {
@@ -977,12 +995,12 @@ impl Chart for AreaChart {
         self.y_axis_label = label;
     }
     fn draw(&self, rect: Rect, context: &mut dyn ChartContext) {
-        context.draw_rect(rect, Color { r: 240, g: 240, b: 240, a: 255 });
+        context.draw_rect(rect, axis_chrome_color(0.0));
         context.draw_text(
             &self.title,
             Point::new(rect.x + 8, rect.y + 16),
             14.0,
-            Color { r: 20, g: 20, b: 20, a: 255 },
+            axis_chrome_color(0.70),
         );
         let visible_series: Vec<&ChartSeries> =
             self.series.iter().filter(|series| series.visible).collect();
@@ -1020,7 +1038,7 @@ impl Chart for AreaChart {
                     layout.plot_y + layout.plot_h + 36.0,
                 ),
                 11.0,
-                Color { r: 40, g: 40, b: 40, a: 255 },
+                axis_chrome_color(0.45),
             );
         }
         if !self.y_axis_label.is_empty() {
@@ -1028,7 +1046,7 @@ impl Chart for AreaChart {
                 &self.y_axis_label,
                 Point::from_f32(layout.plot_x - 56.0, layout.plot_y - 10.0),
                 11.0,
-                Color { r: 40, g: 40, b: 40, a: 255 },
+                axis_chrome_color(0.45),
             );
         }
         let baseline = layout.plot_y + layout.plot_h;

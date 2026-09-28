@@ -27,6 +27,7 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::composite::CompositeBuilder;
+use crate::widget::menu_toolbar::popup_reveal::{PopupReveal, RevealDirection};
 use crate::widget::metrics::dimensions;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetFactory, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -242,6 +243,18 @@ pub struct Menu {
     ///
     /// Defaults to left-to-right, so a menu that never asks behaves exactly as it did.
     direction: crate::core::TextDirection,
+    /// The popup body's open/close reveal, so the entries grow out of the heading rather than
+    /// appearing on the frame the menu opens.
+    ///
+    /// # Why the reveal is separate from `is_visible`
+    ///
+    /// `is_visible` is the *authority*: it is what hit testing, `about_to_show`/`about_to_hide`
+    /// and the `"visible"` property answer with, and it flips on the frame the menu opens. A
+    /// `bool` cannot express a popup mid-open, and the draw path needs the fraction — so the flag
+    /// stays the truth and this says how far the transition has got. Closing is the same pair in
+    /// reverse, which is why `hide` does not empty the menu: a panel that lost its entries as it
+    /// closed would animate nothing.
+    reveal: PopupReveal,
 }
 impl Menu {
     /// Creates a menu titled `title`, initially **hidden**.
@@ -264,6 +277,7 @@ impl Menu {
             submenu_requested: Signal1::new(),
             about_to_hide: GenericSignal::new(),
             direction: crate::core::TextDirection::default(),
+            reveal: PopupReveal::new(false),
         };
         // A menu is a popup, so it starts hidden. `BaseWidget` defaults to visible,
         // which is right for a control that owns part of the surface but wrong for
@@ -688,9 +702,14 @@ impl Widget for Menu {
 
     fn show(&mut self) {
         self.about_to_show.emit();
+        self.reveal.set_open(true);
         self.base.show();
     }
     fn hide(&mut self) {
+        // The reveal is aimed at closed **before** the flag flips, so the closing transition is
+        // still animated: `draw` paints the body while the reveal has anything left to show, and
+        // only a fully collapsed reveal stops it.
+        self.reveal.set_open(false);
         self.base.hide();
         // Clear the invoker position with the popup: it describes an open menu, and
         // leaving it set would make a reopened menu report a stale origin.
@@ -698,6 +717,20 @@ impl Widget for Menu {
         self.hovered_index = None;
         self.about_to_hide.emit();
     }
+
+    /// Advances the popup's open/close reveal; `true` while it still owes frames.
+    ///
+    /// Forwarded to the trait so the animation bus drives it — `tick_animations` sweeps every
+    /// mounted control, so a menu that kept its tick inherent would be one the host cannot
+    /// advance.
+    fn tick(&mut self, delta_ms: u32) -> bool {
+        self.reveal.tick(delta_ms)
+    }
+
+    fn is_animating(&self) -> bool {
+        self.reveal.is_animating()
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -994,12 +1027,33 @@ impl Draw for Menu {
             border,
         );
 
-        if !self.is_visible() {
+        // # Why the body is painted while it is *either* open or still closing
+        //
+        // `is_visible` is the authority and flips on the frame the menu opens or closes, but it is
+        // a `bool` and cannot describe a panel halfway. The body is therefore drawn whenever the
+        // reveal has anything left to show — which is the open state **and** the frames of a
+        // closing one. Testing the flag alone would cut the closing animation off at its first
+        // frame, i.e. exactly the hard cut this control was fixing.
+        if !self.is_visible() && self.reveal.is_closed() {
             return;
         }
 
         let popup_y = rect.y + heading_h as i32;
         let popup_h = self.popup_height();
+        // The body the entries are painted into, revealed from the heading downward so the menu
+        // appears to grow out of its title strip. The clip is what makes the reveal honest: a
+        // body that only shrank its background would still print entries outside its own edge, so
+        // a user would see rows the geometry has not admitted to yet.
+        let body = Rect::new(rect.x, popup_y, rect.width, popup_h as u32);
+        let revealed = self.reveal.revealed(
+            body,
+            RevealDirection::Down,
+            PopupReveal::travel_cap_for(crate::core::Size::new(body.width, body.height)),
+        );
+        let clipped = !self.reveal.is_closed();
+        if clipped {
+            context.push_clip(revealed.x, revealed.y, revealed.width, revealed.height);
+        }
         context.fill_rect(
             Rect::new(rect.x, popup_y, rect.width, popup_h as u32),
             face.blend(&ink, 0.22),
@@ -1102,6 +1156,11 @@ impl Draw for Menu {
                     HorizontalAlignment::Center,
                 );
             }
+        }
+        // Popped on the same path it was pushed, so the reveal cannot leak a clip onto whatever
+        // the host draws after this menu.
+        if clipped {
+            context.pop_clip();
         }
     }
 }
