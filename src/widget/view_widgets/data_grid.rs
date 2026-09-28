@@ -713,9 +713,16 @@ impl Draw for DataGrid {
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))
             .filter(|resolved| *resolved != surface)
             .unwrap_or_else(|| surface.blend(&ink, 0.20));
-        // Cell chrome is derived from the surface rather than picked as a second literal, so
-        // the grid reads as inset in either appearance.
-        let cell_border = surface.blend(&ink, 0.10);
+        // Cell chrome is the theme's `outline_variant` — the **weak** separator role — rather than a
+        // local blend, so the grid is visibly weaker than the `outline`-strength focus ring (§5.4)
+        // and a theme that tunes its separators moves this control with the rest of the table family
+        // (`table_widget`, `virtual_table`, `tree_table`). The blend is the last rung for a build with
+        // no theme.
+        let cell_border = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.outline_variant)
+            .filter(|resolved| *resolved != surface)
+            .unwrap_or_else(|| surface.blend(&ink, 0.10));
         // The accent is the theme's `primary`: the hue a theme is expected to vary most, so
         // the frozen-column indicator follows the appearance rather than staying a literal blue.
         let accent = crate::style::theme_manager()

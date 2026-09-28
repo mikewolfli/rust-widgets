@@ -76,7 +76,7 @@ backend running on an OS it was not compiled for reports `false`.
 |----|:-----------:|:---:|:-------------:|:-----------:|
 | Windows | ✅ | ✅ | ✅ | ✅ |
 | macOS | ✅ | ✅ | ✅ | ✅ |
-| Linux / GTK | ✅ | ✅ | ✅ | ✅ |
+| Linux / GTK | ✅ | ✅ | ✅ | ❌ |
 | Linux / Wayland | ✅ | ✅ | ✅ | ❌ |
 | iOS | ✅ | ✅ | ✅ | ❌ |
 | Android | ✅ | ✅ | ✅ | ❌ |
@@ -84,17 +84,16 @@ backend running on an OS it was not compiled for reports `false`.
 | WASM | ❌ | ❌ | ❌ | ❌ |
 | Portable | ❌ | ❌ | ❌ | ❌ |
 
-Wayland has no menu-bar protocol, so its backend keeps the menu tree in-process
-and the host renders it — advertising a native menu there would be false.
+Wayland and Linux/GTK have no menu-bar protocol, so their backends keep the menu tree
+in-process and the host renders it — advertising a native menu there would be false.
 
 The `native_menu` column is easy to misread, so it is worth knowing where the
-values come from: `Platform::capabilities` defaults to "`true` if the backend
-reports the `Desktop` family", and only Wayland, iOS, Android and HarmonyOS
-override it to `false`. That means a desktop-family backend which *forgets* to
-override silently inherits `native_menu: true` — the default is the over-claim, and
-the override is the honesty. `default_capabilities_for(family)` exposes the default
-so you can compare it against a backend's own report, and the table above is pinned
-by a test so it cannot drift from the source.
+values come from: `Platform::capabilities` defaults to an honest all-`false`, and a
+backend overrides it with what it actually wires up. Only Windows and macOS create
+an OS menu object; Linux (GTK), Wayland, iOS, Android and HarmonyOS keep the menu
+in-process, so their `native_menu` is `false`. `default_capabilities_for(family)`
+exposes the default so you can compare it against a backend's own report, and the
+table above is pinned by a test so it cannot drift from the source.
 
 ---
 

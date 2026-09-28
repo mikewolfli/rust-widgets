@@ -515,6 +515,10 @@ impl Widget for Button {
             "clicked" => Some(EventSignalRef::unit("clicked", self.clicked_signal())),
             "pressed" => Some(EventSignalRef::unit("pressed", &self.pressed_signal)),
             "released" => Some(EventSignalRef::unit("released", &self.released_signal)),
+            // A gesture abandoned by a release outside the button, or by an ungrab. It is a
+            // distinct event from `released`: the button did not activate, so a host that
+            // wants to run 「the press was abandoned」 logic needs its own subscription.
+            "canceled" => Some(EventSignalRef::unit("canceled", &self.canceled)),
             // An enum payload travels as its token spelling, which is the same representation the
             // property side uses for `PropertyValueKind::Enum` — one spelling, not two.
             "state_changed" => {

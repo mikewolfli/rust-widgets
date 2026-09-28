@@ -72,6 +72,62 @@ mod cjk;
 #[cfg(feature = "fonts-cjk")]
 pub use cjk::FONT as CJK;
 
+// The sharded CJK vector face (`fonts-cjk-shards`). Each shard is one `include_bytes!` payload
+// behind its own feature; the generated module names the shard a character lives in so a host can
+// load one script rather than all of CJK. See `tools/cjk_vector_shards.txt`.
+#[cfg(any(
+    feature = "fonts-cjk-shard-latin",
+    feature = "fonts-cjk-shard-symbols",
+    feature = "fonts-cjk-shard-kana",
+    feature = "fonts-cjk-shard-fullwidth",
+    feature = "fonts-cjk-shard-han"
+))]
+/// The sharded CJK vector face: the `fonts-cjk` coverage partitioned on Unicode block boundaries.
+///
+/// Each shard is one `include_bytes!` payload behind its own `fonts-cjk-shard-<id>` feature, and
+/// [`cjk_shards::shard_for`] names the shard a character lives in. Use
+/// [`cjk_shard_loader::load_shard_for`] to make a shard resident on demand — that is the point of
+/// splitting, and it needs the `runtime-fonts` feature to have somewhere to register the bytes.
+#[cfg_attr(
+    docsrs,
+    doc(cfg(any(
+        feature = "fonts-cjk-shard-latin",
+        feature = "fonts-cjk-shard-symbols",
+        feature = "fonts-cjk-shard-kana",
+        feature = "fonts-cjk-shard-fullwidth",
+        feature = "fonts-cjk-shard-han"
+    )))
+)]
+pub mod cjk_shards;
+
+// Loading a shard on demand, into the runtime face list. Needs both a shard to load and the
+// registry to load it into; without `runtime-fonts` a shard would have to be compiled into
+// `active_faces`, which is the behaviour the shards exist to avoid.
+#[cfg(all(
+    feature = "runtime-fonts",
+    any(
+        feature = "fonts-cjk-shard-latin",
+        feature = "fonts-cjk-shard-symbols",
+        feature = "fonts-cjk-shard-kana",
+        feature = "fonts-cjk-shard-fullwidth",
+        feature = "fonts-cjk-shard-han"
+    )
+))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(all(
+        feature = "runtime-fonts",
+        any(
+            feature = "fonts-cjk-shard-latin",
+            feature = "fonts-cjk-shard-symbols",
+            feature = "fonts-cjk-shard-kana",
+            feature = "fonts-cjk-shard-fullwidth",
+            feature = "fonts-cjk-shard-han"
+        )
+    )))
+)]
+pub mod cjk_shard_loader;
+
 #[cfg(feature = "fonts-emoji-color")]
 mod emoji;
 #[cfg(feature = "fonts-emoji-color")]
@@ -101,6 +157,204 @@ pub fn active_color_faces() -> &'static [ColorFaceBytes] {
     &SLOTS
 }
 
+/// Whether `face`'s glyph table has `ch`.
+///
+/// One spelling of the coverage question, shared by [`face_for_char`] and [`outline_face_for`], so
+/// the two cannot drift into disagreeing about what a face contains.
+///
+/// # Why this parses on every call, and why that is about to change
+///
+/// `ttf_parser::Face::parse` walks the table directory — a few dozen reads — and this function is on
+/// the **per-glyph, per-frame** path (`paint_active` → `VectorSource::paint` → `face_for`). A label
+/// of *n* Latin characters re-parses the same face *n* times a frame, every frame, for a table that
+/// never changes. See [`face_for_char`], which layers a cache in front of this.
+#[cfg(any(
+    feature = "text-shaping",
+    feature = "fonts-vector-latin",
+    feature = "fonts-complex",
+    cjk_outline_face
+))]
+pub(crate) fn face_covers(face: &FaceBytes, ch: char) -> bool {
+    ttf_parser::Face::parse(face.bytes, 0).ok().and_then(|parsed| parsed.glyph_index(ch)).is_some()
+}
+
+/// How many entries the coverage cache holds.
+///
+/// A direct-mapped cache keyed by codepoint, so the entry for `ch` is `ch as usize %
+/// COVERAGE_CACHE_SLOTS`. 64 slots is chosen against the shape of the workload rather than a
+/// benchmark: a line of running text draws each character once, so the cache pays off on the
+/// *repeat* case — the same label across frames, a repeated character in a run, a control's caption
+/// drawn then measured. 64 codepoints covers a caption and then some; a larger table only reduces
+/// collisions between characters that are not drawn together anyway.
+///
+/// Collisions are harmless: a miss simply falls through to the face walk, so the cache is an
+/// accelerator, never an authority.
+const COVERAGE_CACHE_SLOTS: usize = 64;
+
+/// One cache slot: the codepoint, and the face (or "none") that answered for it.
+///
+/// The answer is stored as a `CacheAnswer` rather than an index into a candidate list, because the
+/// candidate list changes when a host registers a face and an index would then point at the wrong
+/// entry. Storing the two words of the `FaceBytes` makes a hit self-contained: it needs no lock on
+/// the registry and no generation check, since it *is* the resolved answer.
+#[derive(Clone, Copy)]
+struct CoverageSlot {
+    /// The codepoint this slot was filled for, or `NONE` when the slot is empty.
+    codepoint: u32,
+    /// What answered. `Some` is a face whose glyph table had the character; `None` was cached as
+    /// well, so a character no face covers costs the walk once rather than once per frame.
+    answer: Option<FaceBytes>,
+}
+
+impl CoverageSlot {
+    /// A codepoint no real character has, so an empty slot can never match.
+    const EMPTY_CODEPOINT: u32 = u32::MAX;
+    const EMPTY: Self = Self { codepoint: Self::EMPTY_CODEPOINT, answer: None };
+}
+
+/// The process-wide coverage cache.
+///
+/// # Why a mutex, and why that does not contradict the glyph-path constraints
+///
+/// The crate's constraints forbid shared mutable state on the glyph path. This is a deliberate,
+/// narrow exception: the state is a cache whose *only* correctness requirement is that a stale entry
+/// is never wrong — and a slot stores the resolved answer, so a stale entry cannot be wrong. A
+/// mutex (not a lock-free table) is what makes the lookup-and-fill atomic, so no torn slot is
+/// reachable. The lock is taken per character and never held across rasterisation.
+///
+/// # Why the cache does not need invalidating when a face is registered
+///
+/// A slot holds the *answer*, not an index that a registration would shift. Registering a face
+/// changes what a **later** lookup returns, and the next lookup for a codepoint whose slot holds the
+/// old answer would still return the old face. That is why [`invalidate_face_cache`] exists: it
+/// bumps a counter that every slot's tag is compared against, so a registration is visible to the
+/// cache without the registry lock being taken on every glyph.
+static COVERAGE_CACHE: crate::compat::Mutex<[CoverageSlot; COVERAGE_CACHE_SLOTS]> =
+    crate::compat::Mutex::new([CoverageSlot::EMPTY; COVERAGE_CACHE_SLOTS]);
+
+/// Bumped by every change to the face list, so entries from before it are ignored.
+///
+/// The registry can be mutated by a host calling `register_face`/`clear_faces` at any time. A slot
+/// filled before such a call holds the pre-change answer; comparing the slot's tag against this
+/// counter makes that entry a miss rather than a stale hit.
+static FACE_GENERATION: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// The generation tag of each cache slot, in a parallel array sharing the slot index.
+static SLOT_GENERATIONS: crate::compat::Mutex<[u32; COVERAGE_CACHE_SLOTS]> =
+    crate::compat::Mutex::new([0u32; COVERAGE_CACHE_SLOTS]);
+
+/// The face that covers `ch`, consulting **host-registered faces first**.
+///
+/// # Why this exists rather than every caller walking `active_faces`
+///
+/// With the `runtime-fonts` feature on, a host may register its own face
+/// ([`crate::render::text::register_face`]). That face must be consulted before the compiled
+/// ones — a host that supplied a font did so because it wants *that* font — so the lookup cannot
+/// simply iterate the compiled list. Every caller that needs "which face draws this character"
+/// (`VectorSource`, the SVG backend's `outline_by_coverage`, the shaper's coverage probe) routes
+/// through here, which is what keeps them agreeing (the defect `outline_face_for` documents).
+///
+/// # The cache, and the work it removes
+///
+/// This function is on the **per-glyph, per-frame** path (`paint_active` → `VectorSource::paint` →
+/// `face_for`). Un-cached, each call runs `ttf_parser::Face::parse` over every candidate face before
+/// finding the one that covers the character — for a Latin label that is one parse per glyph; for a
+/// CJK glyph it is a parse of Latin *and* CJK. Nothing about the answer changes between frames on a
+/// build with no runtime faces, so it is work the process repeats purely because nothing remembered
+/// it. The cache ([`COVERAGE_CACHE_SLOTS`]) remembers it per codepoint, `tofu` included.
+#[cfg(any(
+    feature = "text-shaping",
+    feature = "fonts-vector-latin",
+    feature = "fonts-complex",
+    cjk_outline_face
+))]
+pub fn face_for_char(ch: char) -> Option<FaceBytes> {
+    let codepoint = ch as u32;
+    let slot = codepoint as usize % COVERAGE_CACHE_SLOTS;
+    let generation = FACE_GENERATION.load(core::sync::atomic::Ordering::Acquire);
+
+    // A hit is self-contained: the slot holds the resolved answer, so it needs neither the registry
+    // nor the candidate walk. The tag check is what makes a registration visible.
+    {
+        let cache = crate::compat::lock(&COVERAGE_CACHE);
+        let entry = cache[slot];
+        if entry.codepoint == codepoint && slot_generation(slot) == generation {
+            return entry.answer;
+        }
+    }
+
+    let answer = resolve_face(ch);
+    {
+        let mut cache = crate::compat::lock(&COVERAGE_CACHE);
+        cache[slot] = CoverageSlot { codepoint, answer };
+    }
+    set_slot_generation(slot, generation);
+    answer
+}
+
+/// [`face_for_char`] **without** the cache — the control a benchmark measures the cache against.
+///
+/// # Why this is public and hidden
+///
+/// The cache's whole claim is "a repeated character is cheaper than the first". Measuring that
+/// requires both sides: the cached call and the un-cached one. The un-cached one is otherwise
+/// unreachable from a benchmark (an integration target is an external crate, so `pub(crate)` does
+/// not cross), so it is exposed with `#[doc(hidden)]` — present for measurement and for a test that
+/// asserts the two agree, but not part of the documented surface.
+///
+/// # The contract a measurement depends on
+///
+/// This function returns **exactly** what a cold [`face_for_char`] returns: same precedence
+/// (runtime faces before compiled ones), same coverage rule. `tests::the_cached_and_uncached_lookups_agree`
+/// asserts that equality, so a divergence is a test failure rather than a silently invalid benchmark.
+#[cfg(any(
+    feature = "text-shaping",
+    feature = "fonts-vector-latin",
+    feature = "fonts-complex",
+    cjk_outline_face
+))]
+#[doc(hidden)]
+pub fn face_for_char_uncached(ch: char) -> Option<FaceBytes> {
+    resolve_face(ch)
+}
+
+/// The un-cached lookup: runtime faces first, then the compiled ones.
+fn resolve_face(ch: char) -> Option<FaceBytes> {
+    #[cfg(feature = "runtime-fonts")]
+    {
+        let (runtime, len) = crate::render::text::runtime_fonts::active_runtime_faces();
+        for face in &runtime[..len] {
+            if face_covers(face, ch) {
+                return Some(*face);
+            }
+        }
+    }
+    active_faces().iter().copied().find(|face| face_covers(face, ch))
+}
+
+fn slot_generation(slot: usize) -> u32 {
+    crate::compat::lock(&SLOT_GENERATIONS)[slot]
+}
+
+fn set_slot_generation(slot: usize, generation: u32) {
+    crate::compat::lock(&SLOT_GENERATIONS)[slot] = generation;
+}
+
+/// Invalidate the coverage cache after the face list changes.
+///
+/// Called by `runtime_fonts` on every registration and clear, because those are the two operations
+/// that change which face answers a character. A generation bump makes every pre-change entry a miss
+/// without walking (and holding) 64 slots.
+///
+/// Gated on `runtime-fonts` because the registry is the only thing that can change the face list at
+/// runtime: without it the cache's inputs are fixed for the life of the process, so there is nothing
+/// to invalidate and no caller.
+#[cfg(feature = "runtime-fonts")]
+pub(crate) fn invalidate_face_cache() {
+    FACE_GENERATION.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+}
+
+
 /// The vector faces this build carries, in preference order.
 ///
 /// A face is chosen by *coverage* (the shaper asks each whether it has a glyph for the text's
@@ -116,6 +370,10 @@ pub fn active_color_faces() -> &'static [ColorFaceBytes] {
 /// generated face ships no data here and lets the host supply its own. That is why the non-data
 /// case is a zero-length array rather than an absent function — the shaper's lookup code is the
 /// same either way, so there is no second code path to keep in step.
+///
+/// This is the **compiled** list; a face registered at runtime via
+/// [`crate::render::text::register_face`] is not in it. Use [`face_for_char`] when the question is
+/// "which face draws this character", which is almost always.
 #[cfg(any(
     feature = "text-shaping",
     feature = "fonts-vector-latin",
@@ -214,13 +472,72 @@ pub fn active_faces() -> &'static [FaceBytes] {
     feature = "text-shaping",
     feature = "fonts-vector-latin",
     feature = "fonts-complex",
-    feature = "fonts-cjk"
+    cjk_outline_face
 ))]
 pub fn outline_face_for(ch: char) -> Option<FaceBytes> {
-    active_faces().iter().copied().find(|face| {
-        ttf_parser::Face::parse(face.bytes, 0)
-            .ok()
-            .and_then(|parsed| parsed.glyph_index(ch))
-            .is_some()
-    })
+    // One lookup, shared with `face_for_char`: the coverage question has exactly one spelling so the
+    // rasteriser and the vector backend cannot answer it differently. Host-registered faces
+    // (`runtime-fonts`) are consulted first there, which is also what this backend must do — an
+    // outline emitted for a character must be the outline the pixels would show.
+    face_for_char(ch)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The cache is an accelerator, not an authority: a hit must equal the un-cached answer.
+    ///
+    /// # Why this is asserted rather than assumed
+    ///
+    /// The benchmark in `benches/font_bench.rs` measures `face_for_char` against
+    /// `face_for_char_uncached`; that comparison is only meaningful if the two are the *same
+    /// function* modulo the cache. A cache that returned a different face — from a stale index, a
+    /// generation bug, or a bad slot mapping — would make the benchmark compare apples to oranges
+    /// while every timing looked plausible. This is the assertion that keeps the control honest.
+    #[cfg(any(
+        feature = "text-shaping",
+        feature = "fonts-vector-latin",
+        feature = "fonts-complex",
+        cjk_outline_face
+    ))]
+    #[test]
+    fn the_cached_and_uncached_lookups_agree() {
+        // A spread that exercises: a covered ASCII letter, an uncovered private-use codepoint
+        // (cached as "no face"), whitespace, and — when the build carries them — CJK and an
+        // emoji, so both the compiled-list and the shape of the answer are covered.
+        let probes = ['A', 'z', '\u{0}', ' ', '\u{E000}', '\u{4E2D}', '\u{3042}', '\u{1F600}'];
+        for ch in probes {
+            let cached = face_for_char(ch);
+            let uncached = face_for_char_uncached(ch);
+            assert_eq!(
+                cached.map(|face| face.name),
+                uncached.map(|face| face.name),
+                "cache and un-cached lookup disagree for U+{:04X} ({ch:?})",
+                ch as u32
+            );
+        }
+    }
+
+    /// A repeated lookup returns the first answer, and a build with no face answers `None`.
+    ///
+    /// The second half is the honest-absence contract: `face_for_char` on a build with an empty
+    /// compiled list and no registered face must say "no face", not fabricate one.
+    #[cfg(any(
+        feature = "text-shaping",
+        feature = "fonts-vector-latin",
+        feature = "fonts-complex",
+        cjk_outline_face
+    ))]
+    #[test]
+    fn a_repeated_lookup_is_stable() {
+        let first = face_for_char('A');
+        for _ in 0..100 {
+            assert_eq!(
+                face_for_char('A').map(|face| face.name),
+                first.map(|face| face.name),
+                "the cached answer must not change across repeated lookups"
+            );
+        }
+    }
 }

@@ -395,6 +395,18 @@ impl Widget for TagInput {
     fn tick(&mut self, delta_ms: u32) -> bool {
         TagInput::tick(self, delta_ms)
     }
+
+    /// Whether the caret is cycling, i.e. whether a frame is owed.
+    ///
+    /// `Widget::is_animating` answers `false` unless a control overrides it, and a host consults it to
+    /// decide whether a frame is needed **before** paying for a sweep. A focused tag field whose caret
+    /// is mid-blink answered `false`, so such a host would stop scheduling frames between two blinks
+    /// and the caret would stop cycling — the same unreachable animation the trait `tick` above exists
+    /// to end, one layer up. The condition mirrors [`TagInput::tick`]: the caret runs exactly while the
+    /// field holds focus.
+    fn is_animating(&self) -> bool {
+        self.focused
+    }
 }
 
 /// `TagInput`'s property contract.
@@ -751,6 +763,34 @@ mod tests {
         assert!(!ti.is_focused());
         assert_eq!(ti.kind(), WidgetKind::TagInput);
         assert!(ti.is_enabled());
+    }
+
+    /// `is_animating` agrees with `tick`: a tag field owes a frame exactly while it holds focus.
+    ///
+    /// # The defect this pins
+    ///
+    /// `Widget::is_animating` answers `false` unless a control overrides it, and a host consults the
+    /// answer to decide whether a frame is needed **before** paying for a sweep. A focused tag field
+    /// whose caret was mid-blink answered `false`, so such a host would stop scheduling frames between
+    /// two blinks and the caret would stop cycling — the same unreachable animation the trait `tick`
+    /// was lifted for, one layer up.
+    ///
+    /// # Why it is asserted against `tick`
+    ///
+    /// The two answers describe one animation, so a version that disagreed with `tick` in either
+    /// direction would be wrong whichever value it picked: `false` while ticking freezes the caret,
+    /// `true` while settled pins the host at frame rate. Comparing them makes a drift impossible.
+    #[test]
+    fn is_animating_agrees_with_tick() {
+        let mut ti = TagInput::new(Rect::new(0, 0, 300, 36));
+        assert!(!ti.is_animating(), "an unfocused field owes no frames");
+
+        ti.set_focused(true);
+        assert!(ti.is_animating(), "a focused field animates its caret");
+
+        ti.set_focused(false);
+        assert!(!ti.is_animating(), "blurring settles the caret");
+        assert_eq!(ti.is_animating(), ti.tick(0));
     }
 
     #[test]

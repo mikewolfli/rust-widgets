@@ -1,0 +1,125 @@
+# The icon token set — the single source of truth for `IconName`.
+#
+# # What this file is
+#
+# One line per icon: `token | RustVariant | doc string`. `tools/gen_icon_names.py` reads it and
+# writes `src/widget/display_widgets/icon_names.rs`, which holds the whole `IconName` type — the
+# enum, `as_str`, `from_name`, `ALL`, and `data()`.
+#
+# # Why a file rather than a hand-written enum
+#
+# Before this file existed, adding one icon meant editing **six** places by hand: the enum variant,
+# the `as_str` match arm, the `from_name` match arm, the `ALL` array, the `all_tokens` array, and
+# the array's length literal (three separate `31`s). That is the shape that produces *drift* — a
+# token added to five of the six is a bug the compiler cannot see. The set is now stated once, and
+# the generated file cannot disagree with itself.
+#
+# The vendor map (`tools/vendor_material_symbols.py`'s `ICONS`) is keyed by the **token** column, so
+# a token here with no vendored SVG, or a vendored SVG with no token here, is a generation failure
+# rather than an icon that silently never appears.
+#
+# # Format
+#
+#   <token> | <Variant> | <doc>
+#
+# * `token` — the lowercase, underscore-separated string that `IconName::as_str` returns and
+#   `from_name` accepts. This is the spelling in the `icon` property and in `Icon::set_icon`.
+# * `Variant` — the Rust variant name (UpperCamelCase).
+# * `doc` — the doc comment body for the variant. A trailing sentence is fine; it is emitted
+#   verbatim as a `///` line.
+#
+# `#` starts a comment, blank lines are ignored. Order is the declaration order, which is also the
+# order `ICON_DATA` and `ICON_FALLBACK` are indexed by — so moving a line moves the icon, and the
+# integrity tests catch it by name.
+#
+# Regenerate with:
+#     python3 tools/gen_icon_names.py
+
+# ── The original 31 (BLUE25 ICON-3) ──
+check | Check | A tick, for confirmation or success.
+cross | Cross | Two crossing strokes inside a circle, for cancel or "no".
+arrow_left | ArrowLeft | A left-pointing arrow, for "back".
+arrow_right | ArrowRight | A right-pointing arrow, for "next".
+arrow_up | ArrowUp | An upward arrow.
+arrow_down | ArrowDown | A downward arrow.
+star | Star | A five-pointed star, for favourites or ratings.
+heart | Heart | A heart, for likes or favourites.
+settings | Settings | A gear, for configuration.
+home | Home | A house, for the home view.
+search | Search | A magnifying glass, for search.
+menu | Menu | Three stacked bars, for a navigation menu.
+close | Close | The X-shaped dismiss mark.
+plus | Plus | A plus sign, for adding.
+minus | Minus | A minus sign, for removing.
+info | Info | The letter "i" in a circle, for informational messages.
+warning | Warning | A triangle with an exclamation mark, for warnings.
+error | Error | A circle with an exclamation mark, for errors.
+user | User | A head-and-shoulders silhouette, for an account.
+mail | Mail | An envelope, for messages.
+bell | Bell | A bell, for notifications.
+edit | Edit | A pencil, for editing.
+trash | Trash | A waste bin, for deletion.
+share | Share | A node-and-branches glyph, for sharing.
+refresh | Refresh | A circular arrow, for reloading.
+more | More | Three horizontal dots, for an overflow menu.
+filter | Filter | A funnel, for filtering.
+lock | Lock | A closed padlock.
+unlock | Unlock | An open padlock.
+download | Download | A downward arrow into a tray, for downloading.
+upload | Upload | An upward arrow out of a tray, for uploading.
+
+# ── Navigation ──
+# The chevron family is the single most-used icon in a UI: it is the disclosure triangle on every
+# menu, combo box, tree node and accordion.
+chevron_left | ChevronLeft | A left chevron, for collapsing or stepping back.
+chevron_right | ChevronRight | A right chevron, for expanding or stepping forward.
+chevron_up | ChevronUp | An up chevron, for collapsing a disclosure.
+chevron_down | ChevronDown | A down chevron, for expanding a disclosure.
+first_page | FirstPage | A vertical bar with a left chevron, for the first page.
+last_page | LastPage | A vertical bar with a right chevron, for the last page.
+
+# ── Files ──
+folder | Folder | A closed folder.
+folder_open | FolderOpen | An open folder.
+file | File | A document sheet with ruled lines.
+save | Save | A floppy disk, for saving.
+copy | Copy | Two stacked sheets, for copying.
+print | Print | A printer, for printing.
+
+# ── Editing ──
+undo | Undo | A left-curving arrow, for undo.
+redo | Redo | A right-curving arrow, for redo.
+cut | Cut | A pair of scissors, for cutting.
+paste | Paste | A clipboard, for pasting.
+attachment | Attachment | A paperclip, for attaching a file.
+link | Link | Two chain links, for a hyperlink.
+
+# ── Status ──
+# `success` is a filled circle with a tick inside it, deliberately a *different* picture from the
+# bare `check`. The generator rejects two tokens that resolve to one outline, so the distinction
+# is enforced rather than assumed.
+success | Success | A filled circle with a tick, for a completed operation.
+help | Help | A question mark in a circle, for help.
+block | Block | A circle with a diagonal slash, for a disallowed action.
+schedule | Schedule | A clock face, for a scheduled time.
+hourglass | Hourglass | An hourglass, for a pending or in-progress state.
+
+# ── Media ──
+play | Play | A right-pointing triangle, for play.
+pause | Pause | Two vertical bars, for pause.
+stop | Stop | A filled square, for stop.
+skip_next | SkipNext | A triangle against a bar, for the next track.
+volume_up | VolumeUp | A speaker with sound waves, for unmuted audio.
+volume_off | VolumeOff | A speaker with a cross, for muted audio.
+
+# ── Data ──
+sort | Sort | A downward arrow over a bar, for sorting.
+bar_chart | BarChart | Three ascending bars, for a chart.
+calendar | Calendar | A calendar page, for a date.
+table | Table | A grid of cells, for tabular data.
+
+# ── Communication ──
+chat | Chat | A speech bubble, for a conversation.
+call | Call | A telephone handset, for a voice call.
+send | Send | A paper plane, for sending.
+notifications_off | NotificationsOff | A bell with a cross, for muted notifications.

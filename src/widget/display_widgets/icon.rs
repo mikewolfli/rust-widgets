@@ -18,266 +18,14 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 
-/// Common icon names for use with the Icon widget.
-///
-/// Each variant corresponds to a hand-drawn geometric representation rather
-/// than a glyph from an icon font, so the rendered result is a plain-shape
-/// approximation of the symbol. Every variant round-trips through
-/// [`IconName::as_str`] and [`IconName::from_name`].
-///
-/// Note that several variants are drawn as aliases of others (for example
-/// [`IconName::Close`] and [`IconName::Cross`]), so visually distinct names do
-/// not always produce distinct output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IconName {
-    /// A tick, for confirmation or success.
-    Check,
-    /// Two crossing strokes, for cancel or "no".
-    Cross,
-    /// A left-pointing arrow, for "back".
-    ArrowLeft,
-    /// A right-pointing arrow, for "next".
-    ArrowRight,
-    /// An upward arrow.
-    ArrowUp,
-    /// A downward arrow.
-    ArrowDown,
-    /// A five-pointed star, for favourites or ratings.
-    Star,
-    /// A heart, for likes or favourites.
-    Heart,
-    /// A gear, for configuration.
-    Settings,
-    /// A house, for the home view.
-    Home,
-    /// A magnifying glass, for search.
-    Search,
-    /// Three stacked bars, for a navigation menu.
-    Menu,
-    /// The X-shaped dismiss mark.
-    Close,
-    /// A plus sign, for adding.
-    Plus,
-    /// A minus sign, for removing.
-    Minus,
-    /// The letter "i" in a circle, for informational messages.
-    Info,
-    /// A triangle with an exclamation mark, for warnings.
-    Warning,
-    /// A circle with an exclamation mark, for errors.
-    Error,
-    /// A head-and-shoulders silhouette, for an account.
-    User,
-    /// An envelope, for messages.
-    Mail,
-    /// A bell, for notifications.
-    Bell,
-    /// A pencil, for editing.
-    Edit,
-    /// A waste bin, for deletion.
-    Trash,
-    /// A node-and-branches glyph, for sharing.
-    Share,
-    /// A circular arrow, for reloading.
-    Refresh,
-    /// Three horizontal dots, for an overflow menu.
-    More,
-    /// A funnel, for filtering.
-    Filter,
-    /// A closed padlock.
-    Lock,
-    /// An open padlock.
-    Unlock,
-    /// A downward arrow into a tray, for downloading.
-    Download,
-    /// An upward arrow out of a tray, for uploading.
-    Upload,
-}
-
-impl IconName {
-    /// Returns the string representation of this icon name.
-    ///
-    /// The tokens are lower-case and underscore-separated (`"arrow_left"`),
-    /// and are the exact spellings accepted by [`IconName::from_name`] and by
-    /// the `icon` property. They are also the names used by
-    /// [`Icon::set_icon`].
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Check => "check",
-            Self::Cross => "cross",
-            Self::ArrowLeft => "arrow_left",
-            Self::ArrowRight => "arrow_right",
-            Self::ArrowUp => "arrow_up",
-            Self::ArrowDown => "arrow_down",
-            Self::Star => "star",
-            Self::Heart => "heart",
-            Self::Settings => "settings",
-            Self::Home => "home",
-            Self::Search => "search",
-            Self::Menu => "menu",
-            Self::Close => "close",
-            Self::Plus => "plus",
-            Self::Minus => "minus",
-            Self::Info => "info",
-            Self::Warning => "warning",
-            Self::Error => "error",
-            Self::User => "user",
-            Self::Mail => "mail",
-            Self::Bell => "bell",
-            Self::Edit => "edit",
-            Self::Trash => "trash",
-            Self::Share => "share",
-            Self::Refresh => "refresh",
-            Self::More => "more",
-            Self::Filter => "filter",
-            Self::Lock => "lock",
-            Self::Unlock => "unlock",
-            Self::Download => "download",
-            Self::Upload => "upload",
-        }
-    }
-
-    /// Parses an icon name from its string representation.
-    ///
-    /// The match is exact and case-sensitive: only the tokens produced by
-    /// [`IconName::as_str`] are accepted, so `"ArrowLeft"` and `"arrow left"`
-    /// both return `None`. Use [`Icon::set_icon`] when an unrecognised name
-    /// should fall back to a placeholder rather than being rejected.
-    pub fn from_name(s: &str) -> Option<Self> {
-        match s {
-            "check" => Some(Self::Check),
-            "cross" => Some(Self::Cross),
-            "arrow_left" => Some(Self::ArrowLeft),
-            "arrow_right" => Some(Self::ArrowRight),
-            "arrow_up" => Some(Self::ArrowUp),
-            "arrow_down" => Some(Self::ArrowDown),
-            "star" => Some(Self::Star),
-            "heart" => Some(Self::Heart),
-            "settings" => Some(Self::Settings),
-            "home" => Some(Self::Home),
-            "search" => Some(Self::Search),
-            "menu" => Some(Self::Menu),
-            "close" => Some(Self::Close),
-            "plus" => Some(Self::Plus),
-            "minus" => Some(Self::Minus),
-            "info" => Some(Self::Info),
-            "warning" => Some(Self::Warning),
-            "error" => Some(Self::Error),
-            "user" => Some(Self::User),
-            "mail" => Some(Self::Mail),
-            "bell" => Some(Self::Bell),
-            "edit" => Some(Self::Edit),
-            "trash" => Some(Self::Trash),
-            "share" => Some(Self::Share),
-            "refresh" => Some(Self::Refresh),
-            "more" => Some(Self::More),
-            "filter" => Some(Self::Filter),
-            "lock" => Some(Self::Lock),
-            "unlock" => Some(Self::Unlock),
-            "download" => Some(Self::Download),
-            "upload" => Some(Self::Upload),
-            _ => None,
-        }
-    }
-
-    /// The Material Symbols outline for this icon, when the `icons` feature is on.
-    ///
-    /// # Why this is a method on the enum, and why it is not `Option`
-    ///
-    /// With the feature on, `data()` is **total**: it answers `IconData` (not `Option`), so a
-    /// variant added without a matching entry is a compile error rather than a runtime
-    /// placeholder. That is the crate's strongest completeness guarantee, and it is exactly the
-    /// link `icon.rs` used to lack — a declared name and renderable geometry had nothing
-    /// connecting them.
-    #[cfg(feature = "icons")]
-    pub fn data(self) -> IconData {
-        use crate::widget::icon_data::ICON_DATA;
-        // Indexed by the enum's declaration order, which is also `ICON_DATA`'s order: both come
-        // from the same generated token list. The `debug_assert!` catches a reorder in a debug
-        // build; `tests/icon_data_integrity_test.rs` checks the names in every build.
-        let index = self as usize;
-        debug_assert_eq!(
-            ICON_DATA[index].name,
-            self.as_str(),
-            "ICON_DATA order must match IconName declaration order"
-        );
-        ICON_DATA[index]
-    }
-
-    /// The Material Symbols outline for this icon, or `None` when the build has no icon data.
-    ///
-    /// The always-available spelling, so a draw path compiles in both states without a `cfg` at
-    /// the call site (principle #47: the condition lives here, once).
-    #[cfg(feature = "icons")]
-    pub fn data_opt(self) -> Option<IconData> {
-        Some(self.data())
-    }
-
-    /// No bundled data in this build, so there is nothing to resolve.
-    ///
-    /// Returns `None` rather than naming `IconData`, which is not compiled without the feature.
-    #[cfg(not(feature = "icons"))]
-    pub fn data_opt(self) -> Option<IconData> {
-        None
-    }
-
-    /// Every variant, in declaration order.
-    ///
-    /// # Why a hand-written list and why it is safe to have one
-    ///
-    /// `IconName` has no `#[derive(EnumIter)]` and no `ALL` until now; the list is spelled out
-    /// for the same reason [`IconName::as_str`] is, and it is kept honest by the same tests that
-    /// keep that one honest — `icon_data_integrity_test` and the round-trip test below walk it
-    /// against `data()` and `as_str()`, so a variant missing from this list fails the build's
-    /// tests rather than passing unnoticed.
-    pub const ALL: [IconName; 31] = [
-        Self::Check,
-        Self::Cross,
-        Self::ArrowLeft,
-        Self::ArrowRight,
-        Self::ArrowUp,
-        Self::ArrowDown,
-        Self::Star,
-        Self::Heart,
-        Self::Settings,
-        Self::Home,
-        Self::Search,
-        Self::Menu,
-        Self::Close,
-        Self::Plus,
-        Self::Minus,
-        Self::Info,
-        Self::Warning,
-        Self::Error,
-        Self::User,
-        Self::Mail,
-        Self::Bell,
-        Self::Edit,
-        Self::Trash,
-        Self::Share,
-        Self::Refresh,
-        Self::More,
-        Self::Filter,
-        Self::Lock,
-        Self::Unlock,
-        Self::Download,
-        Self::Upload,
-    ];
-
-    /// The canonical token of every variant, in declaration order.
-    ///
-    /// The table's own view of [`IconName::ALL`], so a test can compare the two lists rather
-    /// than compare each against a third copy.
-    pub fn all_tokens() -> [&'static str; 31] {
-        let mut tokens = [""; 31];
-        let mut index = 0;
-        while index < Self::ALL.len() {
-            tokens[index] = Self::ALL[index].as_str();
-            index += 1;
-        }
-        tokens
-    }
-}
+// The `IconName` type is generated from `tools/icon_tokens.txt` — see
+// `tools/gen_icon_names.py`. It is a module rather than an inline `include!` so its public
+// items are named by their real path and rustdoc documents them as the type's own. The `#[path]`
+// is required because this file is itself a module, so a bare `mod icon_names;` would be looked
+// for under an `icon/` directory.
+#[path = "icon_names.rs"]
+mod icon_names;
+pub use icon_names::IconName;
 
 /// One icon's outline, as SVG path data on a square design grid.
 ///
@@ -462,393 +210,28 @@ impl Icon {
         Rect::new(x.max(rect.x), y.max(rect.y), size.min(rect.width), size.min(rect.height))
     }
 
-    /// Draws a check mark (✓).
-    fn draw_check(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let sw = (self.size / 12.0).max(1.5) as u32;
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 8, cy + s / 2),
-            Point::new(cx + s / 3, cy + s * 3 / 4),
-            c,
-            sw,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 3, cy + s * 3 / 4),
-            Point::new(cx + s * 7 / 8, cy + s / 4),
-            c,
-            sw,
-        );
-    }
-
-    /// Draws a cross (✕).
-    fn draw_cross(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let sw = (self.size / 12.0).max(1.5) as u32;
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        let pad = s / 5;
-        ctx.draw_line_stroke(
-            Point::new(cx + pad, cy + pad),
-            Point::new(cx + s - pad, cy + s - pad),
-            c,
-            sw,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s - pad, cy + pad),
-            Point::new(cx + pad, cy + s - pad),
-            c,
-            sw,
-        );
-    }
-
-    /// Draws a left arrow (←).
-    fn draw_arrow_left(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let sw = (self.size / 12.0).max(1.5) as u32;
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        let mid_y = cy + s / 2;
-        let tip_x = cx + s / 5;
-        ctx.draw_line_stroke(Point::new(cx + s * 4 / 5, mid_y), Point::new(tip_x, mid_y), c, sw);
-        ctx.draw_line_stroke(Point::new(tip_x, mid_y), Point::new(cx + s / 3, cy + s / 4), c, sw);
-        ctx.draw_line_stroke(
-            Point::new(tip_x, mid_y),
-            Point::new(cx + s / 3, cy + s * 3 / 4),
-            c,
-            sw,
-        );
-    }
-
-    /// Draws a right arrow (→).
-    fn draw_arrow_right(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let sw = (self.size / 12.0).max(1.5) as u32;
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        let mid_y = cy + s / 2;
-        let tip_x = cx + s * 4 / 5;
-        ctx.draw_line_stroke(Point::new(cx + s / 5, mid_y), Point::new(tip_x, mid_y), c, sw);
-        ctx.draw_line_stroke(
-            Point::new(tip_x, mid_y),
-            Point::new(cx + s * 2 / 3, cy + s / 4),
-            c,
-            sw,
-        );
-        ctx.draw_line_stroke(
-            Point::new(tip_x, mid_y),
-            Point::new(cx + s * 2 / 3, cy + s * 3 / 4),
-            c,
-            sw,
-        );
-    }
-
-    /// Draws an up arrow (↑).
-    fn draw_arrow_up(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let sw = (self.size / 12.0).max(1.5) as u32;
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        let mid_x = cx + s / 2;
-        ctx.draw_line_stroke(
-            Point::new(mid_x, cy + s * 4 / 5),
-            Point::new(mid_x, cy + s / 5),
-            c,
-            sw,
-        );
-        ctx.draw_line_stroke(
-            Point::new(mid_x, cy + s / 5),
-            Point::new(cx + s / 4, cy + s / 3),
-            c,
-            sw,
-        );
-        ctx.draw_line_stroke(
-            Point::new(mid_x, cy + s / 5),
-            Point::new(cx + s * 3 / 4, cy + s / 3),
-            c,
-            sw,
-        );
-    }
-
-    /// Draws a down arrow (↓).
-    fn draw_arrow_down(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let sw = (self.size / 12.0).max(1.5) as u32;
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        let mid_x = cx + s / 2;
-        ctx.draw_line_stroke(
-            Point::new(mid_x, cy + s / 5),
-            Point::new(mid_x, cy + s * 4 / 5),
-            c,
-            sw,
-        );
-        ctx.draw_line_stroke(
-            Point::new(mid_x, cy + s * 4 / 5),
-            Point::new(cx + s / 4, cy + s * 2 / 3),
-            c,
-            sw,
-        );
-        ctx.draw_line_stroke(
-            Point::new(mid_x, cy + s * 4 / 5),
-            Point::new(cx + s * 3 / 4, cy + s * 2 / 3),
-            c,
-            sw,
-        );
-    }
-
-    /// Draws a star (★).
-    fn draw_star(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        let half = s / 2;
-        let center = Point::new(cx + half, cy + half);
-        // Draw a star using overlapping lines from center
-        let arm_len = half;
-        for i in 0..5 {
-            let angle = -std::f32::consts::FRAC_PI_2 + i as f32 * 2.0 * std::f32::consts::PI / 5.0;
-            let outer_x = center.x + (arm_len as f32 * angle.cos()) as i32;
-            let outer_y = center.y + (arm_len as f32 * angle.sin()) as i32;
-            ctx.draw_line_stroke(center, Point::new(outer_x, outer_y), c, 2);
-        }
-    }
-
-    /// Draws a heart (♥).
-    fn draw_heart(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        let half = s / 2;
-        let center = Point::new(cx + half, cy + half);
-        let lobe_r = (s / 4).max(2) as u32;
-        // Two lobes at top
-        ctx.fill_circle(Point::new(center.x - s / 5, center.y - s / 6), lobe_r, c);
-        ctx.fill_circle(Point::new(center.x + s / 5, center.y - s / 6), lobe_r, c);
-        // Triangle body pointing down
-        ctx.draw_line_stroke(
-            Point::new(center.x - s / 3, center.y - s / 8),
-            Point::new(center.x, center.y + s / 3),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(center.x + s / 3, center.y - s / 8),
-            Point::new(center.x, center.y + s / 3),
-            c,
-            2,
-        );
-    }
-
-    /// Draws a search/magnifying glass icon.
-    fn draw_search(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        let center = Point::new(cx + s / 3, cy + s / 3);
-        let circle_r = (s / 5).max(2) as u32;
-        ctx.draw_circle_stroke(center, circle_r, c, 2);
-        // Handle
-        let handle_start = Point::new(
-            center.x + (circle_r as f32 * 0.7) as i32,
-            center.y + (circle_r as f32 * 0.7) as i32,
-        );
-        ctx.draw_line_stroke(handle_start, Point::new(cx + s * 4 / 5, cy + s * 4 / 5), c, 2);
-    }
-
-    /// Draws a menu/hamburger icon (≡).
-    fn draw_menu(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        let sw = (self.size / 12.0).max(1.5) as u32;
-        let pad = s / 5;
-        ctx.draw_line_stroke(
-            Point::new(cx + pad, cy + s / 4),
-            Point::new(cx + s - pad, cy + s / 4),
-            c,
-            sw,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + pad, cy + s / 2),
-            Point::new(cx + s - pad, cy + s / 2),
-            c,
-            sw,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + pad, cy + s * 3 / 4),
-            Point::new(cx + s - pad, cy + s * 3 / 4),
-            c,
-            sw,
-        );
-    }
-
-    /// Draws a close/X icon (same as cross).
-    fn draw_close(&self, ctx: &mut RenderContext) {
-        // Reuse cross drawing
-        self.draw_cross(ctx);
-    }
-
-    /// Draws a plus (+) icon.
-    fn draw_plus(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let sw = (self.size / 12.0).max(1.5) as u32;
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        let pad = s / 4;
-        ctx.draw_line_stroke(
-            Point::new(cx + pad, cy + s / 2),
-            Point::new(cx + s - pad, cy + s / 2),
-            c,
-            sw,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 2, cy + pad),
-            Point::new(cx + s / 2, cy + s - pad),
-            c,
-            sw,
-        );
-    }
-
-    /// Draws a minus (−) icon.
-    fn draw_minus(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let sw = (self.size / 12.0).max(1.5) as u32;
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        let pad = s / 4;
-        ctx.draw_line_stroke(
-            Point::new(cx + pad, cy + s / 2),
-            Point::new(cx + s - pad, cy + s / 2),
-            c,
-            sw,
-        );
-    }
-
-    /// Draws an info (i) icon.
-    fn draw_info(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        let center = Point::new(cx + s / 2, cy + s / 2);
-        // Circle
-        ctx.draw_circle_stroke(center, (s / 2 - 1).max(2) as u32, c, 2);
-        // Dot at top
-        ctx.fill_circle(Point::new(cx + s / 2, cy + s / 4), 2, c);
-        // Vertical line for body
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 2, cy + s / 3 + 2),
-            Point::new(cx + s / 2, cy + s * 3 / 4),
-            c,
-            2,
-        );
-    }
-
-    /// Draws a warning (!) icon.
-    fn draw_warning(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        // Triangle outline
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 2, cy + s / 6),
-            Point::new(cx + s / 6, cy + s * 5 / 6),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 2, cy + s / 6),
-            Point::new(cx + s * 5 / 6, cy + s * 5 / 6),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 6, cy + s * 5 / 6),
-            Point::new(cx + s * 5 / 6, cy + s * 5 / 6),
-            c,
-            2,
-        );
-        // Exclamation mark
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 2, cy + s / 3),
-            Point::new(cx + s / 2, cy + s * 2 / 3),
-            c,
-            2,
-        );
-        // Dot at bottom
-        ctx.fill_circle(Point::new(cx + s / 2, cy + s * 3 / 4), 2, c);
-    }
-
-    /// Draws an error (✕ in circle) icon.
-    fn draw_error(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        let center = Point::new(cx + s / 2, cy + s / 2);
-        // Circle outline
-        ctx.draw_circle_stroke(center, (s / 2 - 1).max(2) as u32, c, 2);
-        // X inside
-        let pad = s / 4;
-        let sw = 2_u32;
-        ctx.draw_line_stroke(
-            Point::new(cx + pad, cy + pad),
-            Point::new(cx + s - pad, cy + s - pad),
-            c,
-            sw,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s - pad, cy + pad),
-            Point::new(cx + pad, cy + s - pad),
-            c,
-            sw,
-        );
-    }
-
-    /// Dispatches to the correct draw method based on icon_name.
+    /// Draws the icon, preferring the bundled outline data and falling back to generated geometry.
     ///
-    /// # Two paths, and why the data path is tried first
+    /// # The order, and why each step is where it is
     ///
-    /// With the opt-in `icons` feature on, a known token has a real outline
-    /// ([`IconName::data`]) and it is drawn. With the feature off — and for a name that is not a
-    /// token at all — the hand-drawn method for that name is used instead. That ordering is what
-    /// keeps a default build's output **byte-identical** to what it was before the data existed:
-    /// the hand-drawn shapes were the only shapes, so every committed snapshot was taken against
-    /// them, and the payload only ever adds a path a caller explicitly asked for.
+    /// 1. **A built-in token with the `icons` feature on** → its real Material Symbols outline
+    ///    ([`IconName::data`]). This is the crate's own vocabulary and it wins, so enabling the
+    ///    feature only ever *adds* a path a caller asked for (the historical snapshots stay valid).
+    /// 2. **A host-registered name** → the host's outline ([`register_icon`](crate::widget::register_icon)),
+    ///    drawn through the same code as a built-in one. A name that is not an [`IconName`] token
+    ///    can only be a host icon, which is exactly the case a host registers for.
+    /// 3. **Anything else that matches a token** → the generated fallback geometry. The fallback
+    ///    must not link the SVG parser, so a build without `icons` draws coarse polygons rather
+    ///    than real outlines; that is what keeps the default build byte-identical.
+    /// 4. **No match** → the question-mark placeholder.
     ///
-    /// The `draw_*` methods are therefore not dead code in a `icons` build: they remain the
-    /// fallback for the un-tokened case and the only renderer for a build without the data. See
-    /// the module docs for why the fallback is kept rather than removed.
+    /// # Why the fallback is *derived* rather than hand-drawn
+    ///
+    /// The fallback used to be 31 hand-written `draw_*` methods — a second source of truth that
+    /// could disagree with the SVG data. It did: `Close` and `Cross` were drawn by one method while
+    /// the data held two distinct outlines. [`ICON_FALLBACK`](crate::widget::icon_fallback_data::ICON_FALLBACK)
+    /// is generated from the **same** `tools/material_symbols/<token>.svg` files as `ICON_DATA`, so
+    /// the two paths cannot describe different shapes for one token.
     fn draw_icon(&self, ctx: &mut RenderContext) {
         #[cfg(feature = "icons")]
         {
@@ -861,51 +244,69 @@ impl Icon {
                 }
             }
         }
-        match self.icon_name.as_str() {
-            "check" => self.draw_check(ctx),
-            "cross" => self.draw_cross(ctx),
-            "close" => self.draw_close(ctx),
-            "arrow_left" => self.draw_arrow_left(ctx),
-            "arrow_right" => self.draw_arrow_right(ctx),
-            "arrow_up" => self.draw_arrow_up(ctx),
-            "arrow_down" => self.draw_arrow_down(ctx),
-            "star" => self.draw_star(ctx),
-            "heart" => self.draw_heart(ctx),
-            "search" => self.draw_search(ctx),
-            "menu" => self.draw_menu(ctx),
-            "plus" => self.draw_plus(ctx),
-            "minus" => self.draw_minus(ctx),
-            "info" => self.draw_info(ctx),
-            "warning" => self.draw_warning(ctx),
-            "error" => self.draw_error(ctx),
-            "settings" => self.draw_settings(ctx),
-            "home" => self.draw_home(ctx),
-            "user" => self.draw_user(ctx),
-            "mail" => self.draw_mail(ctx),
-            "bell" => self.draw_bell(ctx),
-            "edit" => self.draw_edit(ctx),
-            "trash" => self.draw_trash(ctx),
-            "share" => self.draw_share(ctx),
-            "refresh" => self.draw_refresh(ctx),
-            "more" => self.draw_more(ctx),
-            "filter" => self.draw_filter(ctx),
-            "lock" => self.draw_lock(ctx),
-            "unlock" => self.draw_unlock(ctx),
-            "download" => self.draw_download(ctx),
-            "upload" => self.draw_upload(ctx),
-            _ => self.draw_unknown(ctx),
+        // PROBE
+        self.draw_fallback(ctx);
+    }
+
+    /// Draws an icon from the generated fallback geometry
+    /// ([`IconFallback`](crate::widget::icon_fallback_data::IconFallback)).
+    ///
+    /// The token's geometry is looked up in [`ICON_FALLBACK`](crate::widget::icon_fallback_data::ICON_FALLBACK);
+    /// a name that is not a token draws the question mark. Each contour is filled as a polygon, and
+    /// the grid-to-device mapping is the same one [`Self::draw_outline`] uses, so the fallback and
+    /// the data path place an icon identically.
+    fn draw_fallback(&self, ctx: &mut RenderContext) {
+        use crate::widget::icon_fallback_data::ICON_FALLBACK;
+
+        let token = self.icon_name.as_str();
+        // The table is indexed by `IconName`'s declaration order, exactly like `ICON_DATA`, so a
+        // linear scan by name is the honest lookup for a string that may not be a token at all.
+        let Some(fallback) = ICON_FALLBACK.iter().find(|entry| entry.name == token) else {
+            self.draw_unknown(ctx);
+            return;
+        };
+        let rect = self.icon_rect();
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
+        let color = self.resolve_color();
+        let grid = f32::from(fallback.grid);
+        let scale = rect.width as f32 / grid;
+        let origin_x = rect.x as f32;
+        let origin_y = rect.y as f32;
+        for contour in fallback.contours {
+            if contour.len() < 3 {
+                continue;
+            }
+            // Map on the fly rather than through a scratch buffer: a fallback contour is at most a
+            // few dozen points, and a fixed scratch would have to be sized for the largest one.
+            let points: Vec<Point> = contour
+                .iter()
+                .map(|&(gx, gy)| {
+                    Point::new(
+                        (origin_x + gx as f32 * scale).round() as i32,
+                        (origin_y + (gy as f32 + grid) * scale).round() as i32,
+                    )
+                })
+                .collect();
+            ctx.draw_path(&points, true, color, true, 1);
         }
     }
 
-    /// Draws an icon from its bundled outline data.
+    /// Draws an icon from outline data — the one path both a bundled and a host icon take.
     ///
     /// Each contour is filled as a polygon by the non-zero winding rule, so a counter (the hole in
     /// an outlined shape) fills as empty because its ring runs the opposite way — the same rule the
     /// glyph rasteriser uses. Data that does not fit the fixed scratch, or that does not parse, is
     /// **refused**: nothing is drawn for it rather than a truncated shape (a partial icon is a
     /// wrong icon).
-    #[cfg(feature = "icons")]
-    fn draw_outline(&self, ctx: &mut RenderContext, data: &IconData) {
+    ///
+    /// # Why this is not gated on `icons`
+    ///
+    /// A host's registered icon is outline data the host supplied, and it must draw on a build
+    /// without the crate's bundled table — that is the whole point of registering one. Only
+    /// [`Self::draw_outline`], the bundled-table convenience, needs the feature.
+    fn draw_outline_data(&self, ctx: &mut RenderContext, data: &IconData) {
         use crate::render::path::{
             flatten_paths, IconPlacement, MAX_OUTLINE_CONTOURS, MAX_OUTLINE_POINTS,
         };
@@ -929,513 +330,14 @@ impl Icon {
         }
     }
 
-    // ── Extended icon drawings ──
-
-    fn draw_settings(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        let center = Point::new(cx + s / 2, cy + s / 2);
-        // Gear: circle with spokes
-        ctx.draw_circle_stroke(center, (s / 3).max(2) as u32, c, 2);
-        for i in 0..6 {
-            let angle = i as f32 * std::f32::consts::PI / 3.0;
-            let inner = Point::new(
-                center.x + ((s / 4) as f32 * angle.cos()) as i32,
-                center.y + ((s / 4) as f32 * angle.sin()) as i32,
-            );
-            let outer = Point::new(
-                center.x + ((s / 2 - 1) as f32 * angle.cos()) as i32,
-                center.y + ((s / 2 - 1) as f32 * angle.sin()) as i32,
-            );
-            ctx.draw_line_stroke(inner, outer, c, 2);
-        }
-    }
-
-    fn draw_home(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        // House shape: roof + walls
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 2, cy + s / 6),
-            Point::new(cx + s / 6, cy + s / 2),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 2, cy + s / 6),
-            Point::new(cx + s * 5 / 6, cy + s / 2),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 6, cy + s / 2),
-            Point::new(cx + s / 6, cy + s * 5 / 6),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s * 5 / 6, cy + s / 2),
-            Point::new(cx + s * 5 / 6, cy + s * 5 / 6),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 6, cy + s * 5 / 6),
-            Point::new(cx + s * 5 / 6, cy + s * 5 / 6),
-            c,
-            2,
-        );
-        // Door
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 3, cy + s * 5 / 6),
-            Point::new(cx + s / 3, cy + s * 2 / 3),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s * 2 / 3, cy + s * 5 / 6),
-            Point::new(cx + s * 2 / 3, cy + s * 2 / 3),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 3, cy + s * 2 / 3),
-            Point::new(cx + s * 2 / 3, cy + s * 2 / 3),
-            c,
-            2,
-        );
-    }
-
-    fn draw_user(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        // Head circle
-        ctx.draw_circle_stroke(
-            Point::new(cx + s / 2, cy + s / 3 - s / 8),
-            (s / 6).max(2) as u32,
-            c,
-            2,
-        );
-        // Body
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 2, cy + s / 3 + s / 8),
-            Point::new(cx + s / 2, cy + s * 3 / 4),
-            c,
-            2,
-        );
-        // Arms
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 4, cy + s / 2),
-            Point::new(cx + s * 3 / 4, cy + s / 2),
-            c,
-            2,
-        );
-        // Legs
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 2, cy + s * 3 / 4),
-            Point::new(cx + s / 4, cy + s * 5 / 6),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 2, cy + s * 3 / 4),
-            Point::new(cx + s * 3 / 4, cy + s * 5 / 6),
-            c,
-            2,
-        );
-    }
-
-    fn draw_mail(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        // Envelope
-        ctx.draw_rect_stroke(
-            Rect::new(cx + s / 6, cy + s / 4, (s * 2 / 3) as u32, (s / 2) as u32),
-            c,
-            2,
-        );
-        // Flap
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 6, cy + s / 4),
-            Point::new(cx + s / 2, cy + s / 2),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 2, cy + s / 2),
-            Point::new(cx + s * 5 / 6, cy + s / 4),
-            c,
-            2,
-        );
-    }
-
-    fn draw_bell(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        // Bell body (arc + bottom)
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 4, cy + s / 2),
-            Point::new(cx + s / 4, cy + s / 4),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s * 3 / 4, cy + s / 2),
-            Point::new(cx + s * 3 / 4, cy + s / 4),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 4, cy + s / 4),
-            Point::new(cx + s / 4, cy + s / 6),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s * 3 / 4, cy + s / 4),
-            Point::new(cx + s * 3 / 4, cy + s / 6),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 4, cy + s / 2),
-            Point::new(cx + s * 3 / 4, cy + s / 2),
-            c,
-            2,
-        );
-        // Top arc
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 4, cy + s / 6),
-            Point::new(cx + s / 2, cy + s / 8),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s * 3 / 4, cy + s / 6),
-            Point::new(cx + s / 2, cy + s / 8),
-            c,
-            2,
-        );
-        // Clapper
-        ctx.fill_circle(Point::new(cx + s / 2, cy + s / 2), 2, c);
-    }
-
-    fn draw_edit(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        // Pencil
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 4, cy + s * 3 / 4),
-            Point::new(cx + s * 3 / 4, cy + s / 4),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s * 3 / 4, cy + s / 4),
-            Point::new(cx + s * 5 / 6, cy + s / 3),
-            c,
-            2,
-        );
-        // Tip
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 4, cy + s * 3 / 4),
-            Point::new(cx + s / 6, cy + s * 5 / 6),
-            c,
-            2,
-        );
-    }
-
-    fn draw_trash(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        // Bin outline
-        ctx.draw_rect_stroke(
-            Rect::new(cx + s / 4, cy + s / 3, (s / 2) as u32, (s / 2) as u32),
-            c,
-            2,
-        );
-        // Lid
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 5, cy + s / 3),
-            Point::new(cx + s * 4 / 5, cy + s / 3),
-            c,
-            2,
-        );
-        // Handle
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 3, cy + s / 6),
-            Point::new(cx + s * 2 / 3, cy + s / 6),
-            c,
-            2,
-        );
-        // Lines inside
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 3, cy + s / 2),
-            Point::new(cx + s / 3, cy + s * 2 / 3),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 2, cy + s / 2),
-            Point::new(cx + s / 2, cy + s * 2 / 3),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s * 2 / 3, cy + s / 2),
-            Point::new(cx + s * 2 / 3, cy + s * 2 / 3),
-            c,
-            2,
-        );
-    }
-
-    fn draw_share(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        // Share: three dots connected by lines
-        ctx.fill_circle(Point::new(cx + s / 2, cy + s / 5), 2, c);
-        ctx.fill_circle(Point::new(cx + s / 5, cy + s * 3 / 4), 2, c);
-        ctx.fill_circle(Point::new(cx + s * 4 / 5, cy + s * 3 / 4), 2, c);
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 2, cy + s / 5),
-            Point::new(cx + s / 5, cy + s * 3 / 4),
-            c,
-            1,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 2, cy + s / 5),
-            Point::new(cx + s * 4 / 5, cy + s * 3 / 4),
-            c,
-            1,
-        );
-    }
-
-    fn draw_refresh(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        let center = Point::new(cx + s / 2, cy + s / 2);
-        // Circle
-        ctx.draw_circle_stroke(center, (s / 3).max(2) as u32, c, 2);
-        // Arrow head
-        ctx.draw_line_stroke(
-            Point::new(cx + s * 4 / 5, cy + s / 4),
-            Point::new(cx + s * 4 / 5, cy + s / 3),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s * 4 / 5, cy + s / 4),
-            Point::new(cx + s * 3 / 4, cy + s / 4),
-            c,
-            2,
-        );
-    }
-
-    fn draw_more(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        // Three vertical dots
-        ctx.fill_circle(Point::new(cx + s / 2, cy + s / 4), 2, c);
-        ctx.fill_circle(Point::new(cx + s / 2, cy + s / 2), 2, c);
-        ctx.fill_circle(Point::new(cx + s / 2, cy + s * 3 / 4), 2, c);
-    }
-
-    fn draw_filter(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        // Funnel
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 6, cy + s / 6),
-            Point::new(cx + s * 5 / 6, cy + s / 6),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s * 5 / 6, cy + s / 6),
-            Point::new(cx + s / 2, cy + s * 2 / 3),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 6, cy + s / 6),
-            Point::new(cx + s / 2, cy + s * 2 / 3),
-            c,
-            2,
-        );
-        // Stem
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 2, cy + s * 2 / 3),
-            Point::new(cx + s / 2, cy + s * 5 / 6),
-            c,
-            2,
-        );
-    }
-
-    fn draw_lock(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        // Shackle
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 4, cy + s / 3),
-            Point::new(cx + s / 4, cy + s / 6),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s * 3 / 4, cy + s / 3),
-            Point::new(cx + s * 3 / 4, cy + s / 6),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 4, cy + s / 6),
-            Point::new(cx + s * 3 / 4, cy + s / 6),
-            c,
-            2,
-        );
-        // Lock body
-        ctx.draw_rect_stroke(
-            Rect::new(cx + s / 4, cy + s / 3, (s / 2) as u32, (s / 2) as u32),
-            c,
-            2,
-        );
-        // Keyhole
-        ctx.fill_circle(Point::new(cx + s / 2, cy + s / 2 + s / 8), 2, c);
-    }
-
-    fn draw_unlock(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        // Open shackle (only right side)
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 4, cy + s / 3),
-            Point::new(cx + s / 4, cy + s / 8),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(cx + s * 3 / 4, cy + s / 3),
-            Point::new(cx + s * 3 / 4, cy + s / 6),
-            c,
-            2,
-        );
-        // Lock body
-        ctx.draw_rect_stroke(
-            Rect::new(cx + s / 4, cy + s / 3, (s / 2) as u32, (s / 2) as u32),
-            c,
-            2,
-        );
-        // Keyhole
-        ctx.fill_circle(Point::new(cx + s / 2, cy + s / 2 + s / 8), 2, c);
-    }
-
-    fn draw_download(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        // Arrow down
-        let mid_x = cx + s / 2;
-        ctx.draw_line_stroke(
-            Point::new(mid_x, cy + s / 4),
-            Point::new(mid_x, cy + s * 3 / 4),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(mid_x, cy + s * 3 / 4),
-            Point::new(cx + s / 3, cy + s / 2),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(mid_x, cy + s * 3 / 4),
-            Point::new(cx + s * 2 / 3, cy + s / 2),
-            c,
-            2,
-        );
-        // Base line
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 4, cy + s * 4 / 5),
-            Point::new(cx + s * 3 / 4, cy + s * 4 / 5),
-            c,
-            2,
-        );
-    }
-
-    fn draw_upload(&self, ctx: &mut RenderContext) {
-        let r = self.icon_rect();
-        let c = self.resolve_color();
-        let cx = r.x;
-        let cy = r.y;
-        let s = r.width as i32;
-        // Arrow up
-        let mid_x = cx + s / 2;
-        ctx.draw_line_stroke(
-            Point::new(mid_x, cy + s * 3 / 4),
-            Point::new(mid_x, cy + s / 4),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(mid_x, cy + s / 4),
-            Point::new(cx + s / 3, cy + s / 2),
-            c,
-            2,
-        );
-        ctx.draw_line_stroke(
-            Point::new(mid_x, cy + s / 4),
-            Point::new(cx + s * 2 / 3, cy + s / 2),
-            c,
-            2,
-        );
-        // Base line
-        ctx.draw_line_stroke(
-            Point::new(cx + s / 4, cy + s * 4 / 5),
-            Point::new(cx + s * 3 / 4, cy + s * 4 / 5),
-            c,
-            2,
-        );
+    /// Draws an icon from the crate's **bundled** outline table.
+    ///
+    /// A thin wrapper over [`Self::draw_outline_data`], which does the work; this exists so a call
+    /// site in the `icons` path names the bundled table rather than passing a `&IconData` it had to
+    /// fetch itself.
+    #[cfg(feature = "icons")]
+    fn draw_outline(&self, ctx: &mut RenderContext, data: &IconData) {
+        self.draw_outline_data(ctx, data);
     }
 
     /// Draws an unknown icon as a question mark.
@@ -1698,46 +600,25 @@ mod tests {
         );
     }
 
+    /// Every variant round-trips through `as_str` -> `from_name`.
+    ///
+    /// # Why this walks `ALL` rather than a hand-written list
+    ///
+    /// It used to spell out all 31 variants by hand, which meant a variant added to the enum but
+    /// forgotten here — or a stale entry for one that had been removed — needed a test edit to
+    /// stay honest. Walking `ALL` covers every variant the type declares, by construction, so the
+    /// test cannot fall behind the enum.
     #[test]
     fn icon_name_enum_roundtrip() {
-        for name in &[
-            IconName::Check,
-            IconName::Cross,
-            IconName::ArrowLeft,
-            IconName::ArrowRight,
-            IconName::ArrowUp,
-            IconName::ArrowDown,
-            IconName::Star,
-            IconName::Heart,
-            IconName::Search,
-            IconName::Menu,
-            IconName::Close,
-            IconName::Plus,
-            IconName::Minus,
-            IconName::Info,
-            IconName::Warning,
-            IconName::Error,
-            IconName::Home,
-            IconName::Settings,
-            IconName::User,
-            IconName::Mail,
-            IconName::Bell,
-            IconName::Edit,
-            IconName::Trash,
-            IconName::Share,
-            IconName::Refresh,
-            IconName::More,
-            IconName::Filter,
-            IconName::Lock,
-            IconName::Unlock,
-            IconName::Download,
-            IconName::Upload,
-        ] {
+        for name in IconName::ALL {
             let s = name.as_str();
             let parsed = IconName::from_name(s);
             assert!(parsed.is_some(), "Failed to parse icon name: {s}");
-            assert_eq!(parsed.unwrap(), *name);
+            assert_eq!(parsed.unwrap(), name);
         }
+        // And the enum must have more than one variant, so an `ALL` that accidentally fell empty
+        // cannot make the loop above pass vacuously.
+        assert!(IconName::ALL.len() > 1, "the enum must declare more than one icon");
     }
 
     #[test]
@@ -1822,10 +703,19 @@ mod tests {
         assert_eq!(outlines.len(), IconName::ALL.len());
     }
 
-    /// With the feature off, a tokened icon still draws — through the hand-drawn shapes.
+    /// With the feature off, a tokened icon still draws — through the generated fallback.
     ///
-    /// This is the property that keeps a default build's snapshots byte-identical: the data path
-    /// must not become the *only* path, or a build without the payload would render nothing.
+    /// This is the property that keeps a default build's snapshots from being *empty*: the data
+    /// path must not become the *only* path, or a build without the payload would render nothing.
+    ///
+    /// # Why the assertion is `<path>` and not `<line>`
+    ///
+    /// It used to assert `<line>`, because the fallback was 31 hand-written methods that drew line
+    /// and circle primitives. The fallback is now derived from the same Material Symbols outlines as
+    /// the data (see `icon_fallback_data`), so it emits filled `<path>` polygons — the same kind of
+    /// geometry the `icons` build emits, from the same source. Asserting `<path>` is therefore the
+    /// stronger check: it proves the fallback drew a real outline, not that a particular primitive
+    /// survived.
     #[cfg(not(feature = "icons"))]
     #[test]
     fn a_tokened_icon_still_draws_without_the_data() {
@@ -1834,6 +724,126 @@ mod tests {
         let mut icon = Icon::new(Rect::new(0, 0, 24, 24));
         icon.set_icon_enum(IconName::Check);
         let svg = render_to_svg(&mut icon);
-        assert!(svg.contains("<line"), "the hand-drawn fallback must still draw: {svg}");
+        assert!(
+            svg.contains("<path"),
+            "the generated fallback must still draw a real outline: {svg}"
+        );
+        // And it must be a *check*, not the unknown placeholder: a fallback that fell through to
+        // `draw_unknown` would still contain no `<path>` (it draws text), so this is the assertion
+        // that the token was actually found in the fallback table.
+        assert!(!svg.contains("?"), "the fallback must find the token, not draw the placeholder");
+    }
+
+    // ── The generated fallback table (BLUE25 follow-up: fallback shares the data's source) ──
+
+    /// The fallback table lines up with `IconName` and every entry has real geometry.
+    ///
+    /// # Why this is a source-level test and not a rendering one
+    ///
+    /// `every_tokened_icon_draws_a_distinct_outline` renders through the *data* path; the fallback
+    /// is a different table, so it needs its own check that it is complete and distinct. Running in
+    /// `cfg(test)` of the widget module is what makes it run on a build **without** `icons` too,
+    /// where `ICON_FALLBACK` is the only geometry the icon has.
+    #[test]
+    fn the_fallback_table_is_complete_and_distinct() {
+        use crate::widget::icon_fallback_data::ICON_FALLBACK;
+
+        assert_eq!(
+            ICON_FALLBACK.len(),
+            IconName::ALL.len(),
+            "the fallback table and the IconName variants disagree on how many icons exist"
+        );
+        for (entry, variant) in ICON_FALLBACK.iter().zip(IconName::ALL.iter()) {
+            assert_eq!(
+                entry.name,
+                variant.as_str(),
+                "the fallback table's order has drifted from IconName's declaration order"
+            );
+            assert!(entry.grid > 0, "{:?} has a zero grid, so it cannot be scaled", entry.name);
+            assert!(!entry.contours.is_empty(), "{:?} has no fallback geometry", entry.name);
+            let mut points = 0usize;
+            for contour in entry.contours {
+                assert!(
+                    contour.len() >= 3,
+                    "{:?} has a contour of {} points, which cannot be a polygon",
+                    entry.name,
+                    contour.len()
+                );
+                points += contour.len();
+            }
+            assert!(points > 0, "{:?} flattened to geometry with no points", entry.name);
+        }
+        // No two entries share their whole geometry: the `Close == Cross` rule, applied to the
+        // fallback, since both tables are derived from the same source and must stay distinct.
+        for (index, entry) in ICON_FALLBACK.iter().enumerate() {
+            for other in &ICON_FALLBACK[index + 1..] {
+                let same = entry.contours.len() == other.contours.len()
+                    && entry.contours.iter().zip(other.contours.iter()).all(|(a, b)| a == b);
+                assert!(
+                    !same,
+                    "{:?} and {:?} have identical fallback geometry, so two names draw one \
+                     picture",
+                    entry.name, other.name
+                );
+            }
+        }
+    }
+
+    // ── Host-registered icons (`register_icon`) ───────────────────────────────
+
+    /// A registered icon **draws**, through the real pipeline, on any build.
+    ///
+    /// # Why this is a rendering test and not a registry test
+    ///
+    /// `icon_registry`'s own test proves the table stores and returns what was registered. It
+    /// cannot prove the draw path *consults* it — a registry nothing reads is a dead entry point.
+    /// This registers an outline under a name no `IconName` covers, renders it, and asserts real
+    /// geometry came out: the wiring, not the storage.
+    ///
+    /// It runs on both feature states on purpose. A build without `icons` has no bundled table, and
+    /// a host icon must still draw there — that is the case the registry exists for, and gating the
+    /// test on `icons` would leave the important half unverified.
+    #[test]
+    fn a_registered_icon_draws_through_the_real_pipeline() {
+        use crate::widget::svg::render_to_svg;
+        use crate::widget::{clear_registered_icons, register_icon};
+
+        clear_registered_icons();
+        // A closed triangle on the 960-grid, `y` negative upward — the same convention the bundled
+        // data uses, so this exercises the normal placement path rather than a special case.
+        assert!(register_icon("host_probe", &["M480-200 240-440l480 480-240-240Z"]));
+
+        let mut icon = Icon::new(Rect::new(0, 0, 24, 24));
+        icon.set_icon("host_probe");
+        let svg = render_to_svg(&mut icon);
+
+        assert!(
+            svg.contains("<path"),
+            "a registered icon must draw real geometry, not fall through to the placeholder: {svg}"
+        );
+        // The placeholder draws text; a `?` here would mean the name was not found, i.e. the draw
+        // path did not consult the registry.
+        assert!(!svg.contains("?"), "the registered name must resolve, not draw the placeholder");
+
+        clear_registered_icons();
+    }
+
+    /// A name that is neither a built-in token nor registered still draws the placeholder.
+    ///
+    /// The control for the test above: if the placeholder could not be reached, the previous test
+    /// would pass for the wrong reason (everything drawing a `<path>`).
+    #[test]
+    fn an_unknown_name_still_draws_the_placeholder() {
+        use crate::widget::clear_registered_icons;
+        use crate::widget::svg::render_to_svg;
+
+        clear_registered_icons();
+        let mut icon = Icon::new(Rect::new(0, 0, 24, 24));
+        icon.set_icon("definitely_not_a_token");
+        let svg = render_to_svg(&mut icon);
+        assert!(
+            !svg.contains("<path"),
+            "an unknown name must draw the text placeholder, not geometry: {svg}"
+        );
     }
 }

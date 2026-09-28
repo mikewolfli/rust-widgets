@@ -33,9 +33,20 @@ import sys
 SRC = pathlib.Path('src')
 
 # A guard's signature: it returns a guard over the unit type.
-GUARD_SIG = re.compile(r'->\s*[A-Za-z_:]*MutexGuard<\s*(?:\'static\s*,)?\s*\(\s*\)\s*>')
+#
+# Both patterns tolerate a **path-qualified** spelling (`std::sync::MutexGuard`,
+# `std::sync::OnceLock`, `crate::compat::Mutex`). The defect this file exists for lives in
+# modules that spell the types out in full, so a pattern anchored on the bare name would
+# miss exactly the case it was written for — a second lock over shared state that is
+# invisible because of how it is written.
+GUARD_SIG = re.compile(
+    r'->\s*(?:[A-Za-z_][A-Za-z0-9_]*::)*MutexGuard<\s*(?:\'static\s*,)?\s*\(\s*\)\s*>'
+)
 # A declaration of its own lock.
-DECLARES_LOCK = re.compile(r'static\s+\w+\s*:\s*OnceLock<\s*Mutex<\s*\(\s*\)\s*>')
+DECLARES_LOCK = re.compile(
+    r'static\s+\w+\s*:\s*(?:[A-Za-z_][A-Za-z0-9_]*::)*OnceLock<\s*'
+    r'(?:[A-Za-z_][A-Za-z0-9_]*::)*Mutex<\s*\(\s*\)\s*\s*\s*>'
+)
 
 
 def guard_functions() -> list[tuple[str, int, str, bool, bool]]:

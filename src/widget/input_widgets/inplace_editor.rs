@@ -324,6 +324,18 @@ impl Widget for InplaceEditor {
     fn tick(&mut self, delta_ms: u32) -> bool {
         InplaceEditor::tick(self, delta_ms)
     }
+
+    /// Whether the caret is cycling, i.e. whether a frame is owed.
+    ///
+    /// `Widget::is_animating` answers `false` unless a control overrides it, and a host consults it to
+    /// decide whether a frame is needed **before** paying for a sweep. An editing field whose caret is
+    /// mid-blink answered `false`, so such a host would stop scheduling frames between two blinks and
+    /// the caret would stop cycling — the same unreachable animation the trait `tick` above exists to
+    /// end, one layer up. The field's own state answers it: the caret animates exactly while the field
+    /// is collecting keys.
+    fn is_animating(&self) -> bool {
+        self.is_editing
+    }
 }
 
 /// `InplaceEditor`'s property contract.
@@ -613,6 +625,36 @@ mod tests {
 
         ie.finish_edit(true);
         assert!(!ie.tick(500), "leaving edit mode stops the blink");
+    }
+
+    /// `is_animating` agrees with `tick`: a field owes a frame exactly while it is editing.
+    ///
+    /// # The defect this pins
+    ///
+    /// `Widget::is_animating` answers `false` unless a control overrides it, and a host consults the
+    /// answer to decide whether a frame is needed **before** paying for a sweep. An editing field
+    /// whose caret was mid-blink answered `false`, so such a host would stop scheduling frames between
+    /// two blinks and the caret would stop cycling — the same unreachable animation the trait `tick`
+    /// was lifted for, one layer up.
+    ///
+    /// # Why it is asserted against `tick`
+    ///
+    /// The two answers describe one animation, so a version that disagreed with `tick` in either
+    /// direction would be wrong whichever value it picked: `false` while ticking freezes the caret,
+    /// `true` while settled pins the host at frame rate. Comparing them is what makes a drift between
+    /// the two impossible to land.
+    #[test]
+    fn is_animating_agrees_with_tick() {
+        let mut ie = InplaceEditor::new("Hello", Rect::new(0, 0, 200, 30));
+        assert!(!ie.is_animating(), "display mode owes no frames");
+
+        ie.start_edit();
+        assert!(ie.is_animating(), "edit mode is animating the caret");
+
+        ie.finish_edit(true);
+        assert!(!ie.is_animating(), "leaving edit mode settles the caret");
+        // And the two statements agree at rest, which is the direction that matters for the host.
+        assert_eq!(ie.is_animating(), ie.tick(0));
     }
 
     #[test]

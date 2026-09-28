@@ -18,7 +18,7 @@ bezier_curve_editor: curve_changed
 bottom_navigation_bar: selected_changed
 bottom_sheet: dismissed
 breadcrumb: segment_activated
-button: clicked, pressed, released, state_changed
+button: canceled, clicked, pressed, released, state_changed
 calendar: selection_changed
 camera_preview:
 candlestick_chart: bar_clicked, bar_hovered, bar_unhovered
@@ -172,7 +172,7 @@ tag_input: tags_changed
 terminal_view: command_submitted
 text_area: changed
 text_edit: text_changed
-time_edit: time_changed
+time_edit: popup_visibility_changed, time_changed
 timeline_widget: item_selected
 toast: dismissed
 toast_stack: toast_activated, toast_dismissed

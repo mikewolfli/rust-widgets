@@ -72,6 +72,12 @@ fn declare_cfg_aliases() {
     // The designer gate (BLUE19 D7-b-3). Declared here so a `cfg(designer_tooling)`
     // typo is a build error rather than a silently-false condition.
     println!("cargo:rustc-check-cfg=cfg(designer_tooling)");
+    // The CJK outline-face gate. The single `fonts-cjk` face and the sharded `fonts-cjk-shard-*`
+    // faces are the same kind of thing — an outline face that `VectorSource`/`outline` can draw —
+    // so every site that gates on "is there a CJK outline face?" must accept either. Spelled once
+    // here because the disjunction appears at 20+ sites and a hand-written copy would drift the
+    // moment a shard is added (rule #47).
+    println!("cargo:rustc-check-cfg=cfg(cjk_outline_face)");
 
     let has_profile =
         ["desktop", "tablet", "mobile"].iter().any(|feature| feature_enabled(feature));
@@ -127,6 +133,20 @@ fn declare_cfg_aliases() {
     let designer_opted_in = feature_enabled("designer");
     if has_profile && !is_stripped && designer_opted_in {
         println!("cargo:rustc-cfg=designer_tooling");
+    }
+
+    // `cjk_outline_face` — the single vector CJK face *or* any of its shards. They are different
+    // packagings of the same capability (a CJK outline a `VectorSource` can rasterise), so a gate
+    // asking "can this build draw CJK from outlines?" must accept either. See `declare_cfg_aliases`'s
+    // doc for why this is a named alias rather than a written-out `any(...)`.
+    let cjk_outline = feature_enabled("fonts-cjk")
+        || feature_enabled("fonts-cjk-shard-latin")
+        || feature_enabled("fonts-cjk-shard-symbols")
+        || feature_enabled("fonts-cjk-shard-kana")
+        || feature_enabled("fonts-cjk-shard-fullwidth")
+        || feature_enabled("fonts-cjk-shard-han");
+    if cjk_outline {
+        println!("cargo:rustc-cfg=cjk_outline_face");
     }
 
     // Re-run when any of the inputs change; Cargo tracks feature changes itself,

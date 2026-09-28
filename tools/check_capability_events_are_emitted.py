@@ -59,6 +59,7 @@ import re
 import sys
 
 PROPERTIES = pathlib.Path("src/widget/capability/properties.rs")
+EVENT_PAYLOADS = pathlib.Path("src/widget/capability/event_payloads.rs")
 SRC = pathlib.Path("src")
 
 # Signals owned by a data-source trait, emitted by the model rather than the widget layer.
@@ -106,7 +107,14 @@ SHARED_PRODUCERS: dict[str, str] = {
 
 CAPABILITY_RE = re.compile(r"pub\(crate\) fn \w+\(\) -> WidgetCapability \{(.*?)\n\}", re.S)
 NAME_RE = re.compile(r'canonical_name:\s*"([^"]+)"')
-EVENTS_RE = re.compile(r"events:\s*&\[(.*?)\]", re.S)
+# Two spellings of the events field, and both must be read. The original `events: &[...]`
+# inline form was replaced by `events: events_of!("...")`, which looks the names up in the
+# generated `EVENT_SCHEMAS` table via `CONTROL_STARTS`. A parser that only knew the inline
+# form matched **nothing** after that change (163 constructors, 0 matches), so the whole
+# gate ran over zero pairs and could never fail — see `tools/gates_reverse_injection.md`,
+# "BLUE25 C-wave 3". Both forms are recognised so neither revision is silently unread.
+INLINE_EVENTS_RE = re.compile(r"events:\s*&\[(.*?)\]", re.S)
+EVENTS_OF_RE = re.compile(r'events:\s*events_of!\(\s*"([^"]+)"\s*\)')
 QUOTED_RE = re.compile(r'"([^"]+)"')
 
 FIELD_RE = re.compile(r"pub\s+(\w+)\s*:\s*[^;=\n]*Signal[^;=\n]*")
@@ -220,6 +228,70 @@ def collect_struct_declares() -> dict[str, set[str]]:
     return declares
 
 
+def collect_control_spans() -> dict[str, tuple[int, int]]:
+    """Control canonical name -> `(start, len)` into `EVENT_SCHEMAS`.
+
+    Mirrors the generated `CONTROL_STARTS` table in `src/widget/capability/event_payloads.rs`,
+    which is what `events_of!("…")` indexes at compile time. Reading it here is what lets the
+    gate resolve the `events_of!` spelling of the `events` field, rather than silently skipping
+    every capability that uses it.
+    """
+    if not EVENT_PAYLOADS.exists():
+        return {}
+    text = EVENT_PAYLOADS.read_text()
+    table_match = re.search(
+        r"static CONTROL_STARTS:[^=]*=\s*&\[(.*?)\n\];", text, re.S
+    )
+    if not table_match:
+        return {}
+    spans: dict[str, tuple[int, int]] = {}
+    for row in re.finditer(r'\("([^"]+)"\s*,\s*(\d+)\s*,\s*(\d+)\)', table_match.group(1)):
+        spans[row.group(1)] = (int(row.group(2)), int(row.group(3)))
+    return spans
+
+
+def collect_schema_names() -> list[str]:
+    """The `name` of every row in the generated `EVENT_SCHEMAS` table, in order.
+
+    The index into this list is what `CONTROL_STARTS`' `(start, len)` pair ranges over, so the
+    two together give the published names for a control whose `events` field is the
+    `events_of!("…")` spelling.
+    """
+    if not EVENT_PAYLOADS.exists():
+        return []
+    text = EVENT_PAYLOADS.read_text()
+    table_match = re.search(r"static EVENT_SCHEMAS:[^=]*=\s*&\[(.*?)\n\];", text, re.S)
+    if not table_match:
+        return []
+    return [m.group(1) for m in re.finditer(r'name:\s*"([^"]+)"', table_match.group(1))]
+
+
+def published_events(body: str, spans: dict[str, tuple[int, int]], schema_names: list[str]):
+    """The event names a capability constructor body publishes, in either spelling.
+
+    Returns `(names, resolved)`. `resolved` is `False` when the body uses the `events_of!`
+    spelling but the lookup could not be performed (a missing table, or a control absent from
+    `CONTROL_STARTS`) — the caller reports that rather than treating it as “publishes nothing”,
+    which is the failure mode that made the whole gate vacuous.
+    """
+    inline = INLINE_EVENTS_RE.search(body)
+    if inline:
+        return QUOTED_RE.findall(inline.group(1)), True
+
+    macro = EVENTS_OF_RE.search(body)
+    if not macro:
+        return [], True  # no events field at all
+
+    control = macro.group(1)
+    span = spans.get(control)
+    if span is None:
+        return [], False
+    start, length = span
+    if start + length > len(schema_names):
+        return [], False
+    return schema_names[start : start + length], True
+
+
 def main() -> int:
     if not PROPERTIES.exists():
         print(f"❌ {PROPERTIES} not found (run from the repo root)")
@@ -230,6 +302,8 @@ def main() -> int:
     struct_emits = collect_struct_emits()
     struct_declares = collect_struct_declares()
     aliases = collect_type_aliases()
+    spans = collect_control_spans()
+    schema_names = collect_schema_names()
 
     def resolve_owner(capability: str) -> tuple[str, bool]:
         """The struct that should carry this capability's emit sites, and whether it was named
@@ -254,11 +328,16 @@ def main() -> int:
     for match in CAPABILITY_RE.finditer(source):
         body = match.group(1)
         name_match = NAME_RE.search(body)
-        events_match = EVENTS_RE.search(body)
-        if not name_match or not events_match:
+        if not name_match:
             continue
         capability = name_match.group(1)
-        events = QUOTED_RE.findall(events_match.group(1))
+        events, resolved_ok = published_events(body, spans, schema_names)
+        if not resolved_ok:
+            # The `events_of!` lookup could not be performed, so this capability's published
+            # names are *unknown*, not empty. Skipping it here is exactly the vacuity this gate
+            # was fixed to remove, so it is a finding rather than a silent `continue`.
+            unattributable.append((capability, "<events_of! lookup failed>", "EVENT_SCHEMAS"))
+            continue
         if not events:
             continue
 
@@ -310,11 +389,13 @@ def main() -> int:
     for match in CAPABILITY_RE.finditer(source):
         body = match.group(1)
         name_match = NAME_RE.search(body)
-        events_match = EVENTS_RE.search(body)
-        if not name_match or not events_match:
+        if not name_match:
             continue
         capability = name_match.group(1)
-        published = set(QUOTED_RE.findall(events_match.group(1)))
+        published, resolved_ok = published_events(body, spans, schema_names)
+        if not resolved_ok:
+            continue
+        published = set(published)
         struct, _ = resolve_owner(capability)
         if capability in SHARED_PRODUCERS:
             struct = SHARED_PRODUCERS[capability]

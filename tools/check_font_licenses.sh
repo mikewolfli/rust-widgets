@@ -135,7 +135,8 @@ mv "$INJECT_DIR/emoji_subset_codepoints.txt" tools/emoji_subset_codepoints.txt
 # pass: the scan's own `checked=N` is compared against the number of tables this repository ships.
 # Update this constant when a table is added *and* its NOTICE section is written — which is the
 # order the gate is here to enforce.
-EXPECTED_FONT_TABLES=5   # cjk_bitmap_data, latin, arabic, cjk, emoji
+EXPECTED_FONT_TABLES=11  # cjk_bitmap_data, latin, arabic, cjk, emoji,
+                        # cjk_shards (the shard index), and the five cjk_shard_* subsets
 if ! "$PYTHON" tools/font_license_scan.py | grep -q "checked=${EXPECTED_FONT_TABLES} failed=0"; then
     echo "FAIL: the scan does not find exactly ${EXPECTED_FONT_TABLES} recorded font tables;"
     echo "      a generated table is unrecorded, or one was added without its NOTICE section"

@@ -633,12 +633,14 @@ pub fn active_stack() -> FontStack {
     static STACK: [&dyn GlyphSource; 2] =
         [&super::raster::VectorSource::INSTANCE, &Font8x8Source::INSTANCE];
 
-    // `fonts-cjk` alone: a vector face and no other vector data. This arm exists because the arm
-    // above keys on `fonts-vector-latin`/`fonts-complex`, so without it a `fonts-cjk`-only build
-    // would fall through to the 8x8-only stack — and CJK resolution would silently be tofu. That
-    // was a real defect found by probing `source_for('\u{4E2D}')` on exactly this feature set.
+    // `fonts-cjk` (or a shard of it) alone: a vector face and no other vector data. This arm
+    // exists because the arm above keys on `fonts-vector-latin`/`fonts-complex`, so without it a
+    // CJK-only build would fall through to the 8x8-only stack — and CJK resolution would silently
+    // be tofu. That was a real defect found by probing `source_for('\u{4E2D}')` on exactly this
+    // feature set. `cjk_outline_face` covers both the single face and the shards, since either
+    // gives `VectorSource` glyphs (the shards arrive through the runtime registry).
     #[cfg(all(
-        feature = "fonts-cjk",
+        cjk_outline_face,
         not(feature = "fonts-emoji-color"),
         not(feature = "fonts-cjk-bitmap"),
         not(any(feature = "fonts-vector-latin", feature = "fonts-complex"))
@@ -650,7 +652,7 @@ pub fn active_stack() -> FontStack {
         feature = "fonts-cjk-bitmap",
         feature = "fonts-vector-latin",
         feature = "fonts-complex",
-        feature = "fonts-cjk",
+        cjk_outline_face,
         feature = "fonts-emoji-color"
     )))]
     static STACK: [&dyn GlyphSource; 1] = [&Font8x8Source::INSTANCE];
@@ -857,11 +859,7 @@ mod tests {
     ///
     /// `fonts-cjk` is a vector feature and is excluded for the same reason as the other two: it is
     /// served by the same `VectorSource`, so it produces the identical partial coverage.
-    #[cfg(not(any(
-        feature = "fonts-vector-latin",
-        feature = "fonts-complex",
-        feature = "fonts-cjk"
-    )))]
+    #[cfg(not(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face)))]
     #[test]
     fn the_bitmap_view_and_the_painted_coverage_agree() {
         // A few cells per glyph: smaller than the 8x8 source, exactly it, and larger on both axes.

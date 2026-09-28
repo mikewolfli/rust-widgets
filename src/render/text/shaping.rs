@@ -52,7 +52,23 @@ use crate::render::{ShapedGlyphRun, TextShaper};
 /// lucky one.
 ///
 /// The match is case-insensitive because a font family name is an identifier a person types.
+///
+/// # Host-registered faces
+///
+/// With `runtime-fonts` on, a host may have registered a face under the family name it named — and
+/// that is the whole point of registering one. A family lookup that only saw the compiled list would
+/// make the host's own font unreachable by name, which is the one way a caller *does* name it. So
+/// the registered faces are searched first, then the compiled ones.
 pub(crate) fn face_for_family(family: &str) -> Option<FaceBytes> {
+    #[cfg(feature = "runtime-fonts")]
+    {
+        let (runtime, len) = crate::render::text::runtime_fonts::active_runtime_faces();
+        for face in &runtime[..len] {
+            if face.name.eq_ignore_ascii_case(family) {
+                return Some(*face);
+            }
+        }
+    }
     active_faces().iter().copied().find(|face| face.name.eq_ignore_ascii_case(family))
 }
 
@@ -109,7 +125,9 @@ fn face_for_metrics(text: &str, font: &Font) -> Option<FaceBytes> {
     // non-whitespace one, which is the same rule `face_for_text` uses — a run is shaped by the face
     // that covers what it says.
     let probe = text.chars().find(|ch| !ch.is_whitespace())?;
-    active_faces().iter().copied().find(|face| covers(face, probe))
+    // Coverage, through the shared lookup: `face_for_char` is the one place that knows a host face
+    // outranks a compiled one, so measurement and drawing cannot disagree about which face wins.
+    crate::render::text::font_assets::face_for_char(probe)
 }
 
 /// The first face that covers `text`'s first strong character.
@@ -119,17 +137,8 @@ fn face_for_metrics(text: &str, font: &Font) -> Option<FaceBytes> {
 /// which face it wants — the case [`RustybuzzShaper::from_active_faces`] exists for — and it is
 /// deliberately not the rule the renderer's measurement path uses: see [`face_for_family`].
 fn face_for_text(text: &str) -> Option<FaceBytes> {
-    let faces = active_faces();
-    if faces.is_empty() {
-        return None;
-    }
     let probe = text.chars().find(|ch| !ch.is_whitespace())?;
-    faces.iter().copied().find(|face| covers(face, probe))
-}
-
-/// Whether `face` has a glyph for `ch`.
-pub(crate) fn covers(face: &FaceBytes, ch: char) -> bool {
-    face_parser(face).map(|parsed| parsed.glyph_index(ch).is_some()).unwrap_or(false)
+    crate::render::text::font_assets::face_for_char(probe)
 }
 
 /// A parsed view of `face`'s bytes, or `None` if they are not a font this crate can read.

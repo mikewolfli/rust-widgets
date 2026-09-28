@@ -563,6 +563,19 @@ pub struct StateOverlay {
 
 （见 §1.3 实跑。）**这不是「动画没实现」，而是「动画没有时钟」。**
 
+> **✅ 第 76 轮实测收口**（工具：`tools/audit_animation_wiring.py`，见 `log-20260924-1.md` §77.4/§78）：
+>
+> ```text
+> trait（已接总线 `Widget::tick` + 实现了 `is_animating`）：34 个
+trait-tick-only（tick 接了、`is_animating` 缺失）： 3 个   ← 本轮已修
+inherent（有 `pub fn tick` 但不可达）：             0 个
+> ```
+>
+> 即：**总线已全接通，`inherent` 形状已归零**；本轮收的是 `is_animating` 那 3 个
+> （`audio_visualizer` / `inplace_editor` / `tag_input`）—— 它们缺的不是驱动，而是
+> 「**我现在在不在动**」的回答，而宿主用这个回答在「要不要付一次 sweep」**之前**做决定，
+> 所以缺它会让动画卡在半路（与本节要修的缺陷**同形，上一层**）。
+
 ### 3.2 P0-4 「动画帧」的唯一契约定在 `Widget` trait 上
 
 ```rust
@@ -1382,7 +1395,7 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
-| `line_edit` | `lineedit.rs` | 3 | 有 `tick`（光标闪烁）**无驱动者**；缺整个**装饰槽模型**（`prefix`/`suffix`/`helper`/`error`/`counter`，BLUE21 A.4.1） | ① 接 M3（一行）② 补 `:error` 覆盖 + `error_text` ③ `caret_x` 用 `cursor_position` 的字节前缀（BLUE21 A.4.2 的**功能**缺陷） | **M3** **M2** **M10** | **P0** |
+| `line_edit` | `lineedit.rs` | 3 | ① **第 76 轮实测复核：「有 `tick` 无驱动者」已不成立** —— `inherent tick` + `impl Widget::tick` + `is_animating` 三者齐全（工具：`tools/audit_animation_wiring.py`，`log-20260924-1.md` §77.4）② `:error` 覆盖 + `error_text` **已在**（`:487/:496`）③ `caret_x` 已用 `floor_char_boundary` + `measure_text(prefix)`（`:1003-1005`）⇒ 假欠债；**真缺口是「装饰槽模型」（`prefix`/`suffix`/`helper`/`counter`）** | **M10**（装饰槽）仍有活 | ✅ **复核完成** |
 | `spin_box` | `spinbox.rs` | 5 | ✅ 已由 `CompositeBuilder` 组装（BLUE22 第 70 轮，快照几何逐字节不变） | ① 接 M1（步进按钮 hover）② RTL padded 镜像（参考工具包 `reference: padding derived from the sibling's own width`） | **M1** **M8** | P1 |
 | `number_picker` | `number_picker.rs` | 1 | 同 `spin_box` 但未接组装 | 接 **M1** + **M7** | **M1** **M7** | P2 |
 | `combo_box` | `combobox.rs` | 3 | ✅ 指示器已由组装推导（BLUE22）；无 hover 态 | **M1** **M2** **M8**（镜像时指示器 padding 交换） | P1 |
@@ -1396,7 +1409,7 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 | `rich_edit` | `rich_edit.rs` | 1 | BLUE21 A.6：光标几何用**等宽捷径** `cell_width`，变宽跨度下必然错位 | ① 接 M3（光标闪烁）② caret/range 几何改为**跨度感知**（勿继承等宽） | **M3** **M10** | P1 |
 | `masked_edit` | `masked_edit.rs` | 4 | BLUE21 B15：正文字面量 `rgb(33,33,33)` 在暗色字段上对比 **1.35:1**（注：`audit_text_contrast` 现已全绿——**该条已修**，此处仅存 4 个字面量待清） | **M4** **M1** | P2 |
 | `otp_input` | `otp_input.rs` | 0 | BLUE21 B19：6 格里 5 格不可见（已修）；本仓**优势** | ① 接 M1/M2 ② `obscuringCharacter = '•'`（主流 material 实现 `text_field.dart:273`） | **M1** **M2** **M10** | P1 |
-| `tag_input` | `tag_input.rs` | 7 | 有 `tick` 无驱动者；7 个字面量 | **M3** **M4** **M2** | P1 |
+| `tag_input` | `tag_input.rs` | 7 | ✅ **第 76 轮已修**（实测见 `log-20260924-1.md` §78）：① 计划记的「有 `tick` 无驱动者」**不成立** —— `tick` 已接 `impl Widget::tick`（`:395`），属 **§3 总线的已驱控件**（全仓 34 个之一）；② 真缺陷是**缺 `is_animating`** —— 它默认 `false`，而宿主用它在「要不要付一次 sweep」**之前**做决定 ⇒ 正在闪烁的光标被判为「已停」⇒ 动画卡在两帧之间（与 §3「写了动画却永不前进」同形，上一层）⇒ 现报 `self.focused`，与 `tick` 首行守卫同源；断言写成 `is_animating == tick(0)` + 反向注入 | ② **完成**；M4（7 字面量均为回落档/数据）复核为非缺陷 | ✅ **P1 完成** |
 | `keyboard` | `keyboard.rs` | 6 | BLUE21 D20：键帽文字贴顶（**已修**）；仍 6 字面量 + 无按键反馈 | ① 键帽按下**变色 + 动效**（M1/M2/M3）② 字面量 → token | **M1** **M2** **M3** **M4** | P1 |
 | `range_slider` | `range_slider.rs` | 4 | ✅ 双向手柄映射正确（BLUE22 §4.3 的参照）；无 hover/drag 发光 | **M1** **M3**（手柄按下放大，主流 material 实现 `slider_parts.dart:678`） | P1 |
 | `list_box` | `listbox.rs` | 6 | 6 个字面量；行选中无统一来源 | **M1** **M6**（行线）**M4** | P1 |
@@ -1405,7 +1418,7 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 | `auto_complete_edit` | `auto_complete_edit.rs` | 5 | 只发布 `suggestion_count`（无法枚举候选/读高亮）；颜色**已接主题**（`resolved_theme_style` + `style.*`，弹层用字段色），非缺陷 | **M10**（`optionsBuilder` 等价物） | P1 |
 | `mention` | `mention.rs` | 7 | ✅ **第 74 轮已修**（实测见 `log-20260924-1.md` §47）：弹层 `Color::WHITE` + 三个固定灰 + 固定蓝下划线 —— **与 `cascader`/`dropdown` 同一处形状（第三次）**⇒ 面 `surface_container` / 高亮 `primary` + 其对比墨 / 描边 `outline_variant` / 高亮行上的说明朝该行填充退隐；提及下划线改 `primary` | **M4** **M5** **完成** | ✅ **P2 完成** |
 | `command_link` | `command_link.rs` | 3 | ✅ **第 74 轮已修**（实测见 `log-20260924-1.md` §44）：① 计划记的「已有私有 hover 字段」**不成立** —— 结构体无该字段、`draw` 早已读 `self.base.is_hovered()`，故 **M1 无活可做**（如实驳回）；② 真缺陷是**悬停时 `rgb(0,0,255)` 无条件替掉主题墨** ⇒ 改读 `theme.colors.primary`。断言读**下划线 `<line>` 的 stroke**（不比较整份文档） | ② **完成** | ✅ **P1 完成** |
-| `inplace_editor` | `inplace_editor.rs` | 2 | ✅ 第 74 轮复核：`tick` **已接 `impl Widget::tick`**（`:289`，非「无驱动者」）；颜色**已接主题**（`style.*` + `resolved_theme_style` + `theme.colors.primary`），非「不读 style」 | 无需改 | ✅ **P1 复核完成** |
+| `inplace_editor` | `inplace_editor.rs` | 2 | ✅ **第 74 轮复核**：`tick` **已接 `impl Widget::tick`**（非「无驱动者」）；颜色**已接主题**。 ✅ **第 76 轮补修**（§78）：**缺 `is_animating`** ⇒ 正在闪烁的光标被宿主判为「已停」，动画卡在半路 ⇒ 现报 `self.is_editing`，断言与 `tick` 一致 + 反向注入承重 | **完成** | ✅ **P1 完成** |
 | `ime_preedit` | `ime_preedit.rs` | 1 | ✅ 属白名单（无自带色带） | **M4**（1 处） | P2 |
 | `keyboard` | `keyboard.rs` | 6 | ✅ **第 74 轮已修**（实测见 `log-20260924-1.md` §56）：① 颜色**已接主题**（三个字面量是「无主题回落档」，与 `button`/`frame` 同类，**非缺陷**）；② 真缺陷是**按下毫无反馈** —— `handle_event` 发完信号就结束、`draw` 无「哪个键被按」的输入 ⇒ 新增 `pressed_key: Option<(row, col)>`（**用位置而非键码**：数字行与键盘区同码），`MousePress` 用 `key_at_position` 记、`MouseRelease`/`TouchEnd` 清、`draw` 该键 `blend(ink, 0.25)` | ② **完成** | ✅ **P1 完成** |
 | `shortcut_editor` | `shortcut_editor.rs` | 3 | ⚠️ **第 75 轮实测复核**：canonical 控件**已读主题**（`style.` 4 处 + `theme_manager()`），唯一字面量是**无主题回落档** ⇒ **非缺陷**（与 `text_area` 同类，已如实驳回）。**新发现**：同 kind 下还有另一个真控件 `KeySequenceEdit`（`advanced_widgets/key_sequence_edit.rs`，**导出的公共类型、但不是 188 个 canonical 之一**），它的 `Draw` **六个字面量、零主题读取**，且录制态用固定浅红 ⇒ **已在第 75 轮修**（面/框/墨改主题角色，录制态改 `surface.blend(&error, 0.12)`，断言 + 反向注入见 `log-20260924-1.md` §72）。计划 A.3 原记的「① 改逻辑键集 ② 按下反馈」仍留白 | ① 逻辑键集 ② 按下反馈（M10/M1/M2）仍留白；`KeySequenceEdit` 已修 | P1 |
@@ -1435,25 +1448,25 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 > （§9 判据 24 的「安全绳」）。
 | `progress_bar` | `progressbar.rs` | 4 | ✅ 几何已修（`h4 r2`）；**不确定态无动画**（主流 material 实现 1800 ms）；轨道色已改派生态（BLUE21 B8 已修） | ① 不确定态加 `tick`（1800 ms）② `range_slider.rs:405` 的承载面派生已做对，保持 | **M3** **M2** | P1 |
 | `progress_circle` | `progress_circle.rs` | 3 | BLUE21 A.3.6：无 `trackGap`（值 0 时弧与轨道**无法区分**） | ① 补 `trackGap = 4`（主流 material 实现 `progress_indicator.dart:1636`）② 不确定态旋转（M3） | **M10** **M3** | P1 |
-| `spinner` | `spinner.rs` | 3 | 有 `tick` **无驱动者** ⇒ **转圈不转** | **M3**（一行） | **P0** |
+| `spinner` | `spinner.rs` | 3 | ✅ **第 76 轮实测复核：假欠债** —— `inherent tick` + `impl Widget::tick` + `is_animating` 三者齐全 ⇒ **转圈真的转**（BLUE23 §3 总线已完成）| 无 | ✅ **已满足** |
 | `rating` | `rating.rs` | 0 | BLUE21 A.4.5d：`Float` 属性**静默取整**（写 3.7 得 4）；半星不可表达 | ① 半星表示 ② `:hover` 预览（M1/M2）③ M9（`value` 朗读） | **M10** **M1** **M9** | P1 |
 | `badge` | `badge.rs` | 0 | ✅ 药丸可见性已修（BLUE21 B1）；`badge` 点 r 已固定 | **M4**（确认零字面量） | P2 |
 | `avatar` | `avatar.rs` | 1 | ✅ 已由 `AVATAR_SIZE` 固定（曾画半裁圆） | **M4** **M5** | P2 |
 | `chip` | `chip.rs` | 0 | BLUE21 A.3.5：曾是方角且不可见（**已修**）；`selected`/`checked` 互斥（BLUE21 F-4 提示） | ① 接 M2（selected 态）② 语义 flag 互斥断言 | **M2** **M10** | P2 |
 | `scroll_bar` | `scrollbar.rs` | 4 | BLUE21 B2/B3：滑块曾 = 槽色（已修）、箭头尺寸取长（已修）；主流 material 实现 有**闲置 600 ms 后 300 ms 淡出** | ① 加淡出（`tick` + `Motion`）② 保持 `thumb_metrics` 纯函数（BLUE21 A.7 #10 的**优势**） | **M3** | P1 |
 | `meter` | `meter.rs` | 18 | BLUE21 D16：**刻度与自己的弧相差 90°**（漏 `+ offset`）；两端取整不同 ⇒ 45° 刻度 5 px、90° 刻度 6 px | ① 刻度角走**与弧顶点相同**的 `snap_to_grid` ② 18 个字面量 → 共享派生 | **M4** **M10** | **P0** |
-| `icon` | `icon.rs` | 3 | **不读 style** ⇒ 图标不随前景色 | **M4**（墨取 `style.text_color`） | P1 |
-| `image_view` | `image_view.rs` | 3 | **不读 style** | **M4** **M5**（占位面） | P2 |
+| `icon` | `icon.rs` | 3 | ✅ **第 76 轮实测复核**：**已读 style**（`:448` `self.style().text_color`，且有专门的 `colour_resolution_follows_the_widget_style` 测试）⇒ 计划记的「不读 style」**已不成立**（假欠债）| 无 | ✅ **已满足** |
+| `image_view` | `image_view.rs` | 3 | ✅ **第 76 轮实测复核**：**已读 style**（`:169-177` `.style().surface` / `.border_radius`）⇒ 假欠债 | 无 | ✅ **已满足** |
 | `font_preview` | `font_preview.rs` | 3 | ✅ **第 74 轮已修**（实测见 `log-20260924-1.md` §48）：`Draw` 里**一个 `style` 都没读** —— 面板 `Color::WHITE`、预览 `Color::BLACK`、信息行/样本行两个灰、分隔线第三个灰，暗色外观下画亮面板 + 近黑墨。现由 `panel_colors()` 一处解析四色（显式 style → 主题角色 → 字面量） | **M4 完成** | ✅ **P2 完成** |
-| `arc` | `arc.rs` | 3 | **不读 style** | **M4** | P2 |
-| `line` | `line.rs` | 1 | 不读 style（1 处） | **M4** **M6** | P2 |
+| `arc` | `arc.rs` | 3 | ✅ **第 76 轮实测复核**：**已读 style**（`:309` `background_color`（轨道）、`:311` `text_color`（弧））⇒ 假欠债；余 3 字面量是无主题回落档 | 无 | ✅ **已满足** |
+| `line` | `line.rs` | 1 | ✅ **第 76 轮实测复核**：**已读 style**（`:159` `self.color.or_else(|| self.style().border_color)`）⇒ 假欠债 | 无 | ✅ **已满足** |
 | `divider` | `divider.rs` | 1 | ✅ `DIVIDER_SPACING 16`/th 1 已对齐 主流 material 实现 | **M6**（`outline_variant`）**M4** | P1 |
 | `mini_chart` | `mini_chart.rs` | 2 | BLUE21 B14：网格字面量 `rgb(220,220,220)` ⇒ 暗态**最亮的东西是最不重要的网格** | **M4**（用 `charts.rs::axis_chrome()` 一处推导） | **P0** |
 | `lcd_number` | `lcd_number.rs` | 1 | BLUE21 C6：`num_digits` 只当**宽度除数**，不右对齐补位（画 1 位却按 6 位布局） | **M10**（按 `num_digits` 补位；`get_segments` 补 `'.'`） | P1 |
 | `skeleton_loader` | `skeleton_loader.rs` | 2 | 加载态**无闪烁动画**（外部对标 / 主流声明式实现 都有 pulse） | **M3**（pulse，用 `Motion`）**M5** | P1 |
 | `empty_state` | `empty_state.rs` | 1 | ✅ 重叠 28 px 已修（BLUE22 R-5） | **M4** | P2 |
 | `roller` | `roller.rs` | 3 | `roller.rs:331` 是 BLUE21 的**正确写法参照**（文本居中） | **M3**（滚轮惯性/对齐动画）**M4** | P2 |
-| `floating_label` | `floating_label.rs` | 5 | 有 `tick` 无驱动者（BLUE21 记为**正确范式**）；BLUE21 A.3.9：演示浮动标签的控件**没有**浮动标签（已部分） | **M3**（一行）**M4** | P1 |
+| `floating_label` | `floating_label.rs` | 5 | ✅ **第 76 轮实测复核：假欠债** —— `tick` + `is_animating` 齐全（BLUE21 记为**正确范式**，已确认）| 无 | ✅ **已满足** |
 | `emoji_picker` | `emoji_picker.rs` | 2 | BLUE21 B20：面板 = 窗口底色 | **M5** **M4** | P2 |
 | `color_well` | `color_well.rs` | 0 | 本仓**优势**（外部对标 / Cupertino **都没有**取色器） | **M1**（hover 描边）**M5** | P2 |
 | `color_history` | `color_history.rs` | 9 | 9 个字面量；有 hover 记录 | **M4** **M1** | P2 |
@@ -1543,7 +1556,7 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 |---|---|---:|---|---|---|---|
 | `banner` | `banner.rs` | 3 | ✅ 严重度取自语义 token 再推离承载面（BLUE21 A.7 #7 的**优势**）；且是 `theme_derived` 的**先例** | **M4** **M3**（滑入/滑出） | P1 |
 | `fab` | `fab.rs` | 2 | BLUE21 P0-4：**不在 `check_click_requires_release_inside` 的合法清单**（门禁抓到的 2 处缺陷之一） | ① 修点击契约（释放必须在内）② 抬起/落下的**高度动画** + 涟漪 | **M3** **M10** | **P0** |
-| `refresh_control` | `refresh_control.rs` | 1 | 有 `tick` 能力但无驱动者？下拉**无回弹动画** | **M3**（回弹曲线） | P1 |
+| `refresh_control` | `refresh_control.rs` | 1 | ✅ **第 76 轮实测复核：假欠债** —— `tick` + `is_animating` 齐全（共有两处 `is_animating`）| 无 | ✅ **已满足** |
 | `splash_screen` | `splash_screen.rs` | 4 | 4 个字面量；淡出无动画 | **M4** **M3** | P2 |
 
 ### A.7.3 Views（`view_widgets`，14 个）
@@ -1559,14 +1572,14 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 | `table` | `table_widget.rs` | 0 | 与 `table_widget` **同为 `Table` kind**（同一 `Draw` 路径）⇒ **修一次覆盖两个**，已随上一行完成 | 见上行 | ✅ **P0 完成** |
 | `virtual_list` | `virtual_list.rs` | 0 | 与 `data_view` **共用同一文件**（同一 `DataView` kind）；同 `list_view` 的缺口 | **M1** **M3** | P1 |
 | `data_view` | `virtual_list.rs` | 0 | 与 `virtual_list` **同为 `DataView` kind**（`audit_kind_sharing` 实测）；无行 hover | **M1** **M3** | P1 |
-| `data_grid` | `data_grid.rs` | 0 | ✅ **第 74 轮已修**（实测见 `log-20260924-1.md` §61）：① **`selection` 存了但 `draw` 里一次都没出现** ⇒ 按下、存下、`request_redraw()`，网格回来**一模一样**（与 §50 同形，但更重：是用户刚点的那一格）⇒ 补画选中描边；② 补 `base.handle_event` 转发（`"data_grid:hover"` 曾永久失效）；③ 新增 `hovered_cell`（读 `cell_at`，与点击同源），比选中更弱的描边。`frozen_columns` 虚拟化仍是**优势**，未动 | ①②③ **完成** | ✅ **P1 完成** |
-| `virtual_table` | `virtual_table.rs` | 0 | ✅ 第 74 轮复核：它是**纯滚动视口**（有 `row_height` 字段与 `scroll_row/column`，**无选中概念**、不发选中信号）⇒ 计划记的「M1 行 hover」是**推广而非缺陷**，加 hover 等于造功能，**不动并写明** | 无 | ✅ **复核驳回（非缺陷）** |
+| `data_grid` | `data_grid.rs` | 0 | ✅ **第 74 轮已修**（实测见 `log-20260924-1.md` §61）：① **`selection` 存了但 `draw` 里一次都没出现** ⇒ 按下、存下、`request_redraw()`，网格回来**一模一样**（与 §50 同形，但更重：是用户刚点的那一格）⇒ 补画选中描边；② 补 `base.handle_event` 转发（`"data_grid:hover"` 曾永久失效）；③ 新增 `hovered_cell`（读 `cell_at`，与点击同源），比选中更弱的描边。✅ **第 77 轮补 M6**（§84）：格线改读 `outline_variant`。`frozen_columns` 虚拟化仍是**优势**，未动 | **完成** | ✅ **P1 完成** |
+| `virtual_table` | `virtual_table.rs` | 0 | ✅ 第 74 轮复核：它是**纯滚动视口**（有 `row_height` 字段与 `scroll_row/column`，**无选中概念**、不发选中信号）⇒ 计划记的「M1 行 hover」是**推广而非缺陷**，加 hover 等于造功能，**不动并写明**。 ✅ **第 77 轮补 M6**（§84）：格线改读 `outline_variant`（与 `table_widget` 同一来源），断言「角色色出现在 SVG 里」+ 反向注入承重 | **M6 完成** | ✅ **已满足** |
 | `grid_table` | `grid_table.rs` | 4 | BLUE21 D14：列头是 `Col {i}` **占位符**（用循环下标当列名） | ① 从数据源取列名 ② **M6** | **M10** **M6** | P1 |
 | `tree_view` | `tree_view.rs` | 0 | 展开/收起**瞬时**；无缩进引导线 | ① 展开动画（M3）② 子级缩进引导线（M6） | **M3** **M6** | P1 |
-| `tree_table` | `tree_table.rs` | 0 | 同 `tree_view` | **M3** **M6** | P2 |
+| `tree_table` | `tree_table.rs` | 0 | ✅ **第 77 轮已修 M6**（实测见 `log-20260924-1.md` §84）：格线从局部 `blend(ink, 0.10)` 改读 `outline_variant`，与 `table_widget`/`virtual_table`/`data_grid` **同一来源**（否则主题只能调四个中的一两个）。展开动画（M3）仍留白 | **M6 完成** | ✅ **P2 部分完成** |
 | `virtual_list` / `data_view` | `virtual_list.rs` | 0 | 同 `list_view` | **M1** **M3** | P1 |
 | `properties_panel` | `properties_panel.rs` | 0 | BLUE21 A14：行曾低 10 px 压分割线（已修） | **M1** **M6** | P2 |
-| `property_grid` | `property_grid.rs` | 0 | 同 `properties_panel` | **M1** **M6** | P2 |
+| `property_grid` | `property_grid.rs` | 0 | ✅ **第 77 轮实测复核：M6 已满足** —— 它用 `separator = blend(0.25)`（表头）/ `row_separator = blend(0.12)`（行）**两个派生色**，两者都随主题变且与焦点环（`outline` 角色）不同源 ⇒ 满足 M6 的**判据**（行线色 ≠ 焦点环色）。计划的「改读 `outline_variant`」是**手段**，不是判据 ⇒ **不动并写明** | M1（行 hover）留白 | ✅ **复核完成** |
 | `query_builder` | `query_builder.rs` | 0 | 条件行增删无动画 | **M3** **M5** | P2 |
 | `image_gallery` | `image_gallery.rs` | 14 | **本组唯一字面量集中地（14/18）**；无缩放动画 | **M4** **M3**（缩放/淡入） | P1 |
 
@@ -1604,12 +1617,12 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
-| `candlestick_chart` | `finance/candlestick_chart.rs` | **13** | **不读 style**；BLUE21 B4：绘图面字面量 `Color::rgb(18,22,28)` 与另三图**逐字节相同**（四份 SVG 的 diff 各只有 4 行）；D5：空态无轴无网格 | ① **M4**（抽 `finance/layout.rs` **一处**共享面板色）② **M12**（空态画轴 + `No data`）③ BLUE21 C8 死绑定 | **M4** **M12** | **P0** |
-| `volume_chart` | `finance/volume_chart.rs` | 4 | **不读 style**；BLUE21 B4 同形；B5：窗格边距与其他三图**不一致**（`x=52 w=180` vs `x=48 w=184` ⇒ bar 对不齐） | ① **M4** ② 统一 `PlotArea::with_margins` ③ **M12** | **M4** **M12** | **P0** |
-| `depth_chart` | `finance/depth_chart.rs` | 9 | **不读 style**；BLUE21 B4 同形；D5 空态 | **M4** **M12** | **P0** |
-| `indicator_chart` | `finance/indicator_chart.rs` | **12** | **不读 style**；BLUE21 B4/B5 同形 | **M4** **M12** | **P0** |
+| `candlestick_chart` | `finance/candlestick_chart.rs` | **13** | ✅ **第 76 轮实测复核**：**已读 style** —— `:260 panel_colors(Some(self.base.style()))`，即 BLUE21 B4 要求的「抽 `finance/layout.rs` **一处**共享面板色」**已实施** ⇒ 假欠债。余 13 字面量分两类：K 线涨跌色（**数据色**）与无主题回落档 | M12（空态画轴）留白 | ✅ **P0 复核完成** |
+| `volume_chart` | `finance/volume_chart.rs` | 4 | ✅ **第 76 轮实测复核**：**已读 style**（`:162` 同一 `panel_colors` 入口）⇒ 假欠债；4 字面量均为数据色/回落档 | M12 留白 | ✅ **P0 复核完成** |
+| `depth_chart` | `finance/depth_chart.rs` | 9 | ✅ **第 76 轮实测复核**：**已读 style**（`:97` 同一入口）⇒ 假欠债 | M12 留白 | ✅ **P0 复核完成** |
+| `indicator_chart` | `finance/indicator_chart.rs` | **12** | ✅ **第 76 轮实测复核**：**已读 style**（`:520` 同一入口）⇒ 假欠债 | M12 留白 | ✅ **P0 复核完成** |
 | `order_book` | `finance/order_book.rs` | 9 | 9 字面量；**已有 `hovered: Option<(BookSide,usize)>` + `level_hovered` 信号**（本组少数已做状态的） | ① 行键改读 base（M1 去重）② **M4** ③ 价格跳动**闪烁动效**（M3） | **M1** **M4** **M3** | P1 |
-| `quote_board` | `finance/quote_board.rs` | 9 | 同 `order_book`；**涨跌红绿是数据色**（BLUE21 §七 明确**不判为缺陷**） | **M1** **M3**（价格变化高亮淡出） | P1 |
+| `quote_board` | `finance/quote_board.rs` | 9 | ✅ **第 88 轮已修**（实测见 `log-20260924-1.md` §88）：计划记的「涨跌红绿是数据色」**成立**（未动），但同一行还有一个**未被登记的真缺陷** —— **列标题画在隔壁列上**。两处独立原因：（a）位置按「右对齐」算（`start + 8 - 标题宽`）却**左对齐**画，每个标题整体左移一个标题宽；（b）兜底 clamp 用的是**控件**左缘而非**列**左缘。实测 `snapshots/svg/quote_board.svg`（240 px ÷ 5 列 = 48 px）：`Change` 的墨迹落在 `94..131`（第 **1** 列），`Volume` 落在 `190..227`（第 **3** 列）—— 两个标题各自压住前一列。修法：抽 `heading_origin(start, width, title, font)` 一处定几何；**先保外内边距、再保列内边距**（列装不下标题+两侧 8 px 时让出外距）；装不下的列走 `draw_text_fitted` **截断**，不让它跨界（原则：宁可截断不可越界）。断言**直接调出货函数**（首版把公式抄进测试 ⇒ 反向注入不红，已重写），注入后 **3 条转红**并指名 `the heading "Symbol" starts at -32, left of its column at 0`。快照实测：五个标题全部回到自己列内 | **`heading_origin` 完成**；M1/M3 留白 | ✅ **P1 部分完成**（列标题错列已修） |
 | `radar_chart` | `radar_chart.rs` | **14** | ✅ **第 75 轮已修**（实测见 `log-20260924-1.md` §71）：五个字面量、**零主题读取** ⇒ 暗色下是**白板 + 近黑字** ⇒ 新增 `chrome_colors()` 一处解析五色（面 `surface_container` / 框 `outline_variant` / 网格**派生** / 标签 `foreground` / 空态 `secondary`）。**系列调色板不动**（数据身份）。断言采样点选错**两次**（圆角描边 → 网格）才承重 | **M4 完成** | ✅ **P1 完成** |
 | `heatmap` | `heatmap.rs` | **12** | 12 字面量；**色阶是数据色**（豁免，不判） | **M4**（仅 chrome 部分：轴/网格/刻度） | P1 |
 | `chart`（ChartWidget） | `chart.rs` | 10 | ✅ **值轴已落地**（实测复核）：`PlotArea::axis_margin_left` + `draw_value_axis` 在 `Bar` 与**空态**两处调用；`chart.svg` 左列 `x=25..29` 为刻度标签、基线 `y=97`。BLUE21 D6 关闭；空态也已带轴（不再是裸提示） | 数据变化过渡（M3）—— **裁定为独立议题**（需先定图表的数据域映射，见台账） | **M3** | P2 |
@@ -1624,8 +1637,8 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 
 | 控件 | 源文件 | 字面量 | 现状缺陷（实测） | **改进点** | **改进方式方法** | 优先级 |
 |---|---|---:|---|---|---|---|
-| `code_editor` | `code_editor/editor.rs` | 0 | 有 `tick`（光标闪烁）**无驱动者**；BLUE21 P4-4：`SyntaxPalette::default()` **整套浅色**（第 61/62 轮已记，仍未变）；A.6：无手柄/无放大镜/无端点调整 | ① **M3**（一行，光标会闪）② 语法配色按**主题外观**给两套 ③ 选中子系统（手柄/放大镜） | **M3** **M4** | **P0** |
-| `terminal_view` | `terminal_view.rs` | 1 | **最不能没有闪烁的控件**（不闪读起来像卡死）；**无 `tick`** | ① 加 `CursorBlink` + `tick` ② 滚动跟随 | **M3** | **P0** |
+| `code_editor` | `code_editor/editor.rs` | 0 | ① **第 76 轮实测复核：「有 `tick` 无驱动者」已不成立** —— `tick` + `is_animating` 齐全（渲染层在 `render.rs` 子模块，**已接主题**：`resolved_theme_style`）② `SyntaxPalette::default()` 的浅色问题仍有待核 | **M4**（语法配色两套）待核 | ⚠️ **部分复核完成** |
+| `terminal_view` | `terminal_view.rs` | 1 | ✅ **第 76 轮实测复核：假欠债** —— 「**无 `tick`**」不成立，`tick` + `is_animating` 都在（计划行自己写「最不能没有闪烁的控件」，而它**有**）；滚动跟随仍有活（M10）| M10（滚动跟随） | ✅ **复核完成** |
 | `rich_edit` | `input_widgets/rich_edit.rs` | 1 | 见 §A.3：光标几何用**等宽捷径**，变宽跨度下必错 | **M10**（跨度感知 caret） | P1 |
 | `markdown_editor` | `markdown_editor.rs` | 3 | 同 `rich_edit` 的跨度问题 | **M10** | P2 |
 | `diff_viewer` | `diff_viewer.rs` | 0 | 0 字面量；**增删行用语义色**（本仓优势） | **M6**（行线）**M5** | P2 |
@@ -1678,11 +1691,11 @@ Node::on_unmount(f) // f 在节点被移除后调用一次；与 on_mount 配对
 |---|---|---:|---|---|---|---|
 | `video_player` | `video_player.rs` | 11 | ✅ **第 74 轮已修**（实测见 `log-20260924-1.md` §49）：**先读豁免表再动手** —— `video-surface` 已声明它的画面是 content，且「黑 letterbox + 白图标叠加」是所有播放器的刻意设计（底下画面任意）⇒ **letterbox 与传输条 chrome 不动并写明**。真该跟主题的两处：**空态面板** `rgb(30,30,30)` → `surface_container`（无画面时它就是占位面板）、**进度填充** `rgb(60,140,240)` → `primary`（值指示器）。连带：该 `video-surface` 豁免因 dominant 已移动而**变陈旧，已移出豁免表** | 两处 **完成** | ✅ **P0 完成** |
 | `camera_preview` | `camera_preview.rs` | 16 | ✅ **第 74 轮复核：不动** —— 它是**全幅取景器**（画面即整个矩形），叠加的都是「任意画面上的 chrome」（分辨率/变焦/十字线/录制点/绿色边框），豁免表 `camera_preview video-surface` 已声明，`EMPTY_VIEWFINDER` 的注释也已论证。**把一个已论证的设计判成缺陷是另一种跑偏** | 无 | ✅ **复核驳回（非缺陷）** |
-| `audio_visualizer` | `audio_visualizer.rs` | 6 | ✅ **第 74 轮已修**（实测见 `log-20260924-1.md` §50）：控件**从不读 `style`**，所以 `apply_active_theme` 写进 `style.background_color` 的值**没有任何消费者**（声明了但读不回），且亮色外观下画近黑矩形 ⇒ `background_color` 改 `Option<Color>`：`set_*` 仍优先，未设则读 `surface_container`，无主题才用字面量。公共 API 不变 | **完成** | ✅ **P1 完成** |
-| `hero_animation` | `hero_animation.rs` | 11 | 有 `tick` 无驱动者；11 字面量 | **M3** **M4** | P1 |
-| `lottie_widget` | `lottie_widget.rs` | 6 | 有 `tick` 无驱动者 | **M3** **M4** | P1 |
-| `rive_widget` | `rive_widget.rs` | 9 | 有 `tick` 无驱动者 | **M3** **M4** | P1 |
-| `animated_image` | `animated_image.rs` | 3 | 有 `tick` 无驱动者 | **M3** **M4** | P1 |
+| `audio_visualizer` | `audio_visualizer.rs` | 6 | ✅ **第 74 轮已修**（实测见 `log-20260924-1.md` §50）：控件**从不读 `style`**，所以 `apply_active_theme` 写进 `style.background_color` 的值**没有任何消费者**（声明了但读不回），且亮色外观下画近黑矩形 ⇒ `background_color` 改 `Option<Color>`：`set_*` 仍优先，未设则读 `surface_container`，无主题才用字面量。公共 API 不变。 ✅ **第 76 轮补修**（§78）：**缺 `is_animating`** ⇒ 下降中的 peak 指针被宿主判为「已停」，会卡在半路 ⇒ 现报 `self.peak_hold && 有 marker 高于其 bar`；断言写成**一对**（在飞为 `true`、跑完归 `false`），避免「永远 true」被满足 | **完成** | ✅ **P1 完成** |
+| `hero_animation` | `hero_animation.rs` | 11 | ✅ **第 76 轮实测复核：假欠债** —— `tick` + `is_animating` 齐全，动画真的在跑；11 字面量经复核为回落档/数据色 | 无 | ✅ **已满足** |
+| `lottie_widget` | `lottie_widget.rs` | 6 | ✅ **第 76 轮实测复核：假欠债** —— `tick` + `is_animating` 齐全 | 无 | ✅ **已满足** |
+| `rive_widget` | `rive_widget.rs` | 9 | ✅ **第 76 轮实测复核：假欠债** —— `tick` + `is_animating` 齐全 | 无 | ✅ **已满足** |
+| `animated_image` | `animated_image.rs` | 3 | ✅ **第 76 轮实测复核：假欠债** —— `tick` + `is_animating` 齐全 | 无 | ✅ **已满足** |
 
 ### A.8.4 Miscellaneous（`misc_widgets`，8 个）
 

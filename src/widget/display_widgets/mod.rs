@@ -21,8 +21,14 @@ pub mod empty_state;
 pub mod floating_label;
 #[cfg(widgets_unstripped)]
 pub mod font_preview;
+/// The icon set: the built-in tokens (generated), their bundled geometry, the fallback geometry,
+/// and the storage for host-registered icons.
 #[cfg(widgets_unstripped)]
 pub mod icon;
+/// The storage behind the runtime icon registry. Its own module so the lock and the table can be
+/// reasoned about without the public API (`crate::widget::icon_registry`) in view.
+#[cfg(widgets_unstripped)]
+pub(crate) mod icon_data_set;
 #[cfg(feature = "image")]
 pub mod image_view;
 #[cfg(widgets_unstripped)]

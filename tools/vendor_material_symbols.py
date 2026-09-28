@@ -99,6 +99,60 @@ ICONS: dict[str, str] = {
     "unlock": "lock_open",
     "download": "download",
     "upload": "upload",
+    # ── Navigation ──
+    # The `chevron_*` family is the single most-used icon in any UI (a disclosure triangle
+    # on every menu, combo box, tree node and accordion). Upstream's `expand_more`/`expand_less`
+    # are the same shapes as `chevron_down`/`chevron_up` in this style, so only the chevron
+    # names are shipped: two tokens resolving to one outline is the `Close == Cross` defect, and
+    # `gen_icon_data.py --check` refuses it, so a second name for the same picture is not an
+    # option.
+    "chevron_left": "chevron_left",
+    "chevron_right": "chevron_right",
+    "chevron_up": "expand_less",
+    "chevron_down": "expand_more",
+    "first_page": "first_page",
+    "last_page": "last_page",
+    # ── Files ──
+    "folder": "folder",
+    "folder_open": "folder_open",
+    "file": "description",
+    "save": "save",
+    "copy": "content_copy",
+    "print": "print",
+    # ── Editing ──
+    "undo": "undo",
+    "redo": "redo",
+    "cut": "content_cut",
+    "paste": "content_paste",
+    "attachment": "attach_file",
+    "link": "link",
+    # ── Status ──
+    # `success` is `check_circle` upstream, and it is deliberately *not* the same outline as
+    # `check`: one is a bare tick, the other a filled circle containing it. `gen_icon_data.py
+    # --check` rejects two tokens resolving to one outline, so this pairing is guarded, not
+    # assumed.
+    "success": "check_circle",
+    "help": "help",
+    "block": "block",
+    "schedule": "schedule",
+    "hourglass": "hourglass_empty",
+    # ── Media ──
+    "play": "play_arrow",
+    "pause": "pause",
+    "stop": "stop",
+    "skip_next": "skip_next",
+    "volume_up": "volume_up",
+    "volume_off": "volume_off",
+    # ── Data ──
+    "sort": "sort",
+    "bar_chart": "bar_chart",
+    "calendar": "calendar_month",
+    "table": "table_chart",
+    # ── Communication ──
+    "chat": "chat",
+    "call": "call",
+    "send": "send",
+    "notifications_off": "notifications_off",
 }
 
 # `cross` and `close` are two *distinct* declared icons, so they must not share one upstream

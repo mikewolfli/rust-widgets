@@ -588,22 +588,36 @@ impl Draw for QuoteBoard {
             header_fill,
         );
         for (column, (start, width)) in self.columns.iter().zip(ranges.iter()) {
-            let text_x = if column.is_numeric() { start + width - 8 } else { start + 8 };
-            // The label is clamped inside its own column. Without this a title wider than
-            // its slot was drawn from `start - overflow`, which for the first column is a
-            // **negative** x: `Symbol` (42 px into a 48 px slot) started at -34 and left
-            // the pane entirely. A clipped label reads as truncated; an escaped one reads
-            // as a corrupted picture, and the two are not equally honest.
-            let label_x = (text_x - estimate_width(column.title()))
-                .max(self.base.geometry().x)
-                .min(self.base.geometry().x + self.base.geometry().width as i32);
-            context.draw_text(
-                Point { x: label_x, y: geometry.y + 5 },
-                column.title(),
-                &Font::simple("Sans", 11.0),
-                header_text,
-                HorizontalAlignment::Left,
-            );
+            let font = Font::simple("Sans", HEADING_FONT_SIZE);
+            let title = column.title();
+            let label_x = heading_origin(*start, *width, title, &font);
+            if heading_fits(*width, title, &font) {
+                context.draw_text(
+                    Point { x: label_x, y: geometry.y + 5 },
+                    title,
+                    &font,
+                    header_text,
+                    HorizontalAlignment::Left,
+                );
+            } else {
+                // The column is narrower than its own heading. Left unwrapped, the glyphs
+                // would run across the next column's heading, and two headings overlapping
+                // is a picture that reads as corruption rather than as truncation. Fit it to
+                // the column instead, so the overflow shows as the ellipsis it is.
+                let band = Rect::new(
+                    *start,
+                    geometry.y + 5,
+                    (*width).max(1) as u32,
+                    font.size().max(1.0) as u32,
+                );
+                context.draw_text_fitted(
+                    band,
+                    title,
+                    &font,
+                    header_text,
+                    HorizontalAlignment::Left,
+                );
+            }
         }
 
         // The rows, clipped to the pane by the loop bound rather than by a clip push:
@@ -651,6 +665,8 @@ impl Draw for QuoteBoard {
             }
 
             for (column, (start, width)) in self.columns.iter().zip(ranges.iter()) {
+                let start = *start;
+                let width = *width;
                 let text = self.cell_text(quote, *column, decimals);
                 // A signed column is coloured by the quote's direction, not by the text's
                 // own sign, so a change and its percentage can never disagree about colour.
@@ -665,13 +681,18 @@ impl Draw for QuoteBoard {
                 } else {
                     body_text
                 };
-                let text_width = estimate_width(&text);
+                let font = Font::simple("Sans", BODY_FONT_SIZE);
+                // The advance model the renderer draws with, not a per-character guess: a
+                // right-aligned number whose reserved width was a guess lands short of its
+                // column edge by the difference, and the guess drifts with every glyph that
+                // is not one em wide. See `estimate_width`'s removal for the measurement.
+                let text_width = measure_body_text(&text, &font) as i32;
                 let text_x =
                     if column.is_numeric() { start + width - 8 - text_width } else { start + 8 };
                 context.draw_text(
                     Point { x: text_x, y: y + 5 },
                     &text,
-                    &Font::simple("Sans", 11.0),
+                    &font,
                     color,
                     HorizontalAlignment::Left,
                 );
@@ -680,15 +701,84 @@ impl Draw for QuoteBoard {
     }
 }
 
-/// Estimates the pixel width of `text` at the small font size the board uses.
+/// The font size the board draws both its headings and its values at.
 ///
-/// An estimate rather than a measurement because `RenderContext::draw_text` positions by
-/// origin and this control right-aligns numeric columns: the wrap width has to be known
-/// before the call. The factor matches the fixed-pitch metrics the axis labels elsewhere
-/// in this module assume, so a right-aligned column lines up with the rest of the crate's
-/// text without a measurement pass.
-fn estimate_width(text: &str) -> i32 {
-    (text.chars().count() as i32 * 7).max(0)
+/// One size for the whole board: a heading larger than the column it identifies is what
+/// made the first column's label leave the pane, and a heading smaller than the values it
+/// titles reads as a caption on the value rather than as its name.
+const BODY_FONT_SIZE: f32 = 11.0;
+
+/// The same size, named for the header row so the two call sites state one fact twice.
+const HEADING_FONT_SIZE: f32 = BODY_FONT_SIZE;
+
+/// The drawn width of `text` at `font`.
+///
+/// `RenderContext::draw_text` positions by origin, so this control has to know a
+/// right-aligned value's width **before** it calls. The measurement is
+/// [`crate::widget::metrics::estimate_text_width`], the crate's single advance model — the
+/// same `for_each_cluster` traversal and the same `estimate_cluster_advance` the renderer
+/// uses — so measuring here cannot drift from what is painted. The scale is 1.0 because
+/// `draw_text` takes the board's rectangle in device pixels already.
+fn measure_body_text(text: &str, font: &Font) -> u32 {
+    crate::widget::metrics::estimate_text_width(text, font, 1.0)
+}
+
+/// The left edge `title` is drawn at, inside the column that occupies `[start, start + width)`.
+///
+/// # The defect this replaced
+///
+/// A heading is one string drawn at one origin, so "where it starts" and "how wide it is"
+/// describe the same object. The board nevertheless derived the origin *from the width*, as
+/// `start + 8 - title_width` — the arithmetic a **right**-aligned label needs — and then drew
+/// the glyphs left-aligned from that origin. Every heading was therefore a whole
+/// heading-width to the left of its column's inset, and the clamp that was supposed to keep
+/// it in the column floored at the **control's** left edge rather than the column's.
+///
+/// Measured on the census geometry — five columns of 48 px — the old form put `Change` at
+/// x 64 inside a column that starts at 96, and `Volume` at 160 inside a column that starts
+/// at 192: each heading sat over the *previous* column's values.
+///
+/// # Why the inset is not always 8 px
+///
+/// A column can be narrower than its own heading plus the inset on both sides — the census
+/// board's 48 px columns hold `"Symbol"`, which measures 40 px. Insisting on the 8 px inset
+/// there rejects the margin before the heading and keeps the frame margin instead, pinning
+/// the label to `start`. When both cannot fit, the margin that keeps the heading off the
+/// **frame** is the one to give up: the pane has a border of its own, and a heading flush
+/// with its own column's edge still reads as that column's heading, whereas one flush with
+/// the pane's edge reads as the pane's title.
+///
+/// # Why it is a free function
+///
+/// So that the placement can be asserted directly. A test that re-states the formula rather
+/// than calling it passes with the defect re-injected — which is how the first version of
+/// this test was written, and why it was rewritten.
+///
+/// # Why a heading is always left-aligned
+///
+/// It is an identifying label, so it belongs at the column's inset whether the column holds
+/// numbers or not. Right-aligning it would move the heading every time a value gained a
+/// digit.
+fn heading_origin(start: i32, width: i32, title: &str, font: &Font) -> i32 {
+    let title_width = measure_body_text(title, font) as i32;
+    let inset = start + 8;
+    let right_most = start + width - 8 - title_width;
+    if right_most >= inset {
+        // The usual case: the column holds the heading and the inset on both sides.
+        inset
+    } else {
+        // A column too narrow for both. Give up the frame margin, keep the heading inside
+        // its own column, and never push it off the column's left edge.
+        right_most.max(start)
+    }
+}
+
+/// Whether `title` fits inside a column `width` px wide with the inset on both sides.
+///
+/// A caller that paints a heading which does **not** fit should truncate it rather than let
+/// it cross into the next column; see `measure_body_text` for the width to fit it to.
+fn heading_fits(width: i32, title: &str, font: &Font) -> bool {
+    measure_body_text(title, font) as i32 + 16 <= width
 }
 
 /// Test module for the quote board.
@@ -1034,6 +1124,188 @@ mod tests {
             crate::render::SoftwarePaintBackend::new(crate::core::Size::new(640, 240), 1.0);
         let mut context = RenderContext::new(&mut backend);
         board.draw(&mut context);
+    }
+
+    /// A heading is placed on the advance model the board draws with, so its origin is the
+    /// one the renderer will paint from.
+    ///
+    /// # The defect this pins
+    ///
+    /// A heading is one string drawn at one origin, so "where it starts" and "how wide it
+    /// is" describe the same object. The board nevertheless computed both, and computed them
+    /// from two different facts: the origin came from `estimate_width` (7 px per character)
+    /// **subtracted** from `start + 8`, and the glyphs were then painted **left-aligned**
+    /// from that origin. The subtraction is what a *right*-aligned label needs. Nothing was
+    /// right-aligned, so the subtraction moved every heading a whole heading-width to the
+    /// left, and the trailing clamp — which floored at the **control's** left edge rather
+    /// than the column's — hid the worst case by pinning `"Symbol"` to x=0, where it ran
+    /// into the pane's own frame.
+    ///
+    /// # Why the assertion names the advance model
+    ///
+    /// Measured with the board's own `Sans`-11 model, every heading here is within 2 px of
+    /// the 7 px-per-character guess (checked below), so replacing the guess with a
+    /// measurement on its own moves almost nothing — that is *not* what was wrong, and a
+    /// test asserting "the guess is too small" would be pinning a fact that is not a defect.
+    /// What was wrong is that the origin was derived as though the label were right-aligned.
+    /// The assertion therefore names the *width* the placement must use: the renderer's own
+    /// `estimate_text_width`, which is what makes `start + 8` an origin rather than a
+    /// right edge. An assertion on the drawn pixel would move with any column-geometry
+    /// change; this one fails only if the two facts are re-merged.
+    #[test]
+    fn a_heading_is_placed_with_the_advance_model_it_is_drawn_with() {
+        let font = Font::simple("Sans", BODY_FONT_SIZE);
+        for title in ["Symbol", "Name", "Last", "Change", "Chg%", "High", "Low", "Volume"] {
+            let measured = measure_body_text(title, &font);
+            assert_eq!(
+                measured,
+                crate::widget::metrics::estimate_text_width(title, &font, 1.0),
+                "the heading {title:?} must be measured with the renderer's own advance model"
+            );
+            assert!(measured > 0, "the heading {title:?} must have a positive width");
+        }
+        // The 7 px-per-character guess this replaced was **not** the main error: at this font
+        // size it happens to be within 2 px of the honest measurement for every heading the
+        // board ships. It is still the wrong ruler to keep — it charges an em per cluster, so
+        // a narrow glyph and a CJK scalar get the same width — but recording the size of the
+        // error here keeps the next reader from mistaking the guess for the root cause and
+        // "fixing" only the arithmetic, which would have moved four pixels and left the
+        // headings where they were.
+        for title in ["Symbol", "Name", "Last", "Change", "Chg%", "High", "Low", "Volume"] {
+            let measured = measure_body_text(title, &font) as i32;
+            let naive = title.chars().count() as i32 * 7;
+            assert!(
+                (measured - naive).abs() <= 2,
+                "{title:?} measures {measured} against a 7 px-per-character guess of {naive}; \
+                 if these diverge the guess is a second, separate defect to fix"
+            );
+        }
+    }
+
+    /// A heading starts at its column's left inset, not a heading-width to the left of it.
+    ///
+    /// This is the visible half of the defect, and it is asserted at the *narrowest* geometry
+    /// the board can be built at — the one in `snapshots/svg/quote_board.svg`, whose columns
+    /// are 60 px wide. At a comfortable column width the clamp hides the error by pushing the
+    /// heading to the column's left edge, which is only 8 px from the correct answer; the
+    /// defect and the clamp are 8 px apart there and a passing assertion proves little. At
+    /// 60 px the same defect is visible as "the heading ran into the pane's frame".
+    ///
+    /// # Why this calls `heading_origin` rather than re-stating the formula
+    ///
+    /// The first version of this test re-stated `(start + 8).min(..).max(..)` inline. It
+    /// passed with the defect re-injected into `draw`, because it was asserting against its
+    /// own copy of the formula and never touched the shipped one. Calling the function the
+    /// control calls is what makes the assertion load-bearing.
+    #[test]
+    fn a_heading_starts_at_its_columns_inset() {
+        let font = Font::simple("Sans", BODY_FONT_SIZE);
+        for title in ["Symbol", "Name", "Last", "Change", "Chg%", "High", "Low", "Volume"] {
+            let title_width = measure_body_text(title, &font) as i32;
+            // A column is `width` px starting at `start`.
+            for (start, width) in [(0, 60), (60, 60), (120, 60), (180, 60), (0, 48), (0, 80)] {
+                let label_x = heading_origin(start, width, title, &font);
+                assert!(
+                    label_x >= start,
+                    "the heading {title:?} starts at {label_x}, left of its column at {start}"
+                );
+                assert!(
+                    label_x + title_width <= start + width,
+                    "the heading {title:?} ends at {}, past its column's right edge {} \
+                     (it starts at {label_x} and measures {title_width})",
+                    label_x + title_width,
+                    start + width
+                );
+                // The inset is the point: a heading that fits sits on it. The old form could
+                // not reach it, because it subtracted the heading's width from the inset.
+                if title_width + 16 <= width {
+                    assert_eq!(
+                        label_x,
+                        start + 8,
+                        "the heading {title:?} fits {width} px and must start at its inset"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The shipped placement keeps `"Symbol"` inside its own 48 px column.
+    ///
+    /// The concrete case from `snapshots/svg/quote_board.svg`, whose board is the census
+    /// rectangle and ships the **five** default columns — so every column is 48 px and the
+    /// first one holds `"Symbol"`, which measures 40 px. The heading cannot have an 8 px
+    /// inset there and still fit; the assertion is that it nevertheless stays in its own
+    /// column rather than being pushed to the pane's edge, and never crosses into the next
+    /// column, which is what the old form did for `Change` and `Volume`.
+    #[test]
+    fn the_first_heading_stays_inside_a_narrow_first_column() {
+        let font = Font::simple("Sans", BODY_FONT_SIZE);
+        let title = QuoteColumn::Symbol.title();
+        let label_x = heading_origin(0, 48, title, &font);
+        let title_width = measure_body_text(title, &font) as i32;
+        assert!(label_x >= 0, "'Symbol' must not start left of its column, got {label_x}");
+        assert!(
+            title_width + 2 * 8 > 48,
+            "this case is only interesting while the heading cannot hold both insets: \
+             '{title}' measures {title_width} in a 48 px column"
+        );
+        assert!(
+            label_x + title_width <= 48,
+            "'Symbol' ends at {} in a 48 px column (starts at {label_x}, measures {title_width})",
+            label_x + title_width
+        );
+    }
+
+    /// No heading is ever drawn outside the column it names.
+    ///
+    /// This is the property that the old form broke on the census geometry: `Change` and
+    /// `Volume` were placed over the column to their left, because their origin was derived
+    /// from a width that a previous, narrower heading had contributed to.
+    ///
+    /// The width asserted against is the width the board will **paint**, which is why this
+    /// goes through `heading_fits` rather than assuming the nominal measurement: a column too
+    /// narrow for its heading at all is truncated to an ellipsis, and asserting the nominal
+    /// width there would be asserting a number the board never draws.
+    #[test]
+    fn no_heading_escapes_its_own_column() {
+        let font = Font::simple("Sans", BODY_FONT_SIZE);
+        // The census board: 240 px, five default columns, so 48 px each — plus widths a host
+        // could set, including two no heading can fit into.
+        for (start, width) in [(0, 48), (48, 48), (96, 48), (144, 48), (192, 48), (0, 30), (0, 200)]
+        {
+            for column in [
+                QuoteColumn::Symbol,
+                QuoteColumn::Name,
+                QuoteColumn::Last,
+                QuoteColumn::Change,
+                QuoteColumn::ChangePercent,
+                QuoteColumn::High,
+                QuoteColumn::Low,
+                QuoteColumn::Volume,
+            ] {
+                let title = column.title();
+                let label_x = heading_origin(start, width, title, &font);
+                assert!(
+                    label_x >= start,
+                    "{title:?} starts at {label_x}, left of its column at {start}"
+                );
+                // What the board paints: the measured heading when it fits, otherwise the
+                // fitted (truncated) string, which is never wider than the column.
+                let painted = if heading_fits(width, title, &font) {
+                    measure_body_text(title, &font) as i32
+                } else {
+                    // `draw_text_fitted` fits inside `width` less one inset at each end.
+                    (width - 16).max(0)
+                };
+                assert!(
+                    label_x + painted <= start + width,
+                    "{title:?} ends at {} past its column's right edge {} (starts at {label_x}, \
+                     paints {painted} px of a {width} px column)",
+                    label_x + painted,
+                    start + width
+                );
+            }
+        }
     }
 
     /// A malformed quote draws without panicking.

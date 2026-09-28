@@ -1,0 +1,53 @@
+# The unicode-range shards of the CJK vector face (`fonts-cjk-shards`).
+#
+# # What this file is
+#
+# One shard per line. Each line is `id: A..B[, C..D...]` — a shard name and the codepoint ranges it
+# covers. `tools/gen_cjk_shards.py` subsets Noto Sans SC once per shard and writes one
+# `include_bytes!` module per shard; `src/render/text/font_assets/cjk_shards.rs` (generated) lists
+# them so `shard_for(ch)` can name the file a character lives in.
+#
+# # Why shards, and why these boundaries
+#
+# The single `fonts-cjk` face is 361,704 bytes for 2053 glyphs. A host that draws one Chinese label
+# pays for every glyph in that face whether or not the character appears — and a host that needs
+# *more* Han than the face carries has nowhere to put them without growing the one face everyone
+# loads. Sharding on **Unicode block boundaries** fixes both:
+#
+#   * the cuts follow a property of the characters, not a byte budget, so "which shard is U+4E2D
+#     in?" is answerable from the codepoint and needs no lookup table of arbitrary ranges;
+#   * a shard is a natural unit for "load when the UI first shows this script" — an all-English UI
+#     never touches the Han shard, and a Japanese UI loads kana without Han.
+#
+# # How the shards relate to `fonts-cjk`
+#
+# They are **the same codepoints**, partitioned. `fonts-cjk` remains the one-file answer for a host
+# that wants everything resident; the shards are the same coverage split so a host that would rather
+# load on demand can. `tools/check_cjk_shards_cover_the_face.sh` asserts the partition equals
+# `tools/cjk_vector_codepoints.txt`, so the two cannot drift into covering different characters.
+#
+# # Format
+#
+#   <id>: <ranges>
+#
+# `id` is lowercase and becomes the feature suffix (`fonts-cjk-shard-<id>`) and the file stem.
+# Ranges are `A..B` (inclusive, hex) separated by `,`. `#` starts a comment.
+#
+# Regenerate with:
+#     python3 tools/gen_cjk_shards.py --license=ofl-1.1
+
+# ASCII, so a mixed line's advances and kerning come from one face (see the note in
+# `cjk_vector_codepoints.txt`).
+latin: 20..7E
+
+# CJK Symbols and Punctuation (ideographic space, corner brackets, the iteration mark).
+symbols: 3000..303F
+
+# Hiragana and Katakana, including the voiced-mark range.
+kana: 3040..30FF
+
+# Halfwidth and Fullwidth Forms.
+fullwidth: FF00..FFEF
+
+# Han: the 800 most common ideographs, exactly the range `cjk_vector_codepoints.txt` carries.
+han: 4E00..511F

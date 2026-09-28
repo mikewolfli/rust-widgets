@@ -108,7 +108,7 @@ impl SvgPaintBackend {
     /// carries none has no outline ink to emit. Gating the whole function — rather than returning
     /// `false` unconditionally — is what keeps the default build's code path byte-identical: without
     /// an outline face, every glyph takes [`Self::append_bitmap_rects`] exactly as it always did.
-    #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", feature = "fonts-cjk"))]
+    #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
     fn append_outline(
         &self,
         path: &mut String,
@@ -268,7 +268,7 @@ impl SvgPaintBackend {
 /// One pair of functions per axis keeps the four call sites free of truth tables: "which side does
 /// this edge keep" is a `bool` no reader can misread, whereas a generic comparator would have to be
 /// spelled out at each call. See [`clip_polygon`] for the algorithm and why winding survives it.
-#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", feature = "fonts-cjk"))]
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
 fn clip_against_x(
     input: &[(f32, f32)],
     output: &mut Vec<(f32, f32)>,
@@ -280,7 +280,7 @@ fn clip_against_x(
 }
 
 /// Clips `input` against the half-plane `y >= limit` (`keep_greater`) or `y <= limit`.
-#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", feature = "fonts-cjk"))]
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
 fn clip_against_y(
     input: &[(f32, f32)],
     output: &mut Vec<(f32, f32)>,
@@ -312,7 +312,7 @@ fn clip_against_y(
 /// `varying` projects a point onto the axis this edge tests, and `limit` is the bound — so the
 /// crossing is always interpolated on the same coordinate the inside test used, which is what keeps
 /// a clip against `x` from computing a crossing along `y`.
-#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", feature = "fonts-cjk"))]
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
 fn clip_polygon(
     input: &[(f32, f32)],
     output: &mut Vec<(f32, f32)>,
@@ -352,7 +352,7 @@ fn clip_polygon(
 /// it either lies in the plane or never reaches it). Emitting a vertex for such a segment would
 /// duplicate a point the walk already emitted, and a duplicated vertex makes a zero-area edge —
 /// harmless for filling, but it is churn in a byte-compared artifact.
-#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", feature = "fonts-cjk"))]
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
 fn edge_crossing(
     start: (f32, f32),
     end: (f32, f32),
@@ -675,11 +675,7 @@ impl PaintBackend for SvgPaintBackend {
                         // `fonts-cjk`, Han and kana), while the bitmap faces cover everything the
                         // default build draws. Only one of the two ever produces geometry, so the
                         // order is a statement of preference, not a risk of double-drawing.
-                        #[cfg(any(
-                            feature = "fonts-vector-latin",
-                            feature = "fonts-complex",
-                            feature = "fonts-cjk"
-                        ))]
+                        #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
                         let outlined = self.append_outline(
                             &mut path,
                             ch,
@@ -688,11 +684,7 @@ impl PaintBackend for SvgPaintBackend {
                             glyph_width,
                             glyph_height,
                         );
-                        #[cfg(not(any(
-                            feature = "fonts-vector-latin",
-                            feature = "fonts-complex",
-                            feature = "fonts-cjk"
-                        )))]
+                        #[cfg(not(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face)))]
                         let outlined = false;
                         if !outlined {
                             self.append_bitmap_rects(
@@ -737,21 +729,13 @@ impl PaintBackend for SvgPaintBackend {
                 // A provenance tag resolves it at the source. The producer knows a run is a run;
                 // recording that fact costs 15 bytes on a path that is already hundreds, and it
                 // replaces a heuristic that cannot be made correct by adding cases.
-                #[cfg(any(
-                    feature = "fonts-vector-latin",
-                    feature = "fonts-complex",
-                    feature = "fonts-cjk"
-                ))]
+                #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
                 self.push_element(format!(
                     r#"<path d="{}" fill="{}" fill-rule="nonzero" data-text="1" />"#,
                     path,
                     color_to_rgba(color)
                 ));
-                #[cfg(not(any(
-                    feature = "fonts-vector-latin",
-                    feature = "fonts-complex",
-                    feature = "fonts-cjk"
-                )))]
+                #[cfg(not(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face)))]
                 self.push_element(format!(
                     r#"<path d="{}" fill="{}" />"#,
                     path,
@@ -1065,7 +1049,7 @@ mod tests {
     ///
     /// The test is gated on a vector feature because without one there is no outline face and the
     /// rectangle path is the *correct* answer, not a fallback.
-    #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-cjk"))]
+    #[cfg(any(feature = "fonts-vector-latin", cjk_outline_face))]
     #[test]
     fn svg_backend_emits_an_outline_for_a_vector_face() {
         // A Latin face this build ships. The outline path selects by `Font::family`, so the name
@@ -1108,11 +1092,7 @@ mod tests {
     ///
     /// The attribute is emitted only when an outline face exists, because adding it unconditionally
     /// would rewrite all 376 committed snapshots for no behavioural change. This pins that.
-    #[cfg(not(any(
-        feature = "fonts-vector-latin",
-        feature = "fonts-complex",
-        feature = "fonts-cjk"
-    )))]
+    #[cfg(not(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face)))]
     #[test]
     fn svg_backend_emits_rectangles_without_a_fill_rule_by_default() {
         let mut svg = SvgPaintBackend::new(Size::new(120, 48));

@@ -517,7 +517,7 @@ pub struct OutlinePoint {
 ///
 /// `contours.len()` must be at least [`MAX_CONTOURS`]; both constants are exported so a caller can
 /// size them without guessing.
-#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", feature = "fonts-cjk"))]
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
 /// # Why the face is chosen by `family`, not by coverage
 ///
 /// The outline must come from the **same face the layout measured with**. Measurement goes through
@@ -582,7 +582,7 @@ pub fn outline(
 /// it — must still be able to ask for that face, and it is the family lookup that makes measurement
 /// and drawing agree for such a caller. The two entry points answer two different questions; what was
 /// wrong was one of them being used by a caller that meant the other.
-#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", feature = "fonts-cjk"))]
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
 pub fn outline_by_coverage(
     ch: char,
     cell: Cell,
@@ -598,7 +598,7 @@ pub fn outline_by_coverage(
 /// Both [`outline`] and [`outline_by_coverage`] land here, so the two selectors cannot drift into
 /// producing differently-shaped ink for the same face — which is the failure mode of duplicating the
 /// body for the sake of one differing first line.
-#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", feature = "fonts-cjk"))]
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
 fn outline_in_face(
     ch: char,
     cell: Cell,
@@ -653,11 +653,11 @@ fn outline_in_face(
 }
 
 /// The vertex capacity [`outline`] needs in the slice it is handed.
-#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", feature = "fonts-cjk"))]
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
 pub const OUTLINE_MAX_POINTS: usize = MAX_POINTS;
 
 /// The contour capacity [`outline`] needs in the slice it is handed.
-#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", feature = "fonts-cjk"))]
+#[cfg(any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face))]
 pub const OUTLINE_MAX_CONTOURS: usize = MAX_CONTOURS;
 
 /// Rasterises `ch` through the build's vector faces into coverage.
@@ -837,10 +837,7 @@ impl ttf_parser::OutlineBuilder for Flattener<'_> {
 /// [`VectorSource`] covering anything, so every test here would fail on an empty result rather
 /// than on a defect. Gating on the data features is the narrower, honest question — and `fonts-cjk`
 /// is one of them, since it too ships an outline face.
-#[cfg(all(
-    test,
-    any(feature = "fonts-vector-latin", feature = "fonts-complex", feature = "fonts-cjk")
-))]
+#[cfg(all(test, any(feature = "fonts-vector-latin", feature = "fonts-complex", cjk_outline_face)))]
 mod tests {
 
     /// The symbols these tests use that live outside this module.
@@ -866,6 +863,11 @@ mod tests {
     /// name a face the *current feature set* provides. `fonts-vector-latin` ships Open Sans;
     /// `fonts-cjk` ships Noto Sans SC, which also covers ASCII. A build with neither has no Latin
     /// outline face and the tests that need one are compiled out.
+    ///
+    /// A **shard-only** build has no compiled Latin outline face either: the shards are registered
+    /// on demand and named for their shard, and the by-family lookup these tests exercise is not the
+    /// shard path (that is `cjk_shard_loader`'s own test). The gate is therefore `fonts-vector-latin`
+    /// or the single `fonts-cjk` face, not the shard alias.
     #[cfg(any(feature = "fonts-vector-latin", feature = "fonts-cjk"))]
     fn latin_family() -> &'static str {
         #[cfg(feature = "fonts-vector-latin")]

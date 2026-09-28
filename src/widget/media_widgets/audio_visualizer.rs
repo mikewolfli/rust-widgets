@@ -337,6 +337,23 @@ impl Widget for AudioVisualizer {
         moved
     }
 
+    /// Whether the peak-hold markers are still falling, i.e. whether a frame is owed.
+    ///
+    /// # Why this is not the trait's default
+    ///
+    /// `Widget::is_animating` answers `false` unless a control overrides it, and a host uses the
+    /// answer to decide whether a frame is needed **before** paying for a sweep. A visualizer whose
+    /// markers were still falling answered `false`, so such a host would stop scheduling frames
+    /// mid-decline and the markers would freeze part-way — the exact "held forever" shape the
+    /// peak-hold clock was written to end, reintroduced one layer up. The condition mirrors
+    /// [`Self::advance_peak_hold`]: a marker is in flight while peak-hold is on and it sits above the
+    /// bar it tracks.
+    fn is_animating(&self) -> bool {
+        self.peak_hold
+            && (0..self.peak_values.len())
+                .any(|index| self.peak_values[index] > self.bar_value(index))
+    }
+
     /// Reports this widget as the object that paints it.
     ///
     /// `AudioVisualizer` implements `Draw`, so `Some(self)` is total and cannot be wrong.
@@ -539,6 +556,48 @@ mod tests {
         assert!(!av.is_peak_hold_enabled());
         av.set_peak_hold(true);
         assert!(av.is_peak_hold_enabled());
+    }
+
+    /// `is_animating` answers for the peak-hold clock, and stops once the markers settle.
+    ///
+    /// # The defect this pins
+    ///
+    /// `Widget::is_animating` answers `false` unless a control overrides it, and a host consults the
+    /// answer to decide whether a frame is needed **before** paying for a sweep. A visualizer whose
+    /// markers were still falling answered `false`, so such a host would stop scheduling frames
+    /// mid-decline and the markers would freeze part-way — the "held forever" shape the peak-hold
+    /// clock was written to end, reintroduced one layer up.
+    ///
+    /// # Why the assertion is a pair, not a single check
+    ///
+    /// "It reports `true` while markers fall" alone would pass for a control that answered `true`
+    /// forever, which would pin a host at frame rate for the life of the widget. The second half — it
+    /// goes back to `false` once the markers have settled — is what makes the answer an animation
+    /// rather than a traffic loop.
+    #[test]
+    fn is_animating_follows_the_peak_hold_clock() {
+        let mut av = AudioVisualizer::new(Rect::new(0, 0, 300, 150));
+        assert!(!av.is_animating(), "a rest visualizer owes no frames");
+
+        av.set_peak_hold(true);
+        av.set_bar_count(4);
+        av.set_peak_hold_duration(0);
+        // A loud window raises the markers to its own level.
+        av.set_samples(vec![1.0, 1.0, 1.0, 1.0]);
+        assert!(av.tick(16), "raising the markers is a frame-worthy change");
+
+        // A quiet window then leaves the markers *above* their bars, which is the state the clock
+        // exists to animate and therefore the state in which a frame is owed.
+        av.set_samples(vec![0.0, 0.0, 0.0, 0.0]);
+        assert!(av.is_animating(), "markers above their bars are in flight");
+
+        // Let the clock run: the markers fall to their bars and then stop.
+        for _ in 0..400 {
+            if !av.tick(16) {
+                break;
+            }
+        }
+        assert!(!av.is_animating(), "a settled visualizer must stop asking for frames");
     }
 
     #[test]

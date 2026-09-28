@@ -455,9 +455,18 @@ impl Draw for TreeTable {
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))
             .filter(|resolved| *resolved != surface)
             .unwrap_or_else(|| surface.blend(&ink, 0.20));
-        // A cell outline is one step into the surface, so the grid stays a subdivision of the
-        // table rather than a second literal grey.
-        let cell_border = surface.blend(&ink, 0.10);
+        // The cell grid is the theme's `outline_variant` — the **weak** separator role — so a
+        // tree table's grid is visibly weaker than its `outline`-strength focus ring (§5.4), and so
+        // it moves with a theme that tunes its separators. The local blend stays as the last rung for
+        // a build with no theme.
+        //
+        // One source for the whole table family: `table_widget`, `virtual_table` and this control all
+        // share the `Table`/`DataView` grid, so a theme cannot end up tuning one and not the others.
+        let cell_border = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.outline_variant)
+            .filter(|resolved| *resolved != surface)
+            .unwrap_or_else(|| surface.blend(&ink, 0.10));
         // The selected row is a selection state, so it reads the theme's accent token and is
         // laid over the surface, which keeps it legible in either appearance.
         let accent = crate::style::theme_manager()

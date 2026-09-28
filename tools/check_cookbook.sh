@@ -57,6 +57,12 @@ cd "$ROOT_DIR"
 . "$ROOT_DIR/tools/lib_timeout.sh"
 . "$ROOT_DIR/tools/lib_python.sh"
 
+# Per-invocation bound for the book builds (principle #58). Initialised with the same
+# default every peer gate uses: without it, `set -u` makes the first `mdbook build`
+# abort on the unset variable, so step [2] failed for a shell reason on every run and
+# the gate could not pass regardless of whether the books were correct.
+GATE_TIMEOUT="${GATE_TIMEOUT:-900}"
+
 BOOKS="cookbook/en cookbook/zh-CN cookbook/zh-TW"
 
 echo "[1/2] every cookbook-declared API name exists in src/"

@@ -489,9 +489,19 @@ impl Draw for VirtualTable {
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))
             .filter(|resolved| *resolved != surface)
             .unwrap_or_else(|| surface.blend(&ink, 0.20));
-        // A cell outline is one step into the surface, so the grid stays a subdivision of the
-        // table rather than a second literal blue-grey.
-        let cell_border = surface.blend(&ink, 0.10);
+        // The cell grid is the theme's `outline_variant` — the **weak** separator role — so a
+        // table's grid lines are visibly weaker than its `outline`-strength focus ring, which is
+        // the separation §5.4 of the plan asks for. The blind `surface.blend(&ink, 0.10)` fallback
+        // remains for a build with no theme; it is the last rung, not the derivation.
+        //
+        // Read the role rather than blending locally so this control and `table_widget` (same
+        // `Table` kind, so the same grid) cannot drift apart: a theme that tunes its grid cannot
+        // tune one without the other.
+        let cell_border = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.outline_variant)
+            .filter(|resolved| *resolved != surface)
+            .unwrap_or_else(|| surface.blend(&ink, 0.10));
 
         context.face(
             rect,
@@ -537,7 +547,45 @@ impl Draw for VirtualTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::svg::render_to_svg;
     use std::sync::{Arc, Mutex};
+
+    /// The cell grid uses the weak separator role, not the frame's strength.
+    ///
+    /// # Why this is the judgement rather than a style preference
+    ///
+    /// Plan §5.4 asks for separators to be visibly weaker than the focus ring, and its stated
+    /// criterion is "the grid line's colour differs from the ring's". The control drew its grid with
+    /// a **local** `surface.blend(&ink, 0.10)` while `table_widget` — the same `Table` kind, so the
+    /// same grid — read `colors.outline_variant`. Both satisfied the criterion, which is why neither
+    /// was a defect, but they were two derivations of one decision: a theme could tune the grid for
+    /// one control and not the other. This pins them to one source.
+    #[test]
+    #[cfg(all(device_profile, feature = "desktop"))]
+    fn the_cell_grid_reads_the_weak_separator_role() {
+        let _guard = crate::theme::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        crate::theme::global_theme_manager().set_appearance(crate::theme::AppearanceMode::Dark);
+
+        let mut table = VirtualTable::new(Rect::new(0, 0, 320, 200));
+        table.set_data_source(Arc::new(StaticSource));
+        crate::theme::apply_theme_to_widget(&mut table);
+        let svg = render_to_svg(&mut table);
+
+        let manager = crate::style::theme_manager();
+        let variant = manager.current_theme().expect("a preset is active").colors.outline_variant;
+        let background = manager.current_theme().expect("a preset is active").colors.background;
+        let expected = format!("rgba({},{},{},", variant.r, variant.g, variant.b);
+        assert!(
+            svg.contains(&expected),
+            "the grid must be stroked in `outline_variant` ({expected}…), so a theme can tune it \
+             for every `Table`-kind control at once"
+        );
+        // And it must be the **weak** role: a grid drawn in the frame's own `outline` strength would
+        // satisfy the previous assertion if the two roles happened to be equal, which is exactly the
+        // "two names, one colour" state §5.4 exists to end.
+        assert_ne!(variant, background, "the separator role must not coincide with the page");
+    }
 
     struct StaticSource;
 

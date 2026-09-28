@@ -138,6 +138,23 @@ pub mod display_widgets;
 #[cfg(feature = "icons")]
 pub(crate) mod icon_data;
 
+/// The generated hand-drawn fallback geometry, derived from the same Material Symbols outlines.
+///
+/// Compiled whenever `Icon` is (`widgets_unstripped`), not only under `icons`: this *is* the
+/// fallback — the geometry a build without the icon data draws. Gating it on `icons` would leave
+/// the fallback with nothing to draw from, which is the situation the hand-written `draw_*`
+/// methods used to fill. Gating it on the same condition as `icon.rs` keeps a stripped profile
+/// (`mini`/`embedded`, where `Icon` is not compiled at all) from linking a table nothing reads.
+#[cfg(widgets_unstripped)]
+pub(crate) mod icon_fallback_data;
+
+/// Host-registered icons: a name and its outline, added at runtime (`register_icon`).
+///
+/// The crate's own set is the closed `IconName` enum; this is the open extension point a host uses
+/// for an application-specific glyph. Gated like `Icon`, whose draw path consults it.
+#[cfg(widgets_unstripped)]
+pub mod icon_registry;
+
 pub mod input_widgets;
 #[cfg(full_widgets)]
 pub mod media_widgets;
@@ -329,6 +346,10 @@ pub use display_widgets::floating_label::FloatingLabel;
 pub use display_widgets::font_preview::FontPreview;
 #[cfg(widgets_unstripped)]
 pub use display_widgets::icon::{Icon, IconData, IconName};
+
+// Host-registered icons. Re-exported at `widget::` because that is where the icon surface lives,
+// and because reaching into `widget::icon_registry::register_icon` exposes a module the caller has
+// no other reason to name.
 #[cfg(widgets_unstripped)]
 pub use display_widgets::progress_circle::ProgressCircle;
 #[cfg(widgets_unstripped)]
@@ -336,6 +357,11 @@ pub use display_widgets::rating::Rating;
 #[cfg(widgets_unstripped)]
 pub use display_widgets::skeleton_loader::SkeletonLoader;
 pub use display_widgets::switch::Switch;
+#[cfg(widgets_unstripped)]
+pub use icon_registry::{
+    clear_registered_icons, is_registered_icon, register_icon, register_icon_on_grid,
+    registered_icon, registered_icon_count, RegisteredIcon, MAX_REGISTERED_ICONS,
+};
 // Re-export nav widgets
 #[cfg(full_widgets)]
 pub use nav_widgets::adaptive_scaffold::AdaptiveScaffold;

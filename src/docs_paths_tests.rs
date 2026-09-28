@@ -202,11 +202,12 @@ fn published_os_capability_matrix_matches_the_trait_default() {
     use crate::platform::{default_capabilities_for, PlatformCapabilities};
 
     // The published table, as (name, dpi, ime, a11y, native_menu).
-    // Transcribed from `README.md` § "1. Platform services per OS".
+    // Transcribed from the cookbook's `chapters/platform-support.md` § "1.3 Platform services
+    // do vary by OS", which is the matrix a host reads before choosing a build.
     let documented: &[(&str, PlatformFamily, bool, bool, bool, bool)] = &[
         ("windows", PlatformFamily::Desktop, true, true, true, true),
         ("macos", PlatformFamily::Desktop, true, true, true, true),
-        ("linux-gtk", PlatformFamily::Desktop, true, true, true, true),
+        ("linux-gtk", PlatformFamily::Desktop, true, true, true, false),
         ("wayland", PlatformFamily::Desktop, true, true, true, false),
         ("ios", PlatformFamily::Mobile, true, true, true, false),
         ("android", PlatformFamily::Mobile, true, true, true, false),
@@ -295,7 +296,7 @@ fn documented_matrix_matches_real_backends() {
         ("WindowsPlatform", PlatformFamily::Desktop, true, true, true, true),
         ("cocoa", PlatformFamily::Desktop, true, true, true, true),
         ("macos-objc2-preview", PlatformFamily::Desktop, true, true, true, true),
-        ("linux-gtk", PlatformFamily::Desktop, true, true, true, true),
+        ("linux-gtk", PlatformFamily::Desktop, true, true, true, false),
         ("wayland", PlatformFamily::Desktop, true, true, true, false),
         ("ios-state-backend", PlatformFamily::Mobile, true, true, true, false),
         ("android-mobile", PlatformFamily::Mobile, true, true, true, false),

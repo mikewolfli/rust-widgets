@@ -97,6 +97,7 @@ use rust_widgets::view::VIEW_GATE_PROBE;
 fn view_gate_probe_resolves() {
     assert!(!VIEW_GATE_PROBE.is_empty());
 }
+PROBE
 
 # ---------------------------------------------------------------------------
 # Type-check the probe under one feature set and assert the outcome.

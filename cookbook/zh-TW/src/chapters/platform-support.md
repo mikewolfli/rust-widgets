@@ -55,7 +55,7 @@ rust-widgets 在九個支援的平台上提供統一的 API。本章涵蓋平台
 |----|:-----------:|:---:|:-------------:|:-----------:|
 | Windows | ✅ | ✅ | ✅ | ✅ |
 | macOS | ✅ | ✅ | ✅ | ✅ |
-| Linux / GTK | ✅ | ✅ | ✅ | ✅ |
+| Linux / GTK | ✅ | ✅ | ✅ | ❌ |
 | Linux / Wayland | ✅ | ✅ | ✅ | ❌ |
 | iOS | ✅ | ✅ | ✅ | ❌ |
 | Android | ✅ | ✅ | ✅ | ❌ |
@@ -65,7 +65,7 @@ rust-widgets 在九個支援的平台上提供統一的 API。本章涵蓋平台
 
 Wayland 沒有選單列的協議，因此它的後端會把選單樹留在行程內並由宿主渲染 —— 在此處宣稱有原生選單會是不實的。
 
-`native_menu` 這個欄位很容易誤讀，因此值得了解這些值的來源：`Platform::capabilities` 的預設是「若後端回報 `Desktop` 家族則為 `true`」，而只有 Wayland、iOS、Android 與 HarmonyOS 會將它覆寫為 `false`。這意味著一個*忘記*覆寫的桌面家族後端，會默默繼承 `native_menu: true` —— 預設值是過度宣稱，而覆寫才是誠實的。`default_capabilities_for(family)` 會公開這個預設值，讓你可以將它與後端自身的回報做比較，而且上表有測試把關，因此不會與原始碼脫節。
+`native_menu` 這個欄位很容易誤讀，因此值得了解這些值的來源：`Platform::capabilities` 的預設是誠實的全 `false`，由後端覆寫為自己真正接通的能力。只有 Windows 與 macOS 會建立 OS 選單物件；Linux (GTK)、Wayland、iOS、Android 與 HarmonyOS 都把選單保存在行程內，因此它們的 `native_menu` 為 `false`。`default_capabilities_for(family)` 會公開這個預設值，讓你可以將它與後端自身的回報做比較，而且上表有測試把關，因此不會與原始碼脫節。
 
 ---
 

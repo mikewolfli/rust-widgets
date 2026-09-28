@@ -13,6 +13,7 @@ import argparse
 import datetime as dt
 import pathlib
 import re
+import sys
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Mapping, Tuple
 
@@ -247,6 +248,56 @@ def render_markdown(
     return "\n".join(lines)
 
 
+def find_stale_allowlist_entries(
+    scans: List[FileScan], allowlist: AllowlistConfig, src_root: pathlib.Path
+) -> list[str]:
+    """Allowlist rows that no longer suppress anything.
+
+    An allowance whose file/category now has **no** raw finding is a dead exemption: it
+    keeps suppressing nothing, and a reviewer reading it would believe a real finding is
+    still being excused. The same "an exemption that is no longer needed is a defect"
+    rule the rendering/ colour exemption tables already enforce.
+
+    A row is stale when, for every category it names, the file has fewer raw occurrences
+    than the row allows (usually zero). Reported as human-readable strings.
+    """
+    by_path = {scan.path.resolve(): scan for scan in scans}
+    stale: list[str] = []
+
+    for rel_path, rule in sorted(allowlist.files.items()):
+        scan = by_path.get((src_root.parent / rel_path).resolve())
+        if scan is None:
+            stale.append(f"{rel_path}: no such file under src/")
+            continue
+        for category, allowed in sorted(rule.values.items()):
+            raw = scan.raw_counts.get(category, 0)
+            if raw < allowed:
+                stale.append(
+                    f"{rel_path}: allows {allowed} `{category}` but the file has {raw}"
+                )
+
+    # A module row is stale when the module no longer exists, or its allowance for a
+    # category exceeds what every file in that module now contains in total.
+    per_module: Dict[str, Dict[str, int]] = {}
+    for scan in scans:
+        bucket = per_module.setdefault(scan.module, {name: 0 for name in PATTERNS})
+        for name, count in scan.raw_counts.items():
+            bucket[name] += count
+
+    for module, rule in sorted(allowlist.modules.items()):
+        if module not in per_module:
+            stale.append(f"module `{module}`: no such module under src/")
+            continue
+        for category, allowed in sorted(rule.values.items()):
+            raw = per_module[module].get(category, 0)
+            if raw < allowed:
+                stale.append(
+                    f"module `{module}`: allows {allowed} `{category}` but the module has {raw}"
+                )
+
+    return stale
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate feature completeness matrix report")
     parser.add_argument("--src", default="src", help="Source root to scan")
@@ -266,6 +317,15 @@ def main() -> int:
         default="tools/feature_completeness_allowlist.toml",
         help="Optional TOML allowlist for suppressing known false positives",
     )
+    parser.add_argument(
+        "--assert-allowlist-is-live",
+        action="store_true",
+        help=(
+            "Fail (exit 1) when the allowlist contains a stale row — one whose file or module "
+            "no longer has the finding it suppresses. This is what makes the script a gate "
+            "rather than only a report: without it there is no input that makes it fail."
+        ),
+    )
     args = parser.parse_args()
 
     src_root = pathlib.Path(args.src).resolve()
@@ -274,6 +334,24 @@ def main() -> int:
     allowlist = load_allowlist(allowlist_path)
 
     scans = [scan_file(path, src_root, allowlist) for path in discover_rust_files(src_root)]
+
+    if args.assert_allowlist_is_live:
+        stale = find_stale_allowlist_entries(scans, allowlist, src_root)
+        if stale:
+            print(
+                "❌ the feature-completeness allowlist has stale entries — each suppresses a "
+                "finding its file or module no longer has, so it excuses nothing while "
+                "reading as if it does:",
+                file=sys.stderr,
+            )
+            for entry in stale:
+                print(f"  {entry}", file=sys.stderr)
+            print(
+                "  Fix: delete the row, or lower its count to the number still present.",
+                file=sys.stderr,
+            )
+            return 1
+
     report = render_markdown(
         scans=scans,
         src_root=src_root,

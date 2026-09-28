@@ -63,7 +63,7 @@ rust-widgets 在九个支持的平台上提供了统一的 API。本章涵盖平
 |----|:-----------:|:---:|:-------------:|:-----------:|
 | Windows | ✅ | ✅ | ✅ | ✅ |
 | macOS | ✅ | ✅ | ✅ | ✅ |
-| Linux / GTK | ✅ | ✅ | ✅ | ✅ |
+| Linux / GTK | ✅ | ✅ | ✅ | ❌ |
 | Linux / Wayland | ✅ | ✅ | ✅ | ❌ |
 | iOS | ✅ | ✅ | ✅ | ❌ |
 | Android | ✅ | ✅ | ✅ | ❌ |
@@ -74,12 +74,15 @@ rust-widgets 在九个支持的平台上提供了统一的 API。本章涵盖平
 Wayland 没有菜单栏协议，因此其后端把菜单树保存在进程内、由宿主负责渲染 ——
 在那里声称支持原生菜单将是虚假的。
 
+Wayland 与 Linux/GTK 都没有菜单栏协议，因此它们的后端把菜单树保存在进程内、
+由宿主自行渲染 —— 在这些后端声称原生菜单是不诚实的。
+
 `native_menu` 这一列很容易被误读，所以值得说明这些取值的来源：
-`Platform::capabilities` 的默认值是「若后端报告 `Desktop` 家族则为 `true`」，
-只有 Wayland、iOS、Android 与 HarmonyOS 将其覆写为 `false`。这意味着一个桌面家族的
-后端如果*忘记*覆写，就会静默地继承 `native_menu: true` —— 默认值是过度声称，
-覆写才是诚实。`default_capabilities_for(family)` 暴露了这个默认值，
-便于你与后端自身的报告作对照；而上表由测试钉住，不会与源码脱节。
+`Platform::capabilities` 的默认值是诚实的全 `false`，由后端覆写为自己真正接通的能力。
+只有 Windows 与 macOS 会创建 OS 菜单对象；Linux (GTK)、Wayland、iOS、Android 与
+HarmonyOS 都把菜单保存在进程内，因此它们的 `native_menu` 为 `false`。
+`default_capabilities_for(family)` 暴露了这个默认值，便于你与后端自身的报告作对照；
+而上表由测试钉住，不会与源码脱节。
 
 ---
 

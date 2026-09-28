@@ -29,6 +29,18 @@ pub mod font_assets;
 #[cfg(feature = "text-shaping")]
 pub mod shaping;
 
+// Host-registered faces (`runtime-fonts`). Gated on the feature, and on `text-shaping` because a
+// runtime face is only useful to a shaper or the vector rasteriser, both of which need the engine.
+// A host that registers a face on a build with no vector path would hand in bytes nothing reads.
+#[cfg(all(feature = "runtime-fonts", feature = "text-shaping"))]
+pub mod runtime_fonts;
+
+// The public entry point for a host's own font bytes. Re-exported at `text::` because that is
+// where the crate's other text-surface items live, and because the alternative — reaching into
+// `text::runtime_fonts::register_face` — exposes a module the caller has no other reason to name.
+#[cfg(all(feature = "runtime-fonts", feature = "text-shaping"))]
+pub use runtime_fonts::{clear_faces, register_face, registered_face_count, MAX_RUNTIME_FACES};
+
 // The one derivation of a line's clusters, shared by both renderers.
 mod line;
 
@@ -70,6 +82,27 @@ pub use glyph_source::{
     active_stack, paint_active, resolve, source_for, BitOrder, Cell, Font8x8Source, FontStack,
     GlyphBitmap, GlyphSource, InkKind, Painted, TOFU,
 };
+
+// The face lookup the backends share, exposed so a host can ask which face would draw a character
+// (and therefore whether its own registered face is the one answering).
+#[cfg(any(
+    feature = "text-shaping",
+    feature = "fonts-vector-latin",
+    feature = "fonts-complex",
+    cjk_outline_face
+))]
+pub use font_assets::face_for_char;
+
+// The un-cached control for the coverage-cache benchmark. `#[doc(hidden)]` on the item itself;
+// re-exported here so a benchmark reaches it without naming the `font_assets` module path.
+#[cfg(any(
+    feature = "text-shaping",
+    feature = "fonts-vector-latin",
+    feature = "fonts-complex",
+    cjk_outline_face
+))]
+#[doc(hidden)]
+pub use font_assets::face_for_char_uncached;
 
 #[cfg(feature = "fonts-emoji-color")]
 pub use glyph_source::ColorBitmapSource;

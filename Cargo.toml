@@ -359,6 +359,43 @@ fonts-complex = ["text-shaping"]
 ## Because it carries outlines and layout tables, this feature implies `text-shaping`.
 fonts-cjk = ["text-shaping"]
 
+## ── The CJK vector face, sharded on Unicode block boundaries ──
+##
+## `fonts-cjk-shards` is a meta-feature: it turns on every shard below. Each shard is the **same
+## codepoints** as the corresponding range of `fonts-cjk`, split so a host that draws one script
+## loads one script's glyphs. `tools/check_cjk_shards_cover_the_face.sh` asserts the partition
+## equals `tools/cjk_vector_codepoints.txt`, so the shards and the one-face build cover the same
+## characters.
+##
+## # Why shards, and why they do not replace `fonts-cjk`
+##
+## `fonts-cjk` is the one-file answer for a host that wants all of CJK resident. The shards exist
+## for the host that would rather not: an all-English UI never touches `fonts-cjk-shard-han`, and a
+## Japanese UI loads `kana` without Han. Both are the same coverage — the shards are a split, not a
+## different subset — so a host chooses by whether it wants everything at once or one script at a
+## time. See `tools/cjk_vector_shards.txt` for the boundaries and why they follow Unicode blocks.
+##
+## Each shard implies `text-shaping` for the same reason `fonts-cjk` does: it carries outlines and
+## layout tables.
+fonts-cjk-shards = [
+    "fonts-cjk-shard-latin",
+    "fonts-cjk-shard-symbols",
+    "fonts-cjk-shard-kana",
+    "fonts-cjk-shard-fullwidth",
+    "fonts-cjk-shard-han",
+]
+
+## ASCII, so a mixed line's advances and kerning come from one face.
+fonts-cjk-shard-latin = ["text-shaping"]
+## CJK Symbols and Punctuation.
+fonts-cjk-shard-symbols = ["text-shaping"]
+## Hiragana and Katakana, including the voiced-mark range.
+fonts-cjk-shard-kana = ["text-shaping"]
+## Halfwidth and Fullwidth Forms.
+fonts-cjk-shard-fullwidth = ["text-shaping"]
+## Han: the 800 most common ideographs.
+fonts-cjk-shard-han = ["text-shaping"]
+
 ## `fonts-emoji-color` adds a colour emoji face: `CBDT`/`CBLC` bitmap glyphs, each a PNG, plus the
 ## PNG decoder that reads them — G-6.
 ##
@@ -385,6 +422,31 @@ fonts-cjk = ["text-shaping"]
 ## every combination of them builds (the reference-count matrix in `docs/plans/blue23.md` §0A.4
 ## lists them).
 fonts-emoji-color = ["dep:ttf-parser"]
+
+## `runtime-fonts` lets a host register its own face at runtime:
+## `text::register_face("My Family", bytes)` installs a `&'static [u8]` that is consulted **before**
+## every compiled face, so a system font (PingFang, Microsoft YaHei, a Noto this crate does not ship)
+## is usable without recompiling the library.
+##
+## # Why this is a separate axis
+##
+## It ships **no data**. The bytes are the host's, so this feature adds a registry (four slots and a
+## mutex) and nothing else — it is orthogonal to the `fonts-*` data features and to `icons`, and a
+## build may have any combination. It implies `text-shaping` because that is the engine that reads a
+## face's outlines and layout tables; a runtime face on a build with no shaper has no consumer.
+##
+## # Why the bytes are `&'static [u8]`
+##
+## The face list is read per glyph from threads that hold no lock (`FaceBytes` is `Copy` and the
+## list is `&'static`). An owned buffer would force a lock on that path or a leak the caller cannot
+## see; a `&'static [u8]` is what `include_bytes!` or an explicit `Box::leak` gives, and the leak is
+## paid once. See the module docs for the full argument.
+##
+## # Size
+##
+## Negligible: the payload is the caller's, and the registry is `[Option<FaceBytes>; 4]` plus a
+## counter. This feature is safe to enable anywhere `text-shaping` is.
+runtime-fonts = ["text-shaping"]
 
 ## `icons` adds the Material Symbols icon data: one SVG path per `IconName` token.
 ##
@@ -839,6 +901,14 @@ harness = false
 
 [[bench]]
 name = "event_bench"
+harness = false
+
+# The coverage-cache benchmark (BLUE23 §0A.4 / the runtime-fonts + CJK-shard round). Measures
+# `face_for_char` against the `#[doc(hidden)]` un-cached control, and `paint_active` end to end,
+# so the cache's effect is a ratio rather than an absolute number that says nothing on its own.
+# `harness = false` like the others: criterion owns `main`.
+[[bench]]
+name = "font_bench"
 harness = false
 
 [[example]]
