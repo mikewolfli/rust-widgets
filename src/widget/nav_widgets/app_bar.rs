@@ -268,20 +268,19 @@ impl Draw for AppBar {
                 .or_else(|| theme.as_ref().and_then(|t| t.border_color))
                 .unwrap_or(Color::DIVIDER)
         } else {
-            Color::DISABLED_FOREGROUND
+            // A disabled border is derived from the bar's own fill rather than a fixed grey:
+            // a fixed `DISABLED_FOREGROUND` measures 2.48:1 against a light bar, so the rule
+            // all but vanished on that appearance while staying legible on the dark one.
+            background.blend(&background.contrast_color(), crate::widget::BaseWidget::disabled_ink_weight())
         };
-        // The bar's ink follows the same resolution: a title, a back arrow and an
-        // action all read the control's resolved text colour rather than a literal.
         let text_color = if is_enabled {
             style
                 .text_color
                 .or_else(|| theme.as_ref().and_then(|t| t.text_color))
                 .unwrap_or(Color::FOREGROUND)
         } else {
-            Color::DISABLED_FOREGROUND
+            background.blend(&background.contrast_color(), crate::widget::BaseWidget::disabled_ink_weight())
         };
-
-        // Draw background
         context.face(
             rect,
             background,
@@ -404,7 +403,7 @@ impl Draw for AppBar {
             let action_color = if is_enabled {
                 text_color.blend(&background, 0.25)
             } else {
-                Color::DISABLED_FOREGROUND
+                background.blend(&background.contrast_color(), crate::widget::BaseWidget::disabled_ink_weight())
             };
             context.draw_text(
                 Point::new(action_x, action_y),

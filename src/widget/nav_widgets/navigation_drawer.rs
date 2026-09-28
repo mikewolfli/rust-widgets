@@ -250,7 +250,6 @@ impl WidgetProperties for NavigationDrawer {
 impl Draw for NavigationDrawer {
     fn draw(&mut self, context: &mut RenderContext) {
         let rect = self.geometry();
-        let is_enabled = self.base.is_enabled();
 
         // Chrome colours resolve explicit style first, then the theme's resolved style for
         // this control, and only then a literal. The theme step is what makes an appearance
@@ -287,7 +286,12 @@ impl Draw for NavigationDrawer {
             Some(resolved) if resolved != window_fill => resolved,
             _ => window_fill.blend(&ink, 0.08),
         };
-        let panel = if is_enabled { panel } else { panel.blend(&ink, 0.5) };
+        // A disabled drawer recedes toward the page it slides over. It read
+        // `panel.blend(&ink, 0.5)` -- stepping the panel half-way toward its own ink, which on a
+        // dark panel makes it far *lighter*: measured 1.13:1 against the window when enabled and
+        // 5.73:1 when disabled, so the disabled drawer was five times the more prominent of the
+        // two, on both appearances.
+        let panel = self.base.disabled_surface_near(panel, window_fill);
         let border = style
             .border_color
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))

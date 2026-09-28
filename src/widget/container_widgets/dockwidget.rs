@@ -772,8 +772,7 @@ impl Draw for DockWidget {
         // The line box is measured in the *device* scale, so it is used at its own width; the
         // centring arithmetic below casts once, here, rather than at each of the two bands.
         let title_h = context.measure_text("M", &title_font).height.max(1) as i32;
-        let title_color =
-            if self.base.is_enabled() { ink } else { ink.blend(&title_bar_color, 0.5) };
+        let title_color = self.base.disabled_ink_on(ink, title_bar_color);
         // The trailing end is where the buttons live, so the label is bounded by however many are
         // actually shown -- one gap before the first, one after each button.
         let shown = u32::from(self.features.dock_widget_closable)

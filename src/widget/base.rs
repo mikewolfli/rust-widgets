@@ -397,6 +397,72 @@ impl BaseWidget {
             crate::core::Color::disabled_variant_of(enabled_color)
         }
     }
+
+    /// Text ink that honours the enabled flag **and the surface it is painted on**.
+    ///
+    /// # Why this takes a surface and `effective_foreground` does not
+    ///
+    /// `effective_foreground` substitutes a fixed `DISABLED_FOREGROUND` grey, which measures
+    /// **5.84:1** on a dark panel and **2.48:1** on a light one. A single value cannot serve both
+    /// appearances: on the light one it is under the 4.5:1 body-text floor, so a disabled label
+    /// was less readable than an enabled one -- "disabled" reading as "the text went away". That
+    /// is the same defect `dimensions::DISABLED_VEIL_ALPHA` documents, and it is why a disabled
+    /// ink has to be derived from the surface it sits on rather than picked once.
+    ///
+    /// So this steps the surface **toward its own contrast colour** by that shared weight, which
+    /// is the only direction that reads as "receded" on both appearances. It uses the same
+    /// constant as the disabled veil on `label`/`frame`, so a disabled label, a disabled frame
+    /// and a disabled button recede by one amount instead of three.
+    ///
+    /// ```text
+    /// let ink = self.base.disabled_ink_on(panel_ink, panel_fill);
+    /// ```
+    pub fn disabled_ink_on(
+        &self,
+        enabled_ink: crate::core::Color,
+        surface: crate::core::Color,
+    ) -> crate::core::Color {
+        if self.enabled {
+            enabled_ink
+        } else {
+            surface.blend(&surface.contrast_color(), Self::disabled_ink_weight())
+        }
+    }
+
+    /// A surface colour that honours the enabled flag by **receding toward the page**.
+    ///
+    /// # Why this is not `disabled_ink_on`
+    ///
+    /// The two are opposites, and using the ink rule on a fill is what this exists to prevent.
+    /// Ink recedes by stepping toward its surface's contrast colour — it gets *closer* to the
+    /// surface's own tone so it stops shouting. A fill cannot do that: stepping a fill toward its
+    /// own contrast colour makes it *stand out more* against the page behind it, which is the
+    /// opposite of disabled. Several controls did exactly that by blending toward a fixed white,
+    /// which made a dark field jump from `1.95:1` to `8.16:1` against the window when disabled.
+    ///
+    /// A fill recedes by moving toward the **window** it sits on, so a disabled panel sinks into
+    /// the page. That is the same direction `collapsible_pane` derives its header with.
+    pub fn disabled_surface_near(
+        &self,
+        enabled_surface: crate::core::Color,
+        window_fill: crate::core::Color,
+    ) -> crate::core::Color {
+        if self.enabled {
+            enabled_surface
+        } else {
+            enabled_surface.blend(&window_fill, Self::disabled_ink_weight())
+        }
+    }
+
+    /// The weight [`Self::disabled_ink_on`] steps toward the surface's contrast colour.
+    ///
+    /// Exposed so a control that must derive a disabled ink for a colour it cannot pass through
+    /// `self.base` (a track, a glyph, a chart series) uses the same value rather than restating
+    /// it. It is [`dimensions::DISABLED_VEIL_ALPHA`] over 255, so the ink and the veil are one
+    /// figure.
+    pub fn disabled_ink_weight() -> f32 {
+        crate::widget::metrics::dimensions::DISABLED_VEIL_ALPHA as f32 / 255.0
+    }
     /// Replaces the tooltip text with an already-localised string.
     pub fn set_tooltip(&mut self, tooltip: crate::compat::MiniString) {
         self.tooltip = tooltip;

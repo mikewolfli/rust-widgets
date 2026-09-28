@@ -455,9 +455,20 @@ impl Draw for MaskedEdit {
         // an inactive theme still leaves the control with a defined appearance.
         let base_bg =
             style.background_color.or(themed_bg).unwrap_or(Color::rgba(248, 248, 250, 200));
+        // The page this field sits in, read once: a disabled fill recedes toward it.
+        let window_fill = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background)
+            .unwrap_or(Color::WHITE);
         let accent = style.border_color.or(themed_border);
         let bg_color = if !is_enabled {
-            base_bg.blend(&Color::WHITE, 0.35)
+            // A disabled **field** recedes toward the page it sits in. It cannot recede toward its
+            // own contrast colour: that makes a fill stand out *more* against the page, so the
+            // disabled field measured 8.16:1 against the window while the enabled one was at
+            // 1.95:1 -- the state read backwards. Blending toward a fixed white was the same
+            // mistake pointed at a different literal, and it also pointed the same way as
+            // `focused` below, so the two states were distinguished only by distance travelled.
+            self.base.disabled_surface_near(base_bg, window_fill)
         } else if self.focused {
             base_bg.blend(&Color::WHITE, 0.55)
         } else {

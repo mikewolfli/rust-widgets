@@ -277,7 +277,6 @@ impl Draw for NavigationStack {
         if rect.width == 0 || rect.height == 0 {
             return;
         }
-        let is_enabled = self.base.is_enabled();
 
         // Chrome colours resolve explicit style first, then the theme's resolved style for
         // this control, and only then a literal. The theme step is what makes an appearance
@@ -334,7 +333,7 @@ impl Draw for NavigationStack {
         if self.can_pop() {
             let back_text = "< Back";
             let back_font = Font::simple("sans-serif", 13.0);
-            let back_color = if is_enabled { accent } else { accent.blend(&surface, 0.5) };
+            let back_color = self.base.disabled_ink_on(accent, surface);
             // The line box is derived from the *font in use*, not from a literal. `+ 14` was shared
             // by this 13 pt label and the 15 pt title below, so it was the correct descent for
             // neither: a glyph origin is the top edge of its box, so an offset that does not come
@@ -353,7 +352,7 @@ impl Draw for NavigationStack {
         // Title
         let title_font = Font::simple("sans-serif", 15.0);
         let title = self.display_title();
-        let text_color = if is_enabled { ink } else { ink.blend(&surface, 0.5) };
+        let text_color = self.base.disabled_ink_on(ink, surface);
         let metrics = context.measure_text(&title, &title_font);
         let title_x = nav_rect.x + (nav_rect.width as i32 - metrics.width as i32) / 2;
         let title_line = context.text_line(nav_rect, &title_font);

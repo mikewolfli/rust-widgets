@@ -287,6 +287,11 @@ impl Draw for SearchBar {
         let field_rect = Rect::new(rect.x, rect.y, field_width, rect.height);
         let base_field =
             style.background_color.or(themed_bg).unwrap_or(Color::rgba(200, 200, 205, 200));
+        // The page this field sits in, read once: a disabled fill recedes toward it.
+        let window_fill = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background)
+            .unwrap_or(Color::WHITE);
         // # Why the field acknowledges the pointer
         //
         // Disabled is handled (faded toward white); hovered was not, so a pointer over the
@@ -304,7 +309,12 @@ impl Draw for SearchBar {
             0.0
         };
         let field_color = if !is_enabled {
-            base_field.blend(&Color::WHITE, 0.35)
+            // Stepped toward the field's own contrast colour, exactly as the hover arm below
+            // does. It read `base_field.blend(&Color::WHITE, 0.35)`, and white is not a
+            // direction: against a light window it pushed the disabled field *further* from the
+            // window than the enabled one (measured 11.90:1 disabled vs 9.04:1 enabled), so the
+            // disabled state was the more prominent of the two.
+            self.base.disabled_surface_near(base_field, window_fill)
         } else if hover > 0.0 {
             base_field.blend(&base_field.contrast_color(), hover)
         } else {

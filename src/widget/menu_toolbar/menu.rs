@@ -1085,7 +1085,7 @@ impl Draw for Menu {
             // primary it sits on, so neither is a fixed grey or a fixed white that only read on a
             // light popup.
             let fg = if !item.is_enabled() {
-                ink.blend(&face, 0.55)
+                self.base.disabled_ink_on(ink, face)
             } else if is_hovered {
                 primary.contrast_color()
             } else {

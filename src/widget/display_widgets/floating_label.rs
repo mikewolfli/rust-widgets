@@ -372,7 +372,11 @@ impl FloatingLabel {
             let inline_ink = if is_enabled {
                 ink.blend(&field_background, 0.45)
             } else {
-                Color::rgba(180, 180, 180, 255)
+                // A fixed `rgba(180,180,180)` cannot follow the appearance: it is readable on the
+                // dark field and under the floor on the light one. The disabled ink is derived
+                // from the field it is drawn on, by the shared weight, so both appearances get a
+                // legible muted label rather than whichever one the literal happened to suit.
+                self.base.disabled_ink_on(ink, field_background)
             };
             context.draw_text(
                 Point::new(label_x, inline_line.y),

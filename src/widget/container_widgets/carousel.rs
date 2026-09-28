@@ -1022,7 +1022,7 @@ impl Carousel {
         let metrics = context.measure_text(&title, &font);
         let text_x = page_rect.x + (page_rect.width as i32 - metrics.width as i32) / 2;
         let text_y = page_rect.y + (page_rect.height as i32 - metrics.height as i32) / 2;
-        let text_color = if !is_enabled { mark.blend(&panel, 0.35) } else { mark };
+        let text_color = self.base.disabled_ink_on(mark, panel);
         context.draw_text(
             Point::new(text_x, text_y),
             &title,

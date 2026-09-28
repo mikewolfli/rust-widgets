@@ -355,7 +355,7 @@ impl Draw for CupertinoSegmentedControl {
             // the selected segment, the track for the rest — so the two are chosen against
             // their own backdrop instead of both assuming a light one.
             let color = if !self.base.is_enabled() {
-                unselected.blend(&track_color, 0.50)
+                self.base.disabled_ink_on(unselected, track_color)
             } else if i == self.selected_index {
                 indicator_color.contrast_color()
             } else {

@@ -354,7 +354,7 @@ impl Draw for MenuButton {
             .current_theme()
             .map(|theme| theme.colors.accent)
             .unwrap_or(Color::rgba(200, 200, 220, 200));
-        let disabled_ink = ink.blend(&background, 0.55);
+        let disabled_ink = self.base.disabled_ink_on(ink, background);
 
         // ── Draw button background ──
         let bg_color = if !is_enabled {

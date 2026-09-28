@@ -724,10 +724,9 @@ impl TabBar {
             }
         }
 
-        // Text color. A disabled tab's label is muted toward its own fill rather than
-        // the previous literal grey.
-        let text_color =
-            if !is_enabled { text_color.blend(&disabled_tab, 0.5) } else { text_color };
+        // Text color. A disabled tab's label recedes from its own fill by the shared
+        // disabled weight, rather than by a local blend toward a literal grey.
+        let text_color = self.base.disabled_ink_on(text_color, disabled_tab);
 
         // Draw tab title. The origin is the glyph's **top** edge, so the vertical centre is
         // half the difference between the tab and the line box. Passing the tab's midline

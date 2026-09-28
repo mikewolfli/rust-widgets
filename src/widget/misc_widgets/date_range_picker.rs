@@ -512,7 +512,7 @@ impl Draw for DateRangePicker {
             let day_y = cell_y + (cell_size as i32 - day_metrics.height as i32) / 2;
 
             let day_color = if !is_enabled {
-                surface.blend(&text_color, 0.35)
+                self.base.disabled_ink_on(text_color, surface)
             } else if is_start || is_end {
                 // A date on the accent fill: the resolved surface colour is the
                 // legible counterpart of the accent in either appearance.

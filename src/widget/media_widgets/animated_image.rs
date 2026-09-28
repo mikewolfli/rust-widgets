@@ -333,6 +333,13 @@ impl Draw for AnimatedImage {
         let themed_text = themed.as_ref().and_then(|resolved| resolved.text_color);
         let base_bg =
             style.background_color.or(themed_bg).unwrap_or(Color::rgba(230, 230, 230, 200));
+        // The page this shell sits in, read once. A disabled **fill** recedes toward the page it
+        // sits on; it cannot recede toward its own contrast colour the way ink does, because that
+        // would make it stand out *more* against the page -- the opposite of disabled.
+        let window_fill = {
+            let manager = crate::style::theme_manager();
+            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+        };
         let border_color =
             style.border_color.or(themed_border).unwrap_or(Color::rgba(160, 160, 160, 200));
         // The placeholder ink follows the theme's foreground so it stays legible on whichever
@@ -366,11 +373,12 @@ impl Draw for AnimatedImage {
         }
 
         if let Some(frame) = self.frames.get(self.current_frame) {
-            // Background — the surface the frame is matted onto, i.e. chrome. The former
-            // literal white is the fallback, and disabled is now *derived* from the resolved
-            // colour rather than being a second fixed grey, so the two states stay
-            // distinguishable in any theme.
-            let bg = if !is_enabled { base_bg.blend(&Color::WHITE, 0.35) } else { base_bg };
+            // Background — the surface the frame is matted onto, i.e. chrome. Disabled steps the
+            // resolved fill toward its own contrast colour rather than toward a fixed white,
+            // which on a dark surface made the disabled state *more* prominent than the enabled
+            // one (1.13:1 against the window enabled, 3.63:1 disabled).
+            let bg =
+                if !is_enabled { self.base.disabled_surface_near(base_bg, window_fill) } else { base_bg };
             context.face(
                 rect,
                 bg,

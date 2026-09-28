@@ -307,7 +307,7 @@ impl Draw for EmptyState {
         // One gap below the icon's *box*, which is `icon_y + icon_height` — the same sum the
         // stack height above was built from, so the drawn title and the reserved space agree.
         let title_y = icon_y + icon_height + SECTION_GAP;
-        let title_color = if is_enabled { ink } else { ink.blend(&surface, 0.65) };
+        let title_color = self.base.disabled_ink_on(ink, surface);
         let title_metrics = context.measure_text(&self.title, &title_font);
         let title_origin = Point::new(center_x - (title_metrics.width as i32 / 2), title_y);
         context.draw_text(
@@ -357,8 +357,12 @@ impl Draw for EmptyState {
             context.fill_rounded_rect(btn_rect, corner_radius, btn_bg);
 
             // Button text
-            let btn_text_color =
-                if !is_enabled { ink.blend(&surface, 0.6) } else { btn_bg.contrast_color() };
+            let btn_text_color = if !is_enabled {
+                // The button's label sits on the button's fill, not on the page.
+                self.base.disabled_ink_on(ink, btn_bg)
+            } else {
+                btn_bg.contrast_color()
+            };
             let btn_font = Font::with_weight("Sans", 14.0, 600, false);
             // Horizontal centring is measured; vertical centring comes from the shared line
             // box. The previous `btn_rect.y + btn_rect.height / 2` put the glyph box's top edge

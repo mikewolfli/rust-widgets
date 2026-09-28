@@ -476,8 +476,16 @@ impl Draw for TagInput {
         let accent = style.border_color.or(themed_border);
         let base_bg =
             style.background_color.or(themed_bg).unwrap_or(Color::rgba(235, 235, 235, 200));
+        // The page this field sits in, read once: a disabled fill recedes toward it.
+        let window_fill = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background)
+            .unwrap_or(Color::WHITE);
         let bg_color = if !is_enabled {
-            base_bg.blend(&Color::WHITE, 0.35)
+            // A disabled **field** recedes toward the page. It read `base_bg.blend(&Color::WHITE,
+            // 0.35)`, and white is not a direction: on a dark field that moves the disabled fill
+            // *away* from the window, so the disabled state was the more prominent of the two.
+            self.base.disabled_surface_near(base_bg, window_fill)
         } else if self.focused {
             base_bg.blend(&accent.unwrap_or(Color::rgba(60, 140, 255, 200)), 0.18)
         } else {
@@ -601,7 +609,14 @@ impl Draw for TagInput {
         let typed_color = base_ink.legible_on(input_bg, 4.5);
         let hint_color = typed_color.blend(&input_bg, 0.35).legible_on(input_bg, 4.5);
         let input_text_color = if !is_enabled {
-            typed_color.blend(&input_bg, 0.6)
+            // `legible_on` is applied **last**, once the colour is final. It used to be applied to
+            // `typed_color` and then blended away again by 0.6 toward the field, which undid the
+            // guarantee: the blend moved the ink most of the way back to the surface the
+            // legibility check had just stepped it away from. Applying it after the recede means
+            // the disabled placeholder is muted *and* legible, on both appearances.
+            typed_color
+                .blend(&input_bg, crate::widget::BaseWidget::disabled_ink_weight())
+                .legible_on(input_bg, 4.5)
         } else if !self.input_buffer.is_empty() {
             typed_color
         } else {

@@ -445,7 +445,7 @@ impl Draw for EditableComboBox {
         let line = context.text_line(rect, &font);
         let geometry = self.indicator_geometry(line.height);
         let display_text = if self.text.is_empty() && !is_enabled { "" } else { &self.text };
-        let text_color = if is_enabled { ink } else { ink.blend(&bg_color, 0.6) };
+        let text_color = self.base.disabled_ink_on(ink, bg_color);
         // The value is fitted into the box the indicator left, on that box's own line box: a
         // glyph origin is the box's top edge, so the old `padding + 13` put a 13 px font's
         // origin on the field's middle line and drew the value half a line low.
@@ -474,7 +474,10 @@ impl Draw for EditableComboBox {
         let arrow_color = if is_enabled {
             ink.legible_on(bg_color, 4.5).blend(&bg_color, 0.15)
         } else {
-            ink.blend(&bg_color, 0.7)
+            // Derived from the field rather than toward it: `ink.blend(&bg_color, 0.7)` put the
+            // indicator 0.7 of the way to the surface it sits on, which is the lowest-contrast
+            // point available to it. The disabled weight keeps it muted *and* on its surface.
+            self.base.disabled_ink_on(ink, bg_color)
         };
         context.draw_text_fitted(
             geometry.box_rect,
@@ -523,7 +526,7 @@ impl Draw for EditableComboBox {
             // Item text
             let item_text_x = item_rect.x + 8;
             let item_text_y = item_rect.y + 18;
-            let item_color = if is_enabled { ink } else { ink.blend(&field, 0.6) };
+            let item_color = self.base.disabled_ink_on(ink, field);
             context.draw_text(
                 Point::new(item_text_x, item_text_y),
                 item,

@@ -622,6 +622,13 @@ impl Draw for RiveWidget {
         let themed_text = themed.as_ref().and_then(|resolved| resolved.text_color);
         let base_bg =
             style.background_color.or(themed_bg).unwrap_or(Color::rgba(245, 240, 250, 255));
+        // The page this shell sits in, read once. A disabled **fill** recedes toward the page it
+        // sits on; it cannot recede toward its own contrast colour the way ink does, because that
+        // would make it stand out *more* against the page -- the opposite of disabled.
+        let window_fill = {
+            let manager = crate::style::theme_manager();
+            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+        };
         let border_color =
             style.border_color.or(themed_border).unwrap_or(Color::rgba(140, 80, 180, 150));
         // The placeholder ink follows the theme's foreground so it stays legible on whichever
@@ -657,10 +664,10 @@ impl Draw for RiveWidget {
         }
 
         // Background — the surface the animation is rendered onto, i.e. chrome. The former
-        // literal is the fallback, and disabled is now *derived* from the resolved colour
-        // rather than being a second fixed grey, so the two states stay distinguishable in
-        // any theme.
-        let bg = if !is_enabled { base_bg.blend(&Color::WHITE, 0.35) } else { base_bg };
+        // Disabled steps the resolved fill toward its own contrast colour rather than toward a
+        // fixed white, which on a dark surface made the disabled state *more* prominent than the
+        // enabled one.
+        let bg = if !is_enabled { self.base.disabled_surface_near(base_bg, window_fill) } else { base_bg };
         context.face(
             rect,
             bg,

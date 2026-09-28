@@ -3,8 +3,8 @@
 
 //! CollapsiblePane — a container widget that can be collapsed/expanded.
 use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
 use crate::event::key_codes;
+use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::style::{MotionSlot, PropertyDriver};
@@ -421,10 +421,19 @@ impl Draw for CollapsiblePane {
             .unwrap_or_else(|| header_bg.blend(&text_color, 0.03));
 
         // --- Draw header background ---
-        // A disabled pane dims toward its own ink rather than to a fixed light grey, which
-        // is what previously made the disabled state ignore the appearance entirely.
+        //
+        // A disabled pane recedes by a **step**, not by a half-way move. This read
+        // `header_bg.blend(&text_color, 0.5)`, which walked the panel half-way to its own ink — and
+        // since the ink is then derived *from that panel*, both ended up at nearly the same colour:
+        // measured 1.03:1 on the dark appearance and 1.65:1 on the light one, i.e. the header text
+        // all but disappeared in the state that is supposed to merely de-emphasise it. Blending a
+        // surface half-way toward the text that sits on it can only ever produce the
+        // lowest-contrast pair available.
+        //
+        // The recede is toward the *window* instead, by the shared disabled weight, so the header
+        // stays a surface and its ink stays readable against it on both appearances.
         let header_bg =
-            if self.base.is_enabled() { header_bg } else { header_bg.blend(&text_color, 0.5) };
+            if self.base.is_enabled() { header_bg } else { header_bg.blend(&window_fill, 0.5) };
         context.fill_rect(hdr, header_bg);
 
         // --- Draw header bottom border ---
@@ -443,8 +452,18 @@ impl Draw for CollapsiblePane {
         let header_line = context.text_line(hdr, &header_font);
         let arrow_x = hdr.x + 6;
         let arrow_y = header_line.y;
-        let arrow_color =
-            if self.base.is_enabled() { text_color } else { text_color.blend(&header_bg, 0.5) };
+        // # Why the disabled ink is derived from the header, not blended toward it
+        //
+        // These read `text_color.blend(&header_bg, 0.5)` — blending the *ink toward* the
+        // background. That direction is symmetric-looking but is not: on the dark appearance the
+        // ink is light and the header dark, so the midpoint landed at 1.03:1, and on the light
+        // appearance it landed at 1.65:1. Both are effectively invisible, on both appearances,
+        // because half-way between an ink and the surface it sits on is by construction the
+        // lowest-contrast point between them. Deriving *from the surface* instead — the header
+        // stepped toward its own contrast colour — is the only form that reads as "receded"
+        // while staying legible, and it is the same weight the disabled veil uses.
+        let disabled_ink = self.base.disabled_ink_on(text_color, header_bg);
+        let arrow_color = if self.base.is_enabled() { text_color } else { disabled_ink };
         let arrow_char = if self.collapsed { "▶" } else { "▼" };
         context.draw_text(
             Point::from_f32(arrow_x as f32, arrow_y as f32),
@@ -458,8 +477,7 @@ impl Draw for CollapsiblePane {
         if !self.title.is_empty() {
             let text_x = hdr.x + 20;
             let text_y = header_line.y;
-            let title_color =
-                if self.base.is_enabled() { text_color } else { text_color.blend(&header_bg, 0.5) };
+            let title_color = if self.base.is_enabled() { text_color } else { disabled_ink };
             context.draw_text(
                 Point::from_f32(text_x as f32, text_y as f32),
                 &self.title,

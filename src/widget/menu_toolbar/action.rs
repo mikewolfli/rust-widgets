@@ -477,7 +477,7 @@ impl Draw for Action {
         }
         // An action that is not enabled reads as damped ink, so the disabled state
         // follows the appearance instead of a literal grey.
-        let ink = if self.base.is_enabled() { ink } else { ink.blend(&highlight, 0.5) };
+        let ink = self.base.disabled_ink_on(ink, highlight);
         if self.is_checked() && self.is_checkable() {
             let check_x = rect.x + rect.width as i32 - 16;
             context.draw_text(

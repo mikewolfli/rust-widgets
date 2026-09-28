@@ -386,7 +386,12 @@ impl Draw for DropdownMenu {
         // colours rather than from a second literal grey.
         let disabled_background = background.blend(&border, 0.25);
         let placeholder_color = text_color.blend(&background, 0.45);
-        let disabled_text_color = text_color.blend(&background, 0.6);
+        // Derived from the popup's own fill rather than blended toward it: `text_color.blend(
+        // &background, 0.6)` moved the ink 0.6 of the way to the surface it sits on, which is the
+        // lowest-contrast point available and read near-invisibly on a light popup. This is the
+        // one binding every disabled row, arrow and label below reads, so the recede is one
+        // decision rather than six.
+        let disabled_text_color = self.base.disabled_ink_on(text_color, background);
         // The selected row and the separators are secondary chrome, derived from the
         // resolved pair so they follow the appearance.
         let item_highlight = background.blend(&text_color, 0.14);

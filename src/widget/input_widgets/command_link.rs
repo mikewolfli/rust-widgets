@@ -256,9 +256,11 @@ impl Draw for CommandLink {
             let desc_font = Font::new("Arial", 10.0, false, false);
             // `Color::GRAY` was a literal that never moved with the appearance; the disabled
             // ink already follows it, so an enabled description is the same ink damped toward
-            // whatever the control was actually given to paint on.
+            // whatever the control was actually given to paint on. The disabled ink is derived
+            // from the same surface by the shared weight, so both halves of this branch agree
+            // about which surface the text sits on.
             let desc_color = if !is_enabled {
-                disabled_color
+                self.base.disabled_ink_on(current_text_color, bg_color)
             } else {
                 current_text_color.blend(&bg_color, 0.35)
             };

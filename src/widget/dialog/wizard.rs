@@ -476,7 +476,9 @@ impl Draw for WizardDialog {
                 let is_completed = self.steps[i].completed;
 
                 let (circle_color, text_color) = if !is_enabled {
-                    (ink.blend(&surface, 0.25), ink.blend(&surface, 0.35))
+                    // The label is the ink receding from the surface it sits on; the circle is a
+                    // glyph, so both are derived from the surface rather than blended toward it.
+                    (ink.blend(&surface, 0.25), self.base.disabled_ink_on(ink, surface))
                 } else if is_active {
                     (primary, primary_ink)
                 } else if is_completed {
@@ -530,7 +532,7 @@ impl Draw for WizardDialog {
                     Font::new("Arial", 9.0, false, false)
                 };
                 let title_color = if !is_enabled {
-                    ink.blend(&surface, 0.45)
+                    self.base.disabled_ink_on(ink, surface)
                 } else if is_active {
                     primary
                 } else {
@@ -766,11 +768,16 @@ impl Draw for WizardDialog {
         // that formula produced rather than something legible.
         let is_last_step = self.is_last();
         let btn_text = if is_last_step { "Finish" } else { "Next" };
-        let btn_color = if is_enabled { primary } else { primary.blend(&surface, 0.55) };
+        let btn_color = self.base.disabled_ink_on(primary, surface);
         let btn_text_color = if is_enabled {
             primary.contrast_color()
         } else {
-            btn_color.contrast_color().blend(&surface, 0.35)
+            // The button's *label* sits on the button's own fill, not on the page, so its
+            // legible counterpart is derived from that fill. It read `btn_color.contrast_color()
+            // .blend(&surface, 0.35)` -- blending the label back toward the page it is not
+            // painted on, which on the light appearance moved it toward the page rather than
+            // away from the button.
+            self.base.disabled_ink_on(btn_color.contrast_color(), btn_color)
         };
         context.fill_rounded_rect(next_btn, 4, btn_color);
         context.draw_text_fitted(

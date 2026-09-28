@@ -301,10 +301,17 @@ impl Draw for SearchBox {
         let accent = style.border_color.or(themed_border);
         let base_bg =
             style.background_color.or(themed_bg).unwrap_or(Color::rgba(235, 235, 235, 200));
+        // The page this field sits in, read once: a disabled fill recedes toward it.
+        let window_fill = crate::style::theme_manager()
+            .current_theme()
+            .map(|active| active.colors.background)
+            .unwrap_or(Color::WHITE);
         let bg_color = if !is_enabled {
-            // Faded rather than a separate literal: "disabled" is the same colour with the
-            // energy taken out, which is what blending toward white expresses.
-            base_bg.blend(&Color::WHITE, 0.25)
+            // A disabled field recedes toward the page it sits in. The comment here claimed that
+            // "blending toward white expresses energy taken out", but white is not a direction: on
+            // a dark field the disabled fill moves *away* from the window, and the disabled state
+            // ends up the more prominent of the two.
+            self.base.disabled_surface_near(base_bg, window_fill)
         } else if self.focused {
             base_bg.blend(&accent.unwrap_or(Color::rgba(60, 140, 255, 200)), 0.18)
         } else if self.base.is_hovered() || self.base.is_pressed() {
@@ -380,7 +387,11 @@ impl Draw for SearchBox {
             .map(|active| active.colors.foreground)
             .unwrap_or(Color::rgba(30, 30, 30, 230));
         let text_color = if !is_enabled {
-            ink.blend(&Color::WHITE, 0.45)
+            // Derived from the field the text sits on, not blended toward a fixed white: a text
+            // colour moved toward `Color::WHITE` goes *up* in contrast on the dark appearance
+            // (where the field is dark) and *down* on the light one, so one appearance got a
+            // "disabled" label that was more prominent than the enabled one.
+            self.base.disabled_ink_on(ink, bg_color)
         } else if !self.text.is_empty() {
             ink
         } else {

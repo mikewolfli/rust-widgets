@@ -268,7 +268,11 @@ impl Draw for Stepper {
         let bg_color = if !is_enabled { background.blend(&text_color, 0.06) } else { background };
         let button_color = background.blend(&text_color, 0.08);
         let disabled_button = button_color.blend(&background, 0.6);
-        let disabled_text = text_color.blend(&background, 0.5);
+        // Derived from the stepper's own fill by the shared weight. It read
+        // `text_color.blend(&background, 0.5)` -- the ink walked half-way to the surface it sits
+        // on, which is the lowest-contrast point between them and read as near-invisible on both
+        // appearances.
+        let disabled_text = self.base.disabled_ink_on(text_color, background);
 
         // ── The row band actually painted ──
         //

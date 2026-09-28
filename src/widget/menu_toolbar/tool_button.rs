@@ -649,7 +649,7 @@ impl Draw for ToolButton {
         // readable-but-muted on a dark theme as well as a light one; the literal is only
         // the fallback for a control whose ink the theme does not supply.
         let ink = style.text_color.or(themed_text).unwrap_or(Color::rgb(0, 0, 0));
-        let fg = if !self.base.is_enabled() { ink.blend(&base, 0.45) } else { ink };
+        let fg = self.base.disabled_ink_on(ink, base);
 
         // ── Icon ──
         //

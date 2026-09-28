@@ -230,6 +230,13 @@ impl Draw for HeroAnimation {
         let themed_text = themed.as_ref().and_then(|resolved| resolved.text_color);
         let base_bg =
             style.background_color.or(themed_bg).unwrap_or(Color::rgba(240, 240, 240, 255));
+        // The page this shell sits in, read once. A disabled **fill** recedes toward the page it
+        // sits on; it cannot recede toward its own contrast colour the way ink does, because that
+        // would make it stand out *more* against the page -- the opposite of disabled.
+        let window_fill = {
+            let manager = crate::style::theme_manager();
+            manager.current_theme().map(|active| active.colors.background).unwrap_or(Color::WHITE)
+        };
         let shell_border = style.border_color.or(themed_border).unwrap_or(Color::rgba(0, 0, 0, 40));
         // The ink is the theme's foreground, with `.contrast_color()` as the second choice so
         // it stays readable on whichever surface the theme painted; only then the literal.
@@ -239,10 +246,11 @@ impl Draw for HeroAnimation {
             .or_else(|| style.background_color.or(themed_bg).map(|bg| bg.contrast_color()))
             .unwrap_or(Color::rgba(160, 160, 160, 220));
 
-        // The outer shell is this widget's chrome. The former literals are the fallbacks, and
-        // the disabled state is now *derived* from the resolved colour rather than being a
-        // second fixed grey, so the two states stay distinguishable in any theme.
-        let bg = if !is_enabled { base_bg.blend(&Color::WHITE, 0.35) } else { base_bg };
+        // The outer shell is this widget's chrome. The former literals are the fallbacks. The
+        // disabled state steps the resolved fill toward its own contrast colour rather than
+        // toward a fixed white, which on a dark surface made the disabled state *more* prominent
+        // than the enabled one.
+        let bg = if !is_enabled { self.base.disabled_surface_near(base_bg, window_fill) } else { base_bg };
         context.face(
             rect,
             bg,
