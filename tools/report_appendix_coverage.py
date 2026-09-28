@@ -14,7 +14,7 @@ Usage:
 import re
 import sys
 
-PLAN = "docs/plans/blue23.md"
+PLAN = "docs/plans/archive/blue23.md"
 SECTION = re.compile(r"^#{2,4} A\.(\d+)")
 CONTROL_ROW = re.compile(r"^\| `")
 # A row counts as adjudicated when its defect cell names the round it was checked in, or

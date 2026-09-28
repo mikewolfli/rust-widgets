@@ -1,7 +1,7 @@
 # docs/plans — 计划索引
 
-> **本文件是入口。** 目录里有 13 份 `.md`（4 份是**工具/门禁依赖**，不可移动），
-> 37 份历史计划已归档到 [`archive/`](archive/)。
+> **本文件是入口。** 目录里有 14 份 `.md`（4 份是**工具/门禁依赖**，不可移动），
+> 38 份历史计划已归档到 [`archive/`](archive/)。
 
 ---
 
@@ -9,16 +9,17 @@
 
 | 文件 | 内容 | 状态 |
 |---|---|---|
-| [`blue23.md`](blue23.md) | 状态层 / 动效总线 / 层级层 / 声明式原语 | **进行中**（另一个进程处理） |
 | [`blue24.md`](blue24.md) | 帧循环 / 属性动画 / 正交状态 / 环境事实 / a11y 落地 | **主体已完成**（§10 批 0–8 与 §9 均 ✅）；**本文件仍是 BLUE24 自身后续条目的唯一入口**（§12 的 U-1…U-14），未完成项登记在那里 |
+
+> **BLUE23 已归档** → [`archive/blue23.md`](archive/blue23.md)（本轮收口：0 个 `[ ]`，
+> 全部批次 ✅，5 个跟踪扫描 0 失败）。
 
 > **两份可并行**：`blue24.md` §12 写明了三条边界——BLUE24 不登记、不依赖、不阻塞
 > BLUE23 的余项。BLUE24 的批 1（帧循环）在 BLUE23 收口前就能开工。
 
 ### 计划分级
 
-- **blue1 ~ blue22**：✅ 已完成 → 见 [`archive/`](archive/)
-- **blue23**：进行中
+- **blue1 ~ blue23**：✅ 已完成 → 见 [`archive/`](archive/)
 - **blue24**：**主体已完成**，且仍是 BLUE24 自身后续条目（§12）的唯一入口
 
 ---
@@ -51,7 +52,7 @@
 
 ---
 
-## 4. 归档（37 份）
+## 4. 归档（38 份）
 
 [`archive/`](archive/) 里的计划**全部已完成**或**已被取代**，仅供追溯。
 **不要再从里面取「当前要求」**——那是 BLUE24 §9.1 要消除的失败形态
@@ -63,7 +64,7 @@
 
 | 归档文件 | 说明 |
 |---|---|
-| [`blue1.md`](archive/blue1.md) … [`blue22.md`](archive/blue22.md)（逐份见下） | 历次计划主体，逐次收口 |
+| [`blue1.md`](archive/blue1.md) … [`blue22.md`](archive/blue22.md)、[`blue23.md`](archive/blue23.md)（逐份见下）| 历次计划主体，逐次收口 |
 | `blue1.md` | BLUE1 — 控件库奠基 |
 | `blue2.md` | BLUE2 — 控件扩充 |
 | [`BLUE3.md`](archive/BLUE3.md) | BLUE3 — 计划主体（大写拼写，与 `blue3` 不共存） |
@@ -91,6 +92,7 @@
 | [`blue20_p3_backlog.md`](archive/blue20_p3_backlog.md) | BLUE20 P3 遗留（已并入后续计划） |
 | [`blue21.md`](archive/blue21.md) | BLUE21 — 计划主体 |
 | [`blue22.md`](archive/blue22.md) | BLUE22 — 计划主体 |
+| [`blue23.md`](archive/blue23.md) | BLUE23 — 状态层 / 动效总线 / 层级层 / 声明式原语（附录 A 逐条收口）|
 | [`cocoa_to_objc2_migration.md`](archive/cocoa_to_objc2_migration.md) | cocoa → objc2 迁移方案（已实施） |
 | [`miri_audit.md`](archive/miri_audit.md) | Miri 审计（已实施） |
 | [`plan.md`](archive/plan.md) | 早期总计划（已被 BLUE 系列取代） |
@@ -117,8 +119,8 @@
 ### 可复跑的检查
 
 ```text
-$ ls docs/plans/*.md | wc -l          # 12
-$ ls docs/plans/archive/*.md | wc -l  # 35
+$ ls docs/plans/*.md | wc -l          # 13
+$ ls docs/plans/archive/*.md | wc -l  # 38
 $ grep -rn "docs/plans/" --include=*.rs --include=*.sh --include=*.py . | grep -v archive
   # 零命中指向 archive/ 的路径（除刻意保留的历史引注）
 ```

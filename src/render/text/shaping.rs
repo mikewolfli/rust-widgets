@@ -5,7 +5,7 @@
 //!
 //! # The two axes, again
 //!
-//! [BLUE23 §0A.4](docs/plans/blue23.md) keeps two questions apart, and this module is the
+//! [BLUE23 §0A.4](docs/plans/archive/blue23.md) keeps two questions apart, and this module is the
 //! second one:
 //!
 //! * *Does a face have this character?* — [`crate::render::text::GlyphSource`], answered by data;

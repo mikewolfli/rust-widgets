@@ -5,6 +5,123 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.8.1 (2026-09-28) — Disabled-state contrast, a Cupertino collapse, and signature-pad fidelity
+
+Backward compatible for every public signature. This release is **defects removed from paths that
+were reachable but never measured**, plus the shared primitives that make the fix structural rather
+than a per-control patch. Two of the three defects below were invisible to the rendering census,
+because the census draws every control **enabled** — so each is pinned by a new pixel-level probe
+rather than by a snapshot.
+
+**New on `BaseWidget`:** `disabled_ink_on(ink, surface)` and `disabled_surface_near(surface, window)`.
+They are deliberately two names and not one configurable weight: ink recedes by stepping **toward**
+its surface's contrast colour, a fill by stepping **toward the page**. Applying the ink rule to a
+fill does the opposite of what it says — measured on `masked_edit` at `8.16:1` disabled against
+`1.95:1` enabled, i.e. the disabled state painted *more* prominently than the enabled one.
+
+### 1. A disabled control could be less legible than an enabled one — and sometimes more prominent
+
+The crate carried **three contradictory disabled mechanisms**, and the newest one's own documentation
+already named the others as the defect it replaced:
+
+| Mechanism | Behaviour | Light-appearance contrast |
+|---|---|---|
+| `Color::DISABLED_FOREGROUND` (`rgb(153,153,153)`) | appearance-blind | **2.48:1** |
+| 20 local blend weights (`0.15`–`0.50`) | per-control | 1.41–3.88:1 |
+| `dimensions::DISABLED_VEIL_ALPHA` (`0.55`) | relative to the surface | **4.57:1** |
+
+`0.55` is not arbitrary: it is the smallest weight that clears the 4.5:1 body-text floor on **both**
+appearances (`0.50` gives 3.88:1 on the light one).
+
+Fixed, each measured on the painted picture:
+
+| Control | Defect | Before | After |
+|---|---|---|---|
+| `collapsible_pane` | panel blended half-way toward its own ink | 1.03:1 / 1.65:1 | 5.03:1 / 4.58:1 |
+| `app_bar` | fixed `DISABLED_FOREGROUND` for title, rule and action | 2.48:1 (light) | 4.57:1 |
+| `navigation_drawer` | panel stepped toward ink | 1.13→**5.73** (more prominent) | 1.24→1.14 |
+| `search_bar`, `masked_edit`, `search_box`, `tag_input` | field blended toward a fixed white | 1.95→**5.15** | 1.95→1.29 |
+| `floating_label` | fixed `rgba(180,180,180)` | below the floor on light | derived from the field |
+| `image_gallery` | disabled placeholder dimmed to a local `0.38` | 3.56:1 / 2.63:1 | 5.91:1 / 4.57:1 |
+
+A further fourteen controls used the **inverted** shape (`ink.blend(&surface, w)` — stepping the ink
+half-way to the surface it sits on, which is by construction the lowest-contrast point between them);
+all now derive from the surface by the shared weight. `DISABLED_FOREGROUND` itself is unchanged, and
+remains correct where it is used — a chart series or a progress arc is a graphic **on the window**
+(measured 7.37–8.96:1), not text on a panel.
+
+### 2. `cupertino_navigation_bar`'s large title collapsed in one frame
+
+`large_title: bool` was a hard switch driving four things at once — bar height (`96`↔`44`), title
+point size (`34`↔`18`), and the title's x and y. iOS's signature large-title collapse was a
+one-frame swap. It is now a `collapse: PropertyDriver` that `draw` reads as a fraction, measured
+`88 → 62 → 44` across frames, and settling at exactly `44` so a settled bar stays byte-identical to
+the un-animated one.
+
+### 3. `signature_pad` polygonised a fast stroke
+
+`extend_stroke` accepted a point when it was far enough away **by distance alone**, which cannot tell
+"moving slowly, enough points already" from "moving fast, far too few". A stroke drawn quickly was
+sampled once per input event, so every segment was a long straight edge: the pad recorded where the
+pointer *was*, never where it *went*. Time is now a second dimension (`min_point_interval_ms`, default
+10 ms, both a schema property and a C capability), and a gap wider than the pad's own resolution is
+filled by interpolation — so a fast stroke and a slow one land at the same fidelity. Measured
+`5 events → 4 segments` before, `5 events → 136 segments` after.
+
+Timestamp source: the **OS monotonic clock**. The event payloads carry position, pressure and tilt
+but no time, and a drawing surface must not acquire a network dependency for a value the OS already
+provides — a network timestamp answers a different question (*provenance*, "when was this signed"),
+which is the caller's to attach.
+
+### Evidence
+
+Each fix was verified by **reverse injection** — reintroducing the defect and confirming the probe
+goes red — and the probes assert the quantity that was promised rather than a proxy:
+
+* `tests/disabled_text_contrast.rs` — disabled text clears 4.5:1 on **both** appearances, on real pixels.
+* `tests/disabled_surface_probe.rs` — a disabled surface is never more prominent than the enabled one,
+  and a control it cannot measure is asserted **unmeasured** rather than silently skipped.
+* `tests/image_gallery_disabled_probe.rs`, `tests/image_gallery_accent_probe.rs`.
+* `tests/signature_pad_smoothness_probe.rs`, `tests/camera_preview_chrome_probe.rs`.
+
+`camera_preview`'s active-viewfinder overlay was a sixth instance of the same class: eight hard-coded
+near-whites that measured **1.13–1.47:1** against the light stage the theme actually resolves, while
+the census rendered only the inactive branch and so never saw it. The overlay ink is now derived from
+the stage.
+
+### The icon set grows to 68, and adding one is no longer a six-place edit
+
+`IconName` shipped 31 tokens. It now ships **68**, covering the icons a UI actually reaches for and
+was missing: the `chevron_*` family (the disclosure triangle on every menu, combo box and tree
+node), `folder` / `file` / `save` / `copy` / `print`, `undo` / `redo` / `cut` / `paste` /
+`attachment` / `link`, `success` / `help` / `block` / `schedule` / `hourglass`, the transport
+controls (`play` / `pause` / `stop` / `skip_next` / `volume_up` / `volume_off`), `sort` /
+`bar_chart` / `calendar` / `table`, and `chat` / `call` / `send` / `notifications_off`.
+
+Two changes make that maintainable rather than merely larger:
+
+* **The token set is declared once.** `tools/icon_tokens.txt` is the single source of truth;
+  `tools/gen_icon_names.py` generates the whole `IconName` type from it (the enum, `as_str`,
+  `from_name`, `ALL`, `all_tokens`, `data`). Adding an icon used to mean editing six hand-written
+  places — the variant, two match arms, two arrays and three separate `31` length literals — where
+  missing one is a bug the compiler cannot see. It is now a two-line edit plus a generator run.
+  `tools/gen_icon_data.py` reads the same list, so the data and the enum cannot disagree.
+* **A host can register its own.** `register_icon(name, paths)` (and `register_icon_on_grid` for a
+  source on a 24-unit viewBox) adds an icon the crate does not ship; it draws through exactly the
+  same path a bundled one does. The built-in set stays a closed, tested vocabulary — the registry is
+  the open extension point beside it, not a widening of the enum.
+
+### Notes
+
+* No snapshot changed: every fix is on a **disabled** or **un-censused** path. The probes are the
+  evidence, and `snapshots/svg/` is unchanged for all 188 controls.
+* The `icon_sheet` snapshots gain the 37 new icons; `tools/icon_census.txt` is regenerated and
+  asserts every token draws ink and no two draw one picture.
+* `docs/plans/blue23.md` is complete and archived to `docs/plans/archive/blue23.md`; its six
+  tool references, one source doc-link and one `Cargo.toml` reference were updated with it.
+
+---
+
 ## 2.8.0 (2026-09-28) — Material Symbols icon data, a real SVG-path renderer, and a defect sweep across the theme and capability layers
 
 Backward compatible for every public signature. The release is mostly **defects removed from paths

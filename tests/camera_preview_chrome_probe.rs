@@ -18,6 +18,11 @@
 //!
 //! Run with:
 //!   cargo test --no-default-features --features desktop --test camera_preview_chrome_probe
+// This probe needs the full widget registry and the theme layer; the reduced
+// `mini`/`embedded` profiles compile both out, so the file is gated rather than
+// rewritten to avoid APIs those profiles do not have.
+#![cfg(all(full_widgets, feature = "desktop"))]
+
 
 use rust_widgets::core::{Color, Rect};
 use rust_widgets::theme::AppearanceMode;

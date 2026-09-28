@@ -28,7 +28,7 @@ buffer instead. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ```toml
 [dependencies]
-rust_widgets = "2.8.0"
+rust_widgets = "2.8.1"
 ```
 
 Pick **exactly one device profile**. They are mutually exclusive — `mini` and `embedded` compile parts
@@ -36,11 +36,11 @@ of the crate *out*, so combining one with `desktop` is not a lowest common denom
 build:
 
 ```toml
-rust_widgets = { version = "2.8.0", features = ["desktop"] }                       # default
-rust_widgets = { version = "2.8.0", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "2.8.0", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "2.8.0", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "2.8.0", default-features = false, features = ["mini"] }
+rust_widgets = { version = "2.8.1", features = ["desktop"] }                       # default
+rust_widgets = { version = "2.8.1", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "2.8.1", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "2.8.1", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "2.8.1", default-features = false, features = ["mini"] }
 ```
 
 > `cargo check --features embedded` is **wrong**: `desktop` is a default feature, so that command
@@ -151,6 +151,48 @@ Three contracts that a control's shape alone does not communicate:
   `Event::FocusGained` carries a `FocusReason`, and `FocusReason::draws_focus_ring()` is `false` for a
   pointer press — a ring under the cursor reads as a stuck highlight.
 
+## Animation and state
+
+Two mechanisms, both shared rather than per-control:
+
+- **`WidgetState`** — `set_hovered` / `set_pressed` / `set_enabled` re-resolve the control's style
+  through `Widget::set_state_theme_hook`, so a theme author's `"button:hover"` / `":pressed"` /
+  `":disabled"` keys actually reach the painting code. The hook is object-safe, because it has to be
+  callable through `dyn Widget` from the setters themselves.
+- **`PropertyDriver`** — a stored-target progress value between `0.0` and `1.0`, priced by a
+  `MotionSlot` tempo token (`Fast` / `Normal` / `Slow`). A control exposes it through
+  `Widget::tick(delta_ms)` and `Widget::is_animating()`, which is how the frame loop discovers that a
+  control owes frames without each control registering itself anywhere. A driver built at a value is
+  **at rest**, not about to travel, so a freshly constructed control never animates away from its own
+  state on its first frame.
+
+`set_animating` is deliberately not a thing a caller toggles: `is_animating()` is derived from the
+driver, so the control and the frame loop cannot disagree about whether anything is moving.
+
+## Theming and disabled states
+
+Colours resolve through one ladder — the control's explicit style, then the theme's resolved style for
+that control, then a literal as the last resort — so an untouched control still follows an appearance
+switch while a caller's deliberate colour always wins.
+
+Disabled is two different moves, and the crate names them separately because applying one where the
+other belongs produces the *opposite* of the intended state:
+
+| | recedes by stepping toward | measured |
+|---|---|---|
+| `BaseWidget::disabled_ink_on(ink, surface)` — text and icons | the surface's own contrast colour | 4.57–5.91:1 |
+| `BaseWidget::disabled_surface_near(surface, window)` — fills and panels | the page behind them | always less prominent than enabled |
+
+The weights come from one shared constant, `dimensions::DISABLED_VEIL_ALPHA` (`0.55`) — the smallest
+value that clears the 4.5:1 body-text floor on **both** the dark and the light appearance. A
+half-transparent mid-grey has no direction: over a light surface it darkens and over a dark one it
+lightens, so "disabled" would read as *more* prominent on whichever appearance was already hardest to
+read. Stepping toward the surface is the only direction that reads as "receded" on both.
+
+Text legibility is available to callers as well: `Color::contrast_ratio` measures the WCAG ratio, and
+`Color::legible_on(surface, min_ratio)` returns the caller's colour, or the nearest step toward the
+surface's contrast colour that clears `min_ratio`.
+
 ## Verifying a change
 
 ```bash
@@ -160,7 +202,7 @@ cargo run  --no-default-features --features desktop --example export_control_svg
 bash tools/run_all_gates.sh                                    # every gate, PASS/FAIL table
 ```
 
-The 376 SVGs under [`snapshots/svg/`](snapshots/svg/) are one file per control per appearance (dark and
+The SVGs under [`snapshots/svg/`](snapshots/svg/) are one file per control per appearance (dark and
 light). They are **committed and regenerated**, and `tools/check_svg_snapshots.sh` fails byte-for-byte
 if a control's drawing changed without them being updated. So a wrong-looking control shows up as a
 diff in review, and a control whose two files are identical is visibly theme-blind.
@@ -175,6 +217,13 @@ and refuses a stale copy, so the two cannot drift.
 `tools/run_all_gates.sh` runs everything in `tools/check_*.sh` and prints a per-gate table with
 timings. Every gate is expected to be able to fail; the ones that matter most were verified by
 reverse injection — deliberately reintroducing the defect and confirming the gate goes red.
+
+A snapshot is not always the right evidence. It shows a control in its **resting** state, so a defect
+on a hover, disabled or animating path is invisible to it. Those paths are pinned by pixel-level
+probes instead (`tests/disabled_text_contrast.rs`, `tests/disabled_surface_probe.rs`,
+`tests/m3_animation_probe.rs`), and each asserts the quantity that was promised — a contrast ratio, a
+painted height, a segment count — rather than a proxy such as a byte length or a "is it animating"
+flag.
 
 ## What "180 controls" covers
 
@@ -238,7 +287,7 @@ appended to the fallback stack and can only answer for characters the base face 
 | `fonts-vector-latin` | 35 896 bytes, OFL subset | real advances and kerning, from a face named by `Font::family` |
 | `fonts-complex` | 70 576 bytes, OFL subset | Arabic joining, so `بيت` shapes to the word rather than three isolated letters |
 | `fonts-emoji-color` | 1 602 492 bytes, OFL subset | colour emoji — 317 codepoints including the 26 regional indicators |
-| `icons` | 11 592 bytes, Apache-2.0 | one **Material Symbols** SVG outline per `IconName` token (**on by default**) |
+| `icons` | 10 016 bytes, Apache-2.0 | one **Material Symbols** SVG outline per `IconName` token, 68 of them (**on by default**) |
 
 `fonts-cjk-bitmap` and `fonts-cjk` are two answers to one script, and the difference is size
 against quality: an outline subset at the bitmap's own coverage would weigh 581 KB, roughly 7x, so
@@ -257,22 +306,40 @@ the documentation cannot silently overstate what is drawn.
 
 ### Icons
 
-`Icon` draws all 31 `IconName` tokens with hand-written geometry when the `icons` feature is off.
-It is **on by default**, so a plain `cargo build` draws the **real outline** from the Material
-Symbols set vendored at a pinned revision:
+`Icon` ships **68** `IconName` tokens. With the `icons` feature (which is **on by default**) each
+token draws the **real outline** from the Material Symbols set vendored at a pinned revision; with
+the feature off it draws generated fallback geometry derived from the *same* outlines:
 
 ```console
-cargo build                              # the real outlines (default)
-cargo build --no-default-features --features desktop   # the hand-written shapes
+cargo build                                            # the real outlines (default)
+cargo build --no-default-features --features desktop  # the derived fallback shapes
 ```
 
 Nothing else changes with it on: `IconName::as_str` / `from_name` are the same tokens and the
-colour resolves through the same ladder. A build **without** the feature renders the icons it
-always did — that path is kept for exactly this reason, and it is what every snapshot taken before
-the data existed was drawn against. `IconName::data()` answers `IconData` (not `Option`), so adding
-a variant without geometry is a compile error rather than a blank icon. The path data is
-Apache-2.0 (Google LLC); the licence copy, the attribution and the verification gate are in
-[`NOTICE`](NOTICE), `tools/material_symbols/LICENSE` and `tools/check_icon_licences.sh`.
+colour resolves through the same ladder. The fallback is **not** hand-drawn — it is a coarse
+flattening of the same `tools/material_symbols/<token>.svg` files the data comes from, so the two
+paths cannot describe different shapes for one icon. `IconName::data()` answers `IconData` (not
+`Option`), so adding a token without geometry is a compile error rather than a blank icon.
+
+A host can add its **own** icons at runtime — the built-in set is a fixed vocabulary, and
+`register_icon` is the open extension point beside it:
+
+```rust
+use rust_widgets::widget::register_icon;
+
+// SVG path data on the 960-unit design grid, negative y upward (the Material Symbols convention).
+assert!(register_icon("disclosure", &["M480-200 240-440l480 480-240-240Z"]));
+icon.set_icon("disclosure");
+```
+
+`register_icon_on_grid` takes a grid argument for a source on another scale (24 units, as Lucide
+and Tabler use). `clear_registered_icons`, `registered_icon_count` and `is_registered_icon` round
+out the surface, and a registered icon draws through the same code a bundled one does.
+
+The icon data is Apache-2.0 (Google LLC); the licence copy, the attribution and the verification
+gate are in [`NOTICE`](NOTICE), `tools/material_symbols/LICENSE` and `tools/check_icon_licences.sh`.
+The token set is declared once in `tools/icon_tokens.txt`; `tools/gen_icon_names.py` generates the
+`IconName` type from it, so adding an icon is a two-line edit plus a generator run.
 
 The feature is deliberately **not** in any device profile: `mini` and `embedded` are *sized*, so a
 payload the caller did not ask for is wrong there. A profile build that wants icons asks for them
@@ -312,9 +379,10 @@ MIT — see [LICENSE](LICENSE).
 - Issues: [GitHub Issues](https://github.com/mikewolfli/rust-widgets/issues)
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.8.0-blue)]()
-[![tests](https://img.shields.io/badge/tests-5600%2B-brightgreen)]()
+[![version](https://img.shields.io/badge/version-2.8.1-blue)]()
+[![tests](https://img.shields.io/badge/tests-6300%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
+[![controls](https://img.shields.io/badge/controls-180-blue)]()
 
 <p align="center">
   <a href="README.zh-CN.md">

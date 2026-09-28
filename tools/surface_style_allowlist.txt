@@ -82,10 +82,11 @@
 #   src/widget/input_widgets/search_bar.rs               — a disabled rendition.
 #   src/widget/input_widgets/search_box.rs               — a disabled rendition + a placeholder ink.
 #   src/widget/input_widgets/tag_input.rs                — a disabled rendition.
-#   src/widget/media_widgets/animated_image.rs           — a disabled rendition.
-#   src/widget/media_widgets/hero_animation.rs           — a disabled rendition.
-#   src/widget/media_widgets/lottie_widget.rs            — a disabled rendition.
-#   src/widget/media_widgets/rive_widget.rs              — a disabled rendition.
+#   src/widget/media_widgets/animated_image.rs            — MIGRATED: the disabled rendition now
+#       routes through `BaseWidget::disabled_surface_near`, so it left this list.
+#   src/widget/media_widgets/hero_animation.rs            — MIGRATED: same as `animated_image`.
+#   src/widget/media_widgets/lottie_widget.rs             — MIGRATED: same as `animated_image`.
+#   src/widget/media_widgets/rive_widget.rs               — MIGRATED: same as `animated_image`.
 #   src/widget/menu_toolbar/tool_button.rs               — an "active" lighten on the icon.
 
 # ── The measured list (one line per file, with its pattern and reason) ────────
@@ -106,10 +107,6 @@ src/widget/input_widgets/range_slider.rs        C-disabled: the track's lighter 
 src/widget/input_widgets/search_bar.rs          C-disabled: the disabled rendition
 src/widget/input_widgets/search_box.rs          C-disabled: the disabled rendition + placeholder ink
 src/widget/input_widgets/tag_input.rs           C-disabled: the disabled rendition
-src/widget/media_widgets/animated_image.rs      C-disabled: the disabled rendition
-src/widget/media_widgets/hero_animation.rs      C-disabled: the disabled rendition
-src/widget/media_widgets/lottie_widget.rs       C-disabled: the disabled rendition
-src/widget/media_widgets/rive_widget.rs         C-disabled: the disabled rendition
 src/widget/menu_toolbar/tool_button.rs          C-disabled: the active lighten on the icon
 src/widget/misc_widgets/barcode_scanner.rs      B-tint: the letterbox/scrim, one shade
 src/widget/misc_widgets/bezier_curve_editor.rs  B-tint: the canvas gutter, one shade

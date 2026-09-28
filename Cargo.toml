@@ -1,6 +1,6 @@
 [package]
 name = "rust_widgets"
-version = "2.8.0"
+version = "2.8.1"
 edition = "2021"
 description = "Pure Rust cross-platform native GUI library with hardware-adaptive rendering, 180 widgets, touch/gesture support, i18n, and SVG-pipeline-accurate output"
 license = "MIT"
@@ -419,7 +419,7 @@ fonts-cjk-shard-han = ["text-shaping"]
 ##
 ## `ttf-parser` alone resolves a character to a glyph id through `cmap`, which is all a colour face
 ## needs — there is no `GSUB`/`GPOS` step. So the two features can be enabled independently, and
-## every combination of them builds (the reference-count matrix in `docs/plans/blue23.md` §0A.4
+## every combination of them builds (the reference-count matrix in `docs/plans/archive/blue23.md` §0A.4
 ## lists them).
 fonts-emoji-color = ["dep:ttf-parser"]
 

@@ -3,7 +3,7 @@
 
 # Why this exists
 
-`docs/plans/blue23.md` accumulated rows with six cells under a seven-column header over many
+`docs/plans/archive/blue23.md` accumulated rows with six cells under a seven-column header over many
 rounds of hand editing: the §A.3 input table's rows were written without the 「改进点」 column
 that its header declares. A short row still *renders*, but the trailing cells shift left, so a
 priority lands under 「改进方式方法」 and the row reads as adjudicated when it has merely been
@@ -22,7 +22,7 @@ Usage:
 import re
 import sys
 
-PLAN = "docs/plans/blue23.md"
+PLAN = "docs/plans/archive/blue23.md"
 SEPARATOR = re.compile(r"^\|[-: |]+\|$")
 
 

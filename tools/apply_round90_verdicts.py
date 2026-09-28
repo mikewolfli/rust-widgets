@@ -23,7 +23,7 @@ Usage:
 import re
 import sys
 
-PLAN = "docs/plans/blue23.md"
+PLAN = "docs/plans/archive/blue23.md"
 LOG = "`log-20260924-1.md` §90"
 
 # ── The verdicts ───────────────────────────────────────────────────────────────────────────

@@ -355,24 +355,29 @@ impl BaseWidget {
 
     /// A foreground colour that honours the enabled flag.
     ///
-    /// # Why this exists
+    /// # Deprecated: it cannot follow the appearance
     ///
-    /// `set_enabled(false)` only stores a flag, so a widget that gates its input but
-    /// paints with a fixed colour ends up in the worst possible state: it silently
-    /// swallows clicks while looking fully interactive. Roughly a third of the paint
-    /// paths in this crate had that shape, each with its own ad-hoc grey.
+    /// This substitutes a fixed `DISABLED_FOREGROUND` grey, which measures **5.84:1** on a
+    /// dark panel and **2.48:1** on a light one. One value cannot serve both appearances,
+    /// so on the light one a disabled label was *less* readable than an enabled one —
+    /// "disabled" reading as "the text went away". Use [`Self::disabled_ink_on`] for
+    /// text/icon ink (derive it from the surface it is painted on) and
+    /// [`Self::disabled_surface_near`] for fills (recede toward the window).
     ///
-    /// Callers pick their enabled colour and let this substitute the shared disabled
-    /// one, so "is this disabled?" is answered by one constant instead of a
-    /// per-widget literal:
+    /// # Why it is kept rather than deleted
     ///
-    /// ```text
-    /// let color = self.base.effective_foreground(Color::FOREGROUND);
-    /// ```
+    /// It has no callers in this crate, but it is the named proof of the defect the two
+    /// replacements exist for — `tests/disabled_surface_probe.rs` cites it to explain why
+    /// `disabled_ink_on` cannot be used on a fill. Removing the name would leave that
+    /// reasoning without its referent.
     ///
     /// Widgets whose disabled appearance needs more than a colour swap (a dimmed
     /// track, a suppressed hover highlight) should still branch on
-    /// [`Self::is_enabled`] directly — this covers the common case.
+    /// [`Self::is_enabled`] directly.
+    #[deprecated(
+        note = "cannot follow the appearance: 2.48:1 on a light panel, under the 4.5:1 body-text \
+                floor. Use `disabled_ink_on` for ink and `disabled_surface_near` for fills."
+    )]
     pub fn effective_foreground(&self, enabled_color: crate::core::Color) -> crate::core::Color {
         if self.enabled {
             enabled_color
@@ -390,6 +395,15 @@ impl BaseWidget {
     /// Implemented as a channel-wise mix toward `DISABLED_FOREGROUND` rather than a
     /// flat replacement, which keeps each widget's own hue recognisable while making
     /// the reduced emphasis visible.
+    ///
+    /// # Deliberately **not** deprecated
+    ///
+    /// Unlike [`Self::effective_foreground`], this does not hardcode a grey: it goes
+    /// through [`crate::core::Color::disabled_variant_of`], which is the name the
+    /// `Pattern C` (disabled/secondary rendition) entries in
+    /// `tools/surface_style_allowlist.txt` are still to be routed through. Deleting it
+    /// would abandon that recorded migration, so it stays as the destination of that
+    /// work even while it has no callers yet.
     pub fn effective_fill(&self, enabled_color: crate::core::Color) -> crate::core::Color {
         if self.enabled {
             enabled_color

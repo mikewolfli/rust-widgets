@@ -13,7 +13,7 @@ Usage:
 import re
 import sys
 
-PLAN = "docs/plans/blue23.md"
+PLAN = "docs/plans/archive/blue23.md"
 SEPARATOR = re.compile(r"^\|[-: |]+\|$")
 
 

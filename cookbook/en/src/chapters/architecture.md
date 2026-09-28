@@ -900,17 +900,22 @@ between.
 
 ## The Icon Data Path (`icons`, on by default)
 
-`Icon` names 31 icons through `IconName`. The `icons` feature — **on by default** — draws each one
+`Icon` names 68 icons through `IconName`. The `icons` feature — **on by default** — draws each one
 from the **real outline**, read from path data vendored at a pinned upstream revision. Without the
-feature `Icon` falls back to hand-written geometry, which is the path every snapshot taken before the
-data existed was drawn against.
+feature `Icon` falls back to generated geometry, derived by flattening *the same* outlines — so the
+two paths cannot describe different shapes for one icon.
+
+The token set is declared once in `tools/icon_tokens.txt`; `tools/gen_icon_names.py` generates the
+`IconName` type from it, so adding an icon is a two-line edit plus a generator run rather than edits
+spread across the enum, two match arms and three arrays. A host that needs an icon the crate does
+not ship registers its own with `register_icon`, which draws through exactly the code below.
 
 The path from a name to pixels has three stages, and the middle one is deliberately not a second
 implementation of anything:
 
 ```mermaid
 graph LR
-    ENUM["IconName<br/>(31 variants)"]
+    ENUM["IconName<br/>(68 variants)"]
     DATA["IconData<br/>name, grid, paths"]
     PARSE["render::path::parser<br/>SVG d -> Segment"]
     FLAT["render::path::flatten<br/>Segment -> polyline"]

@@ -4,11 +4,11 @@
   <img src="snapshots/header.jpg" alt="rust_widgets" width="800">
 </p>
 
-一个用纯 Rust 编写的跨平台 GUI 库。**所有控件都由库自己绘制**——整个 crate 里没有一处
+一个用纯 Rust 编写的跨平台 GUI 库。它**由自己绘制每一个控件**——整个 crate 里没有一处
 `CreateWindowExW`、`NSButton`、`gtk_button_new` 或 `android.widget.Button`——并且可以渲染到窗口、
-PNG 或 SVG。支持桌面、平板、移动、嵌入式，以及最小化的 `mini` 配置。
+PNG 或 SVG。桌面、平板、移动、嵌入式，以及最小化的 `mini` 配置均在支持之列。
 
-自绘控件换来的是：
+自绘控件值得这份投入，是因为：
 
 | | 自绘（本库） | 原生控件 |
 |---|---|---|
@@ -26,18 +26,18 @@ PNG 或 SVG。支持桌面、平板、移动、嵌入式，以及最小化的 `m
 
 ```toml
 [dependencies]
-rust_widgets = "2.8.0"
+rust_widgets = "2.8.1"
 ```
 
 设备配置**只能选一个**。它们互斥——`mini` 和 `embedded` 会把 crate 的一部分**编译掉**，所以把
 它们和 `desktop` 叠在一起不是「取最小公分母」，而是构建失败：
 
 ```toml
-rust_widgets = { version = "2.8.0", features = ["desktop"] }                       # 默认
-rust_widgets = { version = "2.8.0", default-features = false, features = ["tablet"] }
-rust_widgets = { version = "2.8.0", default-features = false, features = ["mobile"] }
-rust_widgets = { version = "2.8.0", default-features = false, features = ["embedded"] }
-rust_widgets = { version = "2.8.0", default-features = false, features = ["mini"] }
+rust_widgets = { version = "2.8.1", features = ["desktop"] }                       # 默认
+rust_widgets = { version = "2.8.1", default-features = false, features = ["tablet"] }
+rust_widgets = { version = "2.8.1", default-features = false, features = ["mobile"] }
+rust_widgets = { version = "2.8.1", default-features = false, features = ["embedded"] }
+rust_widgets = { version = "2.8.1", default-features = false, features = ["mini"] }
 ```
 
 > `cargo check --features embedded` 是**错的**：`desktop` 是默认特性，这条命令会同时打开两个互斥
@@ -127,6 +127,9 @@ layout.arrange(rect, &children, &mut |id, child_rect| out.push((id, child_rect))
 `AxisHints::new` 在构造时就把 `min <= pref <= max` 归一化，因此**非法状态不可表示**。
 既有布局全部照常工作——`Layout::arrange` 的默认实现转 `Layout::update`。
 
+[`examples/readme_check.rs`](examples/readme_check.rs) 提交了一份示例，因此这些片段在每次构建时
+都会被编译，而不会与 API 漂移。
+
 ## 控件的行为
 
 三条靠外形看不出来的契约：
@@ -147,10 +150,10 @@ cargo run  --no-default-features --features desktop --example export_control_svg
 bash tools/run_all_gates.sh                                    # 全部门禁，输出 PASS/FAIL 表
 ```
 
-[`snapshots/svg/`](snapshots/svg/) 下的 376 个 SVG 是「每个控件 × 明暗两种外观」各一份。它们**被提交
+[`snapshots/svg/`](snapshots/svg/) 下的 392 个 SVG 是「每个控件 × 明暗两种外观」各一份。它们**被提交
 也被重新生成**，只要控件的绘制变了而快照没更新，`tools/check_svg_snapshots.sh` 就会逐字节失败。
-于是一个「看起来不对」的控件会在评审里以 diff 的形式出现；而两个文件完全相同的控件，就是肉眼可见
-的主题盲。
+于是一个「看起来不对」的控件会在评审里以 diff 的形式出现；而两个文件完全相同的控件，就是肉眼可见的
+主题盲。
 
 [`control.md`](control.md) 是同一批图换个方式给人看：每个控件的明暗两张快照，按**实现它的模块**
 分成 17 组。它由 `tools/generate_control_index.py` 从控件注册表与源码树生成，所以它是快照的**一个视图**
@@ -185,28 +188,93 @@ Snackbar、底部面板）；导航、媒体，以及 Material 没有对应物�
 `supports_custom_widgets()`、`supports_web_engine()`、`has_real_engine()` 给的是真实答案，不是
 编译期桩。
 
-## 图标
+## 文本覆盖
 
-`icons` 特性**默认开启**，所以普通的 `cargo build` 会用 **Material Symbols 真实轮廓**画出 31 个
-`IconName`（轮廓固定在某个上游修订）：
+**默认构建只绘制拉丁/ASCII 字符。** crate 不随附任何字体数据，因此字形来自一套固定的 8x8 位图字体，
+覆盖范围是 `U+0000`–`U+007F`。
+
+| 输入 | 默认构建画出的东西 |
+|---|---|
+| `A`、`z`、`7`、`!` | 真实字形 |
+| 中日韩、西里尔、阿拉伯、emoji 及任何其他文种 | **回退字形**（一个空心方框，即「豆腐块」） |
+
+标签仍然照常排版、控件仍然正常渲染——错的只是字形。一行的绘制顺序还会按 **Unicode 双向算法**排序，
+所以阿拉伯文或希伯来文的一段会从右向左绘制。排序不等于字形**形状**：针对具体文字的整形（阿拉伯文
+连写、印度语系重排）完全没有应用。
+
+因此本库**不**实现 Unicode 文本渲染，也不把自己描述为多语言。超出拉丁/ASCII 的覆盖是一条独立的、
+需要可选开启的轴线，它需要字体数据——对复杂文种还需要一步整形。它必须被显式点名请求，因为 `mini`
+或 `embedded` 配置不该携带它根本不会绘制的字形：
+
+```console
+cargo build --features "desktop,fonts-cjk-bitmap"
+```
+
+`fonts-cjk-bitmap` 增加一套生成的 16x16 中日韩位图字体（汉字、假名、中日韩标点与全角形式，
+按需读取约 85 KB）。开启后拉丁文渲染逐字节不变：字体只是被追加到回退栈上，只能应答基础字体没有
+字形的字符。
+
+| 特性 | 数据 | 增加的内容 |
+|---|---|---|
+| `fonts-cjk-bitmap` | 84 996 字节，生成 | 一套 16x16 中日韩位图字体——中日韩文字，无需整形 |
+| `fonts-cjk` | 361 704 字节，OFL 子集 | 同一文种的**轮廓**，因此可抗锯齿并缩放到任意像素尺寸 |
+| `fonts-vector-latin` | 35 896 字节，OFL 子集 | 真实的步进与字距调整，来自 `Font::family` 指定的字体 |
+| `fonts-complex` | 70 576 字节，OFL 子集 | 阿拉伯文连写，使 `بيت` 成形为一个词而非三个孤立字母 |
+| `fonts-emoji-color` | 1 602 492 字节，OFL 子集 | 彩色 emoji——317 个码点，含 26 个区域指示符 |
+| `icons` | 10 016 字节，Apache-2.0 | 每个 `IconName` token 一份 **Material Symbols** SVG 轮廓，共 68 个（**默认开启**） |
+
+`fonts-cjk-bitmap` 与 `fonts-cjk` 是同一文种的两种答案，差别在于体积与画质的取舍：与位图同等覆盖
+范围的轮廓子集会重达 581 KB，大约 7 倍，所以位图是 `mini`/`embedded` 构建使用的，而矢量字体面向
+希望中文在任意尺寸下都抗锯齿的桌面宿主。同时开启两者时，位图会在它覆盖的字符上获胜——它是更廉价
+的字体，而回退栈把廉价来源放在前面。
+
+这些字体没有任何配置会默认开启，`--all-features` 是唯一一次拿到全部的方式。矢量与彩色子集从二进制
+的只读段惰性加载，并连同其上游摘要记录在 [`NOTICE`](NOTICE) 中。
+
+这条边界从两侧都被断言（`render::pipeline::pixel_ops::text_coverage_tests` 与
+`render::text::glyph_source` 的测试）——默认构建下非拉丁字符必须回退为回退字形，而开启中日韩数据必须
+恰好按它增加的字体移动这条边界——因此文档不可能悄悄夸大实际绘制的内容。
+
+### 图标
+
+`Icon` 随附 **68** 个 `IconName` token。开启 `icons` 特性（**默认开启**）时，每个 token 用固定在某个上游
+修订、随附于仓库的 Material Symbols 集画出**真实轮廓**；关闭时则画由**同一份**轮廓派生的回退几何：
 
 ```console
 cargo build                                            # 真实轮廓（默认）
-cargo build --no-default-features --features desktop   # 手写几何
+cargo build --no-default-features --features desktop   # 派生的回退几何
 ```
 
-打开后其余一切不变：`IconName::as_str` / `from_name` 是同样的 token，颜色走同一套阶梯。
-**不开**该特性的构建渲染的是它一直渲染的样子 —— 这条路径正是为此保留的，也是数据出现之前
-所有快照所依据的。`IconName::data()` 返回 `IconData` 而非 `Option`，所以「新增变体但没补几何」
-是**编译错误**，而不是一个空白图标。路径数据为 Apache-2.0（Google LLC）；许可证副本、归属声明与
-校验门禁见 [`NOTICE`](NOTICE)、`tools/material_symbols/LICENSE` 与 `tools/check_icon_licences.sh`。
+打开后其余一切不变：`IconName::as_str` / `from_name` 是同样的 token，颜色走同一套阶梯。回退几何
+**不是手绘的**——它是同一批 `tools/material_symbols/<token>.svg` 的粗粒度展平，所以两条路径不可能
+对同一个图标给出不同形状。`IconName::data()` 返回 `IconData` 而非 `Option`，所以「新增 token 但没补
+几何」是**编译错误**，而不是一个空白图标。
+
+宿主还可以在**运行时**添加**自己的**图标——内置集是一份固定词汇，`register_icon` 是它旁边的开放扩展点：
+
+```rust
+use rust_widgets::widget::register_icon;
+
+// 960 单位设计网格上的 SVG 路径数据，y 轴向上为负（Material Symbols 的约定）。
+assert!(register_icon("disclosure", &["M480-200 240-440l480 480-240-240Z"]));
+icon.set_icon("disclosure");
+```
+
+若数据源使用别的网格尺度（如 Lucide / Tabler 的 24 单位），用 `register_icon_on_grid` 传入网格大小。
+`clear_registered_icons`、`registered_icon_count`、`is_registered_icon` 补全该接口，注册的图标与内置
+图标走**完全相同**的绘制代码。
+
+图标数据为 Apache-2.0（Google LLC）；许可证副本、归属声明与校验门禁见 [`NOTICE`](NOTICE)、
+`tools/material_symbols/LICENSE` 与 `tools/check_icon_licences.sh`。token 集在 `tools/icon_tokens.txt`
+中**只声明一次**，`tools/gen_icon_names.py` 由它生成 `IconName` 类型，所以新增一个图标是两行编辑加
+一次生成器运行。
 
 该特性**刻意不放进任何 device profile**：`mini` / `embedded` 是按尺寸的配置，调用方没要求的
 载荷在那里是错的。想要图标的 profile 构建请显式要求（`--features mini,icons`）。
 
 ## 语言绑定
 
-`C ABI` 位于 `src/bindings/`，通过 **130 个 `rw_*` 函数**暴露每个控件，并提供基于能力的属性与事件模型。C、C++、
+`C ABI` 位于 `src/bindings/`，通过 130 个 `rw_*` 函数暴露每个控件，并提供基于能力的属性与事件模型。C、C++、
 Python 与 Java（JNI）绑定都在 CI 中运行；生成的头文件由 `tools/check_abi.sh` 检查漂移。
 
 见 [`cookbook/zh-CN/src/chapters/language-bindings.md`](cookbook/zh-CN/src/chapters/language-bindings.md)。
@@ -236,7 +304,7 @@ MIT —— 见 [LICENSE](LICENSE)。
 - 问题反馈：[GitHub Issues](https://github.com/mikewolfli/rust-widgets/issues)
 
 [![build](https://img.shields.io/badge/build-passing-brightgreen)]()
-[![version](https://img.shields.io/badge/version-2.8.0-blue)]()
+[![version](https://img.shields.io/badge/version-2.8.1)]()
 [![tests](https://img.shields.io/badge/tests-5600%2B-brightgreen)]()
 [![license](https://img.shields.io/badge/license-MIT-blue)]()
 

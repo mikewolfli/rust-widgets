@@ -37,7 +37,7 @@ import re
 import subprocess
 import sys
 
-PLAN = "docs/plans/blue23.md"
+PLAN = "docs/plans/archive/blue23.md"
 
 
 def measurement() -> str:

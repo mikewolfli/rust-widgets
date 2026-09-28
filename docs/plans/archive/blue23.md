@@ -1,5 +1,17 @@
 # BLUE23 — 从「度量正确」到「手感丝滑」：状态层、动效总线与 主流声明式实现 / 外部对标 / 参考工具包 三方配色对标
 
+> ✅ **本计划已归档（已完成）。** 归档轮：第 100 轮（见 `docs/log/log-20260924-1.md` §100）。
+> 收口状态：**0 个 `[ ]`**；§A.11.1 的 **8 批全部 ✅**；5 个跟踪扫描 0 失败
+> （`state_source_scan` 274 / `animation_driver_scan` 275 / `declared_tokens_scan` 17 /
+> `text_model_single_source_scan` 3 / `focus_ring_scan` 275）。
+>
+> **归档后仍有的两项是「已定」而非「欠」**：
+> - `Color::DISABLED_FOREGROUND` 的**语义**改动 —— 登记为独立决定（§A.21.5）；
+> - `signature_pad` 的**溯源时间戳** —— 几何已修，溯源归调用方（§A.18.2）。
+>
+> ⚠️ 从本目录读到的任何内容都是**历史记录**，不是当前要求。
+> 现行计划入口见 [`../README.md`](../README.md)。
+
 > 依据：[`principle.md`](principle.md)（继承 BLUE1–BLUE22，含 #1–#111）
 > 前置：[`blue22.md`](blue22.md)（附录 F 执行进度、附录 G 文本层）、[`blue21.md`](blue21.md)（缺陷登记表 + 附录 A）
 > 参考实现（**只读，不引入依赖**）：
@@ -2308,18 +2320,18 @@ python3 tools/apply_round90_verdicts.py --check       # 对不上的行**报错*
 以及**「关闭」也必须动画**：`draw` 的条件是 `self.menu_open || !self.reveal.is_closed()` ——
 只判布尔会把关闭砍在第一帧。
 
-### A.15.4 剩余（仍留白）
+### A.15.4 剩余（**其后各轮已全部关闭**，保留供追溯）
 
-| 控件 | 缺口 |
-|---|---|
-| `menu_bar` | 仍持自己的 `hovered_index`（`:74`/`:294`），未改读 base（**M1**）|
-| `toast_stack` / `snackbar` / `notification_center` | 三者**皆无入场/离场动画**（同 C 类，未做）|
-| `map_view` | 缩放/平移**瞬时**（`:94`）|
-| `signature_pad` | 曾是**无时间戳、无插值** → 快速笔画多边形化；**A.18 已修**（时间戳取 OS 单调钟）|
-| `kanban_board` | 列无阴影/层级（**M5**）|
-| `cupertino_navigation_bar` | 大标题收起曾是瞬时布尔；**A.18 已修** |
-| `freeform_shape` 的 2 处字面量 | 回落档/数据色，未清 |
-| `image_gallery` 余 5 处字面量 | 4 处为兜底档（已证主题总填该级，不可达）；**1 处是真缺陷，§A.20.1 已修**（禁用标签权重）|
+| 控件 | 当时缺口 | 现状 |
+|---|---|---|
+| `menu_bar` | 仍持自己的 `hovered_index`（**M1**）| ✅ **A.16 已修**（改为从 base 派生）|
+| `toast_stack` / `snackbar` / `notification_center` | 三者**皆无入场/离场动画** | ✅ **A.16 已修**（`PopupReveal`）|
+| `map_view` | 缩放/平移**瞬时** | ✅ **A.16 已修**（3 个真缺陷）|
+| `signature_pad` | 无时间戳、无插值 → 快速笔画多边形化 | ✅ **A.18 已修**（OS 单调钟 + 缺口插值）|
+| `kanban_board` | 列无阴影/层级（**M5**）| ✅ **A.16 已修** |
+| `cupertino_navigation_bar` | 大标题收起瞬时布尔 | ✅ **A.18 已修**（连续收起 `88→62→44`）|
+| `freeform_shape` 2 处字面量 | 回落档/数据色 | ✅ **A.17.2 已裁定**（画面证明从未绘出）|
+| `image_gallery` 余 5 处字面量 | 4 处兜底档 + 1 处真缺陷 | ✅ **A.20.1 已修**（禁用标签权重）|
 
 ### A.16 第 94 轮：M3 收尾（实测见 `log-20260924-1.md` §94）
 
@@ -2366,8 +2378,8 @@ python3 tools/apply_round90_verdicts.py --check       # 对不上的行**报错*
 |---|---|---|
 | `signature_pad` 时间戳 | **接口决定**：取 OS 单调钟；溯源（时间戳网址）归调用方 | **✅ A.18 已关闭** |
 | `cupertino_navigation_bar` 大标题收起 | 动效（Cupertino 族）| **✅ A.18 已关闭** |
-| `image_gallery` 余 7 处字面量 | M4 长尾 | 可机械清 |
-| `freeform_shape` 2 处字面量 | 回落档/数据色 | 非缺陷 |
+| `image_gallery` 余 5 处字面量 | M4 长尾 | ✅ **A.20.1**：4 处兜底档（不可达）+ 1 处真缺陷（禁用标签）已修 |
+| `freeform_shape` 2 处字面量 | 回落档/数据色 | ✅ **A.17.2**：画面证明从未绘出，非缺陷 |
 
 #### A.16.5 动效族的**完成判据**（本轮确立，可复跑）
 
@@ -2689,14 +2701,19 @@ freeform_shape.light.svg 填 0,0,0         描边 112,109,114
 `text_color` 与主题派生描边，**字面量只活在访问器返回值里**。
 「补全」= 破坏有文档的契约 + 改已钉住的测试。**确实不需要**（这次有画面证据）。
 
-#### A.20.4 🔴 冰山：同类的**手写禁用权重**还有 33 处（登记，未清）
+#### A.20.4 冰山：同类的**手写禁用权重**（**A.21 已完成**）
 
-全仓扫「`is_enabled` + `blend(`」：**34 处**。除本轮修的 `image_gallery`，其余 33 处
-（`wizard` / `lottie_widget` / `rive_widget` / `hero_animation` / `range_slider` /
-`editable_combo_box` / `multi_select_combo_box` / `tab_bar` / `dropdown_menu` /
-`tool_button` / `action` / `date_range_picker` / `mobile_date_picker` …）**未逐个核对**。
+全仓扫「`is_enabled` + `blend(`」：**34 处**（`wizard` / `lottie_widget` / `rive_widget` /
+`hero_animation` / `range_slider` / `editable_combo_box` / `multi_select_combo_box` /
+`tab_bar` / `dropdown_menu` / `tool_button` / `action` / `date_range_picker` /
+`mobile_date_picker` …）。
 
-**不宣告「已清」**：其中一部分是**真正的禁用暗化（绘制输入）**，一部分可能同
+> ✅ **§A.21 已完成**：重扫得 **67 处**禁用暗化点（口径更宽，含 `veil`/`disabled_*`），
+> 其中**喂给文字的约 20 处**。共享层新增两个互不可互换的方法，20 处全部落位，
+> 真缺陷实测见 §A.21.3。图形/图表类经实测**合法**（窗口上 7.37–8.96:1），
+> 而 `DISABLED_FOREGROUND` 的**语义**改动登记为独立决定（§A.21.5）。
+
+**当时不宣告「已清」的理由（保留存档）**：其中一部分是**真正的禁用暗化（绘制输入）**，一部分可能同
 `image_gallery` 一样**低于共享权重导致不可读**，性质不同，必须逐处读码 +
 逐处对比度实测。登记为独立待办，沿用本轮判据：
 
@@ -2716,3 +2733,86 @@ freeform_shape.light.svg 填 0,0,0         描边 112,109,114
 
 **`image_gallery` 快照逐字节不变**（census 渲染的是**启用**空态，禁用分支不在其中）
 ⇒ **证据是探针，不是快照。**
+
+---
+
+### A.21 第 99 轮：禁用态颜色的类修复 —— 共享层 + 20 处站点（实测见 `log-20260924-1.md` §99）
+
+#### A.21.1 现状：仓库里有**三套互相矛盾**的禁用机制
+
+| 机制 | 行为 | 亮态对比度 |
+|---|---|---|
+| `Color::DISABLED_FOREGROUND` = `rgb(153,153,153)` | **与外观无关** | **2.48:1** ❌ |
+| 20 处本地混合权重（0.15–0.50） | 各自为政 | 1.41–3.88:1 ❌ |
+| `dimensions::DISABLED_VEIL_ALPHA` = 0.55 | **相对表面** | **4.57:1** ✅ |
+
+`DISABLED_VEIL_ALPHA` 的文档把「固定中灰」称为它要修的缺陷（BLUE21 B23 scrim），
+但 `DISABLED_FOREGROUND` 仍有 **14 处活引用 / 8 个文件**，且是共享 API
+`BaseWidget::effective_foreground` 的返回值（该 API **无调用者**）。
+
+**权重边界（精确）**：`0.55` 是两态都能过 4.5:1 的**最小值** ——
+`t=0.50 → 亮 3.88 ❌`，`t=0.55 → 亮 4.59 ✅`。这就是该常量的取值来源。
+
+#### A.21.2 共享层：两个**方向相反、不可互换**的方法（`BaseWidget`）
+
+| 方法 | 对象 | 方向 | 理由 |
+|---|---|---|---|
+| `disabled_ink_on(ink, surface)` | **墨**（文字/图标）| 表面 → 表面的对比色 | 墨要**贴回表面**才叫后退 |
+| `disabled_surface_near(surf, window)` | **面**（填充/面板）| 表面 → 窗口 | 面要**沉入页面**才叫后退 |
+
+**为什么不是一个可配置权重**：把「墨」的规则用在「面」上会得到
+`8.16:1`（比启用**更醒目**）—— 正是要修的缺陷换个字面量。
+两个名字长得像、方向相反，**命名本身拦住误用**。
+
+#### A.21.3 已修真缺陷（实测）
+
+| 控件 | 病灶 | 修前 | 修后 |
+|---|---|---|---|
+| `app_bar` ×3 | 固定 `DISABLED_FOREGROUND` | 亮 **2.48:1** | **4.57:1** |
+| `collapsible_pane` ×2 | 面板朝自己的墨混 0.5 | **1.03 / 1.65** | **5.03 / 4.58** |
+| `navigation_drawer` | `panel.blend(&ink, 0.5)` | 面 1.13→**5.73** | 1.24→**1.14** |
+| `search_bar` / `masked_edit` / `search_box` / `tag_input` | `blend(&WHITE, 0.35)` | 面 1.95→**5.15** | 1.95→**1.29** |
+| `floating_label` | 固定 `rgba(180,180,180)` | 亮态低于底线 | 由面板派生 |
+
+其余（`editable_combo_box` ×2、`wizard` ×3、`menu`/`menu_button`/`tool_button`/
+`dropdown_menu`、`navigation_stack` ×2、`dockwidget`、`carousel`、`action`、`tab_bar`、
+`empty_state` ×2、`stepper`、`cupertino::segmented_control`、`command_link`、
+`date_range_picker`）为**反转形**（`x.blend(&表面, w)`，即墨朝表面走），全部改为派生。
+
+#### A.21.4 两个新探针（可复跑，带自校验）
+
+| 探针 | 判据 |
+|---|---|
+| `tests/disabled_text_contrast.rs` | 禁用**文字**在两态都 ≥ 4.5:1（**真实像素**）|
+| `tests/disabled_surface_probe.rs` | 禁用**面**在两态都不比启用更醒目 |
+
+**探针必须响亮失败于「测不了」**：
+
+```rust
+panic!("{name} painted no surface this probe can identify, so its disabled \
+        recede is **unmeasured** rather than verified");
+```
+
+因为本轮「数字前后一样」曾被读成「没问题」，实际是**没量到**。
+
+#### A.21.5 登记：**不宣告已清**的部分
+
+`Color::DISABLED_FOREGROUND` 在**图表/图形**类（`sparkline`/`line_chart`/`bar_chart`/
+`pie_chart`/`spinner`/`progress_circle`）实测在**窗口上**为 7.37–8.96:1，**是合法的**：
+固定灰只在「面板上的文字」处失败。
+
+**改 `DISABLED_FOREGROUND` 的语义 = 改 `core` 的 `pub const`**，会移动大量控件的
+**启用**外观并废掉跨仓快照。**登记为独立决定，不在本轮做。**
+
+#### A.21.6 门禁（最后一次性跑）
+
+| 门禁 | 实测 |
+|---|---|
+| `cargo test --lib` | ✅ 6035 / 0 failed |
+| `cargo test --tests` | ✅ 58 二进制 / exit 0 / 6304 passed |
+| clippy `-D warnings` | ✅ 0 |
+| `check_control_rendering.sh` | ✅ 188 / 0 failed |
+| `check_svg_snapshots.sh` | ✅ PASS（392）|
+| `check_plan_tables.py` | ✅ 0 mismatched |
+
+**快照零变化**（census 渲染**启用**态，改动全在禁用路径）⇒ 证据是探针。

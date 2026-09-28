@@ -873,15 +873,19 @@ pub trait ControlBackend {
 
 ## 图标数据路径（`icons`，默认开启）
 
-`Icon` 通过 `IconName` 命名 31 个图标。`icons` 特性 —— **默认开启** —— 每个都按**真实轮廓**绘制，
-轮廓来自固定在某个上游修订的路径数据。不开该特性时 `Icon` 回退到**手写几何**，数据出现之前的所有
-快照都依据那条路径。
+`Icon` 通过 `IconName` 命名 68 个图标。`icons` 特性 —— **默认开启** —— 每个都按**真实轮廓**绘制，
+轮廓来自固定在某个上游修订的路径数据。不开该特性时 `Icon` 回退到**生成的几何**，它由**同一批**轮廓
+展平而来 —— 所以两条路径不可能对同一个图标给出不同形状。
+
+token 集在 `tools/icon_tokens.txt` 中**只声明一次**，`tools/gen_icon_names.py` 由它生成 `IconName`
+类型，所以新增一个图标是两行编辑加一次生成器运行，而不再需要改枚举、两个 match 分支和三个数组。
+宿主若需要本仓没有的图标，用 `register_icon` 注册自己的，它走下面完全相同的代码。
 
 从一个名字到像素经过三个阶段，而中间那个**刻意不是**任何东西的第二份实现：
 
 ```mermaid
 graph LR
-    ENUM["IconName<br/>（31 个变体）"]
+    ENUM["IconName<br/>（68 个变体）"]
     DATA["IconData<br/>name, grid, paths"]
     PARSE["render::path::parser<br/>SVG d -> Segment"]
     FLAT["render::path::flatten<br/>Segment -> 折线"]
