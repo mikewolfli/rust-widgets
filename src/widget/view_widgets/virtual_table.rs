@@ -547,6 +547,9 @@ impl Draw for VirtualTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Gated exactly as the one test that uses it: the test is `device_profile + desktop`,
+    // so on `mobile`/`tablet` an ungated import here is an unused-import warning.
+    #[cfg(all(device_profile, feature = "desktop"))]
     use crate::widget::svg::render_to_svg;
     use std::sync::{Arc, Mutex};
 

@@ -141,6 +141,45 @@ layout.arrange(rect, &children, &mut |id, child_rect| out.push((id, child_rect))
   `FocusReason`，`FocusReason::draws_focus_ring()` 对鼠标点击返回 `false`——光标下画环会读成卡住的
   高亮。
 
+## 动画与状态
+
+两个机制，都是共享的而非每个控件各写一份：
+
+- **`WidgetState`** —— `set_hovered` / `set_pressed` / `set_enabled` 会经由
+  `Widget::set_state_theme_hook` **重新解析**控件的样式，因此主题作者写的
+  `"button:hover"` / `":pressed"` / `":disabled"` 才真正抵达绘制代码。该钩子必须是
+  对象安全的（object-safe），因为它要被 setter 本身通过 `dyn Widget` 调用。
+- **`PropertyDriver`** —— 一个**存储目标**的进度值，取值 `0.0`–`1.0`，由 `MotionSlot`
+  节奏令牌（`Fast` / `Normal` / `Slow`）计价。控件通过 `Widget::tick(delta_ms)` 与
+  `Widget::is_animating()` 暴露它，帧循环据此发现「哪个控件还欠帧」——**控件不需要向
+  任何地方注册自己**。以某个值构造的驱动器是**静止**的，不会「即将出发」，因此刚建好的
+  控件不会在它的第一帧上朝反方向动起来。
+
+`is_animating()` 是由驱动器**派生**的，而不是一个由调用方翻转的开关，所以控件与帧循环
+不可能对「到底有没有东西在动」产生分歧。
+
+## 主题与禁用态
+
+颜色只走一条解析链——控件显式样式 → 该控件的主题解析样式 → 最后才是一个字面量兜底——
+因此未被触碰的控件仍会跟随外观切换，而调用方刻意设置的颜色总是赢。
+
+「禁用」是**两个方向相反**的动作，本仓给它们**两个名字**，因为把其中一个用在另一个的位置上，
+得到的正是相反的状态：
+
+| | 后退的方式 | 实测 |
+|---|---|---|
+| `BaseWidget::disabled_ink_on(ink, surface)` —— 文字与图标 | 朝**表面自身的对比色**走 | 4.57–5.91:1 |
+| `BaseWidget::disabled_surface_near(surface, window)` —— 填充与面板 | 朝**背后的页面**走 | 永远不比启用时更醒目 |
+
+权重来自同一个共享常量 `dimensions::DISABLED_VEIL_ALPHA`（`0.55`）——它是**在深色与浅色
+两种外观上都**能过 4.5:1 正文底线的**最小值**。半透明中灰是**没有方向**的：压在浅色表面上
+会让它变暗，压在深色表面上会让它变亮，于是「禁用」在本来就最难读的那个外观上反而更醒目。
+朝表面走是**在两种外观上都**读作「后退」的唯一方向。
+
+文字可读性也对调用方开放：`Color::contrast_ratio` 返回 WCAG 对比度，
+`Color::legible_on(surface, min_ratio)` 返回调用方的颜色，或朝表面对比色走出的、
+刚好满足 `min_ratio` 的那一步。
+
 ## 验证一次改动
 
 ```bash
@@ -162,6 +201,11 @@ bash tools/run_all_gates.sh                                    # 全部门禁，
 
 `tools/run_all_gates.sh` 会跑遍 `tools/check_*.sh` 并打印每个门禁的通过情况与耗时。每个门禁都必须
 **能失败**；其中最关键的那些都用反向注入验证过——故意把缺陷改回去，确认门禁会变红。
+
+**快照并不是万能的证据。** 它展示的是控件的**静止**态，所以落在 hover、禁用或动画路径上的
+缺陷对它**不可见**。那些路径改由像素级探针钉住（`tests/disabled_text_contrast.rs`、
+`tests/disabled_surface_probe.rs`、`tests/m3_animation_probe.rs`），且每个探针断言的是
+**被承诺的那个量**——对比度、画出的高度、线段数——而不是字节长度或「是不是在动」这类代理指标。
 
 ## 「180 个控件」覆盖什么
 
