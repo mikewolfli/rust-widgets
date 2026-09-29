@@ -87,6 +87,9 @@ impl PopupWindow {
     /// Hides the popup and emits `closed`.
     pub fn close(&mut self) {
         self.hide();
+        // Base lifecycle signal (handle-layer `on_close` / JSON `closed`) alongside the widget's
+        // own `closed` for its direct listeners.
+        self.base.closed.emit();
         self.closed.emit();
     }
 }

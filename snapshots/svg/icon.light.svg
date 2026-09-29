@@ -2,5 +2,5 @@
 <!-- control: icon | appearance: light -->
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(240,240,240,1.00)" />
-  <path d="M 118 66 L 112 60 L 113 59 L 118 63 L 127 54 L 128 55 L 118 66 Z" fill="rgba(0,0,0,1.00)" stroke="none" stroke-width="0" />
+  <path d="M 118 66 L 112 60 L 113 59 L 118 63 L 127 54 L 128 55 Z" fill="rgba(0,0,0,1.00)" stroke="none" stroke-width="0" />
 </svg>

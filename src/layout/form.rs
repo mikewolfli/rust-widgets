@@ -55,12 +55,26 @@ impl FormLayout {
     }
 
     /// Remove a row by its index. Returns false if index is out of bounds.
+    ///
+    /// # What this removes, and what it must not
+    ///
+    /// `rows` (label/field pairs, from [`Self::add_row_pair`]) and `items` (standalone
+    /// widgets, from [`Self::add_row`] / [`Layout::add_widget`]) are **two separate stores**, so
+    /// only `rows` holds the pair being removed. The body used to run
+    /// `items.retain(|(id, _)| *id != label && *id != field)` as well, which could therefore
+    /// never remove the row it had just taken out — its only effect was to *also* delete a
+    /// standalone item whose id happened to equal the departed label's or field's. Since
+    /// `ObjectId`s are unique that coincidence needs a caller re-using an id, but the
+    /// statement expressed a mixed-up model of the two stores, so it is gone rather than kept
+    /// "just in case".
+    ///
+    /// A field widget that the caller also registered standalone must be removed through
+    /// [`Layout::remove_widget`], which is the store that actually holds it.
     pub fn remove_row(&mut self, index: usize) -> bool {
         if index >= self.rows.len() {
             return false;
         }
-        let (label, field) = self.rows.remove(index);
-        self.items.retain(|(id, _)| *id != label && *id != field);
+        self.rows.remove(index);
         true
     }
 }

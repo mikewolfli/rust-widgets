@@ -106,8 +106,9 @@ mod properties;
 
 pub use element::BoundJsonLayout;
 pub use event_route::{
-    context_for, is_marker_key, json_event_binding, marker_for_key, marker_key_names,
-    published_event_name, JsonEventBinding, JsonTriggerMarker, EVENTS_KEY, MARKER_KEYS,
+    bind_marker_event, bind_published_event, context_for, is_marker_key, json_event_binding,
+    marker_for_key, marker_key_for, marker_key_names, published_event_name, JsonEventBinding,
+    JsonTriggerMarker, EVENTS_KEY, MARKER_KEYS,
 };
 pub use events::{
     clear_global_handlers, invoke_global_handler, register_global_handler, EventHandlerContext,
@@ -118,6 +119,16 @@ pub use layout::{
     forget_layout, parse_layout_kind, place_widget_in_layout, preview_layout, store_layout,
     ChildLayoutAttrs, ChildPlacement, DeclarativeLayoutKind,
 };
+/// Wires one declared event binding to a live control — the single-call entry a **generated**
+/// program uses (rule #98).
+///
+/// # Why a free function rather than a method on `JsonLoader`
+///
+/// `JsonLoader` is a unit struct whose only public operation parses a document. A generated program
+/// deliberately links no parser, so it must reach the *wiring* without reaching the *loader*; a free
+/// function says that in its signature. It forwards to the one binding body, so the generated path
+/// and the JSON path cannot disagree about which callback a name needs.
+pub use loader::bind_event_binding;
 pub use loader::{load_layout_from_str, JsonLoader};
 pub use project::{JsonProject, ProjectNode, MAX_DEPTH as PROJECT_MAX_DEPTH};
 pub use properties::is_widget_property;

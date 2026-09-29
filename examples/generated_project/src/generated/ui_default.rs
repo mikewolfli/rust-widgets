@@ -8,25 +8,16 @@
 // resolved at generation time (not calls in this file):
 //   - the document's layout was solved into constant coordinates against 640x480
 
-use rust_widgets::core::Rect;
 use rust_widgets::view::Node;
 use rust_widgets::widget::capability::CapabilityValue;
 
 pub fn build_ui() {
-    let tree = Node::new("window").key("root").prop("width", CapabilityValue::UInt(640)).prop("height", CapabilityValue::UInt(480)).prop("height", CapabilityValue::Int(480)).prop("title", CapabilityValue::String(String::from("Generated Demo"))).prop("width", CapabilityValue::Int(640)).child(Node::new("label").key("n_0").prop("text", CapabilityValue::String(String::from("Generated from a project document")))).child(Node::new("button").key("n_1").prop("enabled", CapabilityValue::Bool(false)).prop("text", CapabilityValue::String(String::from("Go")))).child(Node::new("slider").key("n_2").prop("value", CapabilityValue::Int(40)));
+    let tree = Node::new("window").key("root").prop("width", CapabilityValue::UInt(640)).prop("height", CapabilityValue::UInt(480)).prop("height", CapabilityValue::Int(480)).prop("title", CapabilityValue::String(String::from("Generated Demo"))).prop("width", CapabilityValue::Int(640)).child(Node::new("label").key("n_0").prop("text", CapabilityValue::String(String::from("Generated from a project document")))).child(Node::new("button").key("n_1").prop("enabled", CapabilityValue::Bool(false)).prop("text", CapabilityValue::String(String::from("Go"))).prop("__wire_events.clicked", CapabilityValue::String("on_go".to_string()))).child(Node::new("slider").key("n_2").prop("value", CapabilityValue::Int(40)));
 
     // The `View` value is the generated tree, and `create_for` is generated too, so this
     // program links no JSON parser and no widget-name table (mode 1's weight).
     let mut engine = rust_widgets::view::ViewEngine::new();
-    let report = engine.mount(&GeneratedTree { tree }, &|node| {
-        let geometry = rust_widgets::core::Rect::new(0, 0, 0, 0);
-        let text = node
-            .prop_value("text")
-            .or_else(|| node.prop_value("title"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        create_for(&node.widget, geometry, text)
-    });
+    let report = engine.mount(&GeneratedTree { tree }, &create_for);
     let _ = report;
 }
 
@@ -41,10 +32,29 @@ impl rust_widgets::view::View for GeneratedTree {
     }
 }
 
-/// Builds one control for the generated tree.
+/// Builds one control for the generated tree, and wires the events it declares.
 ///
 /// The arms are exactly the widget types this file uses, so no name table is linked.
-fn create_for(widget: &str, geometry: Rect, text: &str) -> Option<rust_widgets::core::ObjectId> {
+///
+/// # Why the wires are bound here rather than by the caller
+///
+/// `node` is the description the tree was built from, and it carries the handler names/// the document declared (see `WIRE_PROP_PREFIX`). Binding them at creation is what
+/// makes `events: { clicked: "on_save" }` mean something: before this the wires were
+/// parsed and dropped, so the generated program contained no reference to the handler
+/// and it could never run.
+///
+/// The *decision* of which callback an event needs is the library's, not this file's:
+/// each wire is handed to `bind_published_event` / `bind_marker_event`, which consult
+/// the control's own capability. A generated file that reimplemented that would be a
+/// second rule set (rule #98).
+fn create_for(node: &rust_widgets::view::Node) -> Option<rust_widgets::core::ObjectId> {
+    let widget = node.widget.as_str();
+    let geometry = rust_widgets::core::Rect::new(0, 0, 0, 0);
+    let text = node
+        .prop_value("text")
+        .or_else(|| node.prop_value("title"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let mut control: Option<Box<dyn rust_widgets::widget::Widget>> = match widget {
         "button" => Some(Box::new(rust_widgets::widget::Button::new(text.to_string(), geometry))),
         "label" => Some(Box::new(rust_widgets::widget::Label::new(text.to_string(), geometry))),
@@ -54,5 +64,22 @@ fn create_for(widget: &str, geometry: Rect, text: &str) -> Option<rust_widgets::
     };
     // The registry assigns the id; a generated program has exactly one tree, so the
     // returned id is the one `ViewEngine` will address it by.
-    control.take().map(|c| rust_widgets::widget::runtime::register(c)).flatten()
+    let id = control.take().and_then(rust_widgets::widget::runtime::register)?;
+    // Bind every wire the document declared. A refused name is reported at `warn!` by
+    // the library and counted, so a wire that cannot fire is visible rather than silent.
+    let prefix = "__wire_";
+    for (name, value) in node.props.iter() {
+        let Some(suffix) = name.strip_prefix(prefix) else { continue };
+        let Some(handler) = value.as_str() else { continue };
+        if let Some(event) = suffix.strip_prefix("events.") {
+            rust_widgets::json::bind_published_event(id, widget, event, handler);
+        } else if let Some(marker) = rust_widgets::json::marker_for_key(suffix) {
+            rust_widgets::json::bind_marker_event(id, suffix, marker, handler);
+        }
+        // An unrecognised suffix is impossible: the generator emits only keys from
+        // `is_wire_key`, and `node.props` is built by this file. A branch here would
+        // need a `log` dependency the generated crate does not have, which is the
+        // shape that made the first version of this fail to compile.
+    }
+    Some(id)
 }

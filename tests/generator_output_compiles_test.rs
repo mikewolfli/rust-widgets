@@ -40,7 +40,16 @@
 use rust_widgets::designer::{generate, GenerationRequest, TargetProfile};
 
 /// A project that exercises both templates: a container, a text control, a value control, a
-/// disabled control and a nested container.
+/// disabled control, a nested container, and **declared wires**.
+///
+/// # Why the wires must be in this fixture
+///
+/// The generator used to skip every wire key and emit nothing, so a document that declared
+/// `events: { clicked: "on_save" }` produced a program in which the handler could never run — and
+/// this test still passed, because a fixture without a wire never reaches that code. Adding the two
+/// wire routes here is what makes the compile gate cover the wiring path at all; the first version
+/// of the wiring emitted a `log::warn!` the generated crate has no dependency for, and **this test**
+/// is what caught it.
 const PROJECT: &str = r#"{
   "window": {
     "id": "root",
@@ -52,8 +61,16 @@ const PROJECT: &str = r#"{
       "spacing": 4,
       "children": [
         { "label": { "id": "title", "text": "Hello" } },
-        { "button": { "id": "go", "text": "Go", "enabled": false } },
-        { "slider": { "id": "level", "value": 30 } }
+        {
+          "button": {
+            "id": "go",
+            "text": "Go",
+            "enabled": false,
+            "events": { "clicked": "on_save" },
+            "on_change": "on_save_marker"
+          }
+        },
+        { "slider": { "id": "level", "value": 30, "events": { "value_changed": "on_level" } } }
       ]
     }
   }

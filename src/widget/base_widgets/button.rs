@@ -841,10 +841,14 @@ impl Draw for Button {
         // `solid()` is the identity, so a button on the flat preset emits exactly the fill and
         // outline it emitted before surfaces existed: the snapshot suite is the proof.
         let surface = style.surface.unwrap_or_else(crate::render::SurfaceStyle::solid);
-        surface.paint(
+        surface.paint_with_gradient(
             context,
             rect,
             bg,
+            // `background_gradient` was settable and mergeable but read by **no** painter; passing
+            // it here is what makes a declared gradient actually paint. `None` is the identity, so a
+            // button without one draws exactly what it always did.
+            style.background_gradient.as_ref(),
             style.border_color.unwrap_or(bg),
             style.border_width.unwrap_or(0),
             br,
@@ -1365,7 +1369,7 @@ mod tests {
         let event = Event::MousePress {
             pos: crate::core::Point::new(15, 25),
             button: crate::event::mouse_button::PRIMARY,
-            modifiers: 0
+            modifiers: 0,
         };
         b.handle_event(&event);
         assert!(b.is_pressed());
@@ -1418,7 +1422,7 @@ mod tests {
         b.handle_event(&Event::MousePress {
             pos: crate::core::Point::new(20, 30),
             button: crate::event::mouse_button::PRIMARY,
-            modifiers: 0
+            modifiers: 0,
         });
         assert!(b.is_pressed());
 
@@ -1448,7 +1452,7 @@ mod tests {
         b.handle_event(&Event::MousePress {
             pos: crate::core::Point::new(20, 30),
             button: crate::event::mouse_button::PRIMARY,
-            modifiers: 0
+            modifiers: 0,
         });
         b.handle_event(&Event::MouseRelease {
             pos: crate::core::Point::new(30, 40),
@@ -1465,7 +1469,7 @@ mod tests {
         b.handle_event(&Event::MousePress {
             pos: crate::core::Point::new(20, 30),
             button: crate::event::mouse_button::PRIMARY,
-            modifiers: 0
+            modifiers: 0,
         });
         assert!(b.is_pressed());
 
@@ -1483,7 +1487,7 @@ mod tests {
         b.handle_event(&Event::MousePress {
             pos: crate::core::Point::new(20, 30),
             button: crate::event::mouse_button::SECONDARY,
-            modifiers: 0
+            modifiers: 0,
         });
         assert!(!b.is_pressed());
     }
@@ -1500,7 +1504,7 @@ mod tests {
         b.handle_event(&Event::MousePress {
             pos: crate::core::Point::new(20, 30),
             button: crate::event::mouse_button::PRIMARY,
-            modifiers: 0
+            modifiers: 0,
         });
         b.handle_event(&Event::FocusLost);
         assert!(!b.is_pressed());
@@ -1567,6 +1571,40 @@ mod tests {
         );
     }
 
+    /// A declared `background_gradient` must actually be painted.
+    ///
+    /// Pins the defect: the field was settable, mergeable and CSS-expressible, but no painter read
+    /// it, so a button with a gradient drew a solid fill. This asserts the rendered SVG grows a
+    /// gradient definition that the solid button does not have.
+    #[test]
+    fn a_declared_background_gradient_is_painted() {
+        use crate::style::Gradient;
+        let _theme_guard = crate::style::theme_test_guard();
+
+        let mut plain = make_button();
+        let plain_svg = crate::widget::svg::render_to_svg(&mut plain);
+
+        let mut gradient_button = make_button();
+        let gradient = Gradient::linear(Point::new(0, 0), Point::new(0, 40))
+            .add_stop(0.0, Color::rgb(255, 0, 0))
+            .add_stop(1.0, Color::rgb(0, 0, 255));
+        gradient_button.set_style(gradient_button.style().clone().with_gradient(gradient));
+        let gradient_svg = crate::widget::svg::render_to_svg(&mut gradient_button);
+
+        assert_ne!(
+            plain_svg, gradient_svg,
+            "a gradient must change what is painted, not be silently dropped"
+        );
+        assert!(
+            gradient_svg.contains("linearGradient"),
+            "the gradient must reach the SVG as a paint server: {gradient_svg}"
+        );
+        assert!(
+            !plain_svg.contains("linearGradient"),
+            "a button with no gradient must not paint one: {plain_svg}"
+        );
+    }
+
     #[test]
     fn a_keyboard_activation_keeps_the_ring() {
         let mut b = make_button();
@@ -1595,7 +1633,7 @@ mod tests {
         b.handle_event(&Event::MousePress {
             pos: crate::core::Point::new(20, 30),
             button: crate::event::mouse_button::PRIMARY,
-            modifiers: 0
+            modifiers: 0,
         });
         assert!(!b.is_pressed());
         b.handle_event(&Event::MouseRelease {

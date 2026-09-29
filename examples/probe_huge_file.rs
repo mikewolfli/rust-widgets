@@ -23,9 +23,15 @@ fn split_lines(text: &str) -> Vec<String> {
     text.split('\n').map(|l| l.to_string()).collect()
 }
 
-/// The memory a `Vec<String>` costs: 24-byte header per `String` + capacity.
+/// The memory a `Vec<String>` costs: the `String` headers themselves plus each one's heap
+/// capacity.
+///
+/// `size_of_val(lines)` for the first term rather than `len() * size_of::<String>()`: the two are
+/// the same number, but the former is what the value actually occupies and is what clippy asks
+/// for (`manual_slice_size_calculation`), which matters because this example is built with
+/// `-D warnings` on the cross-compile gates.
 fn vec_string_bytes(lines: &[String]) -> usize {
-    lines.len() * std::mem::size_of::<String>() + lines.iter().map(|l| l.capacity()).sum::<usize>()
+    std::mem::size_of_val(lines) + lines.iter().map(|l| l.capacity()).sum::<usize>()
 }
 
 fn main() {

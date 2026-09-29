@@ -108,13 +108,13 @@
 
 ## 5. 维护规则
 
-1. **新计划 = 在 `blue24.md` 里加一节。** 不新建 `blue25.md`/`blue26.md`
-   （`blue24.md` §9.1 的门禁 `check_single_open_plan` 会拦）。
+1. **新计划可以新建文件。**`docs/plans/blue26.md`、`blue27.md` … 均可；
+   一条新主题就开一份新计划，不再要求把新主题塞进 `blue24.md`。
 2. **一份计划主体全部完成后**才移入 `archive/`，并**必须**在本文件 §4 补一行。
 3. **第 12 节的四份文件不可移动**：`codemap.md` / `platform_capability_matrix.md` /
    `TODO.md` / `principle.md` 被门禁或源码引用，移动会让门禁报红。
-4. **同一件事不两处各写一半**。这是本目录收敛的唯一目标——
-   「多份计划并行」是允许的（见 §1），「同一主题两份计划」不是。
+4. **同一件事不两处各写一半**。同一主题的两份计划允许并行（见 §1），但**同一主题**
+   不应在两处各写一半——这是本目录收敛的唯一目标。
 
 ### 可复跑的检查
 
@@ -125,13 +125,16 @@ $ grep -rn "docs/plans/" --include=*.rs --include=*.sh --include=*.py . | grep -
   # 零命中指向 archive/ 的路径（除刻意保留的历史引注）
 ```
 
-### 三条元门禁（BLUE24 §9）
+### 两条元门禁（BLUE24 §9）
 
-本目录的收敛由**三条可运行的门禁**钉住（而不是靠习惯）：
+> `check_single_open_plan.sh` 已于 2026-09-29 **删除**（用户指令）：它把「同一主题
+> 至多一份活计划」变成硬门禁，连带禁止新建 `blue25/blue26`。现已改为**目录纪律**（见 §5.4），
+> 门禁本身不再存在。
+
+本目录的收敛由**两条可运行的门禁**钉住（而不是靠习惯）：
 
 | 门禁 | 断言 | 反向注入 |
 |---|---|---|
-| `tools/check_single_open_plan.sh` | 同一主题至多一份**未归档且仍有 `[ ]`** 的计划（多份不同主题可并行） | 造一份与 `blue24` 同标题且带 `[ ]` 的计划 ⇒ 变红 |
 | `tools/check_plan_archive_has_index.sh` | `archive/` 每份文件在本 README 有行；README 不引用不存在的归档 | 向 `archive/` 放一份未入索引的文件 ⇒ 变红 |
 | `tools/check_gates_are_worth_running.sh` | 每个 `check_*.sh` 被 `run_all_gates.sh` 的 glob 枚举；运行预算 ≤ 45 min；每个门禁在 `gates_reverse_injection.md` 有名 | 删一行记录 / 改预算为 9999 ⇒ 各自变红 |
 

@@ -174,11 +174,63 @@ impl JsonLoader {
     /// Reading the decision off the binding is also what makes it checkable:
     /// [`JsonEventBinding::Published`] carries the payload observation, so a test (and the gate
     /// in `tools/check_json_event_route.py`) can assert the choice without a live control.
-    fn bind_one(widget_id: ObjectId, binding: crate::json::JsonEventBinding, handler_name: String) {
+    pub fn bind_one(
+        widget_id: ObjectId,
+        binding: crate::json::JsonEventBinding,
+        handler_name: String,
+    ) -> bool {
         let marker = binding.marker();
         let handle: ButtonHandle = ButtonHandle::from_raw(widget_id);
+
+        // A marker whose *real* trigger has no callback on this handle is refused rather
+        // than bound to a nearby one.
+        //
+        // # The defect this closes
+        //
+        // `on_double_click` reports `WidgetTriggerKind::Clicked` (the routing callback it
+        // arrives through cannot carry a finer distinction), so `uses_value_callback()` was
+        // false and it was bound through `on_click` — i.e. to the **single-click** signal.
+        // The handler therefore ran on the first click, was told it had seen a double click,
+        // and could never be reached by a real one. The same applied to `on_focus` /
+        // `on_blur` (bound to the value callback) and `on_close` (bound to the click
+        // callback): in each case the name was validated, the binding looked wired, and the
+        // signal it named was unreachable — precisely the "subscribed successfully but will
+        // never fire" failure the crate refuses elsewhere.
+        //
+        // Refusing is the honest answer: a handler that cannot fire is worse than an error,
+        // because the document loads. The warning names the key and the reason, so an author
+        // is not left guessing why their handler is silent.
+        //
+        // A published binding (`events: { "closed": "h" }`) now reaches this same guard,
+        // because the marker is derived from the *name* -- it used to flatten to `Clicked`
+        // and bind the click callback while telling the handler the control had closed.
+        if let Some(reason) = marker.unroutable_reason() {
+            match binding.published_name() {
+                Some(name) => log::warn!(
+                    "`events.{name}` for handler '{handler_name}' on id={widget_id} was NOT \
+                     bound: {reason}"
+                ),
+                None => log::warn!(
+                    "on_* key for handler '{handler_name}' on id={widget_id} was NOT bound: \
+                     {reason}"
+                ),
+            }
+            crate::app::record_unwired_binding(widget_id);
+            return false;
+        }
+
         if binding.uses_value_callback() {
             handle.on_value_changed(move |_value| {
+                let ctx = crate::json::context_for(widget_id, marker);
+                crate::json::invoke_global_handler(&handler_name, &ctx);
+            });
+        } else if marker.uses_close_callback() {
+            // `Closed` reaches the widget's own `closed` signal (see `WidgetHandle::on_close`),
+            // which is a third callback channel, not the click one. Without this branch a `closed`
+            // handler would be bound to the click signal — the wrong-event defect the earlier
+            // refusal existed to avoid; now the signal exists, so it is bound correctly.
+            use crate::app::WidgetHandle as _;
+            handle.on_close(move || {
                 let ctx = crate::json::context_for(widget_id, marker);
                 crate::json::invoke_global_handler(&handler_name, &ctx);
             });
@@ -188,6 +240,7 @@ impl JsonLoader {
                 crate::json::invoke_global_handler(&handler_name, &ctx);
             });
         }
+        true
     }
 
     /// Places a child at the cell it declared, when it declared one and the parent can honour it.
@@ -371,11 +424,15 @@ impl JsonLoader {
         // kind is matched automatically.
         apply_declared_styles(&mut *widget, obj);
 
-        // Apply common properties (geometry, enabled, visible, tooltip, style)
+        // Apply common properties (geometry, enabled, visible, tooltip, style).
+        //
+        // The min/max size constraints are applied **inside** this call: `apply_properties`
+        // ends with `apply_size_constraints`. Calling it here as well was a second path to
+        // the same concept (principle #101). It is idempotent today, which is exactly why the
+        // duplicate was invisible — and exactly why a later edit that made it non-idempotent
+        // (accumulating a constraint, say) would break silently, with the second call hidden
+        // behind the first.
         apply_properties(&mut *widget, obj);
-
-        // Apply min/max size constraints
-        apply_size_constraints(&mut *widget, obj);
 
         // Set parent
         widget.set_parent(parent_id);
@@ -1141,6 +1198,35 @@ impl JsonLoader {
     }
 }
 
+/// Wires one declared event binding to a live control — the single-call entry a **generated**
+/// program uses (rule #98).
+///
+/// # Why this exists
+///
+/// The designer's generated program builds controls through its own `create_for` and never runs the
+/// JSON loader — that is the point of generating code: the program links no parser. But the
+/// *wiring* it must perform is exactly the loader's: validate the name against the control's
+/// capability, choose the callback from the payload observation, and refuse a name whose trigger has
+/// no signal. Rule #98 makes that the library's job, so a generator (or any host that learns its
+/// wiring at run time) must not reimplement it — a second implementation is a second rule set that
+/// agrees only until one side is edited.
+///
+/// Before this existed, the generator had **no** way to emit a wire at all: a document declaring
+/// `events: { clicked: "on_save" }` produced a program containing no reference to `on_save`, so the
+/// handler could never run — silently, because the name had been validated at generation time and
+/// therefore looked fine. `examples/probe_generated_wires.rs` is the probe that measured it.
+///
+/// Returns whether the handler was bound. A marker whose trigger has no signal (an unroutable
+/// `on_*` key) returns `false` and is reported at `warn!` and through the unwired-binding counter,
+/// so a caller gets a fact rather than a binding that can never fire.
+pub fn bind_event_binding(
+    widget_id: crate::core::ObjectId,
+    binding: crate::json::JsonEventBinding,
+    handler_name: String,
+) -> bool {
+    JsonLoader::bind_one(widget_id, binding, handler_name)
+}
+
 /// The widget's kind in `Debug` spelling, for diagnostics.
 ///
 /// A free function rather than a trait method: only this module's warnings need
@@ -1235,14 +1321,16 @@ fn apply_properties(widget: &mut dyn Widget, obj: &serde_json::Map<String, Value
     // Applied first because the property layer also publishes `geometry`, and a
     // control's own setter is the authority; the shorthand below fills in the
     // common case of four separate keys.
-    if let (Some(x), Some(y), Some(w), Some(h)) = (
-        obj.get("x").and_then(|v| v.as_i64()),
-        obj.get("y").and_then(|v| v.as_i64()),
-        obj.get("width").and_then(|v| v.as_u64()),
-        obj.get("height").and_then(|v| v.as_u64()),
-    ) {
-        widget.set_geometry(Rect::from_i64(x, y, w as i64, h as i64));
-    }
+    //
+    // A **partial** set is honoured against the widget's existing rect rather than
+    // ignored. Before this, `{"button": {"id": "b", "width": 200, "height": 40}}`
+    // loaded with the size silently dropped: the shorthand only fired when all four
+    // keys were present, and `is_loader_owned_key` kept the name-driven pass from
+    // reporting them, so the author got a control at its default size and no warning —
+    // the opposite of this module's documented contract that an unrecognised key is
+    // named. Filling the missing components from the current geometry is the same
+    // "start from what the control has" rule `apply_size_constraints` uses.
+    apply_geometry_shorthand(widget, obj);
 
     // ── Style: padding / margin ─────────────────────────────
     // These two accept either a bare number (all sides) or an object with
@@ -1320,6 +1408,35 @@ fn apply_properties(widget: &mut dyn Widget, obj: &serde_json::Map<String, Value
     apply_size_constraints(widget, obj);
 }
 
+/// Applies whichever of `x` / `y` / `width` / `height` the object supplies.
+///
+/// A missing component keeps the widget's current value, so the four keys are
+/// independent: a document may set only a size, only an origin, or all four. Returns the
+/// number of components applied, so the caller can tell "no geometry keys" from "all four".
+fn apply_geometry_shorthand(
+    widget: &mut dyn Widget,
+    obj: &serde_json::Map<String, Value>,
+) -> usize {
+    let x = obj.get("x").and_then(|v| v.as_i64());
+    let y = obj.get("y").and_then(|v| v.as_i64());
+    let width = obj.get("width").and_then(|v| v.as_u64());
+    let height = obj.get("height").and_then(|v| v.as_u64());
+    let supplied = [x.is_some(), y.is_some(), width.is_some(), height.is_some()];
+    if !supplied.iter().any(|&present| present) {
+        return 0;
+    }
+
+    let current = widget.geometry();
+    let rect = Rect::from_i64(
+        x.unwrap_or(current.x as i64),
+        y.unwrap_or(current.y as i64),
+        width.map(|w| w as i64).unwrap_or(current.width as i64),
+        height.map(|h| h as i64).unwrap_or(current.height as i64),
+    );
+    widget.set_geometry(rect);
+    supplied.iter().filter(|&&present| present).count()
+}
+
 /// Keys this module consumes structurally, so the name-driven pass must not also
 /// try to resolve them as properties.
 ///
@@ -1373,13 +1490,11 @@ fn is_loader_owned_key(key: &str) -> bool {
         | "tristate" | "password" | "word_wrap" | "tab_shape"
         | "h_policy" | "v_policy" | "alpha"
         // Events, wired after registration. The `events` object holds published names (rule
-        // #101's merged route) and the `on_*` keys are the compatibility spellings; the key list
-        // comes from `event_route::MARKER_KEYS` so a key the wiring reads can never be missing
-        // here and be reported as an unknown property.
+        // #101's merged route) and the `on_*` keys are the compatibility spellings. The key list
+        // is read from `event_route::MARKER_KEYS` rather than restated, so a key the wiring reads
+        // can never be missing here and be reported as an unknown property.
         | "events"
-        | "on_click" | "on_change" | "on_close" | "on_double_click" | "on_focus"
-        | "on_blur" | "on_selection_changed" | "on_value_changed"
-    )
+    ) || crate::json::is_marker_key(key)
 }
 
 /// Apply a `#RRGGBB`-style colour key when it is present and parses.
@@ -2244,13 +2359,26 @@ mod tests {
     fn the_loader_consumes_exactly_the_marker_keys() {
         // The "not a property" pattern and the event wiring must agree, because a key in one and
         // not the other is either a warning about a live key or a silently ignored handler.
-        let source = include_str!("loader.rs");
+        //
+        // The loader now **derives** the key set from the marker table rather than restating it
+        // (the pattern used to spell the eight names as literals next to `MARKER_KEYS`, so adding a
+        // ninth key would wire it but report a live handler as an unknown property). This asserts
+        // the derivation, which is the property that makes the two paths agree by construction.
         for (key, _) in MARKER_KEYS {
             assert!(
-                source.contains(&format!("\"{key}\"")),
-                "`{key}` is read by the marker table but is not named in the loader's pattern"
+                crate::json::is_marker_key(key),
+                "`{key}` must be recognised as a marker key so the property pass leaves it alone"
+            );
+            assert!(
+                is_loader_owned_key(key),
+                "`{key}` must be loader-owned, or a declared handler is reported as a property"
             );
         }
+        // The derivation, not a coincidental match: a name the table does not list is not owned.
+        assert!(
+            !is_loader_owned_key("on_definitely_not_a_marker"),
+            "an unknown `on_*` key is not loader-owned"
+        );
     }
 
     #[test]

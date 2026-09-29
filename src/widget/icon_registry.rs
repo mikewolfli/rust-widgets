@@ -72,8 +72,10 @@ pub const MAX_REGISTERED_ICONS: usize = 16;
 /// use rust_widgets::widget::register_icon;
 ///
 /// // A 960-grid outline with negative y upward, as Material Symbols files use.
-/// let triangle = ["M480-200 240-440l56-56 184 184 184-184 56 56-240 240Z"];
-/// assert!(register_icon("disclosure", &triangle));
+/// // The path table must be `&'static [&'static str]` (see "Why the name is `&'static str`"),
+/// // so it is a `static` rather than a local binding.
+/// static TRIANGLE: [&str; 1] = ["M480-200 240-440l56-56 184 184 184-184 56 56-240 240Z"];
+/// assert!(register_icon("disclosure", &TRIANGLE));
 /// ```
 pub fn register_icon(name: &'static str, paths: &'static [&'static str]) -> bool {
     register_icon_on_grid(name, paths, 960)

@@ -131,6 +131,18 @@ pub trait View {
 pub struct ViewEngine {
     current: Option<Node>,
     layout: crate::json::BoundJsonLayout,
+    /// The viewport the next build is classified against, or `None` before a host has
+    /// reported one.
+    ///
+    /// # Why the engine owns this and why it defaults to `None`
+    ///
+    /// A [`Breakpoint`](crate::view::Breakpoint) is a fact about the *window*, and the window
+    /// belongs to the host — the engine has no way to ask the OS. It therefore stores the size
+    /// the host reported through [`ViewEngine::set_viewport`] and establishes the tier while
+    /// the view builds, so `Node::breakpoint` branches on something real. Before any report the
+    /// tier is the honest "no information" answer (`Expanded`, i.e. render everything
+    /// declared) rather than a guessed phone width.
+    viewport: Option<crate::core::Size>,
     /// Maps the previous tree's *shape* to live ids, so the diff can address controls.
     ///
     /// Populated when the engine mounts or applies an `Insert`: ids for nodes it created,
@@ -165,9 +177,47 @@ impl ViewEngine {
         Self {
             current: None,
             layout: crate::json::BoundJsonLayout::new(),
+            viewport: None,
             id_of_path: crate::compat::HashMap::new(),
             overlay_layer: None,
         }
+    }
+
+    /// Report the size the view is being built for, so
+    /// [`Node::breakpoint`](crate::view::Node::breakpoint) selects against the real window.
+    ///
+    /// # Why the host reports rather than the engine asking
+    ///
+    /// The window's size is the host's fact (see rule #35: a platform difference is expressed
+    /// through a runtime API, never by probing from a layer that should not know). A host that
+    /// owns its window calls this from its resize handler — typically right beside the
+    /// `queue_resize_trigger` it already calls — and then rebuilds by calling
+    /// [`Self::update`]. Until it does, the tier is `Expanded` and every declared subtree is
+    /// included, which is the behaviour a tree had before this existed.
+    ///
+    /// This does **not** itself rebuild the tree: a caller that wants the tier to take effect
+    /// calls `update` afterwards, exactly as it would for any other state change.
+    pub fn set_viewport(&mut self, size: crate::core::Size) {
+        self.viewport = Some(size);
+    }
+
+    /// The size the host last reported, or `None` when it has not.
+    pub fn viewport(&self) -> Option<crate::core::Size> {
+        self.viewport
+    }
+
+    /// Run `build` with the reported viewport's tier in force.
+    ///
+    /// Both build entry points funnel through here so "the tier is in force for every build"
+    /// is a property of one function rather than of two call sites that must agree — the
+    /// failure mode [`crate::view::Breakpoint::current`]'s documentation warns about, where a
+    /// tier leaks from one build into the next.
+    fn build_in_force(&self, view: &dyn View, ctx: &Context) -> Node {
+        let tier = self
+            .viewport
+            .map(crate::view::Breakpoint::of)
+            .unwrap_or_else(crate::view::Breakpoint::current);
+        crate::view::with_breakpoint(tier, || view.build_with(ctx))
     }
 
     /// The id of the overlay layer, or `None` when no portal node has needed one.
@@ -227,7 +277,7 @@ impl ViewEngine {
         ctx: &Context,
         create: &dyn Fn(&Node) -> Option<ObjectId>,
     ) -> ApplyReport {
-        let root = view.build_with(ctx);
+        let root = self.build_in_force(view, ctx);
         let mut report = ApplyReport::default();
 
         // Drop the previous tree entirely, so its controls do not linger as orphans and so
@@ -356,7 +406,7 @@ impl ViewEngine {
             self.mount_with(view, ctx, create);
             return DiffReport::default();
         };
-        let next = view.build_with(ctx);
+        let next = self.build_in_force(view, ctx);
         let lookup = |path: &[usize], _index: usize| self.id_of_path.get(path).copied();
         let report = diff(&previous, &next, &lookup);
 
@@ -1168,6 +1218,80 @@ mod tests {
         assert!(
             matches!(text, Some(CapabilityValue::String(s)) if s.contains("no_such_widget")),
             "the placeholder must name the missing widget: {text:?}"
+        );
+    }
+
+    /// A view whose shape depends on the build's size tier.
+    struct Adaptive;
+
+    impl View for Adaptive {
+        fn build(&self) -> Node {
+            Node::new("window")
+                .key("root")
+                .breakpoint(crate::view::Breakpoint::Compact, Node::new("phone_bar").key("phone"))
+                .breakpoint(crate::view::Breakpoint::Expanded, Node::new("sidebar").key("sidebar"))
+        }
+    }
+
+    /// The tier a build runs at must come from the **viewport the host reported**. Before
+    /// this existed nothing ever established it, so `Node::breakpoint` always saw the
+    /// `Expanded` default and the narrow subtree could never be selected.
+    #[test]
+    fn a_reported_viewport_selects_the_breakpoint_subtree() {
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+
+        // A phone-sized viewport: only the narrow branch may exist.
+        engine.set_viewport(crate::core::Size::new(360, 800));
+        engine.mount(&Adaptive, &ids.creator());
+        let root = engine.current().expect("mounted");
+        let keys: Vec<_> = root.children.iter().map(|c| c.key.clone()).collect();
+        assert_eq!(keys, vec![Some("phone".to_string())], "got {keys:?}");
+
+        // A desktop viewport: the wide branch replaces it.
+        engine.set_viewport(crate::core::Size::new(1400, 900));
+        engine.update(&Adaptive, &ids.creator());
+        let root = engine.current().expect("mounted");
+        let keys: Vec<_> = root.children.iter().map(|c| c.key.clone()).collect();
+        assert_eq!(keys, vec![Some("sidebar".to_string())], "got {keys:?}");
+    }
+
+    /// Without a reported viewport the engine must render **everything** the view declares,
+    /// which is the pre-existing behaviour and the honest answer for "no information".
+    #[test]
+    fn without_a_viewport_every_declared_branch_is_included() {
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+        assert_eq!(engine.viewport(), None, "nothing is assumed before a host reports");
+        engine.mount(&Adaptive, &ids.creator());
+        let root = engine.current().expect("mounted");
+        let keys: Vec<_> = root.children.iter().map(|c| c.key.clone()).collect();
+        assert_eq!(keys, vec![Some("sidebar".to_string())], "the widest tier renders all");
+    }
+
+    /// Crossing a tier boundary is a **structural** change, so the diff reports it as an
+    /// insert/remove rather than a property write. That is what makes the two layouts two
+    /// trees instead of one tree with two coordinate calculations.
+    #[test]
+    fn crossing_a_tier_boundary_is_reported_as_a_structural_change() {
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+        engine.set_viewport(crate::core::Size::new(360, 800));
+        engine.mount(&Adaptive, &ids.creator());
+        let phone_id = engine.layout().child_by_key(engine.layout().root(), "phone");
+        assert!(phone_id.is_some(), "the narrow branch was created");
+
+        engine.set_viewport(crate::core::Size::new(1400, 900));
+        let report = engine.update(&Adaptive, &ids.creator());
+        assert!(
+            !report.patches_of_kind("Insert").is_empty()
+                || !report.patches_of_kind("Remove").is_empty(),
+            "a tier change must insert/remove, got {:?}",
+            report.patches
+        );
+        assert!(
+            engine.layout().child_by_key(engine.layout().root(), "sidebar").is_some(),
+            "the wide branch exists after the change"
         );
     }
 }

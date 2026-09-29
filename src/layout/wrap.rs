@@ -62,6 +62,50 @@ impl Default for WrapLayout {
     }
 }
 
+/// The gap `SpaceBetween` / `SpaceAround` leave between two adjacent items, and the
+/// leading/trailing gap `SpaceAround` leaves at the ends.
+///
+/// # The model
+///
+/// Both alignments distribute only what is left **after** the base gap, which is what
+/// keeps the wrap decision and the drawing in agreement (`layout_horizontal` charges each
+/// pair the configured spacing when it decides where a line breaks).
+///
+/// * `SpaceBetween::gap` = base + leftover / (n - 1), no leading gap.
+/// * `SpaceAround::gap` = base + leftover / n, with a leading gap of
+///   `gap - base` divided by two, i.e. half a slot at each end.
+///   With `base == 0` this is the textbook spelling: `leftover / n` between items and
+///   `leftover / (2n)` before the first and after the last.
+///
+/// A one-item line has no pair to separate and no slot to distribute, so both alignments
+/// fall back to the base gap; without that the leading gap would swallow the whole
+/// leftover and shove the lone item across the line.
+struct Spacing {
+    /// Between two adjacent items.
+    gap: i32,
+}
+
+fn spacing_for(
+    alignment: WrapAlignment,
+    available: i32,
+    sizes_sum: i32,
+    item_count: usize,
+    base_gap: i32,
+) -> Spacing {
+    if item_count < 2 {
+        return Spacing { gap: base_gap };
+    }
+    let used = sizes_sum + (item_count as i32 - 1) * base_gap;
+    let leftover = available - used;
+    match alignment {
+        WrapAlignment::SpaceBetween => {
+            Spacing { gap: base_gap + leftover / (item_count as i32 - 1) }
+        }
+        WrapAlignment::SpaceAround => Spacing { gap: base_gap + leftover / item_count as i32 },
+        _ => Spacing { gap: base_gap },
+    }
+}
+
 impl WrapLayout {
     /// Create a new wrap layout with the given parameters.
     pub fn new(
@@ -157,11 +201,16 @@ impl WrapLayout {
             .map(|line| line.iter().map(|(_, s)| s.height as i32).max().unwrap_or(0))
             .collect();
 
-        let total_height: i32 =
+        // The sum of the row heights is the block's height only while it still fits; a
+        // single row of ten-pixel items in a two-hundred-pixel box leaves most of the box
+        // empty, not "the block is two hundred tall". Clamping keeps the centred case
+        // inside the box and leaves the end-aligned case pinned to the bottom.
+        let avail_h = content.height as i32;
+        let content_used_h: i32 =
             row_height.iter().sum::<i32>() + (lines.len() as i32 - 1).max(0) * gap;
+        let total_height: i32 = content_used_h.min(avail_h);
 
         // Apply vertical alignment to the whole content.
-        let avail_h = content.height as i32;
         let start_y = content.y
             + match self.alignment {
                 WrapAlignment::Start => 0,
@@ -174,34 +223,40 @@ impl WrapLayout {
         let mut cur_y = start_y;
 
         for (line_idx, line) in lines.iter().enumerate() {
-            let line_total_w: i32 = line.iter().map(|(_, s)| s.width as i32).sum::<i32>()
-                + (line.len() as i32 - 1).max(0) * gap;
+            // The wrap decision above charged every line the **configured** spacing, so
+            // the drawing must too, with the alignment adding whatever is left over -- see
+            // `spacing_between`. Deriving the gap from the alignment alone (the old shape)
+            // made `SpaceAround` paint a wider gap than the one the wrap assumed, so the
+            // items ran off the trailing edge.
+            let sizes_sum_w: i32 = line.iter().map(|(_, s)| s.width as i32).sum::<i32>();
+            let line_total_w = sizes_sum_w + (line.len() as i32 - 1).max(0) * gap;
             let max_h = row_height[line_idx];
 
+            let spacing = spacing_for(self.alignment, avail_w, sizes_sum_w, line.len(), gap);
             let start_x = match self.alignment {
                 WrapAlignment::Start => content.x,
                 WrapAlignment::Center => content.x + (avail_w - line_total_w).max(0) / 2,
                 WrapAlignment::End => content.x + (avail_w - line_total_w).max(0),
                 WrapAlignment::SpaceBetween => content.x,
-                WrapAlignment::SpaceAround => content.x,
-            };
-
-            let spacing = if line.len() > 1 {
-                match self.alignment {
-                    WrapAlignment::SpaceBetween => {
-                        (avail_w - line_total_w) / (line.len() as i32 - 1)
-                    }
-                    WrapAlignment::SpaceAround => (avail_w - line_total_w) / (line.len() as i32),
-                    _ => gap,
+                // `SpaceAround` gives every item an equal share of the leftover space, so
+                // the leading half-gap is the first thing it must paint. Without this it
+                // started flush at `content.x` and was indistinguishable from
+                // `SpaceBetween` with fewer gaps -- the items were spread, but nothing was
+                // "around" the first one, so the line was not centred in its run.
+                //
+                // The slack is measured from what will actually be painted (the pieces
+                // between the items included), not from `available - used`, so truncating
+                // the per-item gap cannot push the run off centre.
+                WrapAlignment::SpaceAround => {
+                    let painted = sizes_sum_w + (line.len() as i32 - 1) * spacing.gap;
+                    content.x + (avail_w - painted).max(0) / 2
                 }
-            } else {
-                gap
             };
 
             let mut cur_x = start_x;
             for (i, (wid, sz)) in line.iter().enumerate() {
                 if i > 0 {
-                    cur_x += spacing;
+                    cur_x += spacing.gap;
                 }
                 results.push((*wid, Rect::new(cur_x, cur_y, sz.width, sz.height)));
                 cur_x += sz.width as i32;
@@ -263,32 +318,30 @@ impl WrapLayout {
         let mut cur_x = start_x;
 
         for (col_idx, col) in cols.iter().enumerate() {
-            let col_total_h: i32 = col.iter().map(|(_, s)| s.height as i32).sum::<i32>()
-                + (col.len() as i32 - 1).max(0) * gap;
+            // Same shape as the horizontal path: the column is charged the configured
+            // spacing when the wrap decision is taken, so the gap painted here is that
+            // spacing plus whatever the alignment distributes on top.
+            let sizes_sum_h: i32 = col.iter().map(|(_, s)| s.height as i32).sum::<i32>();
+            let col_total_h = sizes_sum_h + (col.len() as i32 - 1).max(0) * gap;
             let max_w = col_width[col_idx];
 
+            let spacing = spacing_for(self.alignment, avail_h, sizes_sum_h, col.len(), gap);
             let start_y = match self.alignment {
                 WrapAlignment::Start => content.y,
                 WrapAlignment::Center => content.y + (avail_h - col_total_h).max(0) / 2,
                 WrapAlignment::End => content.y + (avail_h - col_total_h).max(0),
                 WrapAlignment::SpaceBetween => content.y,
-                WrapAlignment::SpaceAround => content.y,
-            };
-
-            let spacing = if col.len() > 1 {
-                match self.alignment {
-                    WrapAlignment::SpaceBetween => (avail_h - col_total_h) / (col.len() as i32 - 1),
-                    WrapAlignment::SpaceAround => (avail_h - col_total_h) / (col.len() as i32),
-                    _ => gap,
+                // See the horizontal path: `SpaceAround` also centres its run.
+                WrapAlignment::SpaceAround => {
+                    let painted = sizes_sum_h + (col.len() as i32 - 1) * spacing.gap;
+                    content.y + (avail_h - painted).max(0) / 2
                 }
-            } else {
-                gap
             };
 
             let mut cur_y = start_y;
             for (i, (wid, sz)) in col.iter().enumerate() {
                 if i > 0 {
-                    cur_y += spacing;
+                    cur_y += spacing.gap;
                 }
                 results.push((*wid, Rect::new(cur_x, cur_y, sz.width, sz.height)));
                 cur_y += sz.height as i32;
@@ -394,10 +447,7 @@ impl Layout for WrapLayout {
             // flowing row address their controls identically.
             widgets(
                 wid,
-                crate::layout::types::grow_to_min_touch_size(
-                    child_rect,
-                    context.min_touch_size,
-                ),
+                crate::layout::types::grow_to_min_touch_size(child_rect, context.min_touch_size),
             );
         }
     }
@@ -646,5 +696,110 @@ mod tests {
         });
 
         assert!(!called);
+    }
+
+    /// `SpaceAround` must leave **half** a slot before the first item and after the last,
+    /// unlike `SpaceBetween` which starts flush. They used to render identically (minus
+    /// one gap), which made the alignment's name a lie.
+    #[test]
+    fn space_around_leaves_a_half_gap_at_each_end() {
+        /// The alignment arithmetic is asserted on the raw slots, not on the rects that
+        /// `update` finally emits: `update` grows every child to the device's minimum touch
+        /// target, which would move the x coordinates and hide the very gap being tested.
+        fn x_positions(alignment: WrapAlignment) -> Vec<i32> {
+            let mut layout = WrapLayout::new(WrapDirection::Horizontal, alignment, 0, 0);
+            for id in [1, 2, 3] {
+                layout.add_widget(id, 0);
+                layout.set_child_size(id, Size::new(20, 10));
+            }
+            layout
+                .compute_rects(layout.content_rect(Rect::new(0, 0, 160, 40)))
+                .into_iter()
+                .map(|(_, rect)| rect.x)
+                .collect()
+        }
+
+        let around = x_positions(WrapAlignment::SpaceAround);
+        let between = x_positions(WrapAlignment::SpaceBetween);
+
+        // 160 wide, 3 items of 20, no configured spacing: 60 is used by the items and the
+        // remaining 100 is what each alignment distributes.
+        //   SpaceBetween: 2 shares of 50 -> the items sit at 0 / 70 / 140 (20 + 50).
+        //   SpaceAround:  3 slots of 33 -> a 33 gap between items (so a 53 pitch); the run
+        //                 measures 20*3 + 33*2 = 126 and is centred in the 160 box.
+        assert_eq!(between, vec![0, 70, 140], "SpaceBetween starts flush");
+        let pitch = around[1] - around[0];
+        assert_eq!(pitch, 53, "a whole slot between items");
+        assert_eq!(around[2] - around[1], pitch);
+        // Centred: the same space before the run as after it.
+        let lead = around[0];
+        let trail = 160 - (around[2] + 20);
+        assert_eq!(lead, trail, "the run is centred, not left-padded");
+        assert!(lead > 0, "SpaceAround leaves a gap before the first item");
+        assert_ne!(around, between, "SpaceAround and SpaceBetween are not the same alignment");
+    }
+
+    /// A `SpaceBetween`/`SpaceAround` run must stay **inside** its box: the wrap decision
+    /// charges every line the configured spacing, so the painted gap has to start from
+    /// that same base rather than redistributing the whole leftover.
+    #[test]
+    fn spacing_alignments_never_overflow_the_line() {
+        for alignment in [WrapAlignment::SpaceBetween, WrapAlignment::SpaceAround] {
+            // `spacing = 10`, `padding = 0`: the wrap decision charges each of the two
+            // gaps 10, leaving 80 to distribute, and the painted gap must agree.
+            let mut layout = WrapLayout::new(WrapDirection::Horizontal, alignment, 10, 0);
+            for id in [1, 2, 3] {
+                layout.add_widget(id, 0);
+                layout.set_child_size(id, Size::new(30, 10));
+            }
+            let out = layout.compute_rects(layout.content_rect(Rect::new(0, 0, 160, 40)));
+            assert_eq!(
+                out.iter().map(|(_, r)| r.width).collect::<Vec<_>>(),
+                vec![30, 30, 30],
+                "the child sizes are what the test set"
+            );
+            assert_eq!(out.len(), 3, "160 must hold three 30px items plus two 10px gaps");
+            let last = out.last().expect("three items").1;
+            assert!(
+                last.x >= 0 && last.x + last.width as i32 <= 160,
+                "{alignment:?} ran off the line: last item at {}..{}",
+                last.x,
+                last.x + last.width as i32
+            );
+        }
+    }
+
+    /// A one-item line has no pair to separate and no slot to distribute, so the item
+    /// keeps its normal slot; only `SpaceAround` centres it, which is what its name
+    /// promises. Critically it must not be **pushed** by a gap computed as if there were
+    /// two items, which is what a naive `leftover / (n + 1)` leading gap did.
+    #[test]
+    fn a_single_item_line_is_only_centred_not_pushed() {
+        for alignment in [WrapAlignment::SpaceBetween, WrapAlignment::SpaceAround] {
+            let mut layout = WrapLayout::new(WrapDirection::Horizontal, alignment, 10, 0);
+            layout.add_widget(1, 0);
+            layout.set_child_size(1, Size::new(30, 10));
+            let out = layout.compute_rects(layout.content_rect(Rect::new(0, 0, 160, 40)));
+            let x = out[0].1.x;
+            let expected = if alignment == WrapAlignment::SpaceAround { (160 - 30) / 2 } else { 0 };
+            assert_eq!(x, expected, "{alignment:?} placed a lone item at x={x}");
+        }
+    }
+
+    /// The vertical path mirrors the horizontal one: `SpaceAround` is symmetric around
+    /// the run in both axes.
+    #[test]
+    fn space_around_is_symmetric_in_the_vertical_direction() {
+        let mut layout = WrapLayout::new(WrapDirection::Vertical, WrapAlignment::SpaceAround, 0, 0);
+        for id in [1, 2, 3] {
+            layout.add_widget(id, 0);
+            layout.set_child_size(id, Size::new(10, 20));
+        }
+        let out = layout.compute_rects(layout.content_rect(Rect::new(0, 0, 40, 160)));
+
+        // The run is 3 items of 20 separated by 33, so 126 of the 160 is painted and the
+        // 34 that is left is split evenly: 17 above and 17 below.
+        assert_eq!(out[0].1.y, 17, "the run is centred vertically");
+        assert_eq!(160 - (out[2].1.y + 20), 17, "and symmetrically so");
     }
 }

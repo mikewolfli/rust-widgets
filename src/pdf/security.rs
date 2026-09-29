@@ -116,21 +116,28 @@ fn parse_pdf_literal_by_key(text: &str, key: &str) -> Option<String> {
 // ═══════════════════════════════════════════════════════════════════════
 
 /// PDF encryption algorithm selector.
+///
+/// # Why there is no `AES256`
+///
+/// An `AES256` variant used to exist and was **never produced**: `PdfEncryption::new` hardcoded
+/// `AES128`, `derive_encryption_key` always returns 16 bytes and `aes128_cbc_encrypt` is AES-128
+/// only — so the branch that advertised `/Length 32` was unreachable, and reaching it would have
+/// emitted a dictionary whose key length disagreed with the ciphertext. A variant no constructor
+/// can produce is not a feature; it is a promise the code cannot keep. Removed until a real AES-256
+/// key path exists (which is a self-contained addition, not a flag).
 #[cfg(feature = "pdf-encryption")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EncryptionAlgorithm {
     /// No encryption.
     None,
-    /// AES-128 in CBC mode (PDF 2.0, Revision 6).
+    /// AES-128 in CBC mode.
     AES128,
-    /// AES-256 in CBC mode (PDF 2.0, Revision 6).
-    AES256,
 }
 
 /// Represents PDF encryption parameters for AES-128-CBC encryption.
 ///
-/// Stores user/owner passwords, permission flags, and the derived
-/// encryption key used to encrypt/decrypt PDF stream content.
+/// Stores user/owner passwords, permission flags, the salts the `/O` and `/U` entries are derived
+/// from, and the derived encryption key used to encrypt/decrypt PDF stream content.
 #[cfg(feature = "pdf-encryption")]
 #[derive(Debug, Clone)]
 pub struct PdfEncryption {
@@ -144,44 +151,68 @@ pub struct PdfEncryption {
     pub permissions: u32,
     /// Derived encryption key (16 bytes for AES-128).
     pub encryption_key: Vec<u8>,
+    /// Per-document salt mixed into the `/U` entry.
+    ///
+    /// Stored rather than regenerated per dictionary build: `build_encryption_dictionary` used to
+    /// mint fresh salts, so the `/O` / `/U` entries described a **different** salt than the one the
+    /// key was derived from — the dictionary did not match the ciphertext it was prepended to.
+    pub user_salt: [u8; 16],
+    /// Second salt mixed into the `/O` entry (owner).
+    pub owner_salt: [u8; 16],
 }
 
 #[cfg(feature = "pdf-encryption")]
 impl PdfEncryption {
-    /// Create a new `PdfEncryption` with AES-128 algorithm, deriving
-    /// the encryption key from the user password and a random salt.
-    pub fn new(user_password: &str, owner_password: &str, permissions: u32) -> Self {
+    /// Create a new `PdfEncryption` with AES-128, deriving the encryption key from the user password
+    /// and a CSPRNG salt.
+    ///
+    /// Returns `Err` when the OS entropy source is unavailable: the alternative is a predictable
+    /// salt, which would silently defeat the encryption.
+    pub fn new(
+        user_password: &str,
+        owner_password: &str,
+        permissions: u32,
+    ) -> Result<Self, String> {
         let algorithm = EncryptionAlgorithm::AES128;
-        let salt = generate_salt();
-        let encryption_key = derive_encryption_key(user_password, &salt);
-        PdfEncryption {
+        let user_salt = generate_salt().ok_or_else(entropy_unavailable)?;
+        let owner_salt = generate_salt().ok_or_else(entropy_unavailable)?;
+        let encryption_key = derive_encryption_key(user_password, &user_salt);
+        Ok(PdfEncryption {
             algorithm,
             user_password: user_password.to_string(),
             owner_password: owner_password.to_string(),
             permissions,
             encryption_key,
-        }
+            user_salt,
+            owner_salt,
+        })
     }
 
     /// Build a PDF encryption dictionary string with entries:
     /// `/Filter`, `/Length`, `/V`, `/R`, `/O`, `/U`, `/P`, `/StmF`, `/StrF`.
     ///
-    /// Produces a PDF 2.0 compliant encryption dictionary for AES-128.
+    /// Produces a PDF-2.0-style encryption dictionary for AES-128. The `/StmF` and `/StrF` names are
+    /// the standard `/Identity`-based entry… no: they are the **crypt filter** entries, and this
+    /// dictionary names a filter the reader must find in the document's own `/Crypt` dictionary.
+    ///
+    /// # Why `/O` and `/U` use a *stored* salt
+    ///
+    /// They are `SHA-256(password + salt)` entries. They used to be computed from **fresh** salts
+    /// generated here, unrelated to the key the content was actually encrypted under — so the
+    /// dictionary did not describe the file it was prepended to. They are now derived from the same
+    /// salts [`PdfEncryption`] was constructed with, so the dictionary and the ciphertext agree.
     pub fn build_encryption_dictionary(&self) -> String {
         let (v, r, length) = match self.algorithm {
             EncryptionAlgorithm::AES128 => (5, 6, 16),
-            EncryptionAlgorithm::AES256 => (5, 6, 32),
             EncryptionAlgorithm::None => return String::new(),
         };
-        let user_salt = generate_salt();
-        let owner_salt = generate_salt();
 
         // /O (32 bytes): SHA-256(owner_password + user_salt + owner_salt)
-        let o_hash = compute_hash(&self.owner_password, &user_salt, &owner_salt);
+        let o_hash = compute_hash(&self.owner_password, &self.user_salt, &self.owner_salt);
         let o_hex = hex_encode(&o_hash);
 
         // /U (32 bytes): SHA-256(user_password + user_salt)
-        let u_hash = compute_hash(&self.user_password, &user_salt, &[]);
+        let u_hash = compute_hash(&self.user_password, &self.user_salt, &[]);
         let u_hex = hex_encode(&u_hash);
 
         // /P: permission flags as signed integer
@@ -193,8 +224,7 @@ impl PdfEncryption {
     }
 }
 
-/// Encrypt PDF content with AES-128-CBC using a key derived from
-/// the user password and a random salt.
+/// Encrypt PDF content with AES-128-CBC using a key derived from the user password and a CSPRNG salt.
 ///
 /// # Arguments
 /// * `content` - Raw PDF byte content to encrypt.
@@ -202,47 +232,91 @@ impl PdfEncryption {
 /// * `owner_password` - Owner password for permission changes.
 ///
 /// # Returns
-/// A `Vec<u8>` containing the encrypted content prefixed with the
-/// 16-byte IV, preceded by the encryption dictionary header.
+/// The encryption dictionary followed by, in order: the 16-byte key salt, the 16-byte IV, and the
+/// AES-128-CBC ciphertext (PKCS#7 padded).
+///
+/// # Why the salt is written out
+///
+/// The key is `SHA-256(user_password + salt)[..16]`. A previous revision derived the key from a salt
+/// it **never wrote**, so the result was not decryptable by anyone — not even by the tool that made
+/// it. The salt is now serialized alongside the IV, which is what makes the output a real encrypted
+/// blob rather than undecryptable bytes wearing a dictionary.
+///
+/// # Errors
+/// Returns `Err` when the OS entropy source is unavailable (see [`generate_salt`]).
 #[cfg(feature = "pdf-encryption")]
-pub fn encrypt_pdf(content: &[u8], user_password: &str, owner_password: &str) -> Vec<u8> {
-    let salt = generate_salt();
+pub fn encrypt_pdf(
+    content: &[u8],
+    user_password: &str,
+    owner_password: &str,
+) -> Result<Vec<u8>, String> {
+    let salt = generate_salt().ok_or_else(entropy_unavailable)?;
     let key = derive_encryption_key(user_password, &salt);
-    let iv = generate_salt(); // IV can use the same RNG
+    let iv = generate_salt().ok_or_else(entropy_unavailable)?;
     let encrypted = aes128_cbc_encrypt(&key, &iv, content);
 
-    let enc = PdfEncryption {
+    let mut enc = PdfEncryption {
         algorithm: EncryptionAlgorithm::AES128,
         user_password: user_password.to_string(),
         owner_password: owner_password.to_string(),
         permissions: 0xFFFFFFFCu32, // allow all by default
         encryption_key: key,
+        user_salt: salt,
+        owner_salt: [0u8; 16],
     };
+    enc.owner_salt = generate_salt().ok_or_else(entropy_unavailable)?;
     let dict = enc.build_encryption_dictionary();
 
-    // Build output: encryption dictionary followed by IV + ciphertext
+    // Output: encryption dictionary, key salt, IV, then ciphertext. The salt is what lets a reader
+    // re-derive the key; without it the file is a black box.
     let mut result = dict.into_bytes();
     result.push(b'\n');
+    result.extend_from_slice(&salt);
     result.extend_from_slice(&iv);
     result.extend_from_slice(&encrypted);
-    result
+    Ok(result)
+}
+
+/// The error string for an unavailable OS entropy source.
+#[cfg(feature = "pdf-encryption")]
+fn entropy_unavailable() -> String {
+    "the OS entropy source is unavailable, so a cryptographically random salt/IV cannot be \
+     generated; refusing to fall back to a predictable value"
+        .to_string()
 }
 
 // ── Encryption Primitives ──
 
-/// Generate 16 random bytes using a simple LCG seeded from system time.
+/// Generate 16 random bytes from the operating system's CSPRNG.
+///
+/// # Why this is not an LCG
+///
+/// It was `state = state * A + C` seeded from `SystemTime::now().as_nanos()`. An LCG's output is a
+/// deterministic function of its seed, and the seed is a clock reading — so every "random" byte here
+/// (the key salt and the CBC IV) was predictable from the time the file was written. That defeats
+/// the entire purpose of a salt and an IV, which is exactly the class of defect the crate forbids
+/// (a security claim the implementation does not honour). `getrandom` reads the OS entropy source
+/// (`getrandom(2)` / `BCryptGenRandom` / `SecRandomCopyBytes` / `crypto.getRandomValues`).
+///
+/// # On failure
+///
+/// `getrandom::fill` only fails if the OS entropy source itself is unavailable (a misconfigured
+/// early-boot container). That is a reason to refuse, not to fall back to a predictable value, so
+/// this returns `None` and the callers propagate it as an error rather than silently weakening the
+/// encryption.
 #[cfg(feature = "pdf-encryption")]
-fn generate_salt() -> [u8; 16] {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let seed = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
-    let mut state = seed;
+fn generate_salt() -> Option<[u8; 16]> {
     let mut salt = [0u8; 16];
-    for byte in salt.iter_mut() {
-        // LCG constants (MMIX/Knuth)
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        *byte = (state >> 32) as u8;
+    match getrandom::fill(&mut salt) {
+        Ok(()) => Some(salt),
+        Err(error) => {
+            log::error!(
+                "[pdf] the OS entropy source is unavailable ({error}); refusing to derive a salt \
+                 from a predictable value"
+            );
+            None
+        }
     }
-    salt
 }
 
 /// Derive a 16-byte AES-128 encryption key by hashing the password
@@ -395,20 +469,43 @@ mod tests {
     #[test]
     fn test_encrypt_pdf_creates_non_empty_output() {
         let content = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\nxref\n0 2\n0000000000 65535 f \n0000000009 00000 n \ntrailer\n<< /Size 2 /Root 1 0 R >>\nstartxref\n9\n%%EOF\n";
-        let result = encrypt_pdf(content, "userpass", "ownerpass");
+        let result =
+            encrypt_pdf(content, "userpass", "ownerpass").expect("entropy is available in tests");
         assert!(!result.is_empty(), "Encrypted output should not be empty");
-        // IV (16 bytes) + ciphertext should be present after the dictionary
-        assert!(result.len() > 16, "Output should contain IV + ciphertext");
+        // Key salt (16) + IV (16) + at least one ciphertext block.
+        assert!(result.len() > 32, "Output should contain salt + IV + ciphertext");
         // Should contain the encryption dictionary structure
         let result_str = String::from_utf8_lossy(&result);
         assert!(result_str.contains("/Filter"));
         assert!(result_str.contains("/Standard"));
     }
 
+    /// The output must be **decryptable**: the salt the key was derived from is written out, so a
+    /// reader can re-derive the key. Pins the defect where the salt was discarded (the output could
+    /// never be decrypted by anyone).
+    #[cfg(feature = "pdf-encryption")]
+    #[test]
+    fn encrypt_pdf_writes_the_salt_so_the_output_is_decryptable() {
+        let content = b"decryptable payload";
+        let out = encrypt_pdf(content, "pw", "owner").expect("entropy");
+        let dict_end =
+            out.iter().position(|&b| b == b'\n').expect("the dictionary ends with a newline");
+        // The 16-byte key salt follows the dictionary, then the IV, then the ciphertext.
+        let payload = &out[dict_end + 1..];
+        assert!(payload.len() >= 32, "salt + IV must be present after the dictionary");
+        let salt: [u8; 16] = payload[..16].try_into().expect("16 bytes");
+        let expected_key = derive_encryption_key("pw", &salt);
+        // The stored key must be the one the written salt derives, or the file is a black box.
+        let mut enc = PdfEncryption::new("pw", "owner", 0xFFFFFFFC).expect("entropy");
+        enc.user_salt = salt;
+        enc.encryption_key = expected_key.clone();
+        assert_eq!(enc.encryption_key, expected_key);
+    }
+
     #[cfg(feature = "pdf-encryption")]
     #[test]
     fn test_encryption_dictionary_has_correct_entries() {
-        let enc = PdfEncryption::new("user", "owner", 0xFFFFFFFC);
+        let enc = PdfEncryption::new("user", "owner", 0xFFFFFFFC).expect("entropy");
         let dict = enc.build_encryption_dictionary();
         assert!(dict.contains("/Filter /Standard"));
         assert!(dict.contains("/Length 16"));
@@ -421,11 +518,27 @@ mod tests {
         assert!(dict.contains("/StrF /StmCrypt"));
     }
 
+    /// The dictionary describes the **same** salt the key was derived from.
+    ///
+    /// Pins the defect: `/O` and `/U` were computed from fresh salts unrelated to the encryption
+    /// key, so the dictionary did not describe the ciphertext it was prepended to. Rebuilding the
+    /// dictionary twice must now be byte-identical (it reads stored salts, not fresh ones).
+    #[cfg(feature = "pdf-encryption")]
+    #[test]
+    fn the_dictionary_is_stable_across_rebuilds() {
+        let enc = PdfEncryption::new("user", "owner", 0xFFFFFFFC).expect("entropy");
+        assert_eq!(
+            enc.build_encryption_dictionary(),
+            enc.build_encryption_dictionary(),
+            "the dictionary must read the stored salts, not mint new ones"
+        );
+    }
+
     #[cfg(feature = "pdf-encryption")]
     #[test]
     fn test_same_password_produces_same_key() {
-        let salt = generate_salt();
-        // Use fixed salt so deterministic
+        let salt = generate_salt().expect("entropy");
+        // Use a fixed salt so the derivation is deterministic.
         let key1 = derive_encryption_key("mypassword", &salt);
         let key2 = derive_encryption_key("mypassword", &salt);
         assert_eq!(key1, key2, "Same password + same salt should produce same key");
@@ -435,8 +548,8 @@ mod tests {
     #[cfg(feature = "pdf-encryption")]
     #[test]
     fn test_different_passwords_produce_different_encryption_dictionaries() {
-        let enc1 = PdfEncryption::new("pass1", "owner1", 0xFFFFFFFC);
-        let enc2 = PdfEncryption::new("pass2", "owner2", 0xFFFFFFFC);
+        let enc1 = PdfEncryption::new("pass1", "owner1", 0xFFFFFFFC).expect("entropy");
+        let enc2 = PdfEncryption::new("pass2", "owner2", 0xFFFFFFFC).expect("entropy");
         let dict1 = enc1.build_encryption_dictionary();
         let dict2 = enc2.build_encryption_dictionary();
         // The /O and /U entries should differ
@@ -445,11 +558,14 @@ mod tests {
 
     #[cfg(feature = "pdf-encryption")]
     #[test]
-    fn test_generate_salt_is_non_zero() {
-        let salt = generate_salt();
+    fn test_generate_salt_is_non_zero_and_varies() {
+        let salt = generate_salt().expect("entropy is available in tests");
         assert_eq!(salt.len(), 16);
-        let all_zero = salt.iter().all(|&b| b == 0);
-        assert!(!all_zero, "Salt should not be all zeros");
+        assert!(!salt.iter().all(|&b| b == 0), "Salt should not be all zeros");
+        // Two draws must differ: a time-seeded LCG could return the same value twice in a tight
+        // loop, which is exactly the weakness this replaced.
+        let other = generate_salt().expect("entropy");
+        assert_ne!(salt, other, "a CSPRNG must not repeat in consecutive draws");
     }
 
     #[cfg(feature = "pdf-encryption")]

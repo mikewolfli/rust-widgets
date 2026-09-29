@@ -861,8 +861,17 @@ impl EventHandler for TimeEdit {
             }
             #[cfg(feature = "touch")]
             Event::Tap { pos } => {
-                if self.clock_popup && self.pick_at(*pos) {
-                    return;
+                if self.clock_popup {
+                    // Same two-part answer and same near-miss rule as the mouse path above: a tap that
+                    // lands on a ring sets that hand and keeps the face open, and a tap on the face that
+                    // is **not** on a ring is absorbed rather than dismissing the picker. Diverging here
+                    // would mean the identical intent discarded the edit on touch but not on mouse.
+                    if self.pick_at(*pos) {
+                        return;
+                    }
+                    if self.clock_rect().contains_point(*pos) {
+                        return;
+                    }
                 }
                 if self.geometry().contains_point(*pos) {
                     self.toggle_clock_popup();
@@ -1648,6 +1657,37 @@ mod tests {
         assert_eq!(editor.time(), before, "a click on the hub changes nothing");
     }
 
+    /// A tap on the face that misses a ring is *absorbed*, exactly as a mouse press is.
+    ///
+    /// Pins the defect: the `Tap` arm called `pick_at` but, unlike the mouse arm, had no
+    /// `clock_rect` guard, so a near-miss tap on the face fell through to the
+    /// "outside both -> dismiss" branch and closed the picker -- discarding the edit on
+    /// touch while the identical mouse gesture kept it.
+    #[cfg(feature = "touch")]
+    #[test]
+    fn a_tap_that_misses_a_ring_keeps_the_clock_open() {
+        use crate::core::Point;
+        use crate::event::{Event, EventHandler};
+
+        let mut editor = TimeEdit::new(Rect::new(0, 0, 200, 30));
+        editor.set_clock_popup(true);
+        editor.set_time(Time::new(9, 0, 0, 0));
+        let centre = editor.clock_centre();
+
+        // The hub is inside the face but belongs to no ring: a miss.
+        assert!(
+            editor.clock_rect().contains_point(centre),
+            "the hub is inside the face, so this is the near-miss case"
+        );
+        editor.handle_event(&Event::Tap { pos: centre });
+        assert!(editor.clock_popup(), "a near-miss tap on the face must not dismiss the picker");
+        assert_eq!(editor.time(), Time::new(9, 0, 0, 0), "and it must not change the time");
+
+        // A tap genuinely outside the face still closes it, which is what a popup owes its user.
+        editor.handle_event(&Event::Tap { pos: Point::new(9000, 9000) });
+        assert!(!editor.clock_popup(), "a tap outside the face dismisses it");
+    }
+
     /// Clicking the field toggles the face; Escape closes it without committing.
     #[test]
     fn the_field_opens_the_clock_and_escape_closes_it() {
@@ -1671,7 +1711,7 @@ mod tests {
         editor.handle_event(&Event::MousePress {
             pos: crate::core::Point::new(9000, 9000),
             button: 1,
-            modifiers: 0
+            modifiers: 0,
         });
         assert!(!editor.clock_popup(), "a press outside dismisses the face");
     }

@@ -333,25 +333,56 @@ impl Font {
         font.is_valid().then_some(font)
     }
     /// Creates a font with modified size.
+    ///
+    /// The text-scaling fields (`letter_spacing`, `word_spacing`, `line_height`) are **carried over**.
+    /// They formerly were not — every one of these deriving constructors rebuilt through
+    /// `with_weight`, which starts with no tracking and no leading, so a font that had a leading set
+    /// lost it as soon as anything asked for a derived font. `theme/manager.rs` derives on every
+    /// resolution (`theme.fonts.body.clone().scaled(effective_text_scale())`), so a theme's configured
+    /// body leading disappeared exactly when a host set a text scale.
     pub fn with_size(&self, size: f32) -> Self {
-        Self::with_weight(&self.family, size, self.weight, self.italic)
+        self.derived(size, self.weight, self.italic)
     }
-    /// Creates a font with modified weight.
+    /// Creates a font with modified weight. The text-scaling fields are carried over; see
+    /// [`Self::with_size`] for why that matters.
     pub fn with_weight_value(&self, weight: u16) -> Self {
-        Self::with_weight(&self.family, self.size, weight, self.italic)
+        self.derived(self.size, weight, self.italic)
     }
-    /// Creates a font with bold style.
+    /// Creates a font with bold style. The text-scaling fields are carried over; see
+    /// [`Self::with_size`] for why that matters.
     pub fn with_bold(&self, bold: bool) -> Self {
         let weight = if bold { Self::BOLD_WEIGHT } else { Self::REGULAR_WEIGHT };
-        Self::with_weight(&self.family, self.size, weight, self.italic)
+        self.derived(self.size, weight, self.italic)
     }
-    /// Creates a font with italic style.
+    /// Creates a font with italic style. The text-scaling fields are carried over; see
+    /// [`Self::with_size`] for why that matters.
     pub fn with_italic(&self, italic: bool) -> Self {
-        Self::with_weight(&self.family, self.size, self.weight, italic)
+        self.derived(self.size, self.weight, italic)
     }
-    /// Creates a font with modified family.
+    /// Creates a font with modified family. The text-scaling fields are carried over; see
+    /// [`Self::with_size`] for why that matters.
     pub fn with_family(&self, family: impl Into<String>) -> Self {
-        Self::with_weight(family, self.size, self.weight, self.italic)
+        self.derived(self.size, self.weight, self.italic).with_family_name(family)
+    }
+
+    /// Rebuilds this font at `weight`/`italic`, **preserving the text-scaling fields**.
+    ///
+    /// Every deriving constructor above funnels through here rather than through
+    /// [`Font::with_weight`], which cannot carry them: it is the *constructor* a caller uses to build
+    /// a fresh font from a family name, so it has no prior value to preserve. Keeping the two paths
+    /// separate is what stops the drop from being reintroduced one constructor at a time.
+    fn derived(&self, size: f32, weight: u16, italic: bool) -> Self {
+        let mut derived = Font::with_weight(&self.family, size, weight, italic);
+        derived.letter_spacing = self.letter_spacing;
+        derived.word_spacing = self.word_spacing;
+        derived.line_height = self.line_height;
+        derived
+    }
+
+    /// [`Self::with_family`]'s body, so the caller above can keep one funnel.
+    fn with_family_name(mut self, family: impl Into<String>) -> Self {
+        self.family = family.into();
+        self
     }
     /// Returns font size as i32 (rounded and clamped to the signed range).
     pub fn size_i32(&self) -> i32 {
@@ -367,19 +398,21 @@ impl Font {
         }
         self.size.round().clamp(0.0, u32::MAX as f32) as u32
     }
-    /// Creates a larger font by scaling the size.
+    /// Creates a larger font by scaling the size. The text-scaling fields are carried over; see
+    /// [`Self::with_size`] for why that matters.
     pub fn scaled(&self, scale: f32) -> Self {
         if !scale.is_finite() || scale <= 0.0 {
             return self.clone();
         }
-        Self::with_weight(&self.family, self.size * scale, self.weight, self.italic)
+        self.with_size(self.size * scale)
     }
-    /// Creates a smaller font by scaling the size.
+    /// Creates a smaller font by scaling the size. The text-scaling fields are carried over; see
+    /// [`Self::with_size`] for why that matters.
     pub fn scaled_down(&self, scale: f32) -> Self {
         if !scale.is_finite() || scale <= 0.0 {
             return self.clone();
         }
-        Self::with_weight(&self.family, self.size / scale, self.weight, self.italic)
+        self.with_size(self.size / scale)
     }
     /// Returns whether the font is bold (weight >= 700).
     pub fn is_bold(&self) -> bool {
@@ -862,5 +895,59 @@ mod tests {
             context.measure_text("a", &plain).width,
             "one cluster has no inter-cluster gap to pay"
         );
+    }
+
+    /// Every font-*deriving* constructor keeps the text-scaling fields.
+    ///
+    /// # The defect this pins
+    ///
+    /// `with_size` / `with_weight_value` / `with_bold` / `with_italic` / `with_family` / `scaled` /
+    /// `scaled_down` all rebuilt the font through `with_weight`, which starts with no tracking and no
+    /// leading. A font that had `line_height(24.0)` set therefore **lost it** the moment anything
+    /// asked for a derived font — which the theme layer does on every resolution:
+    /// `theme.fonts.body.clone().scaled(effective_text_scale())` in `theme/manager.rs`. So a theme
+    /// that configured its body leading for a 1.5-em reading measure got 1.0 em as soon as the host
+    /// set a text scale, and the two spellings of "the same font" disagreed.
+    ///
+    /// # Why the assertion is on all seven
+    ///
+    /// They are one defect repeated: each is a `Self::with_weight(..)` call that drops the fields.
+    /// Testing one would let the next person fix only that one.
+    #[test]
+    fn a_derived_font_keeps_its_tracking_and_leading() {
+        let base = Font::builder()
+            .family("Monospace")
+            .size(14.0)
+            .weight(400)
+            .letter_spacing(1.5)
+            .word_spacing(3.0)
+            .line_height(21.0)
+            .build();
+
+        // (name, derived) for every constructor that produces a *font from a font*.
+        let derived: [(&str, Font); 7] = [
+            ("with_size", base.with_size(20.0)),
+            ("with_weight_value", base.with_weight_value(700)),
+            ("with_bold", base.with_bold(true)),
+            ("with_italic", base.with_italic(true)),
+            ("with_family", base.with_family("Inter")),
+            ("scaled", base.scaled(1.5)),
+            ("scaled_down", base.scaled_down(1.5)),
+        ];
+        for (name, font) in &derived {
+            assert_eq!(
+                font.letter_spacing(),
+                base.letter_spacing(),
+                "{name} dropped the letter spacing"
+            );
+            assert_eq!(font.word_spacing(), base.word_spacing(), "{name} dropped the word spacing");
+            assert_eq!(font.line_height(), base.line_height(), "{name} dropped the line height");
+        }
+
+        // And the scaled one really did scale, so the assertion above is not vacuous.
+        assert!((derived[5].1.size() - 21.0).abs() < 1e-6, "scaled(1.5) of 14 is 21");
+        // While an invalid scale is a no-op that still preserves the fields.
+        assert_eq!(base.scaled(f32::NAN).size(), base.size());
+        assert_eq!(base.scaled_down(0.0).letter_spacing(), base.letter_spacing());
     }
 }

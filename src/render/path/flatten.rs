@@ -27,12 +27,17 @@
 //!
 //! ```text
 //! device_x = origin_x + design_x * scale
-//! device_y = origin_y + (y_max + design_y) * scale     // y_max = 0, so (-960..0] -> [0..960)
+//! device_y = origin_y + (design_y + grid) * scale   // design y is negative-up: -grid is the top
 //! scale    = size / grid
 //! ```
 //!
+//! This is the standard SVG convention: a `viewBox="0 -grid grid grid"` places design y = -grid at
+//! the box's **top** and y = 0 at its **bottom**, so the mapping is the translation that moves the
+//! design origin onto the box's bottom edge. The `grid` term is the caller's own grid, never a
+//! constant — a 24-unit outline (Lucide, Tabler, Feather) must not be offset by 960.
+//!
 //! The path data stays a verbatim copy of upstream's `d` under this mapping (see `NOTICE`): the
-//! flip is a property of the axes, not a rewrite of the outline.
+//! translation is a property of the axes, not a rewrite of the outline.
 
 use crate::compat::Vec;
 use crate::core::Point;
@@ -73,6 +78,8 @@ pub struct IconPlacement {
     pub origin_y: f32,
     /// Device pixels per grid unit. `size / grid`.
     pub scale: f32,
+    /// The design grid this placement maps from, so the y translation can use it.
+    pub grid: f32,
 }
 
 impl IconPlacement {
@@ -81,19 +88,25 @@ impl IconPlacement {
     /// A non-positive `size` or `grid` yields a zero scale, which flattens every point onto the
     /// origin — a degenerate box, not a panic.
     pub fn new(x: i32, y: i32, size: f32, grid: u16) -> Self {
-        let scale = if grid == 0 { 0.0 } else { size / f32::from(grid) };
-        Self { origin_x: x as f32, origin_y: y as f32, scale }
+        let grid = f32::from(grid);
+        let scale = if grid == 0.0 { 0.0 } else { size / grid };
+        Self { origin_x: x as f32, origin_y: y as f32, scale, grid }
     }
 
     /// Maps one grid point to device space.
+    ///
+    /// Design y is negative-up: the grid's `viewBox` is `0 -grid grid grid`, so a design `y` runs
+    /// `-grid..0` with `-grid` on the box's **top** edge. Device y runs `0..grid` downward from the
+    /// top, so the mapping is a **translation by the grid's height**: `y = -grid` becomes `0` (top)
+    /// and `y = 0` becomes `grid` (bottom).
+    ///
+    /// The translation must use the caller's own `grid`, not a constant: a host icon on a 24-unit
+    /// viewBox (`register_icon_on_grid(.., 24)`) would otherwise be pushed `960 - 24` units below
+    /// the box it was asked to draw in.
     fn map(&self, x: f32, y: f32) -> Pt {
-        Pt::new(self.origin_x + x * self.scale, self.origin_y + (y + GRID_TOP) * self.scale)
+        Pt::new(self.origin_x + x * self.scale, self.origin_y + (y + self.grid) * self.scale)
     }
 }
-
-/// The grid's upper y bound as a float, so `y + GRID_TOP` has the type the mapping wants without a
-/// narrowing cast at the call site. Material Symbols' grid is `0 -960 960 960`.
-const GRID_TOP: f32 = 960.0;
 
 /// A device-space point at flattening precision.
 ///
@@ -227,6 +240,15 @@ pub fn flatten_paths(
             // A `Z` closes the contour implicitly on the fill side, so the closing edge is not
             // pushed — the end/start pair is what the caller's fill already joins. The contour is
             // recorded for an open subpath too, because SVG fills one by implicitly closing it.
+            //
+            // A contour that ends back on its own start has nothing to close, so the repeated last
+            // vertex is dropped here rather than passed on: a scanline fill sees the same polygon,
+            // and a caller that *emits* the contour (the fallback generator, `icon_census.txt`)
+            // records the outline once instead of once plus a duplicate. Only an exact repeat is
+            // dropped, because `M0 0L10 0L0 0` is a real (if degenerate) outline.
+            if cursor > start_index && points[cursor - 1] == points[start_index] {
+                cursor -= 1;
+            }
             if cursor - start_index < 3 {
                 // Fewer than three vertices bound no area; drop the contour rather than hand the
                 // fill a degenerate one. The points stay in the buffer, which is harmless.

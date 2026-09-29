@@ -1191,6 +1191,26 @@ pub fn show_widget(widget_id: crate::core::ObjectId) {
 pub fn hide_widget(widget_id: crate::core::ObjectId) {
     control_backend::get_control_backend().set_widget_visible(widget_id, false);
 }
+
+/// Announce that a widget was **closed**, by emitting its
+/// [`BaseWidget::closed`](crate::widget::BaseWidget::closed) signal.
+///
+/// # Why this is the join
+///
+/// A closeable control's own `close`/`dismiss` path and the handle layer's `close` are two entry
+/// points to one lifecycle fact. Both must reach the same signal, or a handler registered through
+/// one route misses a close produced by the other. This emits the base signal, so every
+/// `on_close`/`closed` binding fires regardless of which path closed the control.
+///
+/// Returns `true` when a mounted widget received it. A `false` means the id addresses no live
+/// widget — the same honest answer [`hide_widget`] gives by doing nothing observable.
+#[cfg(not(alloc_frugal))]
+pub fn close_widget(widget_id: crate::core::ObjectId) -> bool {
+    crate::widget::runtime::with_widget_mut(widget_id, |widget| {
+        widget.base().closed.emit();
+    })
+    .is_some()
+}
 /// Set geometry of a widget.
 #[cfg(not(alloc_frugal))]
 pub fn set_widget_geometry(

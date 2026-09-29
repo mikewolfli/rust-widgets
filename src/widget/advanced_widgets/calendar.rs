@@ -137,6 +137,20 @@ impl Calendar {
     pub fn display_month(&self) -> chrono::NaiveDate {
         self.display_month
     }
+
+    /// Sets the month shown in the grid **without** changing the selected date.
+    ///
+    /// This is the counterpart to [`Calendar::show_next_month`] and friends for a
+    /// caller that wants to point the grid at an arbitrary month. The selected
+    /// date is left untouched (and is therefore not emitted on
+    /// `selection_changed`).
+    pub fn set_display_month(&mut self, date: chrono::NaiveDate) {
+        if self.display_month == date {
+            return;
+        }
+        self.display_month = date;
+        self.base.request_redraw();
+    }
     /// Sets selected date and syncs the displayed month to match.
     pub fn set_selected_date(&mut self, date: chrono::NaiveDate) {
         if self.selected_date != date && date >= self.minimum_date && date <= self.maximum_date {
@@ -256,6 +270,10 @@ impl Calendar {
         }
     }
     /// Returns the current date format string.
+    ///
+    /// The pattern uses `chrono`'s strftime specifiers and is applied to the
+    /// navigation-bar title. A pattern `chrono` cannot resolve falls back to the
+    /// `"<Month> <Year>"` rendering rather than panicking the paint pass.
     pub fn date_format(&self) -> &str {
         &self.date_format
     }
@@ -264,6 +282,26 @@ impl Calendar {
     pub fn set_date_format(&mut self, format: String) {
         self.date_format = format;
         self.base.request_redraw();
+    }
+
+    /// Renders `display_month` through this calendar's `date_format` pattern.
+    ///
+    /// This is what makes `date_format` a live property: it was stored, published
+    /// and settable from the day it was added, but `draw` painted a hardcoded
+    /// `"<Month> <Year>"`, so setting it changed nothing on screen.
+    ///
+    /// `chrono`'s `NaiveDate::format(...).to_string()` panics on an unrecognised
+    /// specifier, so the pattern is validated with `StrftimeItems` first. An
+    /// invalid pattern falls back to the `"<Month> <Year>"` rendering (the
+    /// previous, always-valid paint) rather than crashing the draw pass.
+    fn formatted_month_title(&self) -> String {
+        use chrono::format::{Item, StrftimeItems};
+        let valid = StrftimeItems::new(&self.date_format).all(|item| !matches!(item, Item::Error));
+        if valid {
+            self.display_month.format(&self.date_format).to_string()
+        } else {
+            format!("{} {}", self.display_month.format("%B"), self.display_month.year())
+        }
     }
 
     /// Layout constants.
@@ -781,8 +819,7 @@ impl Draw for Calendar {
                 (band_right - left_edge).max(0) as u32,
                 title_line.height,
             );
-            let title =
-                format!("{} {}", self.display_month.format("%B"), self.display_month.year());
+            let title = self.formatted_month_title();
             context.draw_text_fitted(
                 title_bounds,
                 &title,
@@ -1305,6 +1342,23 @@ mod tests {
         assert_eq!(cal.date_format(), "%Y-%m-%d");
         cal.set_date_format("%d/%m/%Y".to_string());
         assert_eq!(cal.date_format(), "%d/%m/%Y");
+    }
+
+    #[test]
+    fn date_format_is_applied_to_the_painted_title() {
+        // Pins the defect: `date_format` was stored, published and settable, but
+        // `draw` painted a hardcoded "<Month> <Year>" so setting it changed
+        // nothing. This asserts the *rendered* title, not a get/set round-trip.
+        let mut cal = Calendar::new(Rect::new(0, 0, 300, 250));
+        cal.set_display_month(chrono::NaiveDate::from_ymd_opt(2026, 3, 15).unwrap());
+        assert_eq!(cal.formatted_month_title(), "2026-03-15");
+
+        cal.set_date_format("%B %Y".to_string());
+        assert_eq!(cal.formatted_month_title(), "March 2026");
+
+        // A pattern chrono cannot resolve must fall back, never panic in paint.
+        cal.set_date_format("%Q".to_string());
+        assert_eq!(cal.formatted_month_title(), "March 2026");
     }
 
     #[test]

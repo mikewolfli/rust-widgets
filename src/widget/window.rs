@@ -98,6 +98,11 @@ impl Window {
     /// `enabled` — suppressing it would leak the resources it exists to release.
     pub fn close(&mut self) {
         self.hide();
+        // Emit the base lifecycle signal **and** this window's own one. The base signal is what a
+        // handle-layer `on_close` (and the JSON/designer `closed` route) connects to, so emitting
+        // only `self.closed` left those handlers silent; emitting both means either listener fires
+        // from whichever path closed the window.
+        self.base.closed.emit();
         self.closed.emit();
     }
 }
@@ -189,6 +194,7 @@ impl EventHandler for Window {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
         if matches!(event, Event::Quit) {
+            self.base.closed.emit();
             self.closed.emit();
         }
     }

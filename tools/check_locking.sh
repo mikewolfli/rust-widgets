@@ -30,6 +30,19 @@
 #   `src/platform/`  OUT OF SCOPE. Wraps genuinely shared OS handles (a Win32 HWND
 #                   map, the JNI VM).
 #
+#   `src/widget/display_widgets/icon_data_set.rs`
+#                   OUT OF SCOPE, deliberately. One `static REGISTRY: Mutex<Registry>`:
+#                   it holds the **host's** registered icon outlines, not one widget's
+#                   state. A host registers on whatever thread it likes (a designer
+#                   loading a project, a plugin initialiser) while the paint thread reads,
+#                   so the lock is load-bearing for the same reason `event::queue`'s is,
+#                   and the cross-thread layer would have no better home for it — the
+#                   data *is* widget-facing. The table is fixed-size and the critical
+#                   section is a linear scan of at most `MAX_REGISTERED_ICONS` entries,
+#                   so it cannot block a paint path behind real work. Exempted by name
+#                   rather than by loosening the pattern, so any *other* lock appearing in
+#                   this module is still a finding.
+#
 # Usage: tools/check_locking.sh
 set -euo pipefail
 
@@ -50,6 +63,12 @@ import sys
 from pathlib import Path
 
 SCAN_ROOT = "src/widget"
+# Files inside `SCAN_ROOT` that are exempt **by name**, each with the reason recorded in the
+# header above. A name list rather than a looser pattern: a blanket rule cannot express "this
+# one module's lock is load-bearing" without also excusing every future lock in it.
+EXEMPT_FILES = {
+    "src/widget/display_widgets/icon_data_set.rs",
+}
 # Only *blocking* primitives are a finding. `Atomic*` is deliberately not matched:
 # a monotonic id counter (`static NEXT_ID: AtomicU64`) is lock-free — it cannot
 # contend or deadlock — so flagging it would trade a real rule for noise. The
@@ -329,6 +348,11 @@ def skip_gated_items(lines: list[str], index: int) -> int:
 
 findings: list[str] = []
 for path in sorted(Path(SCAN_ROOT).rglob("*.rs")):
+    if str(path).replace("\\", "/") in EXEMPT_FILES:
+        # Exempt by name, with the reason in this script's header. Reported as skipped rather
+        # than silently dropped, so a reader can see the exemption was applied.
+        print(f"  exempt (named in the header): {path}")
+        continue
     production = strip_test_modules(path.read_text(encoding="utf-8"))
     for number, line in enumerate(production.split("\n"), start=1):
         stripped = line.strip()

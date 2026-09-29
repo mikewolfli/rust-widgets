@@ -505,9 +505,18 @@ pub fn init_optional_subsystems() {
     // `feature = "i18n"` is a *capability* feature, not a profile gate, so a
     // compile-time `cfg` on the call is still correct here — and necessary, since
     // `cfg!` cannot eliminate a path to a module that was not compiled.
+    //
+    // # Why the pair of `cfg`s, and why they must agree
+    //
+    // The hot-reload watcher is gated on `all(i18n, not(mini))` — `mini` has no OS runtime to
+    // register an inotify/fsevents/kqueue watch against, so the module is not compiled there.
+    // The call below used to be gated only on `i18n`, so `--features mini,i18n` reached for a
+    // function that did not exist: `E0425`. The two conditions are now written once, in the
+    // same shape as the function's own gate, so an edit to one is an edit to both.
     #[cfg(feature = "i18n")]
     if has_os_runtime() {
         crate::i18n::init();
+        #[cfg(not(feature = "mini"))]
         start_i18n_hot_reload_from_env();
         return;
     }

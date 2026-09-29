@@ -15,8 +15,21 @@ pub mod macos {
     // Only `String` is needed; `CStr::to_string_lossy` resolves inherently.
     use crate::compat::String;
     use cocoa::base::{id, nil, BOOL, YES};
-    use cocoa::foundation::NSString;
+    use cocoa::foundation::{NSAutoreleasePool, NSString};
     use objc::{class, msg_send, sel, sel_impl};
+
+    /// An autoreleased `NSString` for a Rust `&str`.
+    ///
+    /// `NSString::init_str` returns a +1-retained object, so every pasteboard type string and every
+    /// value written to the pasteboard used to leak one. `autorelease` hands ownership to the
+    /// enclosing pool, so the string is reclaimed after the current run-loop turn — the correct
+    /// lifetime for a value that is only read during the following `NSPasteboard` call.
+    ///
+    /// # SAFETY
+    /// Must be called on a thread with an active autorelease pool (AppKit's main thread has one).
+    unsafe fn nsstring(s: &str) -> id {
+        NSString::alloc(nil).init_str(s).autorelease()
+    }
 
     /// macOS rich clipboard backed by the general `NSPasteboard`.
     pub struct MacOsClipboard;
@@ -37,7 +50,7 @@ pub mod macos {
                 return None;
             }
             let item: id = msg_send![items, objectAtIndex: 0u64];
-            let str_id: id = msg_send![item, stringForType: NSString::alloc(nil).init_str("public.utf8-plain-text")];
+            let str_id: id = msg_send![item, stringForType: nsstring("public.utf8-plain-text")];
             if str_id == nil {
                 return None;
             }
@@ -57,8 +70,8 @@ pub mod macos {
                     ClipboardContent::Text(text) => {
                         let item: id = msg_send![class!(NSPasteboardItem), alloc];
                         let item: id = msg_send![item, init];
-                        let ns_string = NSString::alloc(nil).init_str(text);
-                        let success: BOOL = msg_send![item, setString: ns_string forType: NSString::alloc(nil).init_str("public.utf8-plain-text")];
+                        let ns_string = nsstring(text);
+                        let success: BOOL = msg_send![item, setString: ns_string forType: nsstring("public.utf8-plain-text")];
                         if success == YES {
                             let arr: id = msg_send![class!(NSArray), arrayWithObject: item];
                             let _: BOOL = msg_send![pb, writeObjects: arr];
@@ -71,11 +84,12 @@ pub mod macos {
                         let item: id = msg_send![class!(NSPasteboardItem), alloc];
                         let item: id = msg_send![item, init];
 
-                        let ns_html = NSString::alloc(nil).init_str(html);
-                        let html_ok: BOOL = msg_send![item, setString: ns_html forType: NSString::alloc(nil).init_str("public.html")];
+                        let ns_html = nsstring(html);
+                        let html_ok: BOOL =
+                            msg_send![item, setString: ns_html forType: nsstring("public.html")];
 
-                        let ns_plain = NSString::alloc(nil).init_str(plain);
-                        let plain_ok: BOOL = msg_send![item, setString: ns_plain forType: NSString::alloc(nil).init_str("public.utf8-plain-text")];
+                        let ns_plain = nsstring(plain);
+                        let plain_ok: BOOL = msg_send![item, setString: ns_plain forType: nsstring("public.utf8-plain-text")];
 
                         if html_ok == YES || plain_ok == YES {
                             let arr: id = msg_send![class!(NSArray), arrayWithObject: item];
@@ -105,8 +119,7 @@ pub mod macos {
                 let item: id = msg_send![items, objectAtIndex: 0u64];
 
                 // Try HTML first
-                let html_id: id =
-                    msg_send![item, stringForType: NSString::alloc(nil).init_str("public.html")];
+                let html_id: id = msg_send![item, stringForType: nsstring("public.html")];
                 if html_id != nil {
                     let c_str: *const std::os::raw::c_char = msg_send![html_id, UTF8String];
                     if !c_str.is_null() {
@@ -125,7 +138,7 @@ pub mod macos {
         fn has_format(&self, content_type: &str) -> bool {
             let result = std::panic::catch_unwind(|| unsafe {
                 let pb: id = msg_send![class!(NSPasteboard), generalPasteboard];
-                let ns_type = NSString::alloc(nil).init_str(content_type);
+                let ns_type = nsstring(content_type);
                 let arr: id = msg_send![class!(NSArray), arrayWithObject: ns_type];
                 let available: id = msg_send![pb, availableTypeFromArray: arr];
                 available != nil
@@ -567,24 +580,26 @@ pub mod objc2_macos {
     }
 }
 
-// ── Linux clipboard (in-memory mock) ──
+// ── Linux clipboard (session-local store) ──
 
-/// Linux clipboard backend (in-memory mock).
+/// Linux clipboard backend (session-local store).
 ///
-/// Uses a simple in-memory store since native Linux clipboard access
-/// requires platform-specific libraries (GTK / Wayland / X11).
+/// # Why `set_contents` returns `false`
 ///
-/// Stores clipboard contents in memory. This provides a functional
-/// clipboard for testing and environments without a desktop session.
-/// Real Linux clipboard integration can be added later via GTK or
-/// Wayland data-device protocols.
+/// Native Linux clipboard access needs a live desktop session (GTK / Wayland data-device / X11
+/// selections), which this build tree does not link. The store below is genuinely useful **within
+/// one process** — it round-trips text, HTML and images — but it never reaches the system clipboard,
+/// so claiming success would be exactly the "reported success for something that did not happen"
+/// failure rules #41/#53 forbid. `set_contents` therefore stores the value (so a same-process
+/// `get_contents` works) and returns `false`, and no `Platform` backend returns this type from
+/// `clipboard_backend()`. A real GTK/Wayland path can replace it without changing the contract.
 #[cfg(target_os = "linux")]
 pub mod linux {
 
     use super::super::clipboard::{ClipboardContent, RichClipboardBackend};
     use crate::compat::{lock, Mutex};
 
-    /// In-memory clipboard backend for Linux.
+    /// Session-local clipboard store for Linux.
     #[derive(Debug, Default)]
     pub struct LinuxClipboard {
         content: Mutex<Option<ClipboardContent>>,
@@ -599,8 +614,9 @@ pub mod linux {
 
     impl RichClipboardBackend for LinuxClipboard {
         fn set_contents(&self, content: ClipboardContent) -> bool {
+            // Stored for same-process reads, but this is not the system clipboard.
             *lock(&self.content) = Some(content);
-            true
+            false
         }
 
         fn get_contents(&self) -> Option<ClipboardContent> {
@@ -613,19 +629,20 @@ pub mod linux {
     }
 }
 
-// ── WASM clipboard (in-memory mock) ──
+// ── WASM clipboard (session-local store) ──
 
-/// WASM/WebAssembly clipboard backend (in-memory mock).
+/// WASM/WebAssembly clipboard backend (session-local store).
 ///
-/// The browser `navigator.clipboard` API is entirely Promise-based, making it
-/// unsuitable for synchronous trait methods, so this backend uses a simple
-/// in-memory store that is fully functional within a single WASM session.
+/// The browser `navigator.clipboard` API is entirely Promise-based, so it cannot be driven from the
+/// synchronous trait methods without blocking the event loop. This store is fully functional within
+/// a single WASM session but never touches the browser clipboard, so — like the Linux store above —
+/// `set_contents` returns `false` rather than claiming a system-clipboard write that did not happen.
 #[cfg(feature = "wasm")]
 pub mod wasm {
     use super::super::clipboard::{ClipboardContent, RichClipboardBackend};
     use crate::compat::{lock, Mutex};
 
-    /// In-memory clipboard backend for WASM.
+    /// Session-local clipboard store for WASM.
     #[derive(Debug, Default)]
     pub struct WasmClipboard {
         content: Mutex<Option<ClipboardContent>>,
@@ -640,8 +657,9 @@ pub mod wasm {
 
     impl RichClipboardBackend for WasmClipboard {
         fn set_contents(&self, content: ClipboardContent) -> bool {
+            // Stored for same-session reads, but this is not the browser clipboard.
             *lock(&self.content) = Some(content);
-            true
+            false
         }
 
         fn get_contents(&self) -> Option<ClipboardContent> {

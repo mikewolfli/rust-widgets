@@ -133,16 +133,18 @@ The `EventQueue` wraps `std::sync::mpsc` channels for unbounded event posting an
 let queue = EventQueue::new();
 let sender: EventSender = queue.sender();
 
-// Post events from any thread
+// Post events from any thread. Note the constructors take plain coordinates/sizes,
+// not `Point`/`Size` values: `mouse_press(x, y, button)` and `resize(width, height)`.
 sender.post(widget_id, Event::Paint)?;
-sender.post(widget_id, Event::mouse_press(Point::new(10, 20), 0))?;
-sender.post_with_priority(widget_id, Event::resize(Size::new(800, 600)), EventPriority::High)?;
+sender.post(widget_id, Event::mouse_press(10, 20, 0))?;
+sender.post_with_priority(widget_id, Event::resize(800, 600), EventPriority::High)?;
 sender.post_idle(widget_id, Event::Paint)?;
 
 // Drain on the main thread
 while let Some((target, event, priority)) = queue.dequeue() {
     dispatch_event(target, &event, priority);
 }
+```
 
 // Blocking drain (for background threads)
 while let Some((target, event, priority)) = queue.dequeue_blocking() {

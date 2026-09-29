@@ -130,7 +130,6 @@ impl FlowLayout {
         }
     }
     /// Override the default size hint for a child added via `add_widget` (no widget ref).
-    /// Override the default size hint for a child added via `add_widget` (no widget ref).
     ///
     /// The override only affects that default: a child holding a live widget
     /// still reports the widget's own `size_hint`, so this call has no effect
@@ -226,91 +225,129 @@ impl FlowLayout {
         self.apply_alignment(&mut positions, content_rect);
         positions
     }
+    /// Align the items **within each flow line**, not the whole child set.
+    ///
+    /// # Why per line
+    ///
+    /// The flow pass already decided where each line breaks, so an alignment can only
+    /// redistribute the free space of *that* line. The previous version summed every
+    /// child's extent and moved every child by that single offset, which is only correct
+    /// when nothing wrapped: with more than one line the rows were pushed by a number
+    /// computed from the other rows, and `End` could drive the early rows off the left
+    /// (or top) edge entirely. With wrapping off there is exactly one line, so the old
+    /// behaviour is preserved exactly.
+    ///
+    /// The minor axis handling is deliberately **per item**, not per line: a flow line's
+    /// height is the tallest child's, and matching the old formula (every item offset by
+    /// the remaining height) keeps a single-line layout byte-identical.
     fn apply_alignment(&self, positions: &mut [Rect], content_rect: &Rect) {
-        match self.config.alignment {
-            FlowAlignment::Start => {}
-            FlowAlignment::Center => {
-                let total_width: i32 = positions.iter().map(|r| r.width as i32).sum::<i32>()
-                    + (positions.len().saturating_sub(1) as i32) * self.config.spacing;
-                let total_height: i32 = positions.iter().map(|r| r.height as i32).sum::<i32>()
-                    + (positions.len().saturating_sub(1) as i32) * self.config.spacing;
-                let offset_x = (content_rect.width as i32 - total_width) / 2;
-                let offset_y = (content_rect.height as i32 - total_height) / 2;
-                for pos in positions.iter_mut() {
-                    pos.x += offset_x;
-                    pos.y += offset_y;
-                }
+        if self.config.alignment == FlowAlignment::Start {
+            return;
+        }
+
+        // A new line/column starts at the content origin, so the groups are recovered by
+        // splitting wherever an item sits back at that edge.
+        let major_is_x = self.config.direction == FlowDirection::Horizontal;
+        let origin = if major_is_x { content_rect.x } else { content_rect.y };
+        let mut line_start = 0usize;
+        let mut lines: Vec<core::ops::Range<usize>> = Vec::new();
+        for (index, position) in positions.iter().enumerate().skip(1) {
+            let major = if major_is_x { position.x } else { position.y };
+            if major <= origin {
+                lines.push(line_start..index);
+                line_start = index;
             }
-            FlowAlignment::End => {
-                let total_width: i32 = positions.iter().map(|r| r.width as i32).sum::<i32>()
-                    + (positions.len().saturating_sub(1) as i32) * self.config.spacing;
-                let total_height: i32 = positions.iter().map(|r| r.height as i32).sum::<i32>()
-                    + (positions.len().saturating_sub(1) as i32) * self.config.spacing;
-                let offset_x = content_rect.width as i32 - total_width;
-                let offset_y = content_rect.height as i32 - total_height;
-                for pos in positions.iter_mut() {
-                    pos.x += offset_x;
-                    pos.y += offset_y;
-                }
+        }
+        lines.push(line_start..positions.len());
+
+        for line in lines {
+            let items = &mut positions[line];
+            if items.is_empty() {
+                continue;
             }
-            FlowAlignment::SpaceBetween => {
-                if positions.len() > 1 {
-                    let total_size: i32 = match self.config.direction {
-                        FlowDirection::Horizontal => positions.iter().map(|r| r.width as i32).sum(),
-                        FlowDirection::Vertical => positions.iter().map(|r| r.height as i32).sum(),
-                    };
-                    let available = match self.config.direction {
-                        FlowDirection::Horizontal => content_rect.width as i32,
-                        FlowDirection::Vertical => content_rect.height as i32,
-                    };
-                    let spacing = if positions.len() > 1 {
-                        (available - total_size) / (positions.len() as i32 - 1)
+            let available =
+                if major_is_x { content_rect.width as i32 } else { content_rect.height as i32 };
+            let sizes: i32 = if major_is_x {
+                items.iter().map(|r| r.width as i32).sum()
+            } else {
+                items.iter().map(|r| r.height as i32).sum()
+            };
+            let n = items.len() as i32;
+
+            // The gap **between** items (start and end gaps are handled separately).
+            let gap = match self.config.alignment {
+                FlowAlignment::Center | FlowAlignment::End => self.config.spacing,
+                FlowAlignment::SpaceBetween => {
+                    if n > 1 {
+                        (available - sizes) / (n - 1)
                     } else {
-                        0
-                    };
-                    let mut current = match self.config.direction {
-                        FlowDirection::Horizontal => content_rect.x,
-                        FlowDirection::Vertical => content_rect.y,
-                    };
-                    for pos in positions.iter_mut() {
-                        match self.config.direction {
-                            FlowDirection::Horizontal => {
-                                pos.x = current;
-                                current += pos.width as i32 + spacing;
-                            }
-                            FlowDirection::Vertical => {
-                                pos.y = current;
-                                current += pos.height as i32 + spacing;
-                            }
-                        }
+                        self.config.spacing
                     }
                 }
-            }
-            FlowAlignment::SpaceAround => {
-                let total_size: i32 = match self.config.direction {
-                    FlowDirection::Horizontal => positions.iter().map(|r| r.width as i32).sum(),
-                    FlowDirection::Vertical => positions.iter().map(|r| r.height as i32).sum(),
-                };
-                let available = match self.config.direction {
-                    FlowDirection::Horizontal => content_rect.width as i32,
-                    FlowDirection::Vertical => content_rect.height as i32,
-                };
-                let spacing = (available - total_size) / (positions.len() as i32 + 1);
-                let mut current = match self.config.direction {
-                    FlowDirection::Horizontal => content_rect.x + spacing,
-                    FlowDirection::Vertical => content_rect.y + spacing,
-                };
-                for pos in positions.iter_mut() {
-                    match self.config.direction {
-                        FlowDirection::Horizontal => {
-                            pos.x = current;
-                            current += pos.width as i32 + spacing;
-                        }
-                        FlowDirection::Vertical => {
-                            pos.y = current;
-                            current += pos.height as i32 + spacing;
-                        }
+                FlowAlignment::SpaceAround => {
+                    if n > 1 {
+                        self.config.spacing
+                            + (available - sizes - (n - 1) * self.config.spacing) / n
+                    } else {
+                        self.config.spacing
                     }
+                }
+                FlowAlignment::Start => self.config.spacing,
+            };
+
+            let painted = sizes + (n - 1) * gap;
+            let slack = available - painted;
+            let start_offset = match self.config.alignment {
+                // Centred / end-aligned: the whole slack moves to one side. `SpaceBetween`
+                // leaves none at either end; `SpaceAround` splits it evenly, which is what
+                // makes it differ from `SpaceBetween` for a single item too.
+                FlowAlignment::Center => slack.max(0) / 2,
+                FlowAlignment::End => slack,
+                FlowAlignment::SpaceBetween => 0,
+                FlowAlignment::SpaceAround => {
+                    if n > 1 {
+                        (slack - (n - 1) * (gap - self.config.spacing)).max(0) / 2
+                    } else {
+                        slack.max(0) / 2
+                    }
+                }
+                FlowAlignment::Start => 0,
+            };
+
+            let mut cursor = origin + start_offset;
+            for item in items.iter_mut() {
+                if major_is_x {
+                    item.x = cursor;
+                    cursor += item.width as i32 + gap;
+                } else {
+                    item.y = cursor;
+                    cursor += item.height as i32 + gap;
+                }
+            }
+        }
+
+        // The minor axis: `Center`/`End` shift every item by the remaining extent, which
+        // is the same arithmetic a single-line layout always used.
+        let minor_total: i32 = if major_is_x {
+            positions.iter().map(|r| r.height as i32).sum::<i32>()
+                + (positions.len().saturating_sub(1) as i32) * self.config.spacing
+        } else {
+            positions.iter().map(|r| r.width as i32).sum::<i32>()
+                + (positions.len().saturating_sub(1) as i32) * self.config.spacing
+        };
+        let minor_available =
+            if major_is_x { content_rect.height as i32 } else { content_rect.width as i32 };
+        let minor_offset = match self.config.alignment {
+            FlowAlignment::Center => (minor_available - minor_total) / 2,
+            FlowAlignment::End => minor_available - minor_total,
+            _ => 0,
+        };
+        if minor_offset != 0 {
+            for pos in positions.iter_mut() {
+                if major_is_x {
+                    pos.y += minor_offset;
+                } else {
+                    pos.x += minor_offset;
                 }
             }
         }
@@ -599,5 +636,64 @@ mod tests {
 
         // width = 40 + 10 + 60 = 110, height = max(20,30) = 30
         assert_eq!(layout.preferred_size(), Size::new(110, 30));
+    }
+
+    /// A wrapped flow has to align **each line on its own**. The offset used to be computed
+    /// from every child's extent, so with more than one row each row was shifted by a number
+    /// that had nothing to do with it — and `End` could push the early rows off the top-left.
+    #[test]
+    fn wrapped_rows_are_aligned_per_line_not_against_the_whole_set() {
+        let mut layout = FlowLayout::new();
+        layout.config.direction = FlowDirection::Horizontal;
+        layout.config.alignment = FlowAlignment::End;
+        layout.config.spacing = 0;
+        layout.config.padding = 0;
+        layout.config.wrap = true;
+
+        // 100 wide box, 40-wide items: two per row, so two rows of two.
+        for id in 1..=4 {
+            layout.add_child(Box::new(TestWidget::new(id, 40, 10)));
+        }
+        let positions = layout.layout(Rect::new(0, 0, 100, 200));
+        assert_eq!(positions.len(), 4);
+
+        // Each row holds two items, so it must occupy exactly 80 of the 100 available and
+        // be pushed right by the remaining 20 — the *same* 20 for both rows. The old
+        // whole-set offset computed 100 - 160 = -60 and moved every row to x = -60, which
+        // parked the first item 60px off the left edge of its own box.
+        for row in 0..2 {
+            let first = positions[row * 2];
+            let second = positions[row * 2 + 1];
+            assert_eq!(first.x, 20, "row {row} is not right-aligned: {first:?}");
+            assert_eq!(second.x, 60, "row {row} is not right-aligned: {second:?}");
+            assert_eq!(
+                second.x + second.width as i32,
+                100,
+                "row {row} does not reach the right edge"
+            );
+        }
+        // Two lines: a row is a shared `y`, and the second line is below the first.
+        assert_eq!(positions[0].y, positions[1].y, "the first row is one line");
+        assert_eq!(positions[2].y, positions[3].y, "the second row is one line");
+        assert!(positions[2].y > positions[0].y, "the second line is below the first");
+    }
+
+    /// With wrapping off there is a single line, so the aligned result must be unchanged
+    /// from the simple whole-set arithmetic callers already depend on.
+    #[test]
+    fn a_single_line_still_uses_the_whole_set_alignment() {
+        let mut layout = FlowLayout::new();
+        layout.config.direction = FlowDirection::Horizontal;
+        layout.config.alignment = FlowAlignment::Center;
+        layout.config.spacing = 10;
+        layout.config.padding = 0;
+
+        layout.add_child(Box::new(TestWidget::new(1, 40, 20)));
+        layout.add_child(Box::new(TestWidget::new(2, 40, 20)));
+
+        // 90 used in a 200 box: 55 of slack on each side.
+        let positions = layout.layout(Rect::new(0, 0, 200, 100));
+        assert_eq!(positions[0].x, 55);
+        assert_eq!(positions[1].x, 105);
     }
 }

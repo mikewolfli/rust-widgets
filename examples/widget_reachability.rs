@@ -490,12 +490,16 @@ mod tests {
     /// mutually visible.
     #[test]
     fn kind_list_is_exhaustive() {
-        // 180 since BLUE20 layer 4 added `Heatmap`. The number is written down here on
-        // purpose: this is the list the reachability gate iterates, so a variant added to
-        // `WidgetKind` without a row here would silently escape the gate. `exhaustive`
-        // already makes that a compile error; this makes the count disagree too, so the two
-        // signals cannot be dismissed as "just a missing row".
-        assert_eq!(super::all_kinds().len(), 180);
+        // 181 since BLUE20 layer 4 added `Heatmap` (and the count moved again with the controls
+        // added after it). The number is written down here on purpose: this is the list the
+        // reachability gate iterates, so a variant added to `WidgetKind` without a row here would
+        // silently escape the gate. `exhaustive` already makes that a compile error; this makes
+        // the count disagree too, so the two signals cannot be dismissed as "just a missing row".
+        //
+        // Kept in step with `tools/check_widget_kind_count.sh`, which is the *other* place the
+        // number is asserted — it parses `src/widget/kind.rs` and prints the canonical figure.
+        // When this assertion and that script disagree, the script is right: it reads the enum.
+        assert_eq!(super::all_kinds().len(), 181);
     }
 
     /// The `match` in `exhaustive` and the `vec!` in `all_kinds` must agree.

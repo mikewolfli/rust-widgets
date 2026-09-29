@@ -3,14 +3,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <rect x="52" y="48" width="136" height="24" fill="rgba(69,69,69,1.00)" />
-  <path d="M 61 65 L 64 63 L 67 65 L 66 61 L 69 59 L 65 59 L 64 55 L 63 59 L 59 59 L 62 61 L 61 65 Z" fill="rgba(170,170,170,1.00)" stroke="none" stroke-width="0" />
-  <path d="M 58 69 L 59 62 L 54 57 L 61 57 L 64 50 L 67 57 L 74 57 L 69 62 L 70 69 L 64 65 L 58 69 Z" fill="rgba(170,170,170,1.00)" stroke="none" stroke-width="0" />
-  <path d="M 89 65 L 92 63 L 95 65 L 94 61 L 97 59 L 93 59 L 92 55 L 91 59 L 87 59 L 90 61 L 89 65 Z" fill="rgba(170,170,170,1.00)" stroke="none" stroke-width="0" />
-  <path d="M 86 69 L 87 62 L 82 57 L 89 57 L 92 50 L 95 57 L 102 57 L 97 62 L 98 69 L 92 65 L 86 69 Z" fill="rgba(170,170,170,1.00)" stroke="none" stroke-width="0" />
-  <path d="M 117 65 L 120 63 L 123 65 L 122 61 L 125 59 L 121 59 L 120 55 L 119 59 L 115 59 L 118 61 L 117 65 Z" fill="rgba(170,170,170,1.00)" stroke="none" stroke-width="0" />
-  <path d="M 114 69 L 115 62 L 110 57 L 117 57 L 120 50 L 123 57 L 130 57 L 125 62 L 126 69 L 120 65 L 114 69 Z" fill="rgba(170,170,170,1.00)" stroke="none" stroke-width="0" />
-  <path d="M 145 65 L 148 63 L 151 65 L 150 61 L 153 59 L 149 59 L 148 55 L 147 59 L 143 59 L 146 61 L 145 65 Z" fill="rgba(170,170,170,1.00)" stroke="none" stroke-width="0" />
-  <path d="M 142 69 L 143 62 L 138 57 L 145 57 L 148 50 L 151 57 L 158 57 L 153 62 L 154 69 L 148 65 L 142 69 Z" fill="rgba(170,170,170,1.00)" stroke="none" stroke-width="0" />
-  <path d="M 173 65 L 176 63 L 179 65 L 178 61 L 181 59 L 177 59 L 176 55 L 175 59 L 171 59 L 174 61 L 173 65 Z" fill="rgba(170,170,170,1.00)" stroke="none" stroke-width="0" />
-  <path d="M 170 69 L 171 62 L 166 57 L 173 57 L 176 50 L 179 57 L 186 57 L 181 62 L 182 69 L 176 65 L 170 69 Z" fill="rgba(170,170,170,1.00)" stroke="none" stroke-width="0" />
+  <path d="M 61 65 L 64 63 L 67 65 L 66 61 L 69 59 L 65 59 L 64 55 L 63 59 L 59 59 L 62 61 Z" fill="rgba(170,170,170,1.00)" stroke="none" stroke-width="0" />
+  <path d="M 58 69 L 59 62 L 54 57 L 61 57 L 64 50 L 67 57 L 74 57 L 69 62 L 70 69 L 64 65 Z" fill="rgba(170,170,170,1.00)" stroke="none" stroke-width="0" />
+  <path d="M 89 65 L 92 63 L 95 65 L 94 61 L 97 59 L 93 59 L 92 55 L 91 59 L 87 59 L 90 61 Z" fill="rgba(170,170,170,1.00)" stroke="none" stroke-width="0" />
+  <path d="M 86 69 L 87 62 L 82 57 L 89 57 L 92 50 L 95 57 L 102 57 L 97 62 L 98 69 L 92 65 Z" fill="rgba(170,170,170,1.00)" stroke="none" stroke-width="0" />
+  <path d="M 117 65 L 120 63 L 123 65 L 122 61 L 125 59 L 121 59 L 120 55 L 119 59 L 115 59 L 118 61 Z" fill="rgba(170,170,170,1.00)" stroke="none" stroke-width="0" />
+  <path d="M 114 69 L 115 62 L 110 57 L 117 57 L 120 50 L 123 57 L 130 57 L 125 62 L 126 69 L 120 65 Z" fill="rgba(170,170,170,1.00)" stroke="none" stroke-width="0" />
+  <path d="M 145 65 L 148 63 L 151 65 L 150 61 L 153 59 L 149 59 L 148 55 L 147 59 L 143 59 L 146 61 Z" fill="rgba(170,170,170,1.00)" stroke="none" stroke-width="0" />
+  <path d="M 142 69 L 143 62 L 138 57 L 145 57 L 148 50 L 151 57 L 158 57 L 153 62 L 154 69 L 148 65 Z" fill="rgba(170,170,170,1.00)" stroke="none" stroke-width="0" />
+  <path d="M 173 65 L 176 63 L 179 65 L 178 61 L 181 59 L 177 59 L 176 55 L 175 59 L 171 59 L 174 61 Z" fill="rgba(170,170,170,1.00)" stroke="none" stroke-width="0" />
+  <path d="M 170 69 L 171 62 L 166 57 L 173 57 L 176 50 L 179 57 L 186 57 L 181 62 L 182 69 L 176 65 Z" fill="rgba(170,170,170,1.00)" stroke="none" stroke-width="0" />
 </svg>

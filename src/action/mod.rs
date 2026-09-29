@@ -73,6 +73,28 @@ mod tests {
         assert!(mgr.trigger_shortcut("Ctrl+Shift+S"));
     }
 
+    /// A type-bound chord must be reachable by its own canonical string spelling.
+    ///
+    /// Pins the defect: `bind_shortcut_type` keyed the map with `shortcut.to_string().to_lowercase()`
+    /// while `trigger_shortcut` looked up through `normalize_shortcut`. `Shortcut::to_string`
+    /// renders `Modifiers::PRIMARY` as the literal `"Primary"`, so a `primary`-bound chord stored
+    /// `"primary+s"` and a lookup of `normalize_shortcut("Primary+S")` -> `"primary+s"` would have
+    /// matched only by luck; the string spelling `"Ctrl+S"` (which `from_string` maps to the same
+    /// `Modifiers::PRIMARY`) normalizes to `"primary+s"` too, so both spellings must reach it.
+    #[test]
+    fn a_type_bound_shortcut_is_reachable_by_its_string_spelling() {
+        use crate::shortcut::{Key, Shortcut};
+        let mut mgr = ActionManager::new();
+        assert!(mgr.register_action("save", "Save"));
+
+        assert!(mgr.bind_shortcut_type(&Shortcut::primary(Key::S), "save"));
+        // Both the canonical spelling and the platform-neutral `Ctrl` spelling resolve to the one
+        // normalized key, which is the whole point of routing both paths through
+        // `normalize_shortcut`.
+        assert!(mgr.trigger_shortcut("Primary+S"), "the canonical spelling must reach it");
+        assert!(mgr.trigger_shortcut("Ctrl+S"), "and so must the `Ctrl` spelling");
+    }
+
     /// Two different actions keep their own chords.
     ///
     /// The release is scoped to the action being rebound, not global.

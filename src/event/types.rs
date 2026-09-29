@@ -447,35 +447,16 @@ pub enum Event {
         pressure: f32,
     },
     // ── Gamepad Events (BLUE11 R8.3) ──
-    /// Gamepad button press.
-    GamepadPress {
-        /// Device-specific button index, as reported by the platform's gamepad
-        /// API; there is no cross-platform button numbering here.
-        button: u32,
-    },
-    /// Gamepad button release.
-    GamepadRelease {
-        /// The index reported by the matching [`Event::GamepadPress`].
-        button: u32,
-    },
-    /// Gamepad axis movement.
-    GamepadAxis {
-        /// Device-specific axis index.
-        axis: u32,
-        /// Normalized axis position: `-1.0` to `1.0` for a stick, `0.0` to `1.0`
-        /// for a trigger, with `0.0` at rest in both cases.
-        value: f32,
-    },
-    /// Gamepad connected.
-    GamepadConnected {
-        /// Identifier assigned to the gamepad for the lifetime of the connection.
-        id: u32,
-    },
-    /// Gamepad disconnected.
-    GamepadDisconnected {
-        /// The identifier given by the matching [`Event::GamepadConnected`].
-        id: u32,
-    },
+    //
+    // Removed: `GamepadPress` / `GamepadRelease` / `GamepadAxis` / `GamepadConnected` /
+    // `GamepadDisconnected` were declared here, constructed by their own helpers, and
+    // otherwise unused — no platform backend produced one, no widget handled one, and no
+    // gate covered the family (`tools/check_event_producers.sh` checked gestures only).
+    // Five variants with no producer and no consumer are a contract the library does not
+    // honour; the scope of this crate is desktop/tablet/mobile UI, and no backend reads a
+    // gamepad API. They are removed rather than kept as an aspiration (principle #5).
+    // `tools/check_event_variants_have_a_producer.sh` now checks every variant, so the
+    // family cannot come back without a producer.
 }
 impl Event {
     /// Creates a mouse press event with no modifiers held.
@@ -659,32 +640,14 @@ impl Event {
         Event::PointerRelease { pos, button, pressure }
     }
 
-    /// Creates a gamepad press event.
-    pub fn gamepad_press(button: u32) -> Self {
-        Event::GamepadPress { button }
-    }
-
-    /// Creates a gamepad release event.
-    pub fn gamepad_release(button: u32) -> Self {
-        Event::GamepadRelease { button }
-    }
-
-    /// Creates a gamepad axis event.
-    pub fn gamepad_axis(axis: u32, value: f32) -> Self {
-        Event::GamepadAxis { axis, value }
-    }
-
-    /// Creates a gamepad connected event.
-    pub fn gamepad_connected(id: u32) -> Self {
-        Event::GamepadConnected { id }
-    }
-
-    /// Creates a gamepad disconnected event.
-    pub fn gamepad_disconnected(id: u32) -> Self {
-        Event::GamepadDisconnected { id }
-    }
-
     /// Creates an orientation changed event.
+    ///
+    /// A host with a screen-orientation observer (an iOS host's
+    /// `UIDevice.orientationDidChangeNotification`, an Android host's
+    /// `onConfigurationChanged`) posts this after it has reported the new client size through
+    /// `queue_resize_trigger`. The library has no observer of its own on those platforms — it
+    /// stores no UIKit/`Activity` handle — so the host is the producer, the same division
+    /// `queue_resize_trigger` documents.
     pub fn orientation_changed(orientation: ScreenOrientation) -> Self {
         Self::OrientationChanged { orientation }
     }
@@ -1019,54 +982,6 @@ mod tests {
                 assert_eq!(button, 1);
             }
             _ => panic!("Expected PointerRelease"),
-        }
-    }
-
-    #[test]
-    fn gamepad_press_constructor() {
-        let e = Event::gamepad_press(3);
-        match e {
-            Event::GamepadPress { button } => assert_eq!(button, 3),
-            _ => panic!("Expected GamepadPress"),
-        }
-    }
-
-    #[test]
-    fn gamepad_release_constructor() {
-        let e = Event::gamepad_release(7);
-        match e {
-            Event::GamepadRelease { button } => assert_eq!(button, 7),
-            _ => panic!("Expected GamepadRelease"),
-        }
-    }
-
-    #[test]
-    fn gamepad_axis_constructor() {
-        let e = Event::gamepad_axis(1, -0.5);
-        match e {
-            Event::GamepadAxis { axis, value } => {
-                assert_eq!(axis, 1);
-                assert!((value - (-0.5)).abs() < 1e-6);
-            }
-            _ => panic!("Expected GamepadAxis"),
-        }
-    }
-
-    #[test]
-    fn gamepad_connected_constructor() {
-        let e = Event::gamepad_connected(42);
-        match e {
-            Event::GamepadConnected { id } => assert_eq!(id, 42),
-            _ => panic!("Expected GamepadConnected"),
-        }
-    }
-
-    #[test]
-    fn gamepad_disconnected_constructor() {
-        let e = Event::gamepad_disconnected(99);
-        match e {
-            Event::GamepadDisconnected { id } => assert_eq!(id, 99),
-            _ => panic!("Expected GamepadDisconnected"),
         }
     }
 }

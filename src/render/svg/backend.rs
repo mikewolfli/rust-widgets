@@ -165,6 +165,8 @@ fn conic_sample(stops: &[(f32, Color)], t: f32, start_angle: f32) -> Color {
     }
     let span = (stops[hi].0 - stops[lo].0).max(0.0001);
     let local = (t - stops[lo].0) / span;
+    // Truncating channel lerp, matching the other rendering paths (see
+    // `style::gradient::interpolate_color` for why `Color::blend` is not used here: it rounds).
     let a = stops[lo].1;
     let b = stops[hi].1;
     Color::rgba(

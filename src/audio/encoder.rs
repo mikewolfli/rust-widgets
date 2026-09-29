@@ -59,7 +59,7 @@ fn encode_wav(buffer: &AudioBuffer) -> Result<Vec<u8>, String> {
     if buffer.sample_rate == 0 {
         return Err("Sample rate must be > 0".into());
     }
-    let channels = buffer.channels as u16;
+    let channels = buffer.channels() as u16;
     let bits_per_sample: u16 = 16;
     let bytes_per_sample = (bits_per_sample / 8) as u32;
     let block_align = channels as u32 * bytes_per_sample;

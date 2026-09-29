@@ -66,6 +66,23 @@ FIELD_DECL = re.compile(
 ANY_ACCESS = re.compile(r"\.([a-z_][a-z0-9_]*)\b")
 MUTATOR = re.compile(r"\s*(=[^=]|\.(?:push|insert|extend|clear|remove|add|retain|take|get_or_insert))")
 
+# A struct-literal initializer: `field: value` inside a `Braces` expression. This is the shape the
+# gate used to miss entirely, and it is the **most common** way a field is first written —
+# `Self { field: .. }`, `WidgetStyle { field: .. }`. Classifying only `.field` accesses counted such
+# a write as zero, so a field written *only* in initializers looked like it had no writes at all and
+# the "written but never read" rule never fired on it. A faithful probe (declare + initialise +
+# never read) passed the gate before this pattern existed.
+#
+# It requires the field to be followed by `:` and then something that is not `:` (so a type
+# annotation or a `::` path is not a write) and not `=` (so `field == x` is not a write).
+INIT_FIELD = re.compile(r"\b([a-z_][a-z0-9_]*)\s*:\s*[^:=]")
+
+# A shorthand initializer: `Self { field }` / `Self { .., field }`, i.e. the field named alone. That
+# is both a write (into the new value) and a read (from the enclosing scope), so it cannot make a
+# field "write-only" on its own; it is recorded as a **read** so an otherwise-unread field that is
+# merely forwarded through shorthand is not reported as write-only.
+INIT_SHORTHAND = re.compile(r"(?<![.\w])([a-z_][a-z0-9_]*)\s*[,}]")
+
 
 def struct_fields(text: str) -> set[str]:
     """Field names declared inside a `struct { .. }` body in this file."""
@@ -87,19 +104,39 @@ def struct_fields(text: str) -> set[str]:
 
 def main() -> int:
     root = pathlib.Path(__file__).resolve().parent.parent
-    sources: dict[pathlib.Path, str] = {}
+    # The fields this gate owns. A declaration here is what makes a field *subject* to the rule.
+    owned: dict[pathlib.Path, str] = {}
     for sub in ("src/widget", "src/style", "src/layout"):
         for path in (root / sub).rglob("*.rs"):
-            sources[path] = path.read_text(encoding="utf-8")
+            owned[path] = path.read_text(encoding="utf-8")
+
+    # Every `.rs` file, for the **access** tally. This is deliberately wider than `owned`.
+    #
+    # A field declared in this layer is routinely read by a consumer that lives outside it —
+    # `Gradient::start_point` is written in `src/style/gradient.rs` and read in
+    # `src/render/svg/backend.rs`. Counting accesses only inside `owned` reported that field as
+    # write-only, which is a false positive: the reader exists, it is simply one layer down. The
+    # rule being enforced is "written but never read", and "never" has to include the code that
+    # does not declare the field too.
+    all_sources: list[str] = [
+        path.read_text(encoding="utf-8") for path in (root / "src").rglob("*.rs")
+    ]
 
     access: dict[str, list[int]] = defaultdict(lambda: [0, 0])
-    for text in sources.values():
+    for text in all_sources:
         for match in ANY_ACCESS.finditer(text):
             slot = 0 if MUTATOR.match(text[match.end():match.end() + 4]) else 1
             access[match.group(1)][slot] += 1
+        # Struct-literal initializers count as writes; see `INIT_FIELD` for why this had to be
+        # added and what it cost when it was missing.
+        for match in INIT_FIELD.finditer(text):
+            access[match.group(1)][0] += 1
+        # Shorthand initializers count as reads (the value is taken from a binding in scope).
+        for match in INIT_SHORTHAND.finditer(text):
+            access[match.group(1)][1] += 1
 
     findings: list[tuple[str, str]] = []
-    for path, text in sources.items():
+    for path, text in owned.items():
         rel = path.relative_to(root).as_posix()
         for name in sorted(struct_fields(text)):
             if name.startswith("_"):

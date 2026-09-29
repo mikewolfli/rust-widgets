@@ -279,7 +279,7 @@ impl ThemeManager {
                 if let Some(token) = self.current_theme().and_then(|t| t.overrides.styles.get(&key))
                 {
                     let theme = self.current_theme();
-                    apply_token(&mut style, token, None, theme);
+                    apply_token(&mut style, token, theme);
                     break;
                 }
             }
@@ -303,7 +303,7 @@ impl ThemeManager {
                 theme.overrides.styles.get(role_key(WidgetRole::for_kind_name(class_name)))
             });
             if let Some(token) = token {
-                apply_token(&mut style, token, Some(&theme.fonts), Some(theme));
+                apply_token(&mut style, token, Some(theme));
             }
         }
         style
@@ -358,7 +358,7 @@ impl ThemeManager {
             let key = format!("{class_name}:{}", state_suffix(state));
             if let Some(token) = self.current_theme().and_then(|t| t.overrides.styles.get(&key)) {
                 let theme = self.current_theme();
-                apply_token(&mut style, token, None, theme);
+                apply_token(&mut style, token, theme);
             }
         }
         self.apply_high_contrast(&mut style);
@@ -492,7 +492,7 @@ impl ThemeManager {
             theme.overrides.styles.get(role_key(WidgetRole::for_kind_name(class_name)))
         });
         if let Some(token) = token {
-            apply_token(&mut style, token, Some(&theme.fonts), Some(theme));
+            apply_token(&mut style, token, Some(theme));
         }
         style
     }
@@ -587,14 +587,8 @@ fn state_suffix(state: WidgetState) -> &'static str {
 /// Apply a partial override token to a resolved style.
 ///
 /// Only the token's `Some` fields are written, so an override may adjust one
-/// property without restating the rest. `fonts` is consulted only when the token
-/// names a font to resolve from the theme's token set.
-fn apply_token(
-    style: &mut WidgetStyle,
-    token: &super::ThemeStyleToken,
-    fonts: Option<&Fonts>,
-    theme: Option<&Theme>,
-) {
+/// property without restating the rest.
+fn apply_token(style: &mut WidgetStyle, token: &super::ThemeStyleToken, theme: Option<&Theme>) {
     if let Some(color) = token.background {
         style.background_color = Some(color);
     }
@@ -636,13 +630,11 @@ fn apply_token(
     apply_surface_token(style, token, theme, token.shadow == super::ShadowOverride::Inherit);
     if let Some(font) = &token.font {
         style.font = Some(font.clone());
-    } else if let Some(fonts) = fonts {
-        // No explicit font in the token: keep the base token the resolver set.
-        // Reading `fonts` here is what makes the token set reachable at all; the
-        // assignment is a no-op when the base already supplied one, which is the
-        // honest behaviour for a token that does not mention a font.
-        let _ = fonts;
     }
+    // A token that does not name a font keeps the base font the role resolver set. There used to be
+    // an `else if let Some(fonts) = fonts { let _ = fonts; }` branch here that claimed reading the
+    // theme's token set "is what makes the token set reachable at all" -- it was a no-op, because
+    // nothing read the discarded value and the base font comes from `role_base_style`.
 }
 
 /// Applies a token's four surface dimensions onto the style's resolved face.

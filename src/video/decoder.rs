@@ -28,14 +28,13 @@ pub trait VideoDecoder {
 pub struct FrameBufferDecoder {
     metadata: VideoMetadata,
     current_frame: u64,
-    frame_counter: u64,
 }
 
 impl FrameBufferDecoder {
     /// Create a deterministic test-pattern source.
     pub fn new(_data: Vec<u8>, format: ContainerFormat) -> Self {
         let meta = VideoMetadata::new_with_format(format, 320, 240, 10.0);
-        Self { metadata: meta, current_frame: 0, frame_counter: 0 }
+        Self { metadata: meta, current_frame: 0 }
     }
 
     fn generate_frame(&self, frame_index: u64) -> VideoFrame {
@@ -84,7 +83,6 @@ impl VideoDecoder for FrameBufferDecoder {
         }
         let frame = self.generate_frame(self.current_frame);
         self.current_frame += 1;
-        self.frame_counter += 1;
         Ok(Some(frame))
     }
 

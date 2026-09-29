@@ -59,6 +59,69 @@ pub trait ImeBridge: Send + Sync {
     fn is_active(&self) -> bool;
 }
 
+/// Delivers a bridge's composition and commit calls to the focused widget as
+/// [`Event::ImePreedit`](crate::event::Event::ImePreedit) /
+/// [`Event::ImeCommit`](crate::event::Event::ImeCommit).
+///
+/// # Why this exists
+///
+/// [`ImeBridge`] is the *platform* half of IME: it drives the OS candidate window and
+/// receives the composition string. The *widget* half is `Event::ImePreedit` / `Event::ImeCommit`,
+/// which controls like the code editor, `tag_input` and `search_bar` match on. Nothing joined
+/// the two: the variants were published and handled but never produced by the library, so a
+/// control that waited for `ImeCommit` was reachable only from a test. This is the join, and it
+/// is a free function rather than a method on the bridge so that every backend gets the same
+/// delivery without implementing it (the bridge trait stays about the OS connection).
+///
+/// Returns `false` when there is no focused widget to receive the event, which is the honest
+/// answer for a composition that arrived with no caret to attach it to — an IME that is active
+/// while focus is elsewhere must not write into a control the user did not select.
+///
+/// # Why this is gated on `not(alloc_frugal)`
+///
+/// The runtime registry — the thing that maps an id to a mounted control — does not exist in
+/// `mini`, where controls are created and owned directly and there is no per-widget event
+/// dispatch. There is also no IME there: `mini` is the profile with no platform singleton. So
+/// the honest signature for that build is the same one, answering `false` because there is
+/// nothing to deliver to — not a second signature and not a compile error at the call site
+/// (rules #41/#53: an absent capability is a runtime answer, not an API fork).
+#[cfg(not(alloc_frugal))]
+pub fn deliver_composition(widget_id: ObjectId, composition: &ImeComposition) -> bool {
+    let event = crate::event::Event::ImePreedit {
+        text: composition.text.clone(),
+        cursor: composition.cursor_position,
+    };
+    crate::widget::runtime::dispatch_event(widget_id, &event)
+}
+
+/// [`deliver_composition`] for an allocation-frugal build: there is no widget registry and no
+/// IME, so nothing is delivered. See that function for why this is a body and not a signature.
+#[cfg(alloc_frugal)]
+pub fn deliver_composition(_widget_id: ObjectId, _composition: &ImeComposition) -> bool {
+    false
+}
+
+/// Delivers committed IME text to `widget_id` as
+/// [`Event::ImeCommit`](crate::event::Event::ImeCommit).
+///
+/// See [`deliver_composition`] for why this join exists. The same call also tells the live
+/// text model about the commit (`LineEdit::commit_composition`) when the control exposes one,
+/// because the two paths are the same user action: a control that matches on `Event::ImeCommit`
+/// gets the event, and a `LineEdit` that holds composition state gets it resolved.
+///
+/// Returns `false` when `widget_id` is not a mounted control.
+#[cfg(not(alloc_frugal))]
+pub fn deliver_commit(widget_id: ObjectId, text: &str) -> bool {
+    let event = crate::event::Event::ime_commit(text);
+    crate::widget::runtime::dispatch_event(widget_id, &event)
+}
+
+/// [`deliver_commit`] for an allocation-frugal build. See [`deliver_composition`].
+#[cfg(alloc_frugal)]
+pub fn deliver_commit(_widget_id: ObjectId, _text: &str) -> bool {
+    false
+}
+
 /// Mock IME bridge for testing.
 #[derive(Debug)]
 pub struct MockImeBridge {
@@ -286,5 +349,65 @@ mod tests {
         bridge.set_candidate_window_position(ImeCandidatePosition { x: 0, y: 0 });
         bridge.set_candidate_window_position(ImeCandidatePosition { x: 999, y: 888 });
         assert_eq!(bridge.last_candidate_position(), ImeCandidatePosition { x: 999, y: 888 });
+    }
+
+    /// The join between the platform bridge and the widget event layer: a composition is
+    /// delivered to the focused control as `Event::ImePreedit`, and a commit as
+    /// `Event::ImeCommit`. Without this the two variants had **no producer anywhere** —
+    /// controls that matched on them could never be reached outside a test.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn an_ime_composition_and_commit_reach_the_focused_widget() {
+        use crate::event::{Event, EventHandler};
+        use core::cell::RefCell;
+        use std::rc::Rc;
+
+        /// Records the IME events it receives into a shared log, so the test can read them
+        /// after the widget has been handed to the runtime.
+        struct Recorder {
+            log: Rc<RefCell<Vec<String>>>,
+            base: crate::widget::BaseWidget,
+        }
+        impl crate::widget::Widget for Recorder {
+            fn base(&self) -> &crate::widget::BaseWidget {
+                &self.base
+            }
+            fn base_mut(&mut self) -> &mut crate::widget::BaseWidget {
+                &mut self.base
+            }
+        }
+        impl EventHandler for Recorder {
+            fn handle_event(&mut self, event: &Event) {
+                match event {
+                    Event::ImePreedit { text, cursor } => {
+                        self.log.borrow_mut().push(format!("preedit:{text}@{cursor}"));
+                    }
+                    Event::ImeCommit { text } => {
+                        self.log.borrow_mut().push(format!("commit:{text}"));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let id = crate::widget::runtime::register(Box::new(Recorder {
+            log: Rc::clone(&log),
+            base: crate::widget::BaseWidget::new(
+                crate::widget::WidgetKind::Label,
+                crate::core::Rect::new(0, 0, 10, 10),
+                "recorder",
+            ),
+        }))
+        .expect("mount the recorder");
+
+        let composition =
+            ImeComposition { text: "にほ".to_string(), cursor_position: 6, selection_length: 0 };
+        assert!(deliver_composition(id, &composition), "a preedit reaches the control");
+        assert!(deliver_commit(id, "日本語"), "a commit reaches the control");
+
+        assert_eq!(*log.borrow(), vec!["preedit:にほ@6", "commit:日本語"]);
+
+        crate::widget::runtime::unregister(id);
     }
 }

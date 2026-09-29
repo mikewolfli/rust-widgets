@@ -1182,21 +1182,32 @@ mod tests {
             assert!(measured > 0, "the heading {title:?} must have a positive width");
         }
         // The 7 px-per-character guess this replaced was **not** the main error: at this font
-        // size it happens to be within 2 px of the honest measurement for every heading the
+        // size it happened to be within 2 px of the honest measurement for every heading the
         // board ships. It is still the wrong ruler to keep — it charges an em per cluster, so
         // a narrow glyph and a CJK scalar get the same width — but recording the size of the
         // error here keeps the next reader from mistaking the guess for the root cause and
         // "fixing" only the arithmetic, which would have moved four pixels and left the
         // headings where they were.
-        for title in ["Symbol", "Name", "Last", "Change", "Chg%", "High", "Low", "Volume"] {
-            let measured = measure_body_text(title, &font) as i32;
-            let naive = title.chars().count() as i32 * 7;
-            assert!(
-                (measured - naive).abs() <= 2,
-                "{title:?} measures {measured} against a 7 px-per-character guess of {naive}; \
-                 if these diverge the guess is a second, separate defect to fix"
-            );
-        }
+        //
+        // # Why this no longer asserts "within 2 px"
+        //
+        // That tolerance held while `estimate_text_width` used the flat model — the guess and
+        // the measurement were the *same* arithmetic, so of course they agreed. Now that the
+        // measurement reads the real face's advances, they legitimately differ (`"Symbol"` is
+        // 39 px, the guess is 42), which is exactly the divergence this comment predicted: the
+        // guess is a second, separate ruler. Asserting the tolerance would now forbid the
+        // honest measurement.
+        //
+        // The property worth pinning is the one that motivated the replacement: the guess
+        // charges the **same** width to a narrow glyph and a wide one, the real measurement
+        // does not. Keep that as the evidence that the two are different rulers.
+        let narrow = measure_body_text("i", &font);
+        let wide = measure_body_text("W", &font);
+        assert!(
+            wide > narrow,
+            "a proportional face must advance `W` past `i` ({wide} vs {narrow}); a flat \
+             per-character guess cannot express this"
+        );
     }
 
     /// A heading starts at its column's left inset, not a heading-width to the left of it.
@@ -1366,7 +1377,7 @@ mod tests {
         board.handle_event(&crate::event::Event::MousePress {
             pos: crate::core::Point { x: 100, y: 40 },
             button: 0,
-            modifiers: 0
+            modifiers: 0,
         });
         assert_eq!(count.load(Ordering::SeqCst), 1, "a press on a row emits its symbol");
         assert!(board.selected_index().is_some(), "and selects it");

@@ -19,7 +19,7 @@ use super::AccessibilityBridge;
 use crate::compat::{HashMap, MiniToString, Mutex, String};
 use crate::core::ObjectId;
 use cocoa::base::{id, nil};
-use cocoa::foundation::NSString;
+use cocoa::foundation::{NSAutoreleasePool, NSString};
 
 extern "C" {
     /// C function from ApplicationServices framework.
@@ -32,6 +32,21 @@ pub struct MacOSAccessibilityBridge {
     names: Mutex<HashMap<ObjectId, String>>,
     /// Mapping from widget ObjectId to native NSView/NSControl pointer (as *mut c_void).
     native_handles: Mutex<HashMap<ObjectId, usize>>,
+}
+
+/// Create an autoreleased `NSString` from a Rust string.
+///
+/// `NSString::init_str` returns a +1-retained object; left unmanaged it leaks
+/// on every accessibility notification. `autorelease` hands ownership to the
+/// enclosing autorelease pool so the string is reclaimed after the current run
+/// loop turn — the correct lifetime for a value that is only read during the
+/// `NSAccessibilityPostNotification` call that follows.
+///
+/// SAFETY: must be called on a thread with an active autorelease pool (the
+/// AppKit main thread always has one). Callers below invoke it on the same
+/// thread that owns the accessibility elements.
+unsafe fn autoreleased_nsstring(s: &str) -> id {
+    NSString::alloc(nil).init_str(s).autorelease()
 }
 
 impl MacOSAccessibilityBridge {
@@ -68,7 +83,7 @@ impl MacOSAccessibilityBridge {
         // the FFI boundary.
         let result = std::panic::catch_unwind(|| unsafe {
             let element: id = std::mem::transmute(ptr);
-            let ns_name = NSString::alloc(nil).init_str(notification_name);
+            let ns_name = autoreleased_nsstring(notification_name);
             // C function from ApplicationServices: NSAccessibilityPostNotification
             NSAccessibilityPostNotification(element, ns_name);
             true
@@ -99,7 +114,12 @@ impl AccessibilityBridge for MacOSAccessibilityBridge {
     }
 
     fn notify_state_changed(&self, id: ObjectId) {
-        self.post_notification(id, "NSAccessibilityFocusedUIElementChangedNotification");
+        // A state change (enabled/checked/value-of-state) must be reported as a
+        // value change, not a focus change — VoiceOver actions state transitions
+        // and focus moves differently. Posting the focus constant here (as the
+        // code once did) makes assistive output wrong; the Windows backend
+        // already distinguishes EVENT_OBJECT_STATECHANGE from EVENT_OBJECT_FOCUS.
+        self.post_notification(id, "NSAccessibilityValueChangedNotification");
     }
 
     fn notify_focus_changed(&self, id: ObjectId) {
@@ -166,7 +186,7 @@ pub fn post_ns_accessibility_notification(element_ptr: usize, notification: &str
     // `NSAccessibilityPostNotification` only reads the element it is given.
     unsafe {
         let element: id = std::mem::transmute(element_ptr);
-        let ns_name = NSString::alloc(nil).init_str(notification);
+        let ns_name = autoreleased_nsstring(notification);
         NSAccessibilityPostNotification(element, ns_name);
     }
 }

@@ -7,8 +7,15 @@ use crate::core::{ObjectId, Rect, Size};
 use crate::widget::Widget;
 /// A positioned child in an absolute layout, with optional size and anchor.
 ///
-/// The anchor determines which corner/edge of the child is placed at (x, y).
-/// Supports 9 anchor points (TopLeft, TopCenter, …, BottomRight).
+/// # What `anchor` means here
+///
+/// The anchor picks which part of **the child** is placed at `(x, y)`. `Anchor::TopRight`
+/// therefore puts the child's top-right corner at `(x, y)`, which is *not* the same as
+/// "pin the child to the parent's right edge" — that needs the parent's width, and is what
+/// [`AbsolutePosition::to_rect_in_parent`] provides. Keeping both spellings distinct matters:
+/// the self-relative one composes with a parent-relative offset (`x = parent.width - inset`),
+/// while the parent-relative one is what a caller actually means by "top-right corner of the
+/// window".
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AbsolutePosition {
     /// Horizontal offset of the anchored edge, in pixels, increasing to the
@@ -24,7 +31,9 @@ pub struct AbsolutePosition {
     /// Explicit height in pixels, or `None` to fall back to the child's own height
     /// hint. `Some(0)` is honoured as a zero-height rect.
     pub height: Option<u32>,
-    /// Which part of the child is pinned to `(x, y)`.
+    /// Which part of the child is pinned to `(x, y)`, or — via
+    /// [`AbsolutePosition::to_rect_in_parent`] — which edge of the parent it is measured
+    /// from.
     pub anchor: Anchor,
 }
 impl AbsolutePosition {
@@ -56,15 +65,17 @@ impl AbsolutePosition {
         self.anchor = anchor;
         self
     }
-    /// Resolves this position into a concrete pixel rect.
+    /// Resolves this position into a concrete pixel rect, measuring the anchor against
+    /// **the child's own box**.
     ///
     /// `child_size` supplies the width/height for axes where `width`/`height` is
-    /// `None`. `parent_size` is accepted for signature compatibility but is
-    /// currently unused: anchors are resolved against `child_size` rather than by
-    /// aligning to the parent's box, so a right/bottom anchor does *not* by itself
-    /// pin the child to the parent's far edge. Offsets are unclamped, so the
-    /// returned rect may fall partly or wholly outside the parent, and negative
-    /// resulting `x`/`y` values are returned as-is rather than clamped to zero.
+    /// `None`. `parent_size` is unused here: this spelling places the child's own anchored
+    /// corner at `(x, y)`, so `Anchor::TopRight` puts the child's top-right corner at the
+    /// caller's point rather than pinning it to the parent's right edge. Offsets are
+    /// unclamped, so the returned rect may fall partly or wholly outside the parent, and
+    /// negative resulting `x`/`y` values are returned as-is rather than clamped to zero.
+    ///
+    /// For "pin to the parent's edge", use [`Self::to_rect_in_parent`].
     pub fn to_rect(&self, _parent_size: Size, child_size: Size) -> Rect {
         let width = self.width.unwrap_or(child_size.width);
         let height = self.height.unwrap_or(child_size.height);
@@ -109,6 +120,36 @@ impl AbsolutePosition {
         };
         Rect::new(x, y, width, height)
     }
+
+    /// Resolves this position into a rect **anchored to the parent's box**.
+    ///
+    /// Here `(x, y)` is an inset measured from the anchored edge of `parent_size`, which is
+    /// what a caller means by "the top-right corner of the window": `BottomRight` with
+    /// `(8, 8)` puts the child 8px in from the bottom-right, whatever the window's size.
+    /// A centred anchor splits the remaining space, and the child may still overflow a
+    /// parent smaller than it.
+    ///
+    /// This is the operation [`Self::to_rect`]'s `parent_size` parameter was reserved for;
+    /// it is a separate method rather than a change to `to_rect` so that the existing
+    /// self-relative behaviour — which snapshots and callers already depend on — is
+    /// untouched.
+    pub fn to_rect_in_parent(&self, parent_size: Size, child_size: Size) -> Rect {
+        let width = self.width.unwrap_or(child_size.width);
+        let height = self.height.unwrap_or(child_size.height);
+        let pw = parent_size.width as i32;
+        let ph = parent_size.height as i32;
+        let x = match self.anchor.horizontal() {
+            HorizontalAnchor::Start => self.x,
+            HorizontalAnchor::Center => (pw - width as i32) / 2 + self.x,
+            HorizontalAnchor::End => pw - width as i32 - self.x,
+        };
+        let y = match self.anchor.vertical() {
+            VerticalAnchor::Start => self.y,
+            VerticalAnchor::Center => (ph - height as i32) / 2 + self.y,
+            VerticalAnchor::End => ph - height as i32 - self.y,
+        };
+        Rect::new(x, y, width, height)
+    }
 }
 impl Default for AbsolutePosition {
     fn default() -> Self {
@@ -144,6 +185,51 @@ pub enum Anchor {
     /// Bottom-right corner is at `(x, y)`.
     BottomRight,
 }
+/// Which edge of a parent box an anchor measures from, on one axis.
+///
+/// The nine anchors are the product of these two axes, so a caller that only needs "is it
+/// centred horizontally?" asks one question instead of matching nine variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HorizontalAnchor {
+    /// Measured from the left edge (`x` is an inset from the left).
+    Start,
+    /// Centred in the parent, with `x` as a signed nudge.
+    Center,
+    /// Measured from the right edge (`x` is an inset from the right).
+    End,
+}
+
+/// Which edge of a parent box an anchor measures from, on the vertical axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerticalAnchor {
+    /// Measured from the top edge.
+    Start,
+    /// Centred in the parent, with `y` as a signed nudge.
+    Center,
+    /// Measured from the bottom edge.
+    End,
+}
+
+impl Anchor {
+    /// The horizontal half of this anchor.
+    pub fn horizontal(self) -> HorizontalAnchor {
+        match self {
+            Anchor::TopLeft | Anchor::CenterLeft | Anchor::BottomLeft => HorizontalAnchor::Start,
+            Anchor::TopCenter | Anchor::Center | Anchor::BottomCenter => HorizontalAnchor::Center,
+            Anchor::TopRight | Anchor::CenterRight | Anchor::BottomRight => HorizontalAnchor::End,
+        }
+    }
+
+    /// The vertical half of this anchor.
+    pub fn vertical(self) -> VerticalAnchor {
+        match self {
+            Anchor::TopLeft | Anchor::TopCenter | Anchor::TopRight => VerticalAnchor::Start,
+            Anchor::CenterLeft | Anchor::Center | Anchor::CenterRight => VerticalAnchor::Center,
+            Anchor::BottomLeft | Anchor::BottomCenter | Anchor::BottomRight => VerticalAnchor::End,
+        }
+    }
+}
+
 /// Alias for Anchor to match test expectations
 pub use Anchor as AbsoluteAnchor;
 /// A size constraint with optional min/max bounds for each axis.
@@ -488,5 +574,65 @@ mod tests {
         let size = constraint.apply(Size::new(200, 200));
         assert_eq!(size.width, 200);
         assert_eq!(size.height, 100);
+    }
+
+    /// `to_rect_in_parent` measures the anchor from the **parent's** edge, which is what
+    /// "the bottom-right corner of the window" actually means. `to_rect` measures it against
+    /// the child's own box and is unchanged, so both spellings now exist and differ.
+    #[test]
+    fn anchored_in_parent_pins_to_the_parents_edges() {
+        let parent = Size::new(400, 300);
+        let child = Size::new(60, 40);
+
+        // 8px in from the bottom-right, whatever the parent's size.
+        let corner = AbsolutePosition::new(8, 8)
+            .with_anchor_only(Anchor::BottomRight)
+            .to_rect_in_parent(parent, child);
+        assert_eq!(corner, Rect::new(400 - 60 - 8, 300 - 40 - 8, 60, 40));
+
+        // Centred, with the offsets acting as a nudge.
+        let centred = AbsolutePosition::new(0, 0)
+            .with_anchor_only(Anchor::Center)
+            .to_rect_in_parent(parent, child);
+        assert_eq!(centred, Rect::new(170, 130, 60, 40));
+
+        // Top-left is the identity: x/y stay absolute.
+        let top_left = AbsolutePosition::new(5, 6)
+            .with_anchor_only(Anchor::TopLeft)
+            .to_rect_in_parent(parent, child);
+        assert_eq!(top_left, Rect::new(5, 6, 60, 40));
+
+        // And it genuinely differs from the self-relative spelling for the same anchor.
+        let position = AbsolutePosition::new(400, 300).with_anchor_only(Anchor::BottomRight);
+        assert_eq!(
+            position.to_rect(parent, child),
+            Rect::new(400 - 60, 300 - 40, 60, 40),
+            "the old spelling places the child's own corner at the given point"
+        );
+        assert_eq!(
+            position.to_rect_in_parent(parent, child),
+            Rect::new(400 - 60 - 400, 300 - 40 - 300, 60, 40),
+            "the new spelling treats the point as an inset from the parent's edge"
+        );
+    }
+
+    /// The anchor's axis decomposition must be a total function that agrees with the nine
+    /// explicit variants — the property that makes it safe to use as the single source.
+    #[test]
+    fn every_anchor_decomposes_onto_its_axes() {
+        for (anchor, horizontal, vertical) in [
+            (Anchor::TopLeft, HorizontalAnchor::Start, VerticalAnchor::Start),
+            (Anchor::TopCenter, HorizontalAnchor::Center, VerticalAnchor::Start),
+            (Anchor::TopRight, HorizontalAnchor::End, VerticalAnchor::Start),
+            (Anchor::CenterLeft, HorizontalAnchor::Start, VerticalAnchor::Center),
+            (Anchor::Center, HorizontalAnchor::Center, VerticalAnchor::Center),
+            (Anchor::CenterRight, HorizontalAnchor::End, VerticalAnchor::Center),
+            (Anchor::BottomLeft, HorizontalAnchor::Start, VerticalAnchor::End),
+            (Anchor::BottomCenter, HorizontalAnchor::Center, VerticalAnchor::End),
+            (Anchor::BottomRight, HorizontalAnchor::End, VerticalAnchor::End),
+        ] {
+            assert_eq!(anchor.horizontal(), horizontal, "{anchor:?}");
+            assert_eq!(anchor.vertical(), vertical, "{anchor:?}");
+        }
     }
 }

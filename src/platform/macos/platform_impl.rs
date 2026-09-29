@@ -23,6 +23,19 @@ use objc::{class, msg_send, sel, sel_impl};
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
+/// An autoreleased `NSString` for a Rust `&str`.
+///
+/// `NSString::init_str` returns a +1-retained object, so an unmanaged result leaks on every call —
+/// the clipboard reads/writes and the window-title setter each leaked one per invocation.
+/// `autorelease` hands ownership to the enclosing pool, which is the correct lifetime for a string
+/// that is only read during the following Objective-C call.
+///
+/// # SAFETY
+/// Must be called on a thread with an active autorelease pool (AppKit's main thread has one).
+unsafe fn autoreleased_nsstring(s: &str) -> id {
+    NSString::alloc(nil).init_str(s).autorelease()
+}
+
 impl Platform for MacOSPlatform {
     fn as_any(&self) -> &dyn crate::compat::Any {
         self
@@ -422,8 +435,8 @@ impl Platform for MacOSPlatform {
                 return false;
             }
             let _: () = msg_send![pb, clearContents];
-            let ns_str = NSString::alloc(nil).init_str(text);
-            let type_str = NSString::alloc(nil).init_str("public.utf8-plain-text");
+            let ns_str = autoreleased_nsstring(text);
+            let type_str = autoreleased_nsstring("public.utf8-plain-text");
             let success: BOOL = msg_send![pb, setString:ns_str forType:type_str];
             success != NO
         });
@@ -441,7 +454,7 @@ impl Platform for MacOSPlatform {
             if pb == nil {
                 return None;
             }
-            let type_str = NSString::alloc(nil).init_str("public.utf8-plain-text");
+            let type_str = autoreleased_nsstring("public.utf8-plain-text");
             let text_obj: id = msg_send![pb, stringForType:type_str];
             if text_obj == nil {
                 return None;
@@ -480,7 +493,7 @@ impl Platform for MacOSPlatform {
                 // and `setTitle:` is declared by NSWindow.
                 unsafe {
                     let window = Self::as_id(handle);
-                    let title = NSString::alloc(nil).init_str(text);
+                    let title = autoreleased_nsstring(text);
                     NSWindow::setTitle_(window, title);
                 }
             }

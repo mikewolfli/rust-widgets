@@ -140,10 +140,32 @@ pub struct ActionBinding {
     /// Host kind receiving the action.
     pub kind: ActionHostKind,
 }
+/// Canonicalizes a shortcut string so every spelling of *the same chord* maps to one key.
+///
+/// # Why aliases are folded, not just lower-cased
+///
+/// `Shortcut::from_string` maps `primary`, `cmd`, `command`, `cmdorctrl` and `ctrl` all to
+/// [`Modifiers::PRIMARY`](crate::shortcut::Modifiers::PRIMARY) — that is what makes `"Cmd+Z"` and
+/// `"Ctrl+Z"` parse to the *same* value. `Shortcut::to_string` (its canonical form) renders that
+/// bit as `"Primary"`. So a bridge that only lower-cases would key `"ctrl+s"` and `"primary+s"`
+/// as **two** entries for one chord, and a type-bound chord could never be triggered by the
+/// `Ctrl` spelling a hand-written layout uses. Folding the aliases here is what makes both the
+/// string API and the type API agree, wherever they are reached.
 pub(crate) fn normalize_shortcut(shortcut: &str) -> String {
     shortcut
         .split('+')
         .map(|token| token.trim().to_lowercase())
+        // Fold every spelling of the primary modifier onto `"primary"`, matching
+        // `Shortcut::from_string`. Any other token is kept verbatim.
+        //
+        // `String::from` rather than `"primary".to_string()`: an allocation-frugal profile does
+        // not pull in the `ToString` prelude, so the `to_string()` spelling failed to compile
+        // under `--features mini` (E0599) — a defect the `mini` profile gate caught. The branch
+        // must stay owned because the other arm holds the owned result of `to_lowercase()`.
+        .map(|token| match token.as_str() {
+            "cmd" | "command" | "cmdorctrl" | "ctrl" | "control" => String::from("primary"),
+            _ => token,
+        })
         .filter(|token| !token.is_empty())
         .collect::<Vec<_>>()
         .join("+")

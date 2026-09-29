@@ -903,7 +903,15 @@ mod tests {
         assert!(short.iter().all(|byte| *byte == 0), "nothing may be written");
     }
 
-    /// TEMP DIAGNOSTIC: how much of a glyph paint is re-parsing the font file.
+    /// How much of a glyph paint is re-parsing the font file.
+    ///
+    /// Kept because the answer decided the glyph-path design (parse-once vs parse-per-paint),
+    /// so a future reader measuring a regression wants the same probe. **Gated to match what it
+    /// measures**: `font_assets::outline_face_for` and `ttf_parser` only exist when an outline
+    /// face is compiled in, and this test names both directly. Ungated it made `cargo test
+    /// --features mini` fail to compile — a test that cannot build in a profile is not a test
+    /// of that profile.
+    #[cfg(feature = "text-shaping")]
     #[test]
     fn diag_face_parse_cost() {
         let Some(face) = crate::render::text::font_assets::outline_face_for('A') else {

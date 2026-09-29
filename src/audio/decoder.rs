@@ -525,7 +525,7 @@ mod tests {
         assert!(result.is_ok());
         let buf = result.unwrap();
         assert_eq!(buf.sample_rate, 44100);
-        assert_eq!(buf.channels, 1);
+        assert_eq!(buf.channels(), 1);
     }
 
     #[test]
@@ -683,7 +683,7 @@ mod tests {
         }
         let buf = result.unwrap();
         assert_eq!(buf.sample_rate, 44100);
-        assert_eq!(buf.channels, 1);
+        assert_eq!(buf.channels(), 1);
         assert!(!buf.samples.is_empty());
 
         // Verify some samples are non-zero (actual audio data was decoded)

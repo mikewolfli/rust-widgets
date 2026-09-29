@@ -224,19 +224,81 @@ impl DirtyRegionTracker {
     /// that limit.
     ///
     /// Merging is attempted first. If merging alone is not enough, regions are
-    /// sorted by descending [`DirtyRegion::priority`] and the tail is truncated,
-    /// so low-priority (and, on ties, earlier-inserted) regions are dropped
-    /// without being rendered.
+    /// sorted by descending [`DirtyRegion::layer`], then descending
+    /// [`DirtyRegion::priority`], and the tail is truncated, so the regions that sit **above**
+    /// others survive first, and within a layer the higher-priority (and, on ties,
+    /// earlier-inserted) regions are kept.
+    ///
+    /// # Why `layer` leads the sort
+    ///
+    /// The field documents "higher layers sit above lower ones and are retained first". Sorting
+    /// on `priority` alone made that false: a low-priority region on a top layer could be dropped
+    /// while a high-priority one on a background layer survived, which is the opposite of what a
+    /// compositor wants. `layer` is the outer key because an obscured upper layer is the one whose
+    /// loss is visible.
     ///
     /// Calling this when the tracker is within its limit does nothing.
     pub fn optimize(&mut self) {
         if self.regions.len() > self.max_regions {
             self.merge();
             if self.regions.len() > self.max_regions {
-                self.regions.sort_by_key(|b| Reverse(b.priority));
+                // `Reverse` on both keys: descending layer, then descending priority. `sort_by_key`
+                // is stable, so equal (layer, priority) pairs keep their insertion order.
+                self.regions
+                    .sort_by_key(|region| (Reverse(region.layer), Reverse(region.priority)));
                 self.regions.truncate(self.max_regions);
             }
         }
     }
 }
 crate::impl_default_via_new!(DirtyRegionTracker);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Rect;
+
+    fn region_rects(tracker: &DirtyRegionTracker) -> Vec<(i32, i32)> {
+        tracker.regions.iter().map(|region| (region.rect.x, region.rect.y)).collect()
+    }
+
+    /// `optimize` must retain the regions that sit **above** others first, then by priority.
+    ///
+    /// Pins the defect: the doc said `layer` is "used by `optimize`", but `optimize` sorted on
+    /// `priority` alone — so a low-priority region on a top layer could be dropped while a
+    /// high-priority background one survived, the opposite of what a compositor wants.
+    #[test]
+    fn optimize_keeps_upper_layers_first() {
+        let mut tracker = DirtyRegionTracker::with_max_regions(2);
+        // Distinct, non-overlapping rects so `merge` cannot collapse them.
+        tracker.add_with_layer(Rect::new(0, 0, 10, 10), 0); // background, high priority
+        tracker.regions.last_mut().expect("just pushed").priority = 200;
+        tracker.add_with_layer(Rect::new(50, 0, 10, 10), 5); // top layer, low priority
+        tracker.add_with_layer(Rect::new(100, 0, 10, 10), 1); // middle
+
+        tracker.optimize();
+
+        let kept = region_rects(&tracker);
+        assert_eq!(kept.len(), 2, "the tracker is trimmed to its limit");
+        assert!(
+            kept.contains(&(50, 0)),
+            "the top-layer region must survive even at low priority: {kept:?}"
+        );
+        assert!(!kept.contains(&(0, 0)), "the background region is the one dropped: {kept:?}");
+    }
+
+    /// Within one layer, priority still decides.
+    #[test]
+    fn optimize_orders_by_priority_within_a_layer() {
+        let mut tracker = DirtyRegionTracker::with_max_regions(1);
+        tracker.add_with_layer(Rect::new(0, 0, 10, 10), 2);
+        tracker.regions.last_mut().expect("just pushed").priority = 1;
+        tracker.add_with_layer(Rect::new(50, 0, 10, 10), 2);
+        tracker.regions.last_mut().expect("just pushed").priority = 9;
+
+        tracker.optimize();
+
+        let kept = region_rects(&tracker);
+        assert_eq!(kept, vec![(50, 0)], "the higher-priority same-layer region is kept");
+    }
+}

@@ -76,6 +76,21 @@ pub struct BaseWidget {
     pub layout_requested: GenericSignal,
     /// Emitted when a stateful value changes (e.g., slider value, checkbox state).
     pub changed: GenericSignal,
+    /// Emitted when this control is **closed** or dismissed as a lifecycle fact.
+    ///
+    /// # Why this lives on `BaseWidget`
+    ///
+    /// Controls that can be closed (`Window`, `Dialog`, `PopupWindow`, `NavigationDrawer`, a
+    /// snackbar/bottom-sheet dismissal) each declared their **own** `closed`/`dismissed` signal, so
+    /// there was no one signal the handle layer could connect `on_close` to. The published `closed`
+    /// event therefore had no producer reachable from the handle/JSON route, which is why
+    /// `JsonTriggerMarker::Closed` had to refuse `on_close` outright. One base signal makes the
+    /// meaning uniform: a control emits *this* when it closes, and a control-specific signal (where
+    /// one exists) is emitted alongside it for its own listeners.
+    ///
+    /// Not emitted for a mere visibility toggle — closing is the lifecycle transition, and
+    /// [`BaseWidget::set_visible`] is a rendering concern.
+    pub closed: GenericSignal,
     /// Whether [`Self::request_redraw`] has ever been called on this widget.
     ///
     /// Set once and never cleared, because it answers a question about the control's
@@ -180,6 +195,7 @@ impl BaseWidget {
             redraw_requested: GenericSignal::new(),
             layout_requested: GenericSignal::new(),
             changed: GenericSignal::new(),
+            closed: GenericSignal::new(),
             ever_requested_redraw: core::cell::Cell::new(false),
             self_driving_animation: core::cell::Cell::new(false),
             hovered: false,

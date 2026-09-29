@@ -42,6 +42,30 @@ use crate::{impl_widget_property_hooks, property_names_of};
 /// Size of the QR code matrix (rows × columns).
 const MATRIX_SIZE: u32 = 21;
 
+/// Side of a finder pattern (and of its separator ring) in modules.
+const FINDER_SIZE: u32 = 7;
+
+/// Returns the top-left module of the finder block a cell belongs to, together with
+/// whether the corner-local coordinates must be mirrored on each axis.
+///
+/// Each finder pattern owns an 8×8 block: the 7×7 finder itself plus a one-module light
+/// separator on its inner edges. The three blocks are the top-left corner, the top-right
+/// corner (growing leftward) and the bottom-left corner (growing upward). A cell outside
+/// every block is data and returns `None`.
+fn finder_corner(row: u32, col: u32) -> Option<(u32, u32, bool, bool)> {
+    let far = MATRIX_SIZE - FINDER_SIZE - 1;
+    let outer = FINDER_SIZE + 1;
+    if row < outer && col < outer {
+        Some((0, 0, false, false))
+    } else if row < outer && col >= far {
+        Some((0, far, false, true))
+    } else if row >= far && col < outer {
+        Some((far, 0, true, false))
+    } else {
+        None
+    }
+}
+
 /// QRCode widget that renders a deterministic QR-like pattern.
 pub struct QRCode {
     base: BaseWidget,
@@ -129,19 +153,42 @@ impl QRCode {
         let mut state = seed;
         for row in 0..MATRIX_SIZE {
             for col in 0..MATRIX_SIZE {
-                // Skip finder patterns (top-left, top-right, bottom-left corners)
-                let in_finder = row < 7 && !(7..MATRIX_SIZE - 7).contains(&col)
-                    || row >= MATRIX_SIZE - 7 && col < 7;
-
-                if in_finder {
-                    // Draw finder pattern: 7x7 with a 3x3 inner black square
-                    let is_outer = row == 0 || row == 6 || col == 0 || col == 6;
-                    let is_inner = (2..=4).contains(&row) && (2..=4).contains(&col);
-                    let _is_sep = row == 7
-                        || col == 7
-                        || (row < 7 && col == MATRIX_SIZE - 8)
-                        || (row == MATRIX_SIZE - 8 && col < 7);
-
+                // The three finder patterns are 7x7 squares in the top-left, top-right
+                // and bottom-left corners, each separated from the data area by a
+                // one-module light separator (row/column 7 from its own corner).
+                //
+                // The shape test has to run in **corner-local** coordinates: testing the
+                // absolute `row`/`col` only ever matches the top-left corner, so the other
+                // two corners used to be filled with data modules instead of a finder
+                // pattern -- three visually different corners in a widget whose whole
+                // purpose is to look like a QR symbol. `local` therefore reports the
+                // distance from whichever corner the cell belongs to.
+                let corner = finder_corner(row, col);
+                if let Some((base_row, base_col, flip_row, flip_col)) = corner {
+                    // Corner-local coordinates, measured from the **inner** corner of the
+                    // block: a mirrored finder is congruent to the top-left one, which is
+                    // what makes all three corners the same shape. Without the mirror the
+                    // other two would be reflections, not copies.
+                    let mut local_row = (row - base_row) as usize;
+                    let mut local_col = (col - base_col) as usize;
+                    if flip_row {
+                        local_row = FINDER_SIZE as usize - local_row;
+                    }
+                    if flip_col {
+                        local_col = FINDER_SIZE as usize - local_col;
+                    }
+                    // The separator is the 8th row/column of the corner block. It is
+                    // painted light (it is a background cell), and the data generator must
+                    // not be advanced for it either -- otherwise the data area's bit
+                    // stream would depend on where the finder patterns happen to be.
+                    if local_row == 7 || local_col == 7 {
+                        matrix[row as usize][col as usize] = false;
+                        continue;
+                    }
+                    // Draw finder pattern: 7x7 ring with a 3x3 solid centre.
+                    let is_outer =
+                        local_row == 0 || local_row == 6 || local_col == 0 || local_col == 6;
+                    let is_inner = (2..=4).contains(&local_row) && (2..=4).contains(&local_col);
                     matrix[row as usize][col as usize] = is_outer || is_inner;
                     continue;
                 }
@@ -371,5 +418,63 @@ mod tests {
         // Should not panic.
         qr.handle_event(&Event::MouseMove { pos: Point::new(10, 10) });
         qr.handle_event(&Event::KeyDown((65, 0)));
+    }
+
+    /// All three finder patterns must be the **same shape**. Only the top-left corner
+    /// used to be drawn; the other two were filled with data modules, so the symbol
+    /// had one recognisable corner and two that looked like noise.
+    #[test]
+    fn all_three_finder_patterns_are_identical() {
+        let mut qr = QRCode::new(Rect::new(0, 0, 120, 120));
+        qr.set_data("finder-shape");
+        let matrix = qr.generate_matrix();
+
+        let n = MATRIX_SIZE as usize;
+        let top_left: Vec<bool> =
+            (0..7).flat_map(|r| (0..7).map(move |c| (r, c))).map(|(r, c)| matrix[r][c]).collect();
+        let top_right: Vec<bool> = (0..7)
+            .flat_map(|r| (0..7).map(move |c| (r, c)))
+            .map(|(r, c)| matrix[r][n - 1 - c])
+            .collect();
+        let bottom_left: Vec<bool> = (0..7)
+            .flat_map(|r| (0..7).map(move |c| (r, c)))
+            .map(|(r, c)| matrix[n - 1 - r][c])
+            .collect();
+
+        assert_eq!(top_left, top_right, "the top-right finder mirrors the top-left");
+        assert_eq!(top_left, bottom_left, "the bottom-left finder mirrors the top-left");
+
+        // And the canonical 7x7 shape: a dark ring, a light gap, a 3x3 dark core.
+        let expected: Vec<bool> = (0..7)
+            .flat_map(|r| (0..7).map(move |c| (r, c)))
+            .map(|(r, c)| {
+                let outer = r == 0 || r == 6 || c == 0 || c == 6;
+                let inner = (2..=4).contains(&r) && (2..=4).contains(&c);
+                outer || inner
+            })
+            .collect();
+        assert_eq!(top_left, expected, "the finder is a ring plus a solid centre");
+    }
+
+    /// The separator ring between a finder pattern and the data area is **light**, so a
+    /// decoder (and a reader) can tell where the 7x7 block ends. It used to be computed
+    /// and thrown away.
+    #[test]
+    fn finder_patterns_are_ringed_by_a_light_separator() {
+        let mut qr = QRCode::new(Rect::new(0, 0, 120, 120));
+        qr.set_data("separator");
+        let matrix = qr.generate_matrix();
+        let n = MATRIX_SIZE as usize;
+
+        for (r, c) in (0..8).flat_map(|r| (0..8).map(move |c| (r, c))) {
+            if r == 7 || c == 7 {
+                assert!(!matrix[r][c], "top-left separator at ({r},{c}) must be light");
+            }
+        }
+        for c in 0..8 {
+            assert!(!matrix[7][c]);
+            assert!(!matrix[n - 1 - c][7], "bottom-left separator is light");
+            assert!(!matrix[7][n - 1 - c], "top-right separator is light");
+        }
     }
 }

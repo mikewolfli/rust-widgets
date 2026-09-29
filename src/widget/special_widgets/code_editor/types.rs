@@ -89,24 +89,32 @@ impl TokenSpan {
 }
 
 /// Colour palette for token categories and editor decorations.
+///
+/// # Why this is smaller than it looks like it should be
+///
+/// Six fields that used to live here — `active_line_color`, `indent_guide_color`,
+/// `search_current_color`, `occurrence_color`, `chrome_text` and `chrome_dim_text` — were declared
+/// and set in both the light and dark literals but **read by nothing**. The decorations they named
+/// are resolved in `render.rs` from the surface and the theme instead
+/// (`active_line: surface.blend(&ink, 0.04)`, `search_current: warning.blend(&surface, 0.15)`, and
+/// `chrome_text`/`chrome_dim_text` by `ink`/`dim_ink`), which is what makes those colours follow a
+/// host theme rather than a second hard-coded palette. They were removed rather than wired: a
+/// palette literal is only consulted when the theme is absent, and in that case the derived value
+/// is the one already drawn, so wiring them would have been a second source of truth for a colour
+/// that has one (principle #101, #99).
+///
+/// The fields below are read: `colors` by `color_for`, the rest by
+/// `Chrome::resolve`/`color_for` in `render.rs`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SyntaxPalette {
     /// Foreground colour per token kind.
     pub colors: Vec<(TokenKind, Color)>,
     /// Bracket-pair highlight colour.
     pub bracket_color: Color,
-    /// Active-line background.
-    pub active_line_color: Color,
-    /// Indent guide colour.
-    pub indent_guide_color: Color,
     /// Selection background.
     pub selection_color: Color,
     /// Search-hit background.
     pub search_color: Color,
-    /// Active search-hit background.
-    pub search_current_color: Color,
-    /// Occurrence-outline colour.
-    pub occurrence_color: Color,
     /// Gutter background.
     pub gutter_background: Color,
     /// Editor background.
@@ -115,10 +123,6 @@ pub struct SyntaxPalette {
     pub border_color: Color,
     /// Chrome (tab strip, status bar, find bar) background.
     pub chrome_background: Color,
-    /// Primary chrome text colour.
-    pub chrome_text: Color,
-    /// Dimmed chrome text colour.
-    pub chrome_dim_text: Color,
 }
 
 impl Default for SyntaxPalette {
@@ -153,18 +157,12 @@ impl SyntaxPalette {
                 (TokenKind::Identifier, Color::rgb(43, 55, 74)),
             ],
             bracket_color: Color::rgb(120, 158, 212),
-            active_line_color: Color::rgb(243, 247, 253),
-            indent_guide_color: Color::rgb(228, 234, 244),
             selection_color: Color::rgb(206, 226, 250),
             search_color: Color::rgb(255, 232, 158),
-            search_current_color: Color::rgb(255, 198, 92),
-            occurrence_color: Color::rgb(150, 176, 214),
             gutter_background: Color::rgb(246, 248, 252),
             background: Color::rgb(252, 253, 255),
             border_color: Color::rgb(188, 197, 211),
             chrome_background: Color::rgb(238, 242, 248),
-            chrome_text: Color::rgb(70, 84, 106),
-            chrome_dim_text: Color::rgb(140, 152, 170),
         }
     }
 
@@ -198,18 +196,12 @@ impl SyntaxPalette {
                 (TokenKind::Identifier, Color::rgb(212, 218, 228)),
             ],
             bracket_color: Color::rgb(86, 156, 214),
-            active_line_color: Color::rgb(38, 40, 44),
-            indent_guide_color: Color::rgb(52, 55, 60),
             selection_color: Color::rgb(38, 79, 120),
             search_color: Color::rgb(97, 79, 36),
-            search_current_color: Color::rgb(140, 110, 40),
-            occurrence_color: Color::rgb(86, 156, 214),
             gutter_background: Color::rgb(30, 32, 36),
             background: Color::rgb(24, 26, 30),
             border_color: Color::rgb(62, 66, 74),
             chrome_background: Color::rgb(32, 34, 38),
-            chrome_text: Color::rgb(204, 210, 220),
-            chrome_dim_text: Color::rgb(140, 148, 162),
         }
     }
 

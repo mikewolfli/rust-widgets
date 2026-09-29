@@ -6,22 +6,33 @@
 use crate::audio::format::SampleFormat;
 
 /// Buffer of audio samples with metadata.
+///
+/// `channels` is private and guaranteed `>= 1` (see [`AudioBuffer::channels`]):
+/// an interleaved buffer with zero channels is meaningless and would make every
+/// frame/offset computation a division by zero.
 #[derive(Debug, Clone)]
 pub struct AudioBuffer {
     /// Sample rate in Hz (e.g., 44100).
     pub sample_rate: u32,
     /// Interleaved F32 samples: L0, R0, L1, R1, ...
     pub samples: Vec<f32>,
-    /// Number of channels (1=mono, 2=stereo, etc.).
-    pub channels: u8,
+    /// Number of channels (1=mono, 2=stereo, etc.). Always `>= 1`.
+    channels: u8,
     /// Original sample format before conversion to F32.
     pub original_format: SampleFormat,
 }
 
 impl AudioBuffer {
     /// Create a new audio buffer.
+    ///
+    /// `channels` is clamped to at least 1 so the buffer is always well-formed.
     pub fn new(sample_rate: u32, samples: Vec<f32>, channels: u8) -> Self {
         Self { sample_rate, samples, channels: channels.max(1), original_format: SampleFormat::F32 }
+    }
+
+    /// Number of channels. Always `>= 1`.
+    pub fn channels(&self) -> u8 {
+        self.channels
     }
 
     /// Duration in seconds.
@@ -142,5 +153,20 @@ mod tests {
     fn test_audio_buffer_frames() {
         let buf = AudioBuffer::new(44100, vec![0.0; 8], 2);
         assert_eq!(buf.frames(), 4);
+    }
+
+    #[test]
+    fn zero_channels_are_clamped_and_never_divide_by_zero() {
+        // Pins the defect: `channels` was `pub` and `new` clamped it, but a
+        // struct literal (or deserialized buffer) could set 0, making
+        // `frames()` / `duration_seconds()` / `channel()` / `to_mono()` panic
+        // with a division by zero. The field is now private with an accessor
+        // guaranteed `>= 1`, so the only way in is `new`, which clamps.
+        let buf = AudioBuffer::new(44100, vec![0.0; 8], 0);
+        assert_eq!(buf.channels(), 1);
+        assert_eq!(buf.frames(), 8);
+        assert!((buf.duration_seconds() - 8.0 / 44100.0).abs() < 1e-9);
+        assert_eq!(buf.channel(0).len(), 8);
+        assert_eq!(buf.to_mono().len(), 8);
     }
 }

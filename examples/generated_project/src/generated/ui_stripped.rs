@@ -7,6 +7,9 @@
 //
 // resolved at generation time (not calls in this file):
 //   - the document's layout was solved into constant coordinates against 640x480
+//
+// REFUSED — present in the document, absent from this file:
+//   - path [1] `button`: `events.clicked` -> `on_go`: a stripped target has no widget registry, so there is no control id to bind a handler to; the wire is refused rather than generated as a subscription that could never fire
 
 use rust_widgets::core::Rect;
 use rust_widgets::widget::Widget;

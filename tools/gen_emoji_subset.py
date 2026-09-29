@@ -45,9 +45,18 @@ without a recorded decision. `tools/check_font_licenses.sh` asserts the gate sti
 # Determinism
 
 Output is deterministic for a given fontTools version: the source is pinned by SHA-256, and the
-subsetter is invoked with `recalcTimestamp=False` so `head.modified` keeps the upstream value. Without
+font is opened with `recalcTimestamp=False` so `head.modified` keeps the upstream value. Without
 that, fontTools stamps the save time into the file and two runs produce two different artifacts, so
 `--check` could never pass.
+
+# A defect this shipped with, and how it was found
+
+`recalcTimestamp` was set on the **subsetter options** object (`options.recalc_timestamp`), not on
+the `TTFont`. Only the latter is consulted by `TTFont.save`, so the flag had no effect: consecutive
+runs differed in exactly three bytes of the `head` table and `--check` failed forever. It went
+unnoticed because this file was not listed in `check_generated_files_have_a_runnable_producer.sh`,
+so nothing ever ran its `--check`. The gate now lists it (and the other glyph artifacts), which is
+what surfaced this — the same shape as the icon-table defect the gate was written for.
 """
 
 import argparse
@@ -174,6 +183,8 @@ def subset_bytes(face, source_path, codepoints):
     request for a codepoint the face does not have, and the curated list is a superset of some
     upstream releases — so the intersection is what makes the list robust to that, while the count
     printed below still shows how much of the list was actually satisfied.
+    The `recalcTimestamp=False` is passed to `TTFont`, not to the subsetter options: see the module
+    docs on determinism, and on the defect where setting it on the options object was a silent no-op.
     """
     from fontTools.ttLib import TTFont
     from fontTools import subset
@@ -184,12 +195,16 @@ def subset_bytes(face, source_path, codepoints):
     options.retain_gids = True
     options.notdef_outline = True
     options.recalc_bounds = False
-    # Do not stamp the save time into `head`: see the module docs on determinism.
-    options.recalc_timestamp = False
+    # NOTE: not `options.recalc_timestamp`. That attribute lives on the subsetter's options object
+    # but is not what `TTFont.save` consults — the flag that decides whether the save time is
+    # stamped into `head.modified` is `TTFont.recalcTimestamp`, set on the font below. Setting it
+    # here was a no-op, so two runs of this generator produced two different `.ttf` bytes and
+    # `--check` could never pass. The other two glyph generators (`gen_font_subset.py`,
+    # `gen_cjk_shards.py`) already pass it to `TTFont`, which is why only this one drifted.
     options.canonical_order = True
     options.drop_tables += ["DSIG"]
 
-    font = TTFont(str(source_path))
+    font = TTFont(str(source_path), recalcTimestamp=False)
     available = set(font.getBestCmap().keys())
     wanted = [cp for cp in codepoints if cp in available]
     missing = sorted(set(codepoints) - available)

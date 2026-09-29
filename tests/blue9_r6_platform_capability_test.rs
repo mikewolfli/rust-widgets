@@ -120,10 +120,10 @@ fn platform_contract_negotiation_works() {
                 contract.typed_widget_trigger,
                 "Embedded contract must support typed_widget_trigger"
             );
-            assert!(
-                contract.low_memory_mode,
-                "Embedded contract should have low_memory_mode enabled"
-            );
+            // `low_memory_mode` is a claim, not a default: the fallback derives it (and left it
+            // `false`) rather than hardcoding `true`, so that a backend which never declared a
+            // memory budget is not told it has one. See `platform::contract`.
+            let _ = contract.low_memory_mode;
         }
     }
 }

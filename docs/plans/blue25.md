@@ -722,14 +722,23 @@ impl IconName {
 
 | 阶段 | 交付 | 文件 | 门禁 |
 |---|---|---|---|
-| **ICON-1** | **SVG `d` 解析 → 复用 `raster.rs` 已有展平器**的适配层（§6.1.2） | `src/render/path/parser.rs`（新）；单测含畸形输入 | 单测：畸形 `d` ⇒ `Err`，不出 panic；**不断言展平精度**（那是 `raster.rs` 已有的责任） |
-| **ICON-2** | `gen_icon_data.py` + 上游 vendoring（**固定 commit SHA**）+ `NOTICE` 记录 | `tools/gen_icon_data.py`、`tools/material_symbols/*.svg`、`NOTICE` | `gen_icon_data.py --check` 字节一致；无 `--license` ⇒ 退出码 2；**未固定 SHA ⇒ 拒绝运行** |
-| **ICON-3** | `IconName` + `IconData` + `data()`（无 `None` 臂） | `src/widget/icons/{mod.rs,icon_data.rs}`（新） | 编译期保证 + `tests/icon_data_integrity_test.rs` |
+| **ICON-1** | **SVG `d` 解析 → 复用 `raster.rs` 已有展平器**的适配层（§6.1.2） | `src/render/path/parser.rs`（新）+ `src/render/path/flatten.rs`（几何与放置） | 单测：畸形 `d` ⇒ `Err`，不出 panic；**不断言展平精度**（那是 `raster.rs` 已有的责任） |
+| **ICON-2** | `gen_icon_data.py` + `gen_icon_fallback.py` + 上游 vendoring（**固定 commit SHA**）+ `NOTICE` 记录 | `tools/gen_icon_data.py`、`tools/gen_icon_fallback.py`、`tools/material_symbols/*.svg`、`tools/material_symbols/LICENSE`、仓根 `NOTICE` | `gen_icon_data.py --check --license=apache-2.0` 字节一致；无 `--license` ⇒ 拒绝；**未固定 SHA ⇒ 拒绝运行** |
+| **ICON-3** | `IconName` + `IconData` + `data()`（无 `None` 臂） | `src/widget/display_widgets/icon.rs`（`IconData` 的类型与绘制） + `src/widget/display_widgets/icon_names.rs`（**生成物**，由 `tools/gen_icon_names.py` 从 `tools/icon_tokens.txt` 生成） | 编译期保证 + `tests/icon_data_integrity_test.rs` |
 | **ICON-4** | `Icon` 改存 `Option<IconName>`，**移除 draw 期的 `&str` 匹配** | `src/widget/display_widgets/icon.rs` | 「无静默占位」测试：census 里每个名字都**不走** `draw_unknown` |
 | **ICON-5** | `Icon::draw` 走新数据；**删掉 28 个 `draw_*` 中已被数据取代的**（保留过程式兜底） | 同上 | 既有 3 个图标快照**逐字节不变**（证明迁移无回归） |
 | **ICON-6** | census + 互异性门禁 | `tools/icon_census.txt`、`tests/icon_census_test.rs` | 注入：给两个名字同一轮廓 ⇒ 门禁红 |
 | **ICON-7** | 图标**雪碧图**快照（**不**新增 400 个文件） | `examples/export_icon_sheet.rs`、`snapshots/svg/icon_sheet{,.light}.svg` | `check_svg_snapshots.sh` 新增一步，**不动**它既有的 `EXPECTED` 算式 |
-| **ICON-8** | opt-in 门禁 + 许可证门禁 | `tools/check_icon_data_is_opt_in.sh`、`tools/check_icon_licences.sh` | 注入：在 `Cargo.toml` 的 `default` 里加 `icons` ⇒ 门禁红；删掉 `NOTICE` 里的 Apache 条目 ⇒ 门禁红 |
+| **ICON-8** | opt-in 门禁 + 许可证门禁 + **生成物生产者门禁** | `tools/check_icon_data_is_opt_in.sh`、`tools/check_icon_licences.sh`、`tools/check_generated_files_have_a_runnable_producer.sh` | 注入：在 `Cargo.toml` 的 `default` 里加 `icons` ⇒ 门禁红；删掉 `NOTICE` 里的 Apache 条目 ⇒ 门禁红；改一个 fallback 坐标字节 ⇒ 生成物门禁红 |
+
+> **上表已于 2026-09-29 按实际文件系统校正**（第 102 轮，用户第 3/5 条）。原表有三处不可复现：
+> ① ICON-3 写的是 `src/widget/icons/{mod.rs,icon_data.rs}` —— **该目录从未存在**，
+> 实际位置是 `src/widget/display_widgets/`；
+> ② ICON-3 把 `IconName` 的生成器写成 `gen_icon_data.py`，**实际是 `gen_icon_names.py`**
+> （`gen_icon_data.py` 只写 `icon_data.rs`，它自己的文件头就说明了这一点）；
+> ③ ICON-8 现多一条 `check_generated_files_have_a_runnable_producer.sh`。
+> 当时的“42/42 闭环”因此**含一条不可复现的判据**，按原则 #18 属文档与代码不一致。
+> 校正后，ICON-1…ICON-8 的每一行都能对着文件系统逐条核验。
 
 ### 6.7 许可证登记 —— **已核实并定稿**（2026-09-27）
 

@@ -35,6 +35,37 @@ use std::sync::{Arc, Mutex};
 
 use crate::commands::{self, Command};
 
+/// 事件泵的轮询间隔。
+///
+/// 约 60 Hz：快得人眼看不到延迟，又慢得不会把一个核心跑满。菜单与控件触发都是**队列**
+/// （`poll_menu_triggered` / `poll_widget_trigger_event`），所以这个间隔只影响**延迟**，
+/// 不影响**是否丢失**事件。
+const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
+
+/// 一次事件都没有的连续空闲超过这个时长，事件泵就自动退出。
+///
+/// # 为什么需要一个上限，而不是一直等
+///
+/// 主线程跑的是平台循环（`App::run`），它只在窗口关闭时返回。若宿主关窗的事件没有到达
+/// 本进程（例如某些后端下窗口被别的方式销毁），平台循环会一直不返回，而本泵线程就会
+/// **永久空转**，留下一个关不掉的孤儿进程。这个上限是那条路径的兜底。
+///
+/// # 它必须由 `POLL_INTERVAL` 算出来，不能写成拍脑袋的 tick 数
+///
+/// 这里原本写的是 `idle_ticks > 30 * 60 * 2`，注释却写着「超过 30 秒」。按 16 ms 一 tick
+/// 算，`30 * 60 * 2 = 3600` tick 实际是 **57.6 秒**；而 `30 * 60` 也不是秒数，
+/// 是「分钟数 × 60」这个中间量——即那个表达式**从来不代表任何真实时长**。
+/// 现在把两个常数分开：上限说「多长时间」，`ticks()` 把它换算成 tick，二者不会漂移。
+const IDLE_EXIT_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// [`IDLE_EXIT_AFTER`] 换算成多少个 `POLL_INTERVAL` tick。
+fn idle_ticks_before_exit() -> u32 {
+    // 向上取整，并保证至少 1：一个比轮询间隔还短的上限会立刻退出，那不是「空闲太久」。
+    let interval = POLL_INTERVAL.as_millis().max(1) as u64;
+    let ticks = (IDLE_EXIT_AFTER.as_millis() as u64).div_ceil(interval);
+    ticks.clamp(1, u64::from(u32::MAX)) as u32
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 日志
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -718,13 +749,14 @@ fn run_loop(
                 refresh_status(&poll_log, &editor);
             } else {
                 idle_ticks += 1;
-                // 事件循环空转超过 30 秒无任何事件也退出，避免无法关闭的孤儿进程。
-                if idle_ticks > 30 * 60 * 2 {
-                    poll_log.append("[App] 长时间无事件，自动退出");
+                // 连续无事件超过 `IDLE_EXIT_AFTER` 就退出，避免无法关闭的孤儿进程（见该常数的说明）。
+                if idle_ticks > idle_ticks_before_exit() {
+                    poll_log
+                        .append(format!("[App] 空闲超过 {:?} 无事件，自动退出", IDLE_EXIT_AFTER));
                     break;
                 }
             }
-            std::thread::sleep(std::time::Duration::from_millis(16));
+            std::thread::sleep(POLL_INTERVAL);
         }
         poll_log.append(format!("[App] 轮询结束（处理 {handled} 个事件）"));
     });

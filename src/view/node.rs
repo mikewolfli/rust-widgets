@@ -274,8 +274,12 @@ impl Node {
     /// The tier a build runs at is a fact the *build* establishes (see
     /// [`with_breakpoint`](crate::view::with_breakpoint)), not something every `View::build`
     /// should re-derive and thread through. Expressing the choice here means a view declares
-    /// "this sidebar exists on a tablet and up" and the framework supplies the fact — the same
-    /// division [`Node::child_if`] uses for a boolean the view *does* own.
+    /// "this sidebar exists on a tablet and up" and either the host report on
+    /// [`ViewEngine::set_viewport`](crate::view::ViewEngine::set_viewport) — or an explicit
+    /// [`with_breakpoint`](crate::view::with_breakpoint) scope — supplies the fact, the same
+    /// division [`Node::child_if`] uses for a boolean the view *does* own. When neither is
+    /// given the tier is `Expanded`, so nothing a view declared is silently dropped; that is
+    /// an "everything" answer, never a guessed phone width.
     ///
     /// # What it selects
     ///

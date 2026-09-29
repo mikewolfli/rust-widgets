@@ -82,6 +82,14 @@ impl UndoStack {
     }
 
     /// Undo the most recent command, moving it to the redo stack.
+    ///
+    /// # Why a failed undo keeps the command
+    ///
+    /// `command.undo()` is popped first and only pushed onto the redo stack on success. On error
+    /// the command was therefore on **neither** stack: the history lost an entry, so the next
+    /// `undo()` would skip past it and `redo()` could never bring it back. A partial-failure undo
+    /// must not corrupt the history, so the command is put back on the undo stack before the error
+    /// is returned — the caller sees the failure and the stack is exactly as it was.
     pub fn undo(&mut self) -> Result<(), String> {
         let mut command = self.undo_stack.pop().ok_or_else(|| {
             format!(
@@ -89,9 +97,17 @@ impl UndoStack {
                 self.redo_stack.len()
             )
         })?;
-        command.undo()?;
-        self.redo_stack.push(command);
-        Ok(())
+        match command.undo() {
+            Ok(()) => {
+                self.redo_stack.push(command);
+                Ok(())
+            }
+            Err(err) => {
+                // Restore the command to the top of the undo stack so the history is unchanged.
+                self.undo_stack.push(command);
+                Err(err)
+            }
+        }
     }
 
     /// Redo the most recently undone command, moving it back to the undo stack.
@@ -379,6 +395,41 @@ mod tests {
         stack.redo().unwrap();
         assert_eq!(stack.undo_count(), 2);
         assert_eq!(stack.redo_count(), 1);
+    }
+
+    /// A failed `undo()` must leave the history exactly as it was.
+    ///
+    /// Pins the defect: `undo` popped the command and only pushed it onto the redo stack on
+    /// success, so a command whose `undo()` returned `Err` landed on **neither** stack -- the
+    /// next `undo()` skipped past it and `redo()` could never restore it. A `TextCommand` whose
+    /// applied text is shorter than what it means to remove makes `undo()` fail.
+    #[test]
+    fn a_failed_undo_keeps_the_command_on_the_stack() {
+        let mut stack = UndoStack::new();
+
+        // `undo` removes `text.len()` bytes, so applying "abc" but asking to remove "abcdef"
+        // (via a longer `text`) makes `undo()` fail.
+        let mut bad = TextCommand::new("abcdef", "abc");
+        // Do NOT execute: applied is "abc" (3 bytes) and undo wants to remove 6.
+        let _ = &mut bad;
+        stack.push(Box::new(bad));
+        stack.push({
+            let mut good = TextCommand::new("ok", "");
+            good.execute().unwrap();
+            Box::new(good)
+        });
+
+        assert_eq!(stack.undo_count(), 2);
+
+        // Undo the good command, then the bad one: the bad undo fails.
+        stack.undo().expect("the good command undoes");
+        let err = stack.undo().expect_err("the command whose undo fails must report the error");
+        assert!(err.contains("cannot undo"), "the error is the command's own: {err}");
+
+        // The failed command must still be undoable, and nothing must have reached the redo stack.
+        assert!(stack.can_undo(), "the failed command must remain on the undo stack");
+        assert_eq!(stack.undo_count(), 1, "exactly the failed command is left");
+        assert_eq!(stack.redo_count(), 1, "only the successful undo moved to redo");
     }
 
     #[test]

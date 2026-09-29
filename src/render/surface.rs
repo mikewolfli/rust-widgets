@@ -17,7 +17,10 @@
 //!   are one relationship ("lit edge, shaded edge") stated twice per control, and the
 //!   *direction* — is this a raised button or a cut-in well? — was carried by which pair got
 //!   which colour, i.e. by the order of two nearly identical code blocks that nothing checked.
-//! * `WidgetStyle::background_gradient` existed with **zero** readers and no theme schema.
+//! * `WidgetStyle::background_gradient` was settable, mergeable and CSS-expressible, but **no
+//!   painter read it**: a caller that set a gradient still got a solid fill. It is now honoured
+//!   through [`RenderContext::fill_background`] / [`SurfaceStyle::paint_with_gradient`], which the
+//!   control's face path calls.
 //!
 //! # What this module is, and is not
 //!
@@ -564,6 +567,61 @@ impl SurfaceStyle {
         }
 
         // 4. The edge, if the face wants one and the control gave it a width to draw.
+        let drew_edge = self.draws_outline() && border_width > 0;
+        if drew_edge {
+            if radius > 0 {
+                context.draw_rounded_rect_stroke(rect, radius, border, border_width);
+            } else {
+                context.draw_rect_stroke(rect, border, border_width);
+            }
+        }
+        drew_edge
+    }
+
+    /// [`Self::paint`], but the fill is a `gradient` when one is supplied.
+    ///
+    /// # Why a gradient needs its own entry point
+    ///
+    /// A gradient is a paint server, not a colour, so it cannot be folded into `fill` (which is a
+    /// [`Color`]). Passing it as a separate `Option` keeps the identity case exact — `None` delegates
+    /// straight to [`Self::paint`], so a face with no gradient emits byte-for-byte what it did before.
+    /// The shadow, bevel and edge are identical; only the fill step differs.
+    ///
+    /// `too_many_arguments` is allowed for the same reason [`Self::paint`] sits at the limit: the
+    /// parameters are the face's independent dimensions (geometry, fill, gradient, edge, radius,
+    /// shadow), and folding them into a struct would only move the construction to every call site.
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint_with_gradient(
+        &self,
+        context: &mut RenderContext,
+        rect: Rect,
+        fill: Color,
+        gradient: Option<&crate::style::Gradient>,
+        border: Color,
+        border_width: u32,
+        radius: u32,
+        shadow_tint: Color,
+    ) -> bool {
+        if gradient.is_none() {
+            return self.paint(context, rect, fill, border, border_width, radius, shadow_tint);
+        }
+        // The shadow, behind the face.
+        if let Some(shadow) = self.shadow(shadow_tint) {
+            context.fill_rect(
+                Rect::new(rect.x + shadow.x, rect.y + shadow.y, rect.width, rect.height),
+                shadow.color,
+            );
+        }
+        // The gradient fill. A gradient cannot be rounded here because the gradient paint server
+        // has no corner rounding; a radius still gets its bevel and edge, which is what keeps a
+        // gradient face recognisably the same control.
+        if let Some(gradient) = gradient {
+            context.fill_gradient(rect, gradient);
+        }
+        if let Some(spec) = self.bevel {
+            let bevel = spec.resolve(border);
+            bevel.stroke(context, rect, BEVEL_STROKE_WIDTH);
+        }
         let drew_edge = self.draws_outline() && border_width > 0;
         if drew_edge {
             if radius > 0 {

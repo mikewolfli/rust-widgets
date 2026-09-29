@@ -112,11 +112,23 @@ impl TsfThreadMgr {
 
 /// Real Windows IME bridge backed by state tracking and optional TSF
 /// `ITfThreadMgr` integration.
+///
+/// # What "real" means here, honestly
+///
+/// The composition/**state** half of this bridge (focus, marked text, cursor, candidate position) is
+/// a genuine, target-independent state machine and is always correct.
+///
+/// The **OS connection** half — driving the Windows candidate window and receiving composition from
+/// the system IME — requires the TSF COM interfaces (`ITfThreadMgr` etc.). `winapi` ships neither
+/// `CLSID_TF_ThreadMgr` nor the `IID`s, so a full binding is not available in this build tree; the
+/// constructor probes `msctf.dll` for `TF_GetThreadMgr` and records whether a real connection could
+/// be made in `tsf_available`. That flag is the authority [`ImeBridge::is_active`] reports from, so a
+/// build without the TSF binding answers **honestly** (`false`) rather than claiming an IME that it
+/// never talks to (rules #26/#53). The composition state machine keeps working for hosts that drive
+/// it directly.
 pub struct WindowsImeBridge {
     /// The widget that currently has IME focus.
     focused_widget: Mutex<Option<ObjectId>>,
-    /// Whether the IME session is active.
-    active: Mutex<bool>,
 
     // ── Composition / marked-text state ──
     /// Current preedit (marked / composition) text string.
@@ -132,11 +144,18 @@ pub struct WindowsImeBridge {
 
     // ── Native TSF handle ──
     /// Whether the TSF subsystem was successfully initialised.
-    /// Kept for future TSF COM call guarding; currently test-accessible.
-    #[allow(dead_code)]
+    ///
+    /// This is the authority [`ImeBridge::is_active`] answers from. It is not merely informational:
+    /// the bridge can track focus and composition in memory on any target, but only a real TSF
+    /// connection can drive the OS candidate window and receive the OS composition string. Reporting
+    /// "active" without one would be exactly the log-placeholder claim rule #26 forbids.
     tsf_available: Mutex<bool>,
     /// Opaque TSF thread manager handle (kept alive for the bridge lifetime).
-    #[allow(dead_code)]
+    ///
+    /// Held so the `msctf.dll` handle stays loaded for as long as the bridge may make TSF calls.
+    /// The *value* is deliberately not read in production — its existence is the point (an RAII
+    /// keep-alive for the module handle) — so [`WindowsImeBridge::has_tsf_manager`] exists for the
+    /// tests that assert it mirrors `tsf_available`.
     tsf_manager: Mutex<Option<TsfThreadMgr>>,
 }
 
@@ -156,7 +175,6 @@ impl WindowsImeBridge {
 
         Self {
             focused_widget: Mutex::new(None),
-            active: Mutex::new(false),
             marked_text: Mutex::new(String::new()),
             composition_start: Mutex::new(0),
             cursor_pos: Mutex::new(0),
@@ -167,6 +185,16 @@ impl WindowsImeBridge {
         }
     }
 
+    /// Returns whether a TSF thread manager was created and is being kept alive.
+    ///
+    /// The manager's *value* is never read in production: holding it keeps the `msctf.dll` module
+    /// handle loaded for the bridge's lifetime (an RAII keep-alive). This accessor makes that fact
+    /// observable — the tests assert it mirrors [`WindowsImeBridge::is_active`]'s authority — rather
+    /// than leaving the field to trip a dead-code warning.
+    pub fn has_tsf_manager(&self) -> bool {
+        lock(&self.tsf_manager).is_some()
+    }
+
     // ── Native IME interface (exposed for platform event dispatch) ──
 
     /// Set the cursor (insertion-point) rectangle in screen coordinates.
@@ -174,9 +202,11 @@ impl WindowsImeBridge {
     /// `ITfContext::SetSelection` to update the TSF composition window
     /// position.
     pub fn set_cursor_rect(&self, x: i32, y: i32, w: u32, h: u32) {
-        log::debug!("[Windows IME] set_cursor_rect: x={}, y={}, w={}, h={}", x, y, w, h,);
         *lock(&self.cursor_rect) = (x, y, w, h);
-        // Real impl:  ITfContext::GetSelection → ITfContext::SetSelection
+        // A real TSF connection would now move the candidate window via
+        // `ITfContext::GetSelection` / `SetSelection`; without one, the position is recorded for
+        // `is_active`-aware callers (a host that drives the state machine itself) rather than
+        // silently claiming the OS window moved.
     }
 
     /// Process a raw key event through the TSF IME subsystem.
@@ -288,21 +318,19 @@ impl WindowsImeBridge {
 impl ImeBridge for WindowsImeBridge {
     fn focus_in(&self, widget_id: ObjectId) {
         *lock(&self.focused_widget) = Some(widget_id);
-        *lock(&self.active) = true;
         log::info!("[Windows IME] focus_in: widget={}", widget_id);
 
-        // Native TSF: ITfThreadMgr::SetFocus(doc_mgr)
-        //             ITfDocumentMgr::Push(context)
+        // With the TSF binding this would call `ITfThreadMgr::SetFocus(doc_mgr)` /
+        // `ITfDocumentMgr::Push(context)`. `is_active` reports the connection's actual availability,
+        // so focus alone never claims an IME that is not connected.
     }
 
     fn focus_out(&self, widget_id: ObjectId) {
         *lock(&self.focused_widget) = None;
-        *lock(&self.active) = false;
         self.clear_composition();
         log::info!("[Windows IME] focus_out: widget={}", widget_id);
 
-        // Native TSF: ITfDocumentMgr::Pop(TF_POPF_ALL)
-        //             ITfThreadMgr::SetFocus(null)
+        // With the TSF binding this would call `ITfDocumentMgr::Pop(TF_POPF_ALL)`.
     }
 
     fn commit_text(&self, text: &str) {
@@ -341,7 +369,11 @@ impl ImeBridge for WindowsImeBridge {
     }
 
     fn is_active(&self) -> bool {
-        *lock(&self.active)
+        // Honest activity: a real TSF connection **and** a focused widget. The previous body
+        // returned only the focus flag, so on every non-Windows target (and on Windows without the
+        // TSF binding) the bridge reported an active IME while it never talked to the OS — the
+        // "reported success for something that did not happen" failure rules #26/#53 forbid.
+        *lock(&self.tsf_available) && lock(&self.focused_widget).is_some()
     }
 }
 
@@ -361,8 +393,15 @@ mod tests {
         assert!(lock(&bridge.focused_widget).is_none());
 
         bridge.focus_in(42);
-        assert!(bridge.is_active());
         assert_eq!(*lock(&bridge.focused_widget), Some(42));
+        // `is_active` reports the TSF *connection*, not focus: on a host without the TSF binding
+        // (every non-Windows target, and Windows builds without it) it must stay `false` even with a
+        // focused widget — claiming otherwise was the log-placeholder defect rules #26/#53 forbid.
+        assert_eq!(
+            bridge.is_active(),
+            *lock(&bridge.tsf_available),
+            "activity must mirror whether a real TSF connection exists"
+        );
 
         bridge.focus_out(42);
         assert!(!bridge.is_active());
@@ -440,7 +479,9 @@ mod tests {
         let bridge = WindowsImeBridge::new();
         assert!(!bridge.is_active());
         bridge.focus_in(1);
-        assert!(bridge.is_active());
+        // Focus is not activity: `is_active` is honest about the TSF connection (see
+        // `is_active`'s own comment). On a host with TSF it becomes true; without it, false.
+        assert_eq!(bridge.is_active(), *lock(&bridge.tsf_available));
         bridge.focus_out(1);
         assert!(!bridge.is_active());
     }
@@ -516,11 +557,13 @@ mod tests {
         // starts with no composition in flight.
         let bridge = WindowsImeBridge::new();
         let available = *lock(&bridge.tsf_available);
-        let has_manager = lock(&bridge.tsf_manager).is_some();
+        let has_manager = bridge.has_tsf_manager();
         assert_eq!(
             available, has_manager,
             "the TSF availability flag must mirror whether a thread manager was created"
         );
+        // `is_active` reports the connection's authority, so it agrees with the flag when no widget
+        // holds focus (there is none in this test), i.e. it is false here regardless of the host.
         assert!(!bridge.is_active());
         assert!(!bridge.has_marked_text());
     }

@@ -196,7 +196,7 @@ fn build_f32_frame(
     pts: i64,
     sample_rate: u32,
 ) -> Result<AudioFrame, String> {
-    let channels = buffer.channels as usize;
+    let channels = buffer.channels() as usize;
     let mut frame = AudioFrame::new(Sample::F32(SampleType::Packed), frame_samples, channel_layout);
     frame.set_rate(sample_rate);
     frame.set_pts(Some(pts));
@@ -281,7 +281,7 @@ pub fn ffmpeg_encode(buffer: &AudioBuffer, format: AudioFormat) -> Result<Vec<u8
         .map_err(|e| format!("audio encoder '{encoder_name}' could not be created: {e}"))?;
 
     // ── Set encoder parameters ──────────────────────────────────────
-    let channel_layout = match buffer.channels {
+    let channel_layout = match buffer.channels() {
         1 => ChannelLayout::MONO,
         _ => ChannelLayout::STEREO,
     };
@@ -366,7 +366,7 @@ pub fn ffmpeg_encode(buffer: &AudioBuffer, format: AudioFormat) -> Result<Vec<u8
     };
 
     // ── Encode ───────────────────────────────────────────────────────
-    let channels_us = buffer.channels as usize;
+    let channels_us = buffer.channels() as usize;
     let frame_size = encoder.frame_size() as usize;
     // Use the encoder's preferred frame size, or 1024 as default for
     // variable-frame-size encoders (libvorbis, libopus).

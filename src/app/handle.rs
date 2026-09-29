@@ -483,6 +483,28 @@ pub trait WidgetHandle: Sized {
     /// The closure receives the widget's current text at the time of
     /// the [`WidgetTriggerKind::ValueChanged`] event.
     fn on_value_changed<F: FnMut(String) + 'static>(&self, f: F);
+
+    /// Register a callback for the control being **closed** / dismissed.
+    ///
+    /// # Why this has a default body
+    ///
+    /// Every handle reaches the same base signal, so there is nothing per-handle to decide: the
+    /// callback connects to [`BaseWidget::closed`](crate::widget::BaseWidget::closed), which a
+    /// closeable control emits from its own `close`/`dismiss` path. A default body keeps the trait
+    /// from forcing twenty-odd `impl_handle!` expansions to restate it — and, more importantly,
+    /// means a control that *gains* a close path gets the wiring for free rather than silently
+    /// lacking it.
+    ///
+    /// # The defect this closes
+    ///
+    /// `on_close` used to be a `WindowHandle`-only method that stored its callback in a side table
+    /// (`WindowState::close_callback`) which **only `WindowHandle::close` read**. The widget's own
+    /// `closed` signal — the one a `Dialog`/`PopupWindow`/`NavigationDrawer` emits — never reached
+    /// it, so a handler declared through the JSON/designer `closed` route could not be bound at all
+    /// and `JsonTriggerMarker::Closed` had to refuse it outright.
+    fn on_close<F: FnMut() + Send + 'static>(&self, f: F) {
+        register_close_callback(self.raw_id(), f);
+    }
 }
 
 // ── Global callback registry ──────────────────────────────────
@@ -491,6 +513,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 thread_local! {
+    // # Why the per-cell `allow(clippy::missing_const_for_thread_local)`
+    //
+    // OpenHarmony's std resolves `HashMap::new()` as a `const fn` where the host's does not, so
+    // the lint fires there and asks for a `const` initializer that would not compile on any other
+    // target. Same per-cell form (and same reason) as `widget::runtime`'s registry block — a
+    // crate-wide allow would hide a genuine finding in a cell that really can be `const`.
+    //
     // # Why a *list* of callbacks per widget
     //
     // Both tables were `HashMap<ObjectId, Callback>` — one slot per widget. A node that declared
@@ -499,8 +528,10 @@ thread_local! {
     // get one, with no warning and nothing to query. A list keeps every binding the document asked
     // for; `remove_callbacks` still clears the whole list on drop, so the leak a rebuild would
     // otherwise produce is unchanged.
+    #[allow(clippy::missing_const_for_thread_local)]
     static CLICK_CALLBACKS: RefCell<HashMap<ObjectId, Vec<ClickCallback>>> =
         RefCell::new(HashMap::new());
+    #[allow(clippy::missing_const_for_thread_local)]
     static VALUE_CALLBACKS: RefCell<HashMap<ObjectId, Vec<ValueChangedCallback>>> =
         RefCell::new(HashMap::new());
 
@@ -510,6 +541,15 @@ thread_local! {
     /// thread that mounted it, so the same rule that makes the tables per-thread applies here.
     /// A `Cell` rather than an `AtomicUsize` for that reason — sharing the count across threads
     /// would make it a sum over threads whose ids do not refer to one another.
+    ///
+    /// The initializer *is* `const` and the lint still fires, because clippy reports
+    /// `missing_const_for_thread_local` for the **whole `thread_local!` block** when any cell in it
+    /// cannot be `const` — and the two `HashMap` tables above cannot be. The allow is therefore on
+    /// every cell, matching `widget::runtime`'s registry block, rather than only on the two that
+    /// need it: a per-cell allow that does not cover the reported span does not silence it, and
+    /// moving the allow to the block would hide a genuine finding in a cell that really can be
+    /// `const`.
+    #[allow(clippy::missing_const_for_thread_local)]
     static UNWIRED_BINDINGS: Cell<usize> = const { Cell::new(0) };
 }
 
@@ -574,6 +614,42 @@ fn register_click_callback<F: FnMut() + Send + 'static>(widget_id: ObjectId, f: 
     }
 }
 
+/// Registers `f` as the close callback for `widget_id`.
+///
+/// The close counterpart of [`register_click_callback`], and for the same reason: a callback must
+/// be connected to the widget's **own** signal, because nothing manufactures a
+/// `WidgetTriggerKind::Closed` for it. Without this, `WindowHandle::on_close` (and the JSON/designer
+/// `closed` route) registered a callback that nothing ever ran.
+///
+/// Connects to [`BaseWidget::closed`], which every closeable control emits from its own `close` /
+/// `dismiss` path — so the callback fires whenever the control announces that lifecycle fact,
+/// whichever code path produced it.
+fn register_close_callback<F: FnMut() + Send + 'static>(widget_id: ObjectId, f: F) {
+    let held: Arc<Mutex<F>> = Arc::new(Mutex::new(f));
+    let connected = crate::widget::runtime::with_widget_mut(widget_id, |widget| {
+        let held = Arc::clone(&held);
+        widget.base().closed.connect(move || {
+            if let Ok(mut callback) = held.lock() {
+                callback();
+            } else {
+                log::warn!(
+                    "the close callback for widget {widget_id} could not be locked; skipping this \
+                     close rather than panicking"
+                );
+            }
+        })
+    });
+    if connected.is_none() {
+        // Same reasoning as `register_click_callback`: a close handler that can never run is the
+        // failure a caller cannot see from the outside.
+        log::warn!(
+            "on_close ignored for id={widget_id}: it is not a live widget, so there is no signal \
+             for a close to arrive on. The callback will never run."
+        );
+        record_unwired_binding(widget_id);
+    }
+}
+
 /// Records that a callback was requested for an id with no live widget.
 ///
 /// # Why a count and not just a log line
@@ -594,7 +670,12 @@ pub fn reset_unwired_binding_count() {
 }
 
 /// Bumps the unwired-binding counter. See [`unwired_binding_count`].
-fn record_unwired_binding(_widget_id: ObjectId) {
+///
+/// `pub(crate)` because a binding can be refused outside this module: the JSON loader
+/// declines a marker whose trigger has no signal (see `JsonTriggerMarker::unroutable_reason`),
+/// and that refusal must reach the same observable count as a handle wired to a dead id, so a
+/// caller asking "was anything left unwired?" gets one answer rather than two.
+pub(crate) fn record_unwired_binding(_widget_id: ObjectId) {
     UNWIRED_BINDINGS.with(|count| count.set(count.get().saturating_add(1)));
 }
 
@@ -838,6 +919,14 @@ pub fn dispatch_trigger(widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
             if let Some((width, height)) = crate::window_client_size(widget_id) {
                 set_window_size(widget_id, width, height);
                 apply_window_layout(widget_id);
+                // Re-running the layout is only half the contract the event type
+                // documents. `Event::Resize` existed, was published, and had a
+                // constructor — but nothing ever produced it, so a control that handled
+                // it (the code editor refreshes its visible rows and re-measures) never
+                // heard about a resize at all. Delivering it **after** the layout pass
+                // means a handler that reads its own geometry sees the new box, not the
+                // stale one.
+                crate::widget::runtime::dispatch_resize(widget_id, width, height);
             }
             false
         }
@@ -2709,7 +2798,6 @@ struct WindowState {
     fullscreen: bool,
     resizable: bool,
     decorated: bool,
-    close_callback: Option<ClickCallback>,
 }
 
 impl std::fmt::Debug for WindowState {
@@ -2727,7 +2815,6 @@ impl std::fmt::Debug for WindowState {
             .field("fullscreen", &self.fullscreen)
             .field("resizable", &self.resizable)
             .field("decorated", &self.decorated)
-            .field("close_callback", &self.close_callback.as_ref().map(|_| "<fn>"))
             .finish()
     }
 }
@@ -2747,13 +2834,20 @@ impl Default for WindowState {
             fullscreen: false,
             resizable: true,
             decorated: true,
-            close_callback: None,
         }
     }
 }
 
 thread_local! {
     static WINDOW_STATES: RefCell<HashMap<ObjectId, WindowState>> = RefCell::new(HashMap::new());
+
+    /// Legacy `Rc<RefCell<dyn FnMut()>>` close callbacks, keyed by window id.
+    ///
+    /// A `ClickCallback` is not `Send`, so it cannot live in the `FnMut() + Send` slot the widget's
+    /// `closed` signal needs. It is parked here and looked up from the (sendable) slot, on the
+    /// thread the window is used from. See [`WindowHandle::on_close`].
+    static WINDOW_CLOSE_CALLBACKS: RefCell<HashMap<ObjectId, ClickCallback>> =
+        RefCell::new(HashMap::new());
 }
 
 /// # Window-specific state operations
@@ -3021,24 +3115,41 @@ impl WindowHandle {
     }
 
     /// Register a callback invoked when the window is about to close.
+    ///
+    /// Connects to the widget's own `closed` signal through [`register_close_callback`], so the
+    /// callback fires when the **widget** closes (a title-bar close, a `Window::close`, or the
+    /// published `close` command), not only when [`WindowHandle::close`] is called.
+    ///
+    /// # Why the `Rc` is parked in a thread-local
+    ///
+    /// `ClickCallback` is `Rc<RefCell<dyn FnMut()>>` — not `Send` — while the signal slot must be
+    /// `FnMut() + Send`. Rather than change this legacy public signature, the `Rc` is stored in a
+    /// thread-local keyed by window id and the (sendable) slot looks it up on the same thread the
+    /// window lives on, which is where a close is emitted. A missing entry is a no-op, not a panic.
     pub fn on_close(&self, callback: ClickCallback) {
-        WINDOW_STATES.with(|map| {
-            map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).close_callback =
-                Some(callback);
+        WINDOW_CLOSE_CALLBACKS.with(|map| {
+            map.borrow_mut().insert(self.id, callback);
+        });
+        let id = self.id;
+        register_close_callback(id, move || {
+            WINDOW_CLOSE_CALLBACKS.with(|map| {
+                if let Some(cb) = map.borrow().get(&id) {
+                    if let Ok(mut cb) = cb.try_borrow_mut() {
+                        cb();
+                    }
+                }
+            });
         });
     }
 
     /// Programmatically close the window.
+    ///
+    /// Emits the widget's `closed` signal (which is what a registered [`Self::on_close`] — and the
+    /// JSON/designer `closed` route — is connected to) and then hides the window. The side-table
+    /// callback this used to read directly is gone: the signal is the one path a close is announced
+    /// on, so there is no second table to keep in step.
     pub fn close(&self) {
-        // Invoke the close callback if one is registered.
-        WINDOW_STATES.with(|map| {
-            let mut map = map.borrow_mut();
-            if let Some(state) = map.get_mut(&self.raw_id()) {
-                if let Some(cb) = &state.close_callback {
-                    (cb.borrow_mut())();
-                }
-            }
-        });
+        crate::close_widget(self.raw_id());
         crate::hide_widget(self.raw_id());
     }
 
@@ -3486,15 +3597,24 @@ mod tests {
         );
     }
 
-    /// The `close_callback` field is read by `close()`, and `close()` is its only reader.
+    /// A registered close callback fires when the window's **widget** closes.
     ///
-    /// `close_callback` was the one mirror field with *no* test behind it at all. It is a
-    /// callback rather than a platform-readable value, so the round-10 "platform is authoritative"
-    /// rule does not apply: the handle registry **is** the authority, and the only question is
-    /// whether the write is ever read. This drives the pair end to end.
+    /// # The defect this closes
+    ///
+    /// `on_close` used to write a `WindowState::close_callback` side table that only
+    /// `WindowHandle::close` read, so a close produced by the widget (a title-bar close, a
+    /// `Window::close`, the published `close` command) never reached the handler — and the JSON /
+    /// designer `closed` route had no signal to bind at all. The callback now connects to
+    /// `BaseWidget::closed`, which the widget's own close path emits, so the handler fires whenever
+    /// the control announces the lifecycle fact.
     #[test]
-    fn the_close_callback_mirror_is_read_when_the_window_closes() {
-        let id = crate::platform::get_platform().create_window("probe", 0, 0, 320, 240);
+    fn the_close_callback_fires_from_the_widget_close_signal() {
+        // Mount a real `Window` widget so `on_close` has a live `closed` signal to connect to.
+        let id = crate::widget::runtime::register(Box::new(crate::widget::Window::new(
+            "probe".to_string(),
+            crate::core::Rect::new(0, 0, 320, 240),
+        )))
+        .expect("a window mounts");
         let window = WindowHandle::from_raw(id);
         let calls = std::rc::Rc::new(std::cell::Cell::new(0usize));
         {
@@ -3504,27 +3624,40 @@ mod tests {
             })));
         }
 
-        window.close();
-        assert_eq!(calls.get(), 1, "registering a close callback must be what `close()` reads");
+        // The signal path, not the handle method: this is what a widget-level close does.
+        assert!(crate::close_widget(id), "a mounted widget receives the close signal");
+        assert_eq!(
+            calls.get(),
+            1,
+            "a registered on_close must fire when the widget's closed signal is emitted"
+        );
+
+        crate::widget::runtime::unregister(id);
     }
 
-    /// `close()` with nothing registered is a no-op on the callback slot, not a panic.
+    /// `close()` with nothing registered must not panic.
     #[test]
     fn closing_a_window_without_a_close_callback_is_not_a_panic() {
         let id = crate::platform::get_platform().create_window("probe", 0, 0, 320, 240);
         WindowHandle::from_raw(id).close();
     }
 
-    /// The 13 `WindowState` fields, each with the reason it is allowed to exist.
+    /// The `WindowState` fields, each with the reason it is allowed to exist.
     ///
     /// # Why this list is a test and not a comment
     ///
     /// Rule #99 says every mirror field is either a *fallback* (the platform may return `None`,
     /// and production code reads the mirror in that case) or *deleted*. "Written but never read"
     /// is a dangling mirror that drifts into a false fact. The list below is parsed against the
-    /// struct by the test, so adding a 14th field fails here until someone states which of the
-    /// two categories it is in -- and the named test is what makes the claim checkable rather
-    /// than asserted.
+    /// struct by the test, so adding a field fails here until someone states which of the two
+    /// categories it is in -- and the named test is what makes the claim checkable rather than
+    /// asserted.
+    ///
+    /// `close_callback` used to be on this list ("authoritative here: `close()` is the only
+    /// reader"). It was **deleted**: a callback stored in the mirror was a second route a close
+    /// could travel, and only `WindowHandle::close` produced it — the widget's own `closed` signal
+    /// never reached it. `on_close` now connects that signal instead, so there is nothing to keep in
+    /// the mirror.
     #[test]
     fn every_window_state_field_is_classified_and_backed_by_a_test() {
         /// (field, why it is allowed to exist, the test that proves the reason)
@@ -3589,11 +3722,6 @@ mod tests {
                 "fallback via `mirrored_flag`",
                 "every_mirror_backed_getter_defers_to_the_platform_first",
             ),
-            (
-                "close_callback",
-                "authoritative here: `close()` is the only reader",
-                "the_close_callback_mirror_is_read_when_the_window_closes",
-            ),
         ];
 
         let source = include_str!("handle.rs");
@@ -3644,6 +3772,5 @@ mod tests {
         "the_window_position_mirror_is_read_by_center_on_screen",
         "the_window_geometry_mirror_reaches_the_layout_path",
         "every_mirror_backed_getter_defers_to_the_platform_first",
-        "the_close_callback_mirror_is_read_when_the_window_closes",
     ];
 }

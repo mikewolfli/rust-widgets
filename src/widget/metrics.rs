@@ -58,31 +58,67 @@ use crate::style::EdgeOffsets;
 /// control that wants the honest answer there had to write its own arithmetic instead, and
 /// that is how `text.len() * 8 + 4` kept appearing: a private copy of a public fact.
 ///
-/// # Why this is not a *copy* of the renderer's model
+/// # What model this uses, and why the answer has two tiers
 ///
-/// It **is** the renderer's model — the same grapheme traversal (`for_each_cluster`) and the
-/// same advance function (`estimate_cluster_advance`), called without a backend. It used to be
-/// a hand-kept copy, which is why it merged no emoji continuation, classified a different set
-/// of scalars as wide, and would have kept its own answer the day either changed. A control
-/// that reserved space from a model the renderer did not use would be measuring with one ruler
-/// and drawing with another — the defect `surface.rs` records as having been paid for once
-/// already, and the one this crate's `estimate_text_width` exists to prevent.
+/// **With a face** (a build that ships vector/bitmap faces — every `desktop`/`tablet`/`mobile`
+/// profile) the cluster advances come from the face's own layout tables, through the same
+/// [`crate::render::text::shaping::cluster_advances`] the renderer's `shape_line` uses. That is
+/// the renderer's real ruler, so a `size_hint` and the paint agree glyph for glyph.
+///
+/// **Without a face** it falls back to the same grapheme traversal (`for_each_cluster`) and the
+/// same advance function (`estimate_cluster_advance`) the renderer uses in that case, so the two
+/// still cannot disagree about which scalars are wide or how a cluster is segmented.
+///
+/// # Why the fallback is not enough on its own
+///
+/// The flat per-cluster model puts every character at ~0.6 em. On a proportional face that is
+/// wrong for most glyphs (`i` and `W` are not the same width), and the errors only cancel in
+/// aggregate: the crate measured `i` as 8.40 px against a real 3.53 px. The totals often look
+/// close, which is exactly why this hid — a *centred* string could still sit off centre.
 ///
 /// # Cost
 ///
-/// One reused cluster buffer per call, no per-cluster allocation, so it is safe on the layout
-/// hot path where a `size_hint` is asked on every arrange.
+/// The face path parses (and caches) a shaper face per active face — see
+/// [`crate::render::text::shaping::cluster_advances`]; the fallback reuses one cluster buffer
+/// per call and allocates nothing per cluster, so it stays safe on the layout hot path.
 pub fn estimate_text_width(text: &str, font: &crate::core::Font, scale: f32) -> u32 {
     let size = font.size().max(0.0);
     if text.is_empty() || size == 0.0 {
         return 0;
     }
-    let mut advance = 0.0f32;
+
+    // Collect the clusters once, so both tiers measure the same segmentation.
+    let mut ranges: crate::compat::Vec<(usize, usize)> = crate::compat::Vec::new();
     let mut clusters = 0usize;
-    for_each_cluster(text, |cluster, _range| {
-        advance += estimate_cluster_advance(cluster, size, scale);
+    for_each_cluster(text, |_cluster, range| {
+        ranges.push(range);
         clusters += 1;
     });
+
+    // Real metrics when a face is enabled, exactly as `shape_line` does: the advance is what
+    // the face's `hmtx` and `GPOS` kerning say. `None` — no face, or a build with no vector
+    // data — leaves the flat model as the whole answer, so a default build's numbers do not
+    // change when this exists.
+    #[cfg(feature = "text-shaping")]
+    // `cluster_advances` returns `None` rather than an empty vector when no face applies,
+    // so the flattening is only about the inner `with_shaper_face` result.
+    let real_advances: Option<crate::compat::Vec<f32>> =
+        crate::render::text::shaping::cluster_advances(text, &ranges, font, scale);
+    #[cfg(not(feature = "text-shaping"))]
+    let real_advances: Option<crate::compat::Vec<f32>> = None;
+
+    let mut advance = match &real_advances {
+        // A length mismatch means the shaper returned an answer for a different segmentation;
+        // falling back is safer than crediting the wrong cluster.
+        Some(advances) if advances.len() == clusters => advances.iter().sum::<f32>(),
+        _ => {
+            let mut total = 0.0f32;
+            for_each_cluster(text, |cluster, _range| {
+                total += estimate_cluster_advance(cluster, size, scale);
+            });
+            total
+        }
+    };
     // `letter_spacing` is the gap *between* clusters, so `n` clusters pay `n - 1` gaps. The
     // renderer counts them the same way and for the same reason: counting them after the
     // last cluster would make a centred label sit left of centre.
@@ -1922,26 +1958,33 @@ mod tests {
         assert_eq!(ControlMetrics::content_above_bottom_band(rect, 40).height, 0);
     }
 
-    /// The estimate must reproduce the renderer's own model, cluster for cluster.
+    /// The estimate must agree with the renderer's own measurement of the same string.
     ///
-    /// This is the whole reason the function exists rather than each control writing its own
-    /// arithmetic: a widget's `size_hint` reserves space with this, and the renderer paints with
-    /// `estimate_cluster_advance`. If the two disagreed, a control would measure with one ruler
-    /// and draw with another — the defect `surface.rs` records as having been paid for once.
+    /// # Why this no longer pins the flat model's numbers
     ///
-    /// The expected numbers are the model written out longhand (0.6 em per narrow cluster, 1.0
-    /// em per wide cluster, 0.33 em per blank cluster, one em of line height at size 14), so this
-    /// fails if either side changes without the other.
+    /// It used to assert `estimate_text_width("abcd") == 34`, i.e. the flat `0.6 em × n`
+    /// model written out longhand. That model is only the *fallback* now: with a face active
+    /// (every `desktop`/`tablet`/`mobile` profile ships vector faces) both this function and
+    /// the renderer's `shape_line` read the face's real advances, and "abcd" is 32 px, not 34.
+    /// Pinning 34 would have forced the estimate to keep measuring with a different ruler than
+    /// the renderer — the very defect the test was written to prevent.
+    ///
+    /// So the invariant asserted is the real one: **the estimate equals what the renderer
+    /// measures**, whatever model is in force. The properties that must hold under *both*
+    /// models (a wide scalar advances more than a narrow one, empty text advances nothing,
+    /// the line box is one em) are asserted separately below.
     #[test]
     fn the_text_estimate_reproduces_the_renderers_advance_model() {
         let font = crate::core::Font::simple("sans-serif", 14.0);
 
-        // Four narrow ASCII clusters: 4 x 0.6 em x 14 = 33.6 -> 34.
-        assert_eq!(estimate_text_width("abcd", &font, 1.0), 34);
-        // Two wide CJK clusters: 2 x 1.0 em x 14 = 28.
-        assert_eq!(estimate_text_width("\u{4e2d}\u{6587}", &font, 1.0), 28);
-        // Two blanks: 2 x 0.33 em x 14 = 9.24 -> 9.
-        assert_eq!(estimate_text_width("  ", &font, 1.0), 9);
+        // The renderer's own measurement, through the same ladder `shape_line` walks.
+        let renderer = crate::render::text::measure_text_width_for_test("abcd", &font, 1.0);
+        assert_eq!(
+            estimate_text_width("abcd", &font, 1.0),
+            renderer,
+            "a `size_hint` and the paint must use the same ruler"
+        );
+
         // Empty text advances nothing at all, rather than a floor of one cluster.
         assert_eq!(estimate_text_width("", &font, 1.0), 0);
 
@@ -1954,6 +1997,21 @@ mod tests {
 
         // The line box is the font's effective line height, one em at size 14.
         assert_eq!(estimate_line_height(&font, 1.0), 14);
+    }
+
+    /// The **fallback** model — what a build with no face uses — still advances per cluster
+    /// the way the renderer's own fallback does, so the two only differ when a face exists.
+    #[test]
+    fn the_fallback_advance_model_matches_the_renderers_fallback() {
+        let font = crate::core::Font::simple("sans-serif", 14.0);
+        // Whatever tier is in force, summing the renderer's per-cluster model must equal the
+        // estimate for a string the face cannot supply — an unassigned private-use scalar.
+        let exotic = "\u{e000}\u{e001}";
+        let mut expected = 0.0f32;
+        crate::render::text::for_each_cluster(exotic, |cluster, _range| {
+            expected += estimate_cluster_advance(cluster, 14.0, 1.0);
+        });
+        assert_eq!(estimate_text_width(exotic, &font, 1.0), expected.round().max(0.0) as u32);
     }
 
     /// Tracking is paid on the *gaps* between clusters, never after the last one.

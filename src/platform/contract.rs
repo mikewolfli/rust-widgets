@@ -44,12 +44,25 @@ fn fallback_native_capability_contract() -> NativeCapabilityContract {
     crate::platform::types::default_capabilities_for(crate::core::PlatformFamily::Embedded)
 }
 /// Fallback contract for embedded profiles without a published backend contract.
+///
+/// # Why this derives rather than hardcodes
+///
+/// It used to return three `true`s — the same anti-pattern the *native* fallback above was fixed
+/// for. `embedded_capability_contract()` returns `None` for any backend that is not the `Embedded`
+/// family, so the only way to reach this function is from a backend that never claimed embedded
+/// capabilities; answering "you have a fixed DPI, a low-memory mode and typed triggers" is a
+/// **claim**, not a default. It is derived here from the same two facts the trait's own default
+/// uses — the DPI scale factor and the backend's declared capabilities — so a backend that says
+/// nothing gets exactly what an untouched backend gets.
 #[cfg(not(alloc_frugal))]
 fn fallback_embedded_capability_contract() -> EmbeddedCapabilityContract {
+    let platform = get_platform();
     EmbeddedCapabilityContract {
-        fixed_dpi: true,
-        low_memory_mode: true,
-        typed_widget_trigger: true,
+        fixed_dpi: platform.dpi_scale_factor() == 1.0,
+        // Not claimed unless the backend declares it — matching `Platform::capabilities`'s rule
+        // and the trait default's own comment.
+        low_memory_mode: false,
+        typed_widget_trigger: platform.capabilities().typed_widget_trigger,
     }
 }
 /// Negotiate capabilities using profile-specific contracts with deterministic fallbacks.

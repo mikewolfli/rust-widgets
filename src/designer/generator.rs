@@ -165,6 +165,13 @@ pub struct GenerationReport {
     pub nodes_emitted: usize,
     /// Properties emitted as assignments.
     pub properties_emitted: usize,
+    /// Wires emitted (published `events` bindings plus `on_*` compatibility keys).
+    ///
+    /// Counted separately from [`Self::properties_emitted`] because a wire is not a property value:
+    /// it names a handler the library will bind, and a report that folded the two together could not
+    /// answer "did the generated program wire what the document declared?" — the question whose
+    /// absence let the generator emit *no* wires at all while reporting a clean run.
+    pub wires_emitted: usize,
     /// Things resolved at generation time rather than emitted as calls, with the reason.
     pub resolved_at_generation: Vec<String>,
     /// Nodes or names the generator refused, each with a reason.
@@ -186,10 +193,11 @@ impl GenerationReport {
     /// A one-line summary a designer can show without reading the whole report.
     pub fn summary(&self) -> String {
         format!(
-            "{} nodes, {} properties, {} resolved at generation time, {} unsupported, \
+            "{} nodes, {} properties, {} wires, {} resolved at generation time, {} unsupported, \
              {} over capacity, {} cross-profile caveats",
             self.nodes_emitted,
             self.properties_emitted,
+            self.wires_emitted,
             self.resolved_at_generation.len(),
             self.unsupported.len(),
             self.capacity_overflow.len(),
@@ -272,7 +280,7 @@ pub fn generate(request: &GenerationRequest) -> Result<GeneratedSource, String> 
 
     let mut report = GenerationReport::default();
 
-    let availability = availability(&project.root_widget, request.target);
+    let availability = availability_with(&factory, &project.root_widget, request.target);
     match availability {
         Availability::Unavailable | Availability::Unknown => {
             report.unsupported.push(GenerationGap {
@@ -312,8 +320,26 @@ pub fn generate(request: &GenerationRequest) -> Result<GeneratedSource, String> 
 }
 
 /// Whether `name` can be constructed, and how conclusive the answer is.
+///
+/// Builds a default [`WidgetFactory`] to answer. A caller that already holds one (the emitter does,
+/// for every node in the tree) should call [`availability_with`] instead of rebuilding the registry
+/// per node.
 pub fn availability(name: &str, target: TargetProfile) -> Availability {
-    let factory = WidgetFactory::new_with_defaults();
+    availability_with(&WidgetFactory::new_with_defaults(), name, target)
+}
+
+/// [`availability`], using a caller-supplied factory.
+///
+/// # Why the factory is a parameter
+///
+/// The generator builds one `WidgetFactory` for the whole document. Probing availability through it
+/// (rather than constructing a fresh registry for every node) is both cheaper and the reason the
+/// emitter's `factory` parameter is live rather than threaded through and discarded.
+pub fn availability_with(
+    factory: &WidgetFactory,
+    name: &str,
+    target: TargetProfile,
+) -> Availability {
     // `create` is the availability probe: it returns `None` exactly when no constructor is
     // registered for the name under this profile. Asking it is what makes d-1 a measurement rather
     // than a hand-maintained list of what `mini` has.
@@ -413,15 +439,7 @@ fn emit_default_mode(
         "    // The `View` value is the generated tree, and `create_for` is generated too, so this\n\
          \x20   // program links no JSON parser and no widget-name table (mode 1's weight).\n\
          \x20   let mut engine = rust_widgets::view::ViewEngine::new();\n\
-         \x20   let report = engine.mount(&GeneratedTree { tree }, &|node| {\n\
-         \x20       let geometry = rust_widgets::core::Rect::new(0, 0, 0, 0);\n\
-         \x20       let text = node\n\
-         \x20           .prop_value(\"text\")\n\
-         \x20           .or_else(|| node.prop_value(\"title\"))\n\
-         \x20           .and_then(|v| v.as_str())\n\
-         \x20           .unwrap_or(\"\");\n\
-         \x20       create_for(&node.widget, geometry, text)\n\
-         \x20   });\n\
+         \x20   let report = engine.mount(&GeneratedTree { tree }, &create_for);\n\
          \x20   let _ = report;\n",
     );
     body
@@ -452,7 +470,7 @@ fn emit_node(
         return;
     };
 
-    let availability = availability(&node.widget, request.target);
+    let availability = availability_with(factory, &node.widget, request.target);
     if !availability.permits_generation() {
         report.unsupported.push(GenerationGap {
             path: path.to_vec(),
@@ -487,7 +505,6 @@ fn emit_node(
         ));
         report.properties_emitted += 2;
     }
-    let _ = depth;
 
     for (name, value) in node.scalar_properties() {
         if is_style_only_property(&name) {
@@ -502,12 +519,51 @@ fn emit_node(
         report.properties_emitted += 1;
     }
 
-    let _ = factory;
-
     out.push_str(&line);
 
     // Children, then the wires. A wire references the node it leaves from and by name, so it is
     // emitted after the whole tree value exists.
+    //
+    // # How a wire is carried
+    //
+    // A wire is emitted as a **prop** whose name is the key the document used (`events` for a
+    // published binding, `on_click` / `on_change` / … for a compatibility one) and whose value is
+    // the handler name. `create_for` reads them back and hands each to
+    // [`crate::json::bind_published_event`] / [`crate::json::bind_marker_event`] — the library's
+    // own binding, which is what rule #98 requires: the generated program chooses *what* to wire,
+    // never *how*.
+    //
+    // # The defect this replaces
+    //
+    // The comment above used to say "then the wires" and the code emitted none: `is_wire_key`
+    // skipped them in the property loop, and nothing else ever looked at
+    // `declared_handlers`. A document declaring `events: { clicked: "on_save" }` produced a
+    // program with no reference to `on_save` at all, so the handler could never run — silently,
+    // because the name had been validated at generation time and therefore looked fine.
+    // `examples/probe_generated_wires.rs` measured it: two declared wires, zero emitted.
+    for (key, handler) in node.declared_handlers() {
+        // `events` is an *object* in the document (`{ event: handler }`), so each published name
+        // becomes one prop rather than the whole map being stored under one key. The name is
+        // kept verbatim: the library validates it against the control's capability and reports a
+        // miss, which is the same treatment mode 1 gives it.
+        let prop =
+            format!("{WIRE_PROP_PREFIX}{EVENTS_KEY}.{key}", EVENTS_KEY = crate::json::EVENTS_KEY);
+        out.push_str(&format!(
+            ".prop({}, CapabilityValue::String({}.to_string()))",
+            quote(&prop),
+            quote(&handler),
+        ));
+        report.wires_emitted += 1;
+    }
+    for (key, handler) in node.declared_marker_handlers() {
+        let prop = format!("{WIRE_PROP_PREFIX}{key}");
+        out.push_str(&format!(
+            ".prop({}, CapabilityValue::String({}.to_string()))",
+            quote(&prop),
+            quote(&handler),
+        ));
+        report.wires_emitted += 1;
+    }
     let next_depth = depth + 1;
     for (child_index, child) in node.children.iter().enumerate() {
         let Some(child_path) = project_child_path(project, node, child_index) else {
@@ -646,7 +702,7 @@ fn collect_stripped_nodes(
         return;
     };
 
-    let availability = availability(&node.widget, request.target);
+    let availability = availability_with(factory, &node.widget, request.target);
     if !availability.permits_generation() {
         report.unsupported.push(GenerationGap {
             path: path.to_vec(),
@@ -707,6 +763,44 @@ fn collect_stripped_nodes(
         }
     }
 
+    // The wires are **recorded as refused**, not silently dropped.
+    //
+    // # Why a stripped target cannot wire an event
+    //
+    // The library's binding needs an `ObjectId` that a registry knows
+    // ([`crate::json::bind_published_event`]), and `widget::runtime` is `cfg(not(alloc_frugal))`:
+    // a `mini`/`embedded` program has no registry and no per-widget event dispatch, which is why
+    // `add_child` takes `base().id()` rather than a registered id (see the template's own note).
+    // There is therefore no `id` to hand the binder, and inventing one would produce a wire that
+    // reports success and never fires.
+    //
+    // So the honest output is a refusal a reader can act on: the shape and the reason, in the
+    // report and in the generated file's comment header. Emitting nothing *and saying nothing* is
+    // what the default target used to do, and it cost a silently dead handler.
+    for (key, handler) in node.declared_handlers() {
+        report.unsupported.push(GenerationGap {
+            path: path.to_vec(),
+            widget: node.widget.clone(),
+            reason: format!(
+                "`{EVENTS_KEY}.{key}` -> `{handler}`: a stripped target has no widget registry, so \
+                 there is no control id to bind a handler to; the wire is refused rather than \
+                 generated as a subscription that could never fire",
+                EVENTS_KEY = crate::json::EVENTS_KEY
+            ),
+        });
+    }
+    for (key, handler) in node.declared_marker_handlers() {
+        report.unsupported.push(GenerationGap {
+            path: path.to_vec(),
+            widget: node.widget.clone(),
+            reason: format!(
+                "`{key}` -> `{handler}`: a stripped target has no widget registry, so there is \
+                 no control id to bind a handler to; the wire is refused rather than generated as \
+                 a subscription that could never fire"
+            ),
+        });
+    }
+
     if !setters.is_empty() {
         // The control is constructed into a named local so a setter can refer to it, then the
         // block evaluates to that local. A block expression keeps the collection a single
@@ -720,7 +814,6 @@ fn collect_stripped_nodes(
             format!("{{\n        let mut {binding} = {expr};{setters}\n        {binding}\n    }}");
     }
 
-    let _ = factory;
     out.push((path.to_vec(), expr, !setters.is_empty()));
 
     let next_depth = depth + 1;
@@ -1028,6 +1121,14 @@ fn binding_name(path: &[usize]) -> String {
 }
 
 /// A Rust string literal for `value`.
+///
+/// # Why every C0 control character is escaped, not just the common five
+///
+/// A raw control byte (e.g. `\u{7}` in a document string) written verbatim into generated source
+/// is an invalid Rust literal, so the generated file would not compile. The four escapes a person
+/// thinks of (`\n`, `\r`, `\t`, `\\`) do not cover the rest of the C0 range, so the fallback
+/// emits `\u{..}` for anything below `0x20` (and DEL). `designer_manifest.rs` already writes the
+/// full range; this now matches it.
 fn quote(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');
@@ -1038,6 +1139,11 @@ fn quote(value: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
+            // Any other control character (C0 range plus DEL) cannot appear literally in a Rust
+            // string; escape it as `\u{..}`.
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                out.push_str(&format!("\\u{{{:x}}}", c as u32));
+            }
             _ => out.push(ch),
         }
     }
@@ -1105,6 +1211,21 @@ fn project_child_path(
 pub fn is_wire_key(name: &str) -> bool {
     crate::json::is_marker_key(name) || name == crate::json::EVENTS_KEY
 }
+
+/// The prefix a generated file uses to carry a wire on a `Node` prop.
+///
+/// # Why a wire needs a carrier, and why a prefixed prop rather than a bare key
+///
+/// A `Node` carries properties, and a wire is not one — but `create_for` is handed the `Node` and
+/// nothing else, so the wire has to travel with it. Emitting it under the document's own key
+/// (`on_click`, or `events`) would be indistinguishable from a *property* of that name, and a
+/// control that ever published such a property would silently receive a handler name as its value.
+/// The prefix keeps the two namespaces apart, so the read-back is unambiguous.
+///
+/// The prefix is not a public vocabulary: nothing outside this module and the generated
+/// `create_for` reads it, and a prop with this prefix is stripped before the node is used as a
+/// control description.
+pub const WIRE_PROP_PREFIX: &str = "__wire_";
 
 /// How many wire rules the generator shares with the runtime (T-3's "reuse, not rewrite").
 ///
@@ -1184,15 +1305,20 @@ fn assemble(
         }
     }
 
-    source.push_str("\nuse rust_widgets::core::Rect;\n");
     match request.target {
         TargetProfile::Default => {
-            source.push_str("use rust_widgets::view::Node;\n");
+            source.push_str("\nuse rust_widgets::view::Node;\n");
             // The tree value needs the scalar vocabulary, and the generated `create` compares type
             // names, so both imports are load-bearing rather than decorative.
             source.push_str("use rust_widgets::widget::capability::CapabilityValue;\n");
+            // `Rect` is **not** imported here: every use in this template is spelled
+            // `rust_widgets::core::Rect::new(..)` in full, and importing the name as well made it an
+            // unused import — which fails a downstream `-D warnings` build for a reason that has
+            // nothing to do with the project document. `tools/check_generated_sources.sh` caught it.
         }
         TargetProfile::Stripped => {
+            // This template names `Rect` bare, so the import is load-bearing here.
+            source.push_str("\nuse rust_widgets::core::Rect;\n");
             // Deliberately no `crate::view` / `crate::json` / factory import: their absence is the
             // point of this template, and an unused import would be a warning on the target, which
             // is how this template is verified (the DoD requires a real build).
@@ -1225,10 +1351,30 @@ fn assemble(
         // mode does not. Each arm calls the control's own constructor, so no `create_*` wrapper is
         // needed and nothing here depends on which profile wrappers are gated.
         source.push_str(
-            "\n/// Builds one control for the generated tree.\n\
+            "\n/// Builds one control for the generated tree, and wires the events it declares.\n\
              ///\n\
              /// The arms are exactly the widget types this file uses, so no name table is linked.\n\
-             fn create_for(widget: &str, geometry: Rect, text: &str) -> Option<rust_widgets::core::ObjectId> {\n\
+             ///\n\
+             /// # Why the wires are bound here rather than by the caller\n\
+             ///\n\
+             /// `node` is the description the tree was built from, and it carries the handler names\
+             /// the document declared (see `WIRE_PROP_PREFIX`). Binding them at creation is what\n\
+             /// makes `events: { clicked: \"on_save\" }` mean something: before this the wires were\n\
+             /// parsed and dropped, so the generated program contained no reference to the handler\n\
+             /// and it could never run.\n\
+             ///\n\
+             /// The *decision* of which callback an event needs is the library's, not this file's:\n\
+             /// each wire is handed to `bind_published_event` / `bind_marker_event`, which consult\n\
+             /// the control's own capability. A generated file that reimplemented that would be a\n\
+             /// second rule set (rule #98).\n\
+             fn create_for(node: &rust_widgets::view::Node) -> Option<rust_widgets::core::ObjectId> {\n\
+             \x20   let widget = node.widget.as_str();\n\
+             \x20   let geometry = rust_widgets::core::Rect::new(0, 0, 0, 0);\n\
+             \x20   let text = node\n\
+             \x20       .prop_value(\"text\")\n\
+             \x20       .or_else(|| node.prop_value(\"title\"))\n\
+             \x20       .and_then(|v| v.as_str())\n\
+             \x20       .unwrap_or(\"\");\n\
              \x20   let mut control: Option<Box<dyn rust_widgets::widget::Widget>> = match widget {\n",
         );
         let mut names: Vec<String> = Vec::new();
@@ -1262,7 +1408,24 @@ fn assemble(
              \x20   };\n\
              \x20   // The registry assigns the id; a generated program has exactly one tree, so the\n\
              \x20   // returned id is the one `ViewEngine` will address it by.\n\
-             \x20   control.take().map(|c| rust_widgets::widget::runtime::register(c)).flatten()\n\
+             \x20   let id = control.take().and_then(rust_widgets::widget::runtime::register)?;\n\
+             \x20   // Bind every wire the document declared. A refused name is reported at `warn!` by\n\
+             \x20   // the library and counted, so a wire that cannot fire is visible rather than silent.\n\
+             \x20   let prefix = \"__wire_\";\n\
+             \x20   for (name, value) in node.props.iter() {\n\
+             \x20       let Some(suffix) = name.strip_prefix(prefix) else { continue };\n\
+             \x20       let Some(handler) = value.as_str() else { continue };\n\
+             \x20       if let Some(event) = suffix.strip_prefix(\"events.\") {\n\
+             \x20           rust_widgets::json::bind_published_event(id, widget, event, handler);\n\
+             \x20       } else if let Some(marker) = rust_widgets::json::marker_for_key(suffix) {\n\
+             \x20           rust_widgets::json::bind_marker_event(id, suffix, marker, handler);\n\
+             \x20       }\n\
+             \x20       // An unrecognised suffix is impossible: the generator emits only keys from\n\
+             \x20       // `is_wire_key`, and `node.props` is built by this file. A branch here would\n\
+             \x20       // need a `log` dependency the generated crate does not have, which is the\n\
+             \x20       // shape that made the first version of this fail to compile.\n\
+             \x20   }\n\
+             \x20   Some(id)\n\
              }\n",
         );
     }
@@ -1367,6 +1530,21 @@ mod tests {
         assert_eq!(quote("a\nb"), "\"a\\nb\"");
     }
 
+    /// Every C0 control character must become a valid Rust escape.
+    ///
+    /// Pins the defect: only `" \\ \n \r \t` were escaped, so a control byte (e.g. `\u{7}`,
+    /// the bell) in a document string was emitted raw into generated source, producing an invalid
+    /// literal that would not compile. The fallback now writes `\u{..}` for the rest of C0 and DEL.
+    #[test]
+    fn quoting_escapes_the_whole_control_range() {
+        assert_eq!(quote("\u{7}"), "\"\\u{7}\"");
+        assert_eq!(quote("\u{1b}"), "\"\\u{1b}\"");
+        assert_eq!(quote("\u{0}"), "\"\\u{0}\"");
+        assert_eq!(quote("\u{7f}"), "\"\\u{7f}\"");
+        // A printable non-ASCII character is left alone.
+        assert_eq!(quote("中"), "\"中\"");
+    }
+
     #[test]
     fn scalar_values_become_capability_values() {
         assert_eq!(capability_value_expr(&Value::Bool(true)), "CapabilityValue::Bool(true)");
@@ -1387,5 +1565,126 @@ mod tests {
         assert_eq!(binding_name(&[]), "root");
         assert_eq!(binding_name(&[3]), "n_3");
         assert_eq!(binding_name(&[1, 2]), "n_1_2");
+    }
+
+    /// A declared wire must reach the generated **source**, on both templates.
+    ///
+    /// # The defect this pins
+    ///
+    /// `emit_node` carried a comment saying "Children, then the wires" and emitted none: the
+    /// property loop skipped wire keys via `is_wire_key`, and nothing else ever consulted
+    /// `declared_handlers`. A document declaring `events: { clicked: "on_save" }` therefore
+    /// produced a program containing no reference to `on_save`, so the handler could never run —
+    /// silently, because the name had been validated at generation time and looked fine.
+    ///
+    /// The existing mode-consistency test did not catch it either: it asserted the name was
+    /// *publishable* (that `event_is_subscribable` accepts it), never that the generated file used
+    /// it. This test asserts the generated source names the handler, which is the property that was
+    /// actually broken.
+    #[test]
+    fn declared_wires_reach_the_generated_source() {
+        const DOCUMENT: &str = r#"{
+          "window": {
+            "id": "root",
+            "title": "Wires",
+            "children": [
+              {
+                "button": {
+                  "id": "save",
+                  "text": "Save",
+                  "events": { "clicked": "on_save" },
+                  "on_change": "on_save_marker"
+                }
+              }
+            ]
+          }
+        }"#;
+
+        for target in [TargetProfile::Default, TargetProfile::Stripped] {
+            let request = GenerationRequest {
+                json: DOCUMENT.to_string(),
+                target,
+                width: 320,
+                height: 240,
+                function_name: String::from("build_wires"),
+            };
+            let generated = generate(&request).expect("the document must generate");
+            for handler in ["on_save", "on_save_marker"] {
+                assert!(
+                    generated.source.contains(handler),
+                    "{target:?}: the declared handler `{handler}` is absent from the generated \
+                     source, so it could never run"
+                );
+            }
+        }
+    }
+
+    /// On the default target the wire is **carried** as a prop and read back by `create_for`.
+    ///
+    /// Asserting the mechanism and not just the name: a future edit could keep the handler string
+    /// in a comment and pass the test above while wiring nothing.
+    #[test]
+    fn the_default_target_carries_wires_as_prefixed_props() {
+        const DOCUMENT: &str = r#"{
+          "window": {
+            "id": "root",
+            "title": "Wires",
+            "children": [
+              { "button": { "id": "save", "text": "S", "events": { "clicked": "on_save" } } }
+            ]
+          }
+        }"#;
+        let request = GenerationRequest {
+            json: DOCUMENT.to_string(),
+            target: TargetProfile::Default,
+            width: 320,
+            height: 240,
+            function_name: String::from("build_wires"),
+        };
+        let generated = generate(&request).expect("the document must generate");
+
+        assert!(
+            generated.source.contains(&format!("{WIRE_PROP_PREFIX}events.clicked")),
+            "the wire must travel as a prefixed prop, not under its document key"
+        );
+        assert!(
+            generated.source.contains("bind_published_event"),
+            "the generated file must hand the wire to the library's own binder (rule #98)"
+        );
+        assert_eq!(generated.report.wires_emitted, 1, "one declared wire, one emitted");
+    }
+
+    /// A stripped target **refuses** a wire with a reason, because it has no widget registry to
+    /// bind against.
+    ///
+    /// Refusing rather than dropping: the target cannot produce a working subscription, and a
+    /// generated file that silently omitted the handler is the failure mode this whole fix is
+    /// about.
+    #[test]
+    fn a_stripped_target_refuses_a_wire_rather_than_dropping_it() {
+        const DOCUMENT: &str = r#"{
+          "window": {
+            "id": "root",
+            "title": "Wires",
+            "children": [
+              { "button": { "id": "save", "text": "S", "events": { "clicked": "on_save" } } }
+            ]
+          }
+        }"#;
+        let request = GenerationRequest {
+            json: DOCUMENT.to_string(),
+            target: TargetProfile::Stripped,
+            width: 320,
+            height: 240,
+            function_name: String::from("build_wires"),
+        };
+        let generated = generate(&request).expect("the document must generate");
+
+        assert!(
+            generated.report.unsupported.iter().any(|gap| gap.reason.contains("on_save")),
+            "the refusal must name the handler so the reader can act on it: {:?}",
+            generated.report.unsupported
+        );
+        assert!(!generated.report.is_clean(), "a refused wire is not a clean run");
     }
 }

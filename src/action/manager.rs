@@ -95,7 +95,15 @@ impl ActionManager {
             return false;
         }
         self.release_shortcuts_for(&action_id);
-        self.shortcut_to_action.insert(shortcut.to_string().to_lowercase(), action_id);
+        // `normalize_shortcut`, not a bare `to_lowercase`: the string API
+        // (`bind_shortcut` / `trigger_shortcut`) keys the same map through
+        // `normalize_shortcut`, which splits on `+`, trims, drops empty tokens and
+        // rejoins. Using `to_lowercase` here produced a different spelling for the
+        // same chord (`Shortcut::to_string` renders `Modifiers::PRIMARY` as the
+        // literal `"Primary"`, so `Shortcut::primary(Key::S)` became `"primary+s"`
+        // while `trigger_shortcut("Ctrl+S")` looked up `"ctrl+s"`), so a type-bound
+        // chord could never be triggered by its own string spelling.
+        self.shortcut_to_action.insert(normalize_shortcut(&shortcut.to_string()), action_id);
         true
     }
 

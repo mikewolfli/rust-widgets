@@ -775,15 +775,36 @@ fn build_screen(win: &WindowHandle, log: &Arc<EventLog>) {
         let (side, index) = *position;
         ladder_leave_log.append(format!("[OrderBook] pointer left {side:?} #{index}"));
     });
+    // A click on a ladder row is what a trader acts on, so the demo reads the row's price and
+    // quantity back through the widget's own query rather than repeating what the signal already
+    // carried. The id is not known until after the mount, so the handle is captured as a cell the
+    // callback fills in later — the closure runs only on a real click, long after `mount`.
+    let ladder_id = Arc::new(std::sync::Mutex::new(None));
     let ladder_click_log = Arc::clone(log);
+    let ladder_id_for_click = Arc::clone(&ladder_id);
     ladder.level_clicked.connect(move |position| {
-        // A click on a ladder row is what a trader acts on, so the demo reads the row's
-        // price/size back through the widget's own queries rather than repeating what the
-        // signal already carried.
         let (side, index) = *position;
-        ladder_click_log.append(format!("[OrderBook] click {side:?} #{index}"));
+        let level = ladder_id_for_click.lock().ok().and_then(|id| *id).and_then(|id| {
+            rust_widgets::widget::runtime::with_widget(id, |widget| {
+                (widget as &dyn core::any::Any)
+                    .downcast_ref::<OrderBookWidget>()
+                    .and_then(|book| book.levels(side).get(index).copied())
+            })
+            .flatten()
+        });
+        match level {
+            Some(level) => ladder_click_log.append(format!(
+                "[OrderBook] click {side:?} #{index} @ {:.2} x {:.2}",
+                level.price, level.quantity
+            )),
+            None => ladder_click_log
+                .append(format!("[OrderBook] click {side:?} #{index} (row no longer present)")),
+        }
     });
     let id_ladder = mount(win, ladder, layout.book, "OrderBook", log);
+    if let Ok(mut slot) = ladder_id.lock() {
+        *slot = id_ladder;
+    }
 
     // ── The depth curve, over the same book ────────────────────────────────
     let mut depth = DepthChart::new(layout.depth);

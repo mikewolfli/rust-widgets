@@ -48,8 +48,8 @@ impl EmbeddedTask {
     }
 
     fn run(mut self, frame_index: u64) {
-        let _ = self.id;
-        let _ = self.label;
+        // `id` and `label` are read by `EmbeddedEngineShared::stats` (which publishes the pending
+        // `(id, label)` pairs), so they are no longer discarded here.
         if let Some(action) = self.action.take() {
             action(frame_index);
         }
@@ -298,6 +298,11 @@ impl EmbeddedEngineShared {
             running: state.running,
             frame_count: self.frame_count.load(Ordering::SeqCst),
             pending_task_count: state.pending_tasks.len(),
+            pending_tasks: state
+                .pending_tasks
+                .iter()
+                .map(|task| (task.id, task.label.clone()))
+                .collect(),
             window_count: state.windows.len(),
             button_count: state.buttons.len(),
             target_fps: state.target_fps,
@@ -352,6 +357,16 @@ pub struct EmbeddedEngineStats {
     pub frame_count: u64,
     /// Number of queued tasks waiting for the next frame.
     pub pending_task_count: usize,
+    /// `(id, label)` of every queued task, in submission order.
+    ///
+    /// # Why the labels are exposed
+    ///
+    /// `submit_embedded_task` returns a task id, and `EmbeddedTask` stored both an id and a label
+    /// that nothing read — so the returned id was a handle a caller could hold but never act on, and
+    /// the label was inert. Publishing the pending `(id, label)` pairs makes the id meaningful (it
+    /// is what the caller got back) and the label observable in diagnostics, which is the honest way
+    /// to keep the two fields rather than leaving them written-but-unread.
+    pub pending_tasks: Vec<(u64, alloc::string::String)>,
     /// Number of registered windows tracked by the runtime.
     pub window_count: usize,
     /// Number of registered buttons tracked by the runtime.
@@ -450,5 +465,28 @@ mod tests {
         let after = embedded_engine_stats();
         assert!(after.window_count > before.window_count);
         assert!(after.button_count > before.button_count);
+    }
+
+    /// A submitted task's id and label must be observable while it is queued.
+    ///
+    /// Pins the defect: `EmbeddedTask` stored an `id` and a `label` that nothing read (the old
+    /// `run` even had `let _ = self.id; let _ = self.label;`), so `submit_embedded_task`'s returned
+    /// id was a handle a caller could hold but never act on. `stats` now publishes the pending
+    /// `(id, label)` pairs, which is what makes the returned id meaningful.
+    #[test]
+    fn a_queued_task_publishes_its_id_and_label() {
+        let _guard = test_guard();
+        let id = submit_embedded_task("publish-me", |_frame| {});
+        let stats = embedded_engine_stats();
+        assert!(
+            stats
+                .pending_tasks
+                .iter()
+                .any(|(task_id, label)| *task_id == id && label == "publish-me"),
+            "the queued task's id and label must be visible in the stats: {:?}",
+            stats.pending_tasks
+        );
+        // Clean up so the queued task does not leak into another test's view.
+        embedded_engine_shared().quit();
     }
 }

@@ -32,6 +32,36 @@ fn now_ms() -> u64 {
 /// Used instead of a string literal to avoid fragile string matching.
 pub const ANIMATION_FRAME_EVENT_NAME: &str = "animation_frame";
 
+/// The request id carried by an animation-frame event, or `None` for any other event.
+///
+/// The id lives in the payload as eight little-endian bytes (see
+/// [`EventLoop::request_animation_frame`]); decoding it here keeps the encoding in one place, so
+/// the producer and the cancellation check cannot disagree about the layout.
+///
+/// Gated like its callers: both the dispatch phases that consult it are `not(alloc_frugal)`
+/// (the frugal loop has no animation bus), so on `mini` this would be dead code and warn.
+#[cfg(not(alloc_frugal))]
+fn animation_frame_id(event: &Event) -> Option<u64> {
+    let Event::Custom { name, payload } = event else {
+        return None;
+    };
+    if name != ANIMATION_FRAME_EVENT_NAME {
+        return None;
+    }
+    let bytes: [u8; 8] = payload.as_slice().try_into().ok()?;
+    Some(u64::from_le_bytes(bytes))
+}
+
+/// Whether `id` is in `cancelled`, removing it. See `cancel_animation_frame` for why it consumes.
+fn take_cancelled(cancelled: &Mutex<Vec<u64>>, id: u64) -> bool {
+    let mut cancelled = lock(cancelled);
+    if let Some(position) = cancelled.iter().position(|pending| *pending == id) {
+        cancelled.swap_remove(position);
+        return true;
+    }
+    false
+}
+
 /// A handle returned by `request_animation_frame` that can be used to cancel the request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AnimationFrameRequest {
@@ -83,6 +113,25 @@ pub struct EventLoop {
     /// [`IdleTask::tick`] documented itself as "called each frame by the event loop"
     /// while nothing ever called it.
     idle_tasks: Vec<IdleTask>,
+    /// Ids of [`EventLoop::request_animation_frame`] requests that have been cancelled.
+    ///
+    /// # Why this exists
+    ///
+    /// [`AnimationFrameRequest`] was introduced as something that "can be used to identify or
+    /// cancel" a frame, but nothing in the crate ever read its `id` and there was no cancel
+    /// entry point at all — so the field was write-only (principle #99) and the documented
+    /// capability did not exist. A host could request a frame, decide against it, and the
+    /// callback still ran.
+    ///
+    /// Cancellation is checked at **dispatch** time rather than by removing the event from the
+    /// queue: the queue is a lock-protected priority structure shared with the loop thread, and
+    /// a removal would have to race the `dequeue_blocking` that already holds the mutex. An id
+    /// set the dispatcher consults is the same guarantee without touching that lock discipline.
+    ///
+    /// The set only ever grows, which is bounded by the number of cancellations a host performs
+    /// (UI code cancels a frame at most once per request); ids are `u64` and never reused, so a
+    /// stale entry can never cancel a later frame.
+    cancelled_anim_frames: Arc<Mutex<Vec<u64>>>,
 }
 
 impl EventLoop {
@@ -102,6 +151,7 @@ impl EventLoop {
             next_anim_frame_id: AtomicU64::new(1),
             native_pump: None,
             idle_tasks: Vec::new(),
+            cancelled_anim_frames: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -159,6 +209,9 @@ impl EventLoop {
         // field empty; a restart after `stop()` therefore begins with none, which is the
         // honest state — the caller re-registers what it still wants.
         let mut idle_tasks = core::mem::take(&mut self.idle_tasks);
+        // The loop thread consults this set at dispatch time; it is shared rather than moved so
+        // `cancel_animation_frame` (called from the host's thread) mutates the same one.
+        let cancelled_anim_frames = Arc::clone(&self.cancelled_anim_frames);
         let handle = thread::spawn(move || {
             while *lock(&running) {
                 // Phase 0: Pump native platform events (e.g., Wayland dispatch)
@@ -214,6 +267,16 @@ impl EventLoop {
                         continue;
                     }
 
+                    // A cancelled animation frame is discarded here, before any dispatch, so a
+                    // host that cancelled never sees the callback. See
+                    // `cancel_animation_frame` for why this is checked at dispatch rather than
+                    // removed from the queue.
+                    if animation_frame_id(event)
+                        .is_some_and(|id| take_cancelled(&cancelled_anim_frames, id))
+                    {
+                        continue;
+                    }
+
                     #[cfg(feature = "touch")]
                     let maybe_gesture_event = if event.is_touch() {
                         gesture_engine.process(event, now_ms())
@@ -255,6 +318,13 @@ impl EventLoop {
                         #[cfg(not(alloc_frugal))]
                         if idle_budget_start.elapsed().as_millis() >= 5 {
                             break; // budget exhausted, remaining idle events are dropped
+                        }
+                        // Same cancellation rule the Normal phase applies; an animation frame may
+                        // be posted at either priority.
+                        if animation_frame_id(&event)
+                            .is_some_and(|id| take_cancelled(&cancelled_anim_frames, id))
+                        {
+                            continue;
                         }
                         #[cfg(feature = "touch")]
                         let maybe_gesture_event = if event.is_touch() {
@@ -388,8 +458,9 @@ impl EventLoop {
 
     /// Request the event loop to dispatch a custom animation frame event on the next iteration.
     ///
-    /// Returns an `AnimationFrameRequest` handle that can be used to identify or cancel
-    /// the request. This is similar to `window.requestAnimationFrame()` in browsers.
+    /// Returns an `AnimationFrameRequest` handle that can be used to identify the request or to
+    /// cancel it with [`EventLoop::cancel_animation_frame`]. This is similar to
+    /// `window.requestAnimationFrame()` in browsers, cancellation included.
     pub fn request_animation_frame(
         &self,
         target: ObjectId,
@@ -401,6 +472,39 @@ impl EventLoop {
         };
         self.post_event(target, event, EventPriority::Normal)?;
         Ok(AnimationFrameRequest { id })
+    }
+
+    /// Cancels a previously requested animation frame, reporting whether it was still pending.
+    ///
+    /// # What "cancelled" means here
+    ///
+    /// The frame event may already be queued when this is called, so cancellation is enforced by
+    /// the loop: when it dequeues an animation-frame event whose id is in this set, it **discards
+    /// it without invoking the dispatch callback**. A host that cancels therefore never sees the
+    /// callback, which is the guarantee `requestAnimationFrame`'s counterpart gives.
+    ///
+    /// # The return value
+    ///
+    /// `true` when this call is the one that cancelled it. A second cancel of the same request
+    /// returns `false`: the frame is already cancelled, and reporting `true` again would say a
+    /// state change happened when none did. A request that has **already been dispatched** also
+    /// reports `false`, because there is nothing left to cancel.
+    pub fn cancel_animation_frame(&mut self, request: AnimationFrameRequest) -> bool {
+        let mut cancelled = lock(&self.cancelled_anim_frames);
+        if cancelled.contains(&request.id) {
+            return false;
+        }
+        cancelled.push(request.id);
+        true
+    }
+
+    /// Whether `id` was cancelled, consuming the entry.
+    ///
+    /// Kept for callers that hold an [`EventLoop`] and want to ask without going through the
+    /// dispatch path (a test, or a host with its own pump). The loop thread uses the free
+    /// [`take_cancelled`] because it captures the `Arc`, not `self`.
+    pub fn take_cancelled_animation_frame(&self, id: u64) -> bool {
+        take_cancelled(&self.cancelled_anim_frames, id)
     }
 
     /// Sets the dispatch callback invoked for each dequeued event.
@@ -648,6 +752,69 @@ mod tests {
         assert!(
             anim_fired.load(Ordering::SeqCst),
             "animation frame event should have been dispatched through the event loop"
+        );
+    }
+
+    /// A cancelled animation frame never reaches the dispatcher.
+    ///
+    /// # The defect this pins
+    ///
+    /// `AnimationFrameRequest` documented itself as something that "can be used to identify or
+    /// cancel" a request, but nothing read its `id` and there was no cancel entry point at all
+    /// (principle #99: a written-and-never-read field). A host could request a frame, decide
+    /// against it, and the callback ran anyway.
+    ///
+    /// # Why the assertion is on the callback, not on the return value
+    ///
+    /// `cancel_animation_frame` returning `true` only proves the id was recorded. The guarantee
+    /// the API advertises is behavioural — the callback does not run — so the test observes the
+    /// callback, and a *different* request in the same loop is asserted to still fire, which is
+    /// what stops the test passing because dispatch stopped entirely.
+    #[cfg(all(not(alloc_frugal), not(target_arch = "wasm32")))]
+    #[test]
+    fn test_cancelled_animation_frame_never_dispatches() {
+        let mut el = EventLoop::new();
+        let cancelled_fired = Arc::new(AtomicBool::new(false));
+        let kept_fired = Arc::new(AtomicBool::new(false));
+        let cancelled_flag = Arc::clone(&cancelled_fired);
+        let kept_flag = Arc::clone(&kept_fired);
+        // Two requests are distinguished by their ids, which is exactly the payload the host
+        // never had to decode before this test existed.
+        let cancelled_id = Arc::new(AtomicU64::new(0));
+        let seen_id = Arc::clone(&cancelled_id);
+
+        el.set_dispatch_fn(Arc::new(move |_target, event| {
+            let Some(id) = animation_frame_id(event) else { return };
+            if id == seen_id.load(Ordering::SeqCst) {
+                cancelled_flag.store(true, Ordering::SeqCst);
+            } else {
+                kept_flag.store(true, Ordering::SeqCst);
+            }
+        }));
+
+        let doomed = el.request_animation_frame(1u64).unwrap();
+        let kept = el.request_animation_frame(1u64).unwrap();
+        assert_ne!(doomed.id, kept.id, "each request carries its own id");
+        cancelled_id.store(doomed.id, Ordering::SeqCst);
+
+        assert!(el.cancel_animation_frame(doomed), "the first cancel reports the change");
+        assert!(
+            !el.cancel_animation_frame(doomed),
+            "a second cancel of the same request changes nothing, so it must not report `true`"
+        );
+
+        el.start();
+        std::thread::sleep(Duration::from_millis(100));
+        el.stop();
+
+        assert!(
+            !cancelled_fired.load(Ordering::SeqCst),
+            "a cancelled frame must never reach the dispatcher"
+        );
+        assert!(
+            kept_fired.load(Ordering::SeqCst),
+            "the un-cancelled frame in the same loop must still fire, or this test would pass \
+             for the wrong reason"
         );
     }
 

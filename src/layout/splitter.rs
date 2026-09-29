@@ -125,15 +125,14 @@ impl Layout for SplitterLayout {
     }
 
     fn add_widget(&mut self, widget_id: ObjectId, stretch: u32) {
-        self.panes.push(widget_id);
-        self.ratios.push((stretch.max(1) as f32).max(0.01));
+        // One body, one meaning: the trait method and `add_pane` must not be able to drift
+        // apart. The module's own regression test pins that they agree, and the cheapest way
+        // to keep that true forever is to have only one of them push the panes.
+        self.add_pane(widget_id, stretch);
     }
 
     fn remove_widget(&mut self, widget_id: ObjectId) {
-        if let Some(index) = self.panes.iter().position(|id| *id == widget_id) {
-            self.panes.remove(index);
-            self.ratios.remove(index);
-        }
+        self.remove_pane(widget_id);
     }
 
     fn child_ids(&self) -> Vec<ObjectId> {

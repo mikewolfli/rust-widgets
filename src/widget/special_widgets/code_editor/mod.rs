@@ -104,7 +104,7 @@ mod tests_batch5;
 
 pub use editor::CodeEditor;
 pub use multicursor::MultiCursor;
-pub use syntax::{BuiltinHighlighter, LanguageId, SyntaxHighlighter};
+pub use syntax::{BuiltinHighlighter, LanguageId, LineState, SyntaxHighlighter};
 pub use types::{
     CodeEditorConfig, CompletionItem, CompletionSource, CompletionState, ContextMenuState, Cursor,
     DiagnosticMarker, DocumentCompletions, DocumentScale, EditorBuffer, FindState, FoldRegion,

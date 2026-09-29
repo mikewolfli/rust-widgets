@@ -542,7 +542,14 @@ impl Widget for Icon {
     }
 
     fn size_hint(&self) -> crate::core::Size {
-        crate::core::Size::new(24, 24)
+        // The icon's **own** requested box, not a fixed 24: `set_size` is a documented
+        // property that requests a redraw, so a layout that asked this control how much room
+        // it wanted and was always told 24 ignored the very setting the caller just made —
+        // `Icon::new(rect)` followed by `set_size(48.0)` reserved a 24px slot. The value is
+        // rounded to whole pixels because a size hint is in logical pixels, and floored at 1
+        // so a degenerate box is still addressable.
+        let side = self.size.round().max(1.0) as u32;
+        crate::core::Size::new(side, side)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
@@ -855,7 +862,11 @@ mod tests {
     /// leave that test green while every icon rendered blank. This renders each token through the
     /// real pipeline and asserts the emitted geometry is non-empty — the "no silent placeholder"
     /// check ICON-4 asks for, one level below the census gate.
-    #[cfg(all(feature = "icons", not(feature = "mini")))]
+    /// `alloc_frugal` rather than `not(feature = "mini")`: the two are the same condition
+    /// (`alloc_frugal` *is* `feature = "mini"`, defined in `build.rs`), and rule #47 requires
+    /// the profile gate to be spelled through the alias so the same fact is not written two
+    /// ways across the tree.
+    #[cfg(all(feature = "icons", not(alloc_frugal)))]
     #[test]
     fn every_tokened_icon_draws_a_distinct_outline() {
         use crate::widget::svg::render_to_svg;
@@ -1045,5 +1056,54 @@ mod tests {
             unknown_svg.contains("<path") || unknown_svg.contains("<rect"),
             "the placeholder must draw something: {unknown_svg}"
         );
+    }
+
+    /// An icon on a non-960 grid must land inside the box it was given.
+    ///
+    /// # The defect this pins
+    ///
+    /// `IconPlacement::map` translated design y by a **hard-coded 960** (`y + 960`) instead of by the
+    /// caller's own grid. Every bundled icon is on a 960 grid, so nothing in the crate's own
+    /// vocabulary noticed; a host icon registered with `register_icon_on_grid(.., 24)` — the
+    /// documented way to bring a 24-unit viewBox such as Lucide's — was pushed `960 - 24` grid units
+    /// too far, i.e. 40 boxes below the rect it was asked to draw in.
+    ///
+    /// # Why the test is at the placement level
+    ///
+    /// [`draw_outline_in`](super::draw_outline_in) calls
+    /// `IconPlacement::new(rect.x, rect.y, rect.width, data.grid)`, so the grid reaches the mapping —
+    /// and the mapping is what is under test. Asserting through a rendered widget would only
+    /// exercise the bundled 960 grid, where the constant and the grid coincide.
+    #[test]
+    fn a_non_960_grid_is_placed_inside_its_box() {
+        use crate::render::path::{flatten_paths, IconPlacement};
+
+        // A 24-unit grid drawn 24 px square at (10, 20): the box is x 10..34, y 20..44.
+        let placement = IconPlacement::new(10, 20, 24.0, 24);
+        let mut points = [Point::new(0, 0); 16];
+        let mut contours = [(0usize, 0usize); 4];
+        // A triangle with its apex on the grid's **top** row (design y = -24, which maps to the
+        // box's top edge) and its base at design y = -15.
+        let count = flatten_paths(&["M0-15h24L12-24Z"], placement, &mut points, &mut contours)
+            .expect("a triangle flattens");
+        assert_eq!(count, 1);
+        let (start, end) = contours[0];
+        for point in &points[start..end] {
+            assert!(
+                (10..=34).contains(&point.x) && (20..=44).contains(&point.y),
+                "a 24-grid icon must land inside its box, but a vertex is at {point:?}"
+            );
+        }
+        // The apex (design y = -24, the grid's top) must be the **smallest** device y, and it must
+        // sit on the box's top edge — not 40 boxes below it, which is what the hard-coded 960 gave.
+        let apex_y = points[start..end].iter().map(|point| point.y).min().expect("a vertex");
+        let base_y = points[start..end].iter().map(|point| point.y).max().expect("a vertex");
+        assert!(
+            apex_y < base_y,
+            "the apex must be above the base, or the icon is rotated 180 degrees \
+             (apex y={apex_y} base y={base_y})"
+        );
+        assert_eq!(apex_y, 20, "design y = -grid is the grid's top, so it is the box's top edge");
+        assert_eq!(base_y, 29, "design y = -15 scales to 9 px below the box's top");
     }
 }

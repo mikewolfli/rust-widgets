@@ -552,7 +552,7 @@ profile-embedded-mini = []
 # `webkit-engine` was here (Linux-only, gating a wrapper over webkit2gtk). Deleted by
 # BLUE20 layer 5 (ruling W1) because the wrapper never displayed a page; the feature
 # promised a rendering engine the library did not have.
-pdf-encryption = ["aes", "sha2", "cbc"]
+pdf-encryption = ["aes", "sha2", "cbc", "dep:getrandom"]
 audio-output = ["cpal"]
 js-engine = ["boa_engine"]
 video-codecs = ["dep:ffmpeg-next"]
@@ -685,6 +685,12 @@ symphonia = { version = "0.5", default-features = false, features = [
 aes = { version = "0.8", optional = true }
 sha2 = { version = "0.10", optional = true }
 cbc = { version = "0.1", optional = true }
+# A real OS CSPRNG for PDF salt/IV material. `EncryptionAlgorithm`'s salt and IV were derived from a
+# time-seeded LCG, which is predictable and defeats the purpose of a salt. `getrandom` is the
+# cross-platform way to read the OS entropy source; on wasm32 it needs the `wasm_js` feature, which
+# is declared in the `[target.'cfg(target_arch = "wasm32")'.dependencies]` section for the same
+# reason the `js`/`wasm_js` features are pinned there.
+getrandom = { version = "0.3", optional = true }
 # Note: On Linux, requires `libasound2-dev` package for ALSA backend.
 # On macOS, uses CoreAudio; on Windows, uses WASAPI.
 cpal = { version = "0.15", optional = true }
@@ -813,12 +819,13 @@ zbus = { version = "5", optional = true }
 # is why criterion/tempfile/proptest are gated off wasm32.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
-
-# `getrandom` 0.3 removed the browser backend from the default build and renamed
-# the opt-in feature: 0.2's `js` became 0.3's `wasm_js` (verified in the crate's
-# own manifest, not assumed). It arrives via `rand` 0.9 in the dev-dependency
-# tree, so declaring it keeps `--all-features --target wasm32` compiling too.
-getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+# `pdf-encryption` derives its salt/IV from `getrandom` (0.3), whose browser backend is opt-in
+# (`wasm_js`). On `wasm32-unknown-unknown` the feature must be on or the crate refuses to build.
+# This is the **same package** as the optional `getrandom` in `[dependencies]`, so it cannot take a
+# distinct name (cargo rejects one package under two names in a single graph — the earlier
+# `getrandom03` pin collided for exactly that reason); re-declaring it here non-optionally attaches
+# the feature on this target only, which is the constraint.
+getrandom = { version = "0.3", features = ["wasm_js"] }
 
 [dev-dependencies]
 # NOTE: criterion (benchmark harness), tempfile (filesystem tests) and proptest
@@ -877,6 +884,17 @@ harness = false
 name = "view_counter"
 path = "examples/view_counter.rs"
 
+# The adaptive counterpart: one view, three viewports, three different trees.
+#
+# `required-features = ["desktop"]` for the reason the census probes carry it: the body names the
+# declarative layer, which a stripped profile does not compile. The example's own
+# `#[cfg(not(declarative_view))]` `main` explains the absence when it *is* built, and this entry
+# keeps `cargo check --all-targets` from needing that path on `mini`/`embedded` at all.
+[[example]]
+name = "view_adaptive"
+path = "examples/view_adaptive.rs"
+required-features = ["desktop"]
+
 # BLUE20 layer 1 — the rendering census probe.
 #
 # `required-features = ["desktop"]` rather than a crate-level `#![cfg]` on its own: an
@@ -914,6 +932,31 @@ required-features = ["desktop", "icons"]
 name = "export_icon_sheet"
 path = "examples/export_icon_sheet.rs"
 required-features = ["desktop", "icons"]
+
+# Separates `draw` from SVG-export cost, by painting through the real `RenderContext`.
+#
+# `required-features = ["desktop"]` for the same reason the census/sheet probes carry it: the
+# body names `widget::special_widgets::code_editor`, which is `full_widgets`-only, so without
+# this entry `cargo check --all-targets` on `mini`/`embedded` failed to compile the example
+# (`E0433: cannot find special_widgets in widget`) — which is exactly what made
+# `tools/check_profiles.sh` impossible to pass, since its whole point is `--all-targets`.
+# Cargo's `[[example]]` entry is where the gate belongs; an inner `#![cfg]` would leave the
+# example with no `main`, which is `E0601` (see the census probe's note above).
+[[example]]
+name = "probe_draw_only"
+path = "examples/probe_draw_only.rs"
+required-features = ["desktop"]
+
+# Batch-3 timing probe: the cost of one keystroke through `CodeEditor`'s own edit path.
+#
+# `required-features` for the same reason as `probe_draw_only` above — it names `CodeEditor`,
+# which is `full_widgets`-only, so an ungated entry broke `cargo check --all-targets` on
+# `mini`/`embedded`. Two examples shared this defect; both are gated here rather than one at a
+# time, because a gate script that cannot pass is not a gate.
+[[example]]
+name = "verify_batch3"
+path = "examples/verify_batch3.rs"
+required-features = ["desktop"]
 
 # Compile-time probe for the declarative-layer platform gate.
 #

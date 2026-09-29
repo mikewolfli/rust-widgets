@@ -3,9 +3,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120">
   <rect x="0" y="0" width="240" height="120" fill="rgba(18,18,18,1.00)" />
   <rect x="0" y="44" width="240" height="32" rx="4" ry="4" fill="rgba(30,30,33,1.00)" />
-  <path d="M 41 63 L 37 60 L 41 56 L 41 57 L 39 60 L 41 62 L 41 63 Z" fill="rgba(147,147,148,1.00)" stroke="none" stroke-width="0" />
+  <path d="M 41 63 L 37 60 L 41 56 L 41 57 L 39 60 L 41 62 Z" fill="rgba(147,147,148,1.00)" stroke="none" stroke-width="0" />
   <rect x="80" y="44" width="80" height="32" fill="rgba(130,130,130,1.00)" />
   <path d="M120.46 54.13L119.55 54.13L118.68 54.52L117.57 54.81L117.57 55.56L119.28 55.56L119.28 62.67L117.14 62.67L117.14 63.66L122.37 63.66L122.37 62.67L120.46 62.67Z" fill="rgba(0,0,0,1.00)" fill-rule="nonzero" data-text="1" />
-  <path d="M 200 60 L 197 57 L 198 56 L 201 60 L 198 63 L 197 62 L 200 60 Z" fill="rgba(147,147,148,1.00)" stroke="none" stroke-width="0" />
+  <path d="M 200 60 L 197 57 L 198 56 L 201 60 L 198 63 L 197 62 Z" fill="rgba(147,147,148,1.00)" stroke="none" stroke-width="0" />
   <rect x="0" y="44" width="240" height="32" fill="none" stroke="rgba(130,130,130,1.00)" stroke-width="1" />
 </svg>

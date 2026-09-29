@@ -173,6 +173,10 @@ impl Dialog {
         let _ = crate::widget::runtime::exit_modal(self.id());
         self.hide();
         self.reveal.set_target(0.0);
+        // The base lifecycle signal is what a handle-layer `on_close` / the JSON `closed` route
+        // connects to; the widget's own signal is kept for its own listeners. Emitting both means
+        // a handler fires from either path that closed the dialog.
+        self.base.closed.emit();
         self.closed.emit();
     }
 

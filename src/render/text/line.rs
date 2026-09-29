@@ -163,6 +163,28 @@ pub(crate) fn shape_line(text: &str, font: &Font, scale: f32) -> ShapedText {
     ShapedText { clusters, advance: total_advance }
 }
 
+/// The width [`shape_line`] measures for `text` — the renderer's own answer.
+///
+/// # Why this exists as a helper
+///
+/// `crate::widget::metrics::estimate_text_width` and the renderer must agree on how wide a
+/// string is: a control's `size_hint` reserves space with the former and paints with the
+/// latter. Asserting that agreement used to be done by writing the flat
+/// `0.6 em × n` model out longhand in a test, which silently stopped testing anything the
+/// day the renderer gained real face metrics. Exposing the renderer's number here lets the
+/// test assert the coupling itself rather than a copy of one side of it.
+///
+/// `cfg(test)` because no production caller needs it: the paint path already holds the
+/// [`ShapedText`] it measured.
+///
+/// Gated on `text-shaping` as well as `test` because the width it returns is only meaningful
+/// when a face is in play — see `crate::widget::metrics::the_text_estimate_reproduces_the_renderers_advance_model`,
+/// which is the one caller and is itself behind that feature.
+#[cfg(all(test, feature = "text-shaping"))]
+pub(crate) fn measure_text_width_for_test(text: &str, font: &Font, scale: f32) -> u32 {
+    shape_line(text, font, scale).advance.round().max(0.0) as u32
+}
+
 /// Whether a scalar occupies a full em rather than a fraction of one.
 ///
 /// This is a **property of the character**, not of any font: the CJK blocks, Hangul, the

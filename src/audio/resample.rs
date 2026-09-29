@@ -17,11 +17,11 @@ pub fn resample(buffer: &AudioBuffer, target_sample_rate: u32) -> AudioBuffer {
     let ratio = target_sample_rate as f64 / buffer.sample_rate as f64;
     let new_frames = (buffer.frames() as f64 * ratio) as usize;
     if new_frames == 0 || buffer.frames() == 0 {
-        return AudioBuffer::new(target_sample_rate, Vec::new(), buffer.channels);
+        return AudioBuffer::new(target_sample_rate, Vec::new(), buffer.channels());
     }
-    let mut new_samples = Vec::with_capacity(new_frames * buffer.channels as usize);
+    let mut new_samples = Vec::with_capacity(new_frames * buffer.channels() as usize);
 
-    for ch in 0..buffer.channels as usize {
+    for ch in 0..buffer.channels() as usize {
         let ch_data = buffer.channel(ch);
         for i in 0..new_frames {
             let src_pos = i as f64 / ratio;
@@ -41,7 +41,7 @@ pub fn resample(buffer: &AudioBuffer, target_sample_rate: u32) -> AudioBuffer {
     }
 
     // Re-interleave
-    let ch = buffer.channels as usize;
+    let ch = buffer.channels() as usize;
     let frames = new_samples.len() / ch;
     let mut interleaved = Vec::with_capacity(new_samples.len());
     for f in 0..frames {
@@ -51,7 +51,7 @@ pub fn resample(buffer: &AudioBuffer, target_sample_rate: u32) -> AudioBuffer {
         }
     }
 
-    AudioBuffer::new(target_sample_rate, interleaved, buffer.channels)
+    AudioBuffer::new(target_sample_rate, interleaved, buffer.channels())
 }
 
 #[cfg(test)]
@@ -87,7 +87,7 @@ mod tests {
     fn test_resample_stereo() {
         let buf = AudioBuffer::new(44100, vec![0.0; 88200], 2);
         let result = resample(&buf, 22050);
-        assert_eq!(result.channels, 2);
+        assert_eq!(result.channels(), 2);
         assert!(result.samples.len() < 88200);
     }
 

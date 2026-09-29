@@ -872,20 +872,119 @@ const POPUP_GAP: i32 = 4;
 /// The initials of the days of the week, Sunday first, matching [`Date::weekday`].
 const WEEKDAY_INITIALS: [&str; 7] = ["S", "M", "T", "W", "T", "F", "S"];
 
+/// Paints a month grid under `field`: the popup plate, the day-of-week header, and six weeks of
+/// cells with the marked day tinted by the accent.
+///
+/// This is the **one** implementation of the calendar popup. [`DateEdit`] and `DateTimeEdit` show
+/// the same grid -- their own docs say so -- and previously each carried a near-verbatim ~100-line
+/// copy, so a change to one (cell size, the accent source, the six-week rule) would silently leave
+/// the other behind. Both now delegate here.
+///
+/// `date` is the month to lay out and the day to mark; `minimum`/`maximum` decide which cells are
+/// muted. The grid geometry is derived from the field's own rect so a field placed anywhere opens
+/// its popup in the same relative position.
+pub(crate) fn draw_month_grid(
+    context: &mut RenderContext,
+    field: Rect,
+    surface: Color,
+    border: Color,
+    ink: Color,
+    date: &Date,
+    minimum: &Date,
+    maximum: &Date,
+) {
+    let grid_w = POPUP_CELL_W * 7;
+    let grid_h = POPUP_CELL_H * 7;
+    let popup = Rect::new(
+        field.x,
+        field.y + field.height as i32 + POPUP_GAP,
+        grid_w.max(field.width),
+        grid_h,
+    );
+    // The popup gets its own plate and edge, because at this size a bare grid over the page is
+    // indistinguishable from a table that happens to be there. It is the *field's* surface one
+    // step further from the field, so the two read as one control opening rather than two.
+    let plate = surface.blend(&ink, 0.10);
+    context.fill_rect(popup, plate);
+    context.draw_rect(popup, border);
+
+    let font = Font::default();
+    let muted = plate.blend(&ink, 0.45);
+    // The day-of-week row, so the grid's columns mean something. Drawn from the same table
+    // `weekday()` indexes, so the column that a date lands in is the initial above it.
+    for (col, initial) in WEEKDAY_INITIALS.iter().enumerate() {
+        let cell = Rect::new(
+            popup.x + (col as u32 * POPUP_CELL_W) as i32,
+            popup.y,
+            POPUP_CELL_W,
+            POPUP_CELL_H,
+        );
+        context.draw_text_line(cell, initial, &font, muted, HorizontalAlignment::Center);
+    }
+
+    let first = Date::new(date.year(), date.month(), 1);
+    let leading = first.weekday() as u32;
+    let days = first.days_in_month() as u32;
+    for day in 1..=days {
+        let slot = leading + day - 1;
+        let col = slot % 7;
+        let row = slot / 7;
+        // Six weeks is the most a month can need (a 31-day month starting on Saturday ends in
+        // row 5), so anything past that cannot be produced and is skipped rather than clamped
+        // onto a cell that belongs to another day.
+        if row > 5 {
+            break;
+        }
+        let cell = Rect::new(
+            popup.x + (col * POPUP_CELL_W) as i32,
+            popup.y + POPUP_CELL_H as i32 + (row * POPUP_CELL_H) as i32,
+            POPUP_CELL_W,
+            POPUP_CELL_H,
+        );
+        let this = Date::new(date.year(), date.month(), day as u8);
+        let in_range = this >= *minimum && this <= *maximum;
+        if day == date.day() as u32 {
+            // The selected day is the accent plate the rest of the crate marks a selection
+            // with, so "this is the value" reads the same here as everywhere else.
+            let accent = crate::style::resolved_theme_style("slider")
+                .and_then(|style| style.background_color)
+                .unwrap_or_else(|| plate.blend(&ink, 0.55));
+            context.fill_rect(cell, accent);
+            context.draw_text_line(
+                cell,
+                &day.to_string(),
+                &font,
+                accent.contrast_color(),
+                HorizontalAlignment::Center,
+            );
+        } else {
+            // Out-of-range days stay visible but muted: hiding them would leave the reader
+            // unable to see *why* a day cannot be picked.
+            let day_ink = if in_range { ink } else { muted };
+            context.draw_text_line(
+                cell,
+                &day.to_string(),
+                &font,
+                day_ink,
+                HorizontalAlignment::Center,
+            );
+        }
+    }
+}
+
 impl DateEdit {
     /// Paints the month grid for the current date's month, below the field.
     ///
     /// # Why it is drawn rather than held as a child widget
-    //n
+    ///
     /// It is a **function of the field's own state**: the month comes from `self.date`, the muted
     /// cells from `self.minimum`/`self.maximum`, and the marked cell from `self.date.day`. A child
     /// widget would have to be kept in step with all three on every mutation, which is three places
     /// to forget -- and the flag is published as a boolean, so there is nothing for a caller to hold
     /// anyway.
     ///
-    /// Six weeks are always laid out, so the popup's height does not change as months come and go:
-    /// a popup that grew and shrank by a row as the user stepped through the calendar would make
-    /// every row below it jump.
+    /// The grid itself is [`draw_month_grid`], shared with `DateTimeEdit` so the two controls cannot
+    /// drift apart.
     fn draw_calendar_popup(
         &self,
         context: &mut RenderContext,
@@ -894,83 +993,16 @@ impl DateEdit {
         border: Color,
         ink: Color,
     ) {
-        let grid_w = POPUP_CELL_W * 7;
-        let grid_h = POPUP_CELL_H * 7;
-        let popup = Rect::new(
-            field.x,
-            field.y + field.height as i32 + POPUP_GAP,
-            grid_w.max(field.width),
-            grid_h,
+        draw_month_grid(
+            context,
+            field,
+            surface,
+            border,
+            ink,
+            &self.date,
+            &self.minimum,
+            &self.maximum,
         );
-        // The popup gets its own plate and edge, because at this size a bare grid over the page is
-        // indistinguishable from a table that happens to be there. It is the *field's* surface one
-        // step further from the field, so the two read as one control opening rather than two.
-        let plate = surface.blend(&ink, 0.10);
-        context.fill_rect(popup, plate);
-        context.draw_rect(popup, border);
-
-        let font = Font::default();
-        let muted = plate.blend(&ink, 0.45);
-        // The day-of-week row, so the grid's columns mean something. Drawn from the same table
-        // `weekday()` indexes, so the column that a date lands in is the initial above it.
-        for (col, initial) in WEEKDAY_INITIALS.iter().enumerate() {
-            let cell = Rect::new(
-                popup.x + (col as u32 * POPUP_CELL_W) as i32,
-                popup.y,
-                POPUP_CELL_W,
-                POPUP_CELL_H,
-            );
-            context.draw_text_line(cell, initial, &font, muted, HorizontalAlignment::Center);
-        }
-
-        let first = Date::new(self.date.year(), self.date.month(), 1);
-        let leading = first.weekday() as u32;
-        let days = first.days_in_month() as u32;
-        for day in 1..=days {
-            let slot = leading + day - 1;
-            let col = slot % 7;
-            let row = slot / 7;
-            // Six weeks is the most a month can need (a 31-day month starting on Saturday ends in
-            // row 5), so anything past that cannot be produced and is skipped rather than clamped
-            // onto a cell that belongs to another day.
-            if row > 5 {
-                break;
-            }
-            let cell = Rect::new(
-                popup.x + (col * POPUP_CELL_W) as i32,
-                popup.y + POPUP_CELL_H as i32 + (row * POPUP_CELL_H) as i32,
-                POPUP_CELL_W,
-                POPUP_CELL_H,
-            );
-            let date = Date::new(self.date.year(), self.date.month(), day as u8);
-            let in_range = date >= self.minimum && date <= self.maximum;
-            if day == self.date.day() as u32 {
-                // The selected day is the accent plate the rest of the crate marks a selection
-                // with, so "this is the value" reads the same here as everywhere else.
-                let accent = crate::style::resolved_theme_style("slider")
-                    .and_then(|style| style.background_color)
-                    .unwrap_or_else(|| plate.blend(&ink, 0.55));
-                context.fill_rect(cell, accent);
-                context.draw_text_line(
-                    cell,
-                    &day.to_string(),
-                    &font,
-                    accent.contrast_color(),
-                    HorizontalAlignment::Center,
-                );
-            } else {
-                // Out-of-range days stay visible but muted: hiding them would leave the reader
-                // unable to see *why* a day cannot be picked.
-                let day_ink = if in_range { ink } else { muted };
-                context.draw_text_line(
-                    cell,
-                    &day.to_string(),
-                    &font,
-                    day_ink,
-                    HorizontalAlignment::Center,
-                );
-            }
-        }
     }
 }
 

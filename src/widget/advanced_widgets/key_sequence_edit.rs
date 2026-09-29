@@ -406,7 +406,10 @@ fn key_code_to_name(key: u32) -> String {
         122 => "F11".into(),
         123 => "F12".into(),
         k if (65..=90).contains(&k) => (k as u8 as char).to_string(),
-        k if (48..=57).contains(&k) => (((k - 48) as u8 + b'0') as char).to_string(),
+        // `k` in 48..=57 is the ASCII digit itself, so this is `(k as u8 as char)`, matching the
+        // letter arm above. The previous `((k - 48) as u8 + b'0')` round-tripped through zero to
+        // arrive back at `k`, which read as if it did something and invited a wrong "fix".
+        k if (48..=57).contains(&k) => (k as u8 as char).to_string(),
         k => format!("Key{k}"),
     }
 }

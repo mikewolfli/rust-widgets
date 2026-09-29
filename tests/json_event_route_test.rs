@@ -35,8 +35,8 @@
 use rust_widgets::app::dispatch_trigger;
 use rust_widgets::core::ObjectId;
 use rust_widgets::json::{
-    clear_global_handlers, invoke_global_handler, json_event_binding, register_global_handler,
-    BoundJsonLayout, EventHandlerContext, JsonEventBinding, JsonLoader, JsonTriggerMarker,
+    bind_published_event, clear_global_handlers, invoke_global_handler, json_event_binding,
+    register_global_handler, BoundJsonLayout, EventHandlerContext, JsonEventBinding, JsonLoader,
 };
 use rust_widgets::platform::WidgetTriggerKind;
 use rust_widgets::widget::capability::WidgetFactory;
@@ -149,6 +149,41 @@ fn a_compatibility_key_still_reaches_its_handler() {
     });
 }
 
+/// `closed` — both routes — reaches the widget's close channel.
+///
+/// # The defect this closes
+///
+/// `on_close` / `events:{"closed":…}` used to be **refused**: nothing produced a close signal
+/// reachable from the handle layer, so the loader declined the binding rather than wire it to the
+/// click callback (a handler told "closed" while firing on a click). `BaseWidget::closed` now
+/// exists and the loader routes `Closed` through `WidgetHandle::on_close`, so both spellings must
+/// actually fire when the widget announces the lifecycle fact.
+#[test]
+fn closed_reaches_the_handle_through_both_routes() {
+    with_clean_handlers(|| {
+        let published = counting_handler("on_closed_pub");
+        let legacy = counting_handler("on_closed_leg");
+        let json = r#"{"window":{"id":"w","title":"T","width":400,"height":300,
+            "events":{"closed":"on_closed_pub"},"on_close":"on_closed_leg"}}"#;
+
+        let bound = JsonLoader::load(json).expect("a `closed` binding must load, not be refused");
+        let id = mounted_id(&bound, "w");
+
+        // Emit the widget's own `closed` signal — the channel `on_close` connects to.
+        assert!(
+            rust_widgets::close_widget(id),
+            "a mounted widget must receive its own close signal"
+        );
+
+        assert_eq!(
+            published.load(Ordering::SeqCst),
+            1,
+            "`events.closed` must reach the handler on the widget's closed signal"
+        );
+        assert_eq!(legacy.load(Ordering::SeqCst), 1, "`on_close` must reach the same channel");
+    });
+}
+
 /// Both routes in one node, and both must be wired.
 ///
 /// A loader that stopped after the first matching route would satisfy each test above on its own.
@@ -242,18 +277,21 @@ fn a_value_event_is_not_wired_to_the_click_callback() {
     });
 }
 
-/// The route's callback choice follows the event's declared payload, for every published pair.
+/// The route's callback choice follows the event's declared intent (name + payload), for every
+/// published pair.
 ///
 /// The behavioural tests above cover two names; this covers the *rule*, so a control that publishes
-/// an event the two do not mention cannot be wired through a hard-coded constant.
+/// an event the two do not mention cannot be wired through a hard-coded constant. The rule is the
+/// marker's: a payload-free name that is not a click (`closed`, `double_clicked`) resolves to its
+/// own marker and is then refused by `unroutable_reason`, rather than being flattened to `Clicked`.
 #[test]
-fn the_callback_choice_follows_the_declared_payload() {
+fn the_callback_choice_follows_the_declared_intent() {
     let factory = WidgetFactory::new_with_defaults();
     let mut checked = 0usize;
     for capability in factory.capabilities() {
         for schema in capability.events {
             let binding = json_event_binding(capability.canonical_name, schema.name);
-            let JsonEventBinding::Published { has_payload, name } = binding else {
+            let JsonEventBinding::Published { has_payload, name, marker } = binding else {
                 panic!("a published name must produce a Published binding, not a marker");
             };
             assert_eq!(
@@ -269,25 +307,38 @@ fn the_callback_choice_follows_the_declared_payload() {
                 if schema.payload.is_some() { "a payload" } else { "no payload" },
                 if has_payload { "a payload" } else { "no payload" }
             );
+            // The binding's marker and callback must agree with each other (both derive from the
+            // marker), so a name cannot be told one trigger and wired to the other's callback.
             assert_eq!(
-                binding.uses_value_callback(),
-                schema.payload.is_some(),
-                "`{}.{}` must be wired to the callback its payload implies",
+                binding.marker(),
+                marker,
+                "`{}.{}` must report the marker its binding carries",
                 capability.canonical_name,
                 schema.name
             );
             assert_eq!(
-                binding.marker(),
-                if schema.payload.is_some() {
-                    JsonTriggerMarker::ValueChanged
-                } else {
-                    JsonTriggerMarker::Clicked
-                }
+                binding.uses_value_callback(),
+                marker.uses_value_callback(),
+                "`{}.{}` must be wired to the callback its marker implies, not its payload",
+                capability.canonical_name,
+                schema.name
             );
+            // A binding that is refused must never reach a callback at all.
+            if marker.unroutable_reason().is_some() {
+                assert!(
+                    !bind_published_event(0u64, capability.canonical_name, schema.name, "h"),
+                    "`{}.{}` names an unroutable trigger and must be refused",
+                    capability.canonical_name,
+                    schema.name
+                );
+            }
             checked += 1;
         }
     }
-    assert!(checked > 300, "the table has 326 (control, event) pairs; only {checked} were checked");
+    assert!(
+        checked > 300,
+        "the table has 300+ (control, event) pairs; only {checked} were checked"
+    );
 }
 
 /// A binding the control cannot support must be refused **by the capability table**, and the

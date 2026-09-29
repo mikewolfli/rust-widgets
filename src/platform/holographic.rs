@@ -38,7 +38,15 @@
 //! Call `HolographicKeyboardDetector::process_depth()` for each
 //! `HolographicTouch` event. When a key is detected, the detector
 //! returns a `KeyHit` with the character code and confidence level.
-//! The platform layer forwards this as a synthesized keyboard event.
+//!
+//! # Who produces `HolographicTouch`
+//!
+//! There is no in-tree backend that emits `HolographicTouch`: no supported OS exposes a depth
+//! source to this library, and it holds no device handle it could observe. The event and this
+//! detector are therefore an **integration point a host drives** — the host that owns the depth
+//! sensor posts `Event::holographic_touch(..)` and turns a returned [`KeyHit`] into whatever
+//! keyboard event its platform needs. (The earlier wording, "the platform layer forwards this as a
+//! synthesized keyboard event", described a forward that no backend performs.)
 
 use crate::core::{Point, Rect};
 

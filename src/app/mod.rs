@@ -16,6 +16,12 @@ mod handle;
 pub mod lifecycle;
 
 pub use app_core::{App, AppConfig};
+/// Records a binding that was accepted by its caller but can never fire.
+///
+/// `pub(crate)` rather than private to `handle`: the JSON loader also refuses a binding
+/// (a marker with no signal to reach), and every refusal must reach the same counter so
+/// "was anything left unwired?" has one answer.
+pub(crate) use handle::record_unwired_binding;
 /// Test-only seam onto the value-changed router, re-exported so a frame-driver test can
 /// observe the dispatch path without a window handle. See the function's own docs.
 #[cfg(test)]

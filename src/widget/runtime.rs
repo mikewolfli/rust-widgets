@@ -717,23 +717,41 @@ pub fn set_focusable_position(id: ObjectId, x: i32, y: i32) -> bool {
 /// there*, and whether a disabled control reacts is the control's decision (it can
 /// report it declined, the same honest-answer rule used everywhere else).
 ///
-/// Returns `None` for an unmounted `root`, a point outside it, or a tree with no hit.
+/// Returns `None` for an unmounted `root` or a tree with no hit.
+///
+/// # The root's own bounds, and the one case where they are not consulted
+///
+/// Every **non-root** node is tested against `point` normally. The root is the one exception, and
+/// the reason is a coordinate-space fact rather than an oversight: a window's geometry holds the
+/// `x`/`y` the caller asked the operating system for (see `frame_origin`), while its children are
+/// written in client coordinates. Those are two different spaces, so testing the window's rect
+/// against a client point rejected every click on the window.
+///
+/// Skipping the test entirely is not the fix either, and that is what this function used to do: a
+/// point far outside the root then fell through the child search and returned the **root** as the
+/// deepest hit, so a click hundreds of pixels off the window still reached a widget. The two spaces
+/// only differ by the root's own origin, so the bound is applied **relative to that origin**: a
+/// point is inside the root when `point - origin` lies within the root's rect. When the root is a
+/// client-space container (`origin == (0, 0)`, which is the case for every tree built through the
+/// layout engine and for the tests below) this is exactly the plain containment test, and for a
+/// window it is containment in client coordinates — which is the space `point` is documented to be
+/// in above.
 pub fn widget_at(root: ObjectId, point: Point) -> Option<ObjectId> {
+    let origin = with_widget(root, |widget| widget.geometry())?;
+    let local = Point::new(point.x - origin.x, point.y - origin.y);
+    let root_rect = Rect::new(0, 0, origin.width, origin.height);
     let mut current = root;
     loop {
         let children = with_widget(current, |widget| widget.children().to_vec())?;
-        // A **root** is a container, not a rectangle to be tested.
-        //
-        // A window's geometry holds the `x`/`y` the caller asked the operating system for,
-        // while its children sit in client coordinates (see `frame_origin`). Those are two
-        // different spaces, so testing the root against a client point rejected every click
-        // on the window: `demo/control` creates its window at `(100, 100)` and a click at
-        // client `(95, 36)` failed `contains_point` before any child was considered, so the
-        // router answered `None` and no callback ran.
-        //
-        // Every other node is tested normally: a control is addressed in its parent's
-        // space, which is the space its own rectangle is written in.
-        if current != root && !widget_accepts_point(current, point) {
+        // A **root** is a container whose geometry is written in a different space from its
+        // children's (see the doc comment), so its bound is applied in the root's own space via the
+        // `local` point captured above. Every other node is tested normally: a control is addressed
+        // in its parent's space, which is the space its own rectangle is written in.
+        if current == root {
+            if !root_rect.contains_point(local) {
+                return None;
+            }
+        } else if !widget_accepts_point(current, point) {
             return None;
         }
         // Topmost-first: a later sibling paints over an earlier one.
@@ -1865,6 +1883,54 @@ pub fn dispatch_event(id: ObjectId, event: &Event) -> bool {
         return false;
     }
     with_widget_mut(id, |widget| widget.handle_event(event)).is_some()
+}
+
+/// Tells `id` and every mounted descendant that their container became `width` by `height`.
+///
+/// # Why a subtree and not just the resized control
+///
+/// [`Event::Resize`] documents "the new content size in logical pixels", and the control whose
+/// box actually changed is rarely the one that cares: a layout manager resizes the window, but
+/// the code editor inside it is what must re-measure its visible rows. Delivering only to the
+/// window would leave every nested control holding the geometry it computed for the old size —
+/// exactly the staleness the event exists to announce. Each descendant receives the size of the
+/// **resized container**, not of itself: the event answers "my world changed", and a control
+/// reads its own rectangle through [`crate::widget_geometry`] if it needs the narrower fact.
+///
+/// # Why this is not `dispatch_event` in a loop by the caller
+///
+/// Walking the mounted tree requires the registry, which lives here. A caller that reimplemented
+/// the walk would be a second, drifting definition of "the subtree".
+///
+/// Returns the number of controls the event reached, so a caller can tell "nothing was mounted"
+/// from "everything was told".
+#[cfg(not(alloc_frugal))]
+pub fn dispatch_resize(id: ObjectId, width: u32, height: u32) -> usize {
+    let event = Event::resize(width, height);
+    let mut reached = 0;
+    // The descendants are collected before delivery so a handler that mounts or destroys
+    // controls cannot make the walk observe a half-updated registry.
+    let mut targets = alloc::vec::Vec::new();
+    collect_subtree_ids(id, &mut targets);
+    for target in targets {
+        if dispatch_event(target, &event) {
+            reached += 1;
+        }
+    }
+    reached
+}
+
+/// Collects `id` and every mounted descendant into `out`, parents before children.
+///
+/// The traversal goes through [`crate::widget::Widget::children`] (via [`direct_children_of`]),
+/// which is the single definition of "the mounted tree" — the same source the hit-testing and
+/// damage walks use, so the three cannot disagree about what a subtree is.
+#[cfg(not(alloc_frugal))]
+fn collect_subtree_ids(id: ObjectId, out: &mut alloc::vec::Vec<ObjectId>) {
+    out.push(id);
+    for child in direct_children_of(id) {
+        collect_subtree_ids(child, out);
+    }
 }
 
 /// An input fact a platform backend knows about a control it drew itself.
@@ -6050,5 +6116,38 @@ mod tests {
             direct_children_of(window_id).contains(&child_id),
             "after `add_child` the window painter must be able to find it"
         );
+    }
+
+    /// `Event::Resize` used to be published with a constructor and **no producer**: nothing
+    /// in the library ever delivered it, so a nested control that handled it (the code
+    /// editor refreshes its visible rows) never heard that its container changed size.
+    #[test]
+    fn a_container_resize_reaches_a_nested_child() {
+        let window_id = register(Box::new(crate::widget::window::Window::new(
+            "t".to_string(),
+            Rect::new(0, 0, 200, 120),
+        )))
+        .expect("mount the window");
+        let _unmount_window = MountGuard(window_id);
+
+        let panel_id = register(Box::new(crate::widget::Panel::new(Rect::new(0, 0, 200, 120))))
+            .expect("mount the panel");
+        let _unmount_panel = MountGuard(panel_id);
+        with_widget_mut(window_id, |window| window.add_child(panel_id));
+
+        let editor_id = register(Box::new(crate::widget::Button::new(
+            "ok".to_string(),
+            Rect::new(0, 0, 40, 20),
+        )))
+        .expect("mount the button");
+        let _unmount_editor = MountGuard(editor_id);
+        with_widget_mut(panel_id, |panel| panel.add_child(editor_id));
+
+        // The window and both descendants are told, deepest included.
+        let reached = dispatch_resize(window_id, 640, 480);
+        assert_eq!(reached, 3, "window + panel + button");
+
+        // An id that addresses nothing tells nobody rather than panicking.
+        assert_eq!(dispatch_resize(u64::MAX, 10, 10), 0);
     }
 }

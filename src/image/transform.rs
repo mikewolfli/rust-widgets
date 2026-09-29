@@ -258,6 +258,55 @@ pub fn flip_vertical(data: ImageData, w: u32, h: u32) -> Result<ImageData, Strin
     Ok(ImageData::Rgba8(out))
 }
 
+/// Applies an EXIF orientation tag to RGBA8 pixels, returning the corrected data and its new size.
+///
+/// The eight EXIF orientation values describe how the camera was held relative to the scene. Value
+/// `1` is the identity; the others are the seven combinations of a rotation and a mirror. This maps
+/// each one onto the primitives above ([`rotate`], [`flip_horizontal`], [`flip_vertical`]) so there
+/// is one implementation of each transform.
+///
+/// # Why this matters
+///
+/// `Extract_exif` parses the tag but nothing applied it, so a photo shot in portrait on a camera
+/// that stored it landscape (the common case, orientation 6) decoded and rendered rotated. Applying
+/// the tag at decode time is the whole reason to parse it.
+///
+/// An unknown value (`0`, `9`, …) is returned **unchanged** rather than guessed at, matching how
+/// this crate treats any other absent capability.
+pub fn apply_exif_orientation(
+    data: ImageData,
+    w: u32,
+    h: u32,
+    orientation: u8,
+) -> Result<(ImageData, u32, u32), String> {
+    match orientation {
+        // 1 = normal, 0/unknown = leave as-is.
+        1 => Ok((data, w, h)),
+        // 2 = mirrored horizontally.
+        2 => Ok((flip_horizontal(data, w, h)?, w, h)),
+        // 3 = rotated 180.
+        3 => rotate(data, w, h, 180),
+        // 4 = mirrored vertically.
+        4 => Ok((flip_vertical(data, w, h)?, w, h)),
+        // 5 = transposed (mirror across the top-left/bottom-right diagonal): flip H then rotate 90 CW.
+        5 => {
+            let (flipped, fw, fh) = (flip_horizontal(data, w, h)?, w, h);
+            rotate(flipped, fw, fh, 90)
+        }
+        // 6 = rotated 90 clockwise (the usual "portrait photo stored landscape").
+        6 => rotate(data, w, h, 90),
+        // 7 = transverse (mirror across the top-right/bottom-left diagonal): flip H then rotate 270.
+        7 => {
+            let (flipped, fw, fh) = (flip_horizontal(data, w, h)?, w, h);
+            rotate(flipped, fw, fh, 270)
+        }
+        // 8 = rotated 90 counter-clockwise.
+        8 => rotate(data, w, h, 270),
+        // Any other value is not a defined orientation: return the pixels untouched.
+        _ => Ok((data, w, h)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,5 +417,52 @@ mod tests {
         assert!(rotate(short.clone(), 1, 1, 90).is_err());
         assert!(flip_horizontal(short.clone(), 1, 1).is_err());
         assert!(flip_vertical(short, 1, 1).is_err());
+    }
+
+    /// Reads pixel `(x, y)` out of an RGBA8 image as its RGB tuple.
+    fn pixel(data: &ImageData, w: u32, x: u32, y: u32) -> (u8, u8, u8) {
+        let ImageData::Rgba8(bytes) = data else { panic!("expected RGBA8") };
+        let off = ((y * w + x) * 4) as usize;
+        (bytes[off], bytes[off + 1], bytes[off + 2])
+    }
+
+    /// `apply_exif_orientation` must map each tag onto the right transform.
+    ///
+    /// Pins the defect: `extract_exif` parsed the orientation tag but nothing applied it, so a
+    /// portrait photo stored landscape (tag 6) decoded and rendered rotated. The tests use a 2x1
+    /// image whose two pixels differ, so a wrong transform cannot pass by symmetry.
+    #[test]
+    fn exif_orientation_is_applied() {
+        // 2x1: left pixel red, right pixel blue.
+        let src = ImageData::Rgba8(vec![255, 0, 0, 255, 0, 0, 255, 255]);
+
+        // 1 = identity: unchanged.
+        let (out, w, h) = apply_exif_orientation(src.clone(), 2, 1, 1).unwrap();
+        assert_eq!((w, h), (2, 1));
+        assert_eq!(pixel(&out, 2, 0, 0), (255, 0, 0));
+        assert_eq!(pixel(&out, 2, 1, 0), (0, 0, 255));
+
+        // 3 = 180: red moves to the right, blue to the left.
+        let (out, w, h) = apply_exif_orientation(src.clone(), 2, 1, 3).unwrap();
+        assert_eq!((w, h), (2, 1));
+        assert_eq!(pixel(&out, 2, 0, 0), (0, 0, 255));
+        assert_eq!(pixel(&out, 2, 1, 0), (255, 0, 0));
+
+        // 6 = 90 CW: a 2x1 image becomes 1x2, and the left pixel goes to the top.
+        let (out, w, h) = apply_exif_orientation(src.clone(), 2, 1, 6).unwrap();
+        assert_eq!((w, h), (1, 2), "a 90-degree rotation swaps the dimensions");
+        assert_eq!(pixel(&out, 1, 0, 0), (255, 0, 0), "the left pixel rotates to the top");
+        assert_eq!(pixel(&out, 1, 0, 1), (0, 0, 255));
+
+        // 2 = mirror horizontal: red and blue swap places without changing the size.
+        let (out, w, h) = apply_exif_orientation(src.clone(), 2, 1, 2).unwrap();
+        assert_eq!((w, h), (2, 1));
+        assert_eq!(pixel(&out, 2, 0, 0), (0, 0, 255));
+        assert_eq!(pixel(&out, 2, 1, 0), (255, 0, 0));
+
+        // An undefined tag leaves the pixels untouched rather than guessing.
+        let (out, w, h) = apply_exif_orientation(src, 2, 1, 9).unwrap();
+        assert_eq!((w, h), (2, 1));
+        assert_eq!(pixel(&out, 2, 0, 0), (255, 0, 0));
     }
 }

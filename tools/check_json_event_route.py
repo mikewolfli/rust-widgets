@@ -94,19 +94,43 @@ def check_marker_keys_are_declared() -> list[str]:
 
 
 def check_single_source_of_keys() -> list[str]:
-    """[3] The loader must not restate the eight names next to a property pattern."""
+    """[3] The loader must not restate the `on_*` names next to a property pattern.
+
+    # Why the check is "derives" and not "contains"
+
+    The loader once spelled the eight `on_*` keys as literals in `is_loader_owned_key` while the
+    wiring iterated `MARKER_KEYS`. The two lists were maintained separately, so the doc comment
+    claiming the list "comes from `event_route::MARKER_KEYS`" was false and adding a ninth key
+    would have made the property pass report a live handler as an unknown property. The fix is to
+    *derive* the key set from the one table -- so this asserts the derive, and explicitly forbids
+    the literals coming back.
+    """
     findings: list[str] = []
     text = LOADER.read_text()
+
+    # The loader must consult the one table.
+    if "is_marker_key" not in text and "MARKER_KEYS" not in text:
+        findings.append(
+            "src/json/loader.rs names neither `is_marker_key` nor `MARKER_KEYS`, so the `on_*` "
+            "key set is stated in the loader instead of derived from the one event table"
+        )
+
+    # No `on_*` key may be spelled as a string literal outside the derive: a literal here is the
+    # duplication this gate exists to catch. Doc comments that *illustrate* the key (`"on_click"`
+    # inside a `///` line) are not code and are excluded, so only real code lines are scanned.
+    code_lines = [
+        line
+        for line in text.splitlines()
+        if not line.lstrip().startswith("//")
+    ]
+    code = "\n".join(code_lines)
     for key, _marker in marker_table().items():
-        # The key must appear, but only inside the `is_widget_property` exclusion list -- and that
-        # list has to be the *only* place it is spelled as a literal pattern. A second occurrence
-        # in a `get("on_...")` read is the duplication this catches.
-        occurrences = len(re.findall(rf'"{re.escape(key)}"', text))
-        if occurrences == 0:
+        if re.search(rf'"{re.escape(key)}"', code):
             findings.append(
-                f"`{key}` is not named in src/json/loader.rs at all; the property pass would "
-                f"report a declared handler as an unknown property"
+                f"`{key}` is spelled as a literal in src/json/loader.rs; the `on_*` key set must "
+                f"be derived from `event_route::MARKER_KEYS` so a new key cannot be missed here"
             )
+
     # `events` has to be excluded too, or a published binding becomes a property warning.
     if '"events"' not in text:
         findings.append(
@@ -154,7 +178,7 @@ def check_published_names_exist() -> list[str]:
 
 
 def check_callback_choice_is_payload_derived() -> list[str]:
-    """[6] The callback a published name reaches must be derived from its payload.
+    """[6] The callback a published name reaches must be derived from its marker.
 
     # The defect this catches
 
@@ -164,8 +188,14 @@ def check_callback_choice_is_payload_derived() -> list[str]:
     validated the whole time. A structural check on "the name resolves" cannot see that, because
     the name *did* resolve — the wrong callback received it.
 
+    A second, later defect sits on the same axis: a payload-free name that is **not** a click
+    (`closed`, `double_clicked`) was also flattened to `Clicked`, so the handler ran on a click
+    while being told the control had closed. That is why the marker is now derived from the
+    *name* (`JsonTriggerMarker::for_published_name`) with the payload only as a tie-breaker — and
+    why the decision must live on the binding rather than at the call site.
+
     So this asserts the *decision* is data-driven. `uses_value_callback` must exist on the
-    binding and must read the payload; `bind_one` must branch on it rather than on a constant.
+    binding and must read a marker; `bind_one` must branch on it rather than on a constant.
     """
     findings: list[str] = []
     route = ROUTE.read_text()
@@ -177,17 +207,21 @@ def check_callback_choice_is_payload_derived() -> list[str]:
             "which callback a declared binding reaches"
         )
     else:
-        # The answer must come from the payload observation (`Published { has_payload, .. }`) or
-        # from a marker's kind -- never from a bare constant.
-        if "Self::Published { has_payload, .. } => has_payload" not in route:
+        # The answer must come from the binding's marker -- never from a bare constant. Both
+        # variants now answer through their marker, so the payload cannot silently choose the
+        # wrong callback for a payload-free name that is not a click.
+        if not re.search(
+            r"Self::Published \{ marker, \.\. \} => marker\.uses_value_callback\(\)", route
+        ):
             findings.append(
-                "`JsonEventBinding::uses_value_callback` no longer derives from `has_payload`, "
-                "so a payload-carrying event can be wired to the click callback again"
+                "`JsonEventBinding::uses_value_callback` no longer derives from the published "
+                "marker, so a payload-free non-click event (`closed`, `double_clicked`) can be "
+                "wired to the click callback and told the wrong trigger happened"
             )
-        if not re.search(r"Published \{[^}]*has_payload", route, re.S):
+        if not re.search(r"Published \{[^}]*marker", route, re.S):
             findings.append(
-                "`JsonEventBinding::Published` no longer records whether the event carries a "
-                "payload, so the choice cannot be made from the declaration"
+                "`JsonEventBinding::Published` no longer records the trigger marker its name "
+                "names, so the choice cannot be made from the declaration"
             )
 
     # `bind_one` must branch on the binding, not pass a constant marker.
@@ -208,6 +242,32 @@ def check_callback_choice_is_payload_derived() -> list[str]:
         findings.append(
             "`json_event_binding` does not read `EventSchema::payload`, so `has_payload` is "
             "not sourced from the capability table"
+        )
+
+    # The name-to-intent classifier must exist, or a payload-free non-click name is flattenable
+    # to `Clicked` again.
+    if "for_published_name" not in route:
+        findings.append(
+            "`JsonTriggerMarker::for_published_name` is gone, so a published name's trigger "
+            "intent is derived from its payload alone -- which makes `closed` / `double_clicked` "
+            "bind the click callback"
+        )
+
+    # A marker whose real trigger has no callback must be **refused**, not bound to the
+    # nearer of the two. Without this, `on_double_click` reaches the single-click signal and
+    # `on_focus` / `on_blur` reach the value callback: the handler runs on the wrong event
+    # and is told the right one happened.
+    if "unroutable_reason" not in route:
+        findings.append(
+            "`JsonTriggerMarker::unroutable_reason` is gone, so a marker with no signal to "
+            "reach has no way to be refused and will be bound to a callback that fires on a "
+            "different event (`on_double_click` on the click signal, `on_focus` / `on_blur` "
+            "on the value callback)"
+        )
+    if "unroutable_reason()" not in loader:
+        findings.append(
+            "src/json/loader.rs no longer consults `unroutable_reason`, so an unroutable "
+            "marker is silently bound instead of reported"
         )
     return findings
 

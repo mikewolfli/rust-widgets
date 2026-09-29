@@ -427,6 +427,46 @@ impl<'a> RenderContext<'a> {
         let rect = self.offset_rect(rect);
         self.backend.execute_command(&RenderCommand::FillRect { rect, color });
     }
+
+    /// Fills `rect` with a `gradient`.
+    ///
+    /// # Why this is a separate call rather than a flag on `fill_rect`
+    ///
+    /// A gradient is not "a colour with an extra" — it is a different paint server, and the two
+    /// backends route it differently (`SoftwareSurface::fill_rect_gradient` versus the SVG backend's
+    /// `<linearGradient>`/`<radialGradient>`/conic fan). Keeping it a distinct call is what lets the
+    /// two stay honest about what they can express, and lets a caller fall back to a solid fill when
+    /// a gradient is absent.
+    ///
+    /// `rect` is translated by the current offset before drawing.
+    pub fn fill_gradient(&mut self, rect: Rect, gradient: &crate::style::Gradient) {
+        let rect = self.offset_rect(rect);
+        self.backend
+            .execute_command(&RenderCommand::DrawGradient { rect, gradient: gradient.clone() });
+    }
+
+    /// Paints a control's background: the `gradient` when the style declares one, otherwise the
+    /// solid `color`.
+    ///
+    /// # Why this exists
+    ///
+    /// `WidgetStyle::background_gradient` was settable, mergeable and CSS-expressible, but **no
+    /// painter ever read it**: a caller that set a gradient got a solid `background_color` (or the
+    /// control's own default) and the gradient was silently dropped. This is the one-line call that
+    /// closes that gap, so a control draws the gradient it was given and falls back to the colour it
+    /// always drew. The identity case is `fill_rect`: a style with no gradient emits exactly what it
+    /// did before.
+    pub fn fill_background(
+        &mut self,
+        rect: Rect,
+        color: Color,
+        gradient: Option<&crate::style::Gradient>,
+    ) {
+        match gradient {
+            Some(gradient) => self.fill_gradient(rect, gradient),
+            None => self.fill_rect(rect, color),
+        }
+    }
     /// Draws a one-pixel-wide outline of `rect` (alias-aliased) in `color`.
     ///
     /// `rect` is translated by the current offset before drawing.

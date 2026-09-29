@@ -510,12 +510,15 @@ pub mod integration {
     use super::*;
     use crate::memory::{BufferPool, PoolConfig};
     /// Creates a GPU-optimized buffer pool configuration
+    ///
+    /// # Why there is no byte size here
+    ///
+    /// `PoolConfig` carries the pool's **slot counts** (`initial_size`, `max_size`); the
+    /// per-buffer byte size is a property of the pool the config builds, not of the config. This
+    /// function used to compute a per-profile byte size into a `_buffer_size` binding and then
+    /// discard it — the same value [`create_fallback_pool`] computes for real. Removed rather than
+    /// wired, because `PoolConfig` has no field to receive it; the byte size lives where it is used.
     pub fn create_gpu_buffer_pool_config(profile: GpuMemoryProfile) -> PoolConfig {
-        let _buffer_size = match profile {
-            GpuMemoryProfile::Discrete => 4 * 1024 * 1024, // 4 MB
-            GpuMemoryProfile::Integrated => 1024 * 1024,   // 1 MB
-            GpuMemoryProfile::Cpu => 256 * 1024,           // 256 KB
-        };
         PoolConfig {
             initial_size: profile.ring_buffer_slots(),
             max_size: profile.ring_buffer_slots() * 2,

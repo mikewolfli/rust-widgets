@@ -6,7 +6,7 @@
 //! Demo 版式（均为普通控件，放置方式由库决定）：
 //!   菜单栏 — File / View
 //!   工具栏 + 状态栏 — ToolBar / StatusBar
-//!   行 0 — Button:      Button, ToggleButton, disabled Button
+//!   行 0 — Button:      Button（含一个切换外观的 Button 与一个 disabled Button）
 //!   行 1 — Toggle:      CheckBox, tri-state CheckBox, RadioButton x3
 //!   行 2 — Text input:  LineEdit（普通）, password LineEdit, read-only LineEdit, SpinBox
 //!   行 3 — Selection:   ComboBox, ListBox
@@ -139,7 +139,10 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
         }
         None => l.append("[Theme] 当前构建没有注册该外观的主题"),
     });
-    log.append("[ToggleButton] at (180,20,150,32)");
+    // A `Button` that happens to toggle appearance, not a `ToggleButton`: this crate publishes
+    // no `new_toggle_button`, and the log tag must name the control that is actually here so a
+    // reader looking for it in the log is not sent after a family that does not exist.
+    log.append("[Button] at (180,20,150,32) (toggles appearance)");
 
     // Disabled button: proves the enable/disable mirror reaches the native control.
     let disabled = win.new_button("Disabled", 340, 20, 150, 32);

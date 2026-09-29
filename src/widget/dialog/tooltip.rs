@@ -286,16 +286,27 @@ impl Tooltip {
     /// Calculates the preferred size of the tooltip based on the text content
     /// and the configured padding.
     ///
-    /// Uses a simple estimation: measures the text at the configured font size
-    /// and adds padding on all sides. If the text is empty, returns a default
-    /// minimum size.
+    /// # What this estimates, and why it changed
+    ///
+    /// The width is an estimate from the **character** count, not the byte count. The old
+    /// body used `self.text.len()`, which is UTF-8 **bytes**: for ASCII the two happen to
+    /// agree, but for a CJK label three characters reported roughly three times their real
+    /// width, so a Chinese tooltip reserved far more room than its own `draw` used. The live
+    /// long-text path already measures through `context.measure_text`; this stays a cheap
+    /// estimate because [`Widget::size_hint`] has no render context, and it is documented as
+    /// such rather than presented as a measurement.
+    ///
+    /// Zero-width characters are ignored by the count where the platform agrees with
+    /// `char::is_control`; a control character occupies no ink in any font this crate ships.
     pub fn preferred_size(&self) -> Size {
         if self.text.is_empty() {
             return Size::new((self.padding as u32) * 2, (self.padding as u32) * 2 + 16);
         }
-        // Estimate: approximate text measurement using character count
+        let glyphs = self.text.chars().filter(|c| !c.is_control()).count() as f32;
+        // A proportional face averages a little over half an em; this is the same constant
+        // the old estimate used and is the honest resolution of a hint without a context.
         let char_width = self.font_size * 0.6;
-        let estimated_width = (self.text.len() as f32 * char_width).ceil() as u32;
+        let estimated_width = (glyphs * char_width).ceil() as u32;
         let line_height = (self.font_size * 1.4).ceil() as u32;
 
         let width = (estimated_width + (self.padding as u32) * 2).min(self.max_width);
@@ -662,6 +673,22 @@ mod tests {
         // Should be larger than empty padding alone
         assert!(size.width >= 12);
         assert!(size.height >= 28);
+    }
+
+    /// The width estimate counts **characters**, not UTF-8 bytes: the old body used
+    /// `text.len()`, so a CJK tooltip reserved roughly three times the room its own draw
+    /// needed. `"你好世界"` is four characters (12 bytes) and must be no wider than four
+    /// ASCII characters at the same font size.
+    #[test]
+    fn tooltip_preferred_size_counts_characters_not_bytes() {
+        let ascii = Tooltip::new("abcd", Rect::new(0, 0, 600, 40));
+        let cjk = Tooltip::new("你好世界", Rect::new(0, 0, 600, 40));
+        assert_eq!(
+            cjk.preferred_size().width,
+            ascii.preferred_size().width,
+            "four characters must measure the same whatever their byte length"
+        );
+        assert_eq!("你好世界".len(), 12, "12 bytes, so the byte-based estimate was 3x too wide");
     }
 
     #[test]

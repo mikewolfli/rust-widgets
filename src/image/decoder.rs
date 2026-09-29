@@ -1043,6 +1043,22 @@ fn decode_jpeg(data: &[u8]) -> Result<DecodedImage, String> {
 
     let mut img = DecodedImage::new(ImageFormat::Jpeg, ImageData::Rgba8(pixels), width, height);
     img.color_space = ColorSpace::Srgb;
+    // EXIF lives in the JPEG's APP1 segment. It was extracted by `exif::extract_exif` but
+    // **nothing called it**, so `DecodedImage::exif` was always `ExifData::default()` and an
+    // orientation tag was parsed and thrown away -- a portrait photo stored landscape rendered
+    // rotated. Extract here, then apply the orientation so the pixels are upright.
+    img.exif = super::exif::extract_exif(data);
+    if let Some(orientation) = img.exif.orientation {
+        let (corrected, cw, ch) = super::transform::apply_exif_orientation(
+            img.data.clone(),
+            img.width,
+            img.height,
+            orientation,
+        )?;
+        img.data = corrected;
+        img.width = cw;
+        img.height = ch;
+    }
     Ok(img)
 }
 

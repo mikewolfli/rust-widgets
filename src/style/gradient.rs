@@ -180,6 +180,11 @@ impl Gradient {
         self.stops[self.stops.len() - 1].color
     }
     fn interpolate_color(from: Color, to: Color, t: f32) -> Color {
+        // Kept hand-rolled rather than routed through `Color::blend`: `blend` goes through
+        // `Color::from_f32`, which **rounds**, while this truncates via `as u8`. The two agree only
+        // when the interpolated channel is an exact integer, so unifying them changes rendered
+        // pixels (measured: a 50% stop moved 127 -> 128). Rendering must be byte-identical, so the
+        // arithmetic stays as it is; `Color::blend` is the canonical lerp for *non-rendering* use.
         let t = t.clamp(0.0, 1.0);
         let r = ((1.0 - t) * from.r as f32 + t * to.r as f32) as u8;
         let g = ((1.0 - t) * from.g as f32 + t * to.g as f32) as u8;

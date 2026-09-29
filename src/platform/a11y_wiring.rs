@@ -15,14 +15,13 @@ use crate::event::focus::FocusManager;
 pub fn wire_focus_manager_to_a11y(fm: &mut FocusManager) {
     let platform = crate::platform::runtime::get_platform();
     if let Some(bridge) = platform.accessibility_bridge() {
-        // SAFETY: The bridge reference is guaranteed to outlive the FocusManager
-        // because both are owned by the application lifecycle which outlives
-        // any widget tree. The raw pointer is only used within the callback
-        // which fires synchronously during FocusManager operations.
-        let bridge_ptr: *const dyn crate::platform::accessibility::AccessibilityBridge =
-            bridge as *const dyn crate::platform::accessibility::AccessibilityBridge;
+        // `get_platform()` returns `&'static dyn Platform` (it is a `OnceLock`, and the test
+        // override is also `&'static`), so the bridge reference already has the `'static` lifetime
+        // the callback needs. Capturing it directly is sound and needs no `unsafe`; the previous
+        // version erased it to a `*const dyn AccessibilityBridge` and re-dereferenced it inside the
+        // closure, asserting a lifetime relationship the type system could not enforce.
+        let bridge: &'static dyn crate::platform::accessibility::AccessibilityBridge = bridge;
         fm.set_a11y_callback(Box::new(move |id| {
-            let bridge = unsafe { &*bridge_ptr };
             bridge.notify_focus_changed(id);
         }));
     }

@@ -17,7 +17,6 @@ use std::time::Instant;
 use rust_widgets::core::Rect;
 use rust_widgets::widget::special_widgets::code_editor::{CodeEditor, LanguageId};
 use rust_widgets::widget::svg::render_to_svg;
-use rust_widgets::widget::Widget;
 
 fn document(lines: usize) -> String {
     let mut text = String::with_capacity(lines * 46);

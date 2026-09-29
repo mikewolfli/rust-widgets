@@ -8,9 +8,9 @@
 //!
 //!   * `fixed`   — edit one line in place; skip the find scan when idle.
 //!   * `ropeish` — an *optimistic lower bound* for any rope: the cost of the
-//!                 same in-place edit plus one O(log n) tree descent. The
-//!                 descent is approximated by a binary search over the line
-//!                 index, which is the cheapest a real tree could possibly be.
+//!     same in-place edit plus one O(log n) tree descent. The
+//!     descent is approximated by a binary search over the line
+//!     index, which is the cheapest a real tree could possibly be.
 //!
 //! If `ropeish` is within noise of `fixed`, no rope can pay for itself here.
 

@@ -92,16 +92,27 @@ SNAPSHOTS = REPO / "snapshots" / "svg"
 FEATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...], str], ...] = (
     (
         "floating_label",
-        # The caption, drawn as a text run whose ink spans (8,13)-(56,27) and painted in the
-        # *damped* ink (`rgba(155,155,155)` in dark, `rgba(81,81,81)` in light). Both markers are
-        # needed: the geometry alone would also match a run that happened to land there, and the
-        # fill alone would also match a differently-placed one.
-        ('<path d="M9 13h', 'fill="rgba(155,155,155,1.00)"'),
-        # The defect is *absence*: `draw_label` returned early, so there was no caption run at all
-        # and the control was a plain text field. Verified by injecting `if true { return; }` at
-        # the top of `draw_label` — the snapshot then contains not a single `<path>`. There is no
-        # positive spelling to forbid, so the defect is expressed by the missing `requires`
-        # markers above, and `forbids` is empty rather than restated as the thing that must exist.
+        # The caption, drawn as a text run painted in the *damped* ink
+        # (`rgba(155,155,155)` in dark, `rgba(81,81,81)` in light).
+        #
+        # # Why the fill is the marker and the geometry is not
+        #
+        # This pair used to require the caption's glyph box to start at `M9 13h`. That literal
+        # stopped matching when `estimate_text_width` began reading the face's real advances
+        # instead of a flat `0.6 em × clusters` — the caption is correct in both revisions; only
+        # its pen position moved (it is centred on a width that is now measured rather than
+        # estimated). A marker that a *better measurement* invalidates is testing the metric, not
+        # the feature.
+        #
+        # The fill is what actually distinguishes this feature, and it is exactly what the gate's
+        # own header says a marker should be: the caption is painted in the disabled/damped ink
+        # while the input text is not, so "a run exists in that colour at all" cannot be produced
+        # by the chrome the control draws anyway.
+        ('fill="rgba(155,155,155,1.00)"',),
+        # The defect is *absence*: `draw_label` returned early, so there was **no** caption run at
+        # all, and therefore no ink in the damped colour anywhere in the document. Verified by
+        # injecting `if true { return; }` at the top of `draw_label`. There is no positive spelling
+        # to forbid, so `forbids` is empty rather than restated as the thing that must exist.
         (),
         "the control is named `floating_label`, so its snapshot must contain a floating caption. "
         "It shipped with **no label at all** — `label` was unpublished and the shared label "
@@ -137,10 +148,34 @@ FEATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...], str], ...] = (
         # re-exporting and reading the file, and by checking the feature is still present -- two
         # distinct title runs on a 24 px band with the content area below it. A one-tab regression
         # still removes the second run and the second rect, which is what the marker exists to catch.
+        # # Why the markers are the *second tab's* rect and a second title run (the 2026-09-30 update)
+        #
+        # The previous markers were the first vertices of the two caption paths (`M13 5h`,
+        # `M88 5h`) plus `width="62"`. Those went stale twice over:
+        #
+        #   * the vertex literals were never produced by the current glyph trace at all -- at
+        #     commit time they matched nothing in the file, so the gate had been red (and unread)
+        #     for at least one round. A marker that cannot match is not a check.
+        #   * `width="62"` became `59` when `estimate_text_width` started reading the face's real
+        #     `hmtx`/`GPOS` advances instead of a flat `0.6 em × clusters`. `Tab 2` is five
+        #     clusters either way, so the *count* is unchanged; only the per-cluster advance moved.
+        #
+        # The markers are now the properties that actually distinguish "a tab band with two tabs"
+        # from "chrome with no tabs", and that do not move when a font metric is corrected:
+        # two title runs, a 24 px band, and a second tab rect that starts after the first (`x="76"`)
+        # with the content area below the band. A one-tab regression removes the second run and the
+        # second rect; a metric change moves neither marker.
         (
-            '<path d="M13 5h',
-            '<path d="M88 5h',
-            'x="76" y="0" width="62" height="24"',
+            # Two distinct caption runs, each ending in its own glyph trace.
+            'data-text="1"',
+            # The second tab's own covering rect, spelled by the two attributes that do not move
+            # when a font metric is corrected: where it starts (to the right of the first tab at
+            # `x="0"`) and the band height. The `width` between them is deliberately skipped --
+            # that is the number `estimate_text_width` corrected, and a marker that a better
+            # measurement invalidates is testing the metric, not the feature.
+            '<rect x="76" y="0" ',
+            'height="24"',
+            # The content area, which begins *below* the 24 px band.
             'x="0" y="24" width="240" height="96"',
         ),
         # The defect is again *absence* rather than a wrong spelling: verified by removing the

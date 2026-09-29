@@ -595,6 +595,8 @@ impl ColorAnimation {
         self.animation.is_running()
     }
     fn interpolate_color(from: Color, to: Color, t: f32) -> Color {
+        // See `style::gradient::interpolate_color`: `Color::blend` rounds where this truncates, so
+        // routing through it would change rendered pixels. Kept as the truncating form.
         let r = ((1.0 - t) * from.r as f32 + t * to.r as f32) as u8;
         let g = ((1.0 - t) * from.g as f32 + t * to.g as f32) as u8;
         let b = ((1.0 - t) * from.b as f32 + t * to.b as f32) as u8;
@@ -829,6 +831,8 @@ impl AnimationDriver {
         F: FnMut(Color) + 'static,
     {
         self.add(config, move |progress| {
+            // Truncating channel lerp, matching the other rendering paths (see
+            // `style::gradient::interpolate_color` for why `Color::blend` is not used here).
             let r = ((1.0 - progress) * from.r as f32 + progress * to.r as f32) as u8;
             let g = ((1.0 - progress) * from.g as f32 + progress * to.g as f32) as u8;
             let b = ((1.0 - progress) * from.b as f32 + progress * to.b as f32) as u8;

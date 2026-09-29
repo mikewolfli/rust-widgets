@@ -112,6 +112,10 @@ pub use glyph_source::ColorBitmapSource;
 // `estimate_cluster_advance` is exported for the same reason: it *is* the crate's advance
 // model, and a second spelling of it would drift.
 pub use line::{estimate_cluster_advance, is_wide_scalar};
+// Only the `text-shaping` build has a face to measure against, so the helper is only reachable
+// there; gating it the same way keeps a face-less build from warning about an unused import.
+#[cfg(all(test, feature = "text-shaping"))]
+pub(crate) use line::measure_text_width_for_test;
 
 // The cluster helpers and the line-shaping entry point stay inside the crate: their consumers
 // are the two backends and a control's implicit-size estimate, not public API.

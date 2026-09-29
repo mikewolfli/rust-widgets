@@ -191,7 +191,13 @@ fn rect_from_json(value: &Value) -> Option<crate::core::Rect> {
     // what `as u32` alone would produce.
     let width = u32::try_from(components[2]).ok()?;
     let height = u32::try_from(components[3]).ok()?;
-    Some(crate::core::Rect::new(components[0] as i32, components[1] as i32, width, height))
+    // The origin gets the same treatment as the extents: `as i32` silently wraps an
+    // out-of-range coordinate (`4294967296` -> `0`, `2147483648` -> `-2147483648`), so a
+    // document with a bad position loaded as a *wrong on-screen position* with no error —
+    // contradicting the "refused rather than defaulted" contract the extents already follow.
+    let x = i32::try_from(components[0]).ok()?;
+    let y = i32::try_from(components[1]).ok()?;
+    Some(crate::core::Rect::new(x, y, width, height))
 }
 
 /// Look up the declared value kind for a property from the factory schema.

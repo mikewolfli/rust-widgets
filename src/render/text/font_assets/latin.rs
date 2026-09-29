@@ -13,7 +13,9 @@
 // which records this file by name together with the facts above. The subset is a Modified
 // Version under the OFL and is renamed: it does not use the upstream Reserved Font Name.
 //
-// The subset is 35896 bytes (309 glyphs, layout tables: GSUB, GPOS).
+// The subset is 35896 bytes (309 glyphs, layout tables: GSUB, GPOS),
+// covering 203 codepoints (0 of those requested are absent from this upstream
+// revision and were skipped).
 // It is *not* compiled unless the feature that names it is enabled, and it is `include_bytes!`d
 // rather than written into this source as an array: a 36 KB payload as `0x00,` literals would be
 // ~150 KB of source, which is a worse artifact than the binary it describes.
