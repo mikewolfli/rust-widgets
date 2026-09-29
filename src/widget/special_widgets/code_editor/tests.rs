@@ -381,6 +381,22 @@ fn sort_lines_orders_the_selected_block() {
     assert_eq!(editor.text(), "a\nb\nc\nd");
 }
 
+/// With nothing selected, the whole document is sorted.
+///
+/// A collapsed caret is the common case (the user just pressed the chord), and the
+/// method's own summary promises "the whole document when none are selected". Reading
+/// the caret's bounds literally instead sorted only the line the caret sat on, which is
+/// a silent partial sort — the demo's `line_commands_edit_the_document` caught it.
+#[test]
+fn sort_lines_sorts_the_whole_document_when_nothing_is_selected() {
+    let mut editor = editor();
+    editor.set_text("beta\nalpha");
+    editor.set_cursor(0, 0, false);
+    assert!(!editor.has_selection(), "the premise: a collapsed caret");
+    editor.sort_lines();
+    assert_eq!(editor.text(), "alpha\nbeta");
+}
+
 #[test]
 fn goto_line_moves_to_the_first_non_blank_column() {
     let mut editor = editor();

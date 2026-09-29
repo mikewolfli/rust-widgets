@@ -201,7 +201,7 @@ impl Draw for CodeEditor {
         self.draw_gutter(context, rect, &chrome);
         let mut visible = self.draw_source_rows(context, rect, row_height, &chrome);
         self.draw_column_ruler(context, rect, &chrome);
-        self.draw_diagnostics(context, rect, &visible);
+        self.draw_diagnostics(context, &visible);
         visible.clear();
         self.draw_scrollbar(context, rect, &chrome);
         self.draw_minimap(context, rect, &chrome);
@@ -387,6 +387,7 @@ impl CodeEditor {
         );
 
         let row_height = self.config.line_advance.max(1.0);
+        let map = self.coordinate_map();
         let fold_width = self.fold_marker_width();
         let rows_budget = (height as f32 / row_height).floor() as usize;
         let mut row = 0usize;
@@ -399,7 +400,7 @@ impl CodeEditor {
                 break;
             }
             if row >= self.scroll_visual_row {
-                let y = top + ((row - self.scroll_visual_row) as f32 * row_height).round() as i32;
+                let y = map.row_y(row);
                 if self.config.show_line_numbers {
                     // Centred on the row by the line box, not by a hand-tuned fraction of the
                     // row height: `row_height * 0.78` was an ascent for one particular font
@@ -480,6 +481,7 @@ impl CodeEditor {
 
         context.push_clip(left, top, width, height);
 
+        let map = self.coordinate_map();
         let rows_budget = (height as f32 / row_height).ceil() as usize + 1;
         let wrapped = self.config.word_wrap;
         let font = self.font();
@@ -508,8 +510,7 @@ impl CodeEditor {
                 if visual_row < self.scroll_visual_row {
                     continue;
                 }
-                let y = top
-                    + ((visual_row - self.scroll_visual_row) as f32 * row_height).round() as i32;
+                let y = map.row_y(visual_row);
                 let segment_start = if wrapped { segment * self.text_columns().max(1) } else { 0 };
                 let segment_end = if wrapped {
                     (segment_start + self.text_columns().max(1)).min(chars.len())
@@ -582,7 +583,7 @@ impl CodeEditor {
             row += segments;
         }
 
-        self.draw_caret(context, left, top, row_height, chrome);
+        self.draw_caret(context, row_height, chrome);
         context.pop_clip();
         painted
     }
@@ -894,14 +895,11 @@ impl CodeEditor {
         context.draw_line(Point::new(x, top), Point::new(x, bottom), chrome.separator);
     }
 
-    fn draw_caret(
-        &self,
-        context: &mut RenderContext,
-        left: i32,
-        top: i32,
-        row_height: f32,
-        chrome: &EditorChrome,
-    ) {
+    fn draw_caret(&self, context: &mut RenderContext, row_height: f32, chrome: &EditorChrome) {
+        // Caret geometry comes from the same map the text rows used, so a caret can
+        // no longer be one rounding step away from the glyph it is supposed to sit
+        // beside.
+        let map = self.coordinate_map();
         // Secondary carets first so the primary caret paints on top. A collapsed secondary caret is
         // the same blinking insertion point as the primary one, so it follows the same phase — two
         // carets flickering out of step would look like a rendering fault.
@@ -915,12 +913,8 @@ impl CodeEditor {
                     continue;
                 }
                 let row = self.line_to_visual_row(caret.head.line);
-                let y = top
-                    + ((row as f32 - self.scroll_visual_row as f32) * row_height).round() as i32;
-                let x = left
-                    + (((caret.head.column.saturating_sub(self.scroll_column)) as f32)
-                        * self.cell_width())
-                    .round() as i32;
+                let y = map.row_y(row);
+                let x = map.column_x(caret.head.column);
                 context.fill_rect(Rect::new(x, y, 2, row_height.ceil() as u32), chrome.accent);
             } else if let Some(rect) = self.rect_for_range(caret.bounds().0, caret.bounds().1) {
                 context.fill_rect(rect, chrome.selection);
@@ -931,12 +925,8 @@ impl CodeEditor {
         if self.cursor.is_collapsed() {
             if self.caret_blink.is_visible() {
                 let row = self.line_to_visual_row(self.cursor.head.line);
-                let y = top
-                    + ((row as f32 - self.scroll_visual_row as f32) * row_height).round() as i32;
-                let x = left
-                    + (((self.cursor.head.column.saturating_sub(self.scroll_column)) as f32)
-                        * self.cell_width())
-                    .round() as i32;
+                let y = map.row_y(row);
+                let x = map.column_x(self.cursor.head.column);
                 context.fill_rect(Rect::new(x, y, 2, row_height.ceil() as u32), chrome.accent);
             }
         } else {
@@ -947,23 +937,20 @@ impl CodeEditor {
         }
     }
 
-    fn draw_diagnostics(&self, context: &mut RenderContext, rect: Rect, visible: &[usize]) {
+    fn draw_diagnostics(&self, context: &mut RenderContext, visible: &[usize]) {
         let inline = self.inline_diagnostics();
         if inline.is_empty() {
             return;
         }
         let row_height = self.config.line_advance.max(1.0);
-        let top = rect.y + self.text_origin_y();
+        let map = self.coordinate_map();
         let cell = self.cell_width();
         for (row, marker) in inline {
             if row < self.scroll_visual_row {
                 continue;
             }
-            let y = top
-                + ((row as f32 - self.scroll_visual_row as f32 + 1.0) * row_height).round() as i32;
-            let x = rect.x
-                + self.text_origin_x()
-                + ((marker.start_column().saturating_sub(1)) as f32 * cell).round() as i32;
+            let y = map.row_y(row) + row_height.round() as i32;
+            let x = map.column_x(marker.start_column().saturating_sub(1));
             let width = (((marker.finish_column() - marker.start_column() + 1).max(1)) as f32
                 * cell)
                 .round() as u32;
@@ -1335,6 +1322,9 @@ impl CodeEditor {
             self.config.space_advance.max(1.0)
         }));
         self.measured_geometry = Some(self.geometry());
+        // The measured cell changes how many segments a line wraps into, so the
+        // row-prefix table — built from `text_columns()` — is now stale.
+        self.rebuild_visual_row_prefix();
     }
 
     pub(crate) fn text_columns(&self) -> usize {
@@ -1413,53 +1403,45 @@ impl CodeEditor {
     }
 
     /// Maps a widget-local point to a text position, or `None` outside the text area.
+    ///
+    /// The reverse direction of the coordinate map: the same transform the paint
+    /// loop uses, read backwards, so a click always lands on the row and column that
+    /// were drawn there.
     pub fn position_at_point(&self, point: Point) -> Option<TextPosition> {
-        let rect = self.geometry();
-        if point.x < rect.x || point.y < rect.y {
+        let map = self.coordinate_map();
+        if !map.text_area_contains(point) {
             return None;
         }
-        let local_y = point.y - rect.y - self.text_origin_y();
-        if local_y < 0 {
-            return None;
-        }
-        let row = self.scroll_visual_row + (local_y as f32 / self.line_height()).floor() as usize;
+        let row = map.row_at_y(point.y);
         let line = self.visual_row_to_line(row);
-        let local_x = point.x - rect.x - self.text_origin_x();
-        let column = if local_x <= 0 {
-            0
-        } else {
-            (local_x as f32 / self.cell_width()).round() as usize + self.scroll_column
-        };
+        let column = map.column_at_x(point.x);
         Some(self.clamp_position(TextPosition::new(line, column)))
     }
 
     /// Returns the widget-local rectangle of a text range.
+    ///
+    /// Uses the coordinate map for both axes, so the selection a host draws and the
+    /// selection the editor paints cannot disagree about where a range sits.
     pub fn rect_for_range(&self, start: TextPosition, end: TextPosition) -> Option<Rect> {
         let start = self.clamp_position(start);
         let end = self.clamp_position(end);
         if end < start {
             return None;
         }
-        let rect = self.geometry();
+        let map = self.coordinate_map();
         let start_row = self.line_to_visual_row(start.line);
         let end_row = self.line_to_visual_row(end.line);
-        let top = rect.y
-            + self.text_origin_y()
-            + ((start_row as f32 - self.scroll_visual_row as f32) * self.line_height()).round()
-                as i32;
+        let top = map.row_y(start_row);
+        let left = map.column_x(start.column);
         let rows = end_row.saturating_sub(start_row) + 1;
-        let left = rect.x
-            + self.text_origin_x()
-            + ((start.column as f32 - self.scroll_column as f32) * self.cell_width()).round()
-                as i32;
         let width = if end.line > start.line {
-            rect.width.max(1)
+            map.bounds().width.max(1)
         } else {
             (((end.column.saturating_sub(start.column)) as f32) * self.cell_width())
                 .round()
                 .max(1.0) as u32
         };
-        let height = (rows as f32 * self.line_height()).round().max(1.0) as u32;
+        let height = (rows as f32 * map.row_height()).round().max(1.0) as u32;
         Some(Rect::new(left, top, width, height))
     }
 
@@ -1486,11 +1468,11 @@ impl CodeEditor {
         let rect = self.geometry();
         let width = (rect.width as i32 / 2).clamp(180, 340) as u32;
         let height = self.completion.items.len().max(1) as u32 * MIN_TOUCH_TARGET as u32;
+        let map = self.coordinate_map();
         let caret_row = self.line_to_visual_row(self.cursor.head.line);
-        let y = rect.y
-            + self.text_origin_y()
-            + ((caret_row as f32 - self.scroll_visual_row as f32 + 1.0) * self.line_height())
-                .round() as i32;
+        // One row below the caret line, so the popup never covers what is being
+        // completed.
+        let y = map.row_y(caret_row + 1);
         let max_y = (rect.y + rect.height as i32 - height as i32).max(rect.y);
         let max_x = (rect.x + rect.width as i32 - width as i32).max(rect.x);
         Rect::new(

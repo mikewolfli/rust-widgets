@@ -902,4 +902,32 @@ mod tests {
         assert!(!paint_bitmap(&GlyphBitmap::inline8([0xFF; 8]), cell, &mut short));
         assert!(short.iter().all(|byte| *byte == 0), "nothing may be written");
     }
+
+    /// TEMP DIAGNOSTIC: how much of a glyph paint is re-parsing the font file.
+    #[test]
+    fn diag_face_parse_cost() {
+        let Some(face) = crate::render::text::font_assets::outline_face_for('A') else {
+            eprintln!("[DIAG-PERF] no outline face in this build; nothing to measure");
+            return;
+        };
+
+        let n = 2000;
+        let t0 = std::time::Instant::now();
+        for _ in 0..n {
+            let _ = ttf_parser::Face::parse(face.bytes, 0).ok().and_then(|f| f.glyph_index('A'));
+        }
+        let parse_us = t0.elapsed().as_micros() as f64 / n as f64;
+
+        let t1 = std::time::Instant::now();
+        for _ in 0..n {
+            let mut out = vec![0u8; 64 * 64];
+            let _ = paint_active('A', Cell::new(64, 64), &mut out);
+        }
+        let paint_us = t1.elapsed().as_micros() as f64 / n as f64;
+
+        eprintln!("face={} bytes={}", face.name, face.bytes.len());
+        eprintln!("[DIAG-PERF] Face::parse+glyph_index = {parse_us:.2}us");
+        eprintln!("[DIAG-PERF] full paint_active        = {paint_us:.2}us");
+        eprintln!("[DIAG-PERF] a 500-glyph frame costs  = {:.2}ms", paint_us * 500.0 / 1000.0);
+    }
 }

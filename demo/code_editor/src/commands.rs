@@ -291,6 +291,86 @@ pub fn is_editor(editor: &CustomWidgetHandle) -> bool {
     editor.read(|widget| (widget as &dyn std::any::Any).is::<CodeEditor>()).unwrap_or(false)
 }
 
+/// Connects every signal the editor publishes, so the demo shows the *event* half of
+/// the widget API rather than only the command half.
+///
+/// # Why these are connected before mounting, not through the handle
+///
+/// A self-painted widget owns its signals; there is no platform control behind it, so
+/// `WidgetHandle::on_click` / `on_value_changed` are deliberately **ignored** for a
+/// mounted surface (the library logs that fact instead of registering a callback that
+/// would never fire). The signals live in the widget, so they can only be connected
+/// while the caller still holds it — i.e. here, before [`WindowHandle::mount_surface`]
+/// moves it into the registry.
+///
+/// # What each signal carries
+///
+/// | Signal | Payload | Fires when |
+/// |---|---|---|
+/// | `text_changed` | the new full text | any edit |
+/// | `cursor_moved` | `(line, column)`, zero-based | the caret moves |
+/// | `selection_changed` | the selection rect, `None` when collapsed | the selection changes |
+/// | `tab_changed` | the active buffer index | the buffer switches |
+/// | `search_changed` | the hit count | the find query or its hits change |
+/// | `fold_changed` | the number of folded lines | the fold set changes |
+/// | `completion_changed` | whether the popup is visible | it opens, closes or moves |
+///
+/// The closures take the payload as an `Arc<T>` (the signal hands out a shared value
+/// rather than a clone per slot), hence the dereferences below.
+///
+/// `text_changed` carries the **whole document**, so the demo logs its length instead of
+/// the text: printing a whole file on every keystroke would drown the log, and the length
+/// is enough to show the signal fired.
+///
+/// `log` is a plain closure rather than the demo's `EventLog` so this module does not
+/// depend on `app`'s private type: every signal needs to report one line, and that is the
+/// only thing this function asks of its caller. It must be `Clone` because each signal
+/// slot is `'static` and therefore owns its own copy.
+pub fn wire_signals<S>(editor: &CodeEditor, log: S)
+where
+    S: Fn(String) + Clone + Send + Sync + 'static,
+{
+    let text_log = log.clone();
+    editor.text_changed.connect(move |text| {
+        text_log(format!("[signal] text_changed: {} bytes", text.len()));
+    });
+
+    let cursor_log = log.clone();
+    editor.cursor_moved.connect(move |position| {
+        let (line, column) = *position;
+        cursor_log(format!("[signal] cursor_moved: Ln {}, Col {}", line + 1, column + 1));
+    });
+
+    let selection_log = log.clone();
+    editor.selection_changed.connect(move |selection| match selection.as_ref() {
+        Some(rect) => selection_log(format!(
+            "[signal] selection_changed: {}x{} at ({}, {})",
+            rect.width, rect.height, rect.x, rect.y
+        )),
+        None => selection_log(String::from("[signal] selection_changed: collapsed")),
+    });
+
+    let tab_log = log.clone();
+    editor.tab_changed.connect(move |index| {
+        tab_log(format!("[signal] tab_changed: buffer #{index}"));
+    });
+
+    let search_log = log.clone();
+    editor.search_changed.connect(move |hits| {
+        search_log(format!("[signal] search_changed: {hits} hit(s)"));
+    });
+
+    let fold_log = log.clone();
+    editor.fold_changed.connect(move |folded| {
+        fold_log(format!("[signal] fold_changed: {folded} hidden line(s)"));
+    });
+
+    let completion_log = log;
+    editor.completion_changed.connect(move |visible| {
+        completion_log(format!("[signal] completion_changed: visible={visible}"));
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

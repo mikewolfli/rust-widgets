@@ -27,9 +27,88 @@ pub(crate) unsafe extern "system" fn wnd_proc(
     use winapi::um::winuser::NMHDR;
     use winapi::um::winuser::{
         DefWindowProcW, GetClientRect, GetDlgCtrlID, PostQuitMessage, WM_COMMAND, WM_DESTROY,
-        WM_GETMINMAXINFO, WM_NOTIFY, WM_SIZE,
+        WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE,
+        WM_MOUSEMOVE, WM_NOTIFY, WM_PAINT, WM_SIZE,
     };
     match msg {
+        // The window's own painting: every control the window owns, drawn as one frame.
+        //
+        // # Why the top-level window paints anything at all
+        //
+        // The library paints every `WidgetKind` itself (`control_backend`'s one mechanism),
+        // so most controls have **no native control of their own** to draw them. A mounted
+        // surface gets a child `HWND` of the canvas class, but the ordinary children —
+        // buttons, check boxes, labels — get none, and nothing else painted them: the window
+        // showed its chrome over an empty client area, i.e. a blank white board.
+        //
+        // This arm is the Windows half of the window-level painter the Linux backend already
+        // has; both call `render_frame_tree`, which walks the window's child list.
+        WM_PAINT => {
+            paint_window_tree(hwnd);
+            0
+        }
+        // Painting covers the whole client area, so let it erase too. Returning non-zero
+        // skips the background fill and avoids the single white frame a fresh expose would
+        // otherwise flash before the tree is drawn (the canvas procedure does the same).
+        WM_ERASEBKGND => 1,
+        // ── Input ───────────────────────────────────────────────────────────
+        //
+        // The window's tree painter is also its input surface.
+        //
+        // # Why the window procedure routes pointer events at all
+        //
+        // Painting a window's controls means the *window* is where the pointer lands:
+        // an ordinary control has no native `HWND` of its own to receive a click, so
+        // these messages arrive here and nowhere else. The canvas procedure already
+        // does this for a mounted surface; without the same arms on the window, a demo
+        // whose controls were created through `create_*` had controls that were visible
+        // with correct geometry and callbacks that **never ran** — nothing looked wrong,
+        // which is what made it worth its own comment.
+        //
+        // The coordinates Win32 reports are relative to this window's client area, and
+        // controls are positioned in that same space (`frame_origin` is `(0, 0)` for a
+        // window), so no origin offset is applied — unlike the canvas, which sits at an
+        // offset inside its parent.
+        WM_MOUSEMOVE => {
+            forward_window_mouse(hwnd, lparam, MousePhase::Drag);
+            0
+        }
+        WM_LBUTTONDOWN => {
+            eprintln!(
+                "[CLICK] WM_LBUTTONDOWN hwnd={hwnd:?} window_widget={:?}",
+                window_widget_for(hwnd)
+            );
+            forward_window_mouse(hwnd, lparam, MousePhase::Press);
+            0
+        }
+        WM_LBUTTONUP => {
+            forward_window_mouse(hwnd, lparam, MousePhase::Release);
+            0
+        }
+        // A hover highlight has to be cleared when the pointer leaves, or it sticks.
+        WM_MOUSELEAVE => {
+            if window_widget_for(hwnd).is_some() {
+                // The point is only carried into the `MouseLeave` the router delivers, and
+                // the pointer has already left the client area, so zero is the honest
+                // coordinate rather than a stale one.
+                crate::widget::runtime::clear_hover(crate::core::Point::new(0, 0));
+                invalidate_window(hwnd);
+            }
+            0
+        }
+        // Keys go to whatever the pointer router focused, so typing reaches a field the
+        // user clicked rather than always the window. Tab is forwarded too, which is how
+        // focus moves between controls.
+        WM_KEYDOWN => {
+            if let Some(window_id) = window_widget_for(hwnd) {
+                let target = crate::widget::runtime::focused_widget().unwrap_or(window_id);
+                let event = crate::event::Event::KeyPress { key: wparam as u32, modifiers: 0 };
+                if crate::widget::runtime::dispatch_event(target, &event) {
+                    invalidate_window(hwnd);
+                }
+            }
+            0
+        }
         // The user resized the window (or the window manager did). Report the new client
         // size so the host can re-run its layout: without this a window resized by the
         // user kept every child at the geometry it had for the previous size, because
@@ -147,6 +226,195 @@ pub(crate) unsafe extern "system" fn wnd_proc(
             0
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+
+/// Paints a window's whole widget tree into its client area.
+///
+/// # Why the top-level window paints at all
+///
+/// Since 2.0 the library paints **every** `WidgetKind` itself, so a control created with
+/// `create_button` / `create_checkbox` / … has no native Win32 control behind it. The only
+/// Windows painter used to be the canvas child window that `mount_surface` creates, so a
+/// window whose children were created through the ordinary `create_*` path — every control
+/// in `demo/control` and `demo/finance` — had nothing drawing them and showed a blank
+/// client area.
+///
+/// This is the Windows counterpart of the window-content painter the Linux backend has: a
+/// mounted surface (a child `HWND`) still paints itself, and the tree painter here covers
+/// everything that has no surface of its own. A window may therefore mix both kinds.
+///
+/// # The id translation, and why both hops are needed
+///
+/// Win32 hands this procedure **its own** `HWND`. Resolving what to draw therefore takes
+/// two steps, in this order:
+///
+/// 1. `HWND` → the id the platform knows it by (`widget_id_by_native_handle`);
+/// 2. that id → the widget-registry id (`widget_id_for_host_window`), which is the id the
+///    tree lives under.
+///
+/// Skipping a hop would look up an id that addresses no widget and draw nothing — a
+/// silently blank window, which is the failure this function exists to remove.
+#[cfg(target_os = "windows")]
+unsafe fn paint_window_tree(hwnd: HWND) {
+    use winapi::um::winuser::{BeginPaint, EndPaint, PAINTSTRUCT};
+
+    let mut paint: PAINTSTRUCT = std::mem::zeroed();
+    let hdc = BeginPaint(hwnd, &mut paint);
+
+    match super::canvas::client_size(hwnd) {
+        Some((width, height)) => {
+            // TEMP DIAGNOSTIC: time the root draw and the child walk separately.
+            if let Some(widget_id) = paint_target_for(hwnd) {
+                let t0 = std::time::Instant::now();
+                let kids = crate::widget::runtime::children_of(widget_id);
+                let kids_us = t0.elapsed().as_micros();
+                let t1 = std::time::Instant::now();
+                let frame = crate::widget::runtime::render_frame_tree(
+                    widget_id,
+                    crate::core::Size::new(width, height),
+                    crate::core::Color::WHITE,
+                );
+                let render_us = t1.elapsed().as_micros();
+                eprintln!(
+                    "[PAINT] kids_lookup={kids_us}us render={render_us}us kids={} per_kid={}us",
+                    kids.len(),
+                    render_us / (kids.len().max(1) as u128)
+                );
+                if let Some(frame) = frame {
+                    let t2 = std::time::Instant::now();
+                    super::canvas::blit_frame(hdc, width, height, &frame);
+                    eprintln!("[PAINT]   blit={}us", t2.elapsed().as_micros());
+                }
+            }
+        }
+        None => {}
+    }
+
+    EndPaint(hwnd, &paint);
+}
+
+/// The widget-registry id of the window whose client area `hwnd` is.
+///
+/// Extracted from [`paint_target_for`] because the input arms need the same resolution:
+/// a `WM_MOUSEMOVE` and a `WM_PAINT` for the same window must agree on which widget tree
+/// they name, and two copies of a two-hop translation is how they would stop agreeing.
+///
+/// `hwnd` → platform id → widget-registry id, in that order. Win32 hands every callback
+/// the `HWND`, the backend binds `HWND`s against **platform** ids, and the tree is keyed by
+/// **registry** id, so both hops are required.
+#[cfg(target_os = "windows")]
+unsafe fn window_widget_for(hwnd: HWND) -> Option<u64> {
+    crate::widget::runtime::widget_id_for_host_window(widget_id_by_native_handle(hwnd)?)
+}
+
+/// The platform's own id for `hwnd`, or `None` when this backend did not create it.
+#[cfg(target_os = "windows")]
+unsafe fn widget_id_by_native_handle(hwnd: HWND) -> Option<u64> {
+    notify::active_windows_platform()?.widget_id_by_native_handle(hwnd)
+}
+
+/// Marks `hwnd`'s whole client area as needing a repaint.
+#[cfg(target_os = "windows")]
+unsafe fn invalidate_window(hwnd: HWND) {
+    // SAFETY: a null `RECT` invalidates the entire client area, which is intended.
+    winapi::um::winuser::InvalidateRect(hwnd, std::ptr::null(), 0);
+}
+
+#[cfg(target_os = "windows")]
+use crate::platform::MousePhase;
+
+/// Translates a Win32 mouse message on a **window** into a widget event and delivers it.
+///
+/// # Coordinate space, and why the window is not offset
+///
+/// The low and high words of `lparam` hold client-area coordinates, and a child control's
+/// geometry is in that same window-relative space, so the point is used as Win32 reports
+/// it. The **window widget itself** carries its screen position (`demo/control`'s window is
+/// at `x: 100, y: 100`), because that is the geometry it was created with and a window has
+/// no parent to be relative to.
+///
+/// Those are two different spaces in one tree, which is why [`crate::widget::runtime::widget_at`]
+/// treats a root as a container rather than testing it against its own bounds: the root's
+/// rectangle describes where the OS put the window, and the point describes where the
+/// pointer is inside it. Asking the root to contain a client point is the mismatch that
+/// made every click miss.
+///
+/// # Routing
+///
+/// `dispatch_pointer_event` hit-tests the point against the window's child tree, so a click
+/// on a button reaches that button. Child geometry is window-relative, which is the space
+/// `position` is already in.
+#[cfg(target_os = "windows")]
+unsafe fn forward_window_mouse(hwnd: HWND, lparam: isize, phase: MousePhase) {
+    use crate::core::Point;
+    let Some(window_id) = window_widget_for(hwnd) else {
+        return;
+    };
+    let client_x = (lparam & 0xFFFF) as u16 as i16 as i32;
+    let client_y = ((lparam >> 16) & 0xFFFF) as u16 as i16 as i32;
+    // Client coordinates, with **no** window offset.
+    //
+    // A window's own geometry holds the `x`/`y` the caller asked the operating system
+    // for, while its children are placed in client coordinates — two different spaces, as
+    // `widget::runtime::frame_origin` documents for the painter. A child therefore sits at
+    // exactly the client point Win32 reports, and the root is the widget whose bounds do
+    // not describe that space at all.
+    let position = Point::new(client_x, client_y);
+    let event = match phase {
+        MousePhase::Press => crate::event::Event::mouse_press_with(
+            position.x,
+            position.y,
+            1,
+            crate::platform::windows::canvas::current_modifiers(),
+        ),
+        MousePhase::Release => crate::event::Event::MouseRelease { pos: position, button: 1 },
+        MousePhase::Drag => crate::event::Event::MouseMove { pos: position },
+    };
+    let delivered = crate::widget::runtime::dispatch_pointer_event(window_id, &event, position);
+    if matches!(phase, MousePhase::Drag) {
+        // The request is consumed by the event it produces, so it must be re-issued on
+        // every move — without it the leave message never arrives and hover sticks.
+        let mut track: winapi::um::winuser::TRACKMOUSEEVENT = std::mem::zeroed();
+        track.cbSize = std::mem::size_of::<winapi::um::winuser::TRACKMOUSEEVENT>() as u32;
+        track.dwFlags = winapi::um::winuser::TME_LEAVE;
+        track.hwndTrack = hwnd;
+        winapi::um::winuser::TrackMouseEvent(&mut track);
+    }
+    if delivered {
+        if matches!(phase, MousePhase::Press) {
+            // A click can move focus to a nested control; give the window the keyboard so
+            // subsequent keys are delivered here.
+            winapi::um::winuser::SetFocus(hwnd);
+        }
+        invalidate_window(hwnd);
+    }
+}
+
+/// Resolves the widget-registry id whose tree this window should paint.
+///
+/// Both hops are done here rather than inline so the resolution has one definition, and
+/// so a failure can say *which* hop failed: an unknown handle and a known handle with no
+/// widget behind it are different faults, and collapsing them into one `None` is how a
+/// missing association goes unnoticed.
+#[cfg(target_os = "windows")]
+unsafe fn paint_target_for(hwnd: HWND) -> Option<u64> {
+    let Some(host) = widget_id_by_native_handle(hwnd) else {
+        log::error!("[windows] WM_PAINT for hwnd {hwnd:?}, which has no platform id bound to it");
+        return None;
+    };
+    // `host` is the **platform** id `create_window` returned, so the registry lookup is the
+    // second hop and `host` is its input. Feeding it to `widget_id_for_host_window` is not
+    // the same question: that function's argument is a widget-registry id.
+    match crate::widget::runtime::widget_id_for_host_window(host) {
+        Some(id) => Some(id),
+        None => {
+            log::error!(
+                "[windows] window hwnd {hwnd:?} (platform id {host}) has no widget-registry \
+                 association yet; nothing to paint"
+            );
+            None
+        }
     }
 }
 

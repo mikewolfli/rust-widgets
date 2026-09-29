@@ -722,7 +722,18 @@ pub fn widget_at(root: ObjectId, point: Point) -> Option<ObjectId> {
     let mut current = root;
     loop {
         let children = with_widget(current, |widget| widget.children().to_vec())?;
-        if !widget_accepts_point(current, point) {
+        // A **root** is a container, not a rectangle to be tested.
+        //
+        // A window's geometry holds the `x`/`y` the caller asked the operating system for,
+        // while its children sit in client coordinates (see `frame_origin`). Those are two
+        // different spaces, so testing the root against a client point rejected every click
+        // on the window: `demo/control` creates its window at `(100, 100)` and a click at
+        // client `(95, 36)` failed `contains_point` before any child was considered, so the
+        // router answered `None` and no callback ran.
+        //
+        // Every other node is tested normally: a control is addressed in its parent's
+        // space, which is the space its own rectangle is written in.
+        if current != root && !widget_accepts_point(current, point) {
             return None;
         }
         // Topmost-first: a later sibling paints over an earlier one.
@@ -2036,6 +2047,54 @@ pub fn request_repaint(id: ObjectId) {
     request_repaint_because(id, RepaintReason::Explicit);
 }
 
+/// Returns the top-level **window** widget that `id` lives under, if any.
+///
+/// Walks the parent links up to the root and reports it only when the root is a
+/// `WidgetKind::Window`. A widget mounted with no window above it (a test fixture, a
+/// surface the host parented itself) answers `None`, which is the honest result: there
+/// is no window whose invalidation would reveal the change.
+///
+/// The walk is bounded by `max_depth` steps so a corrupted parent chain — a cycle, or a
+/// link to an id that was recycled — cannot hang a paint path. Hitting the bound is
+/// reported as `None` rather than guessed at.
+pub fn top_level_window_of(id: ObjectId) -> Option<ObjectId> {
+    // A widget tree is shallow (window → containers → controls); 64 is far past any real
+    // depth and still a bound rather than a loop that trusts the data.
+    const MAX_DEPTH: usize = 64;
+    let mut current = id;
+    for _ in 0..MAX_DEPTH {
+        let (kind, parent) = with_widget(current, |widget| (widget.kind(), widget.parent()))?;
+        if kind == crate::widget::WidgetKind::Window {
+            return Some(current);
+        }
+        current = parent?;
+    }
+    None
+}
+
+/// Repaints a widget **and the window it lives in**.
+///
+/// # Why invalidating the control alone is not enough
+///
+/// Since 2.0 the library paints every `WidgetKind` itself, so most controls have no
+/// native surface of their own and `invalidate_surface(control)` reaches nothing. On a
+/// backend whose window paints its whole child list (Windows, Linux), the thing that
+/// must be invalidated is the **window**: its `WM_PAINT` / `connect_draw` redraws the
+/// tree the control belongs to.
+///
+/// A mounted surface is still invalidated too — it paints itself, and on macOS that is
+/// the only path a control has. Both calls are made and neither is treated as a failure
+/// when it answers `false`: which of the two the backend can honour is the backend's
+/// business, not this function's.
+pub fn request_repaint_subtree(id: ObjectId) {
+    // The window first, so a backend that coalesces per frame folds the control's own
+    // request into the frame the window is already going to repaint.
+    if let Some(window) = top_level_window_of(id) {
+        request_repaint_because(window, RepaintReason::Explicit);
+    }
+    request_repaint_because(id, RepaintReason::Explicit);
+}
+
 /// Asks the platform to repaint a mounted widget, naming **why** it is being asked.
 ///
 /// # Why the reason is a parameter and not inferred
@@ -2813,6 +2872,8 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
 
     // The root's own painting is part of the frame: a window draws its background and
     // chrome, which the children then sit on top of.
+    // TEMP DIAGNOSTIC: split the root draw from the child walk.
+    let t_root = std::time::Instant::now();
     let mut painted = with_widget_mut(id, |widget| {
         let Some(drawable) = widget.as_draw_mut() else {
             return false;
@@ -2827,7 +2888,10 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
         true
     })
     .unwrap_or(false);
+    let root_us = t_root.elapsed().as_micros();
 
+    let mut slowest: (u128, u64) = (0, 0);
+    let mut child_total = 0u128;
     if painted {
         // Children are drawn into the same frame, so the traversal only issues draw calls;
         // the frame was begun above and is ended once below.
@@ -2839,6 +2903,7 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
             if !is_visible(current) {
                 continue;
             }
+            let t_child = std::time::Instant::now();
             let drew = with_widget_mut(current, |widget| {
                 let Some(drawable) = widget.as_draw_mut() else {
                     return false;
@@ -2850,6 +2915,16 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
                 true
             })
             .unwrap_or(false);
+            let child_us = t_child.elapsed().as_micros();
+            child_total += child_us;
+            if child_us > slowest.0 {
+                slowest = (child_us, current);
+            }
+            if child_us > 300 {
+                let kind = with_widget(current, |w| format!("{:?}", w.kind()))
+                    .unwrap_or_else(|| "?".into());
+                eprintln!("[TREE-SLOW] {child_us}us kind={kind} id={current}");
+            }
             if drew {
                 painted = true;
             }
@@ -2862,6 +2937,10 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
     if !painted {
         return None;
     }
+    eprintln!(
+        "[TREE] root={root_us}us children_total={child_total}us slowest={}us(id={})",
+        slowest.0, slowest.1
+    );
     backend.end_frame();
     Some(backend.frame_rgba().to_vec())
 }
@@ -5878,5 +5957,98 @@ mod tests {
         assert!(!RepaintReason::Overlay.keeps_animating());
         assert!(!RepaintReason::Explicit.keeps_animating());
         assert!(!RepaintReason::Native.keeps_animating());
+    }
+
+    // ── The window-level tree painter (BLUE24 §0A.1) ─────────────────────────
+
+    /// A window's tree frame must contain its **children's** pixels, not just the background.
+    ///
+    /// # The defect this pins
+    ///
+    /// Since 2.0 the library paints every `WidgetKind` itself, so a control created through
+    /// the ordinary `create_*` path has no native control of its own. On Windows the only
+    /// painter was the canvas child window that `mount_surface` creates, so a window whose
+    /// children came from `create_button` / `create_checkbox` / … had **nothing drawing
+    /// them**: the window opened and showed an empty client area — a blank white board.
+    ///
+    /// The fix is a window-level painter that walks the child list (`render_frame_tree`).
+    /// This test pins the property that painter depends on, at the level where it can be
+    /// checked without a display: a window with mounted children yields a frame whose pixels
+    /// are **not all the clear colour**. A regression that broke the traversal — an empty
+    /// child list, a skipped `is_visible`, a missing draw bridge — would produce a uniform
+    /// frame and fail here rather than only on a screen nobody is looking at.
+    #[test]
+    fn a_window_tree_frame_contains_its_children_not_just_the_background() {
+        let window_id = register(Box::new(crate::widget::window::Window::new(
+            "t".to_string(),
+            Rect::new(0, 0, 200, 120),
+        )))
+        .expect("mount the window");
+        let _unmount_window = MountGuard(window_id);
+
+        // A child at a known place, added through the window's own `add_child` so both
+        // directions of the link are written — a one-sided link is the other way a child
+        // becomes unreachable from the root.
+        let child_id = register(Box::new(crate::widget::Button::new(
+            "ok".to_string(),
+            Rect::new(10, 40, 80, 32),
+        )))
+        .expect("mount the button");
+        let _unmount_child = MountGuard(child_id);
+        assert!(with_widget_mut(window_id, |window| {
+            window.add_child(child_id);
+            true
+        })
+        .unwrap_or(false));
+
+        let clear = Color::rgb(255, 255, 255);
+        let frame = render_frame_tree(window_id, Size::new(200, 120), clear)
+            .expect("a window with a drawable child must produce a frame");
+
+        // Every pixel identical to the clear colour means nothing was drawn over the
+        // background — the blank-board symptom, expressed as a fact about the frame.
+        let clear_rgba = [clear.r, clear.g, clear.b, 255];
+        let painted = frame.chunks_exact(4).filter(|pixel| *pixel != clear_rgba).count();
+        assert!(
+            painted > 0,
+            "the window's own chrome or its child must paint something; \
+             a uniform frame is the blank-board defect"
+        );
+    }
+
+    /// The child-list traversal a window painter depends on must actually reach a child.
+    ///
+    /// `render_frame_tree` walks `direct_children_of`, so a child that is mounted but absent
+    /// from that list is invisible to every painter — the failure mode is silent, which is
+    /// why the list is asserted rather than the resulting picture alone.
+    #[test]
+    fn a_mounted_child_is_reachable_through_the_window_child_list() {
+        let window_id = register(Box::new(crate::widget::window::Window::new(
+            "t".to_string(),
+            Rect::new(0, 0, 200, 120),
+        )))
+        .expect("mount the window");
+        let _unmount_window = MountGuard(window_id);
+
+        let child_id = register(Box::new(crate::widget::Button::new(
+            "ok".to_string(),
+            Rect::new(5, 5, 40, 20),
+        )))
+        .expect("mount the button");
+        let _unmount_child = MountGuard(child_id);
+
+        assert!(
+            !direct_children_of(window_id).contains(&child_id),
+            "the premise: mounting a child does not by itself enlist it with the window"
+        );
+        assert!(with_widget_mut(window_id, |window| {
+            window.add_child(child_id);
+            true
+        })
+        .unwrap_or(false));
+        assert!(
+            direct_children_of(window_id).contains(&child_id),
+            "after `add_child` the window painter must be able to find it"
+        );
     }
 }

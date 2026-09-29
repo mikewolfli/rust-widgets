@@ -666,11 +666,17 @@ fn build_screen(win: &WindowHandle, log: &Arc<EventLog>) {
         chart.price_lines().len()
     ));
 
-    // The interaction wiring: a hover reports the bar, a click logs its OHLC. This is
-    // what makes the panel demonstrably live rather than a static picture.
+    // The interaction wiring: a hover reports the bar, a click logs its OHLC, and the
+    // exit reports which bar the pointer left. This is what makes the panel demonstrably
+    // live rather than a static picture — and it shows all three signals the chart
+    // publishes, not just the convenient one.
     let hover_log = Arc::clone(log);
     chart.bar_hovered.connect(move |index| {
         hover_log.append(format!("[CandlestickChart] hover bar #{index}"));
+    });
+    let unhover_log = Arc::clone(log);
+    chart.bar_unhovered.connect(move |index| {
+        unhover_log.append(format!("[CandlestickChart] pointer left bar #{index}"));
     });
     let click_log = Arc::clone(log);
     chart.bar_clicked.connect(move |index| {
@@ -685,6 +691,10 @@ fn build_screen(win: &WindowHandle, log: &Arc<EventLog>) {
     volume.bar_hovered.connect(move |index| {
         volume_log.append(format!("[VolumeChart] hover bar #{index}"));
     });
+    let volume_click_log = Arc::clone(log);
+    volume.bar_clicked.connect(move |index| {
+        volume_click_log.append(format!("[VolumeChart] click bar #{index}"));
+    });
     let id_volume = mount(win, volume, layout.volume, "VolumeChart", log);
 
     // ── Two oscillator panes ───────────────────────────────────────────────
@@ -693,6 +703,16 @@ fn build_screen(win: &WindowHandle, log: &Arc<EventLog>) {
     macd.set_mode(IndicatorMode::Macd);
     // The standard periods; stated explicitly so the demo shows where to change them.
     macd.set_macd_periods(12, 26, 9);
+    // The oscillator panes publish the same pointer signals as the price chart, so the
+    // demo wires them too: the four left-column panes then respond to the pointer alike.
+    let macd_hover_log = Arc::clone(log);
+    macd.bar_hovered.connect(move |index| {
+        macd_hover_log.append(format!("[IndicatorChart/MACD] hover bar #{index}"));
+    });
+    let macd_click_log = Arc::clone(log);
+    macd.bar_clicked.connect(move |index| {
+        macd_click_log.append(format!("[IndicatorChart/MACD] click bar #{index}"));
+    });
     let id_macd = mount(win, macd, layout.macd, "IndicatorChart(MACD)", log);
 
     let mut rsi = IndicatorChart::new(layout.rsi);
@@ -700,6 +720,14 @@ fn build_screen(win: &WindowHandle, log: &Arc<EventLog>) {
     rsi.set_mode(IndicatorMode::Rsi);
     rsi.set_period(14);
     rsi.set_show_reference_levels(true);
+    let rsi_hover_log = Arc::clone(log);
+    rsi.bar_hovered.connect(move |index| {
+        rsi_hover_log.append(format!("[IndicatorChart/RSI] hover bar #{index}"));
+    });
+    let rsi_click_log = Arc::clone(log);
+    rsi.bar_clicked.connect(move |index| {
+        rsi_click_log.append(format!("[IndicatorChart/RSI] click bar #{index}"));
+    });
     let id_rsi = mount(win, rsi, layout.rsi, "IndicatorChart(RSI)", log);
 
     // ── The watchlist ──────────────────────────────────────────────────────
@@ -719,6 +747,16 @@ fn build_screen(win: &WindowHandle, log: &Arc<EventLog>) {
     quotes.quote_clicked.connect(move |symbol| {
         quote_log.append(format!("[QuoteBoard] 选中 {symbol}"));
     });
+    let quote_hover_log = Arc::clone(log);
+    quotes.quote_hovered.connect(move |symbol| {
+        quote_hover_log.append(format!("[QuoteBoard] hover {symbol}"));
+    });
+    // `selection_changed` is a different fact from `quote_clicked`: it fires whenever the
+    // selected row changes, including when the host calls `select()` — not only on a click.
+    let quote_select_log = Arc::clone(log);
+    quotes.selection_changed.connect(move |symbol| {
+        quote_select_log.append(format!("[QuoteBoard] selection -> {symbol:?}"));
+    });
     let id_quotes = mount(win, quotes, layout.quotes, "QuoteBoard", log);
 
     // ── The order book ladder ──────────────────────────────────────────────
@@ -731,6 +769,19 @@ fn build_screen(win: &WindowHandle, log: &Arc<EventLog>) {
         // rather than destructured in the parameter position.
         let (side, index) = *position;
         ladder_log.append(format!("[OrderBook] hover {side:?} #{index}"));
+    });
+    let ladder_leave_log = Arc::clone(log);
+    ladder.level_unhovered.connect(move |position| {
+        let (side, index) = *position;
+        ladder_leave_log.append(format!("[OrderBook] pointer left {side:?} #{index}"));
+    });
+    let ladder_click_log = Arc::clone(log);
+    ladder.level_clicked.connect(move |position| {
+        // A click on a ladder row is what a trader acts on, so the demo reads the row's
+        // price/size back through the widget's own queries rather than repeating what the
+        // signal already carried.
+        let (side, index) = *position;
+        ladder_click_log.append(format!("[OrderBook] click {side:?} #{index}"));
     });
     let id_ladder = mount(win, ladder, layout.book, "OrderBook", log);
 

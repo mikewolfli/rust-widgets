@@ -169,7 +169,24 @@ pub(crate) fn cluster_advances(
     scale: f32,
 ) -> Option<Vec<f32>> {
     let face = face_for_metrics(text, font)?;
-    let parsed = rustybuzz::Face::from_slice(face.bytes, 0)?;
+    // The cached shaper parse: this runs for every measured and every drawn label, and
+    // `text_line` measures before `draw_text` shapes, so a single text control parsed the font
+    // twice a frame. Measured, one `measure_text("M")` cost ~18us, which multiplied out to the
+    // 25ms a frame of `demo/control` spent rendering 36 controls.
+    super::font_assets::with_shaper_face(face, |parsed| {
+        cluster_advances_in_face(text, ranges, font, scale, parsed)
+    })
+    .flatten()
+}
+
+/// Computes the per-cluster advances using an already-parsed shaper `face`.
+fn cluster_advances_in_face(
+    text: &str,
+    ranges: &[(usize, usize)],
+    font: &Font,
+    scale: f32,
+    parsed: &rustybuzz::Face<'_>,
+) -> Option<Vec<f32>> {
     let units_per_em = parsed.units_per_em() as f32;
     if units_per_em <= 0.0 {
         return None;
@@ -180,7 +197,7 @@ pub(crate) fn cluster_advances(
     // family: a label's base direction is a property of its content, and the reorder itself is
     // `bidi`'s job and happens later — shaping works in logical order.
     buffer.guess_segment_properties();
-    let output = rustybuzz::shape(&parsed, &[], buffer);
+    let output = rustybuzz::shape(parsed, &[], buffer);
 
     // The pixel size of one font unit. An `em` is the font size, so a unit is
     // `font_size / units_per_em` logical pixels — the real advance, rather than a per-cluster

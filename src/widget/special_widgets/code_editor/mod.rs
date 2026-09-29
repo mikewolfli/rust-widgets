@@ -32,6 +32,17 @@
 //! completion-provider, defaulting to document identifiers), and
 //! [`DiagnosticMarker`] (host/LSP-pushed inline diagnostics).
 //!
+//! # Host integration: the clipboard
+//!
+//! The context menu's `paste` row reflects whether the clipboard holds text, and
+//! that fact is **cached**, not read when the menu opens
+//! ([`CodeEditor::clipboard_has_text`]). The platform clipboard is a machine-global
+//! resource whose handle is exclusive, so a read can block or fail and would let a
+//! transient failure disable a row for a reason the user cannot see. A host should
+//! call [`CodeEditor::set_clipboard_has_text`] from the platform's clipboard-change
+//! notification (or [`CodeEditor::invalidate_clipboard_has_text`] on focus regain);
+//! with no host wiring the editor probes once and caches the answer.
+//!
 //! # Module layout
 //!
 //! The implementation is split into focused submodules; this file only declares
@@ -44,6 +55,7 @@
 //! | `types` | Positions, cursor, markers, tokens, palette, config, find/completion/menu state |
 //! | `syntax` | Built-in lexer, [`LanguageId`], [`SyntaxHighlighter`] plugin seam |
 //! | `buffer` | Line-indexed document model, tabs, folds, splice primitive |
+//! | `coords` | Document ↔ screen coordinate map (`B3`/`B4`) |
 //! | `multicursor` | Multiple carets: add/merge, occurrence selection, edit projection |
 //! | `pairs` | Auto-pairing, bracket/quote skip-over and smart backspace |
 //! | `editor` | The [`CodeEditor`] widget: state, commands, history |
@@ -68,6 +80,7 @@
 //! the desktop behaviour.
 
 mod buffer;
+mod coords;
 mod editor;
 mod input;
 mod multicursor;
@@ -83,13 +96,20 @@ mod tests;
 #[cfg(test)]
 mod tests_batch1;
 
+#[cfg(test)]
+mod tests_batch4;
+
+#[cfg(test)]
+mod tests_batch5;
+
 pub use editor::CodeEditor;
 pub use multicursor::MultiCursor;
 pub use syntax::{BuiltinHighlighter, LanguageId, SyntaxHighlighter};
 pub use types::{
     CodeEditorConfig, CompletionItem, CompletionSource, CompletionState, ContextMenuState, Cursor,
     DiagnosticMarker, DocumentCompletions, DocumentScale, EditorBuffer, FindState, FoldRegion,
-    MarkerSeverity, MenuItem, SearchMatch, SearchOptions, SyntaxPalette, TextPosition, TokenKind,
-    TokenSpan, VisualLine, DEFAULT_FONT_FAMILY, DEFAULT_FONT_SIZE, DEFAULT_TAB_WIDTH,
-    MAX_COMPLETIONS, MIN_TOUCH_TARGET, SCALE_REDUCED_LINES, SCALE_VIEW_ONLY_LINES,
+    MarkerSeverity, MenuItem, ReadOnlySpan, SearchMatch, SearchOptions, SyntaxPalette,
+    TextPosition, TokenKind, TokenSpan, ViewportSnapshot, VisualLine, DEFAULT_FONT_FAMILY,
+    DEFAULT_FONT_SIZE, DEFAULT_TAB_WIDTH, MAX_COMPLETIONS, MIN_TOUCH_TARGET, SCALE_REDUCED_LINES,
+    SCALE_VIEW_ONLY_LINES,
 };

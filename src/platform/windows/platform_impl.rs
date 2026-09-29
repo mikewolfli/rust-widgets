@@ -437,16 +437,45 @@ impl Platform for WindowsPlatform {
         crate::queue_resize_trigger(window_id, width, height)
     }
 
-    /// Invalidate the canvas window so the OS sends a fresh `WM_PAINT`.
+    /// Invalidate the window that draws `id`, so the OS sends a fresh `WM_PAINT`.
+    ///
+    /// # Why this answers for two kinds of id
+    ///
+    /// A **mounted surface** has a canvas child window of its own, and invalidating that
+    /// repaints just the surface. A **window** has the toplevel `HWND` it was created
+    /// with, and invalidating that repaints the window's whole child list — which is where
+    /// every ordinary control is drawn, since the library paints them and most have no
+    /// native control behind them.
+    ///
+    /// Handling only the first case is what left `demo/control` blank: the tree painter
+    /// existed, but nothing ever told the window it needed to repaint after its controls
+    /// were created.
+    ///
+    /// # The two id spaces
+    ///
+    /// `id` is a **widget-registry** id (the tree), while this backend's handle table is
+    /// keyed by the **platform** id `Platform::create_window` returned for the same window.
+    /// `demo/control`'s window is registry id `6000285942072475648` and platform id `1`, so
+    /// looking the registry id up in the handle table answered `None` — and this method
+    /// reported `false` for a window it plainly owned, which made every repaint request for
+    /// a window a silent no-op.
+    ///
+    /// The translation is therefore two hops, and it is the same pair the tree painter
+    /// needs in the opposite direction: registry id → host window → platform id.
     #[cfg(widgets_unstripped)]
     fn invalidate_surface(&self, id: ObjectId) -> bool {
-        match super::canvas::hwnd_for_widget(id) {
-            Some(hwnd) => {
-                super::canvas::invalidate_canvas(hwnd);
-                true
-            }
-            None => false,
+        if let Some(hwnd) = super::canvas::hwnd_for_widget(id) {
+            super::canvas::invalidate_canvas(hwnd);
+            return true;
         }
+        // Not a mounted surface: it may be a window, whose `HWND` this backend bound when
+        // it created it. `id` addresses the widget registry, so the host window must be
+        // resolved first, and only the host window's id keys the handle table.
+        let Some(hwnd) = super::window_hwnd_for_widget_id(self, id) else {
+            return false;
+        };
+        super::canvas::invalidate_canvas(hwnd);
+        true
     }
 
     /// Invalidate one rectangle of the canvas window.

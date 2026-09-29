@@ -235,10 +235,14 @@ fn main() {
 }
 ";
 
-/// 构建编辑器：配置、示例文本、诊断标记全部就位。
+/// 构建编辑器：配置、示例文本、诊断标记全部就位，并接上全部信号。
 ///
 /// 矩形由调用方传入（即分栏算出的编辑器栏），不再自己算 —— 几何只有一个来源。
-fn build_editor(rect: Rect) -> CodeEditor {
+///
+/// 信号必须在**挂载之前**接：自绘控件自己持有信号，`SurfaceHandle` 的
+/// `on_click`/`on_value_changed` 对挂载面是**有意忽略**的（库会记一条 debug 日志，
+/// 而不是注册一个永不触发的回调）。详见 [`commands::wire_signals`]。
+fn build_editor(rect: Rect, log: &Arc<EventLog>) -> CodeEditor {
     let config = CodeEditorConfig::new()
         .language(LanguageId::Rust)
         .tab_width(4)
@@ -260,6 +264,15 @@ fn build_editor(rect: Rect) -> CodeEditor {
         DiagnosticMarker::new(3, "deep recursion", MarkerSeverity::Warning),
         DiagnosticMarker::new(8, "`limit` could be inlined", MarkerSeverity::Info),
     ]);
+
+    // 事件侧：把 7 个公开信号全部接上，日志会打印每一类的载荷。
+    let signal_log = Arc::clone(log);
+    commands::wire_signals(&editor, move |line: String| signal_log.append(line));
+    log.append(
+        "[signal] 已接入 text_changed / cursor_moved / selection_changed / \
+                tab_changed / search_changed / fold_changed / completion_changed",
+    );
+
     editor
 }
 
@@ -558,7 +571,7 @@ pub fn run() {
     };
 
     // ── 挂载编辑器 ──────────────────────────────────────────────────────
-    let editor_box: Box<dyn Widget> = Box::new(build_editor(rect));
+    let editor_box: Box<dyn Widget> = Box::new(build_editor(rect, &log));
     let editor = match win.mount_surface(editor_box, rect) {
         Ok(handle) => {
             log.append(format!(

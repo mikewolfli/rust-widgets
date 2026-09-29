@@ -305,6 +305,42 @@ impl LanguageId {
             "// "
         }
     }
+
+    /// Returns `true` when the language has a line-comment syntax at all.
+    ///
+    /// This is the `D2` predicate: a structure-aware command is *meaningless* for
+    /// a language that has no such structure, and inserting `// ` into plain text
+    /// or a Markdown heading is not a degraded toggle, it is corruption. Callers
+    /// consult this and refuse rather than guess, so the failure is visible.
+    pub fn supports_line_comments(self) -> bool {
+        !matches!(self, Self::Markdown | Self::PlainText)
+    }
+
+    /// Returns `true` when bracket/quote auto-pairing is meaningful.
+    ///
+    /// Pairing is **not** degraded by language: it is already gated by
+    /// [`super::types::CodeEditorConfig::auto_close_brackets`], which is the user's
+    /// explicit choice, and inserting a matching delimiter is a formatting
+    /// preference rather than a claim about grammar. The one command whose
+    /// incorrect guess corrupts text is [`Self::line_comment_prefix`], which is why
+    /// that one *is* degraded. This predicate exists so a host can still ask the
+    /// question without the editor deciding for it.
+    pub fn supports_auto_pairing(self) -> bool {
+        !matches!(self, Self::Markdown | Self::PlainText)
+    }
+
+    /// Returns the line-comment prefix, or `None` when there is none.
+    ///
+    /// The `Option` is what makes the degradation explicit at the call site: a
+    /// command that needs a comment token cannot silently fall back to a wrong
+    /// one.
+    pub fn line_comment_prefix(self) -> Option<&'static str> {
+        if self.supports_line_comments() {
+            Some(self.comment_prefix())
+        } else {
+            None
+        }
+    }
 }
 
 /// Keyword/identifier-aware lexer covering the [`LanguageId`] families.

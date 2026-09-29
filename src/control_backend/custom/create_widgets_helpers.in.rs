@@ -220,7 +220,11 @@ macro_rules! impl_helpers {
             #[cfg(not(alloc_frugal))]
             {
                 self.with_live_widget(widget_id, |widget| widget.set_visible(visible));
-                crate::widget::runtime::request_repaint(widget_id);
+                // Repaint the widget **and its window**: making a control visible (or
+                // hiding it) changes what the window's tree frame contains, and on a
+                // backend that paints the child list the control itself has no surface
+                // to invalidate.
+                crate::widget::runtime::request_repaint_subtree(widget_id);
                 // Forward to the platform, which is the half that owns a real window.
                 //
                 // The widget's visibility is a model flag, and for an ordinary control
@@ -463,7 +467,12 @@ macro_rules! impl_helpers {
                     return;
                 }
                 if crate::widget::runtime::set_geometry(widget_id, rect) {
-                    crate::widget::runtime::request_repaint(widget_id);
+                    // The **subtree** request, not the widget's own: moving a control must
+                    // repaint it and the window it lives in, because on a backend whose
+                    // window paints its child list the control has no surface of its own
+                    // to invalidate (Windows before this: the window never repainted after
+                    // a resize, so it kept the frame it drew when it was still empty).
+                    crate::widget::runtime::request_repaint_subtree(widget_id);
                     // Tell the platform the surface moved, not just the model.
                     //
                     // A mounted widget lives in two places: the registry (its geometry,

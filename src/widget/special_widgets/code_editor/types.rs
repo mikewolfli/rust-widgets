@@ -423,6 +423,118 @@ impl EditorBuffer {
     }
 }
 
+/// A half-open document range that refuses edits.
+///
+/// [`CodeEditorConfig::read_only`] is a single switch for the whole buffer, which
+/// is the wrong granularity for a *generated* region: a designer keeps the
+/// generated widget tree immutable while the property area around it stays
+/// editable, and must do so inside **one** buffer. A span is the unit that
+/// expresses that split.
+///
+/// The range is expressed in **document coordinates** (line + character column)
+/// rather than byte offsets, so it survives edits that happen above it only if
+/// the host re-derives the spans — the editor therefore also exposes a helper to
+/// shift spans after an edit ([`CodeEditor::shift_read_only_spans_after`]).
+/// Use [`ReadOnlySpan::lines`] to lock whole lines, which is the common case of
+/// "this generated block is immutable".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadOnlySpan {
+    /// First line of the locked range.
+    pub start_line: usize,
+    /// Character column where the locked range begins on `start_line`.
+    pub start_column: usize,
+    /// Last line of the locked range.
+    pub end_line: usize,
+    /// Character column where the locked range ends on `end_line`.
+    ///
+    /// The end is **exclusive**, so a span from `(2, 0)` to `(4, 0)` locks lines 2
+    /// and 3 exactly and leaves the caret free to sit at the start of line 4. The
+    /// sentinel [`ReadOnlySpan::END_OF_LINE`] means "to the end of the end line",
+    /// which is what [`ReadOnlySpan::lines`] uses to lock a whole line whose
+    /// length the span does not know.
+    pub end_column: usize,
+}
+
+impl ReadOnlySpan {
+    /// Sentinel meaning "the end of the end line", used by [`Self::lines`].
+    ///
+    /// A whole-line lock cannot name a character column, because the line's length
+    /// is not known when the span is built and changes when the line is edited.
+    /// Using `usize::MAX` rather than `0` also removes the ambiguity that made
+    /// `lines(0, 0)` collapse to an empty span.
+    pub const END_OF_LINE: usize = usize::MAX;
+
+    /// Creates a span locking whole lines `start_line..=end_line`.
+    pub fn lines(start_line: usize, end_line: usize) -> Self {
+        Self {
+            start_line,
+            start_column: 0,
+            end_line: end_line.max(start_line),
+            end_column: Self::END_OF_LINE,
+        }
+    }
+
+    /// Creates a span from two positions.
+    pub fn new(start: TextPosition, end: TextPosition) -> Self {
+        let (start, end) = if end < start { (end, start) } else { (start, end) };
+        Self {
+            start_line: start.line,
+            start_column: start.column,
+            end_line: end.line,
+            end_column: end.column,
+        }
+    }
+
+    /// Returns whether the span contains a position.
+    ///
+    /// The end is exclusive. [`Self::END_OF_LINE`] means the span covers the whole
+    /// end line, so no column on it is outside the lock.
+    pub fn contains(&self, position: TextPosition) -> bool {
+        if position.line < self.start_line || position.line > self.end_line {
+            return false;
+        }
+        if position.line == self.start_line && position.column < self.start_column {
+            return false;
+        }
+        if position.line == self.end_line
+            && self.end_column != Self::END_OF_LINE
+            && position.column >= self.end_column
+        {
+            return false;
+        }
+        true
+    }
+
+    /// Returns whether any position in the inclusive `[start, end]` range is
+    /// locked, i.e. whether an edit spanning the two positions must be refused.
+    ///
+    /// The range is treated as closed because replacing `[start, end)` moves the
+    /// delimiter at `end`; an edit that merely *touches* a locked span is already
+    /// an edit of it. A zero-width insertion is an edit of the span exactly when
+    /// the insertion point itself is inside it.
+    pub fn overlaps(&self, start: TextPosition, end: TextPosition) -> bool {
+        if self.is_empty() {
+            return false;
+        }
+        let (start, end) = if end < start { (end, start) } else { (start, end) };
+        // The span is the half-open position set `[span_start, span_end)`; the edit
+        // is the closed set `[start, end]`. They intersect iff the edit starts
+        // before the span's exclusive end **and** the span starts at or before the
+        // edit's end. `END_OF_LINE` places the exclusive end past every column of
+        // the end line, which is exactly "the whole line is locked".
+        let span_start = TextPosition::new(self.start_line, self.start_column);
+        let span_end = TextPosition::new(self.end_line, self.end_column);
+        start < span_end && span_start <= end
+    }
+
+    /// Returns whether the span still covers at least one position.
+    pub fn is_empty(&self) -> bool {
+        self.start_line == self.end_line
+            && self.start_column == self.end_column
+            && self.end_column != Self::END_OF_LINE
+    }
+}
+
 /// A foldable region of the document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FoldRegion {
@@ -486,6 +598,25 @@ pub struct SearchMatch {
     pub start_column: usize,
     /// Zero-based end character column, exclusive.
     pub end_column: usize,
+}
+
+/// A viewport + caret snapshot, for linking two editor instances (`D3`).
+///
+/// A side-by-side comparison is two `CodeEditor` widgets whose scroll and caret a
+/// host keeps in step. The library cannot own that policy — it does not know
+/// whether the two panes should follow the caret, only the scroll, or neither —
+/// but it can expose a single value that captures "where this editor is looking"
+/// and a single call that applies one. The host wires the two together through the
+/// existing [`super::editor::CodeEditor::cursor_moved`] and
+/// [`super::editor::CodeEditor::tab_changed`] signals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewportSnapshot {
+    /// First visible visual row.
+    pub first_visual_row: usize,
+    /// Horizontal scroll offset in character columns.
+    pub scroll_column: usize,
+    /// The caret, so a linked pane can show the same position.
+    pub caret: TextPosition,
 }
 
 /// State of the in-editor find bar.

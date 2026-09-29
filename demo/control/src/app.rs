@@ -3,7 +3,7 @@
 //! 使用 App + WindowHandle + WidgetHandle 体系，创建窗口并放置各类控件。
 //! 所有控件事件通过 handle.on_click / on_value_changed 实时记录。
 //!
-//! 布局（左列与右列都是普通控件，放置方式由库决定）：
+//! Demo 版式（均为普通控件，放置方式由库决定）：
 //!   菜单栏 — File / View
 //!   工具栏 + 状态栏 — ToolBar / StatusBar
 //!   行 0 — Button:      Button, ToggleButton, disabled Button
@@ -12,10 +12,12 @@
 //!   行 3 — Selection:   ComboBox, ListBox
 //!   行 4 — Range:       Slider, ProgressBar, indeterminate ProgressBar
 //!   行 5 — Text area:   ScrollArea（内含多行 Label）
-//!   行 6 — Panel/Frame: GroupBox 面板 + Frame
-//!   行 7 — Dialog:      MessageBox
-//!   右列 — CodeEditor + Chip
-//!   底部 — 事件日志
+//!   行 6 — Panel/Frame: Panel + Frame
+//!   行 7 — Dialog:      MessageBox（默认隐藏，由 “Click Me” 打开）
+//!   底部 — 事件日志（Label 行）
+//!
+//! 本 demo 只演示**平台普通控件**；自绘型控件（如 `CodeEditor`、`TreeView`）
+//! 需要挂载面，归 `demo/code_editor` 演示。
 //!
 //! # 跨平台（本 demo 的核心示范）
 //!
@@ -287,12 +289,59 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
     busy.set_indeterminate(true);
     log.append(format!("[ProgressBar] indeterminate={:?}", busy.is_indeterminate()));
 
+    // ── Method-driven update: 一个按钮用**方法**改写其它控件 ────────
+    //
+    // 前面的行演示的是“控件 → 日志”方向（事件）。这里演示反向：宿主主动调用控件
+    // 方法，而且是**先读后写**。两个方向都要有例子—— “能改”与“能读回”是两件事，
+    // 只演示其中一侧会让人误以为另一侧不存在。
+    //
+    // 放在这里是因为它要引用 `tri`/`sl`/`busy`/`rb3`，四个控件都已创建。
+    let sync = win.new_button("Sync", 540, 20, 140, 32);
+    let sync_log = Arc::clone(log);
+    let sync_tri = tri.clone();
+    let sync_sl = sl.clone();
+    let sync_busy = busy.clone();
+    let sync_rb = rb3.clone();
+    sync.on_click(move || {
+        // Read: 先读出当前状态（方法的读回侧）。
+        let state = sync_tri.check_state();
+        let slider = sync_sl.value();
+        // Write: 把 Tri-state 推进到下一个状态、滑块推高 5、工忙条切换。
+        let next = match state {
+            rust_widgets::app::CheckState::Unchecked => rust_widgets::app::CheckState::Checked,
+            rust_widgets::app::CheckState::Checked => {
+                rust_widgets::app::CheckState::PartiallyChecked
+            }
+            rust_widgets::app::CheckState::PartiallyChecked => {
+                rust_widgets::app::CheckState::Unchecked
+            }
+        };
+        sync_tri.set_check_state(next);
+        sync_sl.set_value((slider + 5).min(100));
+        sync_busy.set_indeterminate(!sync_busy.is_indeterminate().unwrap_or(false));
+        // 单选组：`select` 会把同组的其他按钮自动取消选中（组语义）。
+        sync_rb.select();
+        sync_log.append(format!(
+            "[Sync] tri-state {:?} -> {:?}, slider {} -> {}, busy={:?}, radio C selected={}",
+            state,
+            sync_tri.check_state(),
+            slider,
+            sync_sl.value(),
+            sync_busy.is_indeterminate(),
+            sync_rb.is_selected()
+        ));
+    });
+    log.append("[Button] 'Sync' reads then writes 4 other controls（方法方向）");
+
     // ── Row 5: Scrollable Text Area ──────────────────────────────────
     log.append("═══ Row: Scrollable Text Area ═══");
 
     let _area = win.new_scroll_area(20, 286, 260, 90);
     for i in 0..6 {
-        let _line = win.new_label(&format!("log line {i} — scroll me"), 28, 294 + i * 20, 244, 18);
+        // ASCII only: the default build's glyph face carries no em dash, so a `—` here
+        // painted as a missing-glyph box. A separator that renders is worth more than a
+        // typographically nicer one that does not.
+        let _line = win.new_label(&format!("log line {i} - scroll me"), 28, 294 + i * 20, 244, 18);
     }
     log.append("[ScrollArea] with 6 stacked labels at (20,286,260,90)");
 
@@ -308,7 +357,7 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
     // ── Log Panel (底部 4 行标签) ─────────────────────────────────────
     log.append("═══ Log Panel ═══");
 
-    let _title = win.new_label("── Event Log ──", 20, 496, 680, 18);
+    let _title = win.new_label("-- Event Log --", 20, 496, 680, 18);
     for i in 0..4 {
         let _row = win.new_label("", 20, 518 + i * 20, 680, 18);
     }

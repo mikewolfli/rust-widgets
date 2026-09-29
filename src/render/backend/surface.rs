@@ -254,7 +254,9 @@ pub fn text_line(
     alignment: VerticalAlignment,
     context: &RenderContext,
 ) -> Rect {
+    let t0 = std::time::Instant::now();
     let height = context.measure_text("M", font).height.max(1) as i32;
+    eprintln!("[MEAS] text_line measure_text('M') = {}us", t0.elapsed().as_micros());
     let offset = match alignment {
         VerticalAlignment::Top => 0,
         VerticalAlignment::Center => ((band.height as i32 - height) / 2).max(0),

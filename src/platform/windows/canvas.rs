@@ -198,14 +198,10 @@ unsafe fn paint_canvas(hwnd: HWND) {
     let mut paint: PAINTSTRUCT = std::mem::zeroed();
     let hdc: HDC = BeginPaint(hwnd, &mut paint);
 
-    let mut rect: RECT = std::mem::zeroed();
-    if GetClientRect(hwnd, &mut rect) == 0 {
-        log::error!("[windows] canvas: GetClientRect failed");
+    let Some((width, height)) = client_size(hwnd) else {
         EndPaint(hwnd, &paint);
         return;
-    }
-    let width = (rect.right - rect.left).max(1) as u32;
-    let height = (rect.bottom - rect.top).max(1) as u32;
+    };
 
     let Some(widget_id) = widget_id_of(hwnd) else {
         log::error!("[windows] canvas: WM_PAINT for an hwnd with no widget id");
@@ -215,8 +211,8 @@ unsafe fn paint_canvas(hwnd: HWND) {
     // `render_frame_cached` rather than `render_frame`: it carries the previous frame
     // forward and repaints only the damage, so a widget in `RepaintMode::Dirty` does
     // not re-rasterise every pixel on each `WM_PAINT`. The returned frame is complete
-    // — the swap below still walks it — because `StretchDIBits` presents a whole
-    // bitmap; the saving is in what was drawn, not in what is converted.
+    // — the swap in `blit_frame` still walks it — because `StretchDIBits` presents a
+    // whole bitmap; the saving is in what was drawn, not in what is converted.
     let Some(frame) = crate::widget::runtime::render_frame_cached(
         widget_id,
         crate::core::Size::new(width, height),
@@ -230,9 +226,49 @@ unsafe fn paint_canvas(hwnd: HWND) {
         return;
     };
 
+    blit_frame(hdc, width, height, &frame);
+    EndPaint(hwnd, &paint);
+}
+
+/// The client area of `hwnd` in pixels, or `None` when Win32 cannot answer.
+///
+/// Shared by the two painters so neither has to repeat the `GetClientRect` dance —
+/// and so a zero-sized window is rejected in one place rather than in two.
+pub(crate) unsafe fn client_size(hwnd: HWND) -> Option<(u32, u32)> {
+    let mut rect: RECT = std::mem::zeroed();
+    if GetClientRect(hwnd, &mut rect) == 0 {
+        log::error!("[windows] GetClientRect failed");
+        return None;
+    }
+    Some(((rect.right - rect.left).max(1) as u32, (rect.bottom - rect.top).max(1) as u32))
+}
+
+/// Blits a top-down RGBA frame into `hdc`, covering `width` x `height` pixels.
+///
+/// # Why this is one function rather than two copies
+///
+/// Two painters now present a frame on Windows: a mounted surface (its own child
+/// `HWND`) and a window's whole widget tree. They must agree about channel order
+/// and row order, and the only way to guarantee that is for one implementation to
+/// be the one they both call — the same reasoning the Linux backend records for its
+/// `blit_rgba`. A second copy would be correct on the day it was written and would
+/// drift the first time either end was touched.
+pub(crate) unsafe fn blit_frame(hdc: HDC, width: u32, height: u32, frame: &[u8]) {
+    if width == 0 || height == 0 {
+        return;
+    }
+    let expected = width as usize * height as usize * 4;
+    if frame.len() < expected {
+        log::error!(
+            "[windows] blit_frame: a {width}x{height} frame needs {expected} bytes, got {}",
+            frame.len()
+        );
+        return;
+    }
+
     // 32-bit top-down BGRA. The frame is RGBA, so red and blue are swapped while
     // copying; alpha is forced opaque because StretchDIBits with BI_RGB ignores it.
-    let mut buffer = vec![0u8; width as usize * height as usize * 4];
+    let mut buffer = vec![0u8; expected];
     for (index, pixel) in frame.chunks_exact(4).enumerate() {
         let offset = index * 4;
         buffer[offset] = pixel[2];
@@ -266,10 +302,8 @@ unsafe fn paint_canvas(hwnd: HWND) {
         SRCCOPY,
     );
     if scanned == 0 {
-        log::error!("[windows] canvas: StretchDIBits failed for {width}x{height}");
+        log::error!("[windows] blit_frame: StretchDIBits failed for {width}x{height}");
     }
-
-    EndPaint(hwnd, &paint);
 }
 
 /// Marks the whole canvas as needing a repaint.
@@ -337,7 +371,9 @@ unsafe fn forward_mouse(hwnd: HWND, lparam: LPARAM, phase: MousePhase) {
     let (origin_x, origin_y) = canvas_origin(hwnd);
     let position = Point::new(origin_x + x, origin_y + y);
     let event = match phase {
-        MousePhase::Press => Event::mouse_press_with(position.x, position.y, 1, current_modifiers()),
+        MousePhase::Press => {
+            Event::mouse_press_with(position.x, position.y, 1, current_modifiers())
+        }
         MousePhase::Release => Event::MouseRelease { pos: position, button: 1 },
         MousePhase::Drag => Event::MouseMove { pos: position },
     };

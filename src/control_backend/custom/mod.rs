@@ -321,6 +321,12 @@ impl CustomPaintControlBackend {
             crate::widget::runtime::with_widget_mut(parent_id, |host| {
                 host.add_child(id);
             });
+            // A new control must become visible, and only the **window** can make that
+            // happen: it paints the whole child list, and the control just added has no
+            // surface of its own to invalidate. Without this the window kept the frame it
+            // drew when it was still empty — a blank client area that no later call
+            // repaired, because every other repaint request named the child.
+            crate::widget::runtime::request_repaint_subtree(id);
         }
 
         // The host window and the theme-driven title are `full_widgets` concerns: a stripped

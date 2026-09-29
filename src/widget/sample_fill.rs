@@ -683,6 +683,13 @@ mod tests {
     /// sample cannot pass this.
     #[test]
     fn the_calendar_sample_is_pinned_to_a_fixed_day() {
+        // Holds the crate-wide theme guard: this test renders twice and compares the two frames,
+        // and a concurrent test that switches the active theme would otherwise change the accent
+        // colours between them — which made the comparison fail with two perfectly correct pictures
+        // that differed only in the theme's reds and the today-highlight fill
+        // (`rgba(179,62,60)` vs `rgba(183,50,41)`, `rgba(255,193,7)` vs `rgba(255,213,79)`).
+        // Same reason and same precedent as the render tests in `widget::svg` and `avatar`.
+        let _theme_guard = crate::style::theme_test_guard();
         let rect = crate::core::Rect::new(0, 0, 240, 120);
         let mut calendar = Calendar::new(rect);
         assert_eq!(

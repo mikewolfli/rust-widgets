@@ -11,8 +11,9 @@ use super::syntax::{BuiltinHighlighter, LanguageId, LineState, SyntaxHighlighter
 use super::types::{
     CodeEditorConfig, CompletionSource, CompletionState, ContextMenuState, Cursor, CursorGoal,
     DiagnosticMarker, DocumentCompletions, DocumentScale, EditorBuffer, FindState, FoldRegion,
-    InlineDiagnostic, MarkerSeverity, MenuItem, SearchMatch, SearchOptions, SyntaxPalette,
-    TextPosition, TokenKind, TokenSpan, VisualLine, MAX_COMPLETIONS,
+    InlineDiagnostic, MarkerSeverity, MenuItem, ReadOnlySpan, SearchMatch, SearchOptions,
+    SyntaxPalette, TextPosition, TokenKind, TokenSpan, ViewportSnapshot, VisualLine,
+    MAX_COMPLETIONS,
 };
 use crate::compat::MiniVec;
 use crate::core::{Color, Font, Point, Rect, Size};
@@ -142,6 +143,13 @@ pub struct CodeEditor {
     pub(crate) model: SharedModel,
     pub(crate) config: CodeEditorConfig,
     highlighter: Option<Box<dyn SyntaxHighlighter>>,
+    /// Per-language highlighters, consulted before the global override and the
+    /// built-in lexer.
+    ///
+    /// This is the `D1` registry: one widget may show three views in three
+    /// languages, and each view must be lexed by the engine registered for *its*
+    /// language rather than by a single editor-wide highlighter.
+    language_highlighters: Vec<(LanguageId, Box<dyn SyntaxHighlighter>)>,
     completion_source: Box<dyn CompletionSource>,
     pub(crate) palette: SyntaxPalette,
 
@@ -177,8 +185,47 @@ pub struct CodeEditor {
     pub(crate) context_menu: ContextMenuState,
 
     pub(crate) markers: Vec<DiagnosticMarker>,
+    /// Cached answer to "does the clipboard hold text?", for menu enablement.
+    ///
+    /// `open_context_menu` used to ask the platform directly. On desktop that read
+    /// is the **machine-global OS clipboard**, whose handle is exclusive
+    /// (`OpenClipboard`): it can block, it can fail, and it returns an empty string
+    /// while another process holds it — so a menu row could be disabled by a
+    /// transient failure. A query that only needs a boolean must not perform I/O.
+    ///
+    /// Three writers keep this honest, so it is a cache and not a guess:
+    ///
+    /// * [`CodeEditor::set_clipboard_has_text`] — the host, which knows the truth
+    ///   (subscribe to the platform's clipboard change notification);
+    /// * `copy` / `cut` — they just wrote text, so the answer is `true` by
+    ///   construction;
+    /// * `paste` — it just read the clipboard, so it records what it saw.
+    ///
+    /// `None` means "not known yet": `open_context_menu` probes the platform once
+    /// and caches the result, so the common case (no host wiring) costs one read per
+    /// unknown state rather than one per menu open.
+    clipboard_has_text: Option<bool>,
+    /// Document ranges that refuse edits while the rest of the buffer stays
+    /// editable.
+    ///
+    /// This is the `A4` layer of the designer contract: the generated widget tree
+    /// is locked while the property area around it can still be typed into. The
+    /// whole-buffer switch in [`CodeEditorConfig::read_only`] cannot express that
+    /// split, which is why this exists separately rather than as a flag.
+    pub(crate) read_only_spans: Vec<ReadOnlySpan>,
     /// Lines whose fold marker is currently collapsed, for O(1) gutter queries.
     folded_lines: MiniVec<usize>,
+    /// Visual rows before each document line, for O(1) row ↔ line conversion.
+    ///
+    /// `visual_row_prefix[i]` is the number of visual rows contributed by visible
+    /// document lines before line `i`, so the row a line starts at is an array read
+    /// and the reverse is a binary search. It is derived state, rebuilt by
+    /// [`CodeEditor::rebuild_visual_row_prefix`] whenever the things it depends on
+    /// change: the line index, the folds, wrapping, and the cell width that decides
+    /// how many segments a line wraps into. Without it,
+    /// [`CodeEditor::visual_row_to_line`] walks forward from the top of the document
+    /// on every hit-test and every scroll, which is `B4`'s defect.
+    visual_row_prefix: Vec<usize>,
     /// Per-line lexer entry state, so highlighting is incremental rather than
     /// re-derived from line 0 on every frame.
     ///
@@ -281,6 +328,7 @@ impl CodeEditor {
             model: Rc::new(RefCell::new(EditorModel::new())),
             config,
             highlighter: None,
+            language_highlighters: Vec::new(),
             completion_source: Box::new(DocumentCompletions),
             palette: SyntaxPalette::for_active_appearance(),
             cursor: Cursor::default(),
@@ -296,7 +344,10 @@ impl CodeEditor {
             completion: CompletionState::default(),
             context_menu: ContextMenuState::default(),
             markers: Vec::new(),
+            clipboard_has_text: None,
+            read_only_spans: Vec::new(),
             folded_lines: MiniVec::new(),
+            visual_row_prefix: Vec::new(),
             line_states: Vec::new(),
             line_tokens: Vec::new(),
             walked_lines: 0,
@@ -424,6 +475,65 @@ impl CodeEditor {
         self.base.request_redraw();
     }
 
+    /// Registers a highlighter for one language, replacing any previous one.
+    ///
+    /// A per-language registration wins over [`Self::set_highlighter`]'s global
+    /// override for buffers whose language matches, so a host can plug a real
+    /// engine into one language while the rest keep the built-in lexer. The cache
+    /// is dropped when the active buffer's language is the one updated.
+    pub fn register_language_highlighter(
+        &mut self,
+        language: LanguageId,
+        highlighter: Box<dyn SyntaxHighlighter>,
+    ) {
+        match self.language_highlighters.iter_mut().find(|(registered, _)| *registered == language)
+        {
+            Some(slot) => slot.1 = highlighter,
+            None => self.language_highlighters.push((language, highlighter)),
+        }
+        if self.active_language() == language {
+            self.invalidate_line_states();
+        }
+        self.base.request_redraw();
+    }
+
+    /// Removes the highlighter registered for one language.
+    ///
+    /// Returns `true` when one was registered. The active buffer's cache is dropped
+    /// when its language is the one removed, so what is on screen is re-lexed by the
+    /// built-in lexer immediately rather than at the next edit.
+    pub fn unregister_language_highlighter(&mut self, language: LanguageId) -> bool {
+        let before = self.language_highlighters.len();
+        self.language_highlighters.retain(|(registered, _)| *registered != language);
+        let removed = self.language_highlighters.len() != before;
+        if removed && self.active_language() == language {
+            self.invalidate_line_states();
+            self.base.request_redraw();
+        }
+        removed
+    }
+
+    /// Returns the languages that have a registered highlighter.
+    pub fn registered_languages(&self) -> Vec<LanguageId> {
+        self.language_highlighters.iter().map(|(language, _)| *language).collect()
+    }
+
+    /// Returns the language name reported by the highlighter that would lex `language`.
+    ///
+    /// This answers "what engine is actually in force?" without invoking it, which
+    /// is what a status bar or a capability panel needs.
+    pub fn highlighter_name_for(&self, language: LanguageId) -> String {
+        if let Some((_, highlighter)) =
+            self.language_highlighters.iter().find(|(registered, _)| *registered == language)
+        {
+            return highlighter.language_name().to_string();
+        }
+        if let Some(highlighter) = &self.highlighter {
+            return highlighter.language_name().to_string();
+        }
+        language.name().to_string()
+    }
+
     /// Installs a custom completion provider.
     pub fn set_completion_source(&mut self, source: Box<dyn CompletionSource>) {
         self.completion_source = source;
@@ -445,27 +555,189 @@ impl CodeEditor {
         !self.config.read_only && self.scale.allows_editing()
     }
 
-    /// Returns the active language name.
-    pub fn language_name(&self) -> String {
-        match &self.highlighter {
-            Some(highlighter) => highlighter.language_name().to_string(),
-            None => self.config.language.name().to_string(),
+    // ── Range-level read-only (A4) ──────────────────────────────────────────
+
+    /// Returns the document ranges that currently refuse edits.
+    pub fn read_only_spans(&self) -> &[ReadOnlySpan] {
+        &self.read_only_spans
+    }
+
+    /// Replaces the set of locked ranges.
+    ///
+    /// Empty spans are dropped, so a host may build them from positions without
+    /// having to check whether the range collapsed.
+    pub fn set_read_only_spans(&mut self, spans: Vec<ReadOnlySpan>) {
+        self.read_only_spans = spans.into_iter().filter(|span| !span.is_empty()).collect();
+        self.base.request_redraw();
+    }
+
+    /// Adds one locked range.
+    pub fn add_read_only_span(&mut self, span: ReadOnlySpan) {
+        if !span.is_empty() {
+            self.read_only_spans.push(span);
+            self.base.request_redraw();
         }
     }
 
+    /// Removes every locked range.
+    pub fn clear_read_only_spans(&mut self) {
+        if !self.read_only_spans.is_empty() {
+            self.read_only_spans.clear();
+            self.base.request_redraw();
+        }
+    }
+
+    /// Returns whether a single position may be edited.
+    ///
+    /// A position inside a locked span is not editable even when the buffer as a
+    /// whole is. Useful for a host that wants to refuse a drag *before* it starts,
+    /// or to grey out a command.
+    pub fn is_position_editable(&self, position: TextPosition) -> bool {
+        self.is_editable() && !self.read_only_spans.iter().any(|span| span.contains(position))
+    }
+
+    /// Returns whether replacing `[start, end)` would touch a locked range.
+    ///
+    /// This is the guard every mutation path consults: an edit is refused when it
+    /// overlaps any locked span, so a selection cannot be used to delete generated
+    /// lines. A collapsed range is an insertion point and is refused exactly when
+    /// it lands inside a locked span.
+    pub fn is_range_editable(&self, start: TextPosition, end: TextPosition) -> bool {
+        self.is_editable() && !self.read_only_spans.iter().any(|span| span.overlaps(start, end))
+    }
+
+    /// Shifts every locked span after an edit that changed `line_count` lines
+    /// starting at `first_line`.
+    ///
+    /// Locked ranges are expressed in document coordinates, so an edit above one
+    /// moves it. A host that edits its own buffer through this widget gets the
+    /// shift applied automatically by the edit paths; this entry point exists for
+    /// a host that mutates the document out of band and then tells the editor.
+    ///
+    /// `lines_delta` is positive when lines were inserted and negative when they
+    /// were removed.
+    pub fn shift_read_only_spans_after(&mut self, first_line: usize, lines_delta: isize) {
+        if self.read_only_spans.is_empty() || lines_delta == 0 {
+            return;
+        }
+        for span in &mut self.read_only_spans {
+            if span.start_line >= first_line {
+                span.start_line = shift_index(span.start_line, lines_delta);
+            }
+            if span.end_line >= first_line {
+                span.end_line = shift_index(span.end_line, lines_delta);
+            }
+        }
+        self.read_only_spans.retain(|span| !span.is_empty());
+        self.base.request_redraw();
+    }
+
+    /// Applies the internal shift an edit performed at `first_line` implies.
+    ///
+    /// Called after a committed edit whose line range is known, so a host that
+    /// installed spans through [`Self::add_read_only_span`] does not have to track
+    /// line numbers by hand. A span that the edit landed *inside* is left alone:
+    /// its text was rewritten by the edit, and moving it would lock unrelated
+    /// lines. The host re-derives spans for that case.
+    fn shift_read_only_spans_for_edit(
+        &mut self,
+        first_line: usize,
+        lines_now: usize,
+        lines_before: usize,
+    ) {
+        let delta = lines_now as isize - lines_before as isize;
+        if delta == 0 || self.read_only_spans.is_empty() {
+            return;
+        }
+        let edit_end = first_line + lines_before;
+        for span in &mut self.read_only_spans {
+            // A span that starts strictly after the edited block moves wholesale.
+            if span.start_line >= edit_end {
+                span.start_line = shift_index(span.start_line, delta);
+                span.end_line = shift_index(span.end_line, delta);
+            } else if span.end_line >= edit_end {
+                // The span straddles the edit: its tail moved.
+                span.end_line = shift_index(span.end_line, delta);
+            }
+        }
+        self.read_only_spans.retain(|span| !span.is_empty());
+    }
+
+    /// Returns the active language name.
+    ///
+    /// Resolves the language the same way highlighting does: a per-buffer override
+    /// wins, then the editor configuration. The name reported is the one the engine
+    /// that will actually lex the buffer gives, so a plugin that renames itself is
+    /// reflected here rather than the bare language family name.
+    pub fn language_name(&self) -> String {
+        self.highlighter_name_for(self.active_language())
+    }
+
+    /// Returns the language in force for the active buffer.
+    ///
+    /// A buffer's [`EditorBuffer::language`] override wins over
+    /// [`CodeEditorConfig::language`]. This is what makes one widget host several
+    /// tabs of different languages (whitepaper §14.2): the field existed before but
+    /// nothing consulted it, so every tab was lexed as the configured language.
+    pub fn active_language(&self) -> LanguageId {
+        self.model
+            .borrow()
+            .all_buffers
+            .get(self.model.borrow().active_tab)
+            .and_then(|buffer| buffer.language)
+            .unwrap_or(self.config.language)
+    }
+
     /// Sets the built-in language and resets indentation to its default.
+    ///
+    /// The setting applies to the active buffer when it has a language override,
+    /// and to the editor default otherwise, so a multi-language host does not need
+    /// two entry points.
     pub fn set_language(&mut self, language: LanguageId) {
         self.config.language = language;
         self.config.tab_width = language.default_tab_width();
+        let active = self.model.borrow().active_tab;
+        if let Some(buffer) = self.model.borrow_mut().all_buffers.get_mut(active) {
+            buffer.language = Some(language);
+        }
         // A different language lexes the same text differently, so every cached
         // state and span is stale.
         self.invalidate_line_states();
         self.base.request_redraw();
     }
 
-    /// Returns the keyword set used by the built-in lexer.
+    /// Sets the language of the buffer at `index` without switching to it.
+    ///
+    /// Returns `false` for an out-of-range index. When the buffer is active the
+    /// cached lexer state is dropped, because what is on screen just changed
+    /// language.
+    pub fn set_buffer_language(&mut self, index: usize, language: Option<LanguageId>) -> bool {
+        let active = self.model.borrow().active_tab;
+        let changed = {
+            let mut model = self.model.borrow_mut();
+            match model.all_buffers.get_mut(index) {
+                Some(buffer) => {
+                    buffer.language = language;
+                    true
+                }
+                None => false,
+            }
+        };
+        if changed && index == active {
+            self.invalidate_line_states();
+            self.base.request_redraw();
+        }
+        changed
+    }
+
+    /// Returns the language recorded for the buffer at `index`.
+    pub fn buffer_language(&self, index: usize) -> Option<LanguageId> {
+        self.model.borrow().all_buffers.get(index).and_then(|buffer| buffer.language)
+    }
+
+    /// Returns the keyword set of the language in force for the active buffer.
     pub fn keywords(&self) -> &'static [&'static str] {
-        self.config.language.keywords()
+        self.active_language().keywords()
     }
 
     // ── Text access ─────────────────────────────────────────────────────────
@@ -493,7 +765,11 @@ impl CodeEditor {
         }
         self.model.borrow_mut().set_text(next.clone());
         // Wholesale replacement invalidates every cached state; there is no
-        // meaningful "from line N" because no line survived unchanged.
+        // meaningful "from line N" because no line survived unchanged. Locked
+        // spans are positions in the *old* document, so they are dropped rather
+        // than silently re-anchored to unrelated text; a host that replaces the
+        // document also rebuilds its spans.
+        self.read_only_spans.clear();
         self.invalidate_line_states();
         self.minimap_line_count = 0;
         self.scale = DocumentScale::for_lines(self.line_count());
@@ -595,6 +871,15 @@ impl CodeEditor {
         payload: &str,
         head: TextPosition,
     ) {
+        // The single choke point for every range edit, so the locked-span guard
+        // lives here: a splice that overlaps a generated region is refused before
+        // anything is recorded or written. `is_editable` is already checked by the
+        // public entry points, but they cannot see the clamped positions this path
+        // derives, and a caller that passed through `splice_range` unchecked would
+        // otherwise slip a generated-line edit past the lock.
+        if !self.is_range_editable(start, end) {
+            return;
+        }
         // Capture the text being replaced **before** the splice runs. Slicing the
         // post-edit buffer with a pre-edit offset would record whatever now sits
         // there, so undo would restore the edit instead of the original — which is
@@ -629,6 +914,22 @@ impl CodeEditor {
         // `before` directly: the range is in pre-edit coordinates, so slicing the
         // post-edit buffer with it would record the wrong bytes.
         let range = diff_range(&before, &after);
+        // Line commands bypass `splice_and_record`, so the locked-span guard has to
+        // be applied to the *diff* of the two texts: the byte span the command
+        // rewrote is exactly what its positions would be checked against. Without
+        // this, `delete_line` on a generated line would succeed.
+        if let Some((start, removed_len, inserted)) = &range {
+            // The touched region is `[start, start + removed_len + inserted.len())`
+            // in the pre-edit text; the tails of that region are what the guard
+            // needs as positions.
+            let guard_start = position_in_text(&before, *start);
+            let guard_end = position_in_text(&before, start + removed_len + inserted.len());
+            // `start + removed_len + inserted.len()` can exceed the pre-edit
+            // length, so `guard_end` is clamped to the document by the helper.
+            if !self.is_range_editable(guard_start, guard_end) {
+                return;
+            }
+        }
         let removed = range.as_ref().map(|(start, removed_len, _)| {
             before.get(*start..start + removed_len).unwrap_or_default().to_string()
         });
@@ -717,6 +1018,13 @@ impl CodeEditor {
             }
             _ => None,
         };
+        // A locked range that sits *below* the edit has moved by the net line
+        // count. Applying the shift here — where the edit's line range is already
+        // derived for the match cache — keeps the lock statements and the match
+        // cache from disagreeing about where the edit landed.
+        if let Some((first, lines_now, lines_before)) = dirty {
+            self.shift_read_only_spans_for_edit(first, lines_now, lines_before);
+        }
         if !self.restoring_history {
             self.push_checkpoint(checkpoint.range, removed, before_snapshot);
         }
@@ -831,6 +1139,13 @@ impl CodeEditor {
     /// Applies one edit per caret in a single pass, then rebuilds the caret set.
     fn apply_caret_edits(&mut self, carets: &[Cursor], edits: Vec<CaretEdit>) -> bool {
         if !self.is_editable() || carets.is_empty() || carets.len() != edits.len() {
+            return false;
+        }
+        // Multi-caret is a distinct write path from `splice_and_record`, so the
+        // locked-span guard has to be repeated here rather than inherited. The
+        // whole batch is refused when *any* caret's edit touches a locked range:
+        // applying the rest would leave the carets out of step with the document.
+        if edits.iter().any(|edit| !self.is_range_editable(edit.start, edit.end)) {
             return false;
         }
         let before = self.text();
@@ -1235,12 +1550,18 @@ impl CodeEditor {
     }
 
     /// Sorts the selected lines, or the whole document when none are selected.
+    ///
+    /// A **collapsed** caret counts as "none selected", which is what the summary above
+    /// promises and what every editor does. Reading the caret's bounds literally instead
+    /// made a collapsed caret sort the single line it sat on — a no-op for text that is
+    /// already one line, and a silent partial sort otherwise, which is worse than either
+    /// sorting everything or refusing.
     pub fn sort_lines(&mut self) {
         if !self.is_editable() {
             return;
         }
+        let has_selection = self.has_selection();
         let (start, end) = self.cursor.bounds();
-        let start_line = start.line;
         let before = self.text();
         let mut lines: Vec<String> = before.split('\n').map(|line| line.to_string()).collect();
         // A trailing newline produces a final empty element. Sorting it would move
@@ -1249,17 +1570,23 @@ impl CodeEditor {
         // terminator's artefact, not a line the user can see or reorder.
         let trailing_blank = lines.last().is_some_and(|line| line.is_empty());
         let sortable = if trailing_blank { lines.len() - 1 } else { lines.len() };
-        let last = end.line.min(sortable.saturating_sub(1));
         if sortable > 0 {
-            lines[start_line.min(last)..=last].sort();
+            // No selection: the whole sortable document. Otherwise the lines the
+            // selection touches, inclusive of both ends.
+            let (first, last) = if has_selection {
+                (start.line.min(sortable - 1), end.line.min(sortable - 1))
+            } else {
+                (0, sortable - 1)
+            };
+            lines[first..=last].sort();
         }
         let after = join_lines(&lines);
         if after == before {
             return;
         }
-        let head = TextPosition::new(last, 0);
+        let head = TextPosition::new(sortable.saturating_sub(1), 0);
         self.commit_edit(before, after, head);
-        self.cursor.anchor = TextPosition::new(start_line, 0);
+        self.cursor.anchor = TextPosition::new(0, 0);
         self.emit_cursor_and_selection();
     }
 
@@ -1293,7 +1620,10 @@ impl CodeEditor {
 
     /// Tries to apply auto-pairing for a single typed character.
     ///
-    /// Returns `true` when the character was fully handled.
+    /// Returns `true` when the character was fully handled. Pairing is governed by
+    /// the explicit [`CodeEditorConfig::auto_close_brackets`] switch rather than by
+    /// language: it is a formatting preference, not a claim about grammar, so it is
+    /// not among the commands D2 degrades.
     pub(crate) fn try_auto_pair(&mut self, typed: char) -> bool {
         if self.has_multiple_cursors() {
             return false;
@@ -1551,11 +1881,18 @@ impl CodeEditor {
     }
 
     /// Toggles line comments across the selection, in one undo step.
+    ///
+    /// Degrades explicitly for languages with no line-comment syntax: rather than
+    /// inserting `// ` into Markdown or plain text, the command does nothing. The
+    /// language is the *active buffer's*, not the editor default, so a Markdown tab
+    /// and a Rust tab in the same widget behave differently.
     pub fn toggle_line_comment(&mut self) {
         if !self.is_editable() {
             return;
         }
-        let token = self.config.language.comment_prefix();
+        let Some(token) = self.active_language().line_comment_prefix() else {
+            return;
+        };
         let bare = token.trim_end();
         let (start, end) = self.cursor.bounds();
         let before = self.text();
@@ -2032,6 +2369,14 @@ impl CodeEditor {
         self.scroll_line
     }
 
+    /// Returns the horizontal scroll offset in character columns.
+    ///
+    /// The companion to [`Self::scroll_line`] for a host that links two panes and
+    /// needs to reproduce a viewport exactly rather than approximately.
+    pub fn scroll_column(&self) -> usize {
+        self.scroll_column
+    }
+
     /// Returns the number of visible rows for the current geometry.
     pub fn visible_rows(&self) -> usize {
         if self.visible_rows == 0 {
@@ -2059,6 +2404,54 @@ impl CodeEditor {
             self.scroll_column = target as usize;
             self.base.request_redraw();
         }
+    }
+
+    // ── Multi-instance linkage (D3) ─────────────────────────────────────────
+
+    /// Captures where this editor is looking, for a host that links two panes.
+    ///
+    /// A side-by-side comparison needs both instances to agree on the viewport;
+    /// the *policy* (follow the caret? follow the scroll only? lock the columns?)
+    /// belongs to the host, which is why only the capture and the apply live here.
+    pub fn viewport_snapshot(&self) -> ViewportSnapshot {
+        ViewportSnapshot {
+            first_visual_row: self.scroll_visual_row,
+            scroll_column: self.scroll_column,
+            caret: self.cursor.head,
+        }
+    }
+
+    /// Applies a viewport snapshot from another instance.
+    ///
+    /// Scrolls and moves the caret without touching undo history or the modified
+    /// flag: following a *linked* pane is not an edit of this buffer. The caret is
+    /// clamped to this document, so linking a long file to a short one cannot put
+    /// the caret past the end.
+    pub fn apply_viewport(&mut self, snapshot: ViewportSnapshot) {
+        self.scroll_column = snapshot.scroll_column;
+        // The row is clamped through the same transform a scroll uses, so a linked
+        // pane whose `scroll_line` lags the row cannot desynchronise the two.
+        let visible = self.visible_rows().max(1);
+        let max_row = self.visual_row_count().saturating_sub(visible);
+        self.scroll_visual_row = snapshot.first_visual_row.min(max_row);
+        self.scroll_line = self.visual_row_to_line(self.scroll_visual_row);
+        let caret = self.clamp_position(snapshot.caret);
+        let moved = caret != self.cursor.head;
+        self.cursor = Cursor { head: caret, anchor: caret };
+        self.goal.active = false;
+        if moved {
+            self.emit_cursor_and_selection();
+        }
+        self.base.request_redraw();
+    }
+
+    /// Returns the first visible visual row, the linked-pane coordinate.
+    ///
+    /// Distinct from [`Self::scroll_line`], which is a *document line*: with
+    /// wrapping or folding the two differ, and a host linking panes must use the
+    /// row or the panes drift apart by exactly the fold they disagree about.
+    pub fn first_visual_row(&self) -> usize {
+        self.scroll_visual_row
     }
 
     /// Keeps the caret inside the viewport, scrolling only when necessary.
@@ -2140,6 +2533,10 @@ impl CodeEditor {
         self.clamp_cursor_to_visible();
         self.recompute_match_cache_incremental(dirty);
         self.refresh_visible_rows();
+        // The document shape changed (lines, folds, or the wrap geometry the callers
+        // above may have moved), so the row-prefix table is rebuilt here rather than
+        // in the lookup, which only has `&self`.
+        self.rebuild_visual_row_prefix();
     }
 
     // ── Folding ─────────────────────────────────────────────────────────────
@@ -2275,6 +2672,15 @@ impl CodeEditor {
     /// answers.
     pub fn is_line_folded(&self, line: usize) -> bool {
         self.model.borrow().folds.iter().any(|region| region.folded && region.start_line == line)
+    }
+
+    /// Returns whether a line is hidden *inside* a folded region.
+    ///
+    /// Distinct from [`Self::is_line_folded`], which reports the fold's own start
+    /// line — the one row a collapsed region still shows. This answers the other
+    /// half: is the line currently invisible because some region swallowed it.
+    pub fn is_line_hidden(&self, line: usize) -> bool {
+        self.model.borrow().is_hidden(line)
     }
 
     fn after_fold_change(&mut self) {
@@ -2483,6 +2889,21 @@ impl CodeEditor {
         self.last_checkpoint_bytes
     }
 
+    /// Whether the row-prefix table is currently absent.
+    ///
+    /// Exposed so a test can assert that the fold-free, wrap-free fast path really
+    /// does skip the O(document) build instead of silently paying for it.
+    #[cfg(test)]
+    pub(crate) fn visual_row_prefix_is_empty(&self) -> bool {
+        self.visual_row_prefix.is_empty()
+    }
+
+    /// Length of the row-prefix table (`line_count + 1` when built).
+    #[cfg(test)]
+    pub(crate) fn visual_row_prefix_len(&self) -> usize {
+        self.visual_row_prefix.len()
+    }
+
     /// Rebuilds every minimap bucket from scratch.
     ///
     /// Called when the bucket count or the document size changed — opening a
@@ -2540,7 +2961,12 @@ impl CodeEditor {
     }
 
     pub(crate) fn total_visual_rows(&self) -> usize {
-        let rows: usize = if self.folded_lines.is_empty() {
+        // When the row-prefix table exists it already holds the exact total as its
+        // trailing entry, so the count comes off the same table the lookups use
+        // instead of a second traversal that could disagree with it.
+        let rows: usize = if self.visual_row_prefix.len() == self.line_count() + 1 {
+            self.visual_row_prefix.last().copied().unwrap_or(self.line_count())
+        } else if self.folded_lines.is_empty() {
             // The common case: no folds, so every line below the last fold is
             // visible and the total is a single multiply. Walking the document
             // here is what made scrolling a million-line file cost milliseconds
@@ -2549,7 +2975,8 @@ impl CodeEditor {
         } else {
             self.visible_document_lines().iter().map(|line| self.wrap_segments(*line)).sum()
         };
-        let rows = if self.config.word_wrap {
+        let rows = if self.config.word_wrap && self.visual_row_prefix.len() != self.line_count() + 1
+        {
             // Wrapping makes rows depend on each line's length, so the count
             // cannot be derived without measuring — but only the visible span is
             // needed for layout, and the exact total only feeds the scrollbar.
@@ -2575,18 +3002,48 @@ impl CodeEditor {
         }
     }
 
+    /// Returns the visual row at which a document line starts.
+    ///
+    /// `B4`: the two cases that need a walk — wrapping and folding — now read a
+    /// prefix table instead of walking to `line` on every call, so the cost is
+    /// paid once per document-shape change rather than once per lookup. The
+    /// fold-free, wrap-free case keeps its O(1) closed form and never builds the
+    /// table, which is what keeps a million-line scroll free of work.
     pub(crate) fn line_to_visual_row(&self, line: usize) -> usize {
-        if self.folded_lines.is_empty() {
-            // No folds: visual row equals document row when wrapping is off, and
-            // row * segments when it is on. Both avoid allocating a vector of
-            // every visible line — the cost that dominated a large repaint.
-            return if self.config.word_wrap {
-                let columns = self.text_columns().max(1);
-                (0..line).map(|index| self.line_len(index).max(1).div_ceil(columns)).sum()
-            } else {
-                line
-            };
+        if self.folded_lines.is_empty() && !self.config.word_wrap {
+            return line;
         }
+        self.visual_row_prefix
+            .get(line)
+            .copied()
+            .unwrap_or_else(|| self.visual_row_count_fallback(line))
+    }
+
+    /// Returns the document line occupying a visual row.
+    ///
+    /// The reverse of [`Self::line_to_visual_row`]. With the prefix table present
+    /// this is a binary search; the fold-free, wrap-free case is the identity.
+    pub(crate) fn visual_row_to_line(&self, row: usize) -> usize {
+        let last = self.line_count().saturating_sub(1);
+        if self.folded_lines.is_empty() && !self.config.word_wrap {
+            return row.min(last);
+        }
+        if self.visual_row_prefix.len() == self.line_count() + 1 {
+            // `partition_point` finds the first line whose start row is strictly
+            // past `row`; the line before it owns the row. The table is monotone
+            // because every visible line contributes at least one row.
+            let index = self.visual_row_prefix.partition_point(|start| *start <= row);
+            return index.saturating_sub(1).min(last);
+        }
+        self.visual_row_to_line_fallback(row)
+    }
+
+    /// The uncached forward lookup, used only when the prefix table is absent.
+    ///
+    /// This is the pre-`B4` implementation kept as a correctness backstop: a caller
+    /// that reads a coordinate before any refresh must still get a right answer,
+    /// even at the old cost.
+    fn visual_row_count_fallback(&self, line: usize) -> usize {
         let mut row = 0usize;
         for document_line in self.visible_document_lines() {
             if document_line >= line {
@@ -2597,35 +3054,57 @@ impl CodeEditor {
         row
     }
 
-    pub(crate) fn visual_row_to_line(&self, row: usize) -> usize {
-        if self.folded_lines.is_empty() {
-            if !self.config.word_wrap {
-                return row.min(self.line_count().saturating_sub(1));
-            }
-            // Wrapped: the answer is below the fold-free case's cost, but it is
-            // still a forward walk. It is bounded by `row`, which comes from the
-            // viewport, so a scroll never walks the whole document.
-            let columns = self.text_columns().max(1);
-            let mut cursor = 0usize;
-            for line in 0..self.line_count() {
-                let segments = self.line_len(line).max(1).div_ceil(columns);
-                if row < cursor + segments {
-                    return line;
-                }
-                cursor += segments;
-            }
-            return self.line_count().saturating_sub(1);
-        }
-        let visible = self.visible_document_lines();
+    /// The uncached reverse lookup, used only when the prefix table is absent.
+    fn visual_row_to_line_fallback(&self, row: usize) -> usize {
         let mut cursor = 0usize;
-        for line in &visible {
-            let segments = self.wrap_segments(*line);
+        let mut last = 0usize;
+        for document_line in self.visible_document_lines() {
+            last = document_line;
+            let segments = self.wrap_segments(document_line);
             if row < cursor + segments {
-                return *line;
+                return document_line;
             }
             cursor += segments;
         }
-        visible.last().copied().unwrap_or(0)
+        last
+    }
+
+    /// Rebuilds [`Self::visual_row_prefix`] for the current document shape.
+    ///
+    /// Called from the same places that invalidate the other derived caches —
+    /// edits, tab switches, fold changes and the first cell measurement — so the
+    /// table cannot describe a document that no longer exists. The fold-free,
+    /// wrap-free document deliberately skips the build: its row and line numbers
+    /// are equal, and paying O(document) for a table that would only restate that
+    /// would put the cost straight back on the hot path.
+    pub(crate) fn rebuild_visual_row_prefix(&mut self) {
+        self.visual_row_prefix.clear();
+        if self.folded_lines.is_empty() && !self.config.word_wrap {
+            return;
+        }
+        let count = self.line_count();
+        let columns = self.text_columns().max(1);
+        let folded = !self.folded_lines.is_empty();
+        let mut prefix = Vec::with_capacity(count + 1);
+        let mut row = 0usize;
+        {
+            let model = self.model.borrow();
+            for line in 0..count {
+                prefix.push(row);
+                if folded && model.is_hidden(line) {
+                    continue;
+                }
+                row += if self.config.word_wrap {
+                    self.line_len(line).max(1).div_ceil(columns).max(1)
+                } else {
+                    1
+                };
+            }
+        }
+        // The trailing entry is the total row count, so a binary search that runs
+        // off the end still has a value to stop on.
+        prefix.push(row);
+        self.visual_row_prefix = prefix;
     }
 
     /// Returns the summed character count of every line.
@@ -3317,6 +3796,40 @@ impl CodeEditor {
 
     // ── Clipboard ───────────────────────────────────────────────────────────
 
+    /// Tells the editor whether the clipboard currently holds text.
+    ///
+    /// A host that subscribes to the platform's clipboard-change notification calls
+    /// this, after which opening the context menu never touches the OS clipboard.
+    /// Without the call the editor probes once and caches the answer, so the menu
+    /// is still correct on the first open — it just pays one platform read.
+    pub fn set_clipboard_has_text(&mut self, has_text: bool) {
+        self.clipboard_has_text = Some(has_text);
+    }
+
+    /// Forgets the cached clipboard state, so the next menu re-probes it.
+    ///
+    /// For a host that cannot be notified of clipboard changes: call this when the
+    /// application loses and regains focus, which is the point at which another
+    /// program may have replaced the clipboard.
+    pub fn invalidate_clipboard_has_text(&mut self) {
+        self.clipboard_has_text = None;
+    }
+
+    /// Returns whether the clipboard holds text, probing the platform once.
+    ///
+    /// A host-injected answer (or one this widget recorded itself) wins; only an
+    /// unknown state reads the platform. The read is cached, because the answer
+    /// cannot change without either this widget or the host observing it — the menu
+    /// is the wrong place to discover it and the wrong place to pay for it.
+    pub fn clipboard_has_text(&mut self) -> bool {
+        if let Some(known) = self.clipboard_has_text {
+            return known;
+        }
+        let probe = !crate::clipboard::ClipboardManager::text().is_empty();
+        self.clipboard_has_text = Some(probe);
+        probe
+    }
+
     /// Copies the selection to the system clipboard.
     pub fn copy(&mut self) -> bool {
         let Some(selected) = self.selected_text() else { return false };
@@ -3324,6 +3837,8 @@ impl CodeEditor {
             return false;
         }
         crate::clipboard::ClipboardManager::set_text(selected);
+        // We just wrote text, so the cached answer is known without reading it back.
+        self.clipboard_has_text = Some(true);
         true
     }
 
@@ -3342,6 +3857,8 @@ impl CodeEditor {
             return false;
         }
         let text = crate::clipboard::ClipboardManager::text();
+        // Record what the read saw, so the menu does not have to read it again.
+        self.clipboard_has_text = Some(!text.is_empty());
         if text.is_empty() {
             return false;
         }
@@ -3450,35 +3967,50 @@ impl CodeEditor {
     }
 
     /// Opens the context menu at a widget-local position.
+    ///
+    /// The `paste` row's state comes from [`Self::clipboard_has_text`], which is
+    /// cached rather than read here. Opening a menu is a pure UI action and must not
+    /// touch the machine-global OS clipboard, whose handle is exclusive (it can
+    /// block, and it reports empty while another process holds it — which would
+    /// disable `paste` for a reason the user cannot see).
     pub fn open_context_menu(&mut self, position: Point) {
         let has_selection = self.has_selection();
-        let clipboard_has_text = !crate::clipboard::ClipboardManager::text().is_empty();
+        let clipboard_has_text = self.clipboard_has_text();
         let read_only = !self.is_editable();
+        // A selection that overlaps a locked range cannot be mutated, so the
+        // menu reports the refusal before the command runs. Without this every
+        // actionable row would look enabled and then silently do nothing.
+        let (selection_start, selection_end) = self.cursor.bounds();
+        let selection_locked =
+            has_selection && !self.is_range_editable(selection_start, selection_end);
+        let caret_locked = !self.is_position_editable(self.cursor.head);
+        let mutation_blocked = read_only || selection_locked || caret_locked;
+        let selection_mutation_blocked = read_only || selection_locked;
         self.context_menu.items = vec![
             MenuItem::new("cut", "Cut")
                 .with_shortcut("Cmd+X")
-                .disabled(!has_selection || read_only),
+                .disabled(!has_selection || selection_mutation_blocked),
             MenuItem::new("copy", "Copy").with_shortcut("Cmd+C").disabled(!has_selection),
             MenuItem::new("paste", "Paste")
                 .with_shortcut("Cmd+V")
-                .disabled(read_only || !clipboard_has_text),
+                .disabled(mutation_blocked || !clipboard_has_text),
             MenuItem::new("select_all", "Select All").with_shortcut("Cmd+A"),
             MenuItem::new("find", "Find").with_shortcut("Cmd+F"),
             MenuItem::new("replace", "Replace").with_shortcut("Cmd+H"),
             MenuItem::new("toggle_comment", "Toggle Comment")
                 .with_shortcut("Cmd+/")
-                .disabled(read_only),
+                .disabled(mutation_blocked),
             MenuItem::new("fold", "Fold Block").with_shortcut("Cmd+["),
             MenuItem::new("unfold_all", "Unfold All"),
-            MenuItem::new("indent", "Indent").with_shortcut("Cmd+I").disabled(read_only),
-            MenuItem::new("outdent", "Outdent").with_shortcut("Cmd+[").disabled(read_only),
+            MenuItem::new("indent", "Indent").with_shortcut("Cmd+I").disabled(mutation_blocked),
+            MenuItem::new("outdent", "Outdent").with_shortcut("Cmd+[").disabled(mutation_blocked),
             MenuItem::new("duplicate", "Duplicate Line")
                 .with_shortcut("Cmd+Shift+D")
-                .disabled(read_only),
+                .disabled(mutation_blocked),
             MenuItem::new("delete_line", "Delete Line")
                 .with_shortcut("Cmd+Shift+K")
-                .disabled(read_only),
-            MenuItem::new("sort_lines", "Sort Lines").disabled(read_only),
+                .disabled(mutation_blocked),
+            MenuItem::new("sort_lines", "Sort Lines").disabled(selection_mutation_blocked),
             MenuItem::new("select_occurrences", "Select All Occurrences")
                 .with_shortcut("Cmd+Shift+L"),
             MenuItem::new("add_cursor_below", "Add Cursor Below").with_shortcut("Alt+Down"),
@@ -3588,10 +4120,22 @@ impl CodeEditor {
     // ── Tokenization ────────────────────────────────────────────────────────
 
     /// Runs one line through the active highlighter, returning spans and exit state.
+    ///
+    /// Resolution order is the whole point of the seam: a highlighter registered
+    /// for the buffer's language wins, then the editor-wide override, then the
+    /// built-in lexer for that language. The language is resolved per call rather
+    /// than cached, because a buffer switch changes it and the cache invalidation
+    /// that follows (`invalidate_line_states`) is what makes the switch visible.
     fn highlight_with_state(&self, line: &str, state: LineState) -> (Vec<TokenSpan>, LineState) {
+        let language = self.active_language();
+        if let Some((_, highlighter)) =
+            self.language_highlighters.iter().find(|(registered, _)| *registered == language)
+        {
+            return highlighter.highlight_line(line, state);
+        }
         match &self.highlighter {
             Some(highlighter) => highlighter.highlight_line(line, state),
-            None => BuiltinHighlighter::new(self.config.language).highlight_line(line, state),
+            None => BuiltinHighlighter::new(language).highlight_line(line, state),
         }
     }
 
@@ -3973,6 +4517,40 @@ pub(crate) fn decimal_digits(value: usize) -> usize {
         digits += 1;
     }
     digits
+}
+
+/// Shifts a line index by a signed delta, saturating at zero.
+///
+/// Used when a locked range has to follow an edit that inserted or removed lines
+/// above it. Saturating rather than wrapping matters: a removal larger than the
+/// index must land the span at line 0, not at `usize::MAX`.
+fn shift_index(index: usize, delta: isize) -> usize {
+    if delta >= 0 {
+        index.saturating_add(delta as usize)
+    } else {
+        index.saturating_sub(delta.unsigned_abs())
+    }
+}
+
+/// Converts a byte offset in `text` into a [`TextPosition`].
+///
+/// The offset is clamped to a character boundary and to the text length, so a
+/// caller may pass the end of an insertion (`start + removed + inserted`) without
+/// checking whether it still lands inside the pre-edit text. Columns are counted
+/// in characters, matching every other position in the editor.
+fn position_in_text(text: &str, offset: usize) -> TextPosition {
+    let offset = floor_char_boundary(text, offset.min(text.len()));
+    let mut line = 0usize;
+    let mut column = 0usize;
+    for ch in text[..offset].chars() {
+        if ch == '\n' {
+            line += 1;
+            column = 0;
+        } else {
+            column += 1;
+        }
+    }
+    TextPosition::new(line, column)
 }
 
 /// Returns the character length of `text`.

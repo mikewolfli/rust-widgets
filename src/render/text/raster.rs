@@ -609,7 +609,22 @@ fn outline_in_face(
     if cell.is_empty() || points.len() < MAX_POINTS || contours.len() < MAX_CONTOURS {
         return None;
     }
-    let face = ttf_parser::Face::parse(face_bytes.bytes, 0).ok()?;
+    // The cached parse: the SVG backend emits one outline per character per frame, so this is on the
+    // same per-glyph path as `VectorSource::paint`.
+    super::font_assets::with_parsed_face(face_bytes, |face| {
+        outline_in_parsed_face(ch, cell, face, points, contours)
+    })
+    .flatten()
+}
+
+/// Emits `ch`'s flattened outline using an already-parsed `face`.
+fn outline_in_parsed_face(
+    ch: char,
+    cell: Cell,
+    face: &ttf_parser::Face<'_>,
+    points: &mut [OutlinePoint],
+    contours: &mut [(usize, usize)],
+) -> Option<usize> {
     let glyph = face.glyph_index(ch)?;
     let units_per_em = face.units_per_em() as f32;
     if units_per_em <= 0.0 {
@@ -700,7 +715,29 @@ impl GlyphSource for VectorSource {
             return None;
         }
         let face_bytes = self.face_for(ch)?;
-        let face = ttf_parser::Face::parse(face_bytes.bytes, 0).ok()?;
+        // Parsed through the cache rather than here: this is the per-glyph, per-frame path, and
+        // re-reading the table directory for every character of every label was the single largest
+        // cost in a window repaint (measured at 25.6ms of a 26.5ms frame on `demo/control`).
+        // The parse borrows the face's own `'static` bytes, so the reuse copies no font data.
+        super::font_assets::with_parsed_face(face_bytes, |face| {
+            Self::paint_in_face(ch, cell, out, face_bytes, face)
+        })
+        .flatten()
+    }
+}
+
+impl VectorSource {
+    /// Rasterises `ch` using an already-parsed `face`.
+    ///
+    /// Split out of [`GlyphSource::paint`] so the parse can be taken from the cache and the borrow
+    /// released as soon as the glyph is drawn, rather than being held for the caller's convenience.
+    fn paint_in_face(
+        ch: char,
+        cell: Cell,
+        out: &mut [u8],
+        face_bytes: super::font_assets::FaceBytes,
+        face: &ttf_parser::Face<'_>,
+    ) -> Option<Painted> {
         let glyph = face.glyph_index(ch)?;
 
         // The em the caller wants: the cell's height is the line box, and the glyph is scaled to fit
