@@ -3,8 +3,8 @@
 
 //! Color dialog widget.
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
 use crate::event::key_codes;
+use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::tr;

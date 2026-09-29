@@ -235,8 +235,10 @@ mod tests {
     #[test]
     fn gesture_engine_process_none_for_unrelated_event() {
         let mut engine = GestureEngine::new();
-        let result =
-            engine.process(&Event::MousePress { pos: crate::core::Point::new(0, 0), button: 0, modifiers: 0 }, 0);
+        let result = engine.process(
+            &Event::MousePress { pos: crate::core::Point::new(0, 0), button: 0, modifiers: 0 },
+            0,
+        );
         assert!(result.is_none());
     }
 

@@ -382,8 +382,16 @@ mod tests {
         });
 
         area.set_margin_color(Color::rgb(1, 2, 3));
-        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "the inset bands are filled with this colour");
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the inset bands are filled with this colour"
+        );
         area.set_margin_color(Color::rgb(1, 2, 3));
-        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "the same colour is not a change");
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the same colour is not a change"
+        );
     }
 }

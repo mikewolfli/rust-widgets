@@ -434,7 +434,7 @@ mod tests {
         ch.handle_event(&Event::MousePress {
             pos: Point::new(swatch_x, SWATCH_PADDING as i32 / 2),
             button: 1,
-            modifiers: 0
+            modifiers: 0,
         });
 
         assert_eq!(*selected.lock().unwrap(), Color::GREEN);

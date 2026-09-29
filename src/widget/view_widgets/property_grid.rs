@@ -751,7 +751,11 @@ mod tests {
         let mut pg = PropertyGrid::new(Rect::new(0, 0, 300, 200));
         pg.add_property("A", "1", true);
         let top = pg.content_rect().y + FIRST_ROW_TOP as i32;
-        pg.handle_event(&Event::MousePress { pos: Point::new(10, top - 1), button: 1, modifiers: 0 });
+        pg.handle_event(&Event::MousePress {
+            pos: Point::new(10, top - 1),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(pg.selected_index(), None, "the separator line is not a row");
     }
 
@@ -767,7 +771,11 @@ mod tests {
         pg.add_property("B", "2", true);
 
         // Select row 1 first, so "deselect" is observable.
-        pg.handle_event(&Event::MousePress { pos: Point::new(10, 50 + 30), button: 1, modifiers: 0 });
+        pg.handle_event(&Event::MousePress {
+            pos: Point::new(10, 50 + 30),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(pg.selected_index(), Some(0));
 
         // A click above the widget's top edge is outside it.
@@ -829,7 +837,7 @@ mod tests {
         inside.handle_event(&Event::MousePress {
             pos: Point::new(10, y_inside_row_zero(&inside)),
             button: 1,
-            modifiers: 0
+            modifiers: 0,
         });
         assert_eq!(inside.selected_index(), Some(0), "the baseline press must select row 0");
 

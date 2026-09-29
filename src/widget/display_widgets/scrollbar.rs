@@ -1531,6 +1531,9 @@ mod tests {
 
         fired.store(false, std::sync::atomic::Ordering::SeqCst);
         sc.set_orientation(other);
-        assert!(!fired.load(std::sync::atomic::Ordering::SeqCst), "setting the same value must not repaint");
+        assert!(
+            !fired.load(std::sync::atomic::Ordering::SeqCst),
+            "setting the same value must not repaint"
+        );
     }
 }

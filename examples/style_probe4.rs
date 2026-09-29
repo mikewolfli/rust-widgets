@@ -16,13 +16,23 @@ fn main() {
     cb.set_current_index(0);
     let tb = win.new_tool_bar(0, 0, 760, 32);
     rust_widgets::widget::runtime::with_widget(tb.raw_id(), |w| {
-        println!("toolbar bg = {:?} border = {:?}", w.style().background_color, w.style().border_color);
+        println!(
+            "toolbar bg = {:?} border = {:?}",
+            w.style().background_color,
+            w.style().border_color
+        );
     });
     // The platform-level creator for a toolbar, which is what the window handle calls.
-    println!("toolbar factory name = {:?}",
-        rust_widgets::widget::capability::factory_name_for_kind(rust_widgets::widget::WidgetKind::ToolBar));
-    println!("toolbar theme style  = {:?}",
-        rust_widgets::theme::resolved_theme_style("tool_bar").map(|s| s.background_color));
+    println!(
+        "toolbar factory name = {:?}",
+        rust_widgets::widget::capability::factory_name_for_kind(
+            rust_widgets::widget::WidgetKind::ToolBar
+        )
+    );
+    println!(
+        "toolbar theme style  = {:?}",
+        rust_widgets::theme::resolved_theme_style("tool_bar").map(|s| s.background_color)
+    );
 
     rust_widgets::widget::runtime::with_widget(cb.raw_id(), |w| {
         println!("combo bg = {:?}", w.style().background_color);

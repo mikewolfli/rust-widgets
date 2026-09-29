@@ -612,8 +612,16 @@ mod tests {
         });
 
         scanner.set_scan_interval(500);
-        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "the sweep is placed by this interval");
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the sweep is placed by this interval"
+        );
         scanner.set_scan_interval(500);
-        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "the same interval is not a change");
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the same interval is not a change"
+        );
     }
 }

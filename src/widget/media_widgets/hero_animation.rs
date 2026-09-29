@@ -250,7 +250,11 @@ impl Draw for HeroAnimation {
         // disabled state steps the resolved fill toward its own contrast colour rather than
         // toward a fixed white, which on a dark surface made the disabled state *more* prominent
         // than the enabled one.
-        let bg = if !is_enabled { self.base.disabled_surface_near(base_bg, window_fill) } else { base_bg };
+        let bg = if !is_enabled {
+            self.base.disabled_surface_near(base_bg, window_fill)
+        } else {
+            base_bg
+        };
         context.face(
             rect,
             bg,

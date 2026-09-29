@@ -1095,10 +1095,7 @@ mod tests {
         assert!(rs.is_dragging(), "a press on a handle must arm the drag");
 
         let dragged = crate::widget::svg::render_to_svg(&mut rs);
-        assert_ne!(
-            resting, dragged,
-            "a held handle must not paint like a resting one"
-        );
+        assert_ne!(resting, dragged, "a held handle must not paint like a resting one");
 
         // Releasing returns the handle to its resting size, so the emphasis is not latched.
         rs.handle_event(&Event::MouseRelease { pos: lower_centre, button: 1 });

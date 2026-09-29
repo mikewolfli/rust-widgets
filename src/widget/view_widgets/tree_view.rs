@@ -577,7 +577,11 @@ mod tests {
         // first node — the assertion that actually carries the defect (see the doc comment).
         let mut fresh = TreeView::new(Rect::new(0, 0, 120, 100));
         fresh.set_model(Arc::new(StaticTreeModel));
-        fresh.handle_event(&Event::MousePress { pos: crate::core::Point::new(4, 0), button: 1, modifiers: 0 });
+        fresh.handle_event(&Event::MousePress {
+            pos: crate::core::Point::new(4, 0),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(fresh.selected_node(), None, "the inset margin is not a row");
     }
 

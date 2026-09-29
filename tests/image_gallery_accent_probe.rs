@@ -12,7 +12,6 @@
 // rewritten to avoid APIs those profiles do not have.
 #![cfg(all(full_widgets, feature = "desktop"))]
 
-
 use rust_widgets::core::{Color, Rect};
 use rust_widgets::theme::AppearanceMode;
 use rust_widgets::widget::capability::coercion::widget_as_mut;

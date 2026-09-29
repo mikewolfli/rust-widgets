@@ -164,14 +164,8 @@ fn objc2_surface_contract_matches_the_cocoa_backend() {
         backend.resize_surface(window, crate::core::Rect::new(0, 0, 640, 480)),
         "a mounted surface must be resizable"
     );
-    assert!(
-        backend.invalidate_surface(window),
-        "a mounted surface must be repaintable"
-    );
-    assert!(
-        backend.unmount_surface(window),
-        "a mounted surface must be releasable"
-    );
+    assert!(backend.invalidate_surface(window), "a mounted surface must be repaintable");
+    assert!(backend.unmount_surface(window), "a mounted surface must be releasable");
 
     // Unmounting twice reports absence rather than claiming success, so a caller can
     // tell a real release from a no-op.

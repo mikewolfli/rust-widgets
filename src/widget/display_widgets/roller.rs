@@ -596,7 +596,7 @@ mod tests {
         roller.handle_event(&Event::MousePress {
             pos: Point::new(band.x + 10, center_y - item_h),
             button: 1,
-            modifiers: 0
+            modifiers: 0,
         });
         // Should have moved one index up (if available).
         assert_eq!(roller.selected_index(), 0); // already at 0, can't go up
@@ -606,7 +606,7 @@ mod tests {
         roller.handle_event(&Event::MousePress {
             pos: Point::new(band.x + 10, center_y + item_h),
             button: 1,
-            modifiers: 0
+            modifiers: 0,
         });
         assert_eq!(roller.selected_index(), 3);
     }
@@ -670,12 +670,16 @@ mod tests {
         roller.set_selected_index(1);
         let band = roller.wheel_band();
         assert!(band.y > 0, "the wheel is centred, so there is empty space above it");
-        roller.handle_event(&Event::MousePress { pos: Point::new(100, band.y - 10), button: 1, modifiers: 0 });
+        roller.handle_event(&Event::MousePress {
+            pos: Point::new(100, band.y - 10),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(roller.selected_index(), 1, "a press above the wheel must not select");
         roller.handle_event(&Event::MousePress {
             pos: Point::new(100, band.y + band.height as i32 + 10),
             button: 1,
-            modifiers: 0
+            modifiers: 0,
         });
         assert_eq!(roller.selected_index(), 1, "a press below the wheel must not select");
     }

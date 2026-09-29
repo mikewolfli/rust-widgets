@@ -510,8 +510,16 @@ mod tests {
         });
 
         preview.set_camera_id(4);
-        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "the caption names the device, so it is painted");
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the caption names the device, so it is painted"
+        );
         preview.set_camera_id(4);
-        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "the same id is not a change");
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the same id is not a change"
+        );
     }
 }

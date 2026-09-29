@@ -1758,7 +1758,7 @@ mod tests {
         cb.handle_event(&Event::MousePress {
             pos: crate::core::Point::new(row.x + 5, row.y + row.height as i32 / 2),
             button: 1,
-            modifiers: 0
+            modifiers: 0,
         });
         assert_eq!(cb.current_index(), Some(1), "the row under the press is taken");
         assert_eq!(cb.current_text(), "item 1");

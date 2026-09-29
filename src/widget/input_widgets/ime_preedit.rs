@@ -8,8 +8,8 @@
 //! similar to how operating systems render inline IME composition text.
 
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect};
-use crate::event::{Event, EventHandler};
 use crate::event::key_codes;
+use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::widget::capability::coercion::{expect_string, expect_usize};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};

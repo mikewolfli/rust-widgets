@@ -1739,10 +1739,22 @@ mod tests {
         });
 
         widget.set_frame_rate(48.0);
-        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "the readout is timestamped from this");
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the readout is timestamped from this"
+        );
         widget.set_frame_rate(48.0);
-        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "the same rate is not a change");
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the same rate is not a change"
+        );
         widget.set_frame_rate(f32::NAN);
-        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "a non-finite rate is refused, so nothing changed");
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a non-finite rate is refused, so nothing changed"
+        );
     }
 }

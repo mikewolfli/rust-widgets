@@ -377,8 +377,11 @@ impl Draw for AnimatedImage {
             // resolved fill toward its own contrast colour rather than toward a fixed white,
             // which on a dark surface made the disabled state *more* prominent than the enabled
             // one (1.13:1 against the window enabled, 3.63:1 disabled).
-            let bg =
-                if !is_enabled { self.base.disabled_surface_near(base_bg, window_fill) } else { base_bg };
+            let bg = if !is_enabled {
+                self.base.disabled_surface_near(base_bg, window_fill)
+            } else {
+                base_bg
+            };
             context.face(
                 rect,
                 bg,

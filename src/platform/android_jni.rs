@@ -118,7 +118,11 @@ impl log::Log for LogcatLogger {
 // breakage a host-only build never sees. `tools/check_android_cross.sh` now compiles
 // both targets so it cannot come back.
 extern "C" {
-    fn __android_log_write(prio: i32, tag: *const core::ffi::c_char, text: *const core::ffi::c_char) -> i32;
+    fn __android_log_write(
+        prio: i32,
+        tag: *const core::ffi::c_char,
+        text: *const core::ffi::c_char,
+    ) -> i32;
 }
 
 /// Safe wrapper around `__android_log_write`.

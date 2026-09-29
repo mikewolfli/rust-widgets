@@ -612,19 +612,35 @@ mod tests {
     fn picker_mouse_press_changes_date() {
         let mut picker = make_picker();
         // Click upper half of year column -> increment year
-        picker.handle_event(&Event::MousePress { pos: Point::new(20, 30), button: 1, modifiers: 0 });
+        picker.handle_event(&Event::MousePress {
+            pos: Point::new(20, 30),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(picker.selected_date().0, 2026);
 
         // Click lower half of year column -> decrement year
-        picker.handle_event(&Event::MousePress { pos: Point::new(20, 150), button: 1, modifiers: 0 });
+        picker.handle_event(&Event::MousePress {
+            pos: Point::new(20, 150),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(picker.selected_date().0, 2025);
 
         // Click upper half of month column -> increment month
-        picker.handle_event(&Event::MousePress { pos: Point::new(100, 30), button: 1, modifiers: 0 });
+        picker.handle_event(&Event::MousePress {
+            pos: Point::new(100, 30),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(picker.selected_date().1, 2);
 
         // Click upper half of day column -> increment day
-        picker.handle_event(&Event::MousePress { pos: Point::new(180, 30), button: 1, modifiers: 0 });
+        picker.handle_event(&Event::MousePress {
+            pos: Point::new(180, 30),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(picker.selected_date().2, 2);
     }
 
@@ -644,7 +660,11 @@ mod tests {
         let mut picker = make_picker();
         picker.set_enabled(false);
 
-        picker.handle_event(&Event::MousePress { pos: Point::new(20, 30), button: 1, modifiers: 0 });
+        picker.handle_event(&Event::MousePress {
+            pos: Point::new(20, 30),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(picker.selected_date().0, 2025);
     }
 

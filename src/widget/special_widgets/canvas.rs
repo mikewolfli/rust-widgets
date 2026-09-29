@@ -408,7 +408,11 @@ mod tests {
         let mut canvas = Canvas::new(Rect::new(0, 0, 200, 100));
         canvas.set_enabled(false);
         // Events should be ignored when disabled
-        canvas.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
+        canvas.handle_event(&Event::MousePress {
+            pos: Point::new(10, 10),
+            button: 1,
+            modifiers: 0,
+        });
         // Signal should NOT have been emitted (disabled)
         // We just verify no panic and state unchanged
         assert_eq!(canvas.last_mouse_pos(), Point::new(0, 0));

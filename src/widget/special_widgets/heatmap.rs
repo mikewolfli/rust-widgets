@@ -1173,7 +1173,7 @@ mod tests {
         heatmap.handle_event(&Event::MousePress {
             pos: Point::new(grid.x - 20, grid.y - 20),
             button: 1,
-            modifiers: 0
+            modifiers: 0,
         });
         assert_eq!(seen.load(Ordering::SeqCst), -1, "a click outside the grid emits nothing");
     }
@@ -1193,7 +1193,7 @@ mod tests {
         heatmap.handle_event(&Event::MousePress {
             pos: Point::new(grid.x + 3, grid.y + 3),
             button: 1,
-            modifiers: 0
+            modifiers: 0,
         });
         assert!(!fired.load(Ordering::SeqCst), "a disabled heat map must not emit");
     }

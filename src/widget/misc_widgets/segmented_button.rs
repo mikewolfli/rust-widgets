@@ -633,7 +633,11 @@ mod tests {
         let segment_width = 300 / 3;
         btn.handle_event(&Event::MousePress { pos: Point::new(10, 18), button: 1, modifiers: 0 });
         assert_eq!(btn.selected_indices(), &[0]);
-        btn.handle_event(&Event::MousePress { pos: Point::new(segment_width + 10, 18), button: 1, modifiers: 0 });
+        btn.handle_event(&Event::MousePress {
+            pos: Point::new(segment_width + 10, 18),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(
             btn.selected_indices(),
             &[0, 1],

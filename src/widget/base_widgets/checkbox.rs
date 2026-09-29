@@ -4,8 +4,8 @@
 //! Checkbox widget implementation.
 use crate::compat::{format, String, ToString};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
 use crate::event::key_codes;
+use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
 use crate::widget::capability::coercion::{

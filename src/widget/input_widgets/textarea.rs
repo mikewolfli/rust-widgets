@@ -1900,7 +1900,6 @@ mod tests {
 
     // ─── Selection: the pointer ───
 
-
     /// The x offset, from the text origin, at which the `n`-th character of `line` begins.
     ///
     /// Computed through the renderer's own measurement rather than `n * 8`: these tests exist to show
@@ -2196,5 +2195,4 @@ mod tests {
         ta.select_with_modifiers(target, crate::shortcut::Modifiers::NONE);
         assert_eq!(ta.cursor_pos(), caret, "the caret is where it was put");
     }
-
 }

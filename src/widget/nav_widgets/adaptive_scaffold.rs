@@ -575,7 +575,11 @@ mod tests {
         // Bottom nav is at y 812-56 = 756 to 812
         // Tab width = 375/3 = 125 per tab
         // Click on tab 2 (x in [250..374])
-        scaffold.handle_event(&Event::MousePress { pos: Point::new(300, 780), button: 1, modifiers: 0 });
+        scaffold.handle_event(&Event::MousePress {
+            pos: Point::new(300, 780),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(scaffold.selected_nav_index(), 2);
     }
 
@@ -589,12 +593,20 @@ mod tests {
         let mut scaffold = make_scaffold();
         scaffold.set_enabled(false);
 
-        scaffold.handle_event(&Event::MousePress { pos: Point::new(300, 780), button: 1, modifiers: 0 });
+        scaffold.handle_event(&Event::MousePress {
+            pos: Point::new(300, 780),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(scaffold.selected_nav_index(), 0, "a disabled scaffold must keep its selection");
 
         // Re-enabling restores navigation, so the gate suspends rather than locks.
         scaffold.set_enabled(true);
-        scaffold.handle_event(&Event::MousePress { pos: Point::new(300, 780), button: 1, modifiers: 0 });
+        scaffold.handle_event(&Event::MousePress {
+            pos: Point::new(300, 780),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(scaffold.selected_nav_index(), 2, "re-enabling must restore navigation");
     }
 

@@ -1473,7 +1473,11 @@ mod tests {
         assert_eq!(area.active_sub_window(), Some(widget_id_1()));
 
         // Click on second sub-window area
-        area.handle_event(&Event::MousePress { pos: Point::new(150, 150), button: 1, modifiers: 0 });
+        area.handle_event(&Event::MousePress {
+            pos: Point::new(150, 150),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(area.active_sub_window(), Some(widget_id_2()));
 
         // Click back on first sub-window
@@ -1489,7 +1493,11 @@ mod tests {
         assert_eq!(area.active_sub_window(), Some(widget_id_1()));
 
         // Click outside all sub-windows
-        area.handle_event(&Event::MousePress { pos: Point::new(500, 300), button: 1, modifiers: 0 });
+        area.handle_event(&Event::MousePress {
+            pos: Point::new(500, 300),
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(area.active_sub_window(), Some(widget_id_1()), "should not change");
     }
 

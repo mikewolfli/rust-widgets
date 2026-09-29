@@ -1029,10 +1029,22 @@ mod tests {
         });
 
         combo.set_max_visible_items(5);
-        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "the list's height is derived from this");
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the list's height is derived from this"
+        );
         combo.set_max_visible_items(5);
-        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "the same count is not a change");
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the same count is not a change"
+        );
         combo.set_max_visible_items(0);
-        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 2, "zero floors to one, which is a change");
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "zero floors to one, which is a change"
+        );
     }
 }

@@ -3,8 +3,8 @@
 
 //! Progress dialog widget.
 use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
-use crate::event::{Event, EventHandler};
 use crate::event::key_codes;
+use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;

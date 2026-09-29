@@ -199,7 +199,8 @@ fn freeform_shape_clicked_signal_emits_on_click() {
     });
 
     // Press inside shape
-    let press = crate::event::Event::MousePress { pos: Point::new(100, 100), button: 1, modifiers: 0 };
+    let press =
+        crate::event::Event::MousePress { pos: Point::new(100, 100), button: 1, modifiers: 0 };
     shape.handle_event(&press);
 
     // Release inside shape
@@ -222,7 +223,8 @@ fn freeform_shape_click_outside_no_signal() {
     });
 
     // Press outside
-    let press = crate::event::Event::MousePress { pos: Point::new(999, 999), button: 1, modifiers: 0 };
+    let press =
+        crate::event::Event::MousePress { pos: Point::new(999, 999), button: 1, modifiers: 0 };
     shape.handle_event(&press);
 
     let release = crate::event::Event::MouseRelease { pos: Point::new(999, 999), button: 1 };
@@ -267,7 +269,8 @@ fn freeform_shape_pressed_signal_emits_on_press() {
     });
 
     // Press inside
-    let press = crate::event::Event::MousePress { pos: Point::new(100, 100), button: 1, modifiers: 0 };
+    let press =
+        crate::event::Event::MousePress { pos: Point::new(100, 100), button: 1, modifiers: 0 };
     shape.handle_event(&press);
 
     // Release
@@ -291,7 +294,8 @@ fn freeform_shape_disabled_ignores_events() {
         }
     });
 
-    let press = crate::event::Event::MousePress { pos: Point::new(100, 100), button: 1, modifiers: 0 };
+    let press =
+        crate::event::Event::MousePress { pos: Point::new(100, 100), button: 1, modifiers: 0 };
     shape.handle_event(&press);
 
     let release = crate::event::Event::MouseRelease { pos: Point::new(100, 100), button: 1 };

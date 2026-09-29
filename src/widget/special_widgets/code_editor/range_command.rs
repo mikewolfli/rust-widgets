@@ -131,8 +131,13 @@ mod tests {
         inserted: &str,
     ) -> (TextRangeCommand, Rc<RefCell<String>>) {
         let target = Rc::new(RefCell::new(text.to_string()));
-        let command =
-            TextRangeCommand::new(target.clone(), start, removed.to_string(), inserted.to_string(), "test");
+        let command = TextRangeCommand::new(
+            target.clone(),
+            start,
+            removed.to_string(),
+            inserted.to_string(),
+            "test",
+        );
         (command, target)
     }
 

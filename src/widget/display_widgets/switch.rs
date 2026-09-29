@@ -11,9 +11,9 @@ use crate::core::{Color, Rect};
 // Gated exactly like the test module that uses it: `#[cfg(test)]` alone is true in a build where
 // `full_widgets` is off, and the import would then be unused (a warning, which this crate's
 // profile checks treat as a defect).
+use crate::event::key_codes;
 #[cfg(all(test, full_widgets))]
 use crate::event::FocusReason;
-use crate::event::key_codes;
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -858,7 +858,11 @@ mod tests {
     #[test]
     fn switch_press_outside_then_release_inside_does_not_toggle() {
         let mut sw = Switch::new(Rect::new(0, 0, 60, 30));
-        sw.handle_event(&Event::MousePress { pos: Point::new(5000, 5000), button: 1, modifiers: 0 });
+        sw.handle_event(&Event::MousePress {
+            pos: Point::new(5000, 5000),
+            button: 1,
+            modifiers: 0,
+        });
         sw.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
         assert!(!sw.is_checked(), "a drag that began outside must not commit");
     }

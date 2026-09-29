@@ -799,7 +799,11 @@ mod tests {
         picker.set_value(50);
         let before = picker.value();
 
-        picker.handle_event(&Event::MousePress { pos: Point::new(30, 100), button: 1, modifiers: 0 });
+        picker.handle_event(&Event::MousePress {
+            pos: Point::new(30, 100),
+            button: 1,
+            modifiers: 0,
+        });
         // The pointer leaves upward without a release being delivered.
         picker.handle_event(&Event::MouseLeave { pos: Point::new(30, 5) });
 

@@ -1660,11 +1660,23 @@ mod tests {
         });
 
         menu.set_hover_color(Color::rgb(10, 20, 30));
-        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "a new hover colour owes a frame");
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a new hover colour owes a frame"
+        );
         menu.set_hover_color(Color::rgb(10, 20, 30));
-        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "and re-setting the same value does not");
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "and re-setting the same value does not"
+        );
 
         menu.set_text_color(Color::rgb(40, 50, 60));
-        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 2, "a new text colour owes a frame");
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "a new text colour owes a frame"
+        );
     }
 }

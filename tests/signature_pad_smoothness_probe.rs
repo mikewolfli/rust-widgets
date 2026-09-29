@@ -25,7 +25,6 @@
 // rewritten to avoid APIs those profiles do not have.
 #![cfg(all(full_widgets, feature = "desktop"))]
 
-
 use rust_widgets::core::{Color, Point, Rect};
 use rust_widgets::event::{Event, EventHandler};
 use rust_widgets::widget::draw_bridge::draw_of;

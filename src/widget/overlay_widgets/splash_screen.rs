@@ -662,7 +662,7 @@ mod tests {
         splash.handle_event(&Event::MousePress {
             pos: Point::new(skip.x + skip.width as i32 / 2, skip.y + skip.height as i32 / 2),
             button: 1,
-            modifiers: 0
+            modifiers: 0,
         });
         assert_eq!(seen.lock().expect("lock").as_slice(), ["Booting"]);
 

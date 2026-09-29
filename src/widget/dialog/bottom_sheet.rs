@@ -420,7 +420,11 @@ mod tests {
             d.store(true, Ordering::SeqCst);
         });
 
-        sheet.handle_event(&Event::MousePress { pos: Point::new(200, 300), button: 1, modifiers: 0 });
+        sheet.handle_event(&Event::MousePress {
+            pos: Point::new(200, 300),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(!sheet.is_open());
         assert!(dismissed.load(Ordering::SeqCst));
     }
@@ -534,7 +538,11 @@ mod tests {
             d.store(true, Ordering::SeqCst);
         });
 
-        sheet.handle_event(&Event::MousePress { pos: Point::new(100, 50), button: 1, modifiers: 0 });
+        sheet.handle_event(&Event::MousePress {
+            pos: Point::new(100, 50),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(!sheet.is_open());
         assert!(dismissed.load(Ordering::SeqCst));
     }
@@ -551,7 +559,11 @@ mod tests {
             d.store(true, Ordering::SeqCst);
         });
 
-        sheet.handle_event(&Event::MousePress { pos: Point::new(200, 450), button: 1, modifiers: 0 });
+        sheet.handle_event(&Event::MousePress {
+            pos: Point::new(200, 450),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(!sheet.is_open());
         assert!(dismissed.load(Ordering::SeqCst));
     }

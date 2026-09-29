@@ -1028,7 +1028,11 @@ mod tests {
 
         let click = |y: i32| {
             let mut list = build();
-            list.handle_event(&Event::MousePress { pos: Point::new(50, y), button: 1, modifiers: 0 });
+            list.handle_event(&Event::MousePress {
+                pos: Point::new(50, y),
+                button: 1,
+                modifiers: 0,
+            });
             list.current_row()
         };
 

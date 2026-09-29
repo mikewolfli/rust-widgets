@@ -741,7 +741,11 @@ mod tests {
     fn bezier_disabled_blocks_events() {
         let mut editor = default_editor();
         editor.set_enabled(false);
-        editor.handle_event(&Event::MousePress { pos: Point::new(100, 100), button: 1, modifiers: 0 });
+        editor.handle_event(&Event::MousePress {
+            pos: Point::new(100, 100),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(!editor.base.is_mouse_pressed());
     }
 

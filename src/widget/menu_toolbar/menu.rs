@@ -1434,7 +1434,11 @@ mod tests {
         menu.open_at(Point::new(100, 100), Rect::new(0, 0, 400, 400));
 
         // x is inside the popup but past the text column; y is the top padding.
-        menu.handle_event(&Event::MousePress { pos: Point::new(250, 101), button: 1, modifiers: 0 });
+        menu.handle_event(&Event::MousePress {
+            pos: Point::new(250, 101),
+            button: 1,
+            modifiers: 0,
+        });
 
         assert!(menu.is_visible(), "padding inside the popup must not dismiss the menu");
     }

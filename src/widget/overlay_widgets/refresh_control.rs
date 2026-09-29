@@ -916,8 +916,16 @@ mod tests {
         });
 
         control.set_threshold(120.0);
-        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "the indicator is sized against this");
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the indicator is sized against this"
+        );
         control.set_threshold(120.0);
-        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "the same threshold is not a change");
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the same threshold is not a change"
+        );
     }
 }

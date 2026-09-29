@@ -768,7 +768,11 @@ mod tests {
     #[test]
     fn toggle_button_press_outside_does_not_arm() {
         let mut tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 100, 30));
-        tb.handle_event(&Event::MousePress { pos: Point::new(9000, 9000), button: 1, modifiers: 0 });
+        tb.handle_event(&Event::MousePress {
+            pos: Point::new(9000, 9000),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(!tb.is_pressed());
         tb.handle_event(&Event::MouseRelease { pos: Point::new(20, 15), button: 1 });
         assert!(!tb.is_checked(), "a drag that began outside must not commit");

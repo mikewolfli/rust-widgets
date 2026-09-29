@@ -285,8 +285,16 @@ mod tests {
         });
 
         view.set_scaled(true);
-        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "`draw` branches on this to size the image");
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "`draw` branches on this to size the image"
+        );
         view.set_scaled(true);
-        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "the same value is not a change");
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the same value is not a change"
+        );
     }
 }

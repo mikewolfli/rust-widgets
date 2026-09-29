@@ -127,7 +127,8 @@ pub fn bars() -> Vec<(String, f64)> {
 }
 
 /// Typeface names for the font combo box, which holds fonts rather than business rows.
-pub const FONT_NAMES: [&str; 5] = ["Arial", "Helvetica", "Courier New", "Times New Roman", "Georgia"];
+pub const FONT_NAMES: [&str; 5] =
+    ["Arial", "Helvetica", "Courier New", "Times New Roman", "Georgia"];
 
 /// Returns the sample chart's x-axis labels, one per point.
 pub fn x_labels() -> Vec<String> {
