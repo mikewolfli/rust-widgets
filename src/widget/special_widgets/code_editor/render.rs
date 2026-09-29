@@ -177,6 +177,12 @@ impl Draw for CodeEditor {
         // constant instead of the font's real advance is what produced overlapping text.
         self.measure_cell_width(context);
         self.refresh_visible_rows();
+        // Lex the visible rows with `&mut self` before the immutable paint helpers
+        // run. `tokens_on_line` takes `&self` and cannot fill its own cache, so
+        // without this every frame would re-tokenize every visible row — and the
+        // per-line entry state would never be advanced past the viewport.
+        self.prepare_visible_line_cache();
+        self.prepare_minimap();
         let rect = self.geometry();
         let row_height = self.line_height();
 
@@ -207,8 +213,19 @@ impl Draw for CodeEditor {
 
 impl CodeEditor {
     fn draw_tab_strip(&mut self, context: &mut RenderContext, rect: Rect, chrome: &EditorChrome) {
-        let buffers = self.model.borrow().all_buffers.clone();
+        // Only the tab titles are needed to paint the strip. Cloning
+        // `all_buffers` would copy every open buffer's full `text` on every frame,
+        // which at a million lines measured 17 ms per frame — the dominant cost in
+        // the whole paint path, and invisible in the profile of any single draw
+        // helper. Titles are short and there are few of them, so this list is
+        // bounded by the tab count rather than by the document.
+        let titles: Vec<String> =
+            self.model.borrow().all_buffers.iter().map(|buffer| buffer.title.clone()).collect();
         let active = self.active_buffer();
+        // The dirty flag is a maintained boolean, not a string comparison: the
+        // saved text is a full copy of the document, so comparing against it
+        // costs one pass over the file, once per tab, every frame.
+        let active_dirty = self.model.borrow().dirty;
         let strip_height = row_height_of(self.config.line_advance);
         context.fill_rect(
             Rect::new(rect.x, rect.y, rect.width, strip_height as u32),
@@ -216,17 +233,15 @@ impl CodeEditor {
         );
         let mut x = rect.x + 6;
         let advance = self.cell_width();
-        for (index, buffer) in buffers.iter().enumerate() {
-            let model = self.model.borrow();
-            let dirty = index == active && model.saved != *model.text.borrow();
-            drop(model);
+        for (index, title) in titles.iter().enumerate() {
+            let dirty = index == active && active_dirty;
             // The dirty marker is a **drawn dot**, not the `U+2022` bullet the label used to
             // carry. No bundled face covers the general-punctuation bullet's block with an outline
             // that clips inside a tab's narrow cell, so the character fell back to an 8x8 bitmap
             // and the tab read as a blob. Keeping it out of the label also keeps the *title* the
             // title: the marker is state, and state drawn as text is state the next reader has to
             // parse out of a string.
-            let label = buffer.title.clone();
+            let label = title.clone();
             let width = ((label.chars().count() as f32 + 3.0) * advance).round() as u32;
             if x + width as i32 > rect.x + rect.width as i32 {
                 break;
@@ -375,7 +390,10 @@ impl CodeEditor {
         let fold_width = self.fold_marker_width();
         let rows_budget = (height as f32 / row_height).floor() as usize;
         let mut row = 0usize;
-        for line in self.visible_document_lines() {
+        // The windowed iterator, not `visible_document_lines`: the loop below
+        // stops early, but materialising the line list first would already have
+        // walked the document, which is the cost this avoids.
+        for line in self.viewport_document_lines() {
             let segments = self.wrap_segments(line);
             if row >= self.scroll_visual_row + rows_budget {
                 break;
@@ -474,7 +492,7 @@ impl CodeEditor {
         let mut painted: Vec<usize> = Vec::new();
 
         let mut row = 0usize;
-        for line in self.visible_document_lines() {
+        for line in self.viewport_document_lines() {
             let segments = self.wrap_segments(line);
             if row + segments <= self.scroll_visual_row {
                 row += segments;
@@ -998,6 +1016,18 @@ impl CodeEditor {
         );
     }
 
+    /// Draws the minimap.
+    ///
+    /// A minimap is a *summary*: one short bar per strip row, not one per
+    /// document line. The previous version iterated every line of the document
+    /// on every frame and issued a `fill_rect` for each non-blank one, which cost
+    /// 10.5 ms per frame at a million lines — the file opened and the editor
+    /// stopped responding.
+    ///
+    /// The per-bucket summaries are maintained by
+    /// [`CodeEditor::rebuild_minimap`] on edits and read here, so painting is
+    /// bounded by the strip height and a million-line file costs the same per
+    /// frame as a fifty-line one.
     fn draw_minimap(&self, context: &mut RenderContext, rect: Rect, chrome: &EditorChrome) {
         let width = self.minimap_width();
         if width == 0 {
@@ -1010,33 +1040,25 @@ impl CodeEditor {
         context.fill_rect(Rect::new(x, top, width as u32, height), chrome.minimap_background);
 
         let line_count = self.line_count().max(1);
-        let scale = height as f32 / line_count as f32;
-        let dot = scale.max(1.0);
-        for (index, text) in self.model.borrow().lines.iter().enumerate() {
-            let y = top + (index as f32 * scale).round() as i32;
-            let indent = text.chars().take_while(|ch| ch.is_whitespace()).count();
-            let length = text.trim_end().chars().count().saturating_sub(indent);
-            if length == 0 {
+        let rows = self.minimap_buckets.len();
+        if rows == 0 {
+            return;
+        }
+        let inner = (width - 8).max(1) as f32;
+        for (bucket, summary) in self.minimap_buckets.iter().enumerate() {
+            if summary.blank {
                 continue;
             }
-            let bar_width =
-                ((length as f32 / 120.0) * (width - 8) as f32).clamp(1.0, (width - 8) as f32);
-            context.fill_rect(
-                Rect::new(
-                    x + 4
-                        + ((indent as f32 / 120.0) * (width - 8) as f32).min((width - 8) as f32)
-                            as i32,
-                    y,
-                    bar_width as u32,
-                    dot.ceil().max(1.0) as u32,
-                ),
-                chrome.scrollbar_thumb,
-            );
+            let y = top + (bucket as f32 / rows as f32 * height as f32).round() as i32;
+            let bar_width = ((summary.length as f32 / 120.0) * inner).clamp(1.0, inner);
+            let bar_x = x + 4 + ((summary.indent as f32 / 120.0) * inner).min(inner) as i32;
+            context.fill_rect(Rect::new(bar_x, y, bar_width as u32, 1), chrome.scrollbar_thumb);
         }
         // Viewport indicator.
-        let rows = self.visible_rows().max(1);
+        let scale = height as f32 / line_count as f32;
+        let rows_visible = self.visible_rows().max(1);
         let viewport_top = top + (self.scroll_visual_row as f32 * scale).round() as i32;
-        let viewport_height = ((rows as f32 * scale).max(6.0)) as u32;
+        let viewport_height = ((rows_visible as f32 * scale).max(6.0)) as u32;
         context.draw_rect(
             Rect::new(x, viewport_top, width as u32, viewport_height.min(height)),
             chrome.accent,
@@ -1073,10 +1095,18 @@ impl CodeEditor {
         // the control.
         let status_band = Rect::new(rect.x + 8, top + 5, rect.width.saturating_sub(20), 16);
         let font = Font::default();
+        // A reduced level is part of the editor's state, so it belongs on the
+        // status row: a silently disabled feature reads as a bug, while a named
+        // one reads as a decision the user can act on.
+        let scale_note = match self.scale.notice() {
+            Some(note) => format!("  [{note}]"),
+            None => String::new(),
+        };
         let left_label = format!(
-            "{}  {} lines{}{}",
+            "{}  {} lines{}{}{}",
             self.language_name(),
             self.line_count(),
+            scale_note,
             fold_note,
             caret_note
         );

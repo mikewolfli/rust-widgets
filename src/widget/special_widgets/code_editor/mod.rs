@@ -72,6 +72,7 @@ mod editor;
 mod input;
 mod multicursor;
 mod pairs;
+mod range_command;
 mod render;
 mod syntax;
 mod types;
@@ -79,13 +80,16 @@ mod types;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod tests_batch1;
+
 pub use editor::CodeEditor;
 pub use multicursor::MultiCursor;
 pub use syntax::{BuiltinHighlighter, LanguageId, SyntaxHighlighter};
 pub use types::{
     CodeEditorConfig, CompletionItem, CompletionSource, CompletionState, ContextMenuState, Cursor,
-    DiagnosticMarker, DocumentCompletions, EditorBuffer, FindState, FoldRegion, MarkerSeverity,
-    MenuItem, SearchMatch, SearchOptions, SyntaxPalette, TextPosition, TokenKind, TokenSpan,
-    VisualLine, DEFAULT_FONT_FAMILY, DEFAULT_FONT_SIZE, DEFAULT_TAB_WIDTH, MAX_COMPLETIONS,
-    MIN_TOUCH_TARGET,
+    DiagnosticMarker, DocumentCompletions, DocumentScale, EditorBuffer, FindState, FoldRegion,
+    MarkerSeverity, MenuItem, SearchMatch, SearchOptions, SyntaxPalette, TextPosition, TokenKind,
+    TokenSpan, VisualLine, DEFAULT_FONT_FAMILY, DEFAULT_FONT_SIZE, DEFAULT_TAB_WIDTH,
+    MAX_COMPLETIONS, MIN_TOUCH_TARGET, SCALE_REDUCED_LINES, SCALE_VIEW_ONLY_LINES,
 };

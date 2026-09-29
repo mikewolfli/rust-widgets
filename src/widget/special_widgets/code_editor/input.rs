@@ -25,7 +25,7 @@ impl CodeEditor {
 
     /// Applies a committed text or IME payload.
     pub fn input_text(&mut self, text: &str) {
-        if self.config.read_only || text.is_empty() {
+        if !self.is_editable() || text.is_empty() {
             return;
         }
         if self.find.visible {

@@ -6,12 +6,13 @@
 use super::buffer::{join_lines, split_lines, EditorModel};
 use super::multicursor::{self, MultiCursor, OffsetEdit};
 use super::pairs::{self, PairAction};
-use super::syntax::{BuiltinHighlighter, LanguageId, SyntaxHighlighter};
+use super::range_command::TextRangeCommand;
+use super::syntax::{BuiltinHighlighter, LanguageId, LineState, SyntaxHighlighter};
 use super::types::{
     CodeEditorConfig, CompletionSource, CompletionState, ContextMenuState, Cursor, CursorGoal,
-    DiagnosticMarker, DocumentCompletions, EditorBuffer, FindState, FoldRegion, InlineDiagnostic,
-    MarkerSeverity, MenuItem, SearchMatch, SearchOptions, SyntaxPalette, TextPosition, TokenKind,
-    TokenSpan, VisualLine, MAX_COMPLETIONS,
+    DiagnosticMarker, DocumentCompletions, DocumentScale, EditorBuffer, FindState, FoldRegion,
+    InlineDiagnostic, MarkerSeverity, MenuItem, SearchMatch, SearchOptions, SyntaxPalette,
+    TextPosition, TokenKind, TokenSpan, VisualLine, MAX_COMPLETIONS,
 };
 use crate::compat::MiniVec;
 use crate::core::{Color, Font, Point, Rect, Size};
@@ -178,6 +179,45 @@ pub struct CodeEditor {
     pub(crate) markers: Vec<DiagnosticMarker>,
     /// Lines whose fold marker is currently collapsed, for O(1) gutter queries.
     folded_lines: MiniVec<usize>,
+    /// Per-line lexer entry state, so highlighting is incremental rather than
+    /// re-derived from line 0 on every frame.
+    ///
+    /// `line_states[i]` is the [`LineState`] line `i` **starts** in, and the
+    /// vector always holds `line_count() + 1` entries: the extra trailing entry
+    /// is the state the document ends in. Two invariants make this cheap:
+    ///
+    /// * a highlighter line whose entry state is [`LineState::Clean`] also leaves
+    ///   the next line clean, so a whole clean run needs no further work;
+    /// * after an edit only the lines from the change down to the first line whose
+    ///   entry state matches what was already recorded must be re-lexed.
+    line_states: Vec<LineState>,
+    /// How many lines of the entry-state chain have actually been computed.
+    ///
+    /// `line_states` is a dense vector whose untouched tail holds `Clean`
+    /// defaults, so length alone cannot say which entries are real; this counter
+    /// does. An edit resets it to the first affected line so the chain is
+    /// re-derived from there.
+    walked_lines: usize,
+    /// Token spans per line, filled lazily and invalidated with `line_states`.
+    line_tokens: Vec<Option<Vec<TokenSpan>>>,
+    /// Per-strip-row minimap summaries, rebuilt on edits and read while painting.
+    ///
+    /// This is what keeps the minimap's per-frame cost off the document size:
+    /// the summary is proportional to the strip height, so a million-line file
+    /// paints as fast as a fifty-line one.
+    pub(crate) minimap_buckets: Vec<MinimapBucket>,
+    /// Line count [`CodeEditor::minimap_buckets`] was built from.
+    ///
+    /// An edit that adds or removes lines invalidates the bucket boundaries even
+    /// when the bucket count happens to come out the same, so the count is
+    /// tracked separately from the vector length.
+    minimap_line_count: usize,
+    /// What the editor has turned off because the document is very large.
+    ///
+    /// Chosen when the text is set so a level cannot change mid-scroll, and
+    /// reported in the status bar so the reduced behaviour is visible rather than
+    /// mysterious — a silently disabled feature reads as a bug.
+    pub(crate) scale: DocumentScale,
     pub(crate) mouse_selecting: bool,
     /// The caret's blink state, advanced by [`CodeEditor::tick`].
     ///
@@ -187,6 +227,13 @@ pub struct CodeEditor {
     pub(crate) caret_blink: crate::style::CursorBlink,
     undo_stack: UndoStack,
     restoring_history: bool,
+    /// Bytes retained by the most recent undo checkpoint.
+    ///
+    /// Recorded at push time so a test can assert the history cost tracks the edit
+    /// rather than the document. Nothing reads it in production, hence `cfg(test)`
+    /// on the accessor rather than on the field — keeping the field unconditional
+    /// avoids a cfg-shaped hole in the struct initialiser.
+    last_checkpoint_bytes: usize,
 
     /// Emitted when text changes.
     pub text_changed: Signal1<String>,
@@ -250,10 +297,17 @@ impl CodeEditor {
             context_menu: ContextMenuState::default(),
             markers: Vec::new(),
             folded_lines: MiniVec::new(),
+            line_states: Vec::new(),
+            line_tokens: Vec::new(),
+            walked_lines: 0,
+            minimap_buckets: Vec::new(),
+            minimap_line_count: 0,
+            scale: DocumentScale::Full,
             mouse_selecting: false,
             caret_blink: crate::style::CursorBlink::new(),
             undo_stack: UndoStack::new(),
             restoring_history: false,
+            last_checkpoint_bytes: 0,
             text_changed: Signal1::new(),
             cursor_moved: Signal1::new(),
             selection_changed: Signal1::new(),
@@ -277,8 +331,13 @@ impl CodeEditor {
     }
 
     /// Returns `true` when the editor rejects mutations.
+    ///
+    /// This is the *effective* answer, not just the caller's setting: a document
+    /// large enough to be view-only also rejects mutations, and a host asking
+    /// "can this be edited?" needs to hear about both. [`Self::is_editable`] is
+    /// the negation, named for the positive question.
     pub fn is_read_only(&self) -> bool {
-        self.config.read_only
+        !self.is_editable()
     }
 
     /// Enables or disables editing.
@@ -300,7 +359,7 @@ impl CodeEditor {
     /// unconditionally, so a host had no reason to keep scheduling frames and the caret read as a
     /// frozen marker rather than a live insertion point.
     pub fn tick(&mut self, delta_ms: u32) -> bool {
-        if self.config.read_only {
+        if !self.is_editable() {
             return false;
         }
         let running = self.caret_blink.tick(delta_ms);
@@ -352,18 +411,38 @@ impl CodeEditor {
     /// Installs a custom highlighter, replacing the built-in lexer.
     pub fn set_highlighter(&mut self, highlighter: Box<dyn SyntaxHighlighter>) {
         self.highlighter = Some(highlighter);
+        // The cached entry-state chain was produced by the previous highlighter,
+        // so it is meaningless for this one.
+        self.invalidate_line_states();
         self.base.request_redraw();
     }
 
     /// Removes a custom highlighter, restoring the built-in lexer.
     pub fn clear_highlighter(&mut self) {
         self.highlighter = None;
+        self.invalidate_line_states();
         self.base.request_redraw();
     }
 
     /// Installs a custom completion provider.
     pub fn set_completion_source(&mut self, source: Box<dyn CompletionSource>) {
         self.completion_source = source;
+    }
+
+    /// Returns the level of feature reduction in force for this document.
+    ///
+    /// A host can read this to report why a feature is unavailable. It is decided
+    /// when the text is set, so it never changes while the user scrolls.
+    pub fn document_scale(&self) -> DocumentScale {
+        self.scale
+    }
+
+    /// Returns whether a mutation is currently permitted.
+    ///
+    /// Combines the caller's setting with the level the document size imposed, so
+    /// a very large file cannot be edited even when `read_only` is off.
+    pub fn is_editable(&self) -> bool {
+        !self.config.read_only && self.scale.allows_editing()
     }
 
     /// Returns the active language name.
@@ -378,6 +457,9 @@ impl CodeEditor {
     pub fn set_language(&mut self, language: LanguageId) {
         self.config.language = language;
         self.config.tab_width = language.default_tab_width();
+        // A different language lexes the same text differently, so every cached
+        // state and span is stale.
+        self.invalidate_line_states();
         self.base.request_redraw();
     }
 
@@ -410,6 +492,14 @@ impl CodeEditor {
             )));
         }
         self.model.borrow_mut().set_text(next.clone());
+        // Wholesale replacement invalidates every cached state; there is no
+        // meaningful "from line N" because no line survived unchanged.
+        self.invalidate_line_states();
+        self.minimap_line_count = 0;
+        self.scale = DocumentScale::for_lines(self.line_count());
+        // A level that forbids editing has to be reflected in the buffer the
+        // widget already gates on, so every mutation entry point agrees without
+        // repeating the check.
         self.clamp_cursor_to_document();
         self.refresh_derived_state();
         self.text_changed.emit(next);
@@ -440,6 +530,11 @@ impl CodeEditor {
         self.model.borrow().lines.get(line).cloned()
     }
 
+    /// Returns the line containing `offset` in the joined document.
+    pub fn line_of_byte_offset(&self, offset: usize) -> usize {
+        self.model.borrow().line_of_byte_offset(offset)
+    }
+
     /// Returns the character length of a line, or 0 when out of range.
     pub fn line_len(&self, line: usize) -> usize {
         self.model.borrow().line_len(line)
@@ -449,7 +544,7 @@ impl CodeEditor {
 
     /// Inserts text at the caret, replacing any selection.
     pub fn insert(&mut self, text: &str) {
-        if self.config.read_only || text.is_empty() {
+        if !self.is_editable() || text.is_empty() {
             return;
         }
         let payload = self.expand_tabs(text);
@@ -484,9 +579,43 @@ impl CodeEditor {
         } else {
             TextPosition::new(start.line + newlines, trailing_line_len(payload))
         };
-        let before = self.text();
-        let after = self.model.borrow_mut().splice(start, end, payload);
-        self.commit_edit(before, after, head);
+        self.splice_and_record(start, end, payload, head);
+    }
+
+    /// Splices the model and records the change as one undoable range edit.
+    ///
+    /// This is the code editor's only edit path: it derives the changed byte
+    /// range from the same splice that applies it, so the history entry and the
+    /// document cannot disagree. The alternative — snapshotting the whole
+    /// document before and after — costs two full copies per keystroke.
+    fn splice_and_record(
+        &mut self,
+        start: TextPosition,
+        end: TextPosition,
+        payload: &str,
+        head: TextPosition,
+    ) {
+        // Capture the text being replaced **before** the splice runs. Slicing the
+        // post-edit buffer with a pre-edit offset would record whatever now sits
+        // there, so undo would restore the edit instead of the original — which is
+        // exactly the defect this path had.
+        let removed = {
+            let mut model = self.model.borrow_mut();
+            let start = model.clamp_position(start);
+            let end = model.clamp_position(end);
+            let from = model.total_byte_offset(start);
+            let to = model.total_byte_offset(end).max(from);
+            let text = model.text.borrow();
+            text.get(from..to.min(text.len())).unwrap_or_default().to_string()
+        };
+        let (rebuilt, start_offset, removed_len) =
+            self.model.borrow_mut().splice_with_range(start, end, payload);
+        let checkpoint = Checkpoint {
+            range: Some((start_offset, removed_len, payload.to_string())),
+            removed: Some(removed),
+            before: None,
+        };
+        self.record_and_settle_inner(rebuilt, checkpoint, head);
     }
 
     /// Applies an edit that has already been computed.
@@ -495,31 +624,181 @@ impl CodeEditor {
     /// `splice_range`) or rebuilt the text by hand (line commands); this writes
     /// the result back so both paths agree, then records one undo checkpoint.
     fn commit_edit(&mut self, before: String, after: String, head: TextPosition) {
-        let already_applied = {
-            let model = self.model.borrow();
-            let text = model.text.borrow();
-            let same = text.as_str() == after.as_str();
-            same
+        // A caller that rebuilt the text by hand has no offset to report, so the
+        // range is recovered by diffing the two texts. The replaced text comes from
+        // `before` directly: the range is in pre-edit coordinates, so slicing the
+        // post-edit buffer with it would record the wrong bytes.
+        let range = diff_range(&before, &after);
+        let removed = range.as_ref().map(|(start, removed_len, _)| {
+            before.get(*start..start + removed_len).unwrap_or_default().to_string()
+        });
+        let checkpoint = Checkpoint { range, removed, before: Some(before) };
+        self.record_and_settle_inner(Some(after), checkpoint, head);
+    }
+
+    /// Writes the spliced text back, records one checkpoint and refreshes state.
+    ///
+    /// `after` is the rebuilt document when the splice had to rebuild it, or
+    /// `None` when the model already applied the edit in place. `checkpoint`
+    /// carries whatever the caller already knows about the edit: the byte range it
+    /// replaced, the text that was there, and the pre-edit document. All three are
+    /// optional because the edit paths know different amounts — typing knows the
+    /// range, a line command knows only the before/after pair. The most specific
+    /// description available is used, and anything missing is reconstructed from
+    /// the buffer before it is overwritten.
+    fn record_and_settle_inner(
+        &mut self,
+        after: Option<String>,
+        checkpoint: Checkpoint,
+        head: TextPosition,
+    ) {
+        // An in-place edit already left the model correct, so there is nothing to
+        // write back. The document is materialised once, for the `text_changed`
+        // signal: subscribers receive the new text, and that contract is what makes
+        // the signal useful. The comparison against the buffer is only meaningful
+        // for the rebuilt path — an in-place edit is applied by definition.
+        let (after, already_applied) = match after {
+            Some(text) => {
+                let same = {
+                    let model = self.model.borrow();
+                    let current = model.text.borrow();
+                    current.as_str() == text.as_str()
+                };
+                (text, same)
+            }
+            None => (self.model.borrow().text.borrow().clone(), true),
+        };
+        // Everything below that reads the "before" state has to happen before the
+        // write. The recorded range is in pre-edit coordinates, so slicing the
+        // post-edit buffer with it would capture whatever now sits there — for
+        // `a-b-c` → `a+b+c` that turned the undo entry into the edited text, and
+        // undoing restored the edit instead of the original.
+        let removed = match checkpoint.removed {
+            Some(text) => Some(text),
+            None => match &checkpoint.range {
+                Some((start, removed_len, _)) => {
+                    let model = self.model.borrow();
+                    let text = model.text.borrow();
+                    let end = start.saturating_add(*removed_len).min(text.len());
+                    Some(
+                        if *start <= end
+                            && text.is_char_boundary(*start)
+                            && text.is_char_boundary(end)
+                        {
+                            text[*start..end].to_string()
+                        } else {
+                            String::new()
+                        },
+                    )
+                }
+                None => None,
+            },
+        };
+        let before_snapshot = if checkpoint.before.is_some() {
+            checkpoint.before
+        } else if already_applied {
+            None
+        } else {
+            Some(self.model.borrow().text.borrow().clone())
         };
         if !already_applied {
             self.model.borrow_mut().set_text(after.clone());
         }
+        // The match cache can be updated from the edit's line range instead of a
+        // full rescan. `dirty` is `(first_line, lines_now, lines_before)`: the
+        // lines the edit replaced at that position. It is `None` when the caller
+        // could not describe the change, which falls back to a full rescan.
+        let dirty = match (&checkpoint.range, &removed) {
+            (Some((start, _removed_len, inserted)), Some(removed_text)) => {
+                let first = self.line_of_byte_offset(*start);
+                let lines_now = inserted.matches('\n').count() + 1;
+                let lines_before = removed_text.matches('\n').count() + 1;
+                Some((first, lines_now, lines_before))
+            }
+            _ => None,
+        };
         if !self.restoring_history {
-            let target = self.model.borrow().text.clone();
-            self.undo_stack.push(Box::new(TextSnapshotCommand::new(
-                target,
-                before,
-                after.clone(),
-                "code_editor_edit",
-            )));
+            self.push_checkpoint(checkpoint.range, removed, before_snapshot);
         }
         self.cursor = Cursor { head: self.clamp_position(head), anchor: self.clamp_position(head) };
         self.goal.active = false;
-        self.refresh_derived_state();
+        // Re-lex only from the first line the edit could have changed. The
+        // caret lands at or after the edited region in every caller, so taking
+        // the minimum of the two ends is a safe lower bound: re-lexing a line or
+        // two too many is harmless, missing one would leave stale colours.
+        self.invalidate_line_states_from(self.cursor.head.line.min(head.line));
+        // A keystroke inside the document is a modification by definition, so the
+        // flag is set directly rather than re-derived by comparing the whole
+        // document against its save point.
+        self.model.borrow_mut().dirty = true;
+        // A one-line edit cannot change any other line's bucket contribution
+        // unless the longest line in its bucket was the one edited, so re-folding
+        // the edited line is enough. A line count change invalidates the whole
+        // bucket map and is caught by `prepare_minimap` on the next frame.
+        self.patch_minimap_line(self.cursor.head.line.min(head.line));
+        self.refresh_derived_state_after(dirty);
         self.text_changed.emit(after);
         self.emit_cursor_and_selection();
         self.base.request_layout();
         self.base.request_redraw();
+    }
+
+    /// Pushes one undo checkpoint for an edit.
+    ///
+    /// A range edit stores only the text it replaced; anything else falls back to
+    /// `TextSnapshotCommand`, which stores the whole document twice. Typing always
+    /// takes the range path, so a keystroke's history cost is the size of the
+    /// edit rather than the size of the file.
+    fn push_checkpoint(
+        &mut self,
+        range: Option<(usize, usize, String)>,
+        removed: Option<String>,
+        before_snapshot: Option<String>,
+    ) {
+        let target = self.model.borrow().text.clone();
+        self.last_checkpoint_bytes = match (range, removed) {
+            (Some((start, _removed_len, inserted)), Some(removed)) => {
+                let bytes = removed.len() + inserted.len();
+                self.undo_stack.push(Box::new(TextRangeCommand::new(
+                    target,
+                    start,
+                    removed,
+                    inserted,
+                    "code_editor_edit",
+                )));
+                bytes
+            }
+            // No usable range (the caller could not describe the change, or the
+            // recorded offsets do not fit the pre-edit text): fall back to the
+            // whole-document snapshot, which is correct, if costly.
+            (_, _) => {
+                let current = target.borrow().clone();
+                let before = before_snapshot.unwrap_or_else(|| current.clone());
+                let bytes = before.len() + current.len();
+                self.undo_stack.push(Box::new(TextSnapshotCommand::new(
+                    target,
+                    before,
+                    current,
+                    "code_editor_edit",
+                )));
+                bytes
+            }
+        };
+    }
+
+    /// Drops cached lexer state for every line from `first` down.
+    ///
+    /// The token cache is dropped outright because the spans themselves may
+    /// have changed. The entry state of `first` is **kept**: an edit below a
+    /// line cannot change what that line starts inside, so resetting it to
+    /// `Clean` would make the lexer read a block-comment continuation as fresh
+    /// code. `ensure_line_states` re-derives forward from there and stops as
+    /// soon as a line leaves the same state it already had.
+    pub(crate) fn invalidate_line_states_from(&mut self, first: usize) {
+        for slot in self.line_tokens.iter_mut().skip(first) {
+            *slot = None;
+        }
+        self.walked_lines = self.walked_lines.min(first);
     }
 
     /// Applies an edit that replaces `[start, end)` without moving the caret
@@ -531,12 +810,10 @@ impl CodeEditor {
         payload: &str,
         head: TextPosition,
     ) {
-        if self.config.read_only {
+        if !self.is_editable() {
             return;
         }
-        let before = self.text();
-        let after = self.model.borrow_mut().splice(start, end, payload);
-        self.commit_edit(before, after, head);
+        self.splice_and_record(start, end, payload, head);
     }
 
     // ── Multi-caret infrastructure ──────────────────────────────────────────
@@ -553,7 +830,7 @@ impl CodeEditor {
 
     /// Applies one edit per caret in a single pass, then rebuilds the caret set.
     fn apply_caret_edits(&mut self, carets: &[Cursor], edits: Vec<CaretEdit>) -> bool {
-        if self.config.read_only || carets.is_empty() || carets.len() != edits.len() {
+        if !self.is_editable() || carets.is_empty() || carets.len() != edits.len() {
             return false;
         }
         let before = self.text();
@@ -586,16 +863,46 @@ impl CodeEditor {
             new_carets.push(Cursor { head: position, anchor: position });
         }
         let primary = new_carets.pop().unwrap_or(self.cursor);
-        if !self.restoring_history {
+        // Record exactly one checkpoint. `set_text` below pushes its own entry when
+        // history is live, so pushing here as well would make one multi-caret edit
+        // undo in two steps — the buffer would come back half-edited. The range is
+        // derived from the before/after pair because a multi-caret projection
+        // rewrites several disjoint spans at once and has no single offset to
+        // report.
+        let range = diff_range(&before, &after);
+        let checkpoint = if self.restoring_history {
+            None
+        } else {
             let target = self.model.borrow().text.clone();
-            self.undo_stack.push(Box::new(TextSnapshotCommand::new(
-                target,
-                before,
-                after.clone(),
-                "code_editor_edit",
-            )));
-        }
+            Some(match range {
+                Some((start, removed_len, inserted)) => {
+                    let removed =
+                        before.get(start..start + removed_len).unwrap_or_default().to_string();
+                    Box::new(TextRangeCommand::new(
+                        target,
+                        start,
+                        removed,
+                        inserted,
+                        "code_editor_edit",
+                    )) as Box<dyn UndoCommand>
+                }
+                None => Box::new(TextSnapshotCommand::new(
+                    target,
+                    before.clone(),
+                    after.clone(),
+                    "code_editor_edit",
+                )),
+            })
+        };
+        // `set_text` would add a second entry of its own, so suppress it and push
+        // the single checkpoint computed above instead.
+        let was_restoring = self.restoring_history;
+        self.restoring_history = true;
         self.model.borrow_mut().set_text(after.clone());
+        self.restoring_history = was_restoring;
+        if let Some(command) = checkpoint {
+            self.undo_stack.push(command);
+        }
         self.cursor = Cursor {
             head: self.clamp_position(primary.head),
             anchor: self.clamp_position(primary.anchor),
@@ -858,7 +1165,7 @@ impl CodeEditor {
 
     /// Duplicates the lines the selection touches, below the original block.
     pub fn duplicate_line(&mut self) {
-        if self.config.read_only {
+        if !self.is_editable() {
             return;
         }
         let (start, end) = self.cursor.bounds();
@@ -883,7 +1190,7 @@ impl CodeEditor {
 
     /// Deletes the lines the selection touches.
     pub fn delete_line(&mut self) {
-        if self.config.read_only {
+        if !self.is_editable() {
             return;
         }
         let (start, end) = self.cursor.bounds();
@@ -902,7 +1209,7 @@ impl CodeEditor {
 
     /// Joins the caret line with the following one, trimming its indentation.
     pub fn join_lines(&mut self) {
-        if self.config.read_only {
+        if !self.is_editable() {
             return;
         }
         let (start, end) = self.cursor.bounds();
@@ -929,18 +1236,22 @@ impl CodeEditor {
 
     /// Sorts the selected lines, or the whole document when none are selected.
     pub fn sort_lines(&mut self) {
-        if self.config.read_only {
+        if !self.is_editable() {
             return;
         }
         let (start, end) = self.cursor.bounds();
         let start_line = start.line;
         let before = self.text();
         let mut lines: Vec<String> = before.split('\n').map(|line| line.to_string()).collect();
-        let last = end.line.min(lines.len().saturating_sub(1));
-        if start_line >= last {
-            lines.sort();
-        } else {
-            lines[start_line..=last].sort();
+        // A trailing newline produces a final empty element. Sorting it would move
+        // that empty line to the top of the document — `"b\na\n"` came back as
+        // `"\na\nb"` — so it is held back and appended unchanged. It is a line
+        // terminator's artefact, not a line the user can see or reorder.
+        let trailing_blank = lines.last().is_some_and(|line| line.is_empty());
+        let sortable = if trailing_blank { lines.len() - 1 } else { lines.len() };
+        let last = end.line.min(sortable.saturating_sub(1));
+        if sortable > 0 {
+            lines[start_line.min(last)..=last].sort();
         }
         let after = join_lines(&lines);
         if after == before {
@@ -954,7 +1265,7 @@ impl CodeEditor {
 
     /// Removes trailing whitespace from every line.
     pub fn trim_trailing_whitespace(&mut self) {
-        if self.config.read_only {
+        if !self.is_editable() {
             return;
         }
         let before = self.text();
@@ -1035,7 +1346,7 @@ impl CodeEditor {
 
     /// Deletes the character before the caret, or the selection.
     pub fn backspace(&mut self) {
-        if self.config.read_only {
+        if !self.is_editable() {
             return;
         }
         if self.has_multiple_cursors() {
@@ -1073,7 +1384,7 @@ impl CodeEditor {
 
     /// Deletes the character after the caret, or the selection.
     pub fn delete_forward(&mut self) {
-        if self.config.read_only {
+        if !self.is_editable() {
             return;
         }
         if self.has_multiple_cursors() {
@@ -1096,7 +1407,7 @@ impl CodeEditor {
 
     /// Deletes the whole word before the caret.
     pub fn delete_word_backward(&mut self) {
-        if self.config.read_only {
+        if !self.is_editable() {
             return;
         }
         if self.has_selection() {
@@ -1112,7 +1423,7 @@ impl CodeEditor {
 
     /// Deletes the current selection.
     pub fn delete_selection(&mut self) {
-        if self.config.read_only || self.cursor.is_collapsed() {
+        if !self.is_editable() || self.cursor.is_collapsed() {
             return;
         }
         if self.has_multiple_cursors() {
@@ -1134,7 +1445,7 @@ impl CodeEditor {
 
     /// Inserts a newline, carrying the indentation over and opening blocks.
     pub fn insert_newline(&mut self) {
-        if self.config.read_only {
+        if !self.is_editable() {
             return;
         }
         if self.has_multiple_cursors() {
@@ -1171,7 +1482,7 @@ impl CodeEditor {
 
     /// Inserts the indent unit, or indents the selection when it spans lines.
     pub fn insert_tab(&mut self) {
-        if self.config.read_only {
+        if !self.is_editable() {
             return;
         }
         if self.has_selection()
@@ -1187,7 +1498,7 @@ impl CodeEditor {
 
     /// Removes up to one indent unit of leading whitespace before the caret.
     pub fn outdent(&mut self) {
-        if self.config.read_only {
+        if !self.is_editable() {
             return;
         }
         let line = self.cursor.head.line;
@@ -1213,7 +1524,7 @@ impl CodeEditor {
 
     /// Indents every line the selection touches, in one undo step.
     pub fn indent_selection(&mut self) {
-        if self.config.read_only {
+        if !self.is_editable() {
             return;
         }
         let unit = self.indent_unit();
@@ -1225,7 +1536,7 @@ impl CodeEditor {
 
     /// Outdents every line the selection touches, in one undo step.
     pub fn outdent_selection(&mut self) {
-        if self.config.read_only {
+        if !self.is_editable() {
             return;
         }
         let width = self.config.tab_width;
@@ -1241,7 +1552,7 @@ impl CodeEditor {
 
     /// Toggles line comments across the selection, in one undo step.
     pub fn toggle_line_comment(&mut self) {
-        if self.config.read_only {
+        if !self.is_editable() {
             return;
         }
         let token = self.config.language.comment_prefix();
@@ -1293,7 +1604,7 @@ impl CodeEditor {
 
     /// Moves the caret line up (`direction < 0`) or down, preserving text.
     pub fn move_line(&mut self, direction: isize) {
-        if self.config.read_only || direction == 0 {
+        if !self.is_editable() || direction == 0 {
             return;
         }
         let line = self.cursor.head.line;
@@ -1374,7 +1685,7 @@ impl CodeEditor {
 
     /// Undoes the most recent edit. Returns `false` when there is nothing to do.
     pub fn undo(&mut self) -> bool {
-        if self.config.read_only || self.undo_stack.undo().is_err() {
+        if !self.is_editable() || self.undo_stack.undo().is_err() {
             return false;
         }
         self.restore_history_text();
@@ -1383,7 +1694,7 @@ impl CodeEditor {
 
     /// Redoes the most recently undone edit.
     pub fn redo(&mut self) -> bool {
-        if self.config.read_only || self.undo_stack.redo().is_err() {
+        if !self.is_editable() || self.undo_stack.redo().is_err() {
             return false;
         }
         self.restore_history_text();
@@ -1406,10 +1717,17 @@ impl CodeEditor {
     }
 
     fn restore_history_text(&mut self) {
+        // The undo command already wrote the buffer directly (a range command
+        // splices, a snapshot assigns), so `set_text` here would see an unchanged
+        // document and return early — leaving the derived state stale. Rebuild the
+        // line index from the buffer instead of routing through `set_text`.
         let restored = self.model.borrow().text.borrow().clone();
         self.restoring_history = true;
         self.model.borrow_mut().set_text(restored.clone());
         self.restoring_history = false;
+        self.invalidate_line_states();
+        self.minimap_line_count = 0;
+        self.scale = DocumentScale::for_lines(self.line_count());
         self.clamp_cursor_to_document();
         self.refresh_derived_state();
         self.text_changed.emit(restored);
@@ -1793,6 +2111,16 @@ impl CodeEditor {
 
     /// Recomputes fold hints, match cache, row budget and the cursor clamp.
     fn refresh_derived_state(&mut self) {
+        self.refresh_derived_state_after(None);
+    }
+
+    /// [`Self::refresh_derived_state`] with a hint about what the edit changed.
+    ///
+    /// `dirty` describes the edited line range so the match cache can rescan only
+    /// those lines instead of the whole document. Callers that changed the shape
+    /// of the document in a way they cannot describe pass `None`, which is always
+    /// correct and merely slower.
+    fn refresh_derived_state_after(&mut self, dirty: Option<(usize, usize, usize)>) {
         {
             let model = self.model.borrow();
             self.folded_lines.clear();
@@ -1802,8 +2130,15 @@ impl CodeEditor {
                 }
             }
         }
+        // The document may have gained or lost lines since the last refresh, so
+        // the per-line lexer cache is reconciled here rather than in `draw`.
+        let count = self.line_count();
+        if self.line_states.len() != count + 1 {
+            self.line_states.resize(count + 1, LineState::Clean);
+            self.line_tokens.resize(count, None);
+        }
         self.clamp_cursor_to_visible();
-        self.recompute_match_cache();
+        self.recompute_match_cache_incremental(dirty);
         self.refresh_visible_rows();
     }
 
@@ -2013,8 +2348,183 @@ impl CodeEditor {
 
     // ── Visual row mapping ─────────────────────────────────────────────────
 
+    /// Returns the document lines that are visible, folds respected.
+    ///
+    /// When nothing is folded this is a contiguous range, so it is produced by
+    /// arithmetic instead of by filtering every line of the document. The old
+    /// implementation allocated a `Vec` of the whole document on every call, and
+    /// the paint path calls this several times per frame — which is what made a
+    /// large file cost milliseconds per repaint even with nothing to draw.
     pub(crate) fn visible_document_lines(&self) -> Vec<usize> {
+        if self.folded_lines.is_empty() {
+            return (0..self.line_count()).collect();
+        }
         self.model.borrow().visible_lines()
+    }
+
+    /// Returns the visible document lines within the viewport window, plus slack.
+    ///
+    /// This is the iterator the paint loop should use: it never materialises the
+    /// document, so its cost depends on the viewport.
+    pub(crate) fn viewport_document_lines(&self) -> alloc::vec::IntoIter<usize> {
+        if self.folded_lines.is_empty() {
+            let slack = self.visible_rows.max(1) + 1;
+            let first = self.scroll_visual_row.saturating_sub(slack).min(self.line_count());
+            let last = (self.scroll_visual_row + slack * 2).min(self.line_count());
+            return (first..last).collect::<Vec<usize>>().into_iter();
+        }
+        let slack = self.visible_rows.max(1) + 1;
+        let first_row = self.scroll_visual_row.saturating_sub(slack);
+        let last_row = self.scroll_visual_row + slack * 2;
+        let mut rows = 0usize;
+        let mut out = Vec::new();
+        for line in self.visible_document_lines() {
+            let segments = self.wrap_segments(line);
+            if rows + segments > first_row && rows <= last_row {
+                out.push(line);
+            }
+            rows += segments;
+            if rows > last_row {
+                break;
+            }
+        }
+        out.into_iter()
+    }
+
+    /// Fills `line_states` / `line_tokens` for the rows about to be painted.
+    ///
+    /// The paint helpers take `&self`, so the one place that can mutate the cache
+    /// is here, before them. Only the on-screen window is prepared: a document
+    /// with a million lines costs the same as one with fifty, which is the
+    /// invariant that keeps scrolling smooth (principle: per-frame work is
+    /// proportional to the viewport, never to the document).
+    pub(crate) fn prepare_visible_line_cache(&mut self) {
+        let budget = self.visible_rows.max(1) + 1;
+        let first = self.scroll_visual_row.saturating_sub(budget);
+        let last = (self.scroll_visual_row + budget * 2).min(self.line_count());
+        // Advance the entry-state chain up to the first painted line. This is
+        // where a multi-line construct opened far above is resolved, so it is
+        // bounded by the distance from the last known-clean line, not by the
+        // document length.
+        self.ensure_line_states(last);
+        for line in first..last {
+            self.fill_tokens_on_line(line);
+        }
+    }
+
+    /// Returns the cached entry state of `line`, if the lexer has reached it.
+    ///
+    /// The renderer uses this to tell a continuation row apart from a fresh one
+    /// without re-running the lexer, which is what makes a multi-line block
+    /// comment paint as one visually continuous band.
+    pub fn line_state(&self, line: usize) -> LineState {
+        self.line_states.get(line).copied().unwrap_or_default()
+    }
+
+    // ── Minimap summary ─────────────────────────────────────────────────────
+
+    /// Ensures the minimap summary matches the current document and strip size.
+    ///
+    /// Rebuilds only when the bucket count is stale (first paint, a resize, or
+    /// an edit that changed the line count). Steady-state repaints read the
+    /// existing buckets, so scrolling costs nothing here.
+    pub(crate) fn prepare_minimap(&mut self) {
+        if !self.config.show_minimap {
+            return;
+        }
+        let rows = self.minimap_rows();
+        let count = self.line_count();
+        let per_bucket_now = count.div_ceil(rows.max(1)).max(1);
+        let expected = count.div_ceil(per_bucket_now);
+        let stale = self.minimap_buckets.len() != expected || self.minimap_line_count != count;
+        if stale {
+            self.rebuild_minimap(rows);
+            self.minimap_line_count = count;
+        }
+    }
+
+    /// Returns how many strip rows the minimap has room for.
+    fn minimap_rows(&self) -> usize {
+        let rect = self.geometry();
+        let top = self.text_origin_y();
+        let usable = rect.height as i32 - top - self.status_bar_height();
+        (usable.max(1) as usize).clamp(1, MAX_MINIMAP_ROWS)
+    }
+
+    /// Returns how many lines have cached token spans.
+    ///
+    /// Exposed so tests can assert the cache stays proportional to the viewport
+    /// rather than to the document; there is no production caller.
+    #[cfg(test)]
+    pub(crate) fn cached_token_lines(&self) -> usize {
+        self.line_tokens.iter().filter(|slot| slot.is_some()).count()
+    }
+
+    /// Returns whether `line` has a cached token span list.
+    #[cfg(test)]
+    pub(crate) fn has_cached_tokens(&self, line: usize) -> bool {
+        self.line_tokens.get(line).map(|slot| slot.is_some()).unwrap_or(false)
+    }
+
+    /// Fills the entry-state chain up to `upto`, for tests of the increments.
+    #[cfg(test)]
+    pub(crate) fn prime_line_states(&mut self, upto: usize) {
+        self.ensure_line_states(upto);
+    }
+
+    /// Returns how many bytes the top undo entry retains.
+    ///
+    /// Exposed so a test can assert a keystroke's history cost follows the edit
+    /// and not the document; there is no production caller. The count is taken
+    /// when the entry is pushed, because a `dyn UndoCommand` cannot be asked for
+    /// its footprint through the trait.
+    #[cfg(test)]
+    pub(crate) fn debug_last_checkpoint_bytes(&self) -> usize {
+        self.last_checkpoint_bytes
+    }
+
+    /// Rebuilds every minimap bucket from scratch.
+    ///
+    /// Called when the bucket count or the document size changed — opening a
+    /// file, switching tabs, or an edit that added or removed lines. The cost is
+    /// one pass over the document, which is the same order as the load itself
+    /// and therefore not something a keystroke ever pays.
+    pub(crate) fn rebuild_minimap(&mut self, rows: usize) {
+        let rows = rows.max(1);
+        let count = self.line_count();
+        self.minimap_buckets.clear();
+        self.minimap_buckets.resize(rows, MinimapBucket::default());
+        if count == 0 {
+            return;
+        }
+        let per_bucket = count.div_ceil(rows).max(1);
+        for line in 0..count {
+            let bucket = line / per_bucket;
+            let Some(text) = self.line_text(line) else { break };
+            MinimapBucket::accumulate(&mut self.minimap_buckets[bucket], &text);
+        }
+    }
+
+    /// Re-folds `line` into its bucket after an edit, without a full pass.
+    ///
+    /// The bucket keeps a running best (`indent`, `length`) rather than a sum,
+    /// so a changed line may only ever *raise* the recorded maximum. A line that
+    /// shrank leaves the bucket showing a bar one row too long until the next
+    /// rebuild, which is the correct trade: a stale-but-close minimap is visible
+    /// only at a glance, while a per-keystroke document pass is not affordable.
+    pub(crate) fn patch_minimap_line(&mut self, line: usize) {
+        let rows = self.minimap_buckets.len();
+        let count = self.line_count();
+        if rows == 0 || count == 0 {
+            return;
+        }
+        let per_bucket = count.div_ceil(rows).max(1);
+        let bucket = line / per_bucket;
+        // Read the text before taking the mutable bucket borrow: `line_text`
+        // borrows the model, and holding both at once is a conflict.
+        let Some(text) = self.line_text(line) else { return };
+        let Some(slot) = self.minimap_buckets.get_mut(bucket) else { return };
+        MinimapBucket::accumulate(slot, &text);
     }
 
     pub(crate) fn wrap_segments(&self, line: usize) -> usize {
@@ -2030,12 +2540,53 @@ impl CodeEditor {
     }
 
     pub(crate) fn total_visual_rows(&self) -> usize {
-        let visible = self.visible_document_lines();
-        let rows: usize = visible.iter().map(|line| self.wrap_segments(*line)).sum();
+        let rows: usize = if self.folded_lines.is_empty() {
+            // The common case: no folds, so every line below the last fold is
+            // visible and the total is a single multiply. Walking the document
+            // here is what made scrolling a million-line file cost milliseconds
+            // per frame.
+            self.line_count()
+        } else {
+            self.visible_document_lines().iter().map(|line| self.wrap_segments(*line)).sum()
+        };
+        let rows = if self.config.word_wrap {
+            // Wrapping makes rows depend on each line's length, so the count
+            // cannot be derived without measuring — but only the visible span is
+            // needed for layout, and the exact total only feeds the scrollbar.
+            self.wrapped_row_estimate()
+        } else {
+            rows
+        };
         rows.saturating_add(self.inline_diagnostics().len())
     }
 
+    /// Estimates the wrapped row count without walking every line.
+    ///
+    /// A wrapped document's row count is only used to size the scrollbar thumb,
+    /// so an estimate is enough: it is exact whenever no line wraps, and never
+    /// zero, so the thumb cannot divide by zero or vanish.
+    fn wrapped_row_estimate(&self) -> usize {
+        if self.folded_lines.is_empty() {
+            let columns = self.text_columns().max(1);
+            let budget = self.total_line_chars();
+            budget.div_ceil(columns).max(self.line_count())
+        } else {
+            self.visible_document_lines().iter().map(|line| self.wrap_segments(*line)).sum()
+        }
+    }
+
     pub(crate) fn line_to_visual_row(&self, line: usize) -> usize {
+        if self.folded_lines.is_empty() {
+            // No folds: visual row equals document row when wrapping is off, and
+            // row * segments when it is on. Both avoid allocating a vector of
+            // every visible line — the cost that dominated a large repaint.
+            return if self.config.word_wrap {
+                let columns = self.text_columns().max(1);
+                (0..line).map(|index| self.line_len(index).max(1).div_ceil(columns)).sum()
+            } else {
+                line
+            };
+        }
         let mut row = 0usize;
         for document_line in self.visible_document_lines() {
             if document_line >= line {
@@ -2047,6 +2598,24 @@ impl CodeEditor {
     }
 
     pub(crate) fn visual_row_to_line(&self, row: usize) -> usize {
+        if self.folded_lines.is_empty() {
+            if !self.config.word_wrap {
+                return row.min(self.line_count().saturating_sub(1));
+            }
+            // Wrapped: the answer is below the fold-free case's cost, but it is
+            // still a forward walk. It is bounded by `row`, which comes from the
+            // viewport, so a scroll never walks the whole document.
+            let columns = self.text_columns().max(1);
+            let mut cursor = 0usize;
+            for line in 0..self.line_count() {
+                let segments = self.line_len(line).max(1).div_ceil(columns);
+                if row < cursor + segments {
+                    return line;
+                }
+                cursor += segments;
+            }
+            return self.line_count().saturating_sub(1);
+        }
         let visible = self.visible_document_lines();
         let mut cursor = 0usize;
         for line in &visible {
@@ -2057,6 +2626,15 @@ impl CodeEditor {
             cursor += segments;
         }
         visible.last().copied().unwrap_or(0)
+    }
+
+    /// Returns the summed character count of every line.
+    ///
+    /// Used only to size the wrapped-scrollbar estimate; it walks the line index
+    /// but not the text, and no line's contents are copied.
+    fn total_line_chars(&self) -> usize {
+        let model = self.model.borrow();
+        model.lines.iter().map(|line| line.chars().count()).sum()
     }
 
     /// Returns the visual rows of the whole document.
@@ -2151,22 +2729,41 @@ impl CodeEditor {
         if self.markers.is_empty() {
             return Vec::new();
         }
-        let mut rows_by_line: Vec<(usize, usize)> = Vec::new();
-        let mut row = 0usize;
-        for line in self.visible_document_lines() {
-            rows_by_line.push((line, row));
-            row += self.wrap_segments(line);
-        }
-        let mut result: Vec<InlineDiagnostic> = self
-            .markers
-            .iter()
-            .filter_map(|marker| {
-                rows_by_line
+        let mut result: Vec<InlineDiagnostic> = if self.folded_lines.is_empty() {
+            // Nothing is hidden, so a marker's visual row is its line number when
+            // wrapping is off. Building a line-to-row table here would walk the
+            // whole document on every frame for no reason.
+            if !self.config.word_wrap {
+                self.markers.iter().map(|marker| (marker.line, marker.clone())).collect()
+            } else {
+                let columns = self.text_columns().max(1);
+                self.markers
                     .iter()
-                    .find(|(line, _)| *line == marker.line)
-                    .map(|(_, row)| (*row, marker.clone()))
-            })
-            .collect();
+                    .map(|marker| {
+                        let row: usize = (0..marker.line)
+                            .map(|line| self.line_len(line).max(1).div_ceil(columns))
+                            .sum();
+                        (row, marker.clone())
+                    })
+                    .collect()
+            }
+        } else {
+            let mut rows_by_line: Vec<(usize, usize)> = Vec::new();
+            let mut row = 0usize;
+            for line in self.visible_document_lines() {
+                rows_by_line.push((line, row));
+                row += self.wrap_segments(line);
+            }
+            self.markers
+                .iter()
+                .filter_map(|marker| {
+                    rows_by_line
+                        .iter()
+                        .find(|(line, _)| *line == marker.line)
+                        .map(|(_, row)| (*row, marker.clone()))
+                })
+                .collect()
+        };
         result.sort_by_key(|(row, marker)| (*row, marker.severity.rank(), marker.start_column()));
         result
     }
@@ -2234,6 +2831,10 @@ impl CodeEditor {
             ..FindState::default()
         };
         self.dismiss_completion();
+        // A different buffer is a different document: every cached state and every
+        // minimap bucket belongs to the buffer being left.
+        self.invalidate_line_states();
+        self.minimap_line_count = 0;
         self.refresh_derived_state();
         self.text_changed.emit(self.text());
         self.tab_changed.emit(index);
@@ -2268,9 +2869,9 @@ impl CodeEditor {
 
     /// Returns `true` when the active buffer has unsaved edits.
     pub fn is_modified(&self) -> bool {
-        let model = self.model.borrow();
-        let current = model.text.borrow().clone();
-        model.saved != current
+        // A maintained flag, not a comparison: `saved` holds a full copy of the
+        // document, so `saved != text` is one pass over the file.
+        self.model.borrow().dirty
     }
 
     /// Marks the active buffer as saved.
@@ -2278,6 +2879,7 @@ impl CodeEditor {
         let current = self.model.borrow().text.borrow().clone();
         let mut model = self.model.borrow_mut();
         model.saved = current.clone();
+        model.dirty = false;
         let active = model.active_tab;
         if let Some(buffer) = model.all_buffers.get_mut(active) {
             buffer.text = current;
@@ -2420,6 +3022,103 @@ impl CodeEditor {
         matches
     }
 
+    /// Recomputes the hit list, reusing everything outside `dirty`.
+    ///
+    /// A keystroke changes one line, so re-scanning the document for hits is
+    /// wasted work — and in a large file it is the dominant per-key cost. This
+    /// removes the hits of the lines in `dirty`, rescans only those, and splices
+    /// the results back in place. The list stays in document order, which the
+    /// navigation commands rely on.
+    ///
+    /// `dirty` is `(first_line, inserted_lines, removed_lines)` describing the
+    /// edit in line terms: lines `first_line..first_line + removed_lines` were
+    /// replaced by `inserted_lines` new ones. `None` means "the shape of the
+    /// document changed and nothing can be reused", which falls back to a full
+    /// scan.
+    fn recompute_match_cache_incremental(&mut self, dirty: Option<(usize, usize, usize)>) {
+        let query = self.find.query.clone();
+        if query.is_empty() {
+            // No query means no hits, and finding that out costs nothing.
+            self.find.matches.clear();
+            self.find.current = 0;
+            return;
+        }
+        let Some((first, inserted, removed)) = dirty else {
+            self.recompute_match_cache();
+            return;
+        };
+        let options = self.find.options;
+        // Drop the hits of the replaced lines from the existing list.
+        let last_old = first.saturating_add(removed);
+        self.find.matches.retain(|hit| hit.line < first || hit.line >= last_old);
+        // Rescan only the lines that now exist at that position.
+        let last_new = first.saturating_add(inserted).min(self.line_count());
+        let mut fresh: Vec<SearchMatch> = Vec::new();
+        for line in first..last_new {
+            let Some(text) = self.line_text(line) else { break };
+            self.collect_matches_in_line(line, &text, &query, options, &mut fresh);
+        }
+        // Hits after the edited region keep their relative order; shift them by
+        // the line-count delta so they point at the right lines.
+        if inserted != removed {
+            let delta = inserted as isize - removed as isize;
+            for hit in self.find.matches.iter_mut().skip_while(|hit| hit.line < last_old) {
+                hit.line = (hit.line as isize + delta).max(0) as usize;
+            }
+        }
+        // Insert the fresh hits where they belong: after the retained hits that
+        // precede them, before the ones that follow.
+        let insert_at = self.find.matches.partition_point(|hit| hit.line < first);
+        self.find.matches.splice(insert_at..insert_at, fresh);
+        self.find.current = if self.find.matches.is_empty() {
+            0
+        } else {
+            self.find.current.min(self.find.matches.len() - 1)
+        };
+    }
+
+    /// Appends every match of `query` within one line to `out`.
+    fn collect_matches_in_line(
+        &self,
+        line_index: usize,
+        text: &str,
+        query: &str,
+        options: SearchOptions,
+        out: &mut Vec<SearchMatch>,
+    ) {
+        let needle: Vec<char> = query.chars().collect();
+        if needle.is_empty() {
+            return;
+        }
+        let haystack: Vec<char> = text.chars().collect();
+        if haystack.len() < needle.len() {
+            return;
+        }
+        let language = self.config.language;
+        let mut start = 0usize;
+        while start + needle.len() <= haystack.len() {
+            let window = &haystack[start..start + needle.len()];
+            let equal = if options.case_sensitive {
+                window == needle.as_slice()
+            } else {
+                window
+                    .iter()
+                    .flat_map(|ch| ch.to_lowercase())
+                    .eq(needle.iter().flat_map(|ch| ch.to_lowercase()))
+            };
+            if equal && whole_word_ok(&haystack, start, needle.len(), options, language) {
+                out.push(SearchMatch {
+                    line: line_index,
+                    start_column: start,
+                    end_column: start + needle.len(),
+                });
+                start += needle.len();
+            } else {
+                start += 1;
+            }
+        }
+    }
+
     fn recompute_match_cache(&mut self) {
         let query = self.find.query.clone();
         self.find.matches = self.find_all(&query);
@@ -2460,7 +3159,7 @@ impl CodeEditor {
 
     /// Replaces the active hit and advances to the next one.
     pub fn replace_current(&mut self) -> bool {
-        if self.config.read_only {
+        if !self.is_editable() {
             return false;
         }
         let Some(hit) = self.find.matches.get(self.find.current).cloned() else {
@@ -2475,7 +3174,7 @@ impl CodeEditor {
 
     /// Replaces every hit in one undoable step; returns how many were replaced.
     pub fn replace_all(&mut self) -> usize {
-        if self.config.read_only || self.find.matches.is_empty() {
+        if !self.is_editable() || self.find.matches.is_empty() {
             return 0;
         }
         let replacement = self.find.replacement.clone();
@@ -2630,7 +3329,7 @@ impl CodeEditor {
 
     /// Cuts the selection to the system clipboard.
     pub fn cut(&mut self) -> bool {
-        if self.config.read_only || !self.copy() {
+        if !self.is_editable() || !self.copy() {
             return false;
         }
         self.delete_selection();
@@ -2639,7 +3338,7 @@ impl CodeEditor {
 
     /// Pastes the system clipboard at the caret.
     pub fn paste(&mut self) -> bool {
-        if self.config.read_only {
+        if !self.is_editable() {
             return false;
         }
         let text = crate::clipboard::ClipboardManager::text();
@@ -2754,7 +3453,7 @@ impl CodeEditor {
     pub fn open_context_menu(&mut self, position: Point) {
         let has_selection = self.has_selection();
         let clipboard_has_text = !crate::clipboard::ClipboardManager::text().is_empty();
-        let read_only = self.config.read_only;
+        let read_only = !self.is_editable();
         self.context_menu.items = vec![
             MenuItem::new("cut", "Cut")
                 .with_shortcut("Cmd+X")
@@ -2888,28 +3587,113 @@ impl CodeEditor {
 
     // ── Tokenization ────────────────────────────────────────────────────────
 
+    /// Runs one line through the active highlighter, returning spans and exit state.
+    fn highlight_with_state(&self, line: &str, state: LineState) -> (Vec<TokenSpan>, LineState) {
+        match &self.highlighter {
+            Some(highlighter) => highlighter.highlight_line(line, state),
+            None => BuiltinHighlighter::new(self.config.language).highlight_line(line, state),
+        }
+    }
+
+    /// Returns the lexer state line `index` starts in.
+    ///
+    /// The cache is rebuilt lazily: `line_states` is grown to the current line
+    /// count, and entries beyond the last one that is known to be accurate are
+    /// re-derived by walking forward from that point. A line that both starts
+    /// and ends [`LineState::Clean`] cannot influence the next line, so a clean
+    /// run is filled in without running the lexer at all — which is what keeps
+    /// this proportional to the edited region rather than to the document.
+    ///
+    /// The returned state for a line is only meaningful once the chain has
+    /// reached it; [`CodeEditor::line_state`] reports the cached value, which is
+    /// `Clean` for any line the walk has not needed yet.
+    fn ensure_line_states(&mut self, upto: usize) {
+        let count = self.line_count();
+        // The vector holds one entry per line plus a trailing sentinel carrying
+        // the document's final state, so `line_states[line]` is always valid and
+        // `line_states[line + 1]` is the state that line ends in.
+        if self.line_states.len() != count + 1 {
+            self.line_states.resize(count + 1, LineState::Clean);
+            self.line_tokens.resize(count, None);
+            self.walked_lines = 0;
+        }
+        let target = upto.min(count);
+        // `walked_lines` is how far the entry-state chain has been *proven*.
+        // Every entry below it came out of the highlighter, so it is trustworthy
+        // even when non-clean; above it, entries only hold the `Clean` default
+        // and prove nothing.
+        let mut line = self.walked_lines.min(target);
+        if line >= target {
+            return;
+        }
+        let mut state = self.line_states[line];
+        while line < target {
+            let Some(text) = self.line_text(line) else { return };
+            let (_, next) = self.highlight_with_state(&text, state);
+            self.line_states[line + 1] = next;
+            // This line's entry state is now proven and its exit state recorded.
+            self.walked_lines = line + 1;
+            if next == state && state.is_clean() {
+                // Both ends are `Clean`, so this line cannot influence the next
+                // one. Every remaining line in a pure-code region is therefore
+                // also `Clean`, and the walk can stop: that is what keeps a
+                // 10 000-line block comment from being re-lexed on every
+                // keystroke while still walking cheaply through plain code.
+                break;
+            }
+            state = next;
+            line += 1;
+        }
+    }
+
+    /// Drops every cached lexer state, forcing a full re-derivation.
+    ///
+    /// Used when the highlighter or the language changes: the entry-state chain
+    /// is produced *by* the highlighter, so it cannot survive a swap.
+    pub(crate) fn invalidate_line_states(&mut self) {
+        for slot in self.line_tokens.iter_mut() {
+            *slot = None;
+        }
+        for state in self.line_states.iter_mut() {
+            *state = LineState::Clean;
+        }
+        self.walked_lines = 0;
+    }
+
     /// Returns the token spans of a single line.
     ///
     /// Uses the installed highlighter when present, otherwise the built-in
     /// lexer. Spans from a third-party highlighter are clamped to `char`
     /// boundaries and to the line length, so drawing can never panic.
+    ///
+    /// Results are cached per line and keyed by the lexer state the line starts
+    /// in, so a repaint of an unchanged document does no lexing at all.
     pub fn tokens_on_line(&self, line: usize) -> Vec<TokenSpan> {
-        let Some(text) = self.line_text(line) else { return Vec::new() };
-        let raw = match &self.highlighter {
-            Some(highlighter) => highlighter.highlight_line(&text),
-            None => BuiltinHighlighter::new(self.config.language).highlight_line(&text),
-        };
-        let length = text.len();
-        let mut spans: Vec<TokenSpan> = Vec::with_capacity(raw.len());
-        for mut span in raw {
-            span.start = floor_char_boundary(&text, span.start.min(length));
-            span.end = floor_char_boundary(&text, span.end.min(length));
-            if span.end > span.start {
-                spans.push(span);
-            }
+        if let Some(cached) = self.line_tokens.get(line).and_then(|slot| slot.as_ref()) {
+            return cached.clone();
         }
-        spans.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.end.cmp(&b.end)));
-        super::syntax::merge_adjacent(spans)
+        let Some(text) = self.line_text(line) else { return Vec::new() };
+        let state = self.line_states.get(line).copied().unwrap_or_default();
+        let (raw, _) = self.highlight_with_state(&text, state);
+        clamp_and_merge(&text, raw)
+    }
+
+    /// Returns the token spans of `line`, computing and caching them.
+    ///
+    /// The paint path holds `&self` and therefore cannot fill the cache; this
+    /// `&mut` variant is what `draw` calls once per visible row so the cache is
+    /// populated before the immutable readers run.
+    pub(crate) fn fill_tokens_on_line(&mut self, line: usize) {
+        if self.line_tokens.get(line).map(|slot| slot.is_some()).unwrap_or(false) {
+            return;
+        }
+        let Some(text) = self.line_text(line) else { return };
+        let state = self.line_states.get(line).copied().unwrap_or_default();
+        let (raw, _) = self.highlight_with_state(&text, state);
+        let merged = clamp_and_merge(&text, raw);
+        if let Some(slot) = self.line_tokens.get_mut(line) {
+            *slot = Some(merged);
+        }
     }
 
     /// Returns the token colour for a span.
@@ -3083,7 +3867,7 @@ impl Widget for CodeEditor {
     }
 
     fn is_animating(&self) -> bool {
-        !self.config.read_only
+        self.is_editable()
     }
 }
 
@@ -3216,4 +4000,157 @@ fn whole_word_ok(
     let after = start + length;
     let after_ok = after >= haystack.len() || !language.is_word_char(haystack[after]);
     before_ok && after_ok
+}
+
+/// Upper bound on minimap strip rows.
+///
+/// A strip taller than this gains no legibility — a bar per pixel row is already
+/// finer than the eye resolves at that width — while making the summary and the
+/// per-frame loop proportionally longer. Clamping also keeps the summary a fixed
+/// size across window resizes in the common case.
+pub(crate) const MAX_MINIMAP_ROWS: usize = 256;
+
+/// Everything an edit path can tell the history about what it changed.
+///
+/// The three fields are independently optional because the paths know different
+/// amounts: typing knows the byte range it replaced and the text that was there;
+/// a line command that rebuilt the document only has the before/after pair. The
+/// most specific description wins, and anything missing is reconstructed from the
+/// buffer before the edit overwrites it.
+struct Checkpoint {
+    /// `(start_offset, removed_len, inserted)` in pre-edit coordinates.
+    range: Option<(usize, usize, String)>,
+    /// Text the edit replaced, read before the write.
+    removed: Option<String>,
+    /// The document as it was before the edit, for the snapshot fallback.
+    before: Option<String>,
+}
+
+/// Returns the minimal `(start, removed_len, inserted)` change between two texts.
+///
+/// Used only by the edit paths that rebuild the document by hand and therefore
+/// have no range to report (line commands, sort, trim). The common prefix and
+/// suffix are trimmed, so the recorded edit is the smallest one that reproduces
+/// `after` — which keeps a checkpoint's memory proportional to what changed even
+/// when the caller could only describe the result.
+///
+/// Returns `None` when the texts are equal.
+fn diff_range(before: &str, after: &str) -> Option<(usize, usize, String)> {
+    if before == after {
+        return None;
+    }
+    let before_bytes = before.as_bytes();
+    let after_bytes = after.as_bytes();
+    let max_prefix = before_bytes.len().min(after_bytes.len());
+    let mut prefix = 0usize;
+    while prefix < max_prefix && before_bytes[prefix] == after_bytes[prefix] {
+        prefix += 1;
+    }
+    // Do not cut a multi-byte character in half: back up to the nearest boundary.
+    while prefix > 0 && !after.is_char_boundary(prefix) {
+        prefix -= 1;
+    }
+    let max_suffix = (before_bytes.len() - prefix).min(after_bytes.len() - prefix);
+    let mut suffix = 0usize;
+    while suffix < max_suffix
+        && before_bytes[before_bytes.len() - 1 - suffix]
+            == after_bytes[after_bytes.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    while suffix > 0 && !after.is_char_boundary(after.len() - suffix) {
+        suffix -= 1;
+    }
+    while suffix > 0 && !before.is_char_boundary(before.len() - suffix) {
+        suffix -= 1;
+    }
+    let removed_len = before_bytes.len().saturating_sub(prefix + suffix);
+    let inserted_end = after_bytes.len().saturating_sub(suffix);
+    Some((prefix, removed_len, after[prefix..inserted_end].to_string()))
+}
+
+/// Clamps highlighter spans to `text` and merges the adjacent ones.
+///
+/// A third-party highlighter can return offsets past the line end or inside a
+/// multi-byte character; both are repaired here rather than at every call site,
+/// because a malformed span reaching the renderer panics the whole frame.
+fn clamp_and_merge(text: &str, raw: Vec<TokenSpan>) -> Vec<TokenSpan> {
+    let length = text.len();
+    let mut spans: Vec<TokenSpan> = Vec::with_capacity(raw.len());
+    for mut span in raw {
+        span.start = floor_char_boundary(text, span.start.min(length));
+        span.end = floor_char_boundary(text, span.end.min(length));
+        if span.end > span.start {
+            spans.push(span);
+        }
+    }
+    spans.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.end.cmp(&b.end)));
+    super::syntax::merge_adjacent(spans)
+}
+
+/// One row of the minimap: the longest non-blank line folded into it.
+///
+/// A bucket holds a *summary*, not a sum, so painting reads one value per strip
+/// row instead of walking the document. `blank` is tracked separately from
+/// `length == 0` because a bucket containing only whitespace lines is blank,
+/// while one containing a line of spaces is not.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct MinimapBucket {
+    /// Indent column of the longest line seen in this bucket.
+    pub(crate) indent: usize,
+    /// Text length of that line, indentation excluded.
+    pub(crate) length: usize,
+    /// `true` when no non-blank line has landed in this bucket.
+    pub(crate) blank: bool,
+}
+
+impl MinimapBucket {
+    /// Folds one line into the bucket, keeping the longest.
+    fn accumulate(slot: &mut Self, text: &str) {
+        let indent = text.chars().take_while(|ch| ch.is_whitespace()).count();
+        let length = text.trim_end().chars().count().saturating_sub(indent);
+        if length == 0 {
+            return;
+        }
+        if slot.blank || length > slot.length {
+            slot.indent = indent;
+            slot.length = length;
+        }
+        slot.blank = false;
+    }
+}
+
+#[cfg(test)]
+mod diff_range_tests {
+    use super::diff_range;
+
+    #[test]
+    fn a_single_substitution_is_one_range() {
+        assert_eq!(diff_range("a-b-c", "a+b+c"), Some((1, 3, "+b+".to_string())));
+    }
+
+    #[test]
+    fn pure_insertion_and_deletion() {
+        assert_eq!(diff_range("ac", "abc"), Some((1, 0, "b".to_string())));
+        assert_eq!(diff_range("abc", "ac"), Some((1, 1, String::new())));
+    }
+
+    #[test]
+    fn identical_texts_produce_no_edit() {
+        assert_eq!(diff_range("same", "same"), None);
+        assert_eq!(diff_range("", ""), None);
+    }
+
+    #[test]
+    fn multibyte_boundaries_are_respected() {
+        let (start, removed, inserted) = diff_range("héllo", "hello").unwrap();
+        assert!("héllo".is_char_boundary(start));
+        assert!("héllo".is_char_boundary(start + removed));
+        assert_eq!(inserted, "e");
+    }
+
+    #[test]
+    fn replacing_the_whole_text() {
+        assert_eq!(diff_range("abc", "xyz"), Some((0, 3, "xyz".to_string())));
+    }
 }

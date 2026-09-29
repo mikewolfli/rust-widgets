@@ -33,6 +33,21 @@ pub(crate) struct EditorModel {
     pub(crate) text: Rc<RefCell<String>>,
     /// Pristine text of the active buffer's save point.
     pub(crate) saved: String,
+    /// `true` when `text` differs from `saved`.
+    ///
+    /// Maintained as a flag rather than derived on demand. Comparing the two
+    /// strings is O(document), and the paint path asks "is this buffer dirty?"
+    /// once per tab per frame — at a million lines the comparison alone measured
+    /// most of a frame. Every mutation of `text` or `saved` goes through a method
+    /// that updates this, so it cannot drift.
+    pub(crate) dirty: bool,
+    /// Byte offset at which each line starts in the joined document.
+    ///
+    /// `prefix_offsets[i]` is the offset of line `i`, built lazily in one forward
+    /// pass: entry `i` is entry `i - 1` plus line `i - 1`'s length and its
+    /// newline. This turns the offset lookup every edit performs from a walk of
+    /// the line index into an array read.
+    prefix_offsets: Vec<usize>,
 }
 
 impl EditorModel {
@@ -45,6 +60,8 @@ impl EditorModel {
             folds: Vec::new(),
             text: Rc::new(RefCell::new(String::new())),
             saved: String::new(),
+            dirty: false,
+            prefix_offsets: vec![0],
         };
         model.all_buffers.push(EditorBuffer::new("untitled", ""));
         model
@@ -54,10 +71,37 @@ impl EditorModel {
     pub(crate) fn set_text(&mut self, text: String) {
         *self.text.borrow_mut() = text.clone();
         self.lines = split_lines(&text);
+        self.lines_replaced();
         if let Some(buffer) = self.all_buffers.get_mut(self.active_tab) {
             buffer.text = text;
         }
+        self.refresh_dirty();
         self.normalize_folds();
+    }
+
+    /// Marks the line index as replaced, so the prefix cache is rebuilt lazily.
+    ///
+    /// Called wherever `lines` is written directly rather than through
+    /// [`Self::splice_with_range`]. Rebuilding lazily rather than eagerly keeps a
+    /// bulk write (loading a file, a line command) from paying for offsets it may
+    /// never need.
+    pub(crate) fn lines_replaced(&mut self) {
+        self.prefix_offsets.clear();
+        self.prefix_offsets.push(0);
+    }
+
+    /// Recomputes [`Self::dirty`] after a bulk change.
+    ///
+    /// Only called where the two strings were just written; per-keystroke paths
+    /// set `dirty = true` directly, because a keystroke inside a document is a
+    /// modification by definition and comparing megabytes to discover that is
+    /// exactly the cost this flag exists to avoid.
+    pub(crate) fn refresh_dirty(&mut self) {
+        let same = {
+            let text = self.text.borrow();
+            text.as_str() == self.saved.as_str()
+        };
+        self.dirty = !same;
     }
 
     /// Switches the active tab, persisting the outgoing buffer's text first.
@@ -66,14 +110,16 @@ impl EditorModel {
             return;
         }
         let outgoing = self.text.borrow().clone();
+        let outgoing_dirty = self.dirty;
         if let Some(active) = self.all_buffers.get_mut(self.active_tab) {
-            active.modified = self.saved != outgoing;
+            active.modified = outgoing_dirty;
             active.text = outgoing;
         }
         let incoming = self.all_buffers[tab].text.clone();
         self.active_tab = tab;
         self.set_text(incoming);
         self.saved = self.all_buffers[tab].text.clone();
+        self.dirty = self.all_buffers[tab].modified;
     }
 
     /// Returns the joined document text.
@@ -181,33 +227,162 @@ impl EditorModel {
     ///
     /// Positions are clamped, so the splice is total: it can never panic or
     /// silently drop text. Returns the resulting full document text.
+    ///
+    /// A thin wrapper over [`Self::splice_with_range`]; the tests use it to check
+    /// the splice itself, while the widget's edit paths call the range-reporting
+    /// form so the undo entry knows what changed.
+    #[cfg(test)]
     pub(crate) fn splice(
         &mut self,
         start: TextPosition,
         end: TextPosition,
         replacement: &str,
     ) -> String {
-        let before = self.full_text();
+        let (rebuilt, _, _) = self.splice_with_range(start, end, replacement);
+        rebuilt.unwrap_or_else(|| self.full_text())
+    }
+
+    /// Replaces `[start, end)` and reports the byte range that changed.
+    ///
+    /// The returned `(text, start_offset, removed_len)` is what an undo command
+    /// needs: the byte range the edit replaced, in pre-edit coordinates. Deriving
+    /// it here rather than recomputing it in the caller keeps the two in step —
+    /// the offsets come from the same clamping the splice itself applied.
+    /// `text` is `Some` only when the edit rebuilt the document: a single-line
+    /// edit mutates the index in place and the mirror by splice, so the caller
+    /// does not need (and must not pay for) a whole-document copy.
+    ///
+    /// The edit is applied **in place** when it stays inside one line, which is
+    /// what typing always does. Rebuilding the document — joining every line into
+    /// a string, splicing that, then splitting it back — is O(file) per keystroke;
+    /// this path is O(line). Only an edit that crosses a line boundary still
+    /// rebuilds, because only then do the line boundaries themselves move.
+    pub(crate) fn splice_with_range(
+        &mut self,
+        start: TextPosition,
+        end: TextPosition,
+        replacement: &str,
+    ) -> (Option<String>, usize, usize) {
         let start = self.clamp_position(start);
         let end = if end < start { start } else { self.clamp_position(end) };
         let start_offset =
-            self.line_offset(start.line) + self.byte_offset(start.line, start.column);
-        let end_offset = self.line_offset(end.line) + self.byte_offset(end.line, end.column);
+            self.prefix_offset(start.line) + self.byte_offset(start.line, start.column);
+        let end_offset = self.prefix_offset(end.line) + self.byte_offset(end.line, end.column);
+
+        // Single-line edit: change the line, leave the rest of the index alone.
+        // A replacement containing a newline is *not* single-line even when the
+        // range is, because it would split one line into several.
+        if start.line == end.line && !replacement.contains('\n') {
+            let from = self.byte_offset(start.line, start.column);
+            let to = self.byte_offset(end.line, end.column).max(from);
+            let fits =
+                self.lines.get(start.line).is_some_and(|line| from <= to && to <= line.len());
+            if fits {
+                let removed_len = to - from;
+                if let Some(line) = self.lines.get_mut(start.line) {
+                    line.replace_range(from..to, replacement);
+                }
+                // The edit changed this line's byte length, so every offset below
+                // it moved. Entries above stay valid.
+                self.invalidate_prefix_offsets_from(start.line + 1);
+                self.refresh_mirror(start_offset, removed_len, replacement);
+                return (None, start_offset, removed_len);
+            }
+        }
+
+        // Cross-line edit: the line boundaries move, so the index is rebuilt. This
+        // is the Enter key, a paste containing newlines, or a multi-line delete —
+        // each is a single user action, not something that happens per frame.
+        let before = self.full_text();
+        let end_offset = end_offset.min(before.len());
+        let removed_len = end_offset.saturating_sub(start_offset);
         let mut result = String::with_capacity(before.len() + replacement.len());
         result.push_str(&before[..start_offset]);
         result.push_str(replacement);
-        result.push_str(&before[end_offset.min(before.len())..]);
+        result.push_str(&before[end_offset..]);
         self.set_text(result.clone());
-        result
+        (Some(result), start_offset, removed_len)
     }
 
-    /// Returns the byte offset where `line` starts in the joined document.
-    fn line_offset(&self, line: usize) -> usize {
-        let mut offset = 0usize;
-        for index in 0..line {
-            offset += self.lines.get(index).map(|l| l.len()).unwrap_or(0) + 1;
+    /// Applies the same replacement to the mirrored text.
+    ///
+    /// The mirror is spliced directly instead of being re-derived by joining the
+    /// line index: joining is O(document), and the whole point of the in-place
+    /// path is that a keystroke does not touch the whole document.
+    fn refresh_mirror(&mut self, start: usize, removed_len: usize, replacement: &str) {
+        let mut text = self.text.borrow_mut();
+        let end = start.saturating_add(removed_len);
+        if start > text.len() || end > text.len() {
+            // The mirror is out of step (a caller changed the document without
+            // going through the splice path); rebuild it from the index.
+            let joined = self.lines.join("\n");
+            *text = joined;
+            return;
         }
-        offset
+        text.replace_range(start..end, replacement);
+    }
+
+    /// Returns the byte offset of a position in the joined document.
+    ///
+    /// This is the offset an undo range is expressed in: the joined text is what
+    /// `text` mirrors, so a range recorded against it can be replayed directly.
+    /// The position is clamped, so the result is always a valid offset. Takes
+    /// `&mut self` because it fills the prefix cache on the way.
+    pub(crate) fn total_byte_offset(&mut self, position: TextPosition) -> usize {
+        let position = self.clamp_position(position);
+        self.prefix_offset(position.line) + self.byte_offset(position.line, position.column)
+    }
+
+    /// Returns the line containing `offset` in the joined document.
+    ///
+    /// Clamped, so an offset past the end reports the last line rather than
+    /// panicking. This is the inverse of [`Self::total_byte_offset`] for the one
+    /// direction the edit paths need: a byte offset in, a line number out.
+    pub(crate) fn line_of_byte_offset(&self, offset: usize) -> usize {
+        let mut consumed = 0usize;
+        for (index, line) in self.lines.iter().enumerate() {
+            let end = consumed + line.len();
+            if offset <= end {
+                return index;
+            }
+            consumed = end + 1;
+        }
+        self.lines.len().saturating_sub(1)
+    }
+
+    /// Returns the byte offset where `line` starts, using the prefix cache.
+    ///
+    /// The prefix cache is built lazily in one forward pass and then answers
+    /// every offset in O(1). Without it, a keystroke near the bottom of a large
+    /// document pays a full walk of the line index twice — which is what made
+    /// typing scale with the file even after the splice itself became in-place.
+    fn prefix_offset(&mut self, line: usize) -> usize {
+        self.ensure_prefix_offsets(line + 1);
+        self.prefix_offsets.get(line).copied().unwrap_or(0)
+    }
+
+    /// Fills [`Self::prefix_offsets`] up to and including `line`.
+    fn ensure_prefix_offsets(&mut self, line: usize) {
+        let line = line.min(self.lines.len());
+        if self.prefix_offsets.len() > line {
+            return;
+        }
+        let mut offset = self.prefix_offsets.last().copied().unwrap_or(0);
+        let mut index = self.prefix_offsets.len().saturating_sub(1);
+        while index < line {
+            offset += self.lines.get(index).map(|text| text.len() + 1).unwrap_or(0);
+            self.prefix_offsets.push(offset);
+            index += 1;
+        }
+    }
+
+    /// Drops the prefix-offset cache from `line` down.
+    ///
+    /// An edit to one line changes every offset below it, so the tail has to go.
+    /// Entries above the edit stay valid, which is what keeps the per-edit cost
+    /// proportional to the document only when edits move between lines.
+    fn invalidate_prefix_offsets_from(&mut self, line: usize) {
+        self.prefix_offsets.truncate(line.max(1));
     }
 }
 

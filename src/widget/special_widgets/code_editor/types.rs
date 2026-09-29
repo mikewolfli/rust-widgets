@@ -893,3 +893,79 @@ impl CodeEditorConfig {
         Ok(())
     }
 }
+
+// ── Large-document degradation ───────────────────────────────────────────────
+
+/// What the editor turns off as a document grows, and why.
+///
+/// Every feature listed here costs work proportional to the **document**, which
+/// the per-frame work must not be. Rather than let a very large file stutter,
+/// the editor drops the features whose cost cannot be bounded and says so.
+/// Measured thresholds (release build, see `docs/plans/whitepaper.md` §16):
+///
+/// * typing and painting stay constant up to and beyond a million lines;
+/// * what does not is analysis over the whole document — folding-range
+///   detection, indent-guide inference and syntax state carried across a
+///   million lines.
+///
+/// The level is chosen when the text is set, not probed per frame, so behaviour
+/// cannot change mid-scroll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum DocumentScale {
+    /// Everything on. Comfortable for the sizes the editor is normally used at.
+    #[default]
+    Full,
+    /// A large document: document-wide analysis is off, but every visible-line
+    /// feature (highlighting, guides within the viewport, brackets, diagnostics)
+    /// stays on.
+    Reduced,
+    /// A very large document: the editor presents it readably but edits are
+    /// restricted to what stays responsive, and the status bar names the level.
+    ViewOnly,
+}
+
+/// Line count at which [`DocumentScale::Reduced`] takes effect.
+///
+/// 50 000 lines is roughly 2 MB of Rust source — larger than any file this
+/// editor is expected to be *edited* in, and still small enough that the
+/// remaining per-frame work is far below a frame budget.
+pub const SCALE_REDUCED_LINES: usize = 50_000;
+
+/// Line count at which [`DocumentScale::ViewOnly`] takes effect.
+///
+/// 2 000 000 lines is roughly 80 MB. Past this the undo history alone would be
+/// the dominant memory cost, and a wrong edit is expensive to make and to
+/// notice, so editing is disabled and the reason is shown.
+pub const SCALE_VIEW_ONLY_LINES: usize = 2_000_000;
+
+impl DocumentScale {
+    /// Returns the scale appropriate to a document of `lines` lines.
+    pub fn for_lines(lines: usize) -> Self {
+        if lines >= SCALE_VIEW_ONLY_LINES {
+            Self::ViewOnly
+        } else if lines >= SCALE_REDUCED_LINES {
+            Self::Reduced
+        } else {
+            Self::Full
+        }
+    }
+
+    /// Returns whether document-wide analysis (folding, indent inference) runs.
+    pub fn allows_document_analysis(self) -> bool {
+        matches!(self, Self::Full)
+    }
+
+    /// Returns whether the buffer accepts edits.
+    pub fn allows_editing(self) -> bool {
+        !matches!(self, Self::ViewOnly)
+    }
+
+    /// Returns a short label for the status bar, or `None` at full capability.
+    pub fn notice(self) -> Option<&'static str> {
+        match self {
+            Self::Full => None,
+            Self::Reduced => Some("large file: document-wide analysis off"),
+            Self::ViewOnly => Some("very large file: view only"),
+        }
+    }
+}
