@@ -1,9 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use crate::compat::{format, Box, Duration, HashMap, Instant, String, Vec};
+use crate::compat::{Box, Duration, HashMap, Instant, String, Vec};
 use crate::core::Color;
-use crate::style::theme_state::{StatefulTheme, WidgetState};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 /// The timing curve applied to an animation's raw progress.
 ///
@@ -126,9 +125,11 @@ pub enum AnimationDirection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 /// What an animation's value is before it starts and after it finishes.
 ///
-/// This is a declaration carried on [`AnimationConfig`]; the animators in this
-/// module read the `to`/`from` values directly rather than consulting the mode,
-/// so treat it as a hint for whatever layer consumes the animation.
+/// The `backwards` half is honoured by [`Animation::progress`], which holds the run's first
+/// value during the configured delay when this mode asks for it. The `forwards` half describes
+/// what a *consumer* should do with the finished value — the progress function saturates at
+/// `1.0` either way, so whether that value is kept or dropped is the caller's decision, and
+/// [`AnimationFillMode::fills_forwards`] is the question a caller asks to make it.
 pub enum AnimationFillMode {
     #[default]
     /// Apply no value outside the active interval: before the delay the
@@ -140,6 +141,21 @@ pub enum AnimationFillMode {
     Backwards,
     /// Both [`Self::Backwards`] and [`Self::Forwards`].
     Both,
+}
+
+impl AnimationFillMode {
+    /// Whether the animation holds its first value during its own delay.
+    ///
+    /// The single place this question is answered, so [`Animation::progress`] and any future
+    /// consumer cannot disagree about what `Backwards` and `Both` mean.
+    pub const fn fills_backwards(self) -> bool {
+        matches!(self, Self::Backwards | Self::Both)
+    }
+
+    /// Whether the animation keeps its final value once it has finished.
+    pub const fn fills_forwards(self) -> bool {
+        matches!(self, Self::Forwards | Self::Both)
+    }
 }
 #[derive(Debug, Clone)]
 /// The timing and repetition parameters for one animation.
@@ -404,8 +420,34 @@ impl Animation {
         } else {
             self.start_time.map(|t| t.elapsed()).unwrap_or_default()
         };
+        // # `fill_mode` is read here, not merely carried
+        //
+        // The enum documents itself as "what an animation's value is before it starts and after
+        // it finishes", and it used to say that no animator consulted it. Two of its four states
+        // decide this function's answer, so carrying them without reading them made
+        // `with_fill_mode(Backwards)` a no-op — a builder whose name states a behaviour the code
+        // did not have (principle #37).
+        //
+        // * `Backwards`/`Both` — during the delay the animation holds its *first* value, which is
+        //   progress `0.0` for a forward run. That is already what the branch below returns, so
+        //   the distinction is only observable through `direction`: a `Reverse` run's first value
+        //   is progress `1.0`, and filling backwards must not snap it to `0.0`.
+        // * `None`/`Forwards` — nothing is applied before the delay, so progress reads `0.0`
+        //   regardless of direction.
+        //
+        // After the animation finishes the finite case already saturates at `1.0` (see below),
+        // which is the `Forwards` answer; `None` would ideally drop the value, but "dropped" is a
+        // decision for whoever owns the animated property, not for a progress function that must
+        // return *some* `f32`. The doc says so.
         if elapsed < self.config.delay {
-            return 0.0;
+            return if self.config.fill_mode.fills_backwards() {
+                match self.config.direction {
+                    AnimationDirection::Reverse | AnimationDirection::AlternateReverse => 1.0,
+                    _ => 0.0,
+                }
+            } else {
+                0.0
+            };
         }
         let animation_elapsed = elapsed - self.config.delay;
         // Guard against division by zero when duration is ZERO (default).
@@ -952,23 +994,6 @@ impl AnimationDriver {
 }
 
 crate::impl_default_via_new!(AnimationDriver);
-
-/// Animate a state transition using a StatefulTheme's transition duration.
-/// Returns the AnimationId if a transition was found, or None if no transition is configured.
-pub fn animate_state_transition<F>(
-    driver: &mut AnimationDriver,
-    theme: &StatefulTheme,
-    from: WidgetState,
-    to: WidgetState,
-    on_tick: F,
-) -> Option<AnimationId>
-where
-    F: FnMut(f32, f32) + 'static,
-{
-    let duration_ms = theme.get_transition(&from, &to)?;
-    let duration = Duration::from_millis(duration_ms as u64);
-    Some(driver.animate_linear(format!("state_{from:?}_to_{to:?}"), 0.0, 1.0, duration, on_tick))
-}
 
 /// A group of animations that run concurrently.
 ///
@@ -2521,5 +2546,65 @@ mod tests {
             1.0,
             "a completed finite animation must read 1.0, not wrap back to 0.0"
         );
+    }
+
+    /// `fill_mode` decides what the value is **during the delay**.
+    ///
+    /// The enum, the config field and `with_fill_mode` all existed, and no animator read any of
+    /// them — so `with_fill_mode(AnimationFillMode::Backwards)` was a builder whose name stated a
+    /// behaviour the code did not have (principle #37). It is observable exactly here: a forward
+    /// run's first value is progress `0.0`, which the old code happened to return anyway, but a
+    /// `Reverse` run's first value is `1.0`, and filling backwards must hold that rather than
+    /// snapping to zero.
+    #[test]
+    fn fill_mode_decides_the_value_during_the_delay() {
+        use core::time::Duration;
+        let during_delay = |fill: AnimationFillMode, direction: AnimationDirection| -> f32 {
+            let mut animation = Animation::new(AnimationConfig {
+                duration: Duration::from_millis(10),
+                delay: Duration::from_secs(30),
+                direction,
+                fill_mode: fill,
+                ..AnimationConfig::default()
+            });
+            animation.start();
+            // Well inside the 30 s delay, so the answer comes from the delay branch alone.
+            animation.progress()
+        };
+
+        // A forward run starts at 0.0 whether or not it fills backwards.
+        assert_eq!(during_delay(AnimationFillMode::None, AnimationDirection::Normal), 0.0);
+        assert_eq!(during_delay(AnimationFillMode::Forwards, AnimationDirection::Normal), 0.0);
+        assert_eq!(during_delay(AnimationFillMode::Backwards, AnimationDirection::Normal), 0.0);
+
+        // A reversed run's first value is 1.0, and only a backwards fill holds it there.
+        assert_eq!(
+            during_delay(AnimationFillMode::Backwards, AnimationDirection::Reverse),
+            1.0,
+            "a backwards fill holds the run's first value during the delay"
+        );
+        assert_eq!(
+            during_delay(AnimationFillMode::Both, AnimationDirection::Reverse),
+            1.0,
+            "`Both` includes the backwards half"
+        );
+        assert_eq!(
+            during_delay(AnimationFillMode::None, AnimationDirection::Reverse),
+            0.0,
+            "without a backwards fill nothing is applied before the animation starts"
+        );
+        assert_eq!(
+            during_delay(AnimationFillMode::Forwards, AnimationDirection::Reverse),
+            0.0,
+            "`Forwards` says nothing about the delay, so it must not fill backwards"
+        );
+
+        // The two predicates are the single statement of each half.
+        assert!(AnimationFillMode::Both.fills_backwards());
+        assert!(AnimationFillMode::Both.fills_forwards());
+        assert!(!AnimationFillMode::Forwards.fills_backwards());
+        assert!(!AnimationFillMode::Backwards.fills_forwards());
+        assert!(!AnimationFillMode::None.fills_backwards());
+        assert!(!AnimationFillMode::None.fills_forwards());
     }
 }

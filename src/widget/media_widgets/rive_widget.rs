@@ -291,9 +291,12 @@ pub struct RiveWidget {
     /// Emitted when the animation finishes (all loops completed).
     pub animation_finished: GenericSignal,
     /// Parsed animation data with shapes to render.
+    ///
+    /// The raw JSON source is deliberately **not** kept: parsing happens once, here, and
+    /// everything the renderer needs survives in this value. An earlier revision also stored the
+    /// original string in an `animation_json` field that nothing ever read — a second copy of the
+    /// source whose only possible future was to drift from the parsed form (principle #99).
     animation_data: Option<RiveAnimationData>,
-    /// Raw animation JSON data (optional).
-    animation_json: Option<String>,
 }
 
 impl RiveWidget {
@@ -309,7 +312,6 @@ impl RiveWidget {
             animation_progress: 0.0,
             animation_finished: GenericSignal::new(),
             animation_data: None,
-            animation_json: None,
         }
     }
 
@@ -342,7 +344,6 @@ impl RiveWidget {
         self.frame_timer = 0;
         self.is_playing = false;
         self.animation_data = Some(RiveAnimationData::from_json(name, &parsed));
-        self.animation_json = Some(json_data.to_string());
         self.base.request_redraw();
         Ok(())
     }

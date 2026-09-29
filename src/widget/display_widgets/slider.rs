@@ -162,11 +162,18 @@ impl Slider {
     }
     /// Sets minimum value.
     pub fn set_minimum(&mut self, minimum: i32) {
+        let changed = self.minimum != minimum;
         self.minimum = minimum;
         if self.maximum < self.minimum {
             self.maximum = self.minimum;
         }
         self.set_value(self.value); // Re-clamp
+                                    // `draw` derives the tick marks from the bounds, so moving a bound moves ink. `set_value`
+                                    // above only repaints when the *value* had to be re-clamped, which it may well not have —
+                                    // so a bounds-only change was invisible.
+        if changed {
+            self.base.request_redraw();
+        }
     }
     /// Returns maximum value.
     pub fn maximum(&self) -> i32 {
@@ -174,18 +181,26 @@ impl Slider {
     }
     /// Sets maximum value.
     pub fn set_maximum(&mut self, maximum: i32) {
+        let changed = self.maximum != maximum;
         self.maximum = maximum;
         if self.minimum > self.maximum {
             self.minimum = self.maximum;
         }
         self.set_value(self.value); // Re-clamp
+        if changed {
+            self.base.request_redraw();
+        }
     }
     /// Sets both minimum and maximum in one call.
     /// This is a convenience writer; query bounds via `minimum()` and `maximum()`.
     pub fn set_range(&mut self, minimum: i32, maximum: i32) {
+        let changed = self.minimum != minimum || self.maximum != maximum.max(minimum);
         self.minimum = minimum;
         self.maximum = maximum.max(minimum);
         self.set_value(self.value); // Re-clamp
+        if changed {
+            self.base.request_redraw();
+        }
     }
     /// Returns current value.
     pub fn value(&self) -> i32 {

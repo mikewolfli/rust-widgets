@@ -201,7 +201,12 @@ impl RefreshControl {
 
     /// Sets the pull threshold in pixels.
     pub fn set_threshold(&mut self, threshold: f32) {
+        if self.threshold == threshold {
+            return;
+        }
         self.threshold = threshold;
+        // `draw` sizes the pull indicator against this threshold, so changing it moves the ink.
+        self.base.request_redraw();
     }
 
     /// Returns the pull threshold.
@@ -897,5 +902,22 @@ mod tests {
         );
         rc.handle_event(&Event::MouseLeave { pos: Point::new(500, 500) });
         assert_eq!(rc.widget_state(), WidgetState::Normal, "and that it left");
+    }
+
+    #[test]
+    fn setting_the_threshold_repaints() {
+        let mut control = RefreshControl::new(Rect::new(0, 0, 200, 200));
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        control.base.redraw_requested.connect({
+            let seen = std::sync::Arc::clone(&seen);
+            move || {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+
+        control.set_threshold(120.0);
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "the indicator is sized against this");
+        control.set_threshold(120.0);
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "the same threshold is not a change");
     }
 }

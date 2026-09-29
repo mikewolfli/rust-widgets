@@ -107,7 +107,13 @@ impl CameraPreview {
     ///
     /// Display-only: no device with this id is opened or streamed from.
     pub fn set_camera_id(&mut self, id: u32) {
+        if self.camera_id == id {
+            return;
+        }
         self.camera_id = id;
+        // `draw` labels the preview with the device it shows, so the caption goes stale without
+        // this.
+        self.base.request_redraw();
     }
 
     /// Returns the current camera device ID.
@@ -490,5 +496,22 @@ mod tests {
         assert!(cp.is_active());
         cp.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         assert!(!cp.is_active());
+    }
+
+    #[test]
+    fn setting_the_camera_id_repaints() {
+        let mut preview = CameraPreview::new(Rect::new(0, 0, 200, 200));
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        preview.base.redraw_requested.connect({
+            let seen = std::sync::Arc::clone(&seen);
+            move || {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+
+        preview.set_camera_id(4);
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "the caption names the device, so it is painted");
+        preview.set_camera_id(4);
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "the same id is not a change");
     }
 }

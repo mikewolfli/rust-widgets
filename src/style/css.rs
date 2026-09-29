@@ -465,6 +465,12 @@ impl CssParser {
         for decl in declarations {
             Self::apply_one(decl, style)?;
         }
+        // An authored `shadow:` must reach the face the renderer paints; see
+        // `WidgetStyle::reconcile_shadow_into_surface` for why the two spellings exist and what
+        // went wrong when nothing connected them. Done once per block rather than per declaration
+        // because that is what the surface represents: the *result* of every declaration applied
+        // so far.
+        style.reconcile_shadow_into_surface();
         Ok(())
     }
 
@@ -499,7 +505,11 @@ impl CssParser {
         Self::apply_one(
             &CssDeclaration { property: property.to_string(), value: value.to_string() },
             style,
-        )
+        )?;
+        // The single-declaration path reconciles too, so a programmatic write behaves exactly
+        // like the same line inside a stylesheet.
+        style.reconcile_shadow_into_surface();
+        Ok(())
     }
 
     /// Splits `"property: value"`, rejecting the shapes that cannot be a declaration.
@@ -1590,6 +1600,55 @@ mod tests {
         let shadow = style.shadow.expect("shadow");
         assert_eq!((shadow.x, shadow.y, shadow.blur), (1, 2, 3));
         assert_eq!(shadow.color, Color::rgba(0, 0, 0, 255));
+    }
+
+    /// An authored `shadow:` reaches the face the renderer actually paints.
+    ///
+    /// The property used to be parsed into `WidgetStyle::shadow`, inherited by "`merge`/`inherit`,
+    /// and then read by no renderer at all — the paint path takes its shadow from
+    /// `SurfaceStyle`, which knew shadows only through its elevation ladder. So `shadow: 0 2 6 black`
+    /// was a documented CSS property with no effect whatsoever.
+    ///
+    /// This asserts the whole chain rather than the parse: declaration → style → the surface →
+    /// what `SurfaceStyle::shadow()` hands the painter. The last step is the one that was missing,
+    /// so asserting only `style.shadow` (which the tests above already did) would have kept
+    /// passing while nothing was drawn.
+    #[test]
+    fn an_authored_shadow_reaches_the_painted_surface() {
+        let decl =
+            CssDeclaration { property: "shadow".into(), value: "3px 4px 6px #000080".into() };
+        let mut style = WidgetStyle::default();
+        CssParser::apply_declarations(&[decl], &mut style).expect("apply");
+
+        let surface = style.surface.expect("applying a shadow must leave a surface behind");
+        let painted = surface
+            .shadow(Color::BLACK)
+            .expect("the authored shadow must be the one the renderer asks for");
+        assert_eq!(
+            (painted.x, painted.y, painted.blur),
+            (3, 4, 6),
+            "the four authored numbers must survive to the render layer: {painted:?}"
+        );
+        assert_eq!(
+            painted.color,
+            Color::rgba(0, 0, 128, 255),
+            "including the colour, which the elevation ladder could not have expressed"
+        );
+    }
+
+    /// `shadow: none` clears the override and leaves the surface's own shadow in place.
+    #[test]
+    fn clearing_a_shadow_leaves_the_surfaces_own_shadow_alone() {
+        let mut style = WidgetStyle::default();
+        CssParser::apply_declaration_text("shadow: 1px 1px 2px #000000", &mut style)
+            .expect("apply");
+        CssParser::apply_declaration_text("shadow: none", &mut style).expect("clear");
+        assert!(style.shadow.is_none(), "`none` clears the authored value");
+        let surface = style.surface.expect("the surface survives");
+        assert!(
+            surface.custom_shadow.is_none(),
+            "and the override goes with it, so the level's own shadow applies"
+        );
     }
 
     /// Malformed values are reported rather than silently ignored.

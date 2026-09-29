@@ -3,8 +3,8 @@
 
 //! Input dialog widget.
 use crate::core::{Color, Font, HorizontalAlignment, Rect, Size};
-use crate::event::{Event, EventHandler};
 use crate::event::key_codes;
+use crate::event::{Event, EventHandler};
 use crate::impl_widget_property_hooks;
 use crate::property_names_of;
 use crate::render::RenderContext;
@@ -26,7 +26,13 @@ pub enum InputMode {
     /// Free text, edited through [`InputDialog::text_value`].
     Text,
     /// A whole number, clamped to the `int_min`/`int_max` range set by
-    /// [`InputDialog::get_int`] and stepped by `int_step`.
+    /// [`InputDialog::get_int`].
+    ///
+    /// The dialog stores the range's `step` (read it back with
+    /// [`InputDialog::int_step`]) but does not itself apply increments — a caller that
+    /// wants stepping applies it through [`InputDialog::set_int_value`]. Saying "stepped
+    /// by `int_step`" here, as an earlier revision of this comment did, described a
+    /// behaviour no code in this widget has.
     Integer,
     /// A real number, clamped to the `double_min`/`double_max` range and shown
     /// rounded to `double_decimals` places.
@@ -211,6 +217,21 @@ impl InputDialog {
     /// meaningful value in every mode, but only the `Integer` mode displays it.
     pub fn int_value(&self) -> i64 {
         self.int_value
+    }
+    /// The whole-number increment the range was declared with.
+    ///
+    /// [`InputDialog::get_int`] takes a `step`, stores it, and applies no increments itself —
+    /// the value only changes through [`InputDialog::set_int_value`]. This is the read side of
+    /// that stored number, so a caller can drive stepping without having kept its own copy:
+    ///
+    /// ```ignore
+    /// dialog.set_int_value(dialog.int_value() + dialog.int_step());
+    /// ```
+    ///
+    /// Before this existed the field was written by the constructor and read by nothing at all,
+    /// which made the `step` argument unobservable (principle #99).
+    pub fn int_step(&self) -> i64 {
+        self.int_step
     }
     /// The floating-point value, clamped to the `double_min`/`double_max` range.
     ///

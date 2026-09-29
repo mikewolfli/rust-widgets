@@ -77,6 +77,23 @@ pub struct MaskedEdit {
     display_text: String,
     /// Current cursor position within the display text.
     cursor_pos: usize,
+    /// The other end of the selection, as a **display** position, or `None` when nothing is
+    /// selected.
+    ///
+    /// # Why the anchor is a display position and not a raw index
+    ///
+    /// This control has two coordinate spaces: the *raw* value the user typed, and the *display*
+    /// string with the mask's literals inserted. The caret lives in display space, because that is
+    /// what the user sees and points at, so the anchor does too — a range could not otherwise be
+    /// compared with the caret to decide which end is which. The translation to raw happens once,
+    /// in [`MaskedEdit::selection_raw_range`], so no other method has to know both spaces.
+    selection_anchor: Option<usize>,
+    /// Whether a pointer drag is currently extending a selection.
+    ///
+    /// Set by [`MaskedEdit::press_at`], cleared by [`MaskedEdit::end_drag`]. It exists because
+    /// `MouseMove` is delivered for a bare hover too, so without it a caret the user never grabbed
+    /// would follow the pointer across the field.
+    dragging_selection: bool,
     /// Whether this widget currently has keyboard focus.
     focused: bool,
     /// How the field's content is aligned within its own box.
@@ -107,6 +124,8 @@ impl MaskedEdit {
             raw_text: String::new(),
             display_text: String::new(),
             cursor_pos: 0,
+            selection_anchor: None,
+            dragging_selection: false,
             focused: false,
             alignment: crate::core::Alignment::Left,
             text_changed: Signal1::new(),
@@ -283,13 +302,155 @@ impl MaskedEdit {
     ///
     /// The position is a **segment** index (a display position), so it is clamped to the number of
     /// mask segments rather than to the display string's byte length.
+    ///
+    /// This is the programmatic "put the caret here", not a movement, so it **drops any selection**.
+    /// The `Shift`-aware path a *user* takes is [`Self::select_with_modifiers`], which keeps the
+    /// anchor on purpose. Without the drop, a caller that set a position after a selection left the
+    /// anchor behind, and the next `Shift+arrow` extended from a position belonging to a gesture the
+    /// user had already finished — a range starting somewhere they never chose.
     pub fn set_cursor_pos(&mut self, pos: usize) {
         self.cursor_pos = pos.min(self.segments.len());
+        self.selection_anchor = None;
         self.base.request_redraw();
+    }
+
+    /// The selected range as ordered `(start, end)` **display** positions, or `None` when nothing
+    /// is selected.
+    ///
+    /// Display positions rather than raw indices because that is the space the caret moves in and
+    /// the paint highlights; [`Self::selection_raw_range`] is the one place that translates.
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        let anchor = self.selection_anchor?;
+        let caret = self.cursor_pos.min(self.segments.len());
+        if anchor == caret {
+            return None;
+        }
+        Some(if anchor < caret { (anchor, caret) } else { (caret, anchor) })
+    }
+
+    /// The selected range as ordered `(start, end)` **raw** character indices.
+    ///
+    /// # Why a display range must be re-derived rather than divided
+    ///
+    /// The mask sits *between* the two spaces: display position 5 may already be raw character 2
+    /// because three literal characters precede it. A display range translated by averaging or by
+    /// subtracting the literal count would land on the wrong character, so each end is converted
+    /// independently through [`Self::display_to_raw_index`] — the same function the caret and the
+    /// insert path use, so all three agree about which character a position addresses.
+    ///
+    /// The start is converted from the display position *after* the last selected character while
+    /// the end is converted from the one *before* the first, which is what makes the raw range
+    /// cover exactly the characters the user highlighted and no literal-adjacent neighbour.
+    pub fn selection_raw_range(&self) -> Option<(usize, usize)> {
+        let (start, end) = self.selection_range()?;
+        Some((self.display_to_raw_index(start), self.display_to_raw_index(end)))
+    }
+
+    /// The anchor a `Shift`-extend grows from, if one is set.
+    pub fn selection_anchor(&self) -> Option<usize> {
+        self.selection_anchor
+    }
+
+    /// Drops any selection, leaving the caret where it is.
+    pub fn clear_selection(&mut self) {
+        if self.selection_anchor.take().is_some() {
+            self.base.request_redraw();
+        }
+    }
+
+    /// Selects the whole value: from display position 0 to the end of the mask.
+    pub fn select_all(&mut self) {
+        self.selection_anchor = Some(0);
+        self.cursor_pos = self.segments.len();
+        self.base.request_redraw();
+    }
+
+    /// Moves the caret to display position `target`, honouring the modifier keys held.
+    ///
+    /// # The single entry point for every keyboard movement
+    ///
+    /// Left, Right, Home and End all funnel through here, so "what Shift means" is written once
+    /// instead of four times (principle #101):
+    ///
+    /// * **Shift** — extend: the caret moves to `target` while the anchor stays put, so the
+    ///   selection becomes the range between them. With no anchor yet the current caret is adopted
+    ///   as the anchor, so `Shift+Home` selects the prefix rather than the whole value.
+    /// * **No modifier** — replace: the caret moves and any selection is dropped.
+    ///
+    /// The anchor belongs to the whole gesture, so a later extension does **not** re-anchor; that is
+    /// what makes `Shift+End` after `Shift+Home` sweep back to the other side of the same anchor.
+    ///
+    /// `target` is clamped to the number of mask segments, which is the same bound
+    /// [`Self::set_cursor_pos`] applies — the caret addresses display positions, not bytes.
+    pub fn select_with_modifiers(&mut self, target: usize, modifiers: crate::shortcut::Modifiers) {
+        let target = target.min(self.segments.len());
+        if modifiers.contains(crate::shortcut::Modifiers::SHIFT) {
+            if self.selection_anchor.is_none() {
+                self.selection_anchor = Some(self.cursor_pos.min(self.segments.len()));
+            }
+            self.cursor_pos = target;
+        } else {
+            self.selection_anchor = None;
+            self.cursor_pos = target;
+        }
+        self.normalize_selection();
+        self.base.request_redraw();
+    }
+
+    /// Collapses a zero-width anchor/caret pair to "no selection".
+    fn normalize_selection(&mut self) {
+        if self.selection_anchor == Some(self.cursor_pos) {
+            self.selection_anchor = None;
+        }
+    }
+
+    /// Starts a pointer selection at display position `index`.
+    ///
+    /// A press with no `Shift` begins a new gesture anchored where it landed; with `Shift` it
+    /// extends from the existing anchor, moving the caret to the pressed position. The anchor is
+    /// **not** normalised here — this is the start of a gesture, and a drag grows from it — so the
+    /// collapse happens in [`Self::end_drag`] instead.
+    pub fn press_at(&mut self, index: usize, modifiers: crate::shortcut::Modifiers) {
+        let index = index.min(self.segments.len());
+        if modifiers.contains(crate::shortcut::Modifiers::SHIFT) {
+            if self.selection_anchor.is_none() {
+                self.selection_anchor = Some(self.cursor_pos.min(self.segments.len()));
+            }
+            self.cursor_pos = index;
+        } else {
+            self.selection_anchor = Some(index);
+            self.cursor_pos = index;
+        }
+        self.dragging_selection = true;
+        self.base.request_redraw();
+    }
+
+    /// Extends an in-progress pointer selection to `index`.
+    pub fn drag_to(&mut self, index: usize) {
+        if !self.dragging_selection {
+            return;
+        }
+        self.cursor_pos = index.min(self.segments.len());
+        self.normalize_selection();
+        self.base.request_redraw();
+    }
+
+    /// Ends a pointer selection, collapsing a gesture that never moved. Returns whether one was in
+    /// progress.
+    pub fn end_drag(&mut self) -> bool {
+        let was_dragging = core::mem::replace(&mut self.dragging_selection, false);
+        if was_dragging {
+            self.normalize_selection();
+        }
+        was_dragging
     }
 
     /// Inserts a character at the current cursor position.
     fn insert_char(&mut self, ch: char) {
+        // Typing over a selection replaces it: the highlighted characters go, and the new one takes
+        // their place. This has to happen before the caret is read below, because the replacement
+        // moves the caret to the selection's start.
+        self.delete_selection();
         let raw_idx = self.display_to_raw_index(self.cursor_pos);
         if raw_idx >= self.input_count() {
             return;
@@ -314,6 +475,11 @@ impl MaskedEdit {
 
     /// Deletes the character before the cursor (backspace).
     fn backspace(&mut self) {
+        // A selection is what Backspace means when there is one: the whole range goes, not just the
+        // character behind the caret.
+        if self.delete_selection() {
+            return;
+        }
         if self.raw_text.is_empty() || self.cursor_pos == 0 {
             return;
         }
@@ -334,6 +500,9 @@ impl MaskedEdit {
 
     /// Deletes the character at the cursor (delete).
     fn delete(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
         let raw_idx = self.display_to_raw_index(self.cursor_pos);
         if raw_idx < self.raw_text.chars().count() {
             let start = byte_index_of_char(&self.raw_text, raw_idx);
@@ -348,6 +517,43 @@ impl MaskedEdit {
     /// Rebuilds the display text from raw_text and the mask segments.
     fn update_display_text(&mut self) {
         self.display_text = build_display_text(&self.segments, &self.raw_text);
+    }
+
+    /// Removes the selected raw characters, returns whether anything was removed, and leaves the
+    /// caret at the start of what was selected.
+    ///
+    /// # Why the range goes through the raw space
+    ///
+    /// `raw_text` holds the user's characters with no mask literals in it, so a deletion expressed
+    /// in display positions has to be translated before it can be removed — editing the display
+    /// string would take the mask's own characters with it. Both ends are converted through
+    /// [`Self::selection_raw_range`], which is the same translation the reader uses, so a delete and
+    /// a copy can never disagree about which characters were selected.
+    ///
+    /// The display text is rebuilt afterwards, which re-inserts the literals the shortened raw value
+    /// no longer reaches — so deleting the middle of a formatted number leaves the formatting
+    /// intact rather than a hole in the mask.
+    fn delete_selection(&mut self) -> bool {
+        let Some((raw_start, raw_end)) = self.selection_raw_range() else {
+            self.selection_anchor = None;
+            return false;
+        };
+        if raw_start >= raw_end {
+            self.selection_anchor = None;
+            return false;
+        }
+        let start = byte_index_of_char(&self.raw_text, raw_start);
+        let end = byte_index_of_char(&self.raw_text, raw_end);
+        self.raw_text.replace_range(start..end, "");
+        self.update_display_text();
+        // The caret returns to the display position the removed run began at, which is where the
+        // user expects to keep typing. `segment_before_raw_index` answers "the segment before this
+        // character", and after the removal that is exactly the first position the run vacated.
+        self.cursor_pos = self.segment_before_raw_index(raw_start);
+        self.selection_anchor = None;
+        self.text_changed.emit(self.raw_text.clone());
+        self.base.request_redraw();
+        true
     }
 
     /// Returns the number of input segments in the mask.
@@ -410,6 +616,41 @@ impl MaskedEdit {
     /// below reads it too, so the clickable area is exactly the painted one.
     fn field_rect(&self) -> Rect {
         ControlMetrics::full_width_band(self.geometry(), dimensions::TEXT_FIELD_MIN_HEIGHT)
+    }
+
+    /// The display position the horizontal coordinate `x` points at.
+    ///
+    /// # How a pixel becomes a display position
+    ///
+    /// The display string is drawn one character per cell at the field's font advance, so the
+    /// distance from the value's origin divided by that advance is the character the pointer is on.
+    /// The advance is **measured through the same font the paint path uses** rather than assumed, so
+    /// a face change moves the click target with the glyphs.
+    ///
+    /// The result saturates at the number of mask segments, which is the space the caret addresses —
+    /// clicking past the end of the value must land at its end, not past the mask. Adding half a cell
+    /// before dividing is what makes a click in the *middle* of a character select that character's
+    /// boundary rather than the one before it, which is what a user pointing at a glyph expects.
+    fn display_position_at_x(&self, x: i32) -> usize {
+        let field = self.field_rect();
+        let font = Font::simple("monospace", 13.0);
+        let cell = font.size().max(1.0) as i32 * 3 / 5; // the shaper's 0.6 factor, in pixels
+        let cell = cell.max(1);
+        let origin = field.x + dimensions::TEXT_FIELD_PADDING_H as i32;
+        let offset = (x - origin).max(0);
+        let index = (offset + cell / 2) / cell;
+        (index as usize).min(self.segments.len())
+    }
+
+    /// The band colour a selection is painted in.
+    ///
+    /// Derived from the field's own ink and fill rather than a fixed blue, so a selection reads on
+    /// the light *and* the dark appearance without a second theme token to keep in step — the same
+    /// derivation the placeholder uses.
+    fn selection_color(&self, text_color: &Color, field_bg: &Color) -> Color {
+        // Two steps, not one: the band has to land *between* ink and fill, because a single blend is
+        // either invisible behind the glyphs or dark enough to swallow them.
+        text_color.blend(field_bg, 0.3).blend(field_bg, 0.25)
     }
 }
 
@@ -687,6 +928,15 @@ impl Draw for MaskedEdit {
         let mut raw_idx = 0;
         let mut display_x = text_x + start_shift;
 
+        // ── The selection, behind the glyphs ──
+        //
+        // Painted as one band covering the *contiguous* run of segments the range spans, before the
+        // segment walk writes any ink, so the characters stay legible on top of it. A band drawn per
+        // segment after its glyph would cover that glyph, and a band drawn across the whole field
+        // would highlight mask literals outside the range — both are visible mistakes, which is why
+        // the band is placed from the range's own display positions rather than from the caret.
+        let selection = self.selection_range();
+
         for (seg_idx, seg) in self.segments.iter().enumerate() {
             // A segment only starts inside the inner rectangle. With one character per segment
             // the cumulative test `< geom.width - padding * 2` is the whole bound.
@@ -701,6 +951,23 @@ impl Draw for MaskedEdit {
             let draw_x = display_x.min(geom.x + geom.width as i32 - padding - 1);
 
             if remaining_w > 0 {
+                // The selection band for this segment, if it is inside the range. Drawn from the same
+                // `display_x`/`remaining_w` the glyph below uses, so the highlight and the character
+                // it sits behind cannot drift apart — a second derivation of the cell's box is how a
+                // selection ends up underlining the neighbouring character.
+                if let Some((sel_start, sel_end)) = selection {
+                    if seg_idx >= sel_start && seg_idx < sel_end {
+                        context.fill_rect(
+                            Rect::new(
+                                draw_x,
+                                geom.y + 2,
+                                (char_width as i32).min(remaining_w).max(1) as u32,
+                                geom.height.saturating_sub(4),
+                            ),
+                            self.selection_color(&ink, &bg_color),
+                        );
+                    }
+                }
                 match seg {
                     MaskSegment::Literal { ch } => {
                         context.draw_text(
@@ -799,23 +1066,50 @@ impl EventHandler for MaskedEdit {
             // area the caller gave, so in a 120 px cell the bottom 36 px of the rectangle
             // are window background, not the control. Hit-testing the drawn box keeps the
             // clickable area equal to the visible one.
-            Event::MousePress { pos, .. } => {
-                if self.field_rect().contains_point(*pos) {
-                    self.focused = true;
-                    self.base.request_redraw();
+            //
+            // A press also places the caret and anchors a selection, which it did not before:
+            // the click only focused the field, so the caret stayed at position 0 and there was no
+            // pointer selection at all.
+            Event::MousePress { pos, button, modifiers, .. }
+                if *button == 1 && self.field_rect().contains_point(*pos) =>
+            {
+                self.focused = true;
+                let index = self.display_position_at_x(pos.x);
+                self.press_at(index, crate::shortcut::Modifiers::from_event_bits(*modifiers));
+            }
+            Event::MouseMove { pos } => {
+                if self.dragging_selection {
+                    let index = self.display_position_at_x(pos.x);
+                    self.drag_to(index);
                 }
             }
-            Event::KeyPress { key, modifiers: _ } => {
+            // A release anywhere ends the gesture, including outside the field: the anchor stays
+            // where the press put it, so the selection the user made is kept.
+            Event::MouseRelease { button, .. } if *button == 1 => {
+                self.end_drag();
+            }
+            Event::KeyPress { key, modifiers } => {
                 if !self.focused {
+                    return;
+                }
+                // The event carries the framework's wire bitmask; translate it once, here, so
+                // nothing below re-derives a bit.
+                let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                let shift = mods.contains(crate::shortcut::Modifiers::SHIFT);
+                let primary = mods.contains(crate::shortcut::Modifiers::PRIMARY);
+
+                if primary && *key == 65 {
+                    // Primary+A: select all. Handled on the control that owns the text.
+                    self.select_all();
                     return;
                 }
                 match *key {
                     8 => {
-                        // Backspace
+                        // Backspace — the character behind the caret, or the whole selection.
                         self.backspace();
                     }
                     127 => {
-                        // Delete
+                        // Delete — the character at the caret, or the whole selection.
                         self.delete();
                     }
                     13 => {
@@ -827,22 +1121,46 @@ impl EventHandler for MaskedEdit {
                         self.base.request_redraw();
                     }
                     37 => {
-                        // Left arrow
+                        // Left — one display position back, extending under Shift. At position 0 the
+                        // caret cannot move, but a plain press still owes the user a deselect.
                         if self.cursor_pos > 0 {
-                            self.cursor_pos -= 1;
-                            self.base.request_redraw();
+                            let target = self.cursor_pos - 1;
+                            self.select_with_modifiers(target, mods);
+                        } else if !shift {
+                            self.clear_selection();
                         }
                     }
                     39 => {
-                        // Right arrow
-                        if self.cursor_pos < self.display_text.len() {
-                            self.cursor_pos += 1;
-                            self.base.request_redraw();
+                        // Right — one display position forward; see the Left arm.
+                        if self.cursor_pos < self.segments.len() {
+                            let target = self.cursor_pos + 1;
+                            self.select_with_modifiers(target, mods);
+                        } else if !shift {
+                            self.clear_selection();
                         }
                     }
+                    36 => {
+                        // Home — the start of the field, or of the whole value with Primary held.
+                        // A masked field is single-line, so both reach position 0; the distinction
+                        // is kept so the chord is not silently swallowed as an unhandled key.
+                        self.select_with_modifiers(0, mods);
+                    }
+                    35 => {
+                        // End — the end of the value; see the Home arm.
+                        self.select_with_modifiers(self.segments.len(), mods);
+                    }
                     _ => {
-                        // Printable character
-                        if *key >= 32 && *key < 127 {
+                        // Printable character. A control chord is not text: `Primary+B` used to be
+                        // inserted as a literal `b`, because the catch-all accepted every
+                        // printable key regardless of the modifiers beside it.
+                        //
+                        // The three modifiers are tested one at a time on purpose:
+                        // `Modifiers::contains` compares the *value* of the mask, so the combined
+                        // `contains(CTRL | ALT | META)` form is true only when all three are held.
+                        let chord = mods.contains(crate::shortcut::Modifiers::CTRL)
+                            || mods.contains(crate::shortcut::Modifiers::ALT)
+                            || mods.contains(crate::shortcut::Modifiers::META);
+                        if !chord && *key >= 32 && *key < 127 {
                             if let Some(ch) = char::from_u32(*key) {
                                 self.insert_char(ch);
                             }
@@ -1130,7 +1448,7 @@ mod tests {
         me.handle_event(&Event::MousePress {
             pos: Point::new(field.x + 10, field.y + field.height as i32 / 2),
             button: 1,
-            modifiers: 0
+            modifiers: 0,
         });
         assert!(me.focused, "a press on the drawn field focuses it");
 
@@ -1138,7 +1456,7 @@ mod tests {
         me.handle_event(&Event::MousePress {
             pos: Point::new(field.x + 10, field.y + field.height as i32 + 40),
             button: 1,
-            modifiers: 0
+            modifiers: 0,
         });
         assert!(!me.focused, "a press below the drawn field must not focus it");
     }
@@ -1357,5 +1675,219 @@ mod tests {
                 "a mask character at {colour:?} is indistinguishable from its field"
             );
         }
+    }
+
+    // ─── Selection ───
+
+    /// The framework's Shift bit on an event mask.
+    const SHIFT_BIT: u32 = 0b0001;
+
+    /// A focused field with a phone mask and the given raw digits typed in.
+    fn phone(raw: &str) -> MaskedEdit {
+        let mut me = MaskedEdit::new(Rect::new(0, 0, 240, 30));
+        me.set_mask("(000) 000-0000");
+        me.set_text(raw);
+        me.focused = true;
+        me
+    }
+
+    /// A Shift-arrow **extends**; a plain arrow replaces.
+    ///
+    /// # The defect this pins
+    ///
+    /// This control tracked only `cursor_pos`, so there was no way to select text at all: the
+    /// arrows moved the caret and that was the whole of the keyboard model. The assertions are on
+    /// the *range* rather than on the anchor, because a range is what the user sees — an
+    /// implementation that moved the caret but forgot the anchor would still satisfy `cursor_pos`
+    /// and select nothing.
+    #[test]
+    fn a_shift_arrow_extends_and_a_plain_arrow_replaces() {
+        let mut me = phone("5551234567");
+        me.set_cursor_pos(5);
+
+        me.handle_event(&Event::key_press(37, SHIFT_BIT));
+        assert_eq!(me.selection_range(), Some((4, 5)), "the first Shift+Left selects one cell");
+        assert_eq!(me.cursor_pos(), 4);
+
+        me.handle_event(&Event::key_press(37, SHIFT_BIT));
+        assert_eq!(me.selection_range(), Some((3, 5)), "the second extends the same range");
+
+        // A plain arrow drops the range but keeps the caret where the user moved it to.
+        me.handle_event(&Event::key_press(37, 0));
+        assert_eq!(me.selection_anchor(), None, "a plain arrow is not an extend");
+        assert_eq!(me.selection_range(), None, "so nothing stays selected");
+    }
+
+    /// An extension keeps **one** anchor, so it is reversible.
+    ///
+    /// # The defect this pins
+    ///
+    /// Re-anchoring at the caret before every shift-movement is the tempting shortcut, and it makes
+    /// the gesture irreversible: `Shift+Home` would leave the anchor at the start, so the following
+    /// `Shift+End` grows from the wrong end. The anchor belongs to the whole gesture.
+    #[test]
+    fn extending_back_and_forth_returns_to_the_anchor() {
+        let mut me = phone("5551234567");
+        me.set_cursor_pos(6);
+
+        me.handle_event(&Event::key_press(36, SHIFT_BIT));
+        assert_eq!(me.selection_anchor(), Some(6), "the anchor is where the gesture began");
+        assert_eq!(me.cursor_pos(), 0, "Home walks the caret to the start");
+        assert_eq!(me.selection_range(), Some((0, 6)));
+
+        me.handle_event(&Event::key_press(35, SHIFT_BIT));
+        assert_eq!(me.selection_anchor(), Some(6), "and it did not move");
+        // The mask is `(000) 000-0000` = 14 segments.
+        assert_eq!(me.selection_range(), Some((6, 14)), "so the range is the other side of it");
+    }
+
+    /// Home and End reach the ends of the field.
+    ///
+    /// # The defect this pins
+    ///
+    /// Home and End were not handled at all, so they fell through to the printable-character arm
+    /// where key 36 is `$` and 35 is `#` — pressing Home typed a dollar sign into the number.
+    #[test]
+    fn home_and_end_reach_the_ends_and_do_not_type() {
+        let mut me = phone("5551234567");
+        me.set_cursor_pos(4);
+        let before = me.raw_text().to_string();
+
+        me.handle_event(&Event::key_press(36, 0));
+        assert_eq!(me.cursor_pos(), 0, "Home is the start of the field");
+        me.handle_event(&Event::key_press(35, 0));
+        assert_eq!(me.cursor_pos(), 14, "End is the end of the mask");
+        assert_eq!(me.raw_text(), before, "and neither key typed a character");
+    }
+
+    /// Primary+A selects the whole value.
+    #[test]
+    fn primary_a_selects_the_whole_value() {
+        let mut me = phone("5551234567");
+        me.handle_event(&Event::key_press(65, 0b1000));
+        assert_eq!(me.selection_range(), Some((0, 14)));
+        assert_eq!(me.selection_raw_range(), Some((0, 10)), "the ten raw digits");
+    }
+
+    /// The selection translates to **raw** indices per end, not by subtracting literals.
+    ///
+    /// # The defect this pins
+    ///
+    /// A display position is not a raw index: the mask inserts `(`, `)`, ` ` and `-` between the
+    /// digits, so display 5 is raw digit 2. A translation that divided or subtracted a literal count
+    /// would land on the wrong digit, and the `delete`/`copy` paths would then disagree with the
+    /// highlight the user is looking at.
+    #[test]
+    fn a_display_range_translates_to_the_matching_raw_digits() {
+        let mut me = phone("5551234567");
+        // Display positions 1..=3 are the three digits after `(`.
+        me.set_cursor_pos(1);
+        me.select_with_modifiers(4, crate::shortcut::Modifiers::SHIFT);
+        assert_eq!(me.selection_range(), Some((1, 4)), "three display cells");
+        assert_eq!(me.selection_raw_range(), Some((0, 3)), "which are the first three digits");
+
+        // And a range that starts after the literals: display 6 is the first digit of the second
+        // group (`(555) 1` has its `1` at display 6), so it maps to raw digit 3.
+        me.set_cursor_pos(6);
+        me.select_with_modifiers(9, crate::shortcut::Modifiers::SHIFT);
+        assert_eq!(me.selection_raw_range(), Some((3, 6)), "the second group of three");
+    }
+
+    /// Typing over a selection replaces it — the operation that makes selecting worth having.
+    #[test]
+    fn typing_over_a_selection_replaces_it() {
+        let mut me = phone("5551234567");
+        me.set_cursor_pos(1);
+        me.select_with_modifiers(4, crate::shortcut::Modifiers::SHIFT);
+        assert_eq!(me.selection_raw_range(), Some((0, 3)));
+
+        me.handle_event(&Event::key_press(57, 0)); // '9'
+        assert_eq!(me.raw_text(), "91234567", "the selected digits were consumed");
+        assert_eq!(me.selection_range(), None, "and the range it described is gone");
+        // The mask is re-applied to the shorter raw value, so the tail reverts to placeholders.
+        assert_eq!(me.text(), "(912) 345-67__", "the mask was re-applied to the shorter value");
+    }
+
+    /// Backspace and Delete both remove the whole selection rather than one character of it.
+    #[test]
+    fn backspace_and_delete_consume_the_selection() {
+        for key in [8u32, 127] {
+            let mut me = phone("5551234567");
+            me.set_cursor_pos(1);
+            me.select_with_modifiers(4, crate::shortcut::Modifiers::SHIFT);
+            me.handle_event(&Event::key_press(key, 0));
+            assert_eq!(me.raw_text(), "1234567", "key {key} removed the three selected digits");
+            assert_eq!(me.selection_range(), None, "key {key} cleared the range");
+        }
+    }
+
+    /// A control chord is not text: `Primary+b` must not be typed into the field.
+    ///
+    /// # The defect this pins
+    ///
+    /// The printable-character arm accepted every key in `32..127` regardless of the modifiers
+    /// beside it, so `Primary+B`, `Alt+1` and any other host accelerator were typed into the value.
+    #[test]
+    fn a_control_chord_is_not_typed_into_the_field() {
+        let mut me = phone("");
+        // `set_text` leaves the caret at the end of the mask, so it is placed at the start — a chord
+        // tested at a full caret would pass for the wrong reason (`insert_char` refuses there).
+        me.set_cursor_pos(1);
+        for (name, bits) in [("Ctrl", 0b0010u32), ("Alt", 0b0100), ("Primary", 0b1000)] {
+            me.handle_event(&Event::key_press(53, bits)); // '5'
+            assert!(me.raw_text().is_empty(), "{name}+5 must not be typed");
+        }
+        // The same key with no modifier is content, so the guard did not disable typing.
+        me.handle_event(&Event::key_press(53, 0));
+        assert_eq!(me.raw_text(), "5");
+    }
+
+    /// A programmatic `set_cursor_pos` drops the selection; the `Shift` path keeps it.
+    #[test]
+    fn set_cursor_pos_drops_the_selection() {
+        let mut me = phone("5551234567");
+        me.set_cursor_pos(1);
+        me.select_with_modifiers(4, crate::shortcut::Modifiers::SHIFT);
+        assert!(me.selection_range().is_some());
+
+        me.set_cursor_pos(2);
+        assert_eq!(me.selection_range(), None, "placing the caret is not extending a range");
+    }
+
+    /// Nothing selected paints no band, so the highlight is additive.
+    #[test]
+    fn a_caret_without_a_selection_paints_no_band() {
+        // One field, rendered twice, so the caret's own state is identical across the two frames and
+        // only the selection can account for a difference.
+        let mut me = phone("5551234567");
+        let _theme_guard = crate::style::theme_test_guard();
+        me.set_cursor_pos(3);
+        assert_eq!(me.selection_range(), None, "a caret alone is not a selection");
+        let with_caret = render_to_svg(&mut me);
+
+        me.clear_selection();
+        let after = render_to_svg(&mut me);
+        assert_eq!(with_caret, after, "clearing a selection that was not there changed nothing");
+    }
+
+    /// The selection is painted, and it does not move or erase the characters it covers.
+    #[test]
+    fn the_selection_is_painted_without_losing_the_digits() {
+        let _theme_guard = crate::style::theme_test_guard();
+        let mut me = phone("5551234567");
+        let plain = render_to_svg(&mut me);
+
+        me.set_cursor_pos(1);
+        me.select_with_modifiers(4, crate::shortcut::Modifiers::SHIFT);
+        let selected = render_to_svg(&mut me);
+
+        assert_ne!(plain, selected, "a selection must be visible");
+        // The glyphs are still emitted: the band sits *behind* them. Losing the digits would mean the
+        // band had been drawn over the ink instead of under it.
+        assert_eq!(
+            crate::widget::svg::text_ink_box(&selected),
+            crate::widget::svg::text_ink_box(&plain),
+            "and the value's ink is where it was"
+        );
     }
 }

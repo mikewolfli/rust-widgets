@@ -256,10 +256,19 @@ impl TabBar {
     }
 
     /// Sets the text of the tab at the given index.
+    /// Renames the tab at `index`.
+    ///
+    /// Repaints: the title is what the strip draws (`draw` measures and elides each tab from its
+    /// own `title`), so a rename that did not mark damage left the old caption on screen.
     pub fn set_tab_text(&mut self, index: usize, text: String) {
-        if let Some(tab) = self.tabs.get_mut(index) {
-            tab.title = text;
+        let Some(tab) = self.tabs.get_mut(index) else {
+            return;
+        };
+        if tab.title == text {
+            return;
         }
+        tab.title = text;
+        self.base.request_redraw();
     }
 
     // ---------------------------------------------------------------------------
@@ -376,8 +385,16 @@ impl TabBar {
     }
 
     /// Sets whether tabs should show a close button.
+    /// Enables or disables the per-tab close buttons, and repaints.
+    ///
+    /// The close button is drawn from this flag (`draw`'s `// Draw close button if closable`),
+    /// so a caller that switched it on saw nothing until an unrelated event repainted the strip.
     pub fn set_closable(&mut self, closable: bool) {
+        if self.closable == closable {
+            return;
+        }
         self.closable = closable;
+        self.base.request_redraw();
     }
 
     /// Returns whether tabs are movable.
@@ -386,8 +403,16 @@ impl TabBar {
     }
 
     /// Sets whether tabs can be moved via drag-and-drop.
+    /// Enables or disables drag-to-reorder, and repaints.
+    ///
+    /// `movable` gates the press arm that arms a drag, and the draw path shows the drag
+    /// affordance, so the flag is both painted and hit-tested — toggling it has to mark damage.
     pub fn set_movable(&mut self, movable: bool) {
+        if self.movable == movable {
+            return;
+        }
         self.movable = movable;
+        self.base.request_redraw();
     }
 
     /// Moves the tab at `from` so that it sits at `to`, and emits
@@ -452,9 +477,19 @@ impl TabBar {
     /// `set_tab_min_width(5000)` on a bar whose maximum was still the 200 default. The two setters
     /// were asymmetric: `set_tab_max_width` already pulled the maximum up to the minimum, this one
     /// left the maximum behind.
+    /// Sets the minimum tab width, raising the maximum with it if needed, and repaints.
+    ///
+    /// Every tab's width is clamped into `min..=max`, so this changes the painted run rather than
+    /// only a number a caller reads back.
     pub fn set_tab_min_width(&mut self, width: u32) {
-        self.tab_min_width = width.max(1);
-        self.tab_max_width = self.tab_max_width.max(self.tab_min_width);
+        let width = width.max(1);
+        let raised_max = self.tab_max_width.max(width);
+        if self.tab_min_width == width && self.tab_max_width == raised_max {
+            return;
+        }
+        self.tab_min_width = width;
+        self.tab_max_width = raised_max;
+        self.base.request_redraw();
     }
 
     /// Returns the maximum tab width.
@@ -465,8 +500,20 @@ impl TabBar {
     /// Sets the maximum tab width.
     ///
     /// Floors at the current minimum, so the pair the clamp is applied to is never inverted.
+    ///
+    /// # The asymmetry this fixes
+    ///
+    /// [`Self::set_tab_min_width`] repaints; this one did not, though the two bounds are the same
+    /// fact seen from either end and both feed `compute_tab_width`. So raising a tab's minimum
+    /// re-laid-out the bar immediately, while lowering its maximum — the gesture a user makes to
+    /// fit *more* tabs in — changed every tab's width on the next unrelated frame instead.
     pub fn set_tab_max_width(&mut self, width: u32) {
-        self.tab_max_width = width.max(self.tab_min_width);
+        let clamped = width.max(self.tab_min_width);
+        if self.tab_max_width == clamped {
+            return;
+        }
+        self.tab_max_width = clamped;
+        self.base.request_redraw();
     }
 
     // ---------------------------------------------------------------------------
@@ -1451,6 +1498,34 @@ mod tests {
         assert!(
             !rectangular.contains("rx=") && !rectangular.contains("<polygon"),
             "a rectangular tab must be a plain rectangle"
+        );
+    }
+
+    /// `set_tab_text` asks for a frame.
+    ///
+    /// The title is what the strip measures, elides and draws, so a rename that did not mark
+    /// damage left the old caption on screen.
+    #[test]
+    fn setting_tab_text_requests_a_redraw() {
+        let mut tb = TabBar::new(Rect::new(0, 0, 300, 32));
+        tb.add_tab("First".to_string());
+        let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let f = std::sync::Arc::clone(&fired);
+            let scope = tb.connection_scope();
+            tb.redraw_requested_signal().connect_scoped(scope, move || {
+                f.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+        }
+
+        tb.set_tab_text(0, "Renamed".to_string());
+        assert!(fired.load(std::sync::atomic::Ordering::SeqCst), "a rename must be drawn");
+
+        fired.store(false, std::sync::atomic::Ordering::SeqCst);
+        tb.set_tab_text(9, "Nowhere".to_string());
+        assert!(
+            !fired.load(std::sync::atomic::Ordering::SeqCst),
+            "an index that addresses nothing must do nothing"
         );
     }
 }

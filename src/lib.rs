@@ -967,6 +967,46 @@ pub fn reapply_active_theme() {
     }
 }
 
+/// Switches to the appearance the **device** asks for, then restyles every live widget.
+///
+/// # Why the two steps are one call
+///
+/// Choosing a theme and painting the widgets that already exist are a single user-visible outcome:
+/// a host that called only the first would have the right `current_theme()` and the old palette on
+/// screen until something else forced a repaint. Composing them here is what keeps "the app follows
+/// the system appearance" from depending on the caller remembering the sweep.
+///
+/// Returns whether the appearance was recognised, so a host can tell "nothing needed doing"
+/// (the device asks for the appearance already active) from "no theme declares that appearance"
+/// (a packaging error worth surfacing). See
+/// [`ThemeManager::follow_environment_appearance`](crate::theme::ThemeManager::follow_environment_appearance)
+/// for what each [`ThemeMode`](crate::style::ThemeMode) resolves to.
+///
+/// # When to call it
+///
+/// The device preference is read through [`crate::style::environment`], whose snapshot is taken once
+/// per frame by [`drive_frame`](crate::drive_frame). A host that learns of a system appearance
+/// change therefore calls this between frames — which is exactly what the environment's own docs
+/// describe ("a host that changed a system setting between frames sees it take effect on the next
+/// one"). A profile without a theme module has nothing to switch and reports `false`.
+#[cfg(not(alloc_frugal))]
+pub fn apply_environment_appearance() -> bool {
+    #[cfg(device_profile)]
+    {
+        let changed = crate::theme::global_theme_manager().follow_environment_appearance();
+        if changed {
+            reapply_active_theme();
+        }
+        changed
+    }
+    #[cfg(not(device_profile))]
+    {
+        // No theme registry in this profile, so no appearance to follow. Reporting `false` is the
+        // truthful answer rather than a fabricated "changed".
+        false
+    }
+}
+
 /// Returns `Ok(id)` with the widget live in the registry, or `Err(reason)`.
 #[cfg(not(alloc_frugal))]
 fn mount_widget_object(

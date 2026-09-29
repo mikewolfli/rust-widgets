@@ -598,7 +598,13 @@ impl LottieWidget {
     /// and a zero period would advance the animation once per millisecond.
     pub fn set_frame_rate(&mut self, fps: f32) {
         if fps.is_finite() && fps > 0.0 {
-            self.frame_rate = fps.clamp(MIN_LOTTIE_FPS, MAX_LOTTIE_FPS);
+            let clamped = fps.clamp(MIN_LOTTIE_FPS, MAX_LOTTIE_FPS);
+            if self.frame_rate == clamped {
+                return;
+            }
+            self.frame_rate = clamped;
+            // `draw` timestamps the progress bar from this, so the readout changed with the rate.
+            self.base.request_redraw();
         }
     }
 
@@ -1719,5 +1725,24 @@ mod tests {
         // No json loaded - empty state.
         lottie.draw(&mut ctx);
         // No crash = test passes.
+    }
+
+    #[test]
+    fn setting_the_frame_rate_repaints() {
+        let mut widget = LottieWidget::new(Rect::new(0, 0, 200, 200));
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        widget.base.redraw_requested.connect({
+            let seen = std::sync::Arc::clone(&seen);
+            move || {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+
+        widget.set_frame_rate(48.0);
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "the readout is timestamped from this");
+        widget.set_frame_rate(48.0);
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "the same rate is not a change");
+        widget.set_frame_rate(f32::NAN);
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "a non-finite rate is refused, so nothing changed");
     }
 }

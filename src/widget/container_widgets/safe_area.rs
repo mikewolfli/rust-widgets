@@ -82,7 +82,13 @@ impl SafeArea {
     ///
     /// Does not request a redraw, so a visible change needs an explicit repaint.
     pub fn set_margin_color(&mut self, color: Color) {
+        if self.margin_color == color {
+            return;
+        }
         self.margin_color = color;
+        // `draw` fills every inset band with this colour, so a change that did not repaint was
+        // invisible until something else forced a frame.
+        self.base.request_redraw();
     }
     /// Sets the top inset, preserving the other three edges.
     pub fn set_top_inset(&mut self, top: u32) {
@@ -362,5 +368,22 @@ mod tests {
         let cr = sa.content_rect();
         assert_eq!(cr.width, 100); // left/right are 0, so width unchanged
         assert_eq!(cr.height, 0);
+    }
+
+    #[test]
+    fn setting_the_margin_colour_repaints() {
+        let mut area = SafeArea::new(Rect::new(0, 0, 200, 200));
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        area.base.redraw_requested.connect({
+            let seen = std::sync::Arc::clone(&seen);
+            move || {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+
+        area.set_margin_color(Color::rgb(1, 2, 3));
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "the inset bands are filled with this colour");
+        area.set_margin_color(Color::rgb(1, 2, 3));
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "the same colour is not a change");
     }
 }

@@ -142,7 +142,13 @@ impl BarcodeScanner {
 
     /// Sets the scan-sweep interval in milliseconds for the animation.
     pub fn set_scan_interval(&mut self, ms: u64) {
-        self.scan_interval = ms.max(10);
+        let clamped = ms.max(10);
+        if self.scan_interval == clamped {
+            return;
+        }
+        self.scan_interval = clamped;
+        // `draw` places the sweep by this interval, so a change moves the ink.
+        self.base.request_redraw();
     }
 
     /// Returns the current scan-sweep interval in milliseconds.
@@ -592,5 +598,22 @@ mod tests {
         assert_eq!(BarcodeFormat::UPCA.name(), "UPC-A");
         assert_eq!(BarcodeFormat::DataMatrix.name(), "Data Matrix");
         assert_eq!(BarcodeFormat::PDF417.name(), "PDF417");
+    }
+
+    #[test]
+    fn setting_the_scan_interval_repaints() {
+        let mut scanner = BarcodeScanner::new(Rect::new(0, 0, 200, 200));
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        scanner.base.redraw_requested.connect({
+            let seen = std::sync::Arc::clone(&seen);
+            move || {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+
+        scanner.set_scan_interval(500);
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "the sweep is placed by this interval");
+        scanner.set_scan_interval(500);
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "the same interval is not a change");
     }
 }

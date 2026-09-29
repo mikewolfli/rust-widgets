@@ -309,11 +309,18 @@ impl PieMenu {
     /// falls back to that floor. The inner radius is pulled down if it would otherwise reach
     /// past 90% of the new outer radius, and the widget geometry is recomputed to the
     /// enclosing square.
+    /// Sets the outer radius, clamping it to a finite value no smaller than
+    /// [`Self::MIN_RADIUS`] and shrinking the inner radius to stay inside it.
+    ///
+    /// Repaints: [`Self::update_geometry`] calls `BaseWidget::set_geometry`, which
+    /// deliberately stores the rectangle **without** requesting a redraw (see its own docs),
+    /// so the caller here owes one.
     pub fn set_radius(&mut self, radius: f32) {
         self.radius =
             if radius.is_finite() { radius.max(Self::MIN_RADIUS) } else { Self::MIN_RADIUS };
         self.inner_radius = self.inner_radius.min(self.radius * 0.9);
         self.update_geometry();
+        self.base.request_redraw();
     }
 
     /// Returns the inner (donut hole) radius.
@@ -339,12 +346,17 @@ impl PieMenu {
     /// A non-finite input is refused (the previous value is kept) rather than propagated:
     /// `f32::max`/`f32::min` return the non-NaN operand, so a NaN input silently produced
     /// whatever the other operand was, which is not a value the caller asked for either.
+    /// Sets the inner (donut hole) radius, clamped inside the outer radius and to at least 2 px.
+    ///
+    /// Repaints: `update_geometry` only stores the rectangle (see
+    /// [`crate::widget::BaseWidget::set_geometry`]), so a caller must ask for the frame.
     pub fn set_inner_radius(&mut self, inner_radius: f32) {
         if !inner_radius.is_finite() {
             return;
         }
         self.inner_radius = inner_radius.min(self.radius * 0.95).max(2.0);
         self.update_geometry();
+        self.base.request_redraw();
     }
 
     /// Returns the center point of the menu.
@@ -355,9 +367,13 @@ impl PieMenu {
     /// Sets the center point of the menu, in parent-relative logical pixels,
     /// and recomputes the widget geometry so it is the square of side
     /// `2 * radius` centred on that point.
+    /// Moves the menu's centre, which also moves its rectangle.
+    ///
+    /// Repaints, for the same reason [`Self::set_radius`] does.
     pub fn set_center(&mut self, center: Point) {
         self.center = center;
         self.update_geometry();
+        self.base.request_redraw();
     }
 
     /// Returns the animation progress (`0.0` to `1.0`).
@@ -398,7 +414,13 @@ impl PieMenu {
 
     /// Sets the hover highlight color. Does not request a redraw.
     pub fn set_hover_color(&mut self, color: Color) {
+        if self.hover_color == color {
+            return;
+        }
         self.hover_color = color;
+        // Both colours are read by `draw` (the highlight fill, and the hovered label's contrast
+        // colour), so without this the change was invisible until something else forced a frame.
+        self.base.request_redraw();
     }
 
     /// Returns the text color for labels.
@@ -408,7 +430,11 @@ impl PieMenu {
 
     /// Sets the text color for labels. Does not request a redraw.
     pub fn set_text_color(&mut self, color: Color) {
+        if self.text_color == color {
+            return;
+        }
         self.text_color = color;
+        self.base.request_redraw();
     }
 
     /// Returns the currently hovered item index, if any.
@@ -1345,7 +1371,11 @@ mod tests {
                 *triggered.lock().unwrap() = true;
             }
         });
-        menu.handle_event(&Event::MousePress { pos: Point::new(100, 100), button: 1, modifiers: 0 });
+        menu.handle_event(&Event::MousePress {
+            pos: Point::new(100, 100),
+            button: 1,
+            modifiers: 0,
+        });
         assert!(!*triggered.lock().unwrap());
 
         // Re-enable and verify events flow again
@@ -1592,5 +1622,49 @@ mod tests {
             menu.radius()
         );
         assert!(menu.inner_radius() >= 2.0 - 1e-4);
+    }
+
+    /// `set_inner_radius` asks for a frame.
+    ///
+    /// Like its siblings `set_radius`/`set_center`, it goes through `update_geometry`, which only
+    /// stores the rectangle — so the caller owes the repaint.
+    #[test]
+    fn setting_inner_radius_requests_a_redraw() {
+        let mut pm = PieMenu::new(crate::core::Point::new(100, 100), 80.0);
+        let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let f = std::sync::Arc::clone(&fired);
+            let scope = pm.connection_scope();
+            pm.redraw_requested_signal().connect_scoped(scope, move || {
+                f.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+        }
+
+        pm.set_inner_radius(12.0);
+        assert!(fired.load(std::sync::atomic::Ordering::SeqCst), "a new hole radius must be drawn");
+    }
+
+    #[test]
+    fn the_colour_setters_repaint() {
+        // Both colours are read by `draw` — the highlight fill and the hovered label's contrast
+        // colour — so a write that did not ask for a frame was invisible until something else
+        // forced one.
+        let mut menu = PieMenu::new(crate::core::Point::new(100, 100), 80.0);
+
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        menu.base.redraw_requested.connect({
+            let seen = std::sync::Arc::clone(&seen);
+            move || {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+
+        menu.set_hover_color(Color::rgb(10, 20, 30));
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "a new hover colour owes a frame");
+        menu.set_hover_color(Color::rgb(10, 20, 30));
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "and re-setting the same value does not");
+
+        menu.set_text_color(Color::rgb(40, 50, 60));
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 2, "a new text colour owes a frame");
     }
 }

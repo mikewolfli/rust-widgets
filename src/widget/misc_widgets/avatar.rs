@@ -433,6 +433,30 @@ mod tests {
     use crate::core::Point;
     use crate::widget::WidgetKind;
 
+    /// A temporary path no other test can collide with.
+    ///
+    /// Every test in this binary shares one process and one temp directory, and
+    /// [`crate::image::cache`] is process-wide, so two tests that write the *same path* with
+    /// *different bytes* read each other's file. `process::id()` does not help — it is the same
+    /// for all of them — so the uniqueness has to come from a counter plus the clock. The
+    /// timestamp follows `src/pdf/tests.rs`'s fixture, and the counter covers two calls inside one
+    /// nanosecond tick.
+    ///
+    /// The caller removes the file it is given; leaving them behind would accumulate in the
+    /// system temp directory across runs.
+    fn avatar_test_path(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let seq = NEXT.fetch_add(1, Ordering::Relaxed);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let mut path = std::env::temp_dir();
+        path.push(format!("rw_avatar_{tag}_{}_{seq}", stamp));
+        path
+    }
+
     #[test]
     fn avatar_default_state() {
         let avatar = Avatar::new(Rect::new(0, 0, 40, 40));
@@ -521,7 +545,11 @@ mod tests {
     fn avatar_handle_event_no_panic() {
         let mut avatar = Avatar::new(Rect::new(0, 0, 40, 40));
         // EventHandler should not panic for any event type
-        avatar.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
+        avatar.handle_event(&Event::MousePress {
+            pos: Point::new(10, 10),
+            button: 1,
+            modifiers: 0,
+        });
         avatar.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
         avatar.handle_event(&Event::MouseMove { pos: Point::new(20, 20) });
         avatar.handle_event(&Event::KeyPress { key: 0x41, modifiers: 0 });
@@ -533,7 +561,11 @@ mod tests {
         let mut avatar = Avatar::new(Rect::new(0, 0, 40, 40));
         avatar.set_enabled(false);
         // Should not panic
-        avatar.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
+        avatar.handle_event(&Event::MousePress {
+            pos: Point::new(10, 10),
+            button: 1,
+            modifiers: 0,
+        });
         avatar.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
     }
 
@@ -599,14 +631,16 @@ mod tests {
         // A 2x2 PNG with one fully-opaque red pixel and three transparent ones, written by hand so
         // the fixture does not depend on an encoder being compiled in.
         //
-        // # Why the filename carries a per-test suffix
+        // # Why the filename is unique per call
         //
-        // [`crate::image::cache`] is process-wide and keyed on content, so two tests that write the
-        // *same path* with *different bytes* can observe each other: the decoder reads whatever the
-        // other test's `write` left, which made `an_unloadable_source_falls_back_to_the_initials`
-        // pass alone and fail under the full suite. A name no other test uses is what makes each
-        // test's I/O its own.
-        let path = std::env::temp_dir().join("rw_avatar_source_real_image.png");
+        // [`crate::image::cache`] is process-wide and keyed on content, and every test in this
+        // binary shares one process, so two tests that write the *same path* with *different
+        // bytes* observe each other: the decoder reads whatever the other test's `write` left.
+        // That made `an_unloadable_source_falls_back_to_the_initials` pass alone and fail under
+        // the full suite — the earlier attempt at this fix described a per-test suffix in this
+        // comment but kept the shared literal filename, so the doc and the code disagreed and the
+        // race stayed. [`avatar_test_path`] is what actually makes each call's I/O its own.
+        let path = avatar_test_path("source_real_image.png");
         std::fs::write(&path, MINIMAL_PNG).expect("the fixture is writable");
         let source = path.to_str().expect("a UTF-8 temp path").to_string();
 
@@ -655,6 +689,12 @@ mod tests {
     #[cfg(all(feature = "image", not(alloc_frugal)))]
     #[test]
     fn an_unloadable_source_falls_back_to_the_initials() {
+        // Holds the crate-wide theme guard: this test renders twice and compares the two frames,
+        // and a concurrent test that switches the active theme would otherwise change the accent
+        // colour between them — which made the comparison fail with two perfectly correct pictures
+        // that differed only in the disc's fill (`rgba(33,150,243)` vs `rgba(100,181,246)`).
+        // Same reason and same precedent as the render tests in `widget::svg`.
+        let _theme_guard = crate::style::theme_test_guard();
         use crate::widget::svg::{render_to_svg, text_ink_boxes};
 
         let build = |source: &str| {
@@ -676,8 +716,7 @@ mod tests {
 
         // A file that exists but is not an image is the same case, so a caller who points at a text
         // file gets the fallback rather than a panic or a blank disc.
-        let not_an_image =
-            std::env::temp_dir().join(format!("rw_avatar_not_an_image_{}.txt", std::process::id()));
+        let not_an_image = avatar_test_path("not_an_image.txt");
         std::fs::write(&not_an_image, b"this is not a picture").expect("writable");
         let garbage = build(not_an_image.to_str().expect("UTF-8 temp path"));
         assert_eq!(garbage, no_source, "undecodable bytes fall back too");
@@ -694,7 +733,8 @@ mod tests {
         let mut avatar = Avatar::new(Rect::new(0, 0, 40, 40));
         assert!(avatar.decoded_source.is_none(), "nothing is decoded before a source is set");
 
-        let path = std::env::temp_dir().join("rw_avatar_cache_test.png");
+        let _theme_guard = crate::style::theme_test_guard();
+        let path = avatar_test_path("cache_test.png");
         std::fs::write(&path, MINIMAL_PNG).expect("the fixture is writable");
         let source = path.to_str().expect("a UTF-8 temp path").to_string();
 

@@ -324,6 +324,20 @@ pub struct SurfaceStyle {
     pub material: Material,
     /// Who draws the face's outer edge.
     pub hairline: Hairline,
+    /// A shadow stated in full rather than derived from [`Self::elevation`].
+    ///
+    /// # Why a surface needs both this and an elevation
+    ///
+    /// The elevation ladder states the *relationship* between levels — one step further down
+    /// and one step softer per level — which is what keeps a raised face consistent across a
+    /// whole UI. It cannot express an authored shadow, and a stylesheet's `shadow: 0 2 6 black`
+    /// is exactly that: four numbers the author chose. Until this field existed those four
+    /// numbers were parsed into [`WidgetStyle`](crate::style::WidgetStyle)`::shadow`, inherited,
+    /// and then discarded — no renderer read them, so the property had no effect at all.
+    ///
+    /// When this is `Some` it **replaces** the derived shadow, because an authored value is more
+    /// specific than a level; `elevation` still governs the bevel, material and hairline.
+    pub custom_shadow: Option<SurfaceShadow>,
 }
 
 impl SurfaceStyle {
@@ -339,6 +353,7 @@ impl SurfaceStyle {
             bevel: None,
             material: Material::Solid,
             hairline: Hairline::Outline,
+            custom_shadow: None,
         }
     }
 
@@ -459,6 +474,11 @@ impl SurfaceStyle {
     /// `tint` is the shadow's colour with the elevation alpha applied, so a theme can state the
     /// shadow's hue once and let each level own its opacity.
     pub fn shadow(&self, tint: Color) -> Option<SurfaceShadow> {
+        // An authored shadow wins over the level's own: the stylesheet named four numbers, which
+        // is a more specific statement than "this face is at level 2".
+        if let Some(custom) = self.custom_shadow {
+            return Some(custom);
+        }
         if !self.draws_shadow() {
             return None;
         }

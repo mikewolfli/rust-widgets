@@ -115,9 +115,6 @@ pub struct FindReplaceDialog {
     // Internal state tracking
     /// Which text field has focus: 0 = find, 1 = replace
     focus_field: u8,
-    /// Cached row rectangles for hit-testing.
-    find_row_rect: Rect,
-    replace_row_rect: Rect,
 }
 
 impl FindReplaceDialog {
@@ -139,8 +136,6 @@ impl FindReplaceDialog {
             replace_all_signal: Signal1::new(),
             close_signal: Signal1::new(),
             focus_field: 0,
-            find_row_rect: Rect::default(),
-            replace_row_rect: Rect::default(),
         }
     }
 
@@ -556,9 +551,13 @@ impl Draw for FindReplaceDialog {
         context.fill_rect(geom, bar);
         context.draw_rect_stroke(geom, border, 1);
 
+        // The row rectangles are local, not mirrored onto `self`.
+        //
+        // They used to be written into two struct fields here and read by nobody: the event
+        // path calls `compute_layout` for itself (see the press arm below), so the mirror could
+        // only ever drift from the value the draw pass actually used — the "write-only field"
+        // shape principle #99 forbids.
         let (find_row, replace_row) = self.compute_layout();
-        self.find_row_rect = find_row;
-        self.replace_row_rect = replace_row;
 
         // ── Find row: label + input + toggles + buttons ──
         //

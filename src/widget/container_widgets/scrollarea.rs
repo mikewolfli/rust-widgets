@@ -248,15 +248,29 @@ impl ScrollArea {
     }
     /// Sets whether the widget is resizable.
     pub fn set_widget_resizable(&mut self, resizable: bool) {
+        if self.widget_resizable == resizable {
+            return;
+        }
         self.widget_resizable = resizable;
+        // `draw` decides whether to paint the corner grip from this, so the control's own ink
+        // depends on it.
+        self.base.request_redraw();
     }
     /// Returns alignment.
     pub fn alignment(&self) -> Alignment {
         self.alignment
     }
     /// Sets alignment.
+    /// Sets how the content is positioned inside the viewport, and repaints.
+    ///
+    /// The alignment is read while drawing the content frame (`content_frame(chrome.content, ..,
+    /// self.alignment)`), so changing it has to mark damage.
     pub fn set_alignment(&mut self, alignment: Alignment) {
+        if self.alignment == alignment {
+            return;
+        }
         self.alignment = alignment;
+        self.base.request_redraw();
     }
     /// Returns horizontal scroll bar policy.
     pub fn horizontal_scroll_bar_policy(&self) -> ScrollBarPolicy {
@@ -1608,5 +1622,36 @@ mod tests {
         let overflow = content_frame(viewport, Size::new(400, 600), false, Alignment::Center);
         assert_eq!((overflow.x, overflow.y), (viewport.x, viewport.y));
         assert_eq!((overflow.width, overflow.height), (400, 600));
+    }
+
+    /// `set_alignment` asks for a frame.
+    ///
+    /// The alignment is read while drawing the content frame, so a change that did not mark
+    /// damage left the content in its old position.
+    #[test]
+    fn setting_alignment_requests_a_redraw() {
+        let mut area = ScrollArea::new(Rect::new(0, 0, 200, 200));
+        let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let f = std::sync::Arc::clone(&fired);
+            let scope = area.connection_scope();
+            area.redraw_requested_signal().connect_scoped(scope, move || {
+                f.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+        }
+
+        // The default is `Center`, so move to a *different* value — a setter that skips a no-op
+        // change would otherwise look like it repainted when it never wrote anything.
+        let target =
+            if area.alignment() == Alignment::Center { Alignment::Left } else { Alignment::Center };
+        area.set_alignment(target);
+        assert!(fired.load(std::sync::atomic::Ordering::SeqCst), "a new alignment must be drawn");
+
+        fired.store(false, std::sync::atomic::Ordering::SeqCst);
+        area.set_alignment(target);
+        assert!(
+            !fired.load(std::sync::atomic::Ordering::SeqCst),
+            "setting the same value must not repaint"
+        );
     }
 }

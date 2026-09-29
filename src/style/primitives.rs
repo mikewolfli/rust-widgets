@@ -595,6 +595,43 @@ impl WidgetStyle {
         }
     }
 
+    /// Propagates the authored `shadow` into the face the renderer actually paints.
+    ///
+    /// # Why this conversion has to exist
+    ///
+    /// A shadow reaches the screen through `surface: Option<SurfaceStyle>`, whose shadow comes
+    /// from its **elevation ladder** (`render::SurfaceStyle::shadow`). `shadow: Option<Shadow>` is
+    /// the stylesheet-facing spelling — it is what CSS's `shadow: <x> <y> <blur> <color>` parses
+    /// into, what `merge`/`inherit` propagate, and what the cookbook documents. The two were never
+    /// connected, so an authored shadow was parsed, inherited and then read by no renderer at all:
+    /// a documented CSS property with no effect (principle #18/#37).
+    ///
+    /// Both the theme-token path and the stylesheet path call this, so there is one derivation
+    /// rather than two that can drift (principle #101).
+    ///
+    /// An **absent** `shadow` clears the override rather than leaving it: `shadow: none` is the
+    /// documented way to remove a shadow a lower-priority sheet supplied (the parser says so at
+    /// its own call site), and `merge` can also leave the field `None` when a more specific layer
+    /// declined to set one. Leaving a stale `custom_shadow` behind would make `none` a no-op
+    /// against the very declaration it is meant to cancel. The level's own shadow is unaffected —
+    /// it is derived from `elevation`, which nothing here touches.
+    pub fn reconcile_shadow_into_surface(&mut self) {
+        let custom_shadow = self.shadow.as_ref().map(|shadow| crate::render::SurfaceShadow {
+            x: shadow.x,
+            y: shadow.y,
+            blur: shadow.blur,
+            color: shadow.color,
+        });
+        // Nothing to say and nothing said before: leave the surface (and its absence) alone, so a
+        // style that never mentioned a shadow does not gain a `SurfaceStyle` it did not ask for.
+        if custom_shadow.is_none() && self.surface.is_none() {
+            return;
+        }
+        let mut surface = self.surface.unwrap_or_else(crate::render::SurfaceStyle::solid);
+        surface.custom_shadow = custom_shadow;
+        self.surface = Some(surface);
+    }
+
     /// Merge another style into this one: set each property if it's `None` (or default).
     pub fn merge(&mut self, other: &WidgetStyle) {
         if self.background_color.is_none() {

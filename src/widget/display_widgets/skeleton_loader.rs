@@ -108,8 +108,16 @@ impl SkeletonLoader {
     }
 
     /// Sets the skeleton placeholder shape.
+    /// Sets the placeholder's shape, and repaints.
+    ///
+    /// The shape drives the geometry the draw path emits (a line, a circle or a rectangle), so a
+    /// silent change would leave the previous shape on screen.
     pub fn set_shape(&mut self, shape: SkeletonShape) {
+        if self.shape == shape {
+            return;
+        }
         self.shape = shape;
+        self.base.request_redraw();
     }
 
     /// Returns the current skeleton placeholder shape.
@@ -515,5 +523,30 @@ mod tests {
         // The disc is clamped to half the *shorter* side, so it cannot exceed the width.
         let svg = render_to_svg(&mut sl);
         assert!(!svg.contains("r=\"0\""), "a disc is never zero-radius: {svg}");
+    }
+
+    /// `set_shape` asks for a frame.
+    ///
+    /// The shape decides the geometry the draw path emits (a line, a circle or a rectangle), so a
+    /// silent change left the previous placeholder on screen.
+    #[test]
+    fn setting_shape_requests_a_redraw() {
+        let mut s = SkeletonLoader::new(Rect::new(0, 0, 200, 20));
+        let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let f = std::sync::Arc::clone(&fired);
+            let scope = s.connection_scope();
+            s.redraw_requested_signal().connect_scoped(scope, move || {
+                f.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+        }
+
+        let other = if s.shape() == SkeletonShape::Rect(200, 20) {
+            SkeletonShape::Circle(12)
+        } else {
+            SkeletonShape::Rect(200, 20)
+        };
+        s.set_shape(other);
+        assert!(fired.load(std::sync::atomic::Ordering::SeqCst), "a new shape must be drawn");
     }
 }

@@ -186,8 +186,16 @@ impl ScrollBar {
         self.orientation
     }
     /// Sets orientation.
+    /// Sets whether the trough runs horizontally or vertically, and repaints.
+    ///
+    /// The orientation selects which axis the bar measures and which way the arrows point, so
+    /// both the paint path and the hit test branch on it.
     pub fn set_orientation(&mut self, orientation: Orientation) {
+        if self.orientation == orientation {
+            return;
+        }
         self.orientation = orientation;
+        self.base.request_redraw();
     }
 
     /// Returns the writing direction the horizontal trough runs in.
@@ -1495,5 +1503,34 @@ mod tests {
             !idle_fill.ends_with("1.00)"),
             "an idle bar must paint translucent ink, not the same opaque fill (got {idle_fill})"
         );
+    }
+
+    /// `set_orientation` asks for a frame.
+    ///
+    /// The orientation selects which axis the bar measures and which way its arrows point, so the
+    /// paint path and the hit test both branch on it — a silent write left the old trough drawn.
+    #[test]
+    fn setting_orientation_requests_a_redraw() {
+        let mut sc = ScrollBar::new(Rect::new(0, 0, 200, 16));
+        let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let f = std::sync::Arc::clone(&fired);
+            let scope = sc.connection_scope();
+            sc.redraw_requested_signal().connect_scoped(scope, move || {
+                f.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+        }
+
+        let other = if sc.orientation() == Orientation::Horizontal {
+            Orientation::Vertical
+        } else {
+            Orientation::Horizontal
+        };
+        sc.set_orientation(other);
+        assert!(fired.load(std::sync::atomic::Ordering::SeqCst), "a new orientation must be drawn");
+
+        fired.store(false, std::sync::atomic::Ordering::SeqCst);
+        sc.set_orientation(other);
+        assert!(!fired.load(std::sync::atomic::Ordering::SeqCst), "setting the same value must not repaint");
     }
 }

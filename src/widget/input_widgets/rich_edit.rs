@@ -33,6 +33,26 @@ pub struct RichEdit {
     base: BaseWidget,
     text: String,
     selection: Option<(usize, usize)>,
+    /// Whether this editor currently owns keyboard focus.
+    ///
+    /// # Why a text editor has to know
+    ///
+    /// The `KeyPress` arm ran for **every** event, so a document that had never been clicked into
+    /// still consumed the keyboard: with two editors on a page, typing into one edited both, and an
+    /// unfocused editor swallowed accelerators the host meant for something else. The framework does
+    /// deliver `FocusGained` / `FocusLost` (see `crate::widget::runtime`), so the fact was available —
+    /// this control simply had no field to record it in.
+    ///
+    /// Defaults to `false`, so a control that was never focused does not consume keys; the pointer
+    /// path focuses on press, which is how a user reaches it.
+    focused: bool,
+    /// Which end of `selection` the caret is at.
+    ///
+    /// The range is stored as an ordered pair, so the moving end is not recoverable from it —
+    /// [`Self::cursor_position`] reports `start`, which is the wrong end for a range built
+    /// leftwards. A `Shift`-extension needs to know which end must stay put, so the caret's own
+    /// position is tracked here and updated by every path that moves it.
+    extend_caret: usize,
     read_only: bool,
     /// Emitted with the full new text on every accepted change. Carries the
     /// whole document, not a delta.
@@ -57,6 +77,8 @@ impl RichEdit {
             base: BaseWidget::new(WidgetKind::RichEdit, geometry, "RichEdit"),
             text: String::new(),
             selection: None,
+            focused: false,
+            extend_caret: 0,
             read_only: false,
             text_changed: Signal1::new(),
             selection_changed: Signal1::new(),
@@ -151,12 +173,17 @@ impl RichEdit {
         self.selection
     }
     /// Sets selection range.
+    ///
+    /// The caret is left at `end`, so a following `Shift`-movement extends from `start` — the
+    /// convention every other control in the crate has, and the one a caller writing
+    /// `set_selection(0, 5)` then pressing Shift+Left expects.
     pub fn set_selection(&mut self, start: usize, end: usize) {
         if self.read_only {
             return;
         }
         let start = start.min(self.text.len());
         let end = end.min(self.text.len());
+        self.extend_caret = end;
         if self.selection == Some((start, end)) {
             return;
         }
@@ -164,6 +191,35 @@ impl RichEdit {
         self.selection_changed.emit(self.selection);
         self.base.request_redraw();
     }
+    /// The byte offset a point falls on, resolved against the laid-out lines.
+    ///
+    /// # How a point becomes an offset
+    ///
+    /// The line is whichever row `y` lands in, using the same `line_height` and origin the paint path
+    /// uses; the within-line offset then comes from [`Self::byte_offset_at_x`], which measures with
+    /// the renderer's own width model. Deriving the row from a second layout would let a click land
+    /// on a different line than the one drawn there.
+    pub fn byte_offset_at_point(&self, pos: crate::core::Point) -> usize {
+        let rect = self.geometry();
+        let padding = 4;
+        let font = crate::core::Font::default();
+        let line_height = font.effective_line_height().max(1.0) as i32;
+        let first_line_y = rect.y + padding + line_height;
+        let row = ((pos.y - first_line_y).max(0) / line_height.max(1)) as usize;
+
+        // Walk the value's own line splitting, so the answer is derived from the text rather than
+        // rebuilt from a second model of where the newlines are.
+        let mut line_start = 0usize;
+        for (index, line) in self.text.lines().enumerate() {
+            if index == row {
+                return line_start + self.byte_offset_at_x(line, pos.x - rect.x);
+            }
+            line_start += line.len() + 1; // the line plus its `\n`
+        }
+        // Below every line the value has (or an empty value): the caret belongs at the end.
+        self.text.len()
+    }
+
     /// Clears selection.
     pub fn clear_selection(&mut self) {
         if self.selection.is_none() {
@@ -171,6 +227,100 @@ impl RichEdit {
         }
         self.selection = None;
         self.selection_changed.emit(None);
+    }
+
+    /// Moves the caret to `target` (a byte offset), honouring the modifier keys held.
+    ///
+    /// # The single entry point for every keyboard movement
+    ///
+    /// Left, Right, Up, Down, Home and End all funnel through here, so "what Shift means" is written
+    /// once (principle #101). Each of them used to carry its own `if *modifiers == 0` guard, which
+    /// meant **Shift was silently ignored**: the arm did not run, and the probe showed
+    /// `Shift+Right` leaving `Some((1, 1))` — the caret had moved and nothing was selected, so the
+    /// key did something visible but not what it says.
+    ///
+    /// The two behaviours are:
+    ///
+    /// * **Shift** — extend: the caret moves to `target` while the anchor stays put, so the range
+    ///   grows from where the gesture began.
+    /// * **No modifier** — replace: the caret moves and the range collapses to zero width there,
+    ///   which is this control's existing spelling for "just a caret" (see the module docs on why
+    ///   `Some((n, n))` rather than `None`).
+    ///
+    /// # Why the anchor cannot be read back out of the range
+    ///
+    /// This control stores the range as an ordered pair, so which end is the *caret* is not
+    /// recorded. [`Self::cursor_position`] answers `start`, which makes a live range `(0, 1)` look
+    /// as though the caret were at 0 — so an implementation that derived the anchor from the caret
+    /// picked the wrong end and the range collapsed on the second extension (observed: `(1, 1)` where
+    /// `(0, 2)` was due). The moving end is therefore tracked in its own field
+    /// ([`Self::extend_caret`]), which is set whenever the caret moves for any reason.
+    ///
+    /// `target` is clamped to the value and snapped to a character boundary, so an offset computed
+    /// from a pixel can never leave the caret inside a multi-byte character.
+    pub fn select_with_modifiers(&mut self, target: usize, modifiers: crate::shortcut::Modifiers) {
+        let target = floor_char_boundary(&self.text, target.min(self.text.len()));
+        // Where the caret is **now**, before it moves. This is the anchor for an extension that has
+        // no live range yet: the field is showing a bare caret, and a `Shift`-movement must grow a
+        // range *from that caret*. Reading the anchor off `selection` instead would pick the new
+        // target — a zero-width range carries no information about where the caret was — and the
+        // first extension would select nothing (observed: `Some((1, 1))` for the first `Shift+Right`
+        // on a caret at 0).
+        let previous_caret = self.extend_caret.min(self.text.len());
+        if modifiers.contains(crate::shortcut::Modifiers::SHIFT) {
+            let anchor = match self.selection.filter(|(s, e)| s != e) {
+                // A live range: the anchor is the end the caret is not at. `extend_caret` records
+                // which end that is, which `selection` alone cannot tell (it stores an ordered pair,
+                // and `cursor_position()` reports `start`).
+                Some((start, end)) => {
+                    if self.extend_caret == start {
+                        end
+                    } else {
+                        start
+                    }
+                }
+                // No live range: start one from where the caret already was.
+                None => previous_caret,
+            };
+            let (start, end) = if anchor <= target { (anchor, target) } else { (target, anchor) };
+            self.selection = Some((start, end));
+        } else {
+            // A plain movement collapses the range onto the new position.
+            self.selection = Some((target, target));
+        }
+        self.extend_caret = target;
+        self.cursor_position_changed.emit(target);
+        self.selection_changed.emit(self.selection);
+        self.base.request_redraw();
+    }
+
+    /// The byte offset the horizontal coordinate `x` points at on `line`.
+    ///
+    /// # How a pixel becomes an offset
+    ///
+    /// The answer is found by walking the line's own characters and measuring the prefix, using
+    /// [`estimate_text_width`](crate::widget::metrics::estimate_text_width) — the same model the
+    /// paint path lays the ink out with and the caret is placed by. A division by an assumed advance
+    /// would be a fourth copy of the width model, which is precisely the defect the caret's own docs
+    /// record ("`col * 7`, with the comment rough char width").
+    ///
+    /// The result is a character boundary by construction, because it is only ever returned at one.
+    pub fn byte_offset_at_x(&self, line: &str, x: i32) -> usize {
+        let font = crate::core::Font::default();
+        let padding = 4;
+        let target = (x - padding).max(0) as f32;
+        let mut best = 0usize;
+        for (index, ch) in line.char_indices() {
+            let midpoint = crate::widget::metrics::estimate_text_width(&line[..index], &font, 1.0)
+                as f32
+                + crate::widget::metrics::estimate_text_width(&ch.to_string(), &font, 1.0) as f32
+                    / 2.0;
+            if target < midpoint {
+                break;
+            }
+            best = index + ch.len_utf8();
+        }
+        best
     }
     /// Returns read-only state.
     pub fn is_read_only(&self) -> bool {
@@ -523,14 +673,48 @@ impl crate::event::EventHandler for RichEdit {
             return;
         }
         match event {
-            crate::event::Event::MousePress { pos: _, button, .. } if *button == 1 => {
+            crate::event::Event::FocusGained { .. } => {
+                self.focused = true;
+                self.base.request_redraw();
+            }
+            crate::event::Event::FocusLost => {
+                self.focused = false;
+                self.base.request_redraw();
+            }
+            crate::event::Event::MousePress { pos, button, .. } if *button == 1 => {
                 self.base.set_mouse_pressed(true);
+                // A press focuses the control, which is how the user reaches it with the pointer.
+                self.focused = true;
+                // A press places the caret where the user aimed. It used to only set the pressed
+                // flag, so clicking into the document left the caret wherever it was and there was
+                // no pointer selection at all — the probe read `Some((0, 0))` after a press in the
+                // middle of the value.
+                let index = self.byte_offset_at_point(*pos);
+                self.set_selection(index, index);
             }
             crate::event::Event::MouseRelease { pos: _, button } if *button == 1 => {
                 self.base.set_mouse_pressed(false);
             }
             crate::event::Event::KeyPress { key, modifiers } => {
-                let cursor = self.selection.map_or(0, |(start, _)| start);
+                // An unfocused editor owns no keys: otherwise a second editor on the page is edited
+                // by the same keystroke, and a control the user never reached swallows the host's
+                // accelerators. The framework delivers the focus pair, so this is a field to check
+                // rather than a condition to guess.
+                if !self.focused {
+                    return;
+                }
+                // The **caret** end of the range, not `selection.start`. The two differ as soon as
+                // a range is built right-to-left, and every movement below is relative to where the
+                // caret is — reading `start` made `Shift+Right` extend in a loop, because `start`
+                // stayed pinned at the anchor while the caret advanced.
+                //
+                // `text.len()` and `0` are clamped in, because `extend_caret` is a stored offset and
+                // a `set_text` that shortened the value could have left it past the end.
+                let cursor = self.extend_caret.min(self.text.len());
+                // The event carries the framework's wire bitmask; translate it once, here.
+                let mods = crate::shortcut::Modifiers::from_event_bits(*modifiers);
+                let shift = mods.contains(crate::shortcut::Modifiers::SHIFT);
+                let primary = mods.contains(crate::shortcut::Modifiers::PRIMARY);
                 match *key {
                     8 if cursor > 0 => {
                         // Backspace — delete char before cursor
@@ -571,14 +755,13 @@ impl crate::event::EventHandler for RichEdit {
                         self.text_changed.emit(self.text.clone());
                         self.cursor_position_changed.emit(new_cursor);
                     }
-                    37 if *modifiers == 0 && cursor > 0 => {
-                        // Left arrow — move cursor left by one char
+                    37 if cursor > 0 => {
+                        // Left arrow — one character back, extending under Shift.
                         let boundary = floor_char_boundary(&self.text, cursor - 1);
-                        self.selection = Some((boundary, boundary));
-                        self.cursor_position_changed.emit(boundary);
+                        self.select_with_modifiers(boundary, mods);
                     }
-                    39 if *modifiers == 0 && cursor < self.text.len() => {
-                        // Right arrow — move cursor right by one *character*.
+                    39 if cursor < self.text.len() => {
+                        // Right arrow — one character forward.
                         //
                         // `floor_char_boundary(cursor + 1)` floors down, so on a multi-byte
                         // character it returned the caret's own position and the key did nothing —
@@ -590,63 +773,63 @@ impl crate::event::EventHandler for RichEdit {
                             .next()
                             .map(|ch| cursor + ch.len_utf8())
                             .unwrap_or(self.text.len());
-                        self.selection = Some((next, next));
-                        self.cursor_position_changed.emit(next);
+                        self.select_with_modifiers(next, mods);
                     }
-                    36 if *modifiers == 0 => {
-                        // Home — move to beginning of current line
-                        let coord = self.byte_offset_to_line_col(cursor);
-                        if let Some((line, _)) = coord {
-                            let new_cursor = self.line_col_to_byte_offset(line, 0);
-                            self.selection = Some((new_cursor, new_cursor));
-                            self.cursor_position_changed.emit(new_cursor);
-                        }
+                    36 => {
+                        // Home — beginning of the current line.
+                        let new_cursor = match self.byte_offset_to_line_col(cursor) {
+                            Some((line, _)) => self.line_col_to_byte_offset(line, 0),
+                            None => 0,
+                        };
+                        self.select_with_modifiers(new_cursor, mods);
                     }
-                    35 if *modifiers == 0 => {
-                        // End — move to end of current line
-                        let coord = self.byte_offset_to_line_col(cursor);
-                        if let Some((line, _)) = coord {
-                            // Find the line end
-                            let mut current_line = 0usize;
-                            let mut line_end = self.text.len();
-                            for (i, ch) in self.text.char_indices() {
-                                if current_line == line && ch == '\n' {
-                                    line_end = i;
-                                    break;
+                    35 => {
+                        // End — end of the current line.
+                        let new_cursor = match self.byte_offset_to_line_col(cursor) {
+                            Some((line, _)) => {
+                                let mut current_line = 0usize;
+                                let mut line_end = self.text.len();
+                                for (i, ch) in self.text.char_indices() {
+                                    if current_line == line && ch == '\n' {
+                                        line_end = i;
+                                        break;
+                                    }
+                                    if ch == '\n' {
+                                        current_line += 1;
+                                    }
                                 }
-                                if ch == '\n' {
-                                    current_line += 1;
-                                }
+                                line_end
                             }
-                            // If we didn't find newline on this line, it's the last line
-                            if current_line == line && line_end == self.text.len() {
-                                // line_end already = text.len()
-                            }
-                            self.selection = Some((line_end, line_end));
-                            self.cursor_position_changed.emit(line_end);
-                        }
+                            None => self.text.len(),
+                        };
+                        self.select_with_modifiers(new_cursor, mods);
                     }
-                    38 if *modifiers == 0 => {
-                        // Up arrow — move cursor up one line if possible
-                        let coord = self.byte_offset_to_line_col(cursor);
-                        if let Some((line, col)) = coord {
+                    38 => {
+                        // Up — one line, keeping the column.
+                        if let Some((line, col)) = self.byte_offset_to_line_col(cursor) {
                             if line > 0 {
                                 let new_cursor = self.line_col_to_byte_offset(line - 1, col);
-                                self.selection = Some((new_cursor, new_cursor));
-                                self.cursor_position_changed.emit(new_cursor);
+                                self.select_with_modifiers(new_cursor, mods);
+                            } else if !shift {
+                                // No line above: a plain press still collapses the range.
+                                self.select_with_modifiers(cursor, mods);
                             }
                         }
                     }
-                    40 if *modifiers == 0 => {
-                        // Down arrow — move cursor down one line if possible
-                        let coord = self.byte_offset_to_line_col(cursor);
-                        if let Some((line, col)) = coord {
+                    40 => {
+                        // Down — see the Up arm.
+                        if let Some((line, col)) = self.byte_offset_to_line_col(cursor) {
                             let new_cursor = self.line_col_to_byte_offset(line + 1, col);
                             if new_cursor != cursor {
-                                self.selection = Some((new_cursor, new_cursor));
-                                self.cursor_position_changed.emit(new_cursor);
+                                self.select_with_modifiers(new_cursor, mods);
+                            } else if !shift {
+                                self.select_with_modifiers(cursor, mods);
                             }
                         }
+                    }
+                    65 if primary => {
+                        // Primary+A: select the whole value.
+                        self.set_selection(0, self.text.len());
                     }
                     _ if *key >= 32 && *key <= 126 => {
                         // Printable ASCII — insert at cursor position
@@ -785,14 +968,14 @@ mod tests {
 
     #[test]
     fn richedit_set_text() {
-        let mut re = RichEdit::new(Rect::new(0, 0, 400, 300));
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 400, 300)));
         re.set_text("Hello RichEdit".to_string());
         assert_eq!(re.text(), "Hello RichEdit");
     }
 
     #[test]
     fn richedit_undo_redo_restores_text() {
-        let mut re = RichEdit::new(Rect::new(0, 0, 400, 300));
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 400, 300)));
         re.set_text("one".to_string());
         re.set_text("two".to_string());
         assert!(re.can_undo());
@@ -805,7 +988,7 @@ mod tests {
 
     #[test]
     fn richedit_control_z_and_control_y_drive_history() {
-        let mut re = RichEdit::new(Rect::new(0, 0, 400, 300));
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 400, 300)));
         re.set_text("before".to_string());
         re.set_text("after".to_string());
         re.handle_event(&crate::event::Event::key_press(90, 2));
@@ -816,7 +999,7 @@ mod tests {
 
     #[test]
     fn richedit_set_text_read_only() {
-        let mut re = RichEdit::new(Rect::new(0, 0, 400, 300));
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 400, 300)));
         re.set_read_only(true);
         re.set_text("Should not change".to_string());
         assert!(re.text().is_empty());
@@ -824,7 +1007,7 @@ mod tests {
 
     #[test]
     fn richedit_read_only() {
-        let mut re = RichEdit::new(Rect::new(0, 0, 400, 300));
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 400, 300)));
         assert!(!re.is_read_only());
         re.set_read_only(true);
         assert!(re.is_read_only());
@@ -834,7 +1017,7 @@ mod tests {
 
     #[test]
     fn richedit_set_selection() {
-        let mut re = RichEdit::new(Rect::new(0, 0, 400, 300));
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 400, 300)));
         re.set_text("Hello World".to_string());
         re.set_selection(0, 5);
         assert_eq!(re.selection(), Some((0, 5)));
@@ -842,7 +1025,7 @@ mod tests {
 
     #[test]
     fn richedit_clear_selection() {
-        let mut re = RichEdit::new(Rect::new(0, 0, 400, 300));
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 400, 300)));
         re.set_text("Hello World".to_string());
         re.set_selection(0, 5);
         re.clear_selection();
@@ -851,7 +1034,7 @@ mod tests {
 
     #[test]
     fn richedit_set_cursor_position() {
-        let mut re = RichEdit::new(Rect::new(0, 0, 400, 300));
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 400, 300)));
         re.set_text("Hello".to_string());
         re.set_cursor_position(3);
         assert_eq!(re.cursor_position(), 3);
@@ -861,14 +1044,14 @@ mod tests {
 
     #[test]
     fn richedit_geometry_delegation() {
-        let mut re = RichEdit::new(Rect::new(0, 0, 400, 300));
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 400, 300)));
         re.set_geometry(Rect::new(10, 10, 500, 400));
         assert_eq!(re.geometry(), Rect::new(10, 10, 500, 400));
     }
 
     #[test]
     fn richedit_visibility() {
-        let mut re = RichEdit::new(Rect::new(0, 0, 400, 300));
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 400, 300)));
         assert!(re.is_visible());
         re.hide();
         assert!(!re.is_visible());
@@ -878,7 +1061,7 @@ mod tests {
 
     #[test]
     fn richedit_enabled() {
-        let mut re = RichEdit::new(Rect::new(0, 0, 400, 300));
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 400, 300)));
         assert!(re.is_enabled());
         re.set_enabled(false);
         assert!(!re.is_enabled());
@@ -911,7 +1094,7 @@ mod tests {
     /// mid-character bound and `drain` panicked. On `"é"` this took the frame down.
     #[test]
     fn delete_removes_a_whole_multibyte_character() {
-        let mut re = RichEdit::new(Rect::new(0, 0, 300, 100));
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 300, 100)));
         re.set_text("éa".to_string());
         re.set_selection(0, 0);
         re.handle_event(&crate::event::Event::key_press(127, 0)); // Delete
@@ -924,7 +1107,7 @@ mod tests {
     /// at the start of every `é`/han character — the caret could never leave it.
     #[test]
     fn the_right_arrow_moves_past_a_multibyte_character() {
-        let mut re = RichEdit::new(Rect::new(0, 0, 300, 100));
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 300, 100)));
         re.set_text("éa".to_string());
         re.set_selection(0, 0);
         let moved = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
@@ -941,5 +1124,178 @@ mod tests {
         // And back again, one character at a time.
         re.handle_event(&crate::event::Event::key_press(37, 0)); // Left
         assert_eq!(re.selection(), Some((0, 0)));
+    }
+
+    // ─── Shift-extend and pointer placement ───
+
+    /// Focuses an editor, because the keyboard is gated on it.
+    ///
+    /// Stated as one helper rather than inline at each test: a user reaches a text control by clicking
+    /// it, and a fixture that skipped that would be exercising a state no user can be in. The gate
+    /// itself is covered by its own test, so this is setup rather than the behaviour under test.
+    fn focused(mut re: RichEdit) -> RichEdit {
+        re.handle_event(&crate::event::Event::FocusGained {
+            reason: crate::event::FocusReason::Programmatic,
+        });
+        re
+    }
+
+    /// The framework's Shift bit on an event mask.
+    const SHIFT_BIT: u32 = 0b0001;
+
+    /// A Shift-arrow **extends** the selection instead of being ignored.
+    ///
+    /// # The defect this pins
+    ///
+    /// Every movement arm carried its own `if *modifiers == 0` guard, so a `Shift` press did not run
+    /// the arm at all. The probe showed what that produced:
+    ///
+    /// ```text
+    /// Shift+Right on "hello world" with the caret at 0  ->  selection = Some((1, 1))
+    /// ```
+    ///
+    /// The caret had moved and the range was zero width, so the key did something visible without
+    /// doing what it says. A selection the user cannot grow is a selection model that is present but
+    /// unreachable from the keyboard.
+    #[test]
+    fn a_shift_arrow_extends_instead_of_being_ignored() {
+        use crate::event::Event;
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 400, 300)));
+        re.set_text("hello world".to_string());
+        re.set_selection(0, 0);
+
+        re.handle_event(&Event::key_press(39, SHIFT_BIT));
+        assert_eq!(re.selection(), Some((0, 1)), "Shift+Right selects one character");
+        assert_eq!(re.cursor_position(), 0, "and the anchor stays at the start");
+
+        re.handle_event(&Event::key_press(39, SHIFT_BIT));
+        assert_eq!(re.selection(), Some((0, 2)), "the second extends the same range");
+
+        // A plain arrow collapses the range onto its new position.
+        re.handle_event(&Event::key_press(39, 0));
+        let (start, end) = re.selection().expect("a plain move leaves a caret, not `None`");
+        assert_eq!(start, end, "a plain arrow is not an extend");
+    }
+
+    /// Extending in the other direction moves the anchor to the far end, so the range stays ordered.
+    #[test]
+    fn extending_leftwards_keeps_the_range_ordered() {
+        use crate::event::Event;
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 400, 300)));
+        re.set_text("hello world".to_string());
+        re.set_selection(5, 5);
+
+        re.handle_event(&Event::key_press(37, SHIFT_BIT)); // Shift+Left
+        assert_eq!(re.selection(), Some((4, 5)), "the range is ordered, and the caret end is 4");
+        re.handle_event(&Event::key_press(37, SHIFT_BIT));
+        assert_eq!(re.selection(), Some((3, 5)), "and it grows from the same anchor");
+    }
+
+    /// Primary+A selects the whole value.
+    #[test]
+    fn primary_a_selects_the_whole_value() {
+        use crate::event::Event;
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 400, 300)));
+        re.set_text("hello".to_string());
+        re.set_selection(2, 2);
+        re.handle_event(&Event::key_press(65, 0b1000));
+        assert_eq!(re.selection(), Some((0, 5)));
+    }
+
+    /// A press puts the caret where the pointer landed.
+    ///
+    /// # The defect this pins
+    ///
+    /// The `MousePress` arm set only the pressed flag, so a click into the document left the caret
+    /// where it was. The probe read `Some((0, 0))` after pressing in the middle of the value, which
+    /// means a user could not put the caret anywhere with the pointer — every edit went to whatever
+    /// position the last keystroke had left behind.
+    #[test]
+    fn a_press_places_the_caret_where_the_pointer_landed() {
+        use crate::event::Event;
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 400, 300)));
+        re.set_text("hello world".to_string());
+        re.set_selection(0, 0);
+
+        // A point well inside the value resolves to a real offset, not to 0.
+        let index = re.byte_offset_at_point(crate::core::Point::new(30, 20));
+        assert!(index > 0, "a point 30 px in must resolve past the first character, got {index}");
+
+        re.handle_event(&Event::mouse_press(30, 20, 1));
+        let (start, end) = re.selection().expect("a press leaves a caret");
+        assert_eq!(start, end, "a press places a caret, not a range");
+        assert_eq!(start, index, "and it is the offset the map computed");
+    }
+
+    /// The pixel-to-offset map is monotonic and total: moving right never moves the caret left, and
+    /// no x resolves inside a multi-byte character.
+    #[test]
+    fn the_pixel_to_offset_map_is_monotonic_and_total() {
+        let re = {
+            let mut re = focused(RichEdit::new(Rect::new(0, 0, 400, 300)));
+            re.set_text("héllo 中文 world".to_string());
+            re
+        };
+        let line = re.text().to_string();
+        let mut previous = 0usize;
+        for x in 0..240 {
+            let index = re.byte_offset_at_x(&line, x);
+            assert!(index <= line.len(), "the offset is inside the value at x={x}");
+            assert!(
+                line.is_char_boundary(index),
+                "x={x} resolved inside a character: {index} in {line:?}"
+            );
+            assert!(index >= previous, "x={x} moved the caret backwards ({previous} -> {index})");
+            previous = index;
+        }
+        assert_eq!(previous, line.len(), "the far end of the line reaches the end of the value");
+    }
+
+    /// A click on a later line resolves to that line, not to the first.
+    #[test]
+    fn a_press_on_a_later_line_resolves_to_that_line() {
+        use crate::event::Event;
+        let mut re = focused(RichEdit::new(Rect::new(0, 0, 400, 300)));
+        re.set_text("abc\ndef".to_string());
+        let second_line = re.byte_offset_at_point(crate::core::Point::new(5, 40));
+        assert!(second_line >= 4, "a point below the first line is in `def`, got {second_line}");
+
+        re.handle_event(&Event::mouse_press(5, 40, 1));
+        let (start, _) = re.selection().expect("a press leaves a caret");
+        assert_eq!(start, second_line);
+    }
+
+    // ─── Focus ───
+
+    /// An unfocused editor ignores the keyboard, and a focused one accepts it.
+    ///
+    /// # The defect this pins
+    ///
+    /// The `KeyPress` arm ran for every event, so an editor nobody had clicked into still consumed the
+    /// keyboard — with two editors on a page, one keystroke edited both.
+    #[test]
+    fn an_unfocused_editor_ignores_the_keyboard() {
+        let mut re = RichEdit::new(Rect::new(0, 0, 300, 200));
+        re.handle_event(&crate::event::Event::key_press(97, 0)); // 'a'
+        assert!(re.text().is_empty(), "an unfocused editor must not take the keystroke");
+
+        re.handle_event(&crate::event::Event::FocusGained {
+            reason: crate::event::FocusReason::Programmatic,
+        });
+        re.handle_event(&crate::event::Event::key_press(97, 0));
+        assert_eq!(re.text(), "a", "once focused it does");
+
+        re.handle_event(&crate::event::Event::FocusLost);
+        re.handle_event(&crate::event::Event::key_press(98, 0)); // 'b'
+        assert_eq!(re.text(), "a", "and losing focus takes the keyboard away again");
+    }
+
+    /// A press focuses the editor, which is how a user reaches it with the pointer.
+    #[test]
+    fn a_press_focuses_the_editor() {
+        let mut re = RichEdit::new(Rect::new(0, 0, 300, 200));
+        re.handle_event(&crate::event::Event::mouse_press(6, 6, 1));
+        re.handle_event(&crate::event::Event::key_press(97, 0)); // 'a'
+        assert_eq!(re.text(), "a", "the press made the editor own the keyboard");
     }
 }

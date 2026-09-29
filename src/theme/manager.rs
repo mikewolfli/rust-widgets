@@ -5,7 +5,7 @@ use super::{AppearanceMode, Borders, Colors, Fonts, Spacing, Theme, ThemeOverrid
 use crate::compat::HashMap;
 use crate::core::{Color, Font};
 use crate::signal::Signal;
-use crate::style::{HighContrastMode, Margin, Padding, WidgetState, WidgetStyle};
+use crate::style::{HighContrastMode, Margin, Padding, ThemeMode, WidgetState, WidgetStyle};
 
 /// Theme registry and active-theme resolver.
 pub struct ThemeManager {
@@ -88,6 +88,41 @@ impl ThemeManager {
         match candidate {
             Some(name) => self.set_theme(&name),
             None => false,
+        }
+    }
+
+    /// Selects the appearance the **device** asks for, if a theme declares it.
+    ///
+    /// # Why this is the only automatic theme switch
+    ///
+    /// [`EnvironmentProvider::color_scheme`](crate::style::environment::EnvironmentProvider::color_scheme)
+    /// and [`Theme::appearance`](crate::theme::AppearanceMode) answer two halves of one question.
+    /// The provider says what the *user asked for* (including "follow the system", which it resolves
+    /// itself); the theme says what it *is*. Nothing joined them, so a host that had faithfully
+    /// reported `Dark` through the environment still painted light — the fact was declared and read
+    /// by nobody.
+    ///
+    /// The conversion is where the two meet. It is deliberately **not** a `From` impl: this is a
+    /// resolution of one preference *against the currently registered themes*, and a `From` would
+    /// imply the mapping is a property of the values alone.
+    ///
+    /// # What each mode resolves to
+    ///
+    /// * [`ThemeMode::Light`] / [`ThemeMode::Dark`] — the matching [`AppearanceMode`].
+    /// * [`ThemeMode::Auto`] — **no answer**, so this does nothing and returns `false`.
+    ///
+    /// The `Auto` arm is the one that matters. `color_scheme`'s own contract says `Auto` means
+    /// "follow, but do not guess": the provider is expected to resolve the system preference
+    /// itself and report `Dark` or `Light`. Treating `Auto` here as "pick light" would be the
+    /// fabricated answer principle #37 forbids — and it would silently overrule a host whose
+    /// *themes* are ordered differently from the guess.
+    ///
+    /// Returns whether the active theme actually changed.
+    pub fn follow_environment_appearance(&mut self) -> bool {
+        match crate::style::environment::environment().color_scheme {
+            ThemeMode::Light => self.set_appearance(AppearanceMode::Light),
+            ThemeMode::Dark => self.set_appearance(AppearanceMode::Dark),
+            ThemeMode::Auto => false,
         }
     }
 
@@ -663,7 +698,11 @@ fn apply_surface_token(
         }
     }
 
+    // `style.shadow` and `surface.custom_shadow` must not disagree — see
+    // `WidgetStyle::reconcile_shadow_into_surface`, which the stylesheet path calls too, so there
+    // is one derivation rather than two that can drift.
     style.surface = Some(surface);
+    style.reconcile_shadow_into_surface();
 }
 
 impl Colors {
@@ -1086,5 +1125,158 @@ impl Theme {
             );
         }
         theme
+    }
+}
+
+#[cfg(all(test, feature = "desktop", widgets_unstripped))]
+mod environment_appearance_tests {
+    use super::*;
+    use crate::core::TextDirection;
+    use crate::style::environment::{
+        install_environment, uninstall_environment, EnvironmentProvider,
+    };
+    use crate::style::{MotionPreference, ThemeMode};
+    use alloc::boxed::Box;
+
+    /// A provider whose only interesting answer is the appearance the device asks for.
+    ///
+    /// The other seven facts are the provider trait's own neutral defaults, written out rather
+    /// than left to a `..Default::default()` so that adding a fact to the trait makes this
+    /// fixture fail to compile — which is the point of a fixture that claims to be complete.
+    struct DeviceAsking(ThemeMode);
+
+    impl EnvironmentProvider for DeviceAsking {
+        fn text_scale(&self) -> f32 {
+            1.0
+        }
+        fn layout_scale(&self) -> f32 {
+            1.0
+        }
+        fn locale(&self) -> Option<&'static str> {
+            None
+        }
+        fn color_scheme(&self) -> ThemeMode {
+            self.0
+        }
+        fn motion_preference(&self) -> MotionPreference {
+            MotionPreference::NoPreference
+        }
+        fn high_contrast(&self) -> bool {
+            false
+        }
+        fn text_direction(&self) -> TextDirection {
+            TextDirection::LeftToRight
+        }
+        fn mirroring(&self) -> bool {
+            false
+        }
+    }
+
+    /// A manager holding a light and a dark theme, so `set_appearance` has both to choose from.
+    ///
+    /// `Theme::default()` is the light preset; the dark one is renamed so the assertion can tell
+    /// which theme won by name, rather than by comparing colour tables that a preset change would
+    /// move underneath it.
+    fn manager_with_both_appearances() -> ThemeManager {
+        let mut manager = ThemeManager::new();
+        let mut dark = Theme::dark();
+        dark.name = "dark-fixture".to_string();
+        dark.appearance = AppearanceMode::Dark;
+        manager.register_theme(dark);
+        manager
+    }
+
+    /// The device's answer reaches the active theme: this is the whole join, end to end.
+    ///
+    /// # The defect this pins
+    ///
+    /// `EnvironmentProvider::color_scheme` and `Theme::appearance` answered two halves of one
+    /// question — what the user asked for, and what a theme is — and **nothing joined them**. A
+    /// host could faithfully report `Dark` through the installed provider and the app would still
+    /// paint light: a declared fact with no reader. This test walks the join rather than asserting
+    /// on `follow_environment_appearance` in isolation, because "the provider says dark" and "the
+    /// dark theme is active" being two separate passing facts is exactly the state that was broken.
+    #[test]
+    fn the_devices_appearance_chooses_the_active_theme() {
+        let _guard = crate::theme::theme_test_guard();
+        let mut manager = manager_with_both_appearances();
+        assert_eq!(manager.current_theme_name(), Theme::default().name, "light at rest");
+
+        // The device says dark: the dark theme becomes active.
+        let previous = install_environment(Box::new(DeviceAsking(ThemeMode::Dark)));
+        let changed = manager.follow_environment_appearance();
+        assert!(changed, "the appearance actually changed, so the answer must be `true`");
+        assert_eq!(manager.current_theme_name(), "dark-fixture");
+
+        // And back: the device saying light selects the light theme again.
+        install_environment(Box::new(DeviceAsking(ThemeMode::Light)));
+        assert!(manager.follow_environment_appearance());
+        assert_eq!(manager.current_theme_name(), Theme::default().name);
+
+        drop(previous);
+        uninstall_environment();
+    }
+
+    /// `Auto` is **not** a synonym for light.
+    ///
+    /// # The defect this pins
+    ///
+    /// `Auto` means "follow, but do not guess": the provider is expected to resolve the system
+    /// preference itself and report `Light` or `Dark`. A library that turned `Auto` into "pick
+    /// light" would be inventing an answer the provider explicitly declined to give — principle
+    /// #37's fabricated capability — and it would overrule a host whose themes are ordered
+    /// differently from the guess. So the honest response is *no change* and `false`, which is
+    /// also what lets a caller tell "nothing needed doing" from "no theme declares that
+    /// appearance".
+    #[test]
+    fn an_auto_preference_changes_nothing_rather_than_guessing_light() {
+        let _guard = crate::theme::theme_test_guard();
+        let mut manager = manager_with_both_appearances();
+
+        // Start on dark, so a guess of "light" would be observable as a change.
+        assert!(manager.set_appearance(AppearanceMode::Dark));
+        assert_eq!(manager.current_theme_name(), "dark-fixture");
+
+        let previous = install_environment(Box::new(DeviceAsking(ThemeMode::Auto)));
+        assert!(
+            !manager.follow_environment_appearance(),
+            "an unresolved preference must not be answered by guessing"
+        );
+        assert_eq!(
+            manager.current_theme_name(),
+            "dark-fixture",
+            "and it must not have moved the active theme off dark"
+        );
+
+        drop(previous);
+        uninstall_environment();
+    }
+
+    /// A device asking for an appearance no registered theme provides reports `false` and keeps
+    /// the current theme, rather than silently falling back to an unrelated one.
+    ///
+    /// This is the "packaging error worth surfacing" the public API's docs describe: the caller
+    /// shipped a light-only theme set on a dark device. Reporting `true` here would hide it, and
+    /// switching to whatever theme happens to be first would be a fabricated answer.
+    #[test]
+    fn a_device_asking_for_an_unregistered_appearance_is_reported_not_guessed() {
+        let _guard = crate::theme::theme_test_guard();
+        // Only the default (light) theme is registered; nothing declares `Dark`.
+        let mut manager = ThemeManager::new();
+        let before = manager.current_theme_name().to_string();
+
+        let previous = install_environment(Box::new(DeviceAsking(ThemeMode::Dark)));
+        assert!(
+            !manager.follow_environment_appearance(),
+            "no registered theme provides dark, so the answer is `false`"
+        );
+        assert_eq!(
+            manager.current_theme_name(),
+            before,
+            "and the light theme the app had still stands rather than being swapped arbitrarily"
+        );
+
+        drop(previous);
+        uninstall_environment();
     }
 }

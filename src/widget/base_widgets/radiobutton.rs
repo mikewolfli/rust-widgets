@@ -4,8 +4,8 @@
 //! Radio button widget.
 use crate::compat::{String, ToString};
 use crate::core::{Color, Font, HorizontalAlignment, Point, Rect, Size};
-use crate::event::{Event, EventHandler};
 use crate::event::key_codes;
+use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
 use crate::signal::{GenericSignal, Signal1};
 use crate::widget::capability::coercion::{expect_bool, expect_string};
@@ -215,6 +215,12 @@ impl RadioButton {
         // redraw re-runs `draw`, not the theme application — so without this the selection
         // paints the unselected fill. See [`crate::style::reapply_active_theme_state`].
         crate::style::reapply_active_theme_state(self);
+        // Re-resolving the style is not the same as asking for a frame: the new fill only
+        // appears when something repaints, and nothing else here is guaranteed to. `CheckBox`
+        // — this control's closest sibling, which shares the same state/re-resolve shape —
+        // does both, and doing only the first is why a programmatic `set_checked` could leave
+        // the old fill on screen.
+        self.base.request_redraw();
         self.checked_changed.emit(checked);
         if checked {
             self.selected.emit();
@@ -1102,6 +1108,43 @@ mod tests {
         assert!(
             fired.load(std::sync::atomic::Ordering::SeqCst),
             "redraw_requested_signal should fire when text is set"
+        );
+    }
+
+    /// `set_checked` asks for a frame, not only a style re-resolution.
+    ///
+    /// Re-resolving the theme writes the new fill into the style, but nothing is repainted until
+    /// something asks — so a programmatic `set_checked(true)` could leave the old fill on screen
+    /// until an unrelated event arrived. `CheckBox::set_state`, the sibling that shares this exact
+    /// state-plus-re-resolve shape, does both; this pins the same for the radio.
+    ///
+    /// The assertion is on the signal rather than on `has_ever_requested_redraw`, because that
+    /// flag is set once at construction by essentially every control in the crate (see its own
+    /// note), so it cannot tell "this setter asked" from "the constructor once asked".
+    #[test]
+    fn setting_checked_requests_a_redraw() {
+        let mut rb = RadioButton::new(Rect::new(0, 0, 50, 20));
+        let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let f = std::sync::Arc::clone(&fired);
+            let scope = rb.connection_scope();
+            rb.redraw_requested_signal().connect_scoped(scope, move || {
+                f.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+        }
+
+        rb.set_checked(true);
+        assert!(
+            fired.load(std::sync::atomic::Ordering::SeqCst),
+            "a state change must repaint, or the new fill is not drawn until something else does"
+        );
+
+        // An unchanged value is not a change, so it must not repaint.
+        fired.store(false, std::sync::atomic::Ordering::SeqCst);
+        rb.set_checked(true);
+        assert!(
+            !fired.load(std::sync::atomic::Ordering::SeqCst),
+            "setting the value it already has must not ask for a frame"
         );
     }
 

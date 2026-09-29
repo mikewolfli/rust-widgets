@@ -81,6 +81,12 @@ pub struct LineEdit {
     /// than accepting a write that does nothing. Defaults to left, so a caller that never asks
     /// behaves exactly as it did.
     alignment: crate::core::Alignment,
+    /// Whether a pointer drag is currently extending a selection.
+    ///
+    /// Set by [`LineEdit::press_at`] and cleared by [`LineEdit::end_drag`]. It exists so a
+    /// `MouseMove` that is *not* part of a gesture — a bare hover, which arrives on every
+    /// pointer step over the field — cannot move a caret the user never grabbed.
+    dragging_selection: bool,
     /// Emitted after the widget's text changes: on edit commits, and after an
     /// undo/redo restores a snapshot. Not emitted when a programmatic
     /// `set_text` is given the text the field already holds.
@@ -126,6 +132,7 @@ impl LineEdit {
             cursor_blink: crate::style::CursorBlink::new(),
             composition: None,
             alignment: crate::core::Alignment::Left,
+            dragging_selection: false,
             text_changed: Signal1::new(),
             editing_finished: GenericSignal::new(),
             return_pressed: GenericSignal::new(),
@@ -381,6 +388,204 @@ impl LineEdit {
     /// Clears selection.
     pub fn clear_selection(&mut self) {
         self.selection_start = None;
+    }
+
+    /// Selects `target` (a byte offset) honouring the modifier keys held at the time.
+    ///
+    /// # What this is the single entry point for
+    ///
+    /// Every keyboard movement in this field — Left, Right, Home, End — and every pointer
+    /// gesture funnels through here, so the anchor rule is written once. Before it existed,
+    /// each of the four movements carried its own copy of the shift test, and a press could
+    /// not extend at all. The two behaviours are:
+    ///
+    /// * **Shift** — extend: the caret moves to `target` and the *anchor* stays put, so the
+    ///   selection becomes the range between them. With no anchor yet, the current caret is
+    ///   adopted as the anchor first (`Home` on a fresh field then selects back to the start).
+    /// * **No modifier** — replace: the caret moves and any selection is dropped.
+    ///
+    /// # Why Home/End must not re-anchor while extending
+    ///
+    /// The first cut of this helper re-anchored at the caret before moving, for every key. That
+    /// made an extension **irreversible**: `Shift+Home` on a caret at 5 selected `0..=5` and left
+    /// the anchor at 5, so the following `Shift+End` selected `5..=len` rather than sweeping to
+    /// the end. The anchor belongs to the whole gesture — it is where the gesture *began* — so
+    /// only a press with no Shift (which starts one) may move it.
+    ///
+    /// `target` is clamped and snapped to a character boundary, so a caller passing a byte
+    /// offset computed from a pixel can never put the caret inside a character.
+    pub fn select_with_modifiers(&mut self, target: usize, modifiers: crate::shortcut::Modifiers) {
+        let target = floor_char_boundary(&self.text, target.min(self.text.len()));
+        if modifiers.contains(crate::shortcut::Modifiers::SHIFT) {
+            // Adopt the caret as the anchor only when this extension is the *first* one; a
+            // gesture already in flight keeps the anchor it started with.
+            if self.selection_start.is_none() {
+                self.selection_start = Some(self.cursor_position);
+            }
+            self.cursor_position = target;
+        } else {
+            self.selection_start = None;
+            self.cursor_position = target;
+        }
+        self.normalize_selection();
+        self.base.request_redraw();
+    }
+
+    /// Places the caret at `pos` and starts a pointer selection.
+    ///
+    /// A press with no modifier begins a *new* selection anchored at the pressed character:
+    /// the anchor is where the pointer went down, so dragging away from it selects the span
+    /// between them (the behaviour every text field has). Holding Shift extends from the
+    /// existing anchor instead, which is the pointer's version of the same modifier rule
+    /// [`Self::select_with_modifiers`] applies to the keyboard.
+    ///
+    /// # Why the anchor is a **character index**, not a position
+    ///
+    /// `index` is a byte offset and is converted once, here, by [`Self::byte_index_at_x`].
+    /// Pressing past the end of the value is not a no-op: the press anchors at the end and
+    /// the following drag then selects backwards, which is how a user selects the tail of a
+    /// value shorter than the field.
+    pub fn press_at(&mut self, index: usize, modifiers: crate::shortcut::Modifiers) {
+        let index = floor_char_boundary(&self.text, index.min(self.text.len()));
+        let shift = modifiers.contains(crate::shortcut::Modifiers::SHIFT);
+        if !shift {
+            // A press with no Shift **starts** a gesture, so it re-anchors where it landed.
+            self.selection_start = Some(index);
+            self.cursor_position = index;
+        } else {
+            // A Shift-press **extends**: the anchor is kept (adopted from the caret when the
+            // gesture is new) and the caret moves to where the pointer went down. Leaving the
+            // caret alone here — an earlier revision did — made a shift-press a no-op that only
+            // re-anchored, so `Shift`-clicking to the start of a value selected nothing and a
+            // following drag grew from a point the user had not pressed.
+            if self.selection_start.is_none() {
+                self.selection_start = Some(self.cursor_position);
+            }
+            self.cursor_position = index;
+        }
+        self.dragging_selection = true;
+        // Deliberately **not** passed through `normalize_selection`.
+        //
+        // A press that lands exactly on the caret produces a zero-width anchor/caret pair, and
+        // collapsing it to "no selection" is right for a *result* — but this is the *start* of a
+        // gesture, and the anchor is the whole point: the drag that follows grows the range from
+        // it. Normalising here deleted the anchor the press had just set, so a drag backwards over
+        // the value selected nothing; the end of the gesture normalises instead.
+        self.base.request_redraw();
+    }
+
+    /// Extends an in-progress pointer selection to the character at `index`.
+    ///
+    /// Only a gesture that began with [`Self::press_at`] continues here, so a bare hover —
+    /// this control is not animated and a `MouseMove` arrives on every pointer step — cannot
+    /// move a caret the user never grabbed. The anchor is left where the press put it.
+    pub fn drag_to(&mut self, index: usize) {
+        if !self.dragging_selection {
+            return;
+        }
+        self.cursor_position = floor_char_boundary(&self.text, index.min(self.text.len()));
+        self.normalize_selection();
+        self.base.request_redraw();
+    }
+
+    /// Ends a pointer selection. Returns whether one was in progress.
+    ///
+    /// This is where a zero-width gesture is collapsed: a press that never moved leaves the caret
+    /// exactly on its anchor, and a highlight of no width is not a selection. The collapse happens
+    /// here, at the end, rather than in [`Self::press_at`] — see the note there, and
+    /// [`Self::normalize_selection`].
+    pub fn end_drag(&mut self) -> bool {
+        let was_dragging = core::mem::replace(&mut self.dragging_selection, false);
+        if was_dragging {
+            self.normalize_selection();
+        }
+        was_dragging
+    }
+
+    /// Collapses a zero-width anchor/caret pair to "no selection".
+    ///
+    /// A caret that sits exactly on its anchor has selected nothing, but keeping the anchor
+    /// set would make a later Shift-press extend from a position the user did not choose and
+    /// leave `selected_text` reporting an empty range. Dropping it here keeps "there is a
+    /// selection" and "`selected_text` is non-empty" the same statement.
+    fn normalize_selection(&mut self) {
+        if self.selection_start == Some(self.cursor_position) {
+            self.selection_start = None;
+        }
+    }
+
+    /// The byte offset of the character *before* the caret.
+    fn previous_char_boundary(&self) -> usize {
+        if self.cursor_position == 0 {
+            return 0;
+        }
+        let caret = floor_char_boundary(&self.text, self.cursor_position.min(self.text.len()));
+        self.text[..caret].char_indices().next_back().map(|(index, _)| index).unwrap_or(0)
+    }
+
+    /// The byte offset of the character *after* the caret.
+    fn next_char_boundary(&self) -> usize {
+        if self.cursor_position >= self.text.len() {
+            return self.text.len();
+        }
+        let caret = floor_char_boundary(&self.text, self.cursor_position.min(self.text.len()));
+        self.text[caret..]
+            .char_indices()
+            .nth(1)
+            .map(|(index, _)| caret + index)
+            .unwrap_or(self.text.len())
+    }
+
+    /// The byte offset a horizontal pixel `x` points at.
+    ///
+    /// # How the pixel is turned into an index
+    ///
+    /// The value's own advance is measured with the renderer's shaper
+    /// ([`RenderContext::shape_text`]) — the same call [`crate::render::fitted_origin`] uses to
+    /// place the ink — and used as a **scale**, not as a character count:
+    ///
+    /// * when the value's clusters are all one advance wide (the crate's shipped face is
+    ///   monospaced), `chars / advance == 1 / cell`, so `round(clicked_chars) - 1` is the
+    ///   exact character the pointer is on, including out past the end of a short value;
+    /// * when they are not, the round trip still yields `clicked_chars` — an advance-weighted
+    ///   character index — which rounds to the nearest cluster the pointer falls on.
+    ///
+    /// Both cases come out of one expression, so there is no separate "is this face
+    /// monospaced?" branch to keep in step with the paint path. The value is clipped to the
+    /// same [`Self::field_rect`] box the paint and the press hit-test use, and the result is
+    /// snapped to a character boundary, which is what keeps `&self.text[..caret]` total when
+    /// the value contains multi-byte characters.
+    fn byte_index_at_x(&self, x: i32) -> usize {
+        if self.text.is_empty() {
+            return 0;
+        }
+        let style = self.base.style();
+        let default_font = crate::core::Font::default();
+        let font = style.font.as_ref().unwrap_or(&default_font);
+        // The box the value is laid out in, derived the only way this file derives it: from the
+        // decoration layout, so a prefix (`$`) and the value's own origin cannot disagree with
+        // the paint (see the `layout` binding in `draw`, which comes from this same call).
+        //
+        // The zero-sized throwaway backend is a **measurement surface**: `decoration_layout`
+        // only ever calls `measure_text`, and `shape_text` only ever reads the font, so neither
+        // writes a command into it. It is zero-sized because a hit test must not rasterise a
+        // frame, and constructing a full-size surface here would allocate one on every click.
+        let mut measurement =
+            crate::render::SoftwarePaintBackend::new(crate::core::Size::new(0, 0), 1.0);
+        let mut context = RenderContext::new(&mut measurement);
+        let layout = self.decoration_layout(&mut context);
+        // The pointer's distance from the value's origin, clamped to the value's own box so a
+        // press on the field's padding (or past the end of a short value) reads as "the
+        // nearest end" rather than as a negative index.
+        let dx = (x - layout.value.x).clamp(0, layout.value.width as i32) as f32;
+        let advance = context.shape_text(&self.text, font).advance().max(1.0);
+        let chars = self.text.chars().count().max(1) as f32;
+        // `saturating_sub` is the whole point: this is a **boundary** count (a caret sits
+        // *before* the character it is nearest), and a click past the last character must
+        // saturate at the end of the value rather than index one past it.
+        let boundary = ((dx * chars / advance).round() as usize).min(chars as usize);
+        let boundary = boundary.saturating_sub(1);
+        self.text.char_indices().nth(boundary).map(|(index, _)| index).unwrap_or(self.text.len())
     }
     /// Inserts text at cursor position.
     ///
@@ -942,6 +1147,168 @@ impl WidgetProperties for LineEdit {
     }
 }
 
+impl LineEdit {
+    /// Routes a key event through the shared selection entry point instead of mutating
+    /// `selection_start` directly.
+    ///
+    /// # Why the dispatch was pulled out of `handle_event`
+    ///
+    /// The four arrows and Home/End each carried their own copy of the shift test — six
+    /// copies of one rule, each free to drift from the others. They now all call
+    /// [`LineEdit::select_with_modifiers`] (the same entry point the pointer gesture uses),
+    /// so what Shift means is written once (principle #101: one concept, one path).
+    ///
+    /// The helper is inherent rather than a trait method because `EventHandler` declares
+    /// only `handle_event`; the trait impl below is a thin façade over it.
+    ///
+    /// Returns whether the key was consumed. A key this field does not handle leaves the
+    /// event to the rest of the chain rather than being silently swallowed.
+    fn handle_key(&mut self, key: u32, modifiers: crate::shortcut::Modifiers) -> bool {
+        match key {
+            8 => {
+                // Backspace
+                self.backspace();
+            }
+            46 => {
+                // Delete
+                self.delete();
+            }
+            13 => {
+                // Enter/Return
+                self.return_pressed.emit();
+                self.editing_finished.emit();
+            }
+            27 => {
+                // Escape
+                self.editing_finished.emit();
+            }
+            37 => {
+                // Left arrow. A plain press deselects and steps one character back; a
+                // Shift press extends from the anchor rather than replacing it, so the
+                // range grows instead of collapsing to a caret (see `select_with_modifiers`).
+                if self.cursor_position > 0 {
+                    let target = self.previous_char_boundary();
+                    self.select_with_modifiers(target, modifiers);
+                } else if !modifiers.contains(crate::shortcut::Modifiers::SHIFT) {
+                    // Already at the start, and no Shift: the key cannot move the caret, but it
+                    // still owes the user the deselect every other plain press performs. It used
+                    // to be dropped entirely, which left a stale range alive after an arrow press
+                    // that plainly meant "just move". A Shift press here has nothing to extend to.
+                    self.clear_selection();
+                    self.base.request_redraw();
+                }
+            }
+            39 => {
+                // Right arrow. Same contract as Left, stepping forward.
+                if self.cursor_position < self.text.len() {
+                    let target = self.next_char_boundary();
+                    self.select_with_modifiers(target, modifiers);
+                } else if !modifiers.contains(crate::shortcut::Modifiers::SHIFT) {
+                    // Already at the end: see the Left arm — the deselect still applies.
+                    self.clear_selection();
+                    self.base.request_redraw();
+                }
+            }
+            36 => {
+                // Home
+                self.select_with_modifiers(0, modifiers);
+            }
+            35 => {
+                // End
+                self.select_with_modifiers(self.text.len(), modifiers);
+            }
+            65 if modifiers.contains(crate::shortcut::Modifiers::PRIMARY) => {
+                // Primary+A: Select all
+                self.select_all();
+            }
+            86 if modifiers.contains(crate::shortcut::Modifiers::PRIMARY) => {
+                // Primary+V: Paste from the platform clipboard.
+                #[cfg(not(alloc_frugal))]
+                {
+                    let pasted = crate::get_clipboard_text();
+                    if !pasted.is_empty() {
+                        self.insert_text(&pasted);
+                    }
+                }
+                #[cfg(alloc_frugal)]
+                {
+                    // Clipboard integration is unavailable in the mini profile.
+                    self.base.redraw_requested.emit();
+                }
+            }
+            67 if modifiers.contains(crate::shortcut::Modifiers::PRIMARY) => {
+                // Primary+C: Copy selection to the platform clipboard.
+                #[cfg(not(alloc_frugal))]
+                {
+                    self.copy_selection_to_clipboard();
+                }
+                #[cfg(alloc_frugal)]
+                {
+                    // Clipboard integration is unavailable in the mini profile.
+                    self.base.redraw_requested.emit();
+                }
+            }
+            88 if modifiers.contains(crate::shortcut::Modifiers::PRIMARY) => {
+                // Primary+X: Copy selection, then delete it.
+                #[cfg(not(alloc_frugal))]
+                {
+                    let selection = self.selected_text();
+                    if !selection.is_empty() {
+                        crate::set_clipboard_text(&selection);
+                        self.backspace(); // removes the selection
+                    }
+                }
+                #[cfg(alloc_frugal)]
+                {
+                    // Clipboard integration is unavailable in the mini profile.
+                    self.base.redraw_requested.emit();
+                }
+            }
+            90 if modifiers.contains(crate::shortcut::Modifiers::PRIMARY) => {
+                let _ = self.undo();
+            }
+            89 if modifiers.contains(crate::shortcut::Modifiers::PRIMARY) => {
+                let _ = self.redo();
+            }
+            _ => {
+                // Character input. A control chord must not be swallowed as text, nor may an
+                // unmapped **non-printable** key be: both used to be typed as their bare
+                // character, so `Ctrl+B` inserted `b` and `Ctrl+Z` inserted `z`.
+                //
+                // The two chords this field swaps the meaning of are the right ones for the
+                // host: undo/redo are `Primary+Z`/`Primary+Y` (handled above), and the
+                // accelerator convention is `from_event_bits_primary_is_ctrl`.
+                // Character input. A control chord must not be swallowed as text, nor may an
+                // unmapped **non-printable** key be: both used to be typed as their bare
+                // character, so `Ctrl+B` inserted `b` and `Ctrl+Z` inserted `z`.
+                //
+                // # Why the three modifiers are tested one at a time
+                //
+                // Combining them with `|` and asking `contains` is not the predicate it reads
+                // as: `Modifiers::contains` compares the *value* of the mask, so
+                // `contains(CTRL | ALT | META)` is true only when **all three** are held at once.
+                // A `Ctrl+B` carries CTRL alone and therefore failed the combined test, which is
+                // exactly the defect this arm exists to stop. Three separate `contains` calls say
+                // what is meant: none of the three is held.
+                let chord_held = modifiers.contains(crate::shortcut::Modifiers::CTRL)
+                    || modifiers.contains(crate::shortcut::Modifiers::ALT)
+                    || modifiers.contains(crate::shortcut::Modifiers::META);
+                if !chord_held {
+                    // Only a **printable** key is content. `char::from_u32(0)` is `\0`, and 9, 10
+                    // and 13 are Tab/Enter/CR — none of them is something a user typed into a
+                    // text field, and all of them are control codes the host owns.
+                    if let Some(ch) = char::from_u32(key).filter(|c| !c.is_control()) {
+                        if ch.is_ascii_graphic() || ch == ' ' {
+                            self.insert_text(&ch.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        true
+    }
+}
+
 impl EventHandler for LineEdit {
     fn handle_event(&mut self, event: &Event) {
         self.base.handle_event(event);
@@ -958,154 +1325,7 @@ impl EventHandler for LineEdit {
         }
         match event {
             Event::KeyPress { key, modifiers } => {
-                match *key {
-                    8 => {
-                        // Backspace
-                        self.backspace();
-                    }
-                    46 => {
-                        // Delete
-                        self.delete();
-                    }
-                    13 => {
-                        // Enter/Return
-                        self.return_pressed.emit();
-                        self.editing_finished.emit();
-                    }
-                    27 => {
-                        // Escape
-                        self.editing_finished.emit();
-                    }
-                    37 => {
-                        // Left arrow — one *character* back, not one byte. A byte step on a
-                        // multi-byte character put the caret inside it, and the next edit then
-                        // snapped to the end of the value rather than to where the user had moved.
-                        if self.cursor_position > 0 {
-                            if modifiers & 1 != 0 {
-                                if self.selection_start.is_none() {
-                                    self.selection_start = Some(self.cursor_position);
-                                }
-                            } else {
-                                self.selection_start = None;
-                            }
-                            let caret = floor_char_boundary(
-                                &self.text,
-                                self.cursor_position.min(self.text.len()),
-                            );
-                            self.cursor_position = self.text[..caret]
-                                .char_indices()
-                                .next_back()
-                                .map(|(index, _)| index)
-                                .unwrap_or(0);
-                        }
-                    }
-                    39 => {
-                        // Right arrow — one character forward (see the Left arm above).
-                        if self.cursor_position < self.text.len() {
-                            if modifiers & 1 != 0 {
-                                if self.selection_start.is_none() {
-                                    self.selection_start = Some(self.cursor_position);
-                                }
-                            } else {
-                                self.selection_start = None;
-                            }
-                            let caret = floor_char_boundary(
-                                &self.text,
-                                self.cursor_position.min(self.text.len()),
-                            );
-                            self.cursor_position = self.text[caret..]
-                                .char_indices()
-                                .nth(1)
-                                .map(|(index, _)| caret + index)
-                                .unwrap_or(self.text.len());
-                        }
-                    }
-                    36 => {
-                        // Home
-                        if modifiers & 1 != 0 {
-                            if self.selection_start.is_none() {
-                                self.selection_start = Some(self.cursor_position);
-                            }
-                        } else {
-                            self.selection_start = None;
-                        }
-                        self.cursor_position = 0;
-                    }
-                    35 => {
-                        // End
-                        if modifiers & 1 != 0 {
-                            if self.selection_start.is_none() {
-                                self.selection_start = Some(self.cursor_position);
-                            }
-                        } else {
-                            self.selection_start = None;
-                        }
-                        self.cursor_position = self.text.len();
-                    }
-                    65 if modifiers & 2 != 0 => {
-                        // Ctrl+A: Select all
-                        self.select_all();
-                    }
-                    86 if modifiers & 2 != 0 => {
-                        // Ctrl+V: Paste from the platform clipboard.
-                        #[cfg(not(alloc_frugal))]
-                        {
-                            if !self.read_only {
-                                let pasted = crate::get_clipboard_text();
-                                if !pasted.is_empty() {
-                                    self.insert_text(&pasted);
-                                }
-                            }
-                        }
-                        #[cfg(alloc_frugal)]
-                        {
-                            // Clipboard integration is unavailable in the mini profile.
-                            self.base.redraw_requested.emit();
-                        }
-                    }
-                    67 if modifiers & 2 != 0 => {
-                        // Ctrl+C: Copy selection to the platform clipboard.
-                        #[cfg(not(alloc_frugal))]
-                        {
-                            self.copy_selection_to_clipboard();
-                        }
-                        #[cfg(alloc_frugal)]
-                        {
-                            // Clipboard integration is unavailable in the mini profile.
-                            self.base.redraw_requested.emit();
-                        }
-                    }
-                    88 if modifiers & 2 != 0 => {
-                        // Ctrl+X: Copy selection, then delete it.
-                        #[cfg(not(alloc_frugal))]
-                        {
-                            let selection = self.selected_text();
-                            if !selection.is_empty() {
-                                crate::set_clipboard_text(&selection);
-                                self.backspace(); // removes the selection
-                            }
-                        }
-                        #[cfg(alloc_frugal)]
-                        {
-                            // Clipboard integration is unavailable in the mini profile.
-                            self.base.redraw_requested.emit();
-                        }
-                    }
-                    90 if modifiers & 2 != 0 => {
-                        let _ = self.undo();
-                    }
-                    89 if modifiers & 2 != 0 => {
-                        let _ = self.redo();
-                    }
-                    _ => {
-                        // Character input
-                        if let Some(ch) = char::from_u32(*key) {
-                            if ch.is_ascii_graphic() || ch == ' ' {
-                                self.insert_text(&ch.to_string());
-                            }
-                        }
-                    }
-                }
+                self.handle_key(*key, crate::shortcut::Modifiers::from_event_bits(*modifiers));
             }
             Event::FocusLost => {
                 self.set_focused(false);
@@ -1120,10 +1340,33 @@ impl EventHandler for LineEdit {
             // 48 px band in a 120 px cell, testing `geometry()` would let a user focus the
             // field by clicking 60 px below it — on the window background, nowhere near
             // any ink. The test is against `field_rect()` for exactly that reason.
-            Event::MousePress { pos, button, .. }
+            Event::MousePress { pos, button, modifiers, .. }
                 if *button == 1 && self.field_rect().contains_point(*pos) =>
             {
                 self.set_focused(true);
+                // A press places the caret where the user aimed and starts a selection.
+                //
+                // Previously a press only focused the field, so the caret stayed wherever it
+                // happened to be — `set_text` leaves it at the end, so clicking into the middle
+                // of an existing value and typing appended instead of inserting, and there was
+                // no way at all to select with the pointer. `press_at` is the pointer's
+                // counterpart to `select_with_modifiers`: it anchors where the press landed,
+                // and a following drag extends without a key being held, because a drag *is*
+                // the gesture that means "extend".
+                let index = self.byte_index_at_x(pos.x);
+                self.press_at(index, crate::shortcut::Modifiers::from_event_bits(*modifiers));
+            }
+            // A drag extends the selection the press began, and only then — see `drag_to`.
+            Event::MouseMove { pos } => {
+                if self.dragging_selection {
+                    let index = self.byte_index_at_x(pos.x);
+                    self.drag_to(index);
+                }
+            }
+            // A release anywhere ends the gesture, including outside the field: the anchor
+            // stays where the press put it so the selection the user made is kept.
+            Event::MouseRelease { button, .. } if *button == 1 => {
+                self.end_drag();
             }
             _ => { /* Other events are not relevant */ }
         }
@@ -1520,9 +1763,11 @@ mod tests {
         let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
         le.set_text("before");
         le.set_text("after");
-        le.handle_event(&Event::key_press(90, 2));
+        // Bit 3 is the event's Meta/Command bit, i.e. the portable "primary accelerator"
+        // (`Modifiers::from_event_bits`). The physical-Control bit is bit 1 and means Control.
+        le.handle_event(&Event::key_press(90, 0b1000));
         assert_eq!(le.text(), "before");
-        le.handle_event(&Event::key_press(89, 2));
+        le.handle_event(&Event::key_press(89, 0b1000));
         assert_eq!(le.text(), "after");
     }
 
@@ -1606,6 +1851,355 @@ mod tests {
         assert!(le.selection_start().is_none());
     }
 
+    // ─── Shift-arrow selection (BLUE24 §12 U-6) ───
+
+    /// A Shift-arrow **extends** the selection; a plain arrow replaces it.
+    ///
+    /// # The defect this pins
+    ///
+    /// The anchor rule was written out once per arrow key, six copies of one decision. Beyond the
+    /// duplication, the copies meant "Shift extends" lived only in the event loop — nothing else
+    /// could reach it, so the pointer gesture and the entry point a host calls had no way to
+    /// express a range. The assertions are on the *range*, not on the anchor, because a range is
+    /// what the user sees selected: an implementation that moved the caret and forgot the anchor
+    /// would still satisfy `cursor_position` and silently select nothing.
+    ///
+    /// The modifiers are spelled as the **event bitmask** (see
+    /// [`crate::shortcut::Modifiers`]), not as `Modifiers` bits: an `Event` carries the framework's
+    /// wire convention, and the field translates it with `from_event_bits`.
+    #[test]
+    fn a_shift_arrow_extends_and_a_plain_arrow_replaces() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_text("abcdef".to_string()); // caret at the end
+
+        // Shift+Left twice grows a two-character selection, without collapsing to a caret.
+        le.handle_event(&Event::key_press(37, SHIFT_BIT));
+        assert_eq!(le.selected_text(), "f", "the first Shift+Left selects the character behind");
+        le.handle_event(&Event::key_press(37, SHIFT_BIT));
+        assert_eq!(le.selected_text(), "ef", "the second extends the same range");
+
+        // A plain Left keeps the caret where it is and drops the selection entirely.
+        le.handle_event(&Event::key_press(37, 0));
+        assert_eq!(le.selection_start(), None, "a plain arrow is not an extend");
+        assert_eq!(le.cursor_position(), 3, "and the caret is unmoved by the deselect");
+    }
+
+    /// Shift+Home and Shift+End select from the caret to the ends of the value.
+    #[test]
+    fn a_shift_home_and_end_select_to_the_ends_of_the_value() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_text("abcdef".to_string());
+        le.set_cursor_position(2);
+
+        le.handle_event(&Event::key_press(35, SHIFT_BIT));
+        assert_eq!(le.selected_text(), "cdef", "Shift+End runs from the anchor to the end");
+
+        // Shift+Home extends from the *same* anchor at 2, back past the caret to the start: the
+        // range becomes 0..=2, the other side of the same anchor rather than a rewrite of it.
+        le.handle_event(&Event::key_press(36, SHIFT_BIT));
+        assert_eq!(le.cursor_position(), 0, "the caret walks to the start");
+        assert_eq!(le.selection_start(), Some(2), "the anchor is unchanged by the second key");
+        assert_eq!(le.selected_text(), "ab", "so the selection flips to the other side of it");
+
+        // Home with no modifier collapses the range, the same as any plain movement.
+        le.handle_event(&Event::key_press(36, 0));
+        assert_eq!(le.selection_start(), None);
+        assert_eq!(le.cursor_position(), 0);
+    }
+
+    /// Shift+Home on a field that has never been selected anchors at the live caret.
+    ///
+    /// The anchor is adopted from the caret when there is none, rather than assumed to be 0. A
+    /// field whose caret sits at the end would otherwise select the whole value for a gesture the
+    /// user aimed at the start of the line they were on.
+    #[test]
+    fn a_shift_move_with_no_anchor_anchors_at_the_caret() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_text("abcdef".to_string());
+        le.set_cursor_position(3);
+        assert_eq!(le.selection_start(), None, "a fresh caret is not an anchor");
+
+        le.handle_event(&Event::key_press(36, SHIFT_BIT));
+        assert_eq!(le.cursor_position(), 0, "Shift+Home walks the caret to the start");
+        assert_eq!(le.selection_start(), Some(3), "adopting the caret as the anchor, not 0");
+        assert_eq!(le.selected_text(), "abc", "so the range is the caret's own line prefix");
+    }
+
+    /// A Shift-arrow does not move the anchor once a selection exists, so the range grows from a
+    /// fixed point instead of sliding along with the caret.
+    #[test]
+    fn an_extended_range_grows_from_a_fixed_anchor() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_text("abcdef".to_string());
+        le.set_cursor_position(3);
+        // The caret steps back one *character per press*, so the anchor stays at 3 while the
+        // caret walks 3 -> 2 -> 1 and the range grows `"c"`, `"bc"`.
+        le.handle_event(&Event::key_press(37, SHIFT_BIT));
+        assert_eq!(le.cursor_position(), 2, "one press is one character");
+        assert_eq!(le.selection_start(), Some(3), "the anchor is where the gesture began");
+        assert_eq!(le.selected_text(), "c", "so the first step selects one character");
+        le.handle_event(&Event::key_press(37, SHIFT_BIT));
+        assert_eq!(le.selection_start(), Some(3), "and it does not slide with the caret");
+        assert_eq!(le.selected_text(), "bc", "so the range is anchor-to-caret");
+        assert_eq!(le.cursor_position(), 1);
+    }
+
+    /// An extension is **reversible**: Shift+Home then Shift+End returns the range to the anchor.
+    ///
+    /// # The defect this pins
+    ///
+    /// Home and End re-anchored at the caret before moving, so a second extension grew from the
+    /// wrong end: Shift+Home on a caret at 5 selected 0..=5 and moved the anchor to 5; the following
+    /// Shift+End then selected 5..=len instead of 0..=len. The anchor belongs to the *gesture*, and
+    /// only a press that begins one may move it.
+    #[test]
+    fn extending_back_and_forth_returns_to_the_anchor() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_text("abcdefgh".to_string());
+        le.set_cursor_position(5);
+
+        le.handle_event(&Event::key_press(36, SHIFT_BIT));
+        assert_eq!(le.cursor_position(), 0, "Shift+Home walks the caret to the start");
+        assert_eq!(le.selected_text(), "abcde", "the range is anchor(5)-to-caret(0)");
+        assert_eq!(le.selection_start(), Some(5), "the anchor is still where it began");
+
+        // The gesture is reversible: Shift+End **extends** from the same anchor, so the range
+        // flips to the other side of it rather than being replaced with 5..=len. This is the
+        // assertion that fails if Home/End copy the old `selection_start = Some(cursor)` rule.
+        le.handle_event(&Event::key_press(35, SHIFT_BIT));
+        assert_eq!(le.cursor_position(), 8, "Shift+End walks the caret to the end");
+        assert_eq!(le.selection_start(), Some(5), "the anchor never moved");
+        assert_eq!(le.selected_text(), "fgh", "so the range is anchor(5)-to-caret(8)");
+    }
+
+    /// Movement saturates rather than running off either end of the value.
+    ///
+    /// # The defect this pins
+    ///
+    /// The arrows used to be guarded by `if cursor > 0` / `if cursor < len`, so at an end the key was
+    /// *dropped* — including the deselect a plain press owes the user. A ragged selection then
+    /// survived an arrow press that plainly meant "just move". Saturation keeps the caret in range
+    /// and keeps the plain-press contract intact.
+    #[test]
+    fn movement_at_an_end_still_drops_the_selection() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_text("abc".to_string());
+
+        // Caret already at the end: Right cannot move, but it still ends the selection.
+        le.select_all();
+        assert_eq!(le.selection_start(), Some(0));
+        le.handle_event(&Event::key_press(39, 0));
+        assert_eq!(le.cursor_position(), 3, "the caret stays inside the value");
+        assert_eq!(le.selection_start(), None, "a plain press at the end still deselects");
+
+        // Caret already at the start with a range straddling it: Left cannot move, but the same
+        // deselect is owed. The range is built the way a shift-click does — press at the end,
+        // then shift-press at the start — so the caret lands on 0 with the anchor at 3.
+        le.select_all();
+        le.press_at(3, crate::shortcut::Modifiers::NONE);
+        le.press_at(0, crate::shortcut::Modifiers::SHIFT);
+        assert_eq!(le.cursor_position(), 0);
+        assert_eq!(le.selection_start(), Some(3), "a real range straddling the start");
+        assert_eq!(le.selected_text(), "abc");
+
+        le.handle_event(&Event::key_press(37, 0));
+        assert_eq!(le.cursor_position(), 0, "Left cannot move past the start");
+        assert_eq!(le.selection_start(), None, "but it still drops the stale range");
+        assert_eq!(le.selected_text(), "", "so nothing is left selected");
+    }
+
+    /// A control chord is not text: `Ctrl+B` must not insert a literal `b`.
+    ///
+    /// # The defect this pins
+    ///
+    /// The catch-all arm treated every unmapped key as a character and only excluded the chords it
+    /// happened to list (copy, paste, cut, undo, redo). So Ctrl+B, Ctrl+Q, Alt+1 and every other
+    /// shortcut the host may own were typed into the field as their bare key. A field that swallows
+    /// the application's own accelerators is unusable as a text input in a real form.
+    ///
+    /// The comment describes Ctrl/Alt/Meta, and the event convention says the Meta bit is the
+    /// primary accelerator — so those are the bits asserted, not `Modifiers` bits.
+    #[test]
+    fn a_control_chord_is_not_typed_into_the_field() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+
+        // Bit 1 is physical Control, bit 2 is Alt, bit 3 is the primary accelerator (Command on
+        // macOS). `from_event_bits` folds bit 3 into *both* PRIMARY and CTRL, and `contains`
+        // compares the mask's value rather than testing a bit, so the guard must ask about the
+        // three modifiers separately — a combined `contains(CTRL|ALT|META)` would only fire when
+        // all three were held, letting a plain Ctrl chord through.
+        for (name, bits) in [("Ctrl", 0b0010u32), ("Alt", 0b0100), ("Primary", 0b1000)] {
+            le.handle_event(&Event::key_press(98, bits));
+            assert!(le.text().is_empty(), "{name}+B must not insert a `b`");
+        }
+        // And a control code with no modifier at all is not content either: `key: 9` is Tab.
+        le.handle_event(&Event::key_press(9, 0));
+        assert!(le.text().is_empty(), "a bare Tab is not text");
+
+        // The unmodified key is still text, so the guard did not disable typing. The key codes
+        // are ASCII, so 66 is the uppercase `B` and 98 the lowercase `b`.
+        le.handle_event(&Event::key_press(98, 0));
+        assert_eq!(le.text(), "b", "a plain `b` is content");
+    }
+
+    /// The framework's Shift bit on an event mask.
+    const SHIFT_BIT: u32 = 0b0001;
+
+    // ─── Pointer selection ───
+
+    /// A press puts the caret where the user aimed and anchors a selection there.
+    ///
+    /// # The defect this pins
+    ///
+    /// A press used to *only* focus the field. `set_text` leaves the caret at the end, so clicking
+    /// into the middle of an existing value and typing appended to it rather than inserting at the
+    /// click — and there was no pointer selection at all, because nothing computed an index from `x`.
+    /// This bites the common case first: opening a form, clicking a prefilled field to correct one
+    /// word, and finding every keystroke going to the end of the line.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_press_places_the_caret_where_the_pointer_landed() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 240, 120));
+        le.set_text("abcdefgh".to_string());
+        assert_eq!(le.cursor_position(), 8, "`set_text` leaves the caret at the end");
+        let field = le.field_rect();
+
+        // One character cell past the value's origin is the boundary after character 1.
+        let cell = cell_width();
+        let origin = value_origin(&mut le);
+        le.handle_event(&Event::mouse_press(
+            origin + cell + cell / 2,
+            field.y + field.height as i32 / 2,
+            1,
+        ));
+        assert_eq!(le.cursor_position(), 1, "the caret lands on the character clicked");
+        assert_eq!(le.selection_start(), Some(1), "and it is the anchor for a drag");
+    }
+
+    /// A drag extends that selection; a hover that was never pressed does not move the caret.
+    ///
+    /// Both halves matter. The first is the gesture: press on character 1, drag to character 4,
+    /// release leaves `"bcd"` selected. The second is the guard — `MouseMove` is delivered on every
+    /// pointer step over the control, so a field that acted on it unconditionally would have its
+    /// caret follow the mouse whenever the pointer crossed it, with no button pressed at all.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_drag_extends_the_selection_but_a_bare_hover_does_not() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 240, 120));
+        le.set_text("abcdefgh".to_string());
+        let field = le.field_rect();
+        let mid = field.y + field.height as i32 / 2;
+        let cell = cell_width();
+        let origin = value_origin(&mut le);
+
+        // A hover with no press ever delivered leaves the caret exactly where it was.
+        le.handle_event(&Event::mouse_move(field.x + 4 * cell, mid));
+        assert_eq!(le.cursor_position(), 8, "an unpressed hover must not move the caret");
+        assert_eq!(le.selection_start(), None);
+
+        // Press on character 1, drag to character 4: `"bcd"` is selected.
+        le.handle_event(&Event::mouse_press(origin + cell + cell / 2, mid, 1));
+        assert_eq!(le.selection_start(), Some(1), "the press anchors where it landed");
+        le.handle_event(&Event::mouse_move(origin + 4 * cell + cell / 2, mid));
+        assert_eq!(le.selected_text(), "bcd", "the drag selected the span between the two points");
+
+        // The release ends the gesture, so a later hover is inert again.
+        le.handle_event(&Event::mouse_release(origin + 4 * cell, mid, 1));
+        le.handle_event(&Event::mouse_move(field.x + 7 * cell, mid));
+        assert_eq!(le.cursor_position(), 4, "a hover after the release does not extend");
+        assert_eq!(le.selected_text(), "bcd", "and the selection the user made is kept");
+    }
+
+    /// A press past the end of the value anchors at the end and readies a backward drag.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_press_beyond_the_value_anchors_at_its_end() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 240, 120));
+        le.set_text("ab".to_string());
+        let field = le.field_rect();
+        let mid = field.y + field.height as i32 / 2;
+
+        // Well past the two characters that exist: the caret saturates at the end. The press must
+        // land **inside the painted band** to be delivered, so it is taken from `field`, not from
+        // the control's rectangle — on a tall cell the two are different boxes.
+        le.handle_event(&Event::mouse_press(field.x + field.width as i32 - 2, mid, 1));
+        assert_eq!(
+            le.cursor_position(),
+            1,
+            "a press past the two-character value clamps to its own box, i.e. onto the last one"
+        );
+        assert_eq!(le.selection_start(), Some(1), "and that clamped character is the anchor");
+
+        // Dragging back over the value selects it, which is the gesture this enables.
+        let origin = value_origin(&mut le);
+        le.handle_event(&Event::mouse_move(origin, mid));
+        assert_eq!(le.cursor_position(), 0, "the drag reaches the value's leading edge");
+        assert_eq!(le.selected_text(), "a", "so the range is anchor(1)-to-caret(0)");
+    }
+
+    /// The click-to-index map and the painted value agree about where character zero is.
+    ///
+    /// Read off the ink rather than off the same helper the hit test calls: a test that asked
+    /// `decoration_layout` where the value starts would agree with a bug in it. The pen that draws
+    /// the string is at `field.x + TEXT_FIELD_PADDING_H` (see `the_value_starts_at_the_fields_horizontal_padding`),
+    /// so clicking that pixel must resolve to index 0.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_click_on_the_first_glyph_resolves_to_index_zero() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 240, 120));
+        le.set_text("Sample".to_string());
+        let field = le.field_rect();
+        let pen = field.x + dimensions::TEXT_FIELD_PADDING_H as i32;
+
+        le.handle_event(&Event::mouse_press(pen, field.y + field.height as i32 / 2, 1));
+        assert_eq!(le.cursor_position(), 0, "the first pixel of the value is index 0");
+    }
+
+    /// The pixel-to-index map is total on multi-byte values: no click can split a character.
+    ///
+    /// A byte-counting map lands inside `é` or a CJK glyph and the next `&text[..caret]` panics.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_click_never_lands_inside_a_multi_byte_character() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 240, 120));
+        le.set_text("héllo wörld 中文".to_string());
+        let field = le.field_rect();
+        let mid = field.y + field.height as i32 / 2;
+
+        for dx in 0..field.width as i32 {
+            le.handle_event(&Event::mouse_press(field.x + dx, mid, 1));
+            let caret = le.cursor_position();
+            assert!(caret <= le.text().len(), "the caret is inside the value at +{dx}");
+            assert!(
+                le.text().is_char_boundary(caret),
+                "the caret at +{dx} split a character: {caret} in {:?}",
+                le.text()
+            );
+        }
+    }
+
+    /// The width of one character cell in the field's shipped face, as the shaper computes it.
+    ///
+    /// Kept in the test module rather than as a private method on the control: it is the fixture's
+    /// model of the metrics, and a control method for it would be dead code the gate would flag.
+    ///
+    /// Gated with its only consumers, which are all `#[cfg(not(alloc_frugal))]` because they drive
+    /// the pointer path: an ungated helper became dead code under `mini` (which *is* `alloc_frugal`),
+    /// where `clippy -D warnings` reported it while every other profile stayed green.
+    #[cfg(not(alloc_frugal))]
+    fn cell_width() -> i32 {
+        (crate::core::Font::default().size() * 0.6).round().max(1.0) as i32
+    }
+
+    /// The x the value's glyphs are laid out from, read from the field's own layout.
+    #[cfg(not(alloc_frugal))]
+    fn value_origin(le: &mut LineEdit) -> i32 {
+        let mut measurement =
+            crate::render::SoftwarePaintBackend::new(crate::core::Size::new(0, 0), 1.0);
+        let mut context = RenderContext::new(&mut measurement);
+        le.decoration_layout(&mut context).value.x
+    }
+
     #[test]
     fn lineedit_insert_text() {
         let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
@@ -1684,7 +2278,7 @@ mod tests {
         le.handle_event(&Event::MousePress {
             pos: Point::new(field.x + 10, field.y + field.height as i32 / 2),
             button: 1,
-            modifiers: 0
+            modifiers: 0,
         });
         assert!(le.is_focused(), "a press on the drawn field focuses it");
 
@@ -1693,7 +2287,7 @@ mod tests {
         le.handle_event(&Event::MousePress {
             pos: Point::new(field.x + 10, field.y + field.height as i32 + 40),
             button: 1,
-            modifiers: 0
+            modifiers: 0,
         });
         assert!(!le.is_focused(), "a press below the drawn field must not focus it");
     }
@@ -2201,17 +2795,17 @@ mod tests {
         source.set_text("hello world");
         source.select_all();
         // Ctrl+C copies the selection to the platform clipboard.
-        source.handle_event(&KeyPress { key: 67, modifiers: 2 });
+        source.handle_event(&KeyPress { key: 67, modifiers: 0b1000 });
         assert_eq!(crate::get_clipboard_text(), "hello world");
 
         // Ctrl+V pastes into another field.
         let mut target = LineEdit::new(Rect::new(0, 0, 200, 24));
-        target.handle_event(&KeyPress { key: 86, modifiers: 2 });
+        target.handle_event(&KeyPress { key: 86, modifiers: 0b1000 });
         assert_eq!(target.text(), "hello world");
 
         // Ctrl+X on a selected field copies then removes the selection.
         source.select_all();
-        source.handle_event(&KeyPress { key: 88, modifiers: 2 });
+        source.handle_event(&KeyPress { key: 88, modifiers: 0b1000 });
         assert_eq!(source.text(), "");
         assert_eq!(crate::get_clipboard_text(), "hello world");
 

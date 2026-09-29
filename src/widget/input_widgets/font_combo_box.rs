@@ -303,7 +303,13 @@ impl FontComboBox {
     /// never zero-height. Does not request a redraw (unlike the other setters),
     /// so an already-open popup may not repaint until the next redraw.
     pub fn set_max_visible_items(&mut self, max_items: i32) {
-        self.max_visible_items = max_items.max(1);
+        let clamped = max_items.max(1);
+        if self.max_visible_items == clamped {
+            return;
+        }
+        self.max_visible_items = clamped;
+        // The list's height is derived from this, so a popup that is open has to be re-laid-out.
+        self.base.request_redraw();
     }
     /// Appends a family name to the end of the list and requests a redraw.
     ///
@@ -1009,5 +1015,24 @@ mod tests {
         assert_eq!(band.height, dimensions::TEXT_FIELD_MIN_HEIGHT);
         assert_eq!(c.size_hint().height, band.height);
         assert_eq!(band.y, (120 - dimensions::TEXT_FIELD_MIN_HEIGHT as i32) / 2);
+    }
+
+    #[test]
+    fn setting_the_visible_item_count_repaints() {
+        let mut combo = FontComboBox::new(Rect::new(0, 0, 200, 200));
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        combo.base.redraw_requested.connect({
+            let seen = std::sync::Arc::clone(&seen);
+            move || {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+
+        combo.set_max_visible_items(5);
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "the list's height is derived from this");
+        combo.set_max_visible_items(5);
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "the same count is not a change");
+        combo.set_max_visible_items(0);
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 2, "zero floors to one, which is a change");
     }
 }

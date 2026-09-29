@@ -145,7 +145,13 @@ impl Dialog {
 
     /// Sets the modality intent.
     pub fn set_modal(&mut self, modal: bool) {
+        if self.modal == modal {
+            return;
+        }
         self.modal = modal;
+        // `draw` paints the page-dimming layer from this, so a write that did not repaint left the
+        // modal/non-modal distinction invisible until something else forced a frame.
+        self.base.request_redraw();
     }
 
     /// Shows the dialog, emits `opened`, and — when modal — enters the modal stack.

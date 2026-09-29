@@ -45,7 +45,13 @@ impl ImageView {
 
     /// Sets whether the image should be scaled to fill the widget rect.
     pub fn set_scaled(&mut self, scaled: bool) {
+        if self.scaled == scaled {
+            return;
+        }
         self.scaled = scaled;
+        // `draw` branches on this to choose between the image's own size and the widget's, so the
+        // geometry on screen changes with it and the setter owes a frame.
+        self.base.request_redraw();
     }
 
     /// Returns whether the image is scaled to fill the widget rect.
@@ -265,5 +271,22 @@ mod tests {
         let rgba = Image::from_rgba(vec![255; 64 * 64 * 4], 64, 64);
         let view = ImageView::new(rgba, Rect::new(0, 0, 200, 200));
         assert_eq!(view.size_hint(), Size::new(64, 64));
+    }
+
+    #[test]
+    fn setting_scaled_repaints() {
+        let mut view = ImageView::new(crate::widget::Image::new(), Rect::new(0, 0, 200, 200));
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        view.base.redraw_requested.connect({
+            let seen = std::sync::Arc::clone(&seen);
+            move || {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+
+        view.set_scaled(true);
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "`draw` branches on this to size the image");
+        view.set_scaled(true);
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1, "the same value is not a change");
     }
 }
