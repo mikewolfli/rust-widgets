@@ -452,7 +452,7 @@ impl EventHandler for MaterialSnackbar {
         }
 
         match event {
-            Event::MousePress { pos, button } | Event::MouseRelease { pos, button } => {
+            Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button } => {
                 if *button != 1 {
                     return;
                 }
@@ -848,7 +848,7 @@ impl EventHandler for CupertinoAlertDialog {
             return;
         }
         match event {
-            Event::MouseRelease { pos, button } | Event::MousePress { pos, button } => {
+            Event::MouseRelease { pos, button } | Event::MousePress { pos, button, .. } => {
                 if *button != 1 {
                     return;
                 }
@@ -1175,7 +1175,7 @@ impl EventHandler for CupertinoSlider {
             return;
         }
         match event {
-            Event::MousePress { pos, button } => {
+            Event::MousePress { pos, button, .. } => {
                 if *button != 1 {
                     return;
                 }
@@ -1485,7 +1485,7 @@ impl EventHandler for MaterialNavigationRail {
             return;
         }
         match event {
-            Event::MousePress { pos, button } | Event::MouseRelease { pos, button } => {
+            Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button } => {
                 if *button != 1 {
                     return;
                 }
@@ -1551,7 +1551,7 @@ mod tests {
     fn cupertino_switch_event_delegation() {
         let mut cs = CupertinoSwitch::new(Rect::new(0, 0, 60, 30));
         let p = Point::new(10, 10);
-        cs.handle_event(&Event::MousePress { pos: p, button: 1 });
+        cs.handle_event(&Event::MousePress { pos: p, button: 1, modifiers: 0 });
         cs.handle_event(&Event::MouseRelease { pos: p, button: 1 });
         assert!(cs.inner().is_checked());
     }
@@ -1627,7 +1627,7 @@ mod tests {
         let centre =
             Point::new(resting.x + resting.width as i32 / 2, resting.y + resting.height as i32 / 2);
         cupertino.handle_event(&Event::MouseEnter { pos: centre });
-        cupertino.handle_event(&Event::MousePress { pos: centre, button: 1 });
+        cupertino.handle_event(&Event::MousePress { pos: centre, button: 1, modifiers: 0 });
         assert_eq!(cupertino.widget_state(), WidgetState::Pressed);
 
         let held = cupertino.inner().thumb_rect(rect).expect("a roomy rect has a thumb");
@@ -1699,7 +1699,7 @@ mod tests {
         });
 
         // Click on snackbar to dismiss
-        sb.handle_event(&Event::MousePress { pos: Point::new(200, 80), button: 1 });
+        sb.handle_event(&Event::MousePress { pos: Point::new(200, 80), button: 1, modifiers: 0 });
         assert!(fired.load(Ordering::SeqCst));
         assert!(!sb.is_visible());
     }
@@ -1720,7 +1720,7 @@ mod tests {
         // Click on action area (right side of bar)
         // Bar width = 375 - 24 = 351, action area is last ~metrics_width+32 px
         // Approximate action area at x > 200
-        sb.handle_event(&Event::MousePress { pos: Point::new(340, 80), button: 1 });
+        sb.handle_event(&Event::MousePress { pos: Point::new(340, 80), button: 1, modifiers: 0 });
         assert!(fired.load(Ordering::SeqCst));
     }
 
@@ -1736,7 +1736,7 @@ mod tests {
         });
 
         // Should not fire since snackbar is hidden
-        sb.handle_event(&Event::MousePress { pos: Point::new(200, 80), button: 1 });
+        sb.handle_event(&Event::MousePress { pos: Point::new(200, 80), button: 1, modifiers: 0 });
         assert!(!fired.load(Ordering::SeqCst));
     }
 
@@ -1906,7 +1906,7 @@ mod tests {
         let mut sl = CupertinoSlider::new(Rect::new(0, 0, 200, 40));
         // track_left = 12, track_width = 200-24 = 176
         // Click at x=100 -> fraction ~ (100-12)/176 ~ 0.5
-        sl.handle_event(&Event::MousePress { pos: Point::new(100, 20), button: 1 });
+        sl.handle_event(&Event::MousePress { pos: Point::new(100, 20), button: 1, modifiers: 0 });
         assert!((sl.value() - 0.5).abs() < 0.05);
     }
 
@@ -1933,7 +1933,7 @@ mod tests {
     fn cupertino_slider_mouse_press_different_position() {
         let mut sl = CupertinoSlider::new(Rect::new(0, 0, 200, 40));
         // Press at a different position
-        sl.handle_event(&Event::MousePress { pos: Point::new(150, 20), button: 1 });
+        sl.handle_event(&Event::MousePress { pos: Point::new(150, 20), button: 1, modifiers: 0 });
         assert!((sl.value() - 0.78).abs() < 0.05);
     }
 

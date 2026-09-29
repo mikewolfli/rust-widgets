@@ -610,7 +610,7 @@ mod tests {
     fn bar_chart_event_forwarding() {
         let mut bc = BarChart::new(Rect::new(0, 0, 300, 200));
         bc.handle_event(&Event::MouseMove { pos: Point::new(10, 10) });
-        bc.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        bc.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
     }
 
     /// One ink box per text `<path>`, in document order.

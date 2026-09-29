@@ -335,22 +335,34 @@ impl ToolBar {
     /// `id` is what a later `action_triggered` carries and `text` is the visible
     /// label. The item starts enabled and unchecked. The returned index is the
     /// item's position, so removing items later invalidates it.
+    ///
+    /// Repaints: the strip is painted from the item list this grows.
     pub fn add_action(&mut self, id: impl Into<String>, text: impl Into<String>) -> usize {
         let idx = self.items.len();
         self.items.push(ToolBarItem::new(id, text));
+        self.base.request_redraw();
         idx
     }
     /// Appends a visual divider.
     ///
     /// Unlike [`ToolBar::add_action`] this returns nothing, so a caller that
     /// needs the separator's index must read `items().len() - 1`.
+    ///
+    /// Repaints, for the same reason as [`ToolBar::add_action`].
     pub fn add_separator(&mut self) {
         self.items.push(ToolBarItem::separator());
+        self.base.request_redraw();
     }
     /// Removes every item, including separators. Invalidates all previously
     /// returned indices.
+    ///
+    /// Repaints: an empty strip is a visible change.
     pub fn clear(&mut self) {
+        if self.items.is_empty() {
+            return;
+        }
         self.items.clear();
+        self.base.request_redraw();
     }
     /// Enables or disables the item at `index`, and repaints.
     ///
@@ -599,7 +611,7 @@ impl EventHandler for ToolBar {
             Event::MouseMove { pos } => {
                 self.hovered_index = self.hit_item(*pos);
             }
-            Event::MousePress { pos, button: 1 } => {
+            Event::MousePress { pos, button: 1, .. } => {
                 if let Some(idx) = self.hit_item(*pos) {
                     if let Some(item) = self.items.get_mut(idx) {
                         if item.is_enabled() && !item.is_separator() {

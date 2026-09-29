@@ -513,7 +513,13 @@ impl Platform for WindowsPlatform {
         }
     }
     fn init(&self) {
-        self.runtime_initialized.store(true, Ordering::SeqCst);
+        // `init` re-registers the platform and calls `InitCommonControls`, neither of
+        // which is idempotent, so the flag guards a second entry rather than merely
+        // recording that the first happened. Before this the field was written and
+        // never read, so the name promised a guard the code did not have.
+        if self.runtime_initialized.swap(true, Ordering::SeqCst) {
+            return;
+        }
         #[cfg(target_os = "windows")]
         {
             // SAFETY: The platform instance is stored in a `OnceLock<Box<dyn Platform>>`

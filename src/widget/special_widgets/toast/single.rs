@@ -263,7 +263,7 @@ impl EventHandler for Toast {
         }
 
         match event {
-            Event::MousePress { pos, button: 1 } if self.is_over_close(*pos) => {
+            Event::MousePress { pos, button: 1, .. } if self.is_over_close(*pos) => {
                 self.dismiss();
             }
             Event::KeyPress { key: 27, modifiers: _ } => {

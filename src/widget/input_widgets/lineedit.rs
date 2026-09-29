@@ -1120,7 +1120,7 @@ impl EventHandler for LineEdit {
             // 48 px band in a 120 px cell, testing `geometry()` would let a user focus the
             // field by clicking 60 px below it — on the window background, nowhere near
             // any ink. The test is against `field_rect()` for exactly that reason.
-            Event::MousePress { pos, button }
+            Event::MousePress { pos, button, .. }
                 if *button == 1 && self.field_rect().contains_point(*pos) =>
             {
                 self.set_focused(true);
@@ -1684,6 +1684,7 @@ mod tests {
         le.handle_event(&Event::MousePress {
             pos: Point::new(field.x + 10, field.y + field.height as i32 / 2),
             button: 1,
+            modifiers: 0
         });
         assert!(le.is_focused(), "a press on the drawn field focuses it");
 
@@ -1692,6 +1693,7 @@ mod tests {
         le.handle_event(&Event::MousePress {
             pos: Point::new(field.x + 10, field.y + field.height as i32 + 40),
             button: 1,
+            modifiers: 0
         });
         assert!(!le.is_focused(), "a press below the drawn field must not focus it");
     }

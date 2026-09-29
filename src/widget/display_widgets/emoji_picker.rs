@@ -748,7 +748,7 @@ impl EventHandler for EmojiPicker {
             return;
         }
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 if self.search_rect().contains_point(*pos) {
                     // Clicking the search box focuses it, which is what makes typing
                     // go there without a separate focus control.

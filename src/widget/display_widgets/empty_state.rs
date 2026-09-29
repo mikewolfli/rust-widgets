@@ -390,7 +390,7 @@ impl EventHandler for EmptyState {
             return;
         }
         match event {
-            Event::MousePress { pos, button } => {
+            Event::MousePress { pos, button, .. } => {
                 if *button == 1 {
                     // Check if the click is on the action button
                     if let Some(btn_rect) = self.action_button_rect() {

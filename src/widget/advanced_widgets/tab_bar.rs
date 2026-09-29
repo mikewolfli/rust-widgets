@@ -902,7 +902,7 @@ impl EventHandler for TabBar {
                     self.base.request_redraw();
                 }
             }
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 // Check close button first.
                 if self.closable {
                     for i in 0..self.tabs.len() {
@@ -1223,7 +1223,7 @@ mod tests {
         tb.add_tab("First".to_string());
         tb.add_tab("Second".to_string());
         // Click on the first tab area
-        tb.handle_event(&Event::MousePress { pos: Point::new(5, 5), button: 1 });
+        tb.handle_event(&Event::MousePress { pos: Point::new(5, 5), button: 1, modifiers: 0 });
         assert_eq!(tb.current_index(), Some(0));
         // Hover sets hovered_index
         tb.handle_event(&Event::MouseMove { pos: Point::new(5, 5) });

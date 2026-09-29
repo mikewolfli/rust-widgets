@@ -295,7 +295,7 @@ impl crate::event::EventHandler for PopupWindow {
             return;
         }
         match event {
-            crate::event::Event::MousePress { pos: _, button } if *button == 1 => {
+            crate::event::Event::MousePress { pos: _, button, .. } if *button == 1 => {
                 self.base.set_mouse_pressed(true);
             }
             crate::event::Event::MouseRelease { pos: _, button } if *button == 1 => {

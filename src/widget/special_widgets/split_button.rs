@@ -533,7 +533,7 @@ impl EventHandler for SplitButton {
                 self.pressed_primary = false;
                 self.pressed_arrow = false;
             }
-            Event::MousePress { pos, button: 1 } => {
+            Event::MousePress { pos, button: 1, .. } => {
                 if self.hit_primary(*pos) {
                     self.pressed_primary = true;
                 } else if self.hit_arrow(*pos) {

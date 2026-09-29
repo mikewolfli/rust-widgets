@@ -679,7 +679,7 @@ mod tests {
     fn line_chart_event_forwarding() {
         let mut lc = LineChart::new(Rect::new(0, 0, 300, 200));
         lc.handle_event(&Event::MouseMove { pos: Point::new(10, 10) });
-        lc.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        lc.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
     }
 
     /// The widget must render its axes and ticks through the shared chart engine

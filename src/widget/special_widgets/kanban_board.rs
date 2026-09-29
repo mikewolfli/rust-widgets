@@ -731,7 +731,7 @@ impl EventHandler for KanbanBoard {
             return;
         }
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 if let Some(position) = self.card_at(*pos) {
                     self.begin_card_drag(position, *pos);
                 }

@@ -360,7 +360,7 @@ impl EventHandler for Chip {
         }
 
         match event {
-            Event::MousePress { pos, button: 1 } => {
+            Event::MousePress { pos, button: 1, .. } => {
                 if let Some(index) = self.hit_index(*pos) {
                     self.focused_index = Some(index);
                     let _ = self.toggle_index(index);

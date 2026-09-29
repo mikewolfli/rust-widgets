@@ -796,7 +796,7 @@ impl EventHandler for WizardDialog {
             return;
         }
         match event {
-            Event::MousePress { pos, button: _ } | Event::MouseRelease { pos, button: _ } => {
+            Event::MousePress { pos, .. } | Event::MouseRelease { pos, button: _ } => {
                 let rect = self.geometry();
                 let nav = self.nav_button_rects(rect);
                 if nav[0].contains_point(*pos) {
@@ -958,7 +958,7 @@ mod tests {
         let rect = wiz.geometry();
         let btn_x = rect.x + rect.width as i32 - 80 - 8;
         let btn_y = rect.y + rect.height as i32 - 36 - 6 - 6;
-        wiz.handle_event(&Event::MousePress { pos: Point::new(btn_x + 20, btn_y + 10), button: 1 });
+        wiz.handle_event(&Event::MousePress { pos: Point::new(btn_x + 20, btn_y + 10), button: 1, modifiers: 0 });
         assert!(fired.load(Ordering::SeqCst));
     }
 
@@ -977,7 +977,7 @@ mod tests {
         let rect = wiz.geometry();
         let btn_x = rect.x + 8;
         let btn_y = rect.y + rect.height as i32 - 36 - 6 - 6;
-        wiz.handle_event(&Event::MousePress { pos: Point::new(btn_x + 20, btn_y + 10), button: 1 });
+        wiz.handle_event(&Event::MousePress { pos: Point::new(btn_x + 20, btn_y + 10), button: 1, modifiers: 0 });
         assert!(fired.load(Ordering::SeqCst));
     }
 

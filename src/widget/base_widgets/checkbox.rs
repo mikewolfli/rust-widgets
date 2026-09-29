@@ -482,7 +482,7 @@ impl EventHandler for CheckBox {
             // which is the reading every toolkit uses: a checkbox reacts to its own contents,
             // and the minimum touch size widens that region rather than making the whole row
             // live. A caller that wants the row to toggle should size the control to the row.
-            Event::MousePress { pos, button } if *button == 1 && self.base.is_enabled() => {
+            Event::MousePress { pos, button, .. } if *button == 1 && self.base.is_enabled() => {
                 if self.hit_area().contains_point(*pos) {
                     self.toggle();
                 }
@@ -839,7 +839,7 @@ mod tests {
         // "the touch target is at least N points", and the wrong one.
         let mut cb = CheckBox::new(Rect::new(0, 0, 240, 30));
         cb.set_text("Label".to_string());
-        cb.handle_event(&Event::MousePress { pos: Point::new(230, 15), button: 1 });
+        cb.handle_event(&Event::MousePress { pos: Point::new(230, 15), button: 1, modifiers: 0 });
         assert_eq!(
             cb.state(),
             CheckState::Unchecked,
@@ -878,7 +878,7 @@ mod tests {
             "the target must exceed the control's own height for this test to mean anything"
         );
         // One pixel above the control's top edge, inside the expansion.
-        cb.handle_event(&Event::MousePress { pos: Point::new(24, 19), button: 1 });
+        cb.handle_event(&Event::MousePress { pos: Point::new(24, 19), button: 1, modifiers: 0 });
         assert_eq!(
             cb.state(),
             CheckState::Checked,
@@ -890,7 +890,7 @@ mod tests {
     fn a_press_well_outside_the_touch_target_is_ignored() {
         // The reverse direction, so the previous test cannot pass by accepting everything.
         let mut cb = CheckBox::new(Rect::new(100, 100, 24, 18));
-        cb.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        cb.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         assert_eq!(cb.state(), CheckState::Unchecked);
     }
 
@@ -1015,7 +1015,7 @@ mod tests {
     fn test_mouse_down_toggles() {
         let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
         assert_eq!(cb.state(), CheckState::Unchecked);
-        cb.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        cb.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         assert_eq!(cb.state(), CheckState::Checked);
     }
 
@@ -1076,11 +1076,11 @@ mod tests {
     #[test]
     fn test_multiple_mouse_down_toggles() {
         let mut cb = CheckBox::new(Rect::new(0, 0, 100, 30));
-        cb.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        cb.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         assert_eq!(cb.state(), CheckState::Checked);
-        cb.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        cb.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         assert_eq!(cb.state(), CheckState::Unchecked);
-        cb.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        cb.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         assert_eq!(cb.state(), CheckState::Checked);
     }
 

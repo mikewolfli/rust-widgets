@@ -283,7 +283,7 @@ impl EventHandler for FAB {
         }
 
         match event {
-            Event::MousePress { pos, button } => {
+            Event::MousePress { pos, button, .. } => {
                 if *button == crate::event::mouse_button::PRIMARY {
                     // Only a press that lands on the FAB arms it. The runtime hit-tests
                     // before delivery, but a direct dispatch does not, and an unguarded
@@ -423,7 +423,7 @@ mod tests {
             c.store(true, Ordering::SeqCst);
         });
 
-        fab.handle_event(&Event::MousePress { pos: Point::new(28, 28), button: 1 });
+        fab.handle_event(&Event::MousePress { pos: Point::new(28, 28), button: 1, modifiers: 0 });
         assert!(fab.base.is_pressed());
         assert!(!clicked.load(Ordering::SeqCst));
 
@@ -441,7 +441,7 @@ mod tests {
             c.store(true, Ordering::SeqCst);
         });
 
-        fab.handle_event(&Event::MousePress { pos: Point::new(28, 28), button: 2 });
+        fab.handle_event(&Event::MousePress { pos: Point::new(28, 28), button: 2, modifiers: 0 });
         assert!(!fab.base.is_pressed());
         assert!(!clicked.load(Ordering::SeqCst));
     }
@@ -457,7 +457,7 @@ mod tests {
             c.store(true, Ordering::SeqCst);
         });
 
-        fab.handle_event(&Event::MousePress { pos: Point::new(28, 28), button: 1 });
+        fab.handle_event(&Event::MousePress { pos: Point::new(28, 28), button: 1, modifiers: 0 });
         assert!(!fab.base.is_pressed());
 
         fab.handle_event(&Event::MouseRelease { pos: Point::new(28, 28), button: 1 });
@@ -503,7 +503,7 @@ mod tests {
         let mut fab = make_fab();
         assert!(!fab.base.is_pressed());
 
-        fab.handle_event(&Event::MousePress { pos: Point::new(28, 28), button: 1 });
+        fab.handle_event(&Event::MousePress { pos: Point::new(28, 28), button: 1, modifiers: 0 });
         assert!(fab.base.is_pressed());
 
         fab.handle_event(&Event::MouseRelease { pos: Point::new(28, 28), button: 1 });

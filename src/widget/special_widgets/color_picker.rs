@@ -332,7 +332,7 @@ impl EventHandler for ColorPicker {
         }
 
         match event {
-            Event::MousePress { pos, button: 1 } => {
+            Event::MousePress { pos, button: 1, .. } => {
                 for index in 0..self.presets.len() {
                     let Some(preset_rect) = self.preset_rect(index) else {
                         continue;

@@ -586,7 +586,7 @@ mod tests {
         let mut pc = ProgressCircle::new(Rect::new(0, 0, 48, 48));
         // Should not panic
         pc.handle_event(&Event::MouseMove { pos: Point::new(10, 10) });
-        pc.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        pc.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
     }
 
     /// The indeterminate ring must turn, and it must turn on the ticks it is given.

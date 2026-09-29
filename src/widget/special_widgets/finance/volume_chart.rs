@@ -563,11 +563,13 @@ mod tests {
         chart.handle_event(&crate::event::Event::MousePress {
             pos: crate::core::Point { x: 300, y: 80 },
             button: 0,
+            modifiers: 0
         });
         assert_eq!(count.load(Ordering::SeqCst), 1, "a press inside the plot emits once");
         chart.handle_event(&crate::event::Event::MousePress {
             pos: crate::core::Point { x: 2, y: 80 },
             button: 0,
+            modifiers: 0
         });
         assert_eq!(count.load(Ordering::SeqCst), 1, "a press on the axis emits nothing");
     }

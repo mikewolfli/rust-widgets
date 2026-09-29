@@ -324,7 +324,7 @@ impl EventHandler for ColorHistory {
             return;
         }
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 if let Some(index) = self.swatch_at(pos.x, pos.y) {
                     self.selected_index = Some(index);
                     self.color_selected.emit(self.colors[index]);
@@ -434,6 +434,7 @@ mod tests {
         ch.handle_event(&Event::MousePress {
             pos: Point::new(swatch_x, SWATCH_PADDING as i32 / 2),
             button: 1,
+            modifiers: 0
         });
 
         assert_eq!(*selected.lock().unwrap(), Color::GREEN);

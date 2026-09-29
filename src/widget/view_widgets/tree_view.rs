@@ -160,21 +160,34 @@ impl TreeView {
         self.model.as_ref().and_then(|model| model.node_path(index))
     }
     /// Selects a node by visible index.
+    ///
+    /// Repaints: the selected row's highlight is painted, so without the request the
+    /// selection would only appear once some unrelated event repainted the control.
     pub fn select_node(&mut self, index: usize) -> bool {
         if index < self.node_count() {
             self.selected_node = Some(index);
             self.selection_changed.emit(index);
             self.set_focused_node(index);
+            self.base.request_redraw();
             true
         } else {
             false
         }
     }
     /// Clears node selection.
+    ///
+    /// Repaints: the highlight for the previously selected row is painted from this
+    /// field, so clearing it has to mark damage.
     pub fn clear_selection(&mut self) {
+        if self.selected_node.is_none() {
+            return;
+        }
         self.selected_node = None;
+        self.base.request_redraw();
     }
     /// Sets focused node by visible index.
+    ///
+    /// Repaints: the focus ring is painted from this field.
     pub fn set_focused_node(&mut self, index: usize) -> bool {
         if index >= self.node_count() {
             return false;
@@ -184,15 +197,19 @@ impl TreeView {
         }
         self.focused_node = Some(index);
         self.focused_node_changed.emit(self.focused_node);
+        self.base.request_redraw();
         true
     }
     /// Clears node focus.
+    ///
+    /// Repaints: the focus ring is painted from this field.
     pub fn clear_focused_node(&mut self) {
         if self.focused_node.is_none() {
             return;
         }
         self.focused_node = None;
         self.focused_node_changed.emit(None);
+        self.base.request_redraw();
     }
     /// Returns focused node index when present.
     pub fn focused_node(&self) -> Option<usize> {
@@ -440,7 +457,7 @@ impl crate::event::EventHandler for TreeView {
             return;
         }
         match event {
-            crate::event::Event::MousePress { pos, button } if *button == 1 => {
+            crate::event::Event::MousePress { pos, button, .. } if *button == 1 => {
                 // The same index derivation the draw uses, so the row a click selects is the row
                 // the user pointed at.
                 if let Some(index) = self.node_at(*pos) {
@@ -549,7 +566,7 @@ mod tests {
 
         let row = view.node_row_rect(1).expect("a roomy view paints node 1");
         let centre = crate::core::Point::new(row.x + 4, row.y + row.height as i32 / 2);
-        view.handle_event(&Event::MousePress { pos: centre, button: 1 });
+        view.handle_event(&Event::MousePress { pos: centre, button: 1, modifiers: 0 });
         assert_eq!(
             view.selected_node(),
             Some(1),
@@ -560,7 +577,7 @@ mod tests {
         // first node — the assertion that actually carries the defect (see the doc comment).
         let mut fresh = TreeView::new(Rect::new(0, 0, 120, 100));
         fresh.set_model(Arc::new(StaticTreeModel));
-        fresh.handle_event(&Event::MousePress { pos: crate::core::Point::new(4, 0), button: 1 });
+        fresh.handle_event(&Event::MousePress { pos: crate::core::Point::new(4, 0), button: 1, modifiers: 0 });
         assert_eq!(fresh.selected_node(), None, "the inset margin is not a row");
     }
 

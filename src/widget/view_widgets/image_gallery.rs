@@ -629,7 +629,7 @@ impl EventHandler for ImageGallery {
             return;
         }
         match event {
-            Event::MousePress { pos, button } => {
+            Event::MousePress { pos, button, .. } => {
                 if *button == 1 {
                     let rect = self.geometry();
                     if !rect.contains_point(*pos) {

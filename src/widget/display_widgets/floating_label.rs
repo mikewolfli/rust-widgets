@@ -648,7 +648,7 @@ impl EventHandler for FloatingLabel {
             return;
         }
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 let rect = self.geometry();
                 if rect.contains_point(*pos) {
                     self.set_focused(true);
@@ -838,7 +838,7 @@ mod tests {
         let mut fl = FloatingLabel::new(Rect::new(0, 0, 200, 50));
         assert!(!fl.is_focused());
 
-        fl.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        fl.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         assert!(fl.is_focused());
     }
 

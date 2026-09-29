@@ -384,7 +384,7 @@ impl EventHandler for SwipeToDismiss {
         }
 
         match event {
-            Event::MousePress { pos, button } => {
+            Event::MousePress { pos, button, .. } => {
                 if *button == 1 {
                     // Remember where the drag started; the offset is the delta
                     // from here, so the child only moves as far as the pointer.

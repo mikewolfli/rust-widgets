@@ -274,7 +274,7 @@ impl EventHandler for ColorWell {
             return;
         }
         match event {
-            Event::MousePress { pos, button } => {
+            Event::MousePress { pos, button, .. } => {
                 if *button == 1 && self.geometry().contains_point(*pos) {
                     self.clicked.emit();
                 }
@@ -319,7 +319,7 @@ mod tests {
             }
         });
 
-        cw.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        cw.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         assert!(clicked.load(Ordering::SeqCst));
     }
 
@@ -347,7 +347,7 @@ mod tests {
         });
 
         cw.set_enabled(false);
-        cw.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        cw.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         assert!(!clicked.load(Ordering::SeqCst));
     }
 

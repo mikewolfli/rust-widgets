@@ -529,7 +529,7 @@ impl EventHandler for MessageBox {
             return;
         }
         match event {
-            Event::MousePress { pos, button: 1 } => {
+            Event::MousePress { pos, button: 1, .. } => {
                 if let Some(index) = self.action_button_at(*pos) {
                     if let Some(activated) = self.buttons.get(index).copied() {
                         self.click_button(activated);

@@ -230,8 +230,14 @@ impl TabWidget {
         self.tabs.len().saturating_sub(1)
     }
     /// Inserts a tab at position.
+    /// Inserts a tab before the given index.
+    ///
+    /// An `index` past the end appends rather than panicking, matching
+    /// [`Self::add_tab`] and the rest of the container family (`tab_bar`,
+    /// `pie_menu` clamp the same way).
     pub fn insert_tab(&mut self, index: usize, title: String, widget: Option<ObjectId>) {
         let was_empty = self.tabs.is_empty();
+        let index = index.min(self.tabs.len());
         let mut tab = Tab::new(title);
         tab.widget = widget;
         if let Some(widget_id) = widget {
@@ -898,7 +904,7 @@ impl EventHandler for TabWidget {
         // strip, so a drag that started on a tab never reaches the page widget — which is
         // what makes the strip behave as one control rather than as a set of drop targets.
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 if let Some(index) = self.tab_at_position(*pos) {
                     if self.tabs[index].enabled {
                         // Check if the click is on the close button area
@@ -1290,6 +1296,21 @@ mod tests {
         let children = tw.children();
         assert_eq!(children.len(), 1);
         assert!(children.contains(&wid1()));
+    }
+
+    /// An index past the end appends instead of panicking.
+    ///
+    /// `insert_tab` passed the caller's index straight to `Vec::insert`, which panics
+    /// when it exceeds the length. `tab_bar` and `pie_menu` clamp, so a caller that
+    /// asked to insert past the end crashed here and appended everywhere else.
+    #[test]
+    fn tabwidget_insert_past_the_end_appends() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("A".to_string(), None);
+        tw.add_tab("B".to_string(), None);
+        tw.insert_tab(9, "C".to_string(), None);
+        assert_eq!(tw.count(), 3);
+        assert_eq!(tw.tab(2).map(|t| t.title.as_str()), Some("C"), "past the end lands last");
     }
 
     // ── 4. Removing tabs ─────────────────────────────────────────────────────
@@ -1949,7 +1970,7 @@ mod tests {
         let third = tw.tab_rect(2).expect("tab 2 has a band");
         let press = Point::new(first.x + first.width as i32 / 2, first.y + 5);
 
-        tw.handle_event(&Event::MousePress { pos: press, button: 1 });
+        tw.handle_event(&Event::MousePress { pos: press, button: 1, modifiers: 0 });
         // A press alone must not reorder: the gesture is still a click at this point.
         assert_eq!(titles(&tw), vec!["T0", "T1", "T2"]);
 
@@ -1986,6 +2007,7 @@ mod tests {
         tw.handle_event(&Event::MousePress {
             pos: Point::new(first.x + first.width as i32 / 2, y),
             button: 1,
+            modifiers: 0,
         });
         tw.handle_event(&Event::MouseMove { pos: Point::new(third.x + third.width as i32 / 2, y) });
         assert_eq!(titles(&tw), vec!["T0", "T1", "T2"]);
@@ -1999,7 +2021,7 @@ mod tests {
         let mut tw = movable_strip(3);
         let first = tw.tab_rect(0).expect("tab 0 has a band");
         let press = Point::new(first.x + first.width as i32 / 2, first.y + 5);
-        tw.handle_event(&Event::MousePress { pos: press, button: 1 });
+        tw.handle_event(&Event::MousePress { pos: press, button: 1, modifiers: 0 });
         tw.handle_event(&Event::MouseMove { pos: Point::new(press.x + 1, press.y) });
         assert_eq!(titles(&tw), vec!["T0", "T1", "T2"]);
     }
@@ -2014,6 +2036,7 @@ mod tests {
         tw.handle_event(&Event::MousePress {
             pos: Point::new(first.x + first.width as i32 / 2, y),
             button: 1,
+            modifiers: 0,
         });
         tw.handle_event(&Event::MouseMove {
             pos: Point::new(first.x + first.width as i32 / 2 + 10, y),

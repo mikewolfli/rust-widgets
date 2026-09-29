@@ -1004,7 +1004,7 @@ impl EventHandler for GridTableWidget {
         }
 
         match event {
-            Event::MousePress { pos, button: _ } => {
+            Event::MousePress { pos, .. } => {
                 // Check resize handles first
                 if let Some(col) = self.resize_handle_at_point(*pos) {
                     self.resizing_column = Some(col);

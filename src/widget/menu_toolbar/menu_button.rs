@@ -550,7 +550,7 @@ impl EventHandler for MenuButton {
         }
 
         match event {
-            Event::MousePress { pos, button } => {
+            Event::MousePress { pos, button, .. } => {
                 if *button == 1 {
                     if self.geometry().contains_point(*pos) {
                         // Click on the button itself — toggle menu

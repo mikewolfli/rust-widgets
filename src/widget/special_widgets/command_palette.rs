@@ -358,7 +358,7 @@ impl EventHandler for CommandPalette {
         }
 
         match event {
-            Event::MousePress { pos, button: 1 } => {
+            Event::MousePress { pos, button: 1, .. } => {
                 self.pick_at_position(*pos);
             }
             Event::MouseDoubleClick { pos, button: 1 } => {

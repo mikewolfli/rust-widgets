@@ -2961,7 +2961,7 @@ impl EventHandler for CodeEditor {
                 // candidate window against a stable caret.
                 self.base.request_redraw();
             }
-            Event::MousePress { pos, button } if *button == 1 => self.pointer_press(*pos),
+            Event::MousePress { pos, button, .. } if *button == 1 => self.pointer_press(*pos),
             Event::MouseRelease { .. } => self.pointer_release(),
             Event::MouseMove { pos } => self.pointer_drag(*pos),
             Event::MouseDoubleClick { pos, .. } => {

@@ -509,7 +509,7 @@ impl EventHandler for BezierCurveEditor {
             return;
         }
         match event {
-            Event::MousePress { pos, button } => {
+            Event::MousePress { pos, button, .. } => {
                 if *button == 1 {
                     if let Some(target) = self.hit_test_handle(*pos) {
                         self.dragging = Some(target);
@@ -721,7 +721,7 @@ mod tests {
         let cp1_pixel = editor.curve_to_pixel(0.25, 0.1);
 
         // Mouse press on CP1.
-        editor.handle_event(&Event::MousePress { pos: cp1_pixel, button: 1 });
+        editor.handle_event(&Event::MousePress { pos: cp1_pixel, button: 1, modifiers: 0 });
         assert!(editor.base.is_mouse_pressed());
 
         // Drag to a new position.
@@ -741,7 +741,7 @@ mod tests {
     fn bezier_disabled_blocks_events() {
         let mut editor = default_editor();
         editor.set_enabled(false);
-        editor.handle_event(&Event::MousePress { pos: Point::new(100, 100), button: 1 });
+        editor.handle_event(&Event::MousePress { pos: Point::new(100, 100), button: 1, modifiers: 0 });
         assert!(!editor.base.is_mouse_pressed());
     }
 
@@ -789,7 +789,7 @@ mod tests {
         );
         editor.handle_event(&Event::MouseEnter { pos: Point::new(rect.x, rect.y) });
         let cp1_pixel = editor.curve_to_pixel(0.25, 0.1);
-        editor.handle_event(&Event::MousePress { pos: cp1_pixel, button: 1 });
+        editor.handle_event(&Event::MousePress { pos: cp1_pixel, button: 1, modifiers: 0 });
         assert_eq!(
             editor.widget_state(),
             WidgetState::Pressed,

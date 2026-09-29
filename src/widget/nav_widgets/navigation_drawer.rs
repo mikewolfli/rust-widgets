@@ -440,7 +440,7 @@ impl EventHandler for NavigationDrawer {
         }
 
         match event {
-            Event::MousePress { pos, button } | Event::MouseRelease { pos, button } => {
+            Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button } => {
                 if *button != 1 {
                     return;
                 }
@@ -614,7 +614,7 @@ mod tests {
         assert!(drawer.is_open());
 
         // Click on overlay (outside panel, at x=350)
-        drawer.handle_event(&Event::MousePress { pos: Point::new(350, 300), button: 1 });
+        drawer.handle_event(&Event::MousePress { pos: Point::new(350, 300), button: 1, modifiers: 0 });
         // Press alone does not close; release does
         assert!(drawer.is_open());
 
@@ -629,7 +629,7 @@ mod tests {
 
         // Click on item at index 1 ("Search") - header=60, item_height=48, item 1 starts at y=108
         let target_y = 60 + 48 + 24;
-        drawer.handle_event(&Event::MousePress { pos: Point::new(20, target_y), button: 1 });
+        drawer.handle_event(&Event::MousePress { pos: Point::new(20, target_y), button: 1, modifiers: 0 });
         // Not yet selected on press
         assert_eq!(drawer.selected_index(), 0);
 
@@ -643,7 +643,7 @@ mod tests {
         drawer.open();
 
         // Right-click on overlay
-        drawer.handle_event(&Event::MousePress { pos: Point::new(350, 300), button: 2 });
+        drawer.handle_event(&Event::MousePress { pos: Point::new(350, 300), button: 2, modifiers: 0 });
         drawer.handle_event(&Event::MouseRelease { pos: Point::new(350, 300), button: 2 });
         assert!(drawer.is_open());
         assert_eq!(drawer.selected_index(), 0);
@@ -656,7 +656,7 @@ mod tests {
         drawer.open();
 
         // Click release on overlay - should NOT close because disabled
-        drawer.handle_event(&Event::MousePress { pos: Point::new(350, 300), button: 1 });
+        drawer.handle_event(&Event::MousePress { pos: Point::new(350, 300), button: 1, modifiers: 0 });
         drawer.handle_event(&Event::MouseRelease { pos: Point::new(350, 300), button: 1 });
         assert!(drawer.is_open());
     }
@@ -667,7 +667,7 @@ mod tests {
         assert!(!drawer.is_open());
 
         // Events while closed should be ignored for drawer-specific behavior
-        drawer.handle_event(&Event::MousePress { pos: Point::new(20, 100), button: 1 });
+        drawer.handle_event(&Event::MousePress { pos: Point::new(20, 100), button: 1, modifiers: 0 });
         drawer.handle_event(&Event::MouseRelease { pos: Point::new(20, 100), button: 1 });
         assert_eq!(drawer.selected_index(), 0);
     }

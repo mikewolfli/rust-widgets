@@ -557,12 +557,12 @@ impl crate::event::EventHandler for TreeTable {
         }
 
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 if let Some(row) = self.row_at(pos.y) {
                     let _ = self.select_row(row);
                 }
             }
-            Event::MousePress { pos, button } if *button == 2 => {
+            Event::MousePress { pos, button, .. } if *button == 2 => {
                 if let Some(row) = self.row_at(pos.y) {
                     let _ = self.toggle_row_expanded(row);
                 }

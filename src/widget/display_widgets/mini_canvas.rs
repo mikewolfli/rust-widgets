@@ -385,7 +385,7 @@ mod tests {
 
         // Enabled and inside: both signals fire.
         let (mut canvas, hits, clicks) = build();
-        canvas.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        canvas.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         canvas.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
         assert_eq!(hits.load(Ordering::SeqCst), 1);
         assert_eq!(clicks.load(Ordering::SeqCst), 1);
@@ -393,7 +393,7 @@ mod tests {
         // Disabled: nothing fires.
         let (mut canvas, hits, clicks) = build();
         canvas.set_enabled(false);
-        canvas.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        canvas.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         canvas.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
         assert_eq!(hits.load(Ordering::SeqCst), 0, "a disabled canvas must stay out of play");
         assert_eq!(clicks.load(Ordering::SeqCst), 0);
@@ -401,7 +401,7 @@ mod tests {
         // Enabled but outside: nothing fires.
         let (mut canvas, hits, clicks) = build();
         let outside = Point::new(5000, 5000);
-        canvas.handle_event(&Event::MousePress { pos: outside, button: 1 });
+        canvas.handle_event(&Event::MousePress { pos: outside, button: 1, modifiers: 0 });
         canvas.handle_event(&Event::MouseRelease { pos: outside, button: 1 });
         assert_eq!(hits.load(Ordering::SeqCst), 0, "a press outside is not an interaction");
         assert_eq!(clicks.load(Ordering::SeqCst), 0);

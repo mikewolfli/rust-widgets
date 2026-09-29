@@ -663,7 +663,7 @@ impl EventHandler for EditableComboBox {
                 }
                 self.base.handle_event(event);
             }
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 let rect = self.geometry();
 
                 // Click on the text field (with arrow zone)

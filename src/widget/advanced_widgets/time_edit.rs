@@ -825,7 +825,7 @@ impl EventHandler for TimeEdit {
             return;
         }
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 if self.clock_popup {
                     // A press on a ring sets that hand's value and leaves the face open: a clock is a
                     // two-part answer (hour *and* minute), so closing after the first would make the
@@ -1614,7 +1614,7 @@ mod tests {
             Some(ClockHand::Hour),
             "the outer ring is the hour"
         );
-        editor.handle_event(&Event::MousePress { pos: hour_point, button: 1 });
+        editor.handle_event(&Event::MousePress { pos: hour_point, button: 1, modifiers: 0 });
         assert_eq!(editor.time().hour(), 3, "three o'clock on the hour ring");
         assert_eq!(editor.time().minute(), 0, "and the minute is untouched");
 
@@ -1625,7 +1625,7 @@ mod tests {
             Some(ClockHand::Minute),
             "the inner ring is the minute"
         );
-        editor.handle_event(&Event::MousePress { pos: minute_point, button: 1 });
+        editor.handle_event(&Event::MousePress { pos: minute_point, button: 1, modifiers: 0 });
         assert_eq!(editor.time().minute(), 15, "three o'clock on the minute ring is :15");
         assert_eq!(editor.time().hour(), 3, "and the hour is untouched");
 
@@ -1633,7 +1633,7 @@ mod tests {
         // the morning, because the face cannot say which half it means and the field already knows.
         editor.set_time(Time::new(21, 30, 0, 0));
         let nine_point = Point::new(centre.x + (radius * 0.82) as i32, centre.y);
-        editor.handle_event(&Event::MousePress { pos: nine_point, button: 1 });
+        editor.handle_event(&Event::MousePress { pos: nine_point, button: 1, modifiers: 0 });
         assert_eq!(editor.time().hour(), 15, "the afternoon half is preserved");
 
         // The hub belongs to no ring: a click there must not silently pick a value.
@@ -1644,7 +1644,7 @@ mod tests {
         // And a click on the plate between ring positions is not a value either, which is what keeps
         // "never mind" from being the same gesture as "set the hour".
         let before = editor.time();
-        editor.handle_event(&Event::MousePress { pos: centre, button: 1 });
+        editor.handle_event(&Event::MousePress { pos: centre, button: 1, modifiers: 0 });
         assert_eq!(editor.time(), before, "a click on the hub changes nothing");
     }
 
@@ -1657,7 +1657,7 @@ mod tests {
         assert!(!editor.clock_popup(), "a fresh field shows no face");
 
         let field_point = crate::core::Point::new(80, editor.geometry().y + 10);
-        editor.handle_event(&Event::MousePress { pos: field_point, button: 1 });
+        editor.handle_event(&Event::MousePress { pos: field_point, button: 1, modifiers: 0 });
         assert!(editor.clock_popup(), "a press on the field opens the face");
 
         editor.handle_event(&Event::KeyPress { key: 27, modifiers: 0 });
@@ -1671,6 +1671,7 @@ mod tests {
         editor.handle_event(&Event::MousePress {
             pos: crate::core::Point::new(9000, 9000),
             button: 1,
+            modifiers: 0
         });
         assert!(!editor.clock_popup(), "a press outside dismisses the face");
     }
@@ -1700,7 +1701,7 @@ mod tests {
             Some(ClockHand::Minute),
             "the fixture must aim at the minute ring, or the assertion below proves nothing"
         );
-        editor.handle_event(&Event::MousePress { pos: half_past, button: 1 });
+        editor.handle_event(&Event::MousePress { pos: half_past, button: 1, modifiers: 0 });
         assert_eq!(
             editor.time().minute(),
             5,
@@ -1722,7 +1723,7 @@ mod tests {
             Some(ClockHand::Minute),
             "the fixture must aim at the minute ring"
         );
-        editor.handle_event(&Event::MousePress { pos: five_past, button: 1 });
+        editor.handle_event(&Event::MousePress { pos: five_past, button: 1, modifiers: 0 });
         assert_eq!(
             editor.time().minute(),
             5,
@@ -1732,7 +1733,7 @@ mod tests {
         // A step the range forbids is refused, leaving the accepted value in place -- the two clicks
         // differ only in the value they select, so the range is what decided.
         let quarter = Point::new(centre.x + minute_radius as i32, centre.y);
-        editor.handle_event(&Event::MousePress { pos: quarter, button: 1 });
+        editor.handle_event(&Event::MousePress { pos: quarter, button: 1, modifiers: 0 });
         assert_eq!(
             editor.time().minute(),
             5,

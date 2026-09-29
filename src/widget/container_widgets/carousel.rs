@@ -360,16 +360,25 @@ impl Carousel {
 
     /// Removes the page at `index`, returning it when the index was valid.
     ///
-    /// The current index is clamped so removing the visible page shows a
-    /// neighbour rather than an out-of-range position.
+    /// The current index follows the page it pointed at: removing an *earlier* page
+    /// shifts the remaining pages left, so the current index is decremented to keep
+    /// naming the same page. Removing the visible page (or a later one that leaves the
+    /// current index past the end) clamps to the last page. Both cases emit
+    /// `page_changed`, because in both the *value* `current_index()` returns would
+    /// otherwise silently start naming a different page than the one on screen.
     pub fn remove_page(&mut self, index: usize) -> Option<CarouselPage> {
         if index >= self.pages.len() {
             return None;
         }
+        let before = self.current_index;
         let removed = self.pages.remove(index);
         let last = self.pages.len().saturating_sub(1);
-        if self.current_index > last {
+        if index < before {
+            self.current_index = before - 1;
+        } else if self.current_index > last {
             self.current_index = last;
+        }
+        if self.current_index != before {
             self.page_changed.emit(self.current_index);
         }
         self.base.request_redraw();
@@ -1201,7 +1210,7 @@ impl EventHandler for Carousel {
         }
 
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 self.drag = DragState::Pressed { start_x: pos.x };
                 self.base.handle_event(event);
             }
@@ -1573,7 +1582,7 @@ mod tests {
         assert_eq!(c.current(), 0, "a disabled carousel must not page on right arrow");
 
         // Swipe, the third paging path.
-        c.handle_event(&Event::MousePress { pos: Point::new(280, 100), button: 1 });
+        c.handle_event(&Event::MousePress { pos: Point::new(280, 100), button: 1, modifiers: 0 });
         c.handle_event(&Event::MouseMove { pos: Point::new(200, 100) });
         c.handle_event(&Event::MouseRelease { pos: Point::new(200, 100), button: 1 });
         assert_eq!(c.current(), 0, "a disabled carousel must not page on a swipe");
@@ -1673,6 +1682,22 @@ mod tests {
         assert!(c.remove_page(9).is_none());
     }
 
+    /// Removing a page *earlier* than the visible one must keep showing the same page.
+    ///
+    /// The index is a position, so deleting a page to its left shifts the visible page
+    /// down by one; leaving the index alone silently revealed the page's successor. The
+    /// existing clamp test only covers the "past the end" direction, which is why this
+    /// went unnoticed.
+    #[test]
+    fn carousel_remove_page_before_the_current_keeps_showing_it() {
+        let mut c = default_carousel();
+        c.set_current(2);
+        let showing = c.pages()[2].title.clone();
+        c.remove_page(0);
+        assert_eq!(c.current(), 1, "the index follows the page it pointed at");
+        assert_eq!(c.pages()[c.current()].title, showing, "still showing the same page");
+    }
+
     // ── B1-2: swipe paging ──────────────────────────────────────────────────
 
     #[test]
@@ -1681,7 +1706,7 @@ mod tests {
         assert_eq!(c.current(), 0);
 
         // Press at x=280, drag left well past 50% of the 300px width, release.
-        c.handle_event(&Event::MousePress { pos: Point::new(280, 100), button: 1 });
+        c.handle_event(&Event::MousePress { pos: Point::new(280, 100), button: 1, modifiers: 0 });
         c.handle_event(&Event::MouseMove { pos: Point::new(100, 100) });
         c.handle_event(&Event::MouseRelease { pos: Point::new(100, 100), button: 1 });
 
@@ -1693,7 +1718,7 @@ mod tests {
         let mut c = default_carousel();
         c.set_current(2);
 
-        c.handle_event(&Event::MousePress { pos: Point::new(20, 100), button: 1 });
+        c.handle_event(&Event::MousePress { pos: Point::new(20, 100), button: 1, modifiers: 0 });
         c.handle_event(&Event::MouseMove { pos: Point::new(200, 100) });
         c.handle_event(&Event::MouseRelease { pos: Point::new(200, 100), button: 1 });
 
@@ -1704,7 +1729,7 @@ mod tests {
     fn carousel_drag_below_threshold_does_not_page_by_swipe() {
         let mut c = default_carousel();
         // 20px of travel on a 300px control is under the 18% (54px) threshold.
-        c.handle_event(&Event::MousePress { pos: Point::new(100, 100), button: 1 });
+        c.handle_event(&Event::MousePress { pos: Point::new(100, 100), button: 1, modifiers: 0 });
         c.handle_event(&Event::MouseMove { pos: Point::new(80, 100) });
         c.handle_event(&Event::MouseRelease { pos: Point::new(80, 100), button: 1 });
 
@@ -1720,7 +1745,7 @@ mod tests {
         assert_eq!(c.current(), 0);
 
         // Swiping right at page 0 would go to -1, which must be refused.
-        c.handle_event(&Event::MousePress { pos: Point::new(20, 100), button: 1 });
+        c.handle_event(&Event::MousePress { pos: Point::new(20, 100), button: 1, modifiers: 0 });
         c.handle_event(&Event::MouseMove { pos: Point::new(250, 100) });
         c.handle_event(&Event::MouseRelease { pos: Point::new(250, 100), button: 1 });
         assert_eq!(c.current(), 0);
@@ -1733,7 +1758,7 @@ mod tests {
         c.set_current(2);
 
         // Swiping left from the last page wraps to the first.
-        c.handle_event(&Event::MousePress { pos: Point::new(280, 100), button: 1 });
+        c.handle_event(&Event::MousePress { pos: Point::new(280, 100), button: 1, modifiers: 0 });
         c.handle_event(&Event::MouseMove { pos: Point::new(100, 100) });
         c.handle_event(&Event::MouseRelease { pos: Point::new(100, 100), button: 1 });
         assert_eq!(c.current(), 0);
@@ -1742,7 +1767,7 @@ mod tests {
     #[test]
     fn carousel_mousedown_then_mouseup_is_a_click_not_a_drag() {
         let mut c = default_carousel();
-        c.handle_event(&Event::MousePress { pos: Point::new(250, 100), button: 1 });
+        c.handle_event(&Event::MousePress { pos: Point::new(250, 100), button: 1, modifiers: 0 });
         c.handle_event(&Event::MouseRelease { pos: Point::new(250, 100), button: 1 });
         assert_eq!(c.current(), 1, "a press and release with no travel is a click");
     }
@@ -1910,7 +1935,7 @@ mod tests {
         assert_eq!(c.current(), 0);
 
         // Cross the 54px press threshold to enter the swiping state.
-        c.handle_event(&Event::MousePress { pos: Point::new(280, 100), button: 1 });
+        c.handle_event(&Event::MousePress { pos: Point::new(280, 100), button: 1, modifiers: 0 });
         c.handle_event(&Event::MouseMove { pos: Point::new(280 - 60, 100) });
         // Then release after only 6 more pixels of travel. Total travel is 66px,
         // which is past the distance threshold — so this also asserts the documented
@@ -1933,13 +1958,13 @@ mod tests {
     #[test]
     fn carousel_swipe_entering_state_survives_a_fast_release() {
         let mut c = default_carousel();
-        c.handle_event(&Event::MousePress { pos: Point::new(280, 100), button: 1 });
+        c.handle_event(&Event::MousePress { pos: Point::new(280, 100), button: 1, modifiers: 0 });
         c.handle_event(&Event::MouseMove { pos: Point::new(220, 100) });
         c.handle_event(&Event::MouseRelease { pos: Point::new(220, 100), button: 1 });
         assert_eq!(c.current(), 1);
 
         // And the same gesture backwards.
-        c.handle_event(&Event::MousePress { pos: Point::new(20, 100), button: 1 });
+        c.handle_event(&Event::MousePress { pos: Point::new(20, 100), button: 1, modifiers: 0 });
         c.handle_event(&Event::MouseMove { pos: Point::new(80, 100) });
         c.handle_event(&Event::MouseRelease { pos: Point::new(80, 100), button: 1 });
         assert_eq!(c.current(), 0);

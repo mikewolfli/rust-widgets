@@ -256,7 +256,7 @@ impl EventHandler for Snackbar {
         }
 
         match event {
-            Event::MousePress { pos, button: 1 } => {
+            Event::MousePress { pos, button: 1, .. } => {
                 if let Some(rect) = self.action_rect() {
                     if Self::point_in_rect(*pos, rect) {
                         let _ = self.trigger_action();

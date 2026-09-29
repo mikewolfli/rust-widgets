@@ -550,7 +550,7 @@ impl EventHandler for SegmentedButton {
             // The button and the segment are tested in the arm's **pattern**, not as nested `if`s,
             // so "a left press on an enabled segment" reads as one condition and clippy's
             // collapsible-match lint has nothing left to collapse.
-            Event::MousePress { pos, button: 1 }
+            Event::MousePress { pos, button: 1, .. }
                 if self.hit_segment(*pos).is_some_and(|index| {
                     self.segments.get(index).is_some_and(|segment| segment.enabled)
                 }) =>
@@ -631,9 +631,9 @@ mod tests {
 
         // A click toggles; a second click adds rather than replaces.
         let segment_width = 300 / 3;
-        btn.handle_event(&Event::MousePress { pos: Point::new(10, 18), button: 1 });
+        btn.handle_event(&Event::MousePress { pos: Point::new(10, 18), button: 1, modifiers: 0 });
         assert_eq!(btn.selected_indices(), &[0]);
-        btn.handle_event(&Event::MousePress { pos: Point::new(segment_width + 10, 18), button: 1 });
+        btn.handle_event(&Event::MousePress { pos: Point::new(segment_width + 10, 18), button: 1, modifiers: 0 });
         assert_eq!(
             btn.selected_indices(),
             &[0, 1],
@@ -642,7 +642,7 @@ mod tests {
         assert_eq!(btn.selected_index(), Some(0), "the primary selection is the lowest");
 
         // Clicking a selected segment toggles it back off, leaving the others.
-        btn.handle_event(&Event::MousePress { pos: Point::new(10, 18), button: 1 });
+        btn.handle_event(&Event::MousePress { pos: Point::new(10, 18), button: 1, modifiers: 0 });
         assert_eq!(btn.selected_indices(), &[1]);
 
         // Turning multi-select off keeps only the primary selection, so the control never paints

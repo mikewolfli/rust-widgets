@@ -337,7 +337,7 @@ unsafe fn forward_mouse(hwnd: HWND, lparam: LPARAM, phase: MousePhase) {
     let (origin_x, origin_y) = canvas_origin(hwnd);
     let position = Point::new(origin_x + x, origin_y + y);
     let event = match phase {
-        MousePhase::Press => Event::MousePress { pos: position, button: 1 },
+        MousePhase::Press => Event::mouse_press_with(position.x, position.y, 1, current_modifiers()),
         MousePhase::Release => Event::MouseRelease { pos: position, button: 1 },
         MousePhase::Drag => Event::MouseMove { pos: position },
     };

@@ -487,7 +487,7 @@ impl EventHandler for SearchBox {
             return;
         }
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 // Check if clear button was clicked. The circle is placed from the **drawn
                 // field**, not from the control's rectangle: the two used to be the same
                 // box, so the hit test silently agreed with the ink by accident, and once
@@ -659,7 +659,7 @@ mod tests {
         let clear_cy = center_y;
 
         // Click the clear button
-        sb.handle_event(&Event::MousePress { pos: Point::new(clear_cx, clear_cy), button: 1 });
+        sb.handle_event(&Event::MousePress { pos: Point::new(clear_cx, clear_cy), button: 1, modifiers: 0 });
 
         assert_eq!(sb.text(), "");
     }
@@ -708,7 +708,7 @@ mod tests {
         let mut sb = SearchBox::new(Rect::new(0, 0, 200, 32));
         assert!(!sb.is_focused());
 
-        sb.handle_event(&Event::MousePress { pos: Point::new(50, 16), button: 1 });
+        sb.handle_event(&Event::MousePress { pos: Point::new(50, 16), button: 1, modifiers: 0 });
         assert!(sb.is_focused());
     }
 
@@ -727,7 +727,7 @@ mod tests {
         let mut sb = SearchBox::new(Rect::new(0, 0, 200, 32));
         sb.set_enabled(false);
 
-        sb.handle_event(&Event::MousePress { pos: Point::new(50, 16), button: 1 });
+        sb.handle_event(&Event::MousePress { pos: Point::new(50, 16), button: 1, modifiers: 0 });
         assert!(!sb.is_focused());
         assert_eq!(sb.text(), "");
     }
@@ -880,12 +880,12 @@ mod tests {
         let clear_cx = field.x + field.width as i32 - 8 - 16 / 2;
         let clear_cy = field.y + field.height as i32 / 2;
         // A press on the X clears the value.
-        sb.handle_event(&Event::MousePress { pos: Point::new(clear_cx, clear_cy), button: 1 });
+        sb.handle_event(&Event::MousePress { pos: Point::new(clear_cx, clear_cy), button: 1, modifiers: 0 });
         assert_eq!(sb.text(), "", "a press on the drawn X clears");
 
         // A press above the field, inside the control's rectangle, does not clear.
         sb.set_text("query");
-        sb.handle_event(&Event::MousePress { pos: Point::new(clear_cx, field.y - 10), button: 1 });
+        sb.handle_event(&Event::MousePress { pos: Point::new(clear_cx, field.y - 10), button: 1, modifiers: 0 });
         assert_eq!(sb.text(), "query", "a press outside the field must not clear");
     }
 }

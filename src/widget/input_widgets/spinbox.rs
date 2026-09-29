@@ -961,7 +961,7 @@ impl EventHandler for SpinBox {
             return;
         }
         match event {
-            Event::MousePress { pos, button } => {
+            Event::MousePress { pos, button, .. } => {
                 if *button == 1 {
                     self.handle_button_click(*pos);
                 }
@@ -1908,12 +1908,13 @@ mod tests {
 
         let mut sb = SpinBox::new(rect);
         sb.set_value(50);
-        sb.handle_event(&Event::MousePress { pos: Point::new(top.x + 1, top.y + 1), button: 1 });
+        sb.handle_event(&Event::MousePress { pos: Point::new(top.x + 1, top.y + 1), button: 1, modifiers: 0 });
         assert_eq!(sb.value(), 51, "the upper half of the column must step up");
 
         sb.handle_event(&Event::MousePress {
             pos: Point::new(bottom.x + 1, bottom.y + 1),
             button: 1,
+            modifiers: 0
         });
         assert_eq!(sb.value(), 50, "the lower half of the column must step down");
     }
@@ -1960,6 +1961,7 @@ mod tests {
         sb.handle_event(&Event::MousePress {
             pos: Point::new(editable.x + 1, editable.y + editable.height as i32 / 2),
             button: 1,
+            modifiers: 0
         });
         assert_eq!(sb.value(), 50, "the text area is where the user types, not where they step");
     }

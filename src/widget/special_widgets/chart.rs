@@ -1386,7 +1386,7 @@ impl EventHandler for ChartWidget {
                     self.base.request_redraw();
                 }
             }
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 self.base.set_mouse_pressed(true);
                 if let Some(index) = self.data_index_at(*pos) {
                     self.base.clicked.emit();

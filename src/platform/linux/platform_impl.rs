@@ -469,7 +469,12 @@ impl Platform for LinuxPlatform {
                 widget.set_can_focus(true);
                 if crate::widget::runtime::dispatch_pointer_event(
                     window_widget,
-                    &crate::event::Event::MousePress { pos: point, button: 1 },
+                    &crate::event::mouse_press_with(
+                        point.x,
+                        point.y,
+                        1,
+                        crate::platform::linux::canvas::modifier_state_bits(event.state()),
+                    ),
                     point,
                 ) {
                     click_area.queue_draw();

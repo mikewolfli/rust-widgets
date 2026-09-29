@@ -784,11 +784,16 @@ impl Layout for FlexLayout {
         context: &LayoutContext,
         out: &mut dyn FnMut(ObjectId, Rect),
     ) {
-        self.arrange_body(rect, children, context, out)
+        // A real device context is in hand, so the minimum-touch growth applies.
+        self.arrange_body(rect, children, context, true, out)
     }
 
     fn arrange(&self, rect: Rect, children: &[ChildInfo], out: &mut dyn FnMut(ObjectId, Rect)) {
-        self.arrange_body(rect, children, &LayoutContext::default(), out)
+        // No device context, so no touch growth — exactly what [`Layout::arrange`]'s default
+        // promises: a layout that has not been taught about the device lays out by its nominal
+        // numbers. `the_hint_channel_and_the_legacy_path_agree_on_the_same_sizes` is the test that
+        // pins this: `arrange` and `update` must return the same geometry for the same sizes.
+        self.arrange_body(rect, children, &LayoutContext::default(), false, out)
     }
 }
 
@@ -807,6 +812,7 @@ impl FlexLayout {
         rect: Rect,
         children: &[ChildInfo],
         context: &LayoutContext,
+        apply_touch_floor: bool,
         out: &mut dyn FnMut(ObjectId, Rect),
     ) {
         if self.items.is_empty() {
@@ -893,6 +899,22 @@ impl FlexLayout {
             } else {
                 size.width as i32
             }
+        };
+        // The solver is driven by the outer sizes (each child's box plus its margins), and it
+        // Whether the layout is being *told* a size for this child rather than deriving it.
+        //
+        // `Hints::fixed` (`min == max`) is exactly the shape `CompositeBuilder::add_sized` and
+        // `add_flexible` register, and it is what "the composite stated the size" means — the
+        // exemption from the touch floor that
+        // `a_size_the_composite_stated_is_not_inflated_by_the_touch_floor` pins. A child added
+        // through `add` carries its own loose `hints()` (`min 0`), which is a wish rather than a
+        // statement, so the floor still applies to it
+        // (`a_plain_child_is_grown_to_the_profiles_touch_floor`).
+        let size_is_stated = |index: usize| -> bool {
+            described
+                .get(index)
+                .and_then(|info| info.as_ref())
+                .is_some_and(|info| info.hints.width.is_fixed() && info.hints.height.is_fixed())
         };
         // The solver is driven by the outer sizes (each child's box plus its margins), and it
         // reports what each *item*'s box may be. The margins come back out below, so a margin is
@@ -1092,13 +1114,69 @@ impl FlexLayout {
                 // context-free `update` and the context-aware entry agree; leaving it in
                 // `update_with_context` alone is how a composite's children came to be the one
                 // place the floor did not reach.
-                out(
-                    widget_id,
-                    crate::layout::types::grow_to_min_touch_size(
+                //
+                // # Why the grown box is clamped into the band only when the band has room
+                //
+                // The floor grows a child toward the device class's minimum touch target, centred
+                // on the rectangle the layout produced, because a touch radius is symmetric. When
+                // the allocation is smaller than the floor — a 16 px label wish inside a 32 px
+                // target — the centred box begins *before* the allocation: a child laid out at the
+                // content edge `x = 10` grew to `x = 2`, and one at `y = 6` grew to `y = -3`.
+                //
+                // Placement belongs to the layout (§B.6 rule 2, pinned by
+                // `the_layout_owns_placement_and_padding_is_removed_first`), and nothing clips at
+                // this layer, so a child placed before the content origin is drawn over whatever
+                // is behind it.
+                //
+                // Sliding it back is only meaningful when the band is *larger* than the grown
+                // box, because then there is somewhere to slide to. When the slot already spans
+                // the band — a full-height row child, the ordinary case — there is no room to
+                // slide into and the symmetric overhang is the intended answer
+                // (`flex_layout_update_with_context_scales_gap_and_padding` pins exactly that), so
+                // it is left as the centring produced it.
+                let floored = if !apply_touch_floor || size_is_stated(index) {
+                    child_rect
+                } else {
+                    let grown = crate::layout::types::grow_to_min_touch_size(
                         child_rect,
                         context.min_touch_size,
-                    ),
-                );
+                    );
+                    let slide = |origin: i32,
+                                 extent: u32,
+                                 slot_extent: u32,
+                                 band_origin: i32,
+                                 band_extent: u32| {
+                        // No room to slide into: the slot already owns the band.
+                        if slot_extent >= band_extent {
+                            return origin;
+                        }
+                        let latest = band_origin + band_extent as i32 - extent as i32;
+                        if latest < band_origin {
+                            band_origin
+                        } else {
+                            origin.clamp(band_origin, latest)
+                        }
+                    };
+                    Rect::new(
+                        slide(
+                            grown.x,
+                            grown.width,
+                            child_rect.width,
+                            content_rect.x,
+                            content_rect.width,
+                        ),
+                        slide(
+                            grown.y,
+                            grown.height,
+                            child_rect.height,
+                            content_rect.y,
+                            content_rect.height,
+                        ),
+                        grown.width,
+                        grown.height,
+                    )
+                };
+                out(widget_id, floored);
             }
             // Backward on a reversed axis, forward otherwise -- so the next child is always placed
             // against the one just emitted.
@@ -1126,13 +1204,28 @@ impl FlexLayout {
     /// reverse direction: a caller of this method has no hints to give, and `arrange_body` already
     /// falls back to `child_sizes` — the same pre-hints channel this method's callers use — for
     /// exactly that case.
+    ///
+    /// # Why `allow(dead_code)`
+    ///
+    /// rustc's dead-code pass sees only the *static* call graph, and this override is reached
+    /// through a trait object: [`KeyboardAwareLayout::update_with_context`](crate::layout::KeyboardAwareLayout)
+    /// forwards to its `Box<dyn Layout>` inner, which is a `FlexLayout` whenever the keyboard-aware
+    /// wrapper is built around one. Removing the override to silence the lint would silently change
+    /// behaviour on that path — the trait default forwards to [`Layout::update`], which by design
+    /// does **not** apply the touch floor — so the allow is the honest answer, and it is scoped to
+    /// this one method rather than to the module.
+    ///
+    /// The two tests that call it directly (`flex_layout_update_with_context_scales_gap_and_padding`,
+    /// `wrap_layout_update_with_context_scales_spacing`) live in `#[cfg(test)]` modules, which are a
+    /// separate compilation unit and so do not count as production callers for the lint either.
+    #[allow(dead_code)]
     fn update_with_context(
         &self,
         rect: Rect,
         context: &LayoutContext,
         widgets: &mut dyn FnMut(ObjectId, Rect),
     ) {
-        self.arrange_body(rect, &[], context, widgets);
+        self.arrange_body(rect, &[], context, true, widgets);
     }
 }
 

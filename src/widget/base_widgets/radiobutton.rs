@@ -385,7 +385,7 @@ impl EventHandler for RadioButton {
             return;
         }
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 if self.hit_area().contains_point(*pos) {
                     self.set_checked(true);
                     self.base.clicked.emit();

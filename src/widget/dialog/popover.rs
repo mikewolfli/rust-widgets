@@ -537,7 +537,7 @@ impl EventHandler for Popover {
         }
 
         match event {
-            Event::MousePress { pos, button } => {
+            Event::MousePress { pos, button, .. } => {
                 if *button == 1 && !self.body_rect.contains_point(*pos) {
                     // Auto-dismiss on click outside
                     self.hide();
@@ -679,7 +679,7 @@ mod tests {
         assert!(popover.is_visible());
 
         // Click far outside the body rect
-        popover.handle_event(&Event::MousePress { pos: Point::new(5, 5), button: 1 });
+        popover.handle_event(&Event::MousePress { pos: Point::new(5, 5), button: 1, modifiers: 0 });
         assert!(!popover.is_visible());
     }
 
@@ -706,7 +706,7 @@ mod tests {
         popover.set_enabled(false);
 
         // Click far outside the body rect: would normally auto-dismiss.
-        popover.handle_event(&Event::MousePress { pos: Point::new(5, 5), button: 1 });
+        popover.handle_event(&Event::MousePress { pos: Point::new(5, 5), button: 1, modifiers: 0 });
         assert!(popover.is_visible(), "a disabled popover must not auto-dismiss");
 
         // Escape: would normally dismiss.

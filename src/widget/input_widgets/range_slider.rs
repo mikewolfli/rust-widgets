@@ -763,7 +763,7 @@ impl EventHandler for RangeSlider {
             return;
         }
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 let rect = self.geometry();
                 // Check which handle is hit (upper first to give it priority)
                 if self.is_handle_hit(*pos, &rect, false) {
@@ -1091,7 +1091,7 @@ mod tests {
             rs.value_to_pixel(rs.lower_value(), &rect),
             rect.y + rect.height as i32 / 2,
         );
-        rs.handle_event(&Event::MousePress { pos: lower_centre, button: 1 });
+        rs.handle_event(&Event::MousePress { pos: lower_centre, button: 1, modifiers: 0 });
         assert!(rs.is_dragging(), "a press on a handle must arm the drag");
 
         let dragged = crate::widget::svg::render_to_svg(&mut rs);

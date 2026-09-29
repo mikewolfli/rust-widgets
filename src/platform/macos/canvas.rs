@@ -266,6 +266,18 @@ unsafe fn event_local_point(view: id, event: id) -> Option<Point> {
     Some(local_point(view, window_point))
 }
 
+/// Reads an AppKit event's modifier flags, or `0` for a null event.
+///
+/// `NSEvent`'s `modifierFlags` is the same source `map_key_modifiers` reads for keys,
+/// so a pointer press and a key press report the same bitfield for the same held keys.
+unsafe fn ns_event_modifier_flags(event: id) -> u64 {
+    if event == nil {
+        return 0;
+    }
+    let flags: u64 = msg_send![event, modifierFlags];
+    flags
+}
+
 /// Returns the canvas view's origin within its parent.
 ///
 /// AppKit reports pointer positions in view-local space, but widget geometry in this
@@ -429,7 +441,12 @@ fn forward_mouse(this: &Object, event: id, phase: MousePhase) {
             let origin = view_origin(view);
             let position = Point::new(origin.x + local.x, origin.y + local.y);
             let translated = match phase {
-                MousePhase::Press => Event::MousePress { pos: position, button: 1 },
+                MousePhase::Press => Event::mouse_press_with(
+                    position.x,
+                    position.y,
+                    1,
+                    super::types::map_modifiers(ns_event_modifier_flags(event)),
+                ),
                 MousePhase::Release => Event::MouseRelease { pos: position, button: 1 },
                 MousePhase::Drag => Event::MouseMove { pos: position },
             };

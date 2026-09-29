@@ -536,7 +536,7 @@ mod tests {
         let mut badge = Badge::new(Rect::new(0, 0, 40, 24));
         // Should not panic
         badge.handle_event(&Event::MouseMove { pos: Point::new(10, 10) });
-        badge.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        badge.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         badge.handle_event(&Event::Resize { size: Size::new(50, 30) });
     }
 

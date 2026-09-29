@@ -748,7 +748,7 @@ impl EventHandler for WebEngineView {
             // identical on every press. A control cannot know which link was clicked
             // without a DOM hit-test, so inventing a URL was the wrong answer in both
             // respects — it is removed, and the click is reported instead.
-            Event::MousePress { pos, button }
+            Event::MousePress { pos, button, .. }
                 if *button == 1 && self.geometry().contains_point(*pos) =>
             {
                 self.base.clicked.emit();

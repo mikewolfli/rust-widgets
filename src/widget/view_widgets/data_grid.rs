@@ -842,7 +842,7 @@ impl crate::event::EventHandler for DataGrid {
             }
         }
 
-        if let Event::MousePress { pos, button } = event {
+        if let Event::MousePress { pos, button, .. } = event {
             if *button != 1 {
                 return;
             }
@@ -953,7 +953,7 @@ mod tests {
 
         // The box that *was* painted is the box a press resolves to, so the same point names
         // the same cell for probing and for pressing.
-        grid.handle_event(&Event::MousePress { pos: centre, button: 1 });
+        grid.handle_event(&Event::MousePress { pos: centre, button: 1, modifiers: 0 });
         assert_eq!(grid.selection(), Some((2, 3)));
 
         // A press in the column-title strip or outside the grid resolves to nothing rather
@@ -962,7 +962,7 @@ mod tests {
         assert_eq!(grid.cell_at(Point::new(-5, -5)), None);
 
         let below = Point::new(centre.x, target.y + 20 * 100);
-        grid.handle_event(&Event::MousePress { pos: below, button: 1 });
+        grid.handle_event(&Event::MousePress { pos: below, button: 1, modifiers: 0 });
         assert_eq!(grid.selection(), None, "a press on empty space must clear the selection");
     }
 
@@ -1001,7 +1001,7 @@ mod tests {
         let before = width_two_strokes(&mut grid);
         assert_eq!(before, 0, "an untouched grid draws no selection marker");
 
-        grid.handle_event(&Event::MousePress { pos: centre, button: 1 });
+        grid.handle_event(&Event::MousePress { pos: centre, button: 1, modifiers: 0 });
         assert_eq!(grid.selection(), Some((1, 1)));
         let after = width_two_strokes(&mut grid);
         assert_eq!(

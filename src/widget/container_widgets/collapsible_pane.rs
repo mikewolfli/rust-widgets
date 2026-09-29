@@ -302,7 +302,7 @@ impl EventHandler for CollapsiblePane {
         }
 
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 let hdr = self.header_rect();
                 if hdr.contains(*pos) {
                     self.toggle();
@@ -852,7 +852,8 @@ mod tests {
 
         // MousePress on the header area (button 1 = left click).
         // Header rect is at (0,0,200,44) — y=12 is well inside.
-        let click_event = Event::MousePress { pos: Point { x: 10, y: 12 }, button: 1 };
+        let click_event =
+            Event::MousePress { pos: Point { x: 10, y: 12 }, button: 1, modifiers: 0 };
         cp.handle_event(&click_event);
         assert!(cp.is_collapsed(), "click on header should collapse the pane");
 
@@ -866,12 +867,14 @@ mod tests {
         let outside_event = Event::MousePress {
             pos: Point { x: 10, y: 80 }, // content area, well below header_height
             button: 1,
+            modifiers: 0,
         };
         cp.handle_event(&outside_event);
         assert!(cp.is_collapsed(), "click outside header must not toggle");
 
         // Click with non-left button should NOT toggle.
-        let right_click = Event::MousePress { pos: Point { x: 10, y: 12 }, button: 2 };
+        let right_click =
+            Event::MousePress { pos: Point { x: 10, y: 12 }, button: 2, modifiers: 0 };
         // State is currently collapsed (true).
         cp.handle_event(&right_click);
         assert!(cp.is_collapsed(), "right-click on header must not toggle");

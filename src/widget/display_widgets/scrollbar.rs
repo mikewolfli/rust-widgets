@@ -655,7 +655,7 @@ impl EventHandler for ScrollBar {
             self.touch_activity();
         }
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 self.mouse_pressed = true;
                 self.slider_pressed.emit();
                 let pixel = match self.orientation {

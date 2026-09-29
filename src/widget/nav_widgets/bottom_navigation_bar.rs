@@ -395,7 +395,7 @@ impl EventHandler for BottomNavigationBar {
         }
 
         match event {
-            Event::MousePress { pos, button } | Event::MouseRelease { pos, button } => {
+            Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button } => {
                 if *button != 1 {
                     return;
                 }
@@ -548,11 +548,11 @@ mod tests {
         let mut bar = make_bar();
         // Tab 0: x in [0..93], Tab 1: x in [94..187], Tab 2: x in [188..281], Tab 3: x in [282..374]
         // Click on tab at index 2
-        bar.handle_event(&Event::MousePress { pos: Point::new(200, 28), button: 1 });
+        bar.handle_event(&Event::MousePress { pos: Point::new(200, 28), button: 1, modifiers: 0 });
         assert_eq!(bar.selected_index(), 2);
 
         // Click on tab at index 0
-        bar.handle_event(&Event::MousePress { pos: Point::new(30, 28), button: 1 });
+        bar.handle_event(&Event::MousePress { pos: Point::new(30, 28), button: 1, modifiers: 0 });
         assert_eq!(bar.selected_index(), 0);
     }
 
@@ -567,14 +567,14 @@ mod tests {
     fn bottom_nav_bar_mouse_press_other_button_noop() {
         let mut bar = make_bar();
         bar.set_selected_index(1);
-        bar.handle_event(&Event::MousePress { pos: Point::new(30, 28), button: 2 });
+        bar.handle_event(&Event::MousePress { pos: Point::new(30, 28), button: 2, modifiers: 0 });
         assert_eq!(bar.selected_index(), 1); // should remain unchanged
     }
 
     #[test]
     fn bottom_nav_bar_mouse_click_outside_does_nothing() {
         let mut bar = make_bar();
-        bar.handle_event(&Event::MousePress { pos: Point::new(500, 100), button: 1 });
+        bar.handle_event(&Event::MousePress { pos: Point::new(500, 100), button: 1, modifiers: 0 });
         assert_eq!(bar.selected_index(), 0);
     }
 
@@ -583,7 +583,7 @@ mod tests {
         let mut bar = make_bar();
         bar.set_enabled(false);
 
-        bar.handle_event(&Event::MousePress { pos: Point::new(200, 28), button: 1 });
+        bar.handle_event(&Event::MousePress { pos: Point::new(200, 28), button: 1, modifiers: 0 });
         assert_eq!(bar.selected_index(), 0); // should not change
     }
 
@@ -591,7 +591,7 @@ mod tests {
     fn bottom_nav_bar_empty_no_items_does_not_panic() {
         let mut bar = BottomNavigationBar::new(Rect::new(0, 0, 375, 56));
         // These should not panic with no items
-        bar.handle_event(&Event::MousePress { pos: Point::new(30, 28), button: 1 });
+        bar.handle_event(&Event::MousePress { pos: Point::new(30, 28), button: 1, modifiers: 0 });
         bar.set_selected_index(5);
         assert_eq!(bar.selected_index(), 0);
     }

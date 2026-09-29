@@ -435,7 +435,7 @@ impl EventHandler for Pagination {
         }
 
         match event {
-            Event::MousePress { pos, button: 1 } => {
+            Event::MousePress { pos, button: 1, .. } => {
                 if let Some(cell) = self.cell_at(*pos) {
                     self.activate(cell);
                 }

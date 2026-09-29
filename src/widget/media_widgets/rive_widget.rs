@@ -845,7 +845,7 @@ impl EventHandler for RiveWidget {
             return;
         }
         match event {
-            Event::MousePress { pos, button } | Event::MouseRelease { pos, button } => {
+            Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button } => {
                 if *button == 1 && self.geometry().contains_point(*pos) {
                     if self.is_playing {
                         self.pause();

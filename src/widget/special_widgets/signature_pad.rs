@@ -407,7 +407,7 @@ impl EventHandler for SignaturePad {
         }
         let rect = self.geometry();
         match event {
-            Event::MousePress { pos, button: 1 } if rect.contains_point(*pos) => {
+            Event::MousePress { pos, button: 1, .. } if rect.contains_point(*pos) => {
                 self.begin_stroke(*pos);
             }
             #[cfg(feature = "touch")]

@@ -471,7 +471,7 @@ impl EventHandler for MediaPlayer {
                 // Unknown key; ignore
                 _ => {}
             },
-            Event::MousePress { pos, button: 1 } => {
+            Event::MousePress { pos, button: 1, .. } => {
                 let rect = self.geometry();
                 let bar_rect = Rect::new(
                     rect.x + 10,
@@ -679,7 +679,7 @@ mod tests {
     fn narrow_progress_bar_does_not_divide_by_zero() {
         let mut player = MediaPlayer::new(Rect::new(0, 0, 10, 80));
         player.set_source("/tmp/video.mp4", 120_000);
-        player.handle_event(&Event::MousePress { pos: Point::new(5, 62), button: 1 });
+        player.handle_event(&Event::MousePress { pos: Point::new(5, 62), button: 1, modifiers: 0 });
         assert_eq!(player.position_ms(), 0);
     }
 

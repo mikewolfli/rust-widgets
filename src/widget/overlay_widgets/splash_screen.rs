@@ -339,7 +339,7 @@ impl EventHandler for SplashScreen {
         }
 
         match event {
-            Event::MousePress { pos, button: 1 } if self.is_over_skip(*pos) => {
+            Event::MousePress { pos, button: 1, .. } if self.is_over_skip(*pos) => {
                 self.skipped.emit(self.title.clone());
             }
             // Escape skips only when the screen is skippable: a splash that cannot
@@ -662,10 +662,11 @@ mod tests {
         splash.handle_event(&Event::MousePress {
             pos: Point::new(skip.x + skip.width as i32 / 2, skip.y + skip.height as i32 / 2),
             button: 1,
+            modifiers: 0
         });
         assert_eq!(seen.lock().expect("lock").as_slice(), ["Booting"]);
 
-        splash.handle_event(&Event::MousePress { pos: Point::new(5, 5), button: 1 });
+        splash.handle_event(&Event::MousePress { pos: Point::new(5, 5), button: 1, modifiers: 0 });
         assert_eq!(seen.lock().expect("lock").len(), 1, "a click away from Skip is ignored");
     }
 

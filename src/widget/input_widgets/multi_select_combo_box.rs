@@ -595,7 +595,7 @@ impl EventHandler for MultiSelectComboBox {
             return;
         }
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 let rect = self.geometry();
 
                 // Click on the main box toggles expand

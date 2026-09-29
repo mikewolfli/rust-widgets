@@ -948,7 +948,7 @@ impl EventHandler for ComboBox {
             return;
         }
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 // A row of the open list takes priority: it is drawn over the field, so a press
                 // inside it belongs to the list even where the two boxes overlap.
                 if let Some(index) = self.item_at_point(*pos) {
@@ -1740,7 +1740,7 @@ mod tests {
         // A press on the field opens the list rather than cycling the value -- the defect this
         // replaces made a nine-item list take nine clicks to reach item 8.
         let band_centre = crate::core::Point::new(50, cb.field_band().y + 8);
-        cb.handle_event(&Event::MousePress { pos: band_centre, button: 1 });
+        cb.handle_event(&Event::MousePress { pos: band_centre, button: 1, modifiers: 0 });
         assert!(cb.is_open(), "a press on the field opens the list");
         assert_eq!(cb.current_index(), None, "and does not change the value");
 
@@ -1758,6 +1758,7 @@ mod tests {
         cb.handle_event(&Event::MousePress {
             pos: crate::core::Point::new(row.x + 5, row.y + row.height as i32 / 2),
             button: 1,
+            modifiers: 0
         });
         assert_eq!(cb.current_index(), Some(1), "the row under the press is taken");
         assert_eq!(cb.current_text(), "item 1");

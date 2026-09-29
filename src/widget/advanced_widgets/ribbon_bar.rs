@@ -334,17 +334,29 @@ impl RibbonBar {
     }
 
     /// Removes the tab at the given index.
+    ///
+    /// The current tab follows the tab it pointed at: removing an *earlier* tab shifts
+    /// the rest left, so the index is decremented to keep naming the same tab. Removing
+    /// the visible tab clamps to the last one. Either way the picture changed, so a
+    /// repaint is requested.
     pub fn remove_tab(&mut self, index: usize) {
         if index >= self.tabs.len() {
             return;
         }
+        let before = self.current_tab_index;
         self.tabs.remove(index);
         self.groups.remove(index);
         if self.tabs.is_empty() {
             self.current_tab_index = 0;
+        } else if index < before {
+            self.current_tab_index = before - 1;
         } else if self.current_tab_index >= self.tabs.len() {
             self.current_tab_index = self.tabs.len() - 1;
         }
+        if self.current_tab_index != before {
+            self.current_tab_changed.emit(self.current_tab_index);
+        }
+        self.base.request_redraw();
     }
 
     /// Returns the title of the tab at the given index.
@@ -1070,7 +1082,7 @@ impl EventHandler for RibbonBar {
                 }
             }
 
-            Event::MousePress { pos, button: 1 } => {
+            Event::MousePress { pos, button: 1, .. } => {
                 // Check minimize button first
                 if self.minimize_button_rect().contains(*pos) {
                     self.minimized = !self.minimized;

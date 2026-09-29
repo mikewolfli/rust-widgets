@@ -167,17 +167,32 @@ pub struct SelectionModel {
     selected_rows: Vec<usize>,
     /// Currently focused row.
     current_row: Option<usize>,
+    /// The row a `Shift`-extend grows from in [`SelectionMode::Extended`].
+    ///
+    /// Only meaningful in that mode; every other mode leaves it `None`.
+    anchor: Option<usize>,
 }
 crate::impl_default_via_new!(SelectionModel);
 
 impl SelectionModel {
     /// Creates a new selection model.
     pub fn new() -> Self {
-        Self { mode: SelectionMode::Single, selected_rows: Vec::new(), current_row: None }
+        Self {
+            mode: SelectionMode::Single,
+            selected_rows: Vec::new(),
+            current_row: None,
+            anchor: None,
+        }
     }
     /// Sets selection mode.
+    ///
+    /// Leaving [`SelectionMode::Extended`] clears the anchor, because a later switch
+    /// back to `Extended` must not extend from a row chosen under a different rule.
     pub fn set_mode(&mut self, mode: SelectionMode) {
         self.mode = mode;
+        if mode != SelectionMode::Extended {
+            self.anchor = None;
+        }
         self.normalize();
     }
     /// Returns current selection mode.
@@ -185,6 +200,12 @@ impl SelectionModel {
         self.mode
     }
     /// Selects a row.
+    ///
+    /// This is the **unmodified** selection: a plain click or a programmatic select.
+    /// In [`SelectionMode::Extended`] it *replaces* the selection and leaves an anchor,
+    /// which is what makes a following `Shift` extend from here rather than from the
+    /// previous selection. The modifier-driven behaviours live in
+    /// [`Self::select_with_modifiers`].
     ///
     /// In [`SelectionMode::None`] the view accepts no selection, so this is a
     /// no-op — the mode is a property of the view, not a transient state, and
@@ -203,17 +224,66 @@ impl SelectionModel {
                 self.current_row = Some(row);
             }
             SelectionMode::Extended => {
-                // Extended selection logic
+                // A plain click starts a new selection from here. Pushing instead of
+                // replacing would make `Extended` indistinguishable from `Multi`, and
+                // pushing without a duplicate check would let `selected_rows()` report
+                // the same row twice.
+                self.selected_rows.clear();
                 self.selected_rows.push(row);
                 self.current_row = Some(row);
+                self.anchor = Some(row);
             }
             SelectionMode::None => {}
         }
+    }
+    /// Selects `row` with keyboard modifiers, implementing the Windows-explorer
+    /// model [`SelectionMode::Extended`] documents.
+    ///
+    /// * `Shift` — selects the inclusive range from the anchor to `row`.
+    /// * `Ctrl`/`Primary` — toggles `row`, and re-anchors there so a following
+    ///   `Shift` extends from the row the user just toggled.
+    /// * no modifier — [`Self::select_row`], i.e. replace and re-anchor.
+    ///
+    /// In every other mode this delegates to [`Self::select_row`], so a caller does
+    /// not have to know the current mode to call it safely.
+    pub fn select_with_modifiers(&mut self, row: usize, modifiers: crate::shortcut::Modifiers) {
+        if self.mode != SelectionMode::Extended {
+            self.select_row(row);
+            return;
+        }
+        if modifiers.contains(crate::shortcut::Modifiers::SHIFT) {
+            // No anchor means the user has not selected anything yet, so the range is
+            // just this row — which is also the anchor it leaves behind.
+            let anchor = self.anchor.unwrap_or(row);
+            let (low, high) = if anchor <= row { (anchor, row) } else { (row, anchor) };
+            self.selected_rows = (low..=high).collect();
+            self.current_row = Some(row);
+            return;
+        }
+        if modifiers.contains(crate::shortcut::Modifiers::CTRL) {
+            if let Some(pos) = self.selected_rows.iter().position(|&i| i == row) {
+                self.selected_rows.remove(pos);
+            } else {
+                self.selected_rows.push(row);
+                // Keep the list ordered so it reads as a set of rows in visual order
+                // rather than in click order.
+                self.selected_rows.sort_unstable();
+            }
+            self.current_row = Some(row);
+            self.anchor = Some(row);
+            return;
+        }
+        self.select_row(row);
+    }
+    /// Returns the anchor a `Shift`-extend grows from, when one has been set.
+    pub fn anchor(&self) -> Option<usize> {
+        self.anchor
     }
     /// Clears selection.
     pub fn clear(&mut self) {
         self.selected_rows.clear();
         self.current_row = None;
+        self.anchor = None;
     }
     /// Returns whether the view accepts selection at all.
     pub fn is_selectable(&self) -> bool {
@@ -373,21 +443,54 @@ impl ListView {
         self.model.as_ref().and_then(|m| m.data(row))
     }
     /// Select one row in the current view projection.
+    ///
+    /// Repaints: the selected row's highlight is painted, so without the request it
+    /// would only appear once some unrelated event repainted the control.
     pub fn select_row(&mut self, row: usize) -> bool {
         if row < self.row_count() {
             self.selection.select_row(row);
             self.selection_changed.emit(row);
             self.set_focused_row(row);
+            self.base.request_redraw();
             true
         } else {
             false
         }
     }
+    /// Selects `row` honouring the modifier keys held during the click.
+    ///
+    /// In [`SelectionMode::Extended`](crate::widget::input_widgets::listbox::SelectionMode::Extended)
+    /// this is what implements the documented interaction model: `Shift` selects the
+    /// range from the anchor, `Ctrl`/`Primary` toggles the row, and no modifier replaces
+    /// the selection. In every other mode it is [`Self::select_row`], so an event handler
+    /// can call it unconditionally.
+    pub fn select_row_with_modifiers(
+        &mut self,
+        row: usize,
+        modifiers: crate::shortcut::Modifiers,
+    ) -> bool {
+        if row >= self.row_count() {
+            return false;
+        }
+        self.selection.select_with_modifiers(row, modifiers);
+        self.selection_changed.emit(row);
+        self.set_focused_row(row);
+        self.base.request_redraw();
+        true
+    }
     /// Clear current row selection.
+    ///
+    /// Repaints: the selection highlight is painted from the selection model.
     pub fn clear_selection(&mut self) {
+        if self.selection.rows().is_empty() {
+            return;
+        }
         self.selection.clear();
+        self.base.request_redraw();
     }
     /// Sets focused row in current projection.
+    ///
+    /// Repaints: the focus highlight is painted from this field.
     pub fn set_focused_row(&mut self, row: usize) -> bool {
         if row >= self.row_count() {
             return false;
@@ -397,15 +500,19 @@ impl ListView {
         }
         self.focused_row = Some(row);
         self.focused_row_changed.emit(self.focused_row);
+        self.base.request_redraw();
         true
     }
     /// Clears focused row.
+    ///
+    /// Repaints: the focus highlight is painted from this field.
     pub fn clear_focused_row(&mut self) {
         if self.focused_row.is_none() {
             return;
         }
         self.focused_row = None;
         self.focused_row_changed.emit(None);
+        self.base.request_redraw();
     }
     /// Returns focused row when still visible in projection.
     pub fn focused_row(&self) -> Option<usize> {
@@ -625,9 +732,23 @@ impl ListView {
     /// One implementation for the mouse and the touch paths, which were two copies of the same
     /// sixteen lines that had already drifted from the paint loop's own idea of where rows are.
     fn select_row_at_point(&mut self, point: crate::core::Point) {
+        self.select_row_at_point_with(point, crate::shortcut::Modifiers::NONE);
+    }
+
+    /// Focuses and selects the row under `point`, honouring `modifiers`.
+    ///
+    /// The modifier state comes from the press that produced the point, which is why it
+    /// is a parameter: `Shift`/`Ctrl` are what select a range or toggle one row in
+    /// extended-selection mode, and the widget layer can only see them if the event
+    /// carried them this far.
+    fn select_row_at_point_with(
+        &mut self,
+        point: crate::core::Point,
+        modifiers: crate::shortcut::Modifiers,
+    ) {
         let Some(index) = self.row_at_point(point) else { return };
         self.focused_row = Some(index);
-        self.selection.select_row(index);
+        self.selection.select_with_modifiers(index, modifiers);
         if let Some(row) = self.focused_row {
             self.selection_changed.emit(row);
             self.focused_row_changed.emit(Some(row));
@@ -887,8 +1008,11 @@ impl crate::event::EventHandler for ListView {
             return;
         }
         match event {
-            crate::event::Event::MousePress { pos, button } if *button == 1 => {
-                self.select_row_at_point(*pos);
+            crate::event::Event::MousePress { pos, button, modifiers } if *button == 1 => {
+                self.select_row_at_point_with(
+                    *pos,
+                    crate::shortcut::Modifiers::from_event_bits(*modifiers),
+                );
             }
             // Row hover, derived from the same `row_at_point` the click uses, so the row that is
             // highlighted is the row a click would affect. A pointer that leaves the rows entirely
@@ -1254,5 +1378,31 @@ mod tests {
         let mut list = ListView::new(Rect::new(0, 0, 200, 120));
         list.set_view_mode(ViewMode::List);
         assert!(!list.list_layout().label_below, "List labels sit beside their row");
+    }
+
+    /// `Extended` implements the Windows-explorer model its documentation promises.
+    ///
+    /// It used to be a copy of `Multi`: the arm pushed the row unconditionally, so a
+    /// plain click *added* to the selection instead of replacing it, and there was no
+    /// anchor at all for a `Shift` to extend from. `ListBox` had already been fixed;
+    /// the shared model the view widgets use was left behind.
+    #[test]
+    fn extended_selection_replaces_on_a_plain_click_and_extends_with_shift() {
+        use crate::shortcut::Modifiers;
+        let mut v = ListView::new(Rect::new(0, 0, 200, 200));
+        v.set_model(Arc::new(VecListModel::new((0..8).map(|n| n.to_string()).collect())));
+        v.set_selection_mode(SelectionMode::Extended);
+
+        v.select_row(2);
+        assert_eq!(v.selected_rows(), vec![2], "a plain click replaces the selection");
+
+        v.select_row_with_modifiers(5, Modifiers::SHIFT);
+        assert_eq!(v.selected_rows(), vec![2, 3, 4, 5], "Shift extends from the anchor");
+
+        v.select_row_with_modifiers(4, Modifiers::CTRL);
+        assert_eq!(v.selected_rows(), vec![2, 3, 5], "Ctrl toggles one row, no duplicates");
+
+        v.select_row_with_modifiers(1, Modifiers::NONE);
+        assert_eq!(v.selected_rows(), vec![1], "and a plain click replaces again");
     }
 }

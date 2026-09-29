@@ -823,7 +823,7 @@ impl EventHandler for Menu {
                     y += h;
                 }
             }
-            Event::MousePress { pos, button: 1 } => {
+            Event::MousePress { pos, button: 1, .. } => {
                 let rect = self.geometry();
                 let mut y = rect.y as f32 + 2.0;
                 for (index, item) in self.items.iter().enumerate() {
@@ -1405,7 +1405,7 @@ mod tests {
         });
 
         // First entry sits just below the popup's 2px top padding.
-        menu.handle_event(&Event::MousePress { pos: Point::new(20, 14), button: 1 });
+        menu.handle_event(&Event::MousePress { pos: Point::new(20, 14), button: 1, modifiers: 0 });
 
         assert_eq!(&*fired.lock().expect("sink poisoned"), &["Cut".to_string()]);
         assert!(!menu.is_visible(), "choosing an entry must close the menu");
@@ -1420,7 +1420,7 @@ mod tests {
             menu.open_at(Point::new(100, 100), Rect::new(0, 0, 400, 400));
             assert!(menu.is_visible());
 
-            menu.handle_event(&Event::MousePress { pos: Point::new(5, 5), button });
+            menu.handle_event(&Event::MousePress { pos: Point::new(5, 5), button, modifiers: 0 });
 
             assert!(!menu.is_visible(), "button {button} outside the popup must dismiss it");
         }
@@ -1434,7 +1434,7 @@ mod tests {
         menu.open_at(Point::new(100, 100), Rect::new(0, 0, 400, 400));
 
         // x is inside the popup but past the text column; y is the top padding.
-        menu.handle_event(&Event::MousePress { pos: Point::new(250, 101), button: 1 });
+        menu.handle_event(&Event::MousePress { pos: Point::new(250, 101), button: 1, modifiers: 0 });
 
         assert!(menu.is_visible(), "padding inside the popup must not dismiss the menu");
     }
@@ -1709,7 +1709,7 @@ mod tests {
         // A press on the first row, which is the branch. `open_at(0, 0)` puts the popup at the
         // origin, and the rows begin just below its own top padding — the same coordinate the
         // existing leaf test uses.
-        menu.handle_event(&Event::MousePress { pos: Point::new(20, 14), button: 1 });
+        menu.handle_event(&Event::MousePress { pos: Point::new(20, 14), button: 1, modifiers: 0 });
 
         assert_eq!(opened.load(Ordering::SeqCst), 1, "the branch must be reported as opened");
         assert_eq!(
@@ -1742,7 +1742,7 @@ mod tests {
             chosen_clone.fetch_add(1, Ordering::SeqCst);
         });
 
-        menu.handle_event(&Event::MousePress { pos: Point::new(20, 14), button: 1 });
+        menu.handle_event(&Event::MousePress { pos: Point::new(20, 14), button: 1, modifiers: 0 });
 
         assert_eq!(chosen.load(Ordering::SeqCst), 1, "a leaf must commit");
         assert_eq!(opened.load(Ordering::SeqCst), 0, "a leaf must not ask for a submenu");

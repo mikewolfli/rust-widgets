@@ -471,7 +471,7 @@ impl EventHandler for AnimatedImage {
             return;
         }
         match event {
-            Event::MousePress { pos, button } | Event::MouseRelease { pos, button } => {
+            Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button } => {
                 if *button == 1 && self.geometry().contains_point(*pos) {
                     if self.playing {
                         self.pause();
@@ -692,7 +692,7 @@ mod tests {
         img.load_frames(two_test_frames()).unwrap();
         img.set_enabled(false);
 
-        img.handle_event(&Event::MousePress { pos: Point::new(50, 50), button: 1 });
+        img.handle_event(&Event::MousePress { pos: Point::new(50, 50), button: 1, modifiers: 0 });
         assert!(!img.is_playing());
     }
 

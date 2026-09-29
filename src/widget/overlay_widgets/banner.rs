@@ -473,7 +473,7 @@ impl EventHandler for Banner {
         }
 
         match event {
-            Event::MousePress { pos, button: 1 } => {
+            Event::MousePress { pos, button: 1, .. } => {
                 if self.hits_dismiss(*pos) {
                     let _ = self.dismiss();
                     return;

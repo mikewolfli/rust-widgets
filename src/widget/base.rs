@@ -896,7 +896,7 @@ impl EventHandler for BaseWidget {
             Event::MouseMove { pos } => {
                 self.hover.emit(*pos);
             }
-            Event::MousePress { pos, button } => {
+            Event::MousePress { pos, button, .. } => {
                 self.mouse_down.emit((*pos, *button));
             }
             Event::MouseRelease { pos, button } => {
@@ -968,7 +968,7 @@ impl BaseWidget {
         match event {
             Event::MouseEnter { .. } => self.hovered = true,
             Event::MouseLeave { .. } => self.hovered = false,
-            Event::MousePress { pos, button } => {
+            Event::MousePress { pos, button, .. } => {
                 // Only a press the runtime actually routed here (or that hit-tests
                 // inside) arms the gesture, and never on a disabled control: a disabled
                 // control is inert, so its state channel must stay `Disabled` rather than
@@ -1035,7 +1035,7 @@ mod tests {
         bw.mouse_down.connect(move |_| *downs_slot.lock().expect("lock") += 1);
 
         bw.handle_event(&Event::MouseMove { pos: Point::new(3, 4) });
-        bw.handle_event(&Event::MousePress { pos: Point::new(3, 4), button: 1 });
+        bw.handle_event(&Event::MousePress { pos: Point::new(3, 4), button: 1, modifiers: 0 });
 
         assert_eq!(*hovers.lock().expect("lock"), vec![Point::new(3, 4)], "hover is routed");
         assert_eq!(*downs.lock().expect("lock"), 1, "mouse_down is routed");
@@ -1062,7 +1062,7 @@ mod tests {
 
         // A complete press/release pair, which is what a Button would turn into a
         // click in its own handler.
-        bw.handle_event(&Event::MousePress { pos: Point::new(1, 1), button: 1 });
+        bw.handle_event(&Event::MousePress { pos: Point::new(1, 1), button: 1, modifiers: 0 });
         bw.handle_event(&Event::MouseRelease { pos: Point::new(1, 1), button: 1 });
 
         assert_eq!(
@@ -1203,7 +1203,17 @@ mod tests {
     ///
     /// This drives the real registry, so it also proves the runtime lookup the primitive makes is
     /// the one that finds the child.
+    ///
+    /// # Profile gate
+    ///
+    /// Gated with the runtime, exactly as the primitive it tests is: `add_child_linked` writes the
+    /// child's parent link through `widget::runtime::with_widget_mut`, and the alloc-frugal profiles
+    /// compile that module out. There the entry is a list operation only (see `add_child_linked`'s
+    /// own note), so the second half of this assertion has nothing to observe — the test belongs on
+    /// the profiles where the behaviour it describes exists, not to a silent skip that would let the
+    /// pairing regress unnoticed everywhere.
     #[test]
+    #[cfg(not(alloc_frugal))]
     fn adding_a_child_linked_writes_both_directions() {
         let parent_id = crate::widget::runtime::register(crate::compat::Box::new(
             crate::widget::Panel::new(crate::core::Rect::new(0, 0, 10, 10)),
@@ -1419,7 +1429,7 @@ mod tests {
             *key_sink.lock().unwrap() = Some(*args);
         });
 
-        bw.handle_event(&Event::MousePress { pos: Point::new(12, 34), button: 1 });
+        bw.handle_event(&Event::MousePress { pos: Point::new(12, 34), button: 1, modifiers: 0 });
         bw.handle_event(&Event::KeyPress { key: 65, modifiers: 2 });
 
         assert_eq!(*mouse_down.lock().unwrap(), Some((Point::new(12, 34), 1)));
@@ -1499,7 +1509,7 @@ mod tests {
     fn base_records_press_and_release_with_the_grab() {
         let mut bw = make_base();
         // A press inside the widget's rectangle arms the gesture.
-        bw.handle_event(&Event::MousePress { pos: Point::new(50, 30), button: 1 });
+        bw.handle_event(&Event::MousePress { pos: Point::new(50, 30), button: 1, modifiers: 0 });
         assert!(bw.is_pressed());
         assert!(bw.is_grabbed());
         bw.handle_event(&Event::MouseRelease { pos: Point::new(50, 30), button: 1 });
@@ -1514,7 +1524,7 @@ mod tests {
     #[test]
     fn base_ignores_a_press_outside_its_rectangle() {
         let mut bw = make_base();
-        bw.handle_event(&Event::MousePress { pos: Point::new(400, 400), button: 1 });
+        bw.handle_event(&Event::MousePress { pos: Point::new(400, 400), button: 1, modifiers: 0 });
         assert!(!bw.is_pressed());
         assert!(!bw.is_grabbed());
     }
@@ -1524,7 +1534,7 @@ mod tests {
     #[test]
     fn base_keeps_the_grab_while_a_drag_leaves_and_returns() {
         let mut bw = make_base();
-        bw.handle_event(&Event::MousePress { pos: Point::new(50, 30), button: 1 });
+        bw.handle_event(&Event::MousePress { pos: Point::new(50, 30), button: 1, modifiers: 0 });
         bw.handle_event(&Event::MouseMove { pos: Point::new(400, 400) });
         assert!(!bw.is_pressed(), "dragging off stops painting pressed");
         assert!(bw.is_grabbed(), "but the gesture is still ours");

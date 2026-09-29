@@ -382,6 +382,6 @@ mod tests {
     fn sparkline_event_forwarding() {
         let mut sl = Sparkline::new(Rect::new(0, 0, 80, 24));
         sl.handle_event(&Event::MouseMove { pos: Point::new(5, 5) });
-        sl.handle_event(&Event::MousePress { pos: Point::new(5, 5), button: 1 });
+        sl.handle_event(&Event::MousePress { pos: Point::new(5, 5), button: 1, modifiers: 0 });
     }
 }

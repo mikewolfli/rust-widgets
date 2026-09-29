@@ -373,7 +373,7 @@ impl EventHandler for HeroAnimation {
             return;
         }
         match event {
-            Event::MousePress { pos, button } | Event::MouseRelease { pos, button } => {
+            Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button } => {
                 if *button == 1 && self.geometry().contains_point(*pos) {
                     if self.is_animating {
                         self.stop_animation();
@@ -569,7 +569,7 @@ mod tests {
             Rect::new(200, 100, 100, 80),
         )));
         ha.set_enabled(false);
-        ha.handle_event(&Event::MousePress { pos: Point::new(50, 50), button: 1 });
+        ha.handle_event(&Event::MousePress { pos: Point::new(50, 50), button: 1, modifiers: 0 });
         assert!(!ha.is_animating());
     }
 

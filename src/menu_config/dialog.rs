@@ -109,4 +109,21 @@ impl MenuConfigDialog {
             _ => format!("{} (memory not reportable)", caps.gpu_type.description()),
         }
     }
+
+    /// Returns a description of the detected system memory.
+    ///
+    /// The same rule [`Self::gpu_description`] follows: a figure is printed only when a
+    /// backend actually measured it. When nothing could report physical memory the
+    /// description says so, and names the conservative assumption the *scoring* model
+    /// uses instead — clearly labelled as an assumption, so it cannot be read as a probe
+    /// result.
+    pub fn system_memory_description(&self) -> String {
+        match self.config.hardware_caps().system_ram_mb {
+            Some(mb) => format!("{mb} MB"),
+            None => format!(
+                "not reportable on this backend (scoring assumes {} MB)",
+                MenuConfig::assumed_system_memory()
+            ),
+        }
+    }
 }

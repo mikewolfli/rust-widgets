@@ -284,7 +284,7 @@ impl EventHandler for ToastStack {
         }
 
         match event {
-            Event::MousePress { pos, button: 1 } => {
+            Event::MousePress { pos, button: 1, .. } => {
                 if let Some(index) = self.row_at(*pos) {
                     let _ = self.select_index(index);
                     let _ = self.activate_selected();

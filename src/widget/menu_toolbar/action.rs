@@ -758,7 +758,7 @@ mod tests {
         });
         // Manually trigger should still work (trigger is not gated by base)
         // but handle_event should be blocked
-        a.handle_event(&Event::MousePress { pos: Point::new(15, 25), button: 1 });
+        a.handle_event(&Event::MousePress { pos: Point::new(15, 25), button: 1, modifiers: 0 });
         // When disabled, handle_event should return early before trigger()
         // We check that triggered signal was not emitted
         assert!(

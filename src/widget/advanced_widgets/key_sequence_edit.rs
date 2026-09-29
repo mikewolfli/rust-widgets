@@ -722,7 +722,7 @@ mod tests {
         let mut kse = KeySequenceEdit::new(Rect::new(0, 0, 150, 30));
 
         assert!(!kse.is_recording());
-        kse.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        kse.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         assert!(kse.is_recording());
     }
 
@@ -845,12 +845,12 @@ mod tests {
         assert!(!kse.is_enabled());
 
         // Mouse press should not start recording when disabled
-        kse.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        kse.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         assert!(!kse.is_recording());
 
         // Re-enable and verify it works
         kse.set_enabled(true);
-        kse.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        kse.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         assert!(kse.is_recording());
     }
 

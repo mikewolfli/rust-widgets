@@ -347,7 +347,7 @@ impl EventHandler for NotificationCenter {
         }
 
         match event {
-            Event::MousePress { pos, button: 1 } => {
+            Event::MousePress { pos, button: 1, .. } => {
                 if let Some(index) = self.row_at(*pos) {
                     let _ = self.select_index(index);
                 }

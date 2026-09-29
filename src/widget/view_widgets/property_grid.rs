@@ -479,7 +479,7 @@ impl EventHandler for PropertyGrid {
             return;
         }
         match event {
-            Event::MousePress { pos, button } | Event::MouseRelease { pos, button } => {
+            Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button } => {
                 if *button == 1 {
                     let content = self.content_rect();
 
@@ -710,7 +710,7 @@ mod tests {
 
         // First row is at y=25 (header at 0..24, then y=25+1=26 is row 0 start, so
         // click on row 0: y=26..49, clicking at y=30 should select index 0
-        pg.handle_event(&Event::MousePress { pos: Point::new(10, 35), button: 1 });
+        pg.handle_event(&Event::MousePress { pos: Point::new(10, 35), button: 1, modifiers: 0 });
         assert_eq!(pg.selected_index(), Some(0));
     }
 
@@ -720,7 +720,7 @@ mod tests {
         pg.add_property("A", "1", true);
 
         // Click in header area (y < row_height + 1 = 25)
-        pg.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        pg.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         assert_eq!(pg.selected_index(), None);
     }
 
@@ -744,14 +744,14 @@ mod tests {
         pg.add_property("B", "2", true);
 
         let top = pg.content_rect().y + FIRST_ROW_TOP as i32;
-        pg.handle_event(&Event::MousePress { pos: Point::new(10, top), button: 1 });
+        pg.handle_event(&Event::MousePress { pos: Point::new(10, top), button: 1, modifiers: 0 });
         assert_eq!(pg.selected_index(), Some(0), "the first row's top edge is part of it");
 
         // The last pixel of the previous row is not.
         let mut pg = PropertyGrid::new(Rect::new(0, 0, 300, 200));
         pg.add_property("A", "1", true);
         let top = pg.content_rect().y + FIRST_ROW_TOP as i32;
-        pg.handle_event(&Event::MousePress { pos: Point::new(10, top - 1), button: 1 });
+        pg.handle_event(&Event::MousePress { pos: Point::new(10, top - 1), button: 1, modifiers: 0 });
         assert_eq!(pg.selected_index(), None, "the separator line is not a row");
     }
 
@@ -767,11 +767,11 @@ mod tests {
         pg.add_property("B", "2", true);
 
         // Select row 1 first, so "deselect" is observable.
-        pg.handle_event(&Event::MousePress { pos: Point::new(10, 50 + 30), button: 1 });
+        pg.handle_event(&Event::MousePress { pos: Point::new(10, 50 + 30), button: 1, modifiers: 0 });
         assert_eq!(pg.selected_index(), Some(0));
 
         // A click above the widget's top edge is outside it.
-        pg.handle_event(&Event::MousePress { pos: Point::new(10, 5), button: 1 });
+        pg.handle_event(&Event::MousePress { pos: Point::new(10, 5), button: 1, modifiers: 0 });
         assert_eq!(pg.selected_index(), None, "a click above the widget must deselect");
     }
 
@@ -789,11 +789,11 @@ mod tests {
         // (200 - 25) / 24 = 7 rows are painted, occupying [25, 193).
         assert_eq!(pg.visible_row_count(), 7);
 
-        pg.handle_event(&Event::MousePress { pos: Point::new(10, 196), button: 1 });
+        pg.handle_event(&Event::MousePress { pos: Point::new(10, 196), button: 1, modifiers: 0 });
         assert_eq!(pg.selected_index(), None, "row 7 of 10 is not painted here");
 
         // The last painted row is still reachable.
-        pg.handle_event(&Event::MousePress { pos: Point::new(10, 190), button: 1 });
+        pg.handle_event(&Event::MousePress { pos: Point::new(10, 190), button: 1, modifiers: 0 });
         assert_eq!(pg.selected_index(), Some(6));
     }
 
@@ -829,13 +829,14 @@ mod tests {
         inside.handle_event(&Event::MousePress {
             pos: Point::new(10, y_inside_row_zero(&inside)),
             button: 1,
+            modifiers: 0
         });
         assert_eq!(inside.selected_index(), Some(0), "the baseline press must select row 0");
 
         for (label, x) in [("left", -5), ("right", 305), ("far right", 5000)] {
             let mut pg = build();
             let y = y_inside_row_zero(&pg);
-            pg.handle_event(&Event::MousePress { pos: Point::new(x, y), button: 1 });
+            pg.handle_event(&Event::MousePress { pos: Point::new(x, y), button: 1, modifiers: 0 });
             assert_eq!(
                 pg.selected_index(),
                 None,

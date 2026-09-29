@@ -7,7 +7,7 @@
 //! below showing the selected tab's content. Supports add/remove/clear
 //! operations on tabs and emits a `tab_changed` signal on selection.
 
-use crate::core::{Color, Font, HorizontalAlignment, Rect};
+use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Rect};
 use crate::event::{Event, EventHandler};
 #[cfg(full_widgets)]
 use crate::layout::{
@@ -21,8 +21,10 @@ use crate::widget::capability::properties_trait::{base_property_get, base_proper
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
 use crate::widget::metrics::estimate_text_width;
-use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
+use crate::widget::{BaseWidget, Draw, SimpleRegistry, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// A single tab page with a title, optional content, and optional icon name.
 pub struct TabPage {
@@ -44,6 +46,10 @@ pub struct TabView {
     selected_index: usize,
     /// Emitted when the selected tab index changes.
     pub tab_changed: Signal1<usize>,
+    /// The shared registry the selected tab's content widget is drawn and dispatched
+    /// through. Without it a `TabPage::content` would be stored and never shown — the
+    /// content area is otherwise a flat fill.
+    registry: Option<Rc<RefCell<SimpleRegistry>>>,
 }
 
 impl TabView {
@@ -54,7 +60,21 @@ impl TabView {
             tabs: Vec::new(),
             selected_index: 0,
             tab_changed: Signal1::new(),
+            registry: None,
         }
+    }
+
+    /// Sets the shared widget registry used to draw and dispatch the selected tab's content.
+    ///
+    /// The registry is what makes [`TabPage::content`] visible: the widget mounted on the
+    /// selected tab is drawn into [`Self::content_rect`] by the host that owns the registry.
+    pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
+        self.registry = Some(registry);
+    }
+
+    /// Returns the shared widget registry, if set.
+    pub fn registry(&self) -> Option<&Rc<RefCell<SimpleRegistry>>> {
+        self.registry.as_ref()
     }
 
     /// Adds a new tab page at the end of the tab list.
@@ -74,18 +94,66 @@ impl TabView {
     }
 
     /// Removes the tab at the given index.
+    ///
     /// Adjusts selection if the removed tab was selected.
+    ///
+    /// The current index follows the tab it pointed at: removing an *earlier* tab shifts
+    /// the rest left, so the index is decremented to keep naming the same tab rather than
+    /// silently revealing its successor. Removing the visible tab clamps to the last one,
+    /// and the change is announced through `tab_changed`.
     pub fn remove_tab(&mut self, index: usize) {
         if index >= self.tabs.len() {
             return;
         }
+        let before = self.selected_index;
         self.tabs.remove(index);
         if self.tabs.is_empty() {
             self.selected_index = 0;
+        } else if index < before {
+            self.selected_index = before - 1;
         } else if self.selected_index >= self.tabs.len() {
             self.selected_index = self.tabs.len() - 1;
         }
+        if self.selected_index != before {
+            self.tab_changed.emit(self.selected_index);
+        }
         self.base.request_redraw();
+    }
+
+    /// Returns the object id of the selected tab's content widget, when it has one.
+    ///
+    /// A `TabPage` carries its content as a `Box<dyn Widget>`, but a widget that is expected to
+    /// be drawn by a host lives in that host's registry and is addressed by id. This is the
+    /// bridge: the content's own id, or `None` when the selected page has no content.
+    pub fn content_widget_id(&self) -> Option<ObjectId> {
+        self.tabs.get(self.selected_index).and_then(|tab| tab.content.as_ref().map(|c| c.id()))
+    }
+
+    /// Routes `event` to the selected tab's content widget through the registry.
+    ///
+    /// Pointer events are only delivered while the pointer is inside [`Self::content_rect`],
+    /// so a click on the strip cannot also reach the content behind it; every other event kind
+    /// goes to the content unconditionally, matching `TabWidget`'s contract. Nothing is
+    /// forwarded when the selected page has no content or the host set no registry.
+    fn forward_to_content(&self, event: &Event) {
+        let Some(widget_id) = self.content_widget_id() else {
+            return;
+        };
+        let Some(ref reg) = self.registry else {
+            return;
+        };
+        let content_rect = self.content_rect();
+        let inside = match event {
+            Event::MousePress { pos, .. }
+            | Event::MouseRelease { pos, .. }
+            | Event::MouseMove { pos } => content_rect.contains(*pos),
+            _ => true,
+        };
+        if !inside {
+            return;
+        }
+        reg.borrow_mut().set_widget_geometry(widget_id, content_rect);
+        let _ = reg.borrow_mut().forward_event(widget_id, event);
     }
 
     /// Returns the number of tabs.
@@ -431,8 +499,32 @@ impl Draw for TabView {
         let separator_rect = Rect::new(rect.x, rect.y + tab_bar_height as i32 - 1, rect.width, 1);
         context.fill_rect(separator_rect, separator);
 
-        // Draw selected tab content area (child widget rendering is delegated)
+        // Draw selected tab content area. The background is laid down first so a tab whose
+        // content widget is not registered (or a registry-less host) still paints the surface
+        // the strip leaves; the widget itself is then drawn over it.
         context.fill_rect(content_rect, content_background);
+
+        // The selected tab's content widget, drawn through the host's registry.
+        //
+        // `TabPage::content` used to be a public field that was stored and never read, so a
+        // caller that mounted a widget on a tab got a flat rectangle: the content area is not a
+        // child the widget system knows about, it is only whatever this control draws inside its
+        // own rectangle. The registry is what bridges the two, and it is the same mechanism
+        // `TabWidget` already uses (`set_widget_geometry` + `draw_widget`), so the geometry the
+        // content is drawn at is the geometry the event path forwards at.
+        if let Some(widget_id) = self.content_widget_id() {
+            if let Some(ref reg) = self.registry {
+                reg.borrow_mut().set_widget_geometry(widget_id, content_rect);
+                context.push_clip(
+                    content_rect.x,
+                    content_rect.y,
+                    content_rect.width,
+                    content_rect.height,
+                );
+                reg.borrow_mut().draw_widget(widget_id, context);
+                context.pop_clip();
+            }
+        }
     }
 }
 
@@ -442,7 +534,7 @@ impl EventHandler for TabView {
             return;
         }
         match event {
-            Event::MousePress { pos, button } => {
+            Event::MousePress { pos, button, .. } => {
                 if *button == 1 && !self.tabs.is_empty() {
                     // The band comes from the control's own derivation, so the region that accepts
                     // a press is by construction the region the renderer drew.
@@ -462,12 +554,17 @@ impl EventHandler for TabView {
                         });
                         if let Some(index) = clicked {
                             self.set_current_index(index);
+                            return;
                         }
                     }
+                    // The press was outside the strip, so it belongs to the content area. Falls
+                    // through to the shared dispatch below.
+                    self.forward_to_content(event);
                 }
             }
             _ => {
                 self.base.handle_event(event);
+                self.forward_to_content(event);
             }
         }
     }
@@ -668,6 +765,23 @@ mod tests {
         assert_eq!(tv.current_index(), 1);
     }
 
+    /// Removing a tab *before* the selected one keeps the same tab selected.
+    ///
+    /// Only the "removed the visible tab" direction was covered, which is exactly the
+    /// direction that needs no index repair. Deleting an earlier tab shifted the rest
+    /// left while the index stayed put, so the control quietly showed a different tab.
+    #[test]
+    fn tab_view_remove_earlier_tab_keeps_the_selection() {
+        let mut tv = make_tab_view();
+        tv.add_tab("A", None, None::<&str>);
+        tv.add_tab("B", None, None::<&str>);
+        tv.add_tab("C", None, None::<&str>);
+        tv.set_current_index(2);
+        tv.remove_tab(0);
+        assert_eq!(tv.current_index(), 1, "the index follows the tab it pointed at");
+        assert_eq!(tv.tabs()[tv.current_index()].title, "C", "still showing the same tab");
+    }
+
     #[test]
     fn tab_view_clear_tabs() {
         let mut tv = make_tab_view();
@@ -696,7 +810,7 @@ mod tests {
             strip.x + second.x + second.width as i32 / 2,
             strip.y + second.height as i32 / 2,
         );
-        tv.handle_event(&Event::MousePress { pos: centre, button: 1 });
+        tv.handle_event(&Event::MousePress { pos: centre, button: 1, modifiers: 0 });
         assert_eq!(tv.current_index(), 1, "a press on the second tab selects it");
 
         // And the first tab's own box still selects the first, so the mapping is not merely
@@ -706,7 +820,7 @@ mod tests {
             strip.x + first.x + first.width as i32 / 2,
             strip.y + first.height as i32 / 2,
         );
-        tv.handle_event(&Event::MousePress { pos: centre, button: 1 });
+        tv.handle_event(&Event::MousePress { pos: centre, button: 1, modifiers: 0 });
         assert_eq!(tv.current_index(), 0, "a press on the first tab selects it");
     }
 
@@ -769,5 +883,32 @@ mod tests {
         let mut tv = make_tab_view();
         tv.set_current_index(5); // no tabs, should not panic
         assert_eq!(tv.current_index(), 0);
+    }
+
+    /// A tab's mounted content is reachable through the registry.
+    ///
+    /// `TabPage::content` is a public field documented as "displayed when this tab is
+    /// selected", but nothing read it: the content area was a flat fill and no event
+    /// reached the widget, so a host that mounted one got a silent no-op. The registry
+    /// is the bridge, and this pins the id the draw and dispatch paths resolve.
+    #[test]
+    fn the_selected_tabs_content_is_reachable_through_the_registry() {
+        let mut tv = make_tab_view();
+        let registry =
+            std::rc::Rc::new(std::cell::RefCell::new(crate::widget::SimpleRegistry::new()));
+        tv.set_registry(registry.clone());
+
+        let first = crate::widget::base_widgets::label::Label::new(
+            "first".to_string(),
+            Rect::new(0, 0, 10, 10),
+        );
+        let first_id = first.id();
+        tv.add_tab("A", Some(Box::new(first)), None::<&str>);
+        tv.add_tab("B", None, None::<&str>);
+
+        assert_eq!(tv.content_widget_id(), Some(first_id));
+
+        tv.set_current_index(1);
+        assert_eq!(tv.content_widget_id(), None, "the empty tab has no content to draw");
     }
 }

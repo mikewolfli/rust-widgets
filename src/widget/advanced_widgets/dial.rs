@@ -755,7 +755,7 @@ mod tests {
     #[test]
     fn dial_mouse_events() {
         let mut d = Dial::new(Rect::new(0, 0, 64, 64));
-        d.handle_event(&Event::MousePress { pos: Point::new(32, 32), button: 1 });
+        d.handle_event(&Event::MousePress { pos: Point::new(32, 32), button: 1, modifiers: 0 });
         // value should not change; only signal emitted
         assert_eq!(d.value(), 0);
         d.handle_event(&Event::MouseRelease { pos: Point::new(32, 32), button: 1 });

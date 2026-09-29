@@ -153,8 +153,14 @@ impl ToolBox {
         self.items.len().saturating_sub(1)
     }
     /// Inserts an item at position.
+    /// Inserts an item before the given index.
+    ///
+    /// An `index` past the end appends rather than panicking, matching
+    /// [`Self::add_item`] and the rest of the container family (`tab_bar`,
+    /// `pie_menu` clamp the same way).
     pub fn insert_item(&mut self, index: usize, text: String, widget: Option<ObjectId>) {
         let was_empty = self.items.is_empty();
+        let index = index.min(self.items.len());
         let mut item = ToolBoxItem::new(text);
         item.widget = widget;
         if let Some(widget_id) = widget {
@@ -525,7 +531,7 @@ impl EventHandler for ToolBox {
             return;
         }
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 if let Some(index) = self.item_at_position(*pos) {
                     if self.items[index].enabled {
                         self.set_current_index(index);
@@ -1093,7 +1099,7 @@ mod tests {
 
         // Default orientation is Vertical; item_rect(1) has y = 0 + 32*1 = 32
         // Click on item 1 at (10, 40) which is within vertical item 1: (0, 32, 200, 32)
-        tb.handle_event(&Event::MousePress { pos: Point::new(10, 40), button: 1 });
+        tb.handle_event(&Event::MousePress { pos: Point::new(10, 40), button: 1, modifiers: 0 });
         assert_eq!(tb.current_index(), 1, "clicking item should select it");
     }
 
@@ -1110,7 +1116,7 @@ mod tests {
 
         assert_eq!(tb.current_index(), 0);
         // Click on item 1 (y=32), should not select because item is disabled
-        tb.handle_event(&Event::MousePress { pos: Point::new(10, 40), button: 1 });
+        tb.handle_event(&Event::MousePress { pos: Point::new(10, 40), button: 1, modifiers: 0 });
         assert_eq!(tb.current_index(), 0, "clicking disabled item should not change current");
     }
 
@@ -1122,7 +1128,7 @@ mod tests {
 
         // Click far below items (y=200, but geometry only goes to 160)
         // Since item_at_position returns None for out-of-bounds, no change
-        tb.handle_event(&Event::MousePress { pos: Point::new(10, 200), button: 1 });
+        tb.handle_event(&Event::MousePress { pos: Point::new(10, 200), button: 1, modifiers: 0 });
         assert_eq!(tb.current_index(), 0);
     }
 
@@ -1139,7 +1145,7 @@ mod tests {
         tb.set_enabled(false);
 
         // Try clicking on item 1
-        tb.handle_event(&Event::MousePress { pos: Point::new(10, 40), button: 1 });
+        tb.handle_event(&Event::MousePress { pos: Point::new(10, 40), button: 1, modifiers: 0 });
         // current_index should remain 0 because event handling returns early when disabled
         assert_eq!(tb.current_index(), 0, "disabled toolbox should not process mouse events");
     }
@@ -1151,12 +1157,12 @@ mod tests {
         tb.add_item("B".to_string(), None);
 
         tb.set_enabled(false);
-        tb.handle_event(&Event::MousePress { pos: Point::new(10, 40), button: 1 });
+        tb.handle_event(&Event::MousePress { pos: Point::new(10, 40), button: 1, modifiers: 0 });
         assert_eq!(tb.current_index(), 0);
 
         // Re-enable and click again
         tb.set_enabled(true);
-        tb.handle_event(&Event::MousePress { pos: Point::new(10, 40), button: 1 });
+        tb.handle_event(&Event::MousePress { pos: Point::new(10, 40), button: 1, modifiers: 0 });
         assert_eq!(tb.current_index(), 1, "after re-enable, mouse clicks should work");
     }
 
@@ -1343,5 +1349,20 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// An index past the end appends instead of panicking.
+    ///
+    /// `insert_item` passed the caller's index straight to `Vec::insert`, which panics
+    /// when it exceeds the length. `tab_bar` and `pie_menu` clamp, so a caller that
+    /// asked to insert past the end crashed here and appended everywhere else.
+    #[test]
+    fn toolbox_insert_past_the_end_appends() {
+        let mut tb = ToolBox::new(Rect::new(0, 0, 240, 120));
+        tb.add_item("A".to_string(), None);
+        tb.add_item("B".to_string(), None);
+        tb.insert_item(9, "C".to_string(), None);
+        assert_eq!(tb.count(), 3);
+        assert_eq!(tb.item(2).map(|i| i.text()), Some("C"), "past the end lands last");
     }
 }

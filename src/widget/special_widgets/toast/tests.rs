@@ -291,11 +291,11 @@ fn clicking_the_close_affordance_dismisses() {
     });
 
     // A press well away from the right-hand close area.
-    toast.handle_event(&Event::MousePress { pos: Point::new(5, 20), button: 1 });
+    toast.handle_event(&Event::MousePress { pos: Point::new(5, 20), button: 1, modifiers: 0 });
     assert_eq!(*seen.lock().expect("lock"), 0, "a click on the body must be ignored");
 
     // The close affordance sits near the right edge, vertically centred.
-    toast.handle_event(&Event::MousePress { pos: Point::new(188, 20), button: 1 });
+    toast.handle_event(&Event::MousePress { pos: Point::new(188, 20), button: 1, modifiers: 0 });
     assert_eq!(*seen.lock().expect("lock"), 1, "a click on the close button must dismiss");
 }
 
@@ -311,7 +311,7 @@ fn a_non_dismissible_toast_has_no_close_target() {
         *sink.lock().expect("signal sink poisoned") += 1;
     });
 
-    toast.handle_event(&Event::MousePress { pos: Point::new(188, 20), button: 1 });
+    toast.handle_event(&Event::MousePress { pos: Point::new(188, 20), button: 1, modifiers: 0 });
     assert_eq!(
         *seen.lock().expect("lock"),
         0,

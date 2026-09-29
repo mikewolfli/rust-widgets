@@ -482,7 +482,7 @@ impl EventHandler for GridWidget {
                     self.hovered_cell = None;
                 }
             }
-            Event::MousePress { pos, button: 1 } => {
+            Event::MousePress { pos, button: 1, .. } => {
                 self.base.set_mouse_pressed(true);
                 if let Some(cell) = self.cell_at(pos) {
                     self.base.clicked.emit();

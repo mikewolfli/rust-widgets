@@ -394,7 +394,7 @@ impl EventHandler for NavigationStack {
             return;
         }
         match event {
-            Event::MousePress { pos, button } => {
+            Event::MousePress { pos, button, .. } => {
                 if *button == 1 {
                     // Check if the back button was clicked
                     if self.can_pop() {

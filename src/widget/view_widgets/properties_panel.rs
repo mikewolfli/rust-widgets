@@ -578,7 +578,7 @@ impl Draw for PropertiesPanel {
 impl EventHandler for PropertiesPanel {
     fn handle_event(&mut self, event: &Event) {
         match event {
-            Event::MousePress { pos, button } => {
+            Event::MousePress { pos, button, .. } => {
                 // A disabled panel must not edit values. Without this gate
                 // `set_enabled(false)` left the rows clickable, so a panel put into a
                 // read-only state still mutated its properties.
@@ -834,6 +834,7 @@ mod tests {
         panel.handle_event(&Event::MousePress {
             pos: Point::new(VALUE_COL_LEFT + 4, first_entry.y + first_entry.height as i32 / 2),
             button: 1,
+            modifiers: 0
         });
 
         // The bool should have been toggled
@@ -870,6 +871,7 @@ mod tests {
         panel.handle_event(&Event::MousePress {
             pos: Point::new(VALUE_COL_LEFT + 4, entry_row.y + entry_row.height as i32 / 2),
             button: 1,
+            modifiers: 0
         });
 
         let val = panel.get_property_value("Enabled").unwrap();
@@ -884,6 +886,7 @@ mod tests {
         panel.handle_event(&Event::MousePress {
             pos: Point::new(VALUE_COL_LEFT + 4, entry_row.y + entry_row.height as i32 / 2),
             button: 1,
+            modifiers: 0
         });
         match panel.get_property_value("Enabled").unwrap() {
             PropertyValue::Bool(b) => assert!(!b, "re-enabling must restore editing"),

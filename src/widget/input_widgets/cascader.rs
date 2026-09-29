@@ -909,7 +909,7 @@ impl EventHandler for Cascader {
             return;
         }
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 let field = self.field_rect();
                 if field.contains_point(*pos) {
                     if self.expanded {

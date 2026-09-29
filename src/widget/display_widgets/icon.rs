@@ -831,7 +831,7 @@ mod tests {
         let mut icon = Icon::new(Rect::new(0, 0, 24, 24));
         // Should not panic
         icon.handle_event(&Event::MouseMove { pos: Point::new(10, 10) });
-        icon.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        icon.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
     }
 
     #[test]

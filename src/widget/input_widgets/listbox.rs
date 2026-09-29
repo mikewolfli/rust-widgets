@@ -696,7 +696,7 @@ impl EventHandler for ListBox {
             return;
         }
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 self.select_at_pos(*pos);
             }
             Event::MouseMove { pos } => {
@@ -1028,7 +1028,7 @@ mod tests {
 
         let click = |y: i32| {
             let mut list = build();
-            list.handle_event(&Event::MousePress { pos: Point::new(50, y), button: 1 });
+            list.handle_event(&Event::MousePress { pos: Point::new(50, y), button: 1, modifiers: 0 });
             list.current_row()
         };
 

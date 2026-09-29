@@ -750,7 +750,7 @@ mod tests {
     fn rating_mouse_press_out_of_bounds() {
         let mut r = Rating::new(Rect::new(0, 0, 200, 40));
         let mid_y = r.star_row().y + r.star_row().height as i32 / 2;
-        r.handle_event(&Event::MousePress { pos: Point::new(300, mid_y), button: 1 });
+        r.handle_event(&Event::MousePress { pos: Point::new(300, mid_y), button: 1, modifiers: 0 });
         assert_eq!(r.rating(), 0);
     }
 
@@ -758,7 +758,7 @@ mod tests {
     fn rating_mouse_press_before_first_star() {
         let mut r = Rating::new(Rect::new(0, 0, 200, 40));
         let mid_y = r.star_row().y + r.star_row().height as i32 / 2;
-        r.handle_event(&Event::MousePress { pos: Point::new(-10, mid_y), button: 1 });
+        r.handle_event(&Event::MousePress { pos: Point::new(-10, mid_y), button: 1, modifiers: 0 });
         assert_eq!(r.rating(), 0);
     }
 
@@ -853,7 +853,7 @@ mod tests {
         let mut r = Rating::new(Rect::new(0, 0, 200, 40));
         r.set_enabled(false);
         let mid_y = r.star_row().y + r.star_row().height as i32 / 2;
-        r.handle_event(&Event::MousePress { pos: Point::new(40, mid_y), button: 1 });
+        r.handle_event(&Event::MousePress { pos: Point::new(40, mid_y), button: 1, modifiers: 0 });
         assert_eq!(r.rating(), 0);
     }
 
@@ -861,7 +861,7 @@ mod tests {
     fn rating_right_click_ignored() {
         let mut r = Rating::new(Rect::new(0, 0, 200, 40));
         let mid_y = r.star_row().y + r.star_row().height as i32 / 2;
-        r.handle_event(&Event::MousePress { pos: Point::new(40, mid_y), button: 2 });
+        r.handle_event(&Event::MousePress { pos: Point::new(40, mid_y), button: 2, modifiers: 0 });
         assert_eq!(r.rating(), 0);
     }
 

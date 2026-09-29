@@ -521,7 +521,7 @@ mod tests {
     fn avatar_handle_event_no_panic() {
         let mut avatar = Avatar::new(Rect::new(0, 0, 40, 40));
         // EventHandler should not panic for any event type
-        avatar.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        avatar.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         avatar.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
         avatar.handle_event(&Event::MouseMove { pos: Point::new(20, 20) });
         avatar.handle_event(&Event::KeyPress { key: 0x41, modifiers: 0 });
@@ -533,7 +533,7 @@ mod tests {
         let mut avatar = Avatar::new(Rect::new(0, 0, 40, 40));
         avatar.set_enabled(false);
         // Should not panic
-        avatar.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        avatar.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         avatar.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
     }
 

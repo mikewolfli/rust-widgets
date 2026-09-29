@@ -514,7 +514,7 @@ impl EventHandler for RefreshControl {
             return;
         }
         match event {
-            Event::MousePress { pos, button } => {
+            Event::MousePress { pos, button, .. } => {
                 if *button == 1 {
                     self.drag_origin_y = Some(pos.y as f32);
                     self.start_pull();
@@ -612,7 +612,7 @@ mod tests {
             }
         });
 
-        rc.handle_event(&Event::MousePress { pos: Point::new(100, 20), button: 1 });
+        rc.handle_event(&Event::MousePress { pos: Point::new(100, 20), button: 1, modifiers: 0 });
         assert_eq!(rc.refresh_state(), RefreshState::Dragging);
 
         // Three 30px downward steps accumulate to 90px, past the 60px default.
@@ -632,7 +632,7 @@ mod tests {
         // Dragging up must not produce a negative pull that could later read as
         // a threshold crossing.
         let mut rc = make_refresh_control();
-        rc.handle_event(&Event::MousePress { pos: Point::new(100, 200), button: 1 });
+        rc.handle_event(&Event::MousePress { pos: Point::new(100, 200), button: 1, modifiers: 0 });
         rc.handle_event(&Event::MouseMove { pos: Point::new(100, 120) });
         assert_eq!(rc.pull_distance(), 0.0);
 
@@ -814,7 +814,7 @@ mod tests {
     fn refresh_control_disabled_blocks_events() {
         let mut rc = make_refresh_control();
         rc.set_enabled(false);
-        rc.handle_event(&Event::MousePress { pos: Point::new(100, 100), button: 1 });
+        rc.handle_event(&Event::MousePress { pos: Point::new(100, 100), button: 1, modifiers: 0 });
         assert_eq!(rc.refresh_state(), RefreshState::Idle);
     }
 

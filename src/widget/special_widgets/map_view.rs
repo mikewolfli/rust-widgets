@@ -380,7 +380,7 @@ impl EventHandler for MapView {
                 189 | 109 => self.zoom_by(0.9),
                 _ => { /* Other keys are not relevant */ }
             },
-            Event::MousePress { pos, button: 1 } => {
+            Event::MousePress { pos, button: 1, .. } => {
                 if let Some(index) = self.hit_marker_index(*pos) {
                     let _ = self.select_marker(index);
                 }

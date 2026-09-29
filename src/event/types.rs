@@ -170,6 +170,18 @@ pub enum Event {
         pos: Point,
         /// Which button was pressed; see [`mouse_button`].
         button: u32,
+        /// Keyboard modifiers held during the press, using the same convention as
+        /// [`Event::KeyPress`].
+        ///
+        /// # Why a press carries this
+        ///
+        /// `Modifiers::SHIFT`/`CTRL` on a press are what selects a *range* or *toggles*
+        /// one row — the [`SelectionMode::Extended`](crate::widget::SelectionMode::Extended)
+        /// interaction model. Without the field on the event there was no path for the
+        /// platform's modifier state to reach a widget at all, so the mode was
+        /// unimplementable rather than merely unimplemented. `0` means no modifier, so
+        /// the zero value is the plain click.
+        modifiers: u32,
     },
     /// Pointer double-click.
     ///
@@ -466,9 +478,32 @@ pub enum Event {
     },
 }
 impl Event {
-    /// Creates a mouse press event.
+    /// Creates a mouse press event with no modifiers held.
     pub fn mouse_press(x: i32, y: i32, button: u32) -> Self {
-        Self::MousePress { pos: Point::new(x, y), button }
+        Self::MousePress { pos: Point::new(x, y), button, modifiers: 0 }
+    }
+    /// Creates a mouse press event carrying the modifier state it was made under.
+    ///
+    /// This is the form the platform backends use: they read the live modifier state
+    /// (for example Win32 `GetKeyState`) and pass it through so a widget can tell a
+    /// plain click from a `Shift`/`Ctrl` click.
+    pub fn mouse_press_with(x: i32, y: i32, button: u32, modifiers: u32) -> Self {
+        Self::MousePress { pos: Point::new(x, y), button, modifiers }
+    }
+    /// Returns the modifier bitmask carried by a pointer event, or `0` for a kind that
+    /// carries none.
+    ///
+    /// Pointers are not the only source of modifiers, and most pointer events do not
+    /// carry them; this returns the field when it exists so a handler does not have to
+    /// match on the variant just to read it.
+    pub fn modifiers(&self) -> u32 {
+        match self {
+            Self::MousePress { modifiers, .. }
+            | Self::KeyPress { modifiers, .. }
+            | Self::KeyRelease { modifiers, .. }
+            | Self::Wheel { modifiers, .. } => *modifiers,
+            _ => 0,
+        }
     }
     /// Creates a mouse release event.
     pub fn mouse_release(x: i32, y: i32, button: u32) -> Self {

@@ -610,7 +610,7 @@ impl EventHandler for Slider {
             return;
         }
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 self.mouse_pressed = true;
                 self.slider_pressed.emit();
                 let pixel = match self.orientation {
@@ -1663,7 +1663,7 @@ mod tests {
         s.set_range(0, 100);
         s.set_value(50);
 
-        s.handle_event(&Event::MousePress { pos: Point::new(100, 15), button: 1 });
+        s.handle_event(&Event::MousePress { pos: Point::new(100, 15), button: 1, modifiers: 0 });
         // The pointer leaves without a release being delivered.
         s.handle_event(&Event::MouseLeave { pos: Point::new(0, 0) });
 
@@ -1799,7 +1799,7 @@ mod tests {
         s.handle_event(&Event::MouseEnter { pos: inside });
         let hovered = halo_colour(&mut s).expect("a hovered slider shows a halo");
 
-        s.handle_event(&Event::MousePress { pos: inside, button: 1 });
+        s.handle_event(&Event::MousePress { pos: inside, button: 1, modifiers: 0 });
         let dragged = halo_colour(&mut s).expect("a dragging slider shows a halo");
         // A drag must be the **firmer** gesture, not merely a different one: the halo is a step
         // from the handle toward the window fill, so "firmer" is "closer to the fill". A bare

@@ -550,7 +550,7 @@ impl crate::event::EventHandler for ToggleButton {
             return;
         }
         match event {
-            crate::event::Event::MousePress { pos, button } if *button == 1 => {
+            crate::event::Event::MousePress { pos, button, .. } if *button == 1 => {
                 // Arm only for a press on the control; a press outside must not leave the latch
                 // set for a later release.
                 self.set_pressed(self.base.contains_point_with_touch_expansion(*pos));
@@ -753,7 +753,7 @@ mod tests {
         let inside = Point::new(20, 15);
         let mut tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 100, 30));
 
-        tb.handle_event(&Event::MousePress { pos: inside, button: 1 });
+        tb.handle_event(&Event::MousePress { pos: inside, button: 1, modifiers: 0 });
         assert!(tb.is_pressed(), "a press on the control arms the latch");
 
         tb.handle_event(&Event::MouseLeave { pos: Point::new(-1, -1) });
@@ -768,7 +768,7 @@ mod tests {
     #[test]
     fn toggle_button_press_outside_does_not_arm() {
         let mut tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 100, 30));
-        tb.handle_event(&Event::MousePress { pos: Point::new(9000, 9000), button: 1 });
+        tb.handle_event(&Event::MousePress { pos: Point::new(9000, 9000), button: 1, modifiers: 0 });
         assert!(!tb.is_pressed());
         tb.handle_event(&Event::MouseRelease { pos: Point::new(20, 15), button: 1 });
         assert!(!tb.is_checked(), "a drag that began outside must not commit");
@@ -779,7 +779,7 @@ mod tests {
     fn toggle_button_completed_activation_toggles() {
         let inside = Point::new(20, 15);
         let mut tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 100, 30));
-        tb.handle_event(&Event::MousePress { pos: inside, button: 1 });
+        tb.handle_event(&Event::MousePress { pos: inside, button: 1, modifiers: 0 });
         tb.handle_event(&Event::MouseRelease { pos: inside, button: 1 });
         assert!(tb.is_checked());
     }
@@ -789,7 +789,7 @@ mod tests {
     fn toggle_button_focus_loss_abandons_a_held_press() {
         let inside = Point::new(20, 15);
         let mut tb = ToggleButton::new("T".to_string(), Rect::new(0, 0, 100, 30));
-        tb.handle_event(&Event::MousePress { pos: inside, button: 1 });
+        tb.handle_event(&Event::MousePress { pos: inside, button: 1, modifiers: 0 });
         tb.handle_event(&Event::FocusLost);
         assert!(!tb.is_pressed());
         tb.handle_event(&Event::MouseRelease { pos: inside, button: 1 });
@@ -813,7 +813,7 @@ mod tests {
         tb.handle_event(&Event::MouseEnter { pos: inside });
         assert_eq!(tb.state(), ToggleButtonState::Hover, "a pointer over the control is a state");
 
-        tb.handle_event(&Event::MousePress { pos: inside, button: 1 });
+        tb.handle_event(&Event::MousePress { pos: inside, button: 1, modifiers: 0 });
         assert_eq!(tb.state(), ToggleButtonState::Pressed, "a held control is a state");
 
         tb.handle_event(&Event::MouseRelease { pos: inside, button: 1 });
@@ -847,7 +847,7 @@ mod tests {
         assert_eq!(read(&tb), "normal");
         tb.handle_event(&Event::MouseEnter { pos: inside });
         assert_eq!(read(&tb), "hover");
-        tb.handle_event(&Event::MousePress { pos: inside, button: 1 });
+        tb.handle_event(&Event::MousePress { pos: inside, button: 1, modifiers: 0 });
         assert_eq!(read(&tb), "pressed");
     }
 

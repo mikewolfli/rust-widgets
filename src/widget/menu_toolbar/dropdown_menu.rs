@@ -660,7 +660,7 @@ impl EventHandler for DropdownMenu {
         }
 
         match event {
-            Event::MousePress { pos, button } => {
+            Event::MousePress { pos, button, .. } => {
                 if *button == 1 {
                     if self.geometry().contains_point(*pos) {
                         // Click on the text field — toggle expand

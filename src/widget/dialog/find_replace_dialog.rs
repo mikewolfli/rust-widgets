@@ -754,7 +754,7 @@ impl EventHandler for FindReplaceDialog {
         }
 
         match event {
-            Event::MousePress { pos, button } => {
+            Event::MousePress { pos, button, .. } => {
                 if *button == 1 {
                     // Check clicks on find row buttons. The regions come from the same
                     // `compute_layout` + trailing-column arithmetic the draw path uses, so

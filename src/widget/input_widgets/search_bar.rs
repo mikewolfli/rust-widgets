@@ -461,7 +461,7 @@ impl EventHandler for SearchBar {
             return;
         }
         match event {
-            Event::MousePress { pos, button } => {
+            Event::MousePress { pos, button, .. } => {
                 if *button == 1 {
                     let rect = self.geometry();
                     let cancel_width: u32 =
@@ -629,7 +629,7 @@ mod tests {
         });
 
         // Click cancel button (at x=240+, since width=300, cancel starts at 300-60=240)
-        sb.handle_event(&Event::MousePress { pos: Point::new(260, 20), button: 1 });
+        sb.handle_event(&Event::MousePress { pos: Point::new(260, 20), button: 1, modifiers: 0 });
         assert!(!sb.is_active());
         assert!(captured.load(Ordering::SeqCst));
     }

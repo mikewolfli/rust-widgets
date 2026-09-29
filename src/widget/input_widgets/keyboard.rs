@@ -406,7 +406,7 @@ impl EventHandler for Keyboard {
         match event {
             // Only handle MousePress (modern variant) to avoid double-trigger
             // with MouseDown (legacy variant).
-            Event::MousePress { pos, button: _ } => {
+            Event::MousePress { pos, .. } => {
                 let hit = self.key_at_position(*pos);
                 let key_code = hit.and_then(|(r, c)| {
                     self.keys.get(r).and_then(|row| row.get(c)).map(|k| k.key_code)
@@ -831,7 +831,7 @@ mod tests {
         let centre = key_centre(&kbd, row, col).expect("the key must have a rectangle");
 
         let resting = key_fill(&mut kbd, rect, centre).expect("a key paints a fill");
-        kbd.handle_event(&Event::MousePress { pos: centre, button: 1 });
+        kbd.handle_event(&Event::MousePress { pos: centre, button: 1, modifiers: 0 });
         let pressed = key_fill(&mut kbd, rect, centre).expect("a pressed key paints a fill");
         assert_ne!(
             pressed, resting,
@@ -975,11 +975,11 @@ mod tests {
 
         // Row 2, col 0 is the Shift key. Simulate a click on it.
         let shift_pos = Point::new(10, 90); // Roughly in row 2.
-        kbd.handle_event(&Event::MousePress { pos: shift_pos, button: 1 });
+        kbd.handle_event(&Event::MousePress { pos: shift_pos, button: 1, modifiers: 0 });
         assert!(kbd.is_shifted());
 
         // Press again to toggle back.
-        kbd.handle_event(&Event::MousePress { pos: shift_pos, button: 1 });
+        kbd.handle_event(&Event::MousePress { pos: shift_pos, button: 1, modifiers: 0 });
         assert!(!kbd.is_shifted());
     }
 

@@ -492,7 +492,7 @@ impl EventHandler for BarcodeScanner {
             return;
         }
         match event {
-            Event::MousePress { pos, button } => {
+            Event::MousePress { pos, button, .. } => {
                 // The press must land on the scanner. Discarding the position meant a
                 // click anywhere in the window started or stopped scanning.
                 if *button == 1 && self.geometry().contains_point(*pos) {

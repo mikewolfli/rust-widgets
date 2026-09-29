@@ -340,7 +340,7 @@ impl EventHandler for ColorDialog {
         }
 
         match event {
-            Event::MousePress { pos, button: 1 } => {
+            Event::MousePress { pos, button: 1, .. } => {
                 if let Some(color) = self.pick_color_from_point(*pos) {
                     self.set_current_color(color);
                 }

@@ -45,8 +45,8 @@ fn translate_content_event(event: &Event, dx: i32, dy: i32) -> Event {
             Event::MouseMoveLegacy((translate(*point), *device))
         }
         Event::MouseMove { pos } => Event::MouseMove { pos: translate(*pos) },
-        Event::MousePress { pos, button } => {
-            Event::MousePress { pos: translate(*pos), button: *button }
+        Event::MousePress { pos, button, modifiers } => {
+            Event::MousePress { pos: translate(*pos), button: *button, modifiers: *modifiers }
         }
         Event::MouseDoubleClick { pos, button } => {
             Event::MouseDoubleClick { pos: translate(*pos), button: *button }

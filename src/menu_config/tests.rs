@@ -47,11 +47,15 @@ fn hardware_detection_delegates_to_platform_backend() {
         "on_battery must come from Platform::is_on_battery",
     );
 
-    // A backend reporting `None` must fall back to the documented conservative
-    // default rather than a fabricated figure derived from this host.
+    // A backend reporting `None` must stay `None`: "unknown" must not be reported as a
+    // fabricated figure that a caller cannot tell apart from a measurement. The
+    // conservative default is for scoring only and is never published here.
     let reported = crate::platform::platform_facts().total_memory_mb();
-    let expected_ram = reported.unwrap_or(4096);
-    assert_eq!(config.hardware_caps().system_ram_mb, expected_ram);
+    assert_eq!(
+        config.hardware_caps().system_ram_mb,
+        reported,
+        "system_ram_mb must be the backend's own answer, `None` included",
+    );
 }
 #[test]
 fn test_user_overrides() {
@@ -168,7 +172,7 @@ fn test_hardware_capabilities() {
         gpu_memory_mb: Some(4096),
         gpu_memory_is_measured: true,
         gpu_performance_score: 80,
-        system_ram_mb: 16384,
+        system_ram_mb: Some(16384),
         cpu_performance_score: 70,
         on_battery: false,
         performance_level: PerformanceLevel::High,
@@ -189,7 +193,7 @@ fn test_unmeasured_gpu_memory_is_not_reported_as_detected() {
         gpu_memory_mb: None,
         gpu_memory_is_measured: false,
         gpu_performance_score: 40,
-        system_ram_mb: 8192,
+        system_ram_mb: Some(8192),
         cpu_performance_score: 50,
         on_battery: false,
         performance_level: PerformanceLevel::Medium,
@@ -256,11 +260,7 @@ fn persistence_round_trips_every_user_override() {
     assert_eq!(loaded.animation_speed, Some(1.25), "animation_speed must round-trip");
     assert_eq!(loaded.max_visible_items, Some(12), "max_visible_items must round-trip");
     assert_eq!(loaded.animations, Some(false), "animations must round-trip");
-    assert_eq!(
-        loaded.hardware_acceleration,
-        Some(true),
-        "hardware_acceleration must round-trip"
-    );
+    assert_eq!(loaded.hardware_acceleration, Some(true), "hardware_acceleration must round-trip");
 
     // `clear` must actually remove the file, or a "reset to defaults" would be undone
     // by the next launch.

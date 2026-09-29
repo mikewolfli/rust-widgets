@@ -577,7 +577,7 @@ impl EventHandler for Calendar {
             return;
         }
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 // Check nav-bar button clicks
                 if self.navigation_bar_visible {
                     let nav = self.nav_rect();

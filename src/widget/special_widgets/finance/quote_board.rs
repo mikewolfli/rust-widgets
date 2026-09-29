@@ -1366,6 +1366,7 @@ mod tests {
         board.handle_event(&crate::event::Event::MousePress {
             pos: crate::core::Point { x: 100, y: 40 },
             button: 0,
+            modifiers: 0
         });
         assert_eq!(count.load(Ordering::SeqCst), 1, "a press on a row emits its symbol");
         assert!(board.selected_index().is_some(), "and selects it");

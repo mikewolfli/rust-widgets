@@ -653,7 +653,7 @@ impl EventHandler for DockWidget {
             return;
         }
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 if self.is_in_close_button(*pos) && self.features.dock_widget_closable {
                     self.hide();
                 } else if self.is_in_float_button(*pos) && self.features.dock_widget_floatable {
@@ -1292,7 +1292,7 @@ mod tests {
         // y: title_bar.y + (24 - 16) / 2 = 0 + 4 = 4
         let close_pos = Point::new(179, 8);
         assert!(dw.is_visible());
-        dw.handle_event(&Event::MousePress { pos: close_pos, button: 1 });
+        dw.handle_event(&Event::MousePress { pos: close_pos, button: 1, modifiers: 0 });
         assert!(!dw.is_visible(), "clicking close button should hide the widget");
     }
 
@@ -1301,7 +1301,7 @@ mod tests {
         let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
         let close_pos = Point::new(179, 8);
         // Right-click should not hide
-        dw.handle_event(&Event::MousePress { pos: close_pos, button: 2 });
+        dw.handle_event(&Event::MousePress { pos: close_pos, button: 2, modifiers: 0 });
         assert!(dw.is_visible(), "right-click on close should not hide");
     }
 
@@ -1311,7 +1311,7 @@ mod tests {
         // Float button area: width - 42 = 158, y = 4
         let float_pos = Point::new(162, 8);
         assert!(!dw.is_floating());
-        dw.handle_event(&Event::MousePress { pos: float_pos, button: 1 });
+        dw.handle_event(&Event::MousePress { pos: float_pos, button: 1, modifiers: 0 });
         assert!(dw.is_floating(), "clicking float button should toggle floating");
     }
 
@@ -1319,7 +1319,7 @@ mod tests {
     fn test_mouse_title_bar_drag_starts() {
         let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
         let title_pos = Point::new(50, 10);
-        dw.handle_event(&Event::MousePress { pos: title_pos, button: 1 });
+        dw.handle_event(&Event::MousePress { pos: title_pos, button: 1, modifiers: 0 });
         assert!(dw.base().is_mouse_pressed(), "mouse press on title bar should set mouse_pressed");
     }
 
@@ -1328,7 +1328,7 @@ mod tests {
         let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
         let title_pos = Point::new(50, 10);
         // Press on title bar to start drag — stores offset (50, 10)
-        dw.handle_event(&Event::MousePress { pos: title_pos, button: 1 });
+        dw.handle_event(&Event::MousePress { pos: title_pos, button: 1, modifiers: 0 });
         // Move mouse — widget should follow, maintaining the initial grab offset
         dw.handle_event(&Event::MouseMove { pos: Point::new(100, 50) });
         // Offset was (50, 10), so new position = (100 - 50, 50 - 10) = (50, 40)
@@ -1339,7 +1339,7 @@ mod tests {
     fn test_mouse_release_ends_drag() {
         let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
         let title_pos = Point::new(50, 10);
-        dw.handle_event(&Event::MousePress { pos: title_pos, button: 1 });
+        dw.handle_event(&Event::MousePress { pos: title_pos, button: 1, modifiers: 0 });
         assert!(dw.base().is_mouse_pressed());
         dw.handle_event(&Event::MouseRelease { pos: Point::new(60, 20), button: 1 });
         assert!(!dw.base().is_mouse_pressed(), "mouse release should clear mouse_pressed");
@@ -1350,7 +1350,7 @@ mod tests {
         let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
         // Click below title bar (y > 24)
         let content_pos = Point::new(50, 50);
-        dw.handle_event(&Event::MousePress { pos: content_pos, button: 1 });
+        dw.handle_event(&Event::MousePress { pos: content_pos, button: 1, modifiers: 0 });
         assert!(!dw.base().is_mouse_pressed(), "click outside title bar should not start drag");
     }
 
@@ -1359,7 +1359,7 @@ mod tests {
         let mut dw = DockWidget::new(Rect::new(0, 0, 200, 100));
         dw.set_enabled(false);
         let close_pos = Point::new(179, 8);
-        dw.handle_event(&Event::MousePress { pos: close_pos, button: 1 });
+        dw.handle_event(&Event::MousePress { pos: close_pos, button: 1, modifiers: 0 });
         assert!(dw.is_visible(), "disabled widget should ignore close event");
     }
 

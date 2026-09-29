@@ -790,7 +790,7 @@ impl EventHandler for Mention {
             return;
         }
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 let rect = self.geometry();
                 if rect.contains_point(*pos) {
                     // Clicking the field puts the caret at the end, which is where a

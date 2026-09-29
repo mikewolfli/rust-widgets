@@ -807,7 +807,7 @@ impl EventHandler for RadarChart {
                 self.hovered_axis = None;
                 self.base.request_redraw();
             }
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 self.base.set_mouse_pressed(true);
                 if let Some(axis) = self.axis_at(*pos) {
                     // The nearest series polygon is reported, so a click on a

@@ -535,7 +535,7 @@ impl EventHandler for FontComboBox {
                     }
                 }
             }
-            Event::MousePress { pos, button } if button == &1 => {
+            Event::MousePress { pos, button, .. } if button == &1 => {
                 // Arm only for a press on the control; a press outside must not leave the
                 // cycle-on-release latch armed.
                 self.base.set_pressed(self.geometry().contains_point(*pos));
@@ -917,7 +917,7 @@ mod tests {
         // A press outside does not arm the latch.
         assert_eq!(
             run(&[
-                Event::MousePress { pos: outside, button: 1 },
+                Event::MousePress { pos: outside, button: 1, modifiers: 0 },
                 Event::MouseRelease { pos: inside, button: 1 },
             ]),
             (-1, -1),
@@ -927,7 +927,7 @@ mod tests {
         // Pressing inside and releasing outside cancels.
         assert_eq!(
             run(&[
-                Event::MousePress { pos: inside, button: 1 },
+                Event::MousePress { pos: inside, button: 1, modifiers: 0 },
                 Event::MouseRelease { pos: outside, button: 1 },
             ]),
             (-1, -1)
@@ -936,7 +936,7 @@ mod tests {
         // A completed activation advances exactly one step.
         assert_eq!(
             run(&[
-                Event::MousePress { pos: inside, button: 1 },
+                Event::MousePress { pos: inside, button: 1, modifiers: 0 },
                 Event::MouseRelease { pos: inside, button: 1 },
             ]),
             (-1, 0)
@@ -945,7 +945,7 @@ mod tests {
         // Focus loss abandons a held press.
         assert_eq!(
             run(&[
-                Event::MousePress { pos: inside, button: 1 },
+                Event::MousePress { pos: inside, button: 1, modifiers: 0 },
                 Event::FocusLost,
                 Event::MouseRelease { pos: inside, button: 1 },
             ]),

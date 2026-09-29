@@ -79,7 +79,7 @@ impl TouchEventTranslator {
         match *event {
             Event::TouchBegin { pos, touch_id } => {
                 self.active_touches.insert(touch_id, (pos.x, pos.y));
-                vec![Event::MousePress { pos, button: 0 }, Event::MouseEnter { pos }]
+                vec![Event::MousePress { pos, button: 0, modifiers: 0 }, Event::MouseEnter { pos }]
             }
             Event::TouchMove { pos, touch_id } => {
                 if let Some(pos_ref) = self.active_touches.get_mut(&touch_id) {
@@ -165,7 +165,7 @@ mod tests {
     #[test]
     fn non_touch_events_produce_no_translation() {
         let mut t = TouchEventTranslator::new();
-        let ev = Event::MousePress { pos: Point::new(10, 20), button: 0 };
+        let ev = Event::MousePress { pos: Point::new(10, 20), button: 0, modifiers: 0 };
         let result = t.translate(&ev);
         assert!(result.is_empty());
     }

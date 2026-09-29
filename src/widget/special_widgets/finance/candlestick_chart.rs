@@ -1109,6 +1109,7 @@ mod tests {
         chart.handle_event(&crate::event::Event::MousePress {
             pos: crate::core::Point { x: 70, y: 100 },
             button: 0,
+            modifiers: 0
         });
         let index = seen.load(Ordering::SeqCst);
         assert_ne!(index, usize::MAX, "a press inside the plot must emit a bar index");
@@ -1132,6 +1133,7 @@ mod tests {
         chart.handle_event(&crate::event::Event::MousePress {
             pos: crate::core::Point { x: 5, y: 100 },
             button: 0,
+            modifiers: 0
         });
         assert_eq!(count.load(Ordering::SeqCst), 0, "a press on the price axis is not on a bar");
     }

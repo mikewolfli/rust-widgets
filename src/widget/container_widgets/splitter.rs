@@ -167,6 +167,59 @@ impl Splitter {
         self.layout.update(self.base.geometry(), &mut |id, rect| rects.push((id, rect)));
         rects
     }
+
+    /// The centre of the divider that follows pane `index`, in widget coordinates.
+    ///
+    /// # Why this is one derivation
+    ///
+    /// The panes are laid out by [`SplitterLayout::update`](crate::layout::splitter::SplitterLayout),
+    /// which reads the stored ratios as **relative weights** — `weights[i] / sum(weights)`. The
+    /// divider fill, the hit test and the drag all used to accumulate `ratio(i) * extent`
+    /// *without* dividing by the sum, so as soon as the weights did not already sum to `1.0`
+    /// (which is the normal state: `add_pane` stores the raw `stretch` and only a drag release
+    /// normalises) the divider was painted and dragged at a different place than the boundary
+    /// between the panes. With two equal panes on a 300px splitter the handle sat at `x=300` —
+    /// past the right edge — while the boundary was at `x=150`.
+    ///
+    /// The divider belongs at the pane boundary, so this asks the layout for the pane rectangles
+    /// and takes the edge between pane `index` and pane `index + 1`: `pane[index].end() +
+    /// spacing / 2`, i.e. the midpoint of the gap the layout reserves. One derivation feeds all
+    /// three consumers, so they cannot drift again.
+    ///
+    /// Returns `None` when pane `index + 1` does not exist.
+    fn divider_center(&self, index: usize) -> Option<i32> {
+        let rects = self.pane_rects();
+        let left = rects.get(index)?.1;
+        let right = rects.get(index + 1)?.1;
+        Some(match self.orientation() {
+            Orientation::Horizontal => {
+                let left_end = left.x + left.width as i32;
+                left_end + (right.x - left_end) / 2
+            }
+            Orientation::Vertical => {
+                let left_end = left.y + left.height as i32;
+                left_end + (right.y - left_end) / 2
+            }
+        })
+    }
+
+    /// The dividers this control paints, one per gap between panes.
+    ///
+    /// With fewer than two panes there is no boundary to draw between, so a single
+    /// affordance is placed at the middle of the control. That keeps the divider — which *is*
+    /// the drag handle — discoverable on an empty splitter, while never inventing a position
+    /// that disagrees with the pane layout.
+    fn divider_centers(&self) -> Vec<i32> {
+        let count = self.pane_count();
+        if count < 2 {
+            let rect = self.base.geometry();
+            return crate::compat::vec![match self.orientation() {
+                Orientation::Horizontal => rect.x + rect.width as i32 / 2,
+                Orientation::Vertical => rect.y + rect.height as i32 / 2,
+            }];
+        }
+        (0..count - 1).filter_map(|index| self.divider_center(index)).collect()
+    }
 }
 impl Widget for Splitter {
     fn base(&self) -> &BaseWidget {
@@ -290,59 +343,31 @@ impl Draw for Splitter {
         //
         // The count guard used to be `pane_count() > 1`, so a splitter with no panes yet —
         // which is exactly what `Splitter::new` builds, and what the factory produces — drew
-        // no handle at all. It then rendered as a featureless slab: two full-area rectangles
-        // and no chrome, `detail = 0` in the rendering census. A splitter and a
-        // scroll view and SwiftUI's `HSplitView` all draw the divider
-        // regardless of how many panes exist, because the divider *is* the affordance — an
-        // invisible one is a control a user cannot find or drag.
+        // no handle at all. It then rendered as a featureless slab and no chrome, `detail = 0`
+        // in the rendering census. A scroll view and SwiftUI's `HSplitView` all draw the
+        // divider regardless of how many panes exist, because the divider *is* the affordance —
+        // an invisible one is a control a user cannot find or drag.
         //
-        // So the handle count is `max(pane_count - 1, 1)`, and when there are no ratios to
-        // place it by, it sits at the midpoint rather than not existing. A caller with real
-        // panes gets exactly the previous geometry: `pane_count - 1` handles at the
-        // accumulated ratios.
+        // The positions come from `divider_centers`, which asks the *layout* where the pane
+        // boundaries are. Deriving them here from raw ratios was a defect: the layout reads a
+        // ratio as a relative weight (`weight / sum`), so two equal panes put the boundary at
+        // the middle while the raw-weight accumulation put the handle at the right edge.
         let handle_width = 5;
-        let handle_slots = self.pane_count().saturating_sub(1).max(1);
         match self.orientation() {
             Orientation::Horizontal => {
-                // Draw vertical splitter handles.
-                let total_width = rect.width as f32;
-                let mut x = rect.x as f32;
-                for i in 0..handle_slots {
-                    // No ratios to consult (0 or 1 panes): split the width evenly so the
-                    // divider lands mid-control instead of at the left edge.
-                    let ratio = if self.pane_count() > 1 {
-                        self.ratio(i).unwrap_or(0.0)
-                    } else {
-                        1.0 / (handle_slots as f32 + 1.0)
-                    };
-                    x += total_width * ratio;
-                    let handle_rect = Rect::new(
-                        x as i32 - handle_width / 2,
-                        rect.y,
-                        handle_width as u32,
-                        rect.height,
-                    );
+                // Draw vertical splitter handles, one in each gap between panes.
+                for x in self.divider_centers() {
+                    let handle_rect =
+                        Rect::new(x - handle_width / 2, rect.y, handle_width as u32, rect.height);
                     context.fill_rect(handle_rect, handle_fill);
                     context.draw_rect(handle_rect, handle_border);
                 }
             }
             Orientation::Vertical => {
-                // Draw horizontal splitter handles.
-                let total_height = rect.height as f32;
-                let mut y = rect.y as f32;
-                for i in 0..handle_slots {
-                    let ratio = if self.pane_count() > 1 {
-                        self.ratio(i).unwrap_or(0.0)
-                    } else {
-                        1.0 / (handle_slots as f32 + 1.0)
-                    };
-                    y += total_height * ratio;
-                    let handle_rect = Rect::new(
-                        rect.x,
-                        y as i32 - handle_width / 2,
-                        rect.width,
-                        handle_width as u32,
-                    );
+                // Draw horizontal splitter handles, one in each gap between panes.
+                for y in self.divider_centers() {
+                    let handle_rect =
+                        Rect::new(rect.x, y - handle_width / 2, rect.width, handle_width as u32);
                     context.fill_rect(handle_rect, handle_fill);
                     context.draw_rect(handle_rect, handle_border);
                 }
@@ -357,7 +382,7 @@ impl crate::event::EventHandler for Splitter {
             return;
         }
         match event {
-            crate::event::Event::MousePress { pos, button }
+            crate::event::Event::MousePress { pos, button, .. }
                 if *button == 1 && self.pane_count() > 1 =>
             {
                 self.begin_handle_drag(*pos);
@@ -423,6 +448,9 @@ impl Splitter {
     /// Opens a [`DragSession`] — the shared state machine — and records the
     /// splitter-specific snapshot beside it. Pressing away from any divider leaves
     /// no session, so a subsequent move does not resize anything.
+    ///
+    /// The hit test uses the same [`Self::divider_centers`] derivation the fill uses, so
+    /// the grab area is exactly the handle the user can see.
     fn begin_handle_drag(&mut self, pos: crate::core::Point) {
         const HANDLE_WIDTH: f32 = 5.0;
 
@@ -435,14 +463,13 @@ impl Splitter {
             self.active_pane = Some(index);
         }
 
-        let total = self.primary_extent();
         let pos_primary = self.primary_offset(pos);
-        let mut accumulated = 0.0;
-        for index in 0..self.pane_count().saturating_sub(1) {
-            if let Some(ratio) = self.ratio(index) {
-                accumulated += ratio * total;
-            }
-            if (pos_primary - accumulated).abs() <= HANDLE_WIDTH / 2.0 {
+        for (index, center) in self.divider_centers().into_iter().enumerate() {
+            let center = match self.orientation() {
+                Orientation::Horizontal => center as f32 - self.base.geometry().x as f32,
+                Orientation::Vertical => center as f32 - self.base.geometry().y as f32,
+            };
+            if (pos_primary - center).abs() <= HANDLE_WIDTH / 2.0 {
                 // The payload names the handle, so a future drop target can tell
                 // which divider the drag came from.
                 let payload =
@@ -592,11 +619,31 @@ mod tests {
 
     /// The x coordinate of the divider between two equal panes.
     ///
-    /// Derived from the layout rather than hard-coded, so the test keeps describing
-    /// "the divider" if the layout rule changes.
+    /// Read from the control's own `divider_centers`, which is the same derivation the
+    /// fill, the hit test and the drag use. It used to recompute `ratio(0) * width`
+    /// here — the *raw-weight* arithmetic the control itself had, which put the handle
+    /// at the right edge instead of between the panes. Recomputing it in the test meant
+    /// the two wrong derivations agreed with each other and the defect stayed green.
     fn divider_x(sp: &Splitter) -> i32 {
-        let total = sp.geometry().width as f32;
-        (sp.ratio(0).unwrap_or(0.0) * total).round() as i32 + sp.geometry().x
+        sp.divider_centers().first().copied().unwrap_or(sp.geometry().x)
+    }
+
+    /// The divider is painted and grabbed at the boundary between the panes.
+    ///
+    /// `add_pane` stores its `stretch` as a **relative weight**, and the layout divides
+    /// by the sum, so two equal panes on a 300px splitter meet at 150. The control used
+    /// to accumulate the raw weights instead, which put the handle at 300 — off the
+    /// right edge and nowhere near the panes it separates.
+    #[test]
+    fn the_divider_sits_between_the_panes() {
+        let sp = two_pane_splitter();
+        // The panes themselves, from the layout the control lays them out with.
+        let mut rects = crate::compat::Vec::new();
+        sp.layout.update(sp.geometry(), &mut |id, rect| rects.push((id, rect)));
+        let (first, second) = (rects[0].1, rects[1].1);
+        assert_eq!(first.x + first.width as i32, 150, "first pane ends at the middle");
+        assert_eq!(second.x, 150, "second pane starts there too");
+        assert_eq!(divider_x(&sp), 150, "and the divider is drawn in that gap");
     }
 
     #[test]
@@ -693,11 +740,15 @@ mod tests {
         sp.add_pane(1, 1);
         sp.add_pane(2, 1);
 
-        let total = sp.geometry().height as f32;
-        let divider_y = (sp.ratio(0).expect("ratio 0") * total).round() as i32;
+        // The divider's y comes from the control's own derivation, the same one the fill
+        // and the hit test use. Recomputing `ratio(0) * height` here (the raw weight) put
+        // it at 200 — the bottom edge — while the panes actually meet at 100.
+        let divider_y = sp.divider_centers()[0];
+        assert_eq!(divider_y, 100, "two equal panes meet halfway down a 200px splitter");
         let before = sp.ratio(0).expect("ratio 0");
 
         sp.handle_event(&crate::event::Event::mouse_press(100, divider_y, 1));
+        assert!(sp.is_dragging_handle(), "the divider is grabbable where it is drawn");
         sp.handle_event(&crate::event::Event::mouse_move(100, divider_y + 40));
         assert!(sp.ratio(0).expect("ratio 0") > before, "a vertical splitter's handle moves on y");
     }

@@ -5,21 +5,28 @@
 //!
 //! Provides `ErrorId` for FFI-safe error codes and `RwError` for
 //! rich Rust-side error reporting.  `ErrorId` is **only** used at the
-//! C/C++ FFI boundary; internal Rust code uses `RwResult<T>`.
+//! C/C++ FFI boundary.
 //!
 //! # Design
 //!
-//! - **Rust internal APIs** return `RwResult<T>` (or `Option<T>`).
 //! - **C ABI functions** convert `RwError` → `ErrorId` (i32) so that
 //!   C/C++ callers receive a stable numeric error code.
+//! - **Rust internal APIs** carry the cause through [`RwError::source`]
+//!   when they need to, and otherwise report the failure with the crate's
+//!   own return conventions. `RwResult<T>` is the alias for that purpose; it is
+//!   exported for FFI wrappers, and it is used inside this module by
+//!   [`catch_panic`]. It is **not** the return type of every internal function —
+//!   an earlier revision of this note claimed it was, which was never true.
 //! - **`catch_panic`** must be used at every `extern "C" fn` entry
 //!   point to prevent unwinding across the FFI boundary (UB).
 //!
 //! # Reachability
 //!
-//! **State:** Production callers: `src/bindings/binding_impl.rs:1` (`rw_error_code` / `rw_error_message` read `error::ffi`).
+//! **State:** Production callers: `src/bindings/binding_impl.rs:2300` and
+//! `:2310` (`rw_error_code` / `rw_error_message` read this module's
+//! [`ffi`] slot).
 
-use crate::compat::{fmt, format, MiniToString, String};
+use crate::compat::{fmt, format, Box, MiniToString, String};
 
 // ---------------------------------------------------------------------------
 // ErrorId — stable integer error codes (for C/C++ FFI only)
@@ -31,14 +38,22 @@ use crate::compat::{fmt, format, MiniToString, String};
 /// deleted once published in a C header.  New IDs are appended.
 ///
 /// # Usage
-/// - **Used in production code**: `SUCCESS`, `NOT_IMPLEMENTED`,
-///   `UNSUPPORTED_OPERATION`, `INVALID_ARGUMENT`, `FILE_NOT_FOUND`
+/// - **Produced at runtime today**: `INVALID_ARGUMENT` (every capability and style
+///   refusal records it — see [`ffi::record_capability_error`]) and `GENERAL`
+///   (a caught panic). [`ffi`]'s reader reports `SUCCESS` as the literal `0`
+///   [`ErrorId::SUCCESS`] holds when no failure was recorded.
 /// - **Reserved for future use** (stable API, not yet wired):
-///   `NULL_POINTER`, `OUT_OF_MEMORY`, `LOCK_POISONED`,
-///   `WIDGET_BASE_NOT_IMPL`, `WIDGET_NOT_FOUND`, `WIDGET_INVALID_STATE`,
-///   `WIDGET_DEPRECATED`, `PLATFORM_UNSUPPORTED`, `PLATFORM_INIT_FAILED`,
-///   `CLIPBOARD_FAILED`, `DRAG_DROP_FAILED`, `RENDER_CONTEXT_INVALID`,
-///   `RENDER_PIPELINE_FAILED`, `I18N_LOAD_FAILED`
+///   `NOT_IMPLEMENTED`, `UNSUPPORTED_OPERATION`, `NULL_POINTER`, `OUT_OF_MEMORY`,
+///   `LOCK_POISONED`, `WIDGET_BASE_NOT_IMPL`, `WIDGET_NOT_FOUND`,
+///   `WIDGET_INVALID_STATE`, `WIDGET_DEPRECATED`, `PLATFORM_UNSUPPORTED`,
+///   `PLATFORM_INIT_FAILED`, `CLIPBOARD_FAILED`, `DRAG_DROP_FAILED`,
+///   `RENDER_CONTEXT_INVALID`, `RENDER_PIPELINE_FAILED`, `I18N_LOAD_FAILED`
+///
+/// `NOT_IMPLEMENTED`, `UNSUPPORTED_OPERATION` and `FILE_NOT_FOUND` are reachable
+/// only through [`From<crate::core::CoreError>`] — `FILE_NOT_FOUND` additionally
+/// through the FFI file helpers' own call sites. An earlier revision of this list
+/// named `NOT_IMPLEMENTED`/`UNSUPPORTED_OPERATION`/`FILE_NOT_FOUND` as
+/// "used in production", which no production path constructed.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ErrorId(pub i32);
 
@@ -165,7 +180,13 @@ impl ErrorId {
 /// let not_impl = RwError::not_implemented("my_feature");
 /// assert_eq!(not_impl.id, ErrorId::NOT_IMPLEMENTED);
 /// ```
-#[derive(Debug, Clone)]
+// `Clone` is implemented by hand rather than derived: the cause is a trait object, which
+// is not `Clone`, and there is no way to clone a boxed error without knowing its original
+// type. A clone keeps the classified id and message (the parts a caller acts on) and drops
+// the cause, rather than refusing to clone at all. Dropping it is visible on
+// `Error::source`, which returns `None` for the copy — but the message still names the
+// original failure, so nothing a log prints is lost.
+#[derive(Debug)]
 pub struct RwError {
     /// Stable machine-readable error code. Treat as the authoritative
     /// classifier; `message` is for humans only and may be reworded.
@@ -174,12 +195,45 @@ pub struct RwError {
     /// never guaranteed to be localised, and may embed untrusted input taken
     /// from the caller's arguments.
     pub message: String,
+    /// The underlying error this one was converted from, when there was one.
+    ///
+    /// # Why the field exists
+    ///
+    /// Without it, `?`-converting a real cause (an `io::Error`, a `CoreError`)
+    /// into an `RwError` flattened it to a formatted string, and
+    /// [`Error::source`](core::error::Error::source) could only ever answer `None`.
+    /// A caller that wanted to branch on the cause had no way to, and a log that
+    /// printed the chain showed only the outermost message.
+    ///
+    /// It stays `None` for errors constructed directly from an id and message,
+    /// which is most of them, so the common case carries no allocation.
+    pub cause: Option<Box<dyn core::error::Error + Send + Sync>>,
+}
+
+impl Clone for RwError {
+    /// Copies the classified id and message; see the note on [`RwError::cause`].
+    fn clone(&self) -> Self {
+        Self { id: self.id, message: self.message.clone(), cause: None }
+    }
 }
 
 impl RwError {
     /// Create a new error from an ID and message.
     pub fn new(id: ErrorId, message: impl Into<String>) -> Self {
-        Self { id, message: message.into() }
+        Self { id, message: message.into(), cause: None }
+    }
+
+    /// Creates an error that carries `cause` as its source.
+    ///
+    /// This is the form to use at a `?`-conversion site: it preserves both the
+    /// classified id/message a caller reads and the original error a developer
+    /// follows through [`Error::source`](core::error::Error::source).
+    pub fn with_cause(
+        id: ErrorId,
+        message: impl Into<String>,
+        cause: impl core::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self { id, message: message.into(), cause: Some(Box::new(cause)) }
     }
 
     /// Shorthand for a "not implemented" error.
@@ -209,24 +263,39 @@ impl fmt::Display for RwError {
     }
 }
 
-impl core::error::Error for RwError {}
+impl core::error::Error for RwError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        self.cause.as_deref().map(|e| e as &(dyn core::error::Error + 'static))
+    }
+}
 
 // ---------------------------------------------------------------------------
 // From impls — bridge between core and error domains
 // ---------------------------------------------------------------------------
 
 impl From<crate::core::CoreError> for RwError {
+    /// Maps each [`CoreError`](crate::core::CoreError) variant onto the `ErrorId`
+    /// that names the same failure, keeping the original error as the new one's
+    /// [`source`](core::error::Error::source).
+    ///
+    /// `CoreError::Internal` maps to [`ErrorId::GENERAL`], not `NOT_IMPLEMENTED`:
+    /// it means "something went wrong inside", which is exactly what `GENERAL`
+    /// is for. It used to map to `NOT_IMPLEMENTED`, which is a *different* claim
+    /// ("this exists but has no implementation yet") and which the reverse
+    /// conversion does not produce — so a `GENERAL` error that made the round trip
+    /// silently came back reclassified as "not implemented".
     fn from(err: crate::core::CoreError) -> Self {
-        match err {
+        let (id, message) = match &err {
             crate::core::CoreError::InvalidArgument(msg) => {
-                RwError::new(ErrorId::INVALID_ARGUMENT, msg)
+                (ErrorId::INVALID_ARGUMENT, msg.clone())
             }
             crate::core::CoreError::NotSupported(msg) => {
-                RwError::new(ErrorId::UNSUPPORTED_OPERATION, msg)
+                (ErrorId::UNSUPPORTED_OPERATION, msg.clone())
             }
-            crate::core::CoreError::NotFound(msg) => RwError::new(ErrorId::FILE_NOT_FOUND, msg),
-            crate::core::CoreError::Internal(msg) => RwError::new(ErrorId::NOT_IMPLEMENTED, msg),
-        }
+            crate::core::CoreError::NotFound(msg) => (ErrorId::FILE_NOT_FOUND, msg.clone()),
+            crate::core::CoreError::Internal(msg) => (ErrorId::GENERAL, msg.clone()),
+        };
+        RwError::with_cause(id, message, err)
     }
 }
 
@@ -298,24 +367,10 @@ where
 // ---------------------------------------------------------------------------
 // FFI safety — c_try! macro and helpers
 // ---------------------------------------------------------------------------
+// FFI boundary helpers
+// ---------------------------------------------------------------------------
 pub mod ffi;
 pub use ffi::{c_try_fallback, CAbiSafe};
-
-/// Convert a fallible FFI body into an `ErrorId` for the C ABI boundary.
-///
-/// Maps `Ok(())` to [`ErrorId::SUCCESS`] and otherwise logs the error via
-/// `log::error!` and returns the numeric code. See the module docs for why
-/// every `extern "C"` entry point should funnel its result through this (or
-/// [`catch_panic`]) rather than returning a `Result` directly.
-pub fn to_error_id(result: RwResult<()>) -> i32 {
-    match result {
-        Ok(()) => ErrorId::SUCCESS.0,
-        Err(e) => {
-            log::error!("[rust_widgets] {e}");
-            e.id.0
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -348,5 +403,42 @@ mod tests {
     fn rw_error_display_prefix_uses_ew() {
         let err = RwError::new(ErrorId::INVALID_ARGUMENT, "bad input");
         assert!(err.to_string().starts_with("[EW-"));
+    }
+
+    /// A converted cause is reachable through `Error::source`.
+    ///
+    /// `RwError` had no field to hold a cause, so the bridge from `CoreError`
+    /// flattened the original error to a string and `source()` could only ever
+    /// answer `None`. A caller that wanted to branch on the cause had nothing to
+    /// branch on.
+    #[test]
+    fn a_converted_core_error_keeps_its_cause_in_the_source_chain() {
+        use core::error::Error;
+        let err = RwError::from(crate::core::CoreError::NotSupported("no GPU".to_string()));
+        // The classified view is unchanged…
+        assert_eq!(err.id, ErrorId::UNSUPPORTED_OPERATION);
+        // …and the original error is still there for a developer.
+        let cause = err.source().expect("the converted CoreError must be the source");
+        assert!(cause.to_string().contains("no GPU"));
+    }
+
+    /// An error built from an id and message has no cause, and says so.
+    #[test]
+    fn an_error_built_from_an_id_has_no_source() {
+        use core::error::Error;
+        assert!(RwError::new(ErrorId::INVALID_ARGUMENT, "x").source().is_none());
+    }
+
+    /// `CoreError::Internal` maps to `GENERAL`, not `NOT_IMPLEMENTED`.
+    ///
+    /// The reverse conversion turns `GENERAL` back into `Internal`, so the mapping
+    /// has to be that way round for the two to round-trip. Mapping `Internal` onto
+    /// `NOT_IMPLEMENTED` reclassified an internal failure as "no implementation yet"
+    /// on the way back, a claim about the API rather than about what happened.
+    #[test]
+    fn an_internal_core_error_round_trips_as_internal() {
+        let err = RwError::from(crate::core::CoreError::Internal("boom".to_string()));
+        assert_eq!(err.id, ErrorId::GENERAL, "internal is not \"not implemented\"");
+        assert!(matches!(crate::core::CoreError::from(err), crate::core::CoreError::Internal(_)));
     }
 }

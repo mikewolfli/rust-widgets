@@ -610,7 +610,7 @@ impl EventHandler for AutoCompleteEdit {
             return;
         }
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 let rect = self.geometry();
                 // Check if click is inside the text field area
                 if rect.contains_point(*pos) {

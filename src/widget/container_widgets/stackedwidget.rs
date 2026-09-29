@@ -53,8 +53,14 @@ impl StackedWidget {
         self.widgets.len().saturating_sub(1)
     }
     /// Inserts a widget at position.
+    /// Inserts a widget before the given index.
+    ///
+    /// An `index` past the end appends rather than panicking, matching
+    /// [`Self::add_widget`] and the rest of the container family (`tab_bar`,
+    /// `pie_menu`, `kanban_board` all clamp).
     pub fn insert_widget(&mut self, index: usize, widget: ObjectId) {
         let was_empty = self.widgets.is_empty();
+        let index = index.min(self.widgets.len());
         self.base.add_child_linked(widget);
         self.widgets.insert(index, widget);
         if !was_empty && self.current_index >= index {
@@ -1029,5 +1035,22 @@ mod tests {
             sw.current_changed_suppression_reason(0),
             Some("current_changed not emitted: the index is out of range")
         );
+    }
+
+    /// An index past the end appends instead of panicking.
+    ///
+    /// `insert_widget` passed the caller's index straight to `Vec::insert`, which panics
+    /// when it exceeds the length. The rest of the container family (`tab_bar`,
+    /// `pie_menu`, `kanban_board`) clamps, so a caller that asked to insert past the end
+    /// crashed here and appended everywhere else.
+    #[test]
+    fn stacked_widget_insert_past_the_end_appends() {
+        let mut sw = StackedWidget::new(Rect::new(0, 0, 300, 200));
+        sw.add_widget(widget_id_1());
+        sw.add_widget(widget_id_2());
+        sw.insert_widget(9, widget_id_3());
+        assert_eq!(sw.count(), 3);
+        sw.set_current_widget(widget_id_3());
+        assert_eq!(sw.current_index(), 2, "past the end lands last");
     }
 }

@@ -491,7 +491,7 @@ impl EventHandler for AudioVisualizer {
             return;
         }
         match event {
-            Event::MousePress { pos, button }
+            Event::MousePress { pos, button, .. }
                 if *button == 1 && self.geometry().contains_point(*pos) =>
             {
                 self.peak_hold = !self.peak_hold;

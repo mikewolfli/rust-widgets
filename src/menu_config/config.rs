@@ -123,12 +123,25 @@ impl MenuConfig {
             GpuType::Cpu => 20,
         }
     }
-    fn detect_system_memory() -> u64 {
-        // The machine's physical memory is an OS fact, so it is asked of the
-        // active platform backend rather than read from `/proc` here. `None`
-        // means this backend cannot report it; the caller then falls back to the
-        // conservative 4096 MB assumption. See principle #36/#37.
-        crate::platform::platform_facts().total_memory_mb().unwrap_or(4096)
+    /// The machine's physical memory, or `None` when the active backend cannot
+    /// report it.
+    ///
+    /// The probe is asked of the active platform backend rather than read from
+    /// `/proc` here (principles #36/#37). `None` is passed through unchanged: an
+    /// earlier revision substituted a `4096` constant, which made an unknown amount
+    /// of memory indistinguishable from a measured one — the same defect
+    /// [`Self::detect_gpu_memory`] had already been fixed for. The scoring model uses
+    /// [`Self::assumed_system_memory`] instead, which never reaches a caller.
+    fn detect_system_memory() -> Option<u64> {
+        crate::platform::platform_facts().total_memory_mb()
+    }
+    /// The conservative RAM assumption used only for scoring, never reported.
+    ///
+    /// Separated from [`Self::detect_system_memory`] for the same reason
+    /// [`Self::assumed_gpu_memory`] is separated from `detect_gpu_memory`: the number a
+    /// *score* is computed from must not be publishable as if it had been measured.
+    pub(crate) fn assumed_system_memory() -> u64 {
+        4096
     }
     fn estimate_cpu_performance() -> u32 {
         match std::thread::available_parallelism() {

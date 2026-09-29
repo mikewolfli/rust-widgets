@@ -921,7 +921,7 @@ impl crate::event::EventHandler for FreeformShapeWidget {
                 self.pressed_changed.emit(false);
                 self.base.request_redraw();
             }
-            crate::event::Event::MousePress { pos, button }
+            crate::event::Event::MousePress { pos, button, .. }
                 if *button == 1 && self.contains(*pos) =>
             {
                 self.pressed_item = true;

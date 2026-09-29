@@ -711,7 +711,7 @@ impl EventHandler for TagInput {
             return;
         }
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 // Check if the click is on a tag's close button
                 if let Some(tag_index) = self.hit_tag_close(*pos) {
                     self.remove_tag(tag_index);
@@ -1065,7 +1065,7 @@ mod tests {
         let mut ti = TagInput::new(Rect::new(0, 0, 300, 36));
         assert!(!ti.is_focused());
 
-        ti.handle_event(&Event::MousePress { pos: Point::new(50, 18), button: 1 });
+        ti.handle_event(&Event::MousePress { pos: Point::new(50, 18), button: 1, modifiers: 0 });
         assert!(ti.is_focused());
     }
 
@@ -1084,7 +1084,7 @@ mod tests {
         let mut ti = TagInput::new(Rect::new(0, 0, 300, 36));
         ti.set_enabled(false);
 
-        ti.handle_event(&Event::MousePress { pos: Point::new(50, 18), button: 1 });
+        ti.handle_event(&Event::MousePress { pos: Point::new(50, 18), button: 1, modifiers: 0 });
         assert!(!ti.is_focused());
         assert!(ti.tags().is_empty());
     }
@@ -1144,7 +1144,7 @@ mod tests {
         let close_center = ti.tag_close_center(chip_x, chip_width, chip_y);
 
         // Click on the close button
-        ti.handle_event(&Event::MousePress { pos: close_center, button: 1 });
+        ti.handle_event(&Event::MousePress { pos: close_center, button: 1, modifiers: 0 });
         assert!(ti.tags().is_empty());
     }
 
@@ -1172,7 +1172,7 @@ mod tests {
             "the close circle is painted inside the field: {close_center:?}, field={field:?}"
         );
         // And clicking exactly there removes the tag.
-        ti.handle_event(&Event::MousePress { pos: close_center, button: 1 });
+        ti.handle_event(&Event::MousePress { pos: close_center, button: 1, modifiers: 0 });
         assert!(ti.tags().is_empty(), "the drawn close circle answers a click");
     }
 

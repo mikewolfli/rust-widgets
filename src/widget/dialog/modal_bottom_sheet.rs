@@ -411,7 +411,7 @@ impl EventHandler for ModalBottomSheet {
         }
 
         match event {
-            Event::MousePress { pos, button } => {
+            Event::MousePress { pos, button, .. } => {
                 if *button == 1 {
                     let rect = self.geometry();
                     let sheet_height = self.compute_sheet_height();
@@ -509,7 +509,7 @@ mod tests {
 
         // Click above the sheet area (overlay region)
         // Sheet height is computed, but geometry is 600 tall so overlay is top portion
-        sheet.handle_event(&Event::MousePress { pos: Point::new(200, 50), button: 1 });
+        sheet.handle_event(&Event::MousePress { pos: Point::new(200, 50), button: 1, modifiers: 0 });
         assert!(!sheet.is_visible());
         assert!(dismissed.load(Ordering::SeqCst));
     }
@@ -575,7 +575,7 @@ mod tests {
 
         // Press inside the sheet panel, near its bottom edge, as a user would.
         let press_y = rect.y + rect.height as i32 - 20;
-        sheet.handle_event(&Event::MousePress { pos: Point::new(rect.x + 50, press_y), button: 1 });
+        sheet.handle_event(&Event::MousePress { pos: Point::new(rect.x + 50, press_y), button: 1, modifiers: 0 });
         assert!(sheet.is_dragging(), "a press inside the sheet must start a drag");
 
         // Drag downward well past a third of the sheet height.
@@ -606,7 +606,7 @@ mod tests {
         let rect = sheet.geometry();
         let press_y = rect.y + rect.height as i32 - 20;
 
-        sheet.handle_event(&Event::MousePress { pos: Point::new(rect.x + 50, press_y), button: 1 });
+        sheet.handle_event(&Event::MousePress { pos: Point::new(rect.x + 50, press_y), button: 1, modifiers: 0 });
         sheet.handle_event(&Event::MouseMove { pos: Point::new(rect.x + 50, press_y + 10) });
         sheet.handle_event(&Event::MouseRelease {
             pos: Point::new(rect.x + 50, press_y + 10),
@@ -626,7 +626,7 @@ mod tests {
         let rect = sheet.geometry();
         let press_y = rect.y + rect.height as i32 - 20;
 
-        sheet.handle_event(&Event::MousePress { pos: Point::new(rect.x + 50, press_y), button: 1 });
+        sheet.handle_event(&Event::MousePress { pos: Point::new(rect.x + 50, press_y), button: 1, modifiers: 0 });
         sheet.handle_event(&Event::MouseMove { pos: Point::new(rect.x + 50, press_y + 60) });
         assert!(sheet.drag_offset() > 0.0);
 

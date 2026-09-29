@@ -728,7 +728,7 @@ impl EventHandler for PieMenu {
                     self.base.request_redraw();
                 }
             }
-            Event::MousePress { pos, button: 1 } => {
+            Event::MousePress { pos, button: 1, .. } => {
                 if let Some(idx) = self.hit_test(*pos) {
                     if let Some(item) = self.items.get(idx) {
                         if item.is_enabled() {
@@ -1345,7 +1345,7 @@ mod tests {
                 *triggered.lock().unwrap() = true;
             }
         });
-        menu.handle_event(&Event::MousePress { pos: Point::new(100, 100), button: 1 });
+        menu.handle_event(&Event::MousePress { pos: Point::new(100, 100), button: 1, modifiers: 0 });
         assert!(!*triggered.lock().unwrap());
 
         // Re-enable and verify events flow again

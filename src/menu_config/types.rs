@@ -41,11 +41,22 @@ pub struct HardwareCapabilities {
     ///
     /// `false` means the value is the conservative assumption for the GPU type, not
     /// a probe result. A UI that describes the hardware must say which it is.
+    ///
+    /// The same distinction for system memory is carried by the *type* rather than a
+    /// flag: [`Self::system_ram_mb`] is `None` when nothing measured it, so an assumed
+    /// figure can never be mistaken for a measurement.
     pub gpu_memory_is_measured: bool,
     /// Estimated GPU performance score (0-100).
     pub gpu_performance_score: u32,
-    /// System RAM in MB.
-    pub system_ram_mb: u64,
+    /// System RAM in MB, when the active backend can measure it.
+    ///
+    /// `None` means the backend cannot report physical memory, which is the honest
+    /// answer — [`crate::platform::Platform::total_memory_mb`]'s own contract forbids
+    /// substituting a made-up constant here. A figure that is *assumed* rather than
+    /// measured is supplied separately by `assumed_system_memory`, and never appears
+    /// in this field, so a caller reading it can trust it. The parallel field
+    /// [`Self::gpu_memory_is_measured`] carries the same distinction for the GPU.
+    pub system_ram_mb: Option<u64>,
     /// CPU performance score (0-100).
     pub cpu_performance_score: u32,
     /// Whether running on battery (laptops).

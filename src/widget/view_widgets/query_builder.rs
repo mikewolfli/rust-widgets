@@ -900,7 +900,7 @@ impl EventHandler for QueryBuilder {
             return;
         }
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 let rect = self.geometry();
                 let header = Rect::new(rect.x, rect.y, rect.width, HEADER_HEIGHT);
                 if header.contains_point(*pos) {

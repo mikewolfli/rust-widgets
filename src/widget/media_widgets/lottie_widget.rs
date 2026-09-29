@@ -1206,7 +1206,7 @@ impl EventHandler for LottieWidget {
             return;
         }
         match event {
-            Event::MousePress { pos, button } | Event::MouseRelease { pos, button } => {
+            Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button } => {
                 if *button == 1 && self.geometry().contains_point(*pos) {
                     if self.playing {
                         self.pause();

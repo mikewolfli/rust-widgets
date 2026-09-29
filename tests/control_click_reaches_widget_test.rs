@@ -61,7 +61,7 @@ fn a_click_reaches_the_control_under_the_pointer() {
     // completes the gesture), so this is the press half.
     let hit = rust_widgets::widget::runtime::dispatch_pointer_event(
         root,
-        &Event::MousePress { pos: centre, button: 1 },
+        &Event::MousePress { pos: centre, button: 1, modifiers: 0 },
         centre,
     );
     assert!(hit, "a press at the button's centre must be delivered to a control");
@@ -86,7 +86,7 @@ fn a_click_reaches_the_control_under_the_pointer() {
     let empty = Point::new(390, 290);
     rust_widgets::widget::runtime::dispatch_pointer_event(
         root,
-        &Event::MousePress { pos: empty, button: 1 },
+        &Event::MousePress { pos: empty, button: 1, modifiers: 0 },
         empty,
     );
     rust_widgets::widget::runtime::dispatch_pointer_event(

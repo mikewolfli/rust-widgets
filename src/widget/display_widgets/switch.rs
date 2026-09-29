@@ -665,7 +665,7 @@ impl EventHandler for Switch {
         self.base.handle_event(event);
         let enabled = self.base.is_enabled();
         match event {
-            Event::MousePress { pos, button: 1 } if enabled => {
+            Event::MousePress { pos, button: 1, .. } if enabled => {
                 // Arm only for a press that actually lands on the control; a press
                 // outside must not leave the latch armed for a later release.
                 self.pressed = self.base.contains_point_with_touch_expansion(*pos);
@@ -834,7 +834,7 @@ mod tests {
     fn switch_mouse_press_toggles() {
         let mut sw = Switch::new(Rect::new(0, 0, 60, 30));
         let p = Point::new(10, 10);
-        sw.handle_event(&Event::MousePress { pos: p, button: 1 });
+        sw.handle_event(&Event::MousePress { pos: p, button: 1, modifiers: 0 });
         sw.handle_event(&Event::MouseRelease { pos: p, button: 1 });
         assert!(sw.is_checked());
     }
@@ -858,7 +858,7 @@ mod tests {
     #[test]
     fn switch_press_outside_then_release_inside_does_not_toggle() {
         let mut sw = Switch::new(Rect::new(0, 0, 60, 30));
-        sw.handle_event(&Event::MousePress { pos: Point::new(5000, 5000), button: 1 });
+        sw.handle_event(&Event::MousePress { pos: Point::new(5000, 5000), button: 1, modifiers: 0 });
         sw.handle_event(&Event::MouseRelease { pos: Point::new(10, 10), button: 1 });
         assert!(!sw.is_checked(), "a drag that began outside must not commit");
     }
@@ -867,7 +867,7 @@ mod tests {
     #[test]
     fn switch_press_inside_then_release_outside_cancels() {
         let mut sw = Switch::new(Rect::new(0, 0, 60, 30));
-        sw.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        sw.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         sw.handle_event(&Event::MouseRelease { pos: Point::new(500, 500), button: 1 });
         assert!(!sw.is_checked());
         // The latch must also be clear, so the *next* stray release does not fire.
@@ -879,7 +879,7 @@ mod tests {
     #[test]
     fn switch_focus_loss_cancels_a_held_press() {
         let mut sw = Switch::new(Rect::new(0, 0, 60, 30));
-        sw.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        sw.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         assert!(sw.is_pressed());
         sw.handle_event(&Event::FocusLost);
         assert!(!sw.is_pressed());
@@ -899,7 +899,7 @@ mod tests {
     fn switch_disabled_blocks_events() {
         let mut sw = Switch::new(Rect::new(0, 0, 60, 30));
         sw.set_enabled(false);
-        sw.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        sw.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         assert!(!sw.is_checked());
     }
 

@@ -97,9 +97,9 @@ fn test_orientation() {
 
 #[test]
 fn test_event_mouse_press() {
-    let press = Event::MousePress { pos: Point::new(10, 20), button: 0 };
+    let press = Event::MousePress { pos: Point::new(10, 20), button: 0, modifiers: 0 };
     match press {
-        Event::MousePress { pos, button } => {
+        Event::MousePress { pos, button, modifiers: 0 } => {
             assert_eq!(pos.x, 10);
             assert_eq!(pos.y, 20);
             assert_eq!(button, 0);

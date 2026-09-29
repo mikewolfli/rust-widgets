@@ -121,9 +121,11 @@ pub(crate) fn mount_canvas(
     area.connect_button_press_event(move |area, event| {
         let position = Point::new(event.position().0 as i32, event.position().1 as i32);
         let absolute = Point::new(origin.x + position.x, origin.y + position.y);
+        // The press carries the modifier state GTK reports, so a Shift/Ctrl click
+        // reaches the widget as a modifier click rather than as a plain one.
         let delivered = forward_pointer_to_platform(
             id,
-            &Event::MousePress { pos: absolute, button: 1 },
+            &Event::mouse_press_with(absolute.x, absolute.y, 1, modifier_state_bits(event.state())),
             absolute,
         );
         if delivered {
@@ -476,8 +478,16 @@ fn printable_text(event: &gdk::EventKey) -> Option<String> {
 /// The widget-layer convention is shift = 1, control = 2, alt = 4,
 /// meta/command = 8 (see `Modifiers::from_event_bits`). GTK reports the Super
 /// (Windows/Command) key as `SUPER_MASK`, which maps to bit 3.
+///
+/// The key-event form is a thin wrapper over [`modifier_state_bits`] so a pointer press
+/// and a key press report the same bitfield for the same held keys: a `Shift` click has
+/// to be distinguishable from a plain one, or extended selection cannot work.
 fn modifier_bits(event: &gdk::EventKey) -> u32 {
-    let state = event.state();
+    modifier_state_bits(event.state())
+}
+
+/// Translates a GTK [`gdk::ModifierType`] state into the widget-layer bitfield.
+pub(crate) fn modifier_state_bits(state: gdk::ModifierType) -> u32 {
     // Widget-layer bits (see `Modifiers::from_event_bits`).
     const WIDGET_SHIFT: u32 = 1;
     const WIDGET_CONTROL: u32 = 2;

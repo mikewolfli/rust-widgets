@@ -372,7 +372,7 @@ impl EventHandler for Dropdown {
         }
 
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 if self.expanded {
                     // Clicked on one of the list items?
                     if let Some(idx) = self.hit_test_item(*pos) {

@@ -278,7 +278,11 @@ use std::sync::Mutex;
 pub struct WindowsPlatform {
     /// Host-side widget/surface state shared with every backend.
     pub state: BackendState<WindowsHandleKind>,
-    /// Whether [`Platform::init`] has run.
+    /// Whether [`Platform::init`] has already run.
+    ///
+    /// Read at the top of `init` to make repeat entry a no-op: `init` registers the
+    /// platform and calls `InitCommonControls`, and doing either twice is wasteful at
+    /// best.
     pub runtime_initialized: AtomicBool,
     /// Whether the run loop is currently active.
     pub runtime_running: AtomicBool,

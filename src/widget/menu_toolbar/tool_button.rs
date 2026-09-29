@@ -551,7 +551,7 @@ impl EventHandler for ToolButton {
             // preview) does not, and an unguarded press would leave the latch armed for a release
             // that belongs elsewhere. Both halves of "resolves to this control" are in the guard,
             // so the arm either arms the gesture or does nothing at all.
-            Event::MousePress { pos, button }
+            Event::MousePress { pos, button, .. }
                 if self.base.is_enabled()
                     && *button == crate::event::mouse_button::PRIMARY
                     && self.base.contains_point_with_touch_expansion(*pos) =>
@@ -893,7 +893,7 @@ mod tests {
             c.store(true, Ordering::SeqCst);
         });
         // Press then release
-        btn.handle_event(&Event::MousePress { pos: Point::new(15, 25), button: 1 });
+        btn.handle_event(&Event::MousePress { pos: Point::new(15, 25), button: 1, modifiers: 0 });
         btn.handle_event(&Event::MouseRelease { pos: Point::new(15, 25), button: 1 });
         assert!(clicked.load(Ordering::SeqCst));
     }
@@ -972,7 +972,7 @@ mod tests {
             c.store(true, Ordering::SeqCst);
         });
         // Mouse press+release should be blocked
-        btn.handle_event(&Event::MousePress { pos: Point::new(15, 25), button: 1 });
+        btn.handle_event(&Event::MousePress { pos: Point::new(15, 25), button: 1, modifiers: 0 });
         btn.handle_event(&Event::MouseRelease { pos: Point::new(15, 25), button: 1 });
         assert!(
             !clicked.load(Ordering::SeqCst),

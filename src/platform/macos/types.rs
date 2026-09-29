@@ -104,6 +104,17 @@ pub(crate) unsafe fn translate_key_event(event: id) -> (u32, u32) {
 /// never depend on this number.
 #[cfg(widgets_unstripped)]
 pub(crate) fn map_key_modifiers(appkit_flags: u64, key_code: u16) -> (u32, u32) {
+    (key_code as u32, map_modifiers(appkit_flags))
+}
+
+/// Converts AppKit's `NSEventModifierFlag` bits into the widget-layer bitfield.
+///
+/// Split out of [`map_key_modifiers`] so a **pointer** event can carry the same
+/// modifier state a key event does. A `Shift`/`Ctrl` press is what selects a range or
+/// toggles one row in an extended-selection view, and the widget layer can only honour
+/// that if the press it receives says which modifiers were held.
+#[cfg(widgets_unstripped)]
+pub(crate) fn map_modifiers(appkit_flags: u64) -> u32 {
     // AppKit modifier flags are shared with the accelerator parser, which owns
     // their definitions so the two macOS backends cannot disagree on them.
     use super::accelerator::{MOD_COMMAND, MOD_CONTROL, MOD_OPTION, MOD_SHIFT};
@@ -124,7 +135,7 @@ pub(crate) fn map_key_modifiers(appkit_flags: u64, key_code: u16) -> (u32, u32) 
     if appkit_flags & MOD_COMMAND != 0 {
         modifiers |= WIDGET_META;
     }
-    (key_code as u32, modifiers)
+    modifiers
 }
 
 /// Returns `true` when the caller is running on the AppKit main thread.

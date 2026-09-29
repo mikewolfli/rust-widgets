@@ -354,7 +354,7 @@ impl EventHandler for Stepper {
             return;
         }
         match event {
-            Event::MousePress { pos, button } => {
+            Event::MousePress { pos, button, .. } => {
                 if *button != 1 {
                     return;
                 }
@@ -481,6 +481,7 @@ mod tests {
         s.handle_event(&Event::MousePress {
             pos: Point::new(minus.x + minus.width as i32 / 2, minus.y + minus.height as i32 / 2),
             button: 1,
+            modifiers: 0
         });
         assert_eq!(s.value(), 4);
     }
@@ -495,6 +496,7 @@ mod tests {
         s.handle_event(&Event::MousePress {
             pos: Point::new(plus.x + plus.width as i32 / 2, plus.y + plus.height as i32 / 2),
             button: 1,
+            modifiers: 0
         });
         assert_eq!(s.value(), 1);
     }
@@ -507,6 +509,7 @@ mod tests {
         s.handle_event(&Event::MousePress {
             pos: Point::new(plus.x + plus.width as i32 / 2, plus.y + plus.height as i32 / 2),
             button: 1,
+            modifiers: 0
         });
         assert_eq!(s.value(), 0);
     }
@@ -565,12 +568,13 @@ mod tests {
         let band = s.row_band();
         // Above the row band, still inside the control's rectangle.
         assert!(band.y > 0, "the row is centred, so there is empty space above it");
-        s.handle_event(&Event::MousePress { pos: Point::new(band.x + 4, band.y - 5), button: 1 });
+        s.handle_event(&Event::MousePress { pos: Point::new(band.x + 4, band.y - 5), button: 1, modifiers: 0 });
         assert_eq!(s.value(), 50, "a press above the row must not step");
         // On the value between the two buttons.
         s.handle_event(&Event::MousePress {
             pos: Point::new(band.x + band.width as i32 / 2, band.y + band.height as i32 / 2),
             button: 1,
+            modifiers: 0
         });
         assert_eq!(s.value(), 50, "a press on the value must not step");
     }

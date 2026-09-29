@@ -351,7 +351,7 @@ impl EventHandler for SegmentedControl {
                     self.base.request_redraw();
                 }
             }
-            Event::MousePress { pos, button: 1 } => {
+            Event::MousePress { pos, button: 1, .. } => {
                 if let Some(index) = self.hit_index(*pos) {
                     let _ = self.set_selected_index(index);
                 }

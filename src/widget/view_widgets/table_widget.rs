@@ -281,21 +281,53 @@ impl TableWidget {
         (index < self.row_count() && self.row_rect(index).is_some()).then_some(index)
     }
     /// Select one row in the current view projection.
+    ///
+    /// Repaints: the selected row's highlight is painted, so without the request it
+    /// would only appear once some unrelated event repainted the control.
     pub fn select_row(&mut self, row: usize) -> bool {
         if row < self.row_count() {
             self.selection.select_row(row);
             self.selection_changed.emit(row);
             self.set_focused_row(row);
+            self.base.request_redraw();
             true
         } else {
             false
         }
     }
+    /// Selects `row` honouring the modifier keys held during the click.
+    ///
+    /// In [`SelectionMode::Extended`](crate::widget::input_widgets::listbox::SelectionMode::Extended)
+    /// this is what implements the documented interaction model: `Shift` selects the
+    /// range from the anchor, `Ctrl`/`Primary` toggles the row, and no modifier replaces
+    /// the selection. In every other mode it is [`Self::select_row`].
+    pub fn select_row_with_modifiers(
+        &mut self,
+        row: usize,
+        modifiers: crate::shortcut::Modifiers,
+    ) -> bool {
+        if row >= self.row_count() {
+            return false;
+        }
+        self.selection.select_with_modifiers(row, modifiers);
+        self.selection_changed.emit(row);
+        self.set_focused_row(row);
+        self.base.request_redraw();
+        true
+    }
     /// Clear current row selection.
+    ///
+    /// Repaints: the selection highlight is painted from the selection model.
     pub fn clear_selection(&mut self) {
+        if self.selection.rows().is_empty() {
+            return;
+        }
         self.selection.clear();
+        self.base.request_redraw();
     }
     /// Sets focused row in current projection.
+    ///
+    /// Repaints: the focus highlight is painted from this field.
     pub fn set_focused_row(&mut self, row: usize) -> bool {
         if row >= self.row_count() {
             return false;
@@ -305,15 +337,19 @@ impl TableWidget {
         }
         self.focused_row = Some(row);
         self.focused_row_changed.emit(self.focused_row);
+        self.base.request_redraw();
         true
     }
     /// Clears focused row.
+    ///
+    /// Repaints: the focus highlight is painted from this field.
     pub fn clear_focused_row(&mut self) {
         if self.focused_row.is_none() {
             return;
         }
         self.focused_row = None;
         self.focused_row_changed.emit(None);
+        self.base.request_redraw();
     }
     /// Returns focused row when still visible in projection.
     pub fn focused_row(&self) -> Option<usize> {
@@ -696,13 +732,16 @@ impl crate::event::EventHandler for TableWidget {
             return;
         }
         match event {
-            crate::event::Event::MousePress { pos, button } if *button == 1 => {
+            crate::event::Event::MousePress { pos, button, modifiers } if *button == 1 => {
                 // The row is read from `row_at_point`, the same derivation the paint loop uses.
                 // The press arm used to compute its own `(pos.y - rect.y) / 20`, which measured from
                 // the control instead of from the content box below the header, so a click on the
                 // first content row selected the row above it.
                 if let Some(index) = self.row_at_point(*pos) {
-                    self.select_row(index);
+                    self.select_row_with_modifiers(
+                        index,
+                        crate::shortcut::Modifiers::from_event_bits(*modifiers),
+                    );
                 }
             }
             crate::event::Event::MouseMove { pos } => {
@@ -1197,12 +1236,20 @@ mod tests {
         // arm measured rows from the control's top edge instead of from below the header. Fixing
         // that derivation is what turned this into a real pointer on a real row.
         let on_first_row = crate::core::Point::new(10, 30);
-        tv.handle_event(&crate::event::Event::MousePress { pos: on_first_row, button: 1 });
+        tv.handle_event(&crate::event::Event::MousePress {
+            pos: on_first_row,
+            button: 1,
+            modifiers: 0,
+        });
         assert!(captured.lock().unwrap().is_none());
 
         // Re-enable and verify it works
         tv.set_enabled(true);
-        tv.handle_event(&crate::event::Event::MousePress { pos: on_first_row, button: 1 });
+        tv.handle_event(&crate::event::Event::MousePress {
+            pos: on_first_row,
+            button: 1,
+            modifiers: 0,
+        });
         assert_eq!(*captured.lock().unwrap(), Some(0));
     }
 
@@ -1241,7 +1288,7 @@ mod tests {
         assert_eq!(tv.row_at_point(point), Some(row), "the point must name its own row");
 
         let before = row_fill(&mut tv, row).expect("the row paints a fill");
-        tv.handle_event(&crate::event::Event::MousePress { pos: point, button: 1 });
+        tv.handle_event(&crate::event::Event::MousePress { pos: point, button: 1, modifiers: 0 });
         assert_eq!(tv.focused_row(), Some(row), "the press must select the row it is on");
         let after = row_fill(&mut tv, row).expect("the row still paints a fill");
         assert_ne!(before, after, "the selected row must be visibly selected");

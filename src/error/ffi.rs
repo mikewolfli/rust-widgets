@@ -66,8 +66,13 @@ pub fn record_last_ffi_error(error: super::RwError) {
 /// Read by the C ABI error accessors (`rw_error_code` / `rw_error_message`),
 /// which are available wherever the `bindings` module is built.
 #[cfg(all(any(feature = "desktop", feature = "jni", feature = "mobile-api"), not(alloc_frugal)))]
-pub(crate) fn last_ffi_error() -> Option<super::RwError> {
-    LAST_FFI_ERROR.lock().ok().and_then(|slot| slot.clone())
+pub fn last_ffi_error() -> Option<super::RwError> {
+    // Goes through the crate's lock helper for the same reason the two writers do:
+    // it recovers from poisoning instead of turning it into a `None`, and a `None`
+    // here is reported to C as `ErrorId::SUCCESS` — i.e. "no error" — which would be
+    // the one place this module silently reports success for something that did not
+    // happen.
+    crate::compat::lock(&LAST_FFI_ERROR).clone()
 }
 
 /// Clear the recorded last FFI error.
@@ -91,22 +96,27 @@ pub fn clear_last_ffi_error() {
 /// message stable also makes it safe for a binding to match on.
 pub fn record_capability_error(error: crate::widget::capability::types::CapabilityAccessError) {
     use crate::widget::capability::types::CapabilityAccessError;
+    // The id is what a C/C++ binding can branch on, so the seven refusals are split into
+    // the three *classes* the reserved `ErrorId`s were kept for. Mapping them all to
+    // `INVALID_ARGUMENT` (the previous behaviour) made "no such widget" indistinguishable
+    // from "that property is read-only" at the ABI, which is precisely the distinction
+    // `rw_error_code` exists to carry.
     let (id, message) = match error {
         CapabilityAccessError::UnknownWidget => {
-            (super::ErrorId::INVALID_ARGUMENT, "no widget is registered under that id")
+            (super::ErrorId::WIDGET_NOT_FOUND, "no widget is registered under that id")
         }
         CapabilityAccessError::UnknownProperty => (
             super::ErrorId::INVALID_ARGUMENT,
             "the widget does not publish a property by that name",
         ),
         CapabilityAccessError::ReadOnlyProperty => {
-            (super::ErrorId::INVALID_ARGUMENT, "the property is read-only")
+            (super::ErrorId::WIDGET_INVALID_STATE, "the property is read-only")
         }
         CapabilityAccessError::TypeMismatch => {
             (super::ErrorId::INVALID_ARGUMENT, "the property does not accept that value kind")
         }
         CapabilityAccessError::UnsupportedOnWidget => {
-            (super::ErrorId::INVALID_ARGUMENT, "the property is not meaningful for this widget")
+            (super::ErrorId::WIDGET_INVALID_STATE, "the property is not meaningful for this widget")
         }
         CapabilityAccessError::OutOfRange => {
             (super::ErrorId::INVALID_ARGUMENT, "the value is out of range for this property")

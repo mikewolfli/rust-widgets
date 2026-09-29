@@ -401,7 +401,7 @@ impl EventHandler for CameraPreview {
             return;
         }
         match event {
-            Event::MousePress { pos, button } => {
+            Event::MousePress { pos, button, .. } => {
                 // The press must land on the preview. Discarding the position meant a
                 // click anywhere in the window started or stopped the camera — a
                 // side-effecting device action taken on an unrelated click.
@@ -486,9 +486,9 @@ mod tests {
     fn camera_preview_click_toggles() {
         let mut cp = CameraPreview::new(Rect::new(0, 0, 320, 240));
         assert!(!cp.is_active());
-        cp.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        cp.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         assert!(cp.is_active());
-        cp.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        cp.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         assert!(!cp.is_active());
     }
 }

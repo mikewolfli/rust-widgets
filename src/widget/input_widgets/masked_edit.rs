@@ -1130,6 +1130,7 @@ mod tests {
         me.handle_event(&Event::MousePress {
             pos: Point::new(field.x + 10, field.y + field.height as i32 / 2),
             button: 1,
+            modifiers: 0
         });
         assert!(me.focused, "a press on the drawn field focuses it");
 
@@ -1137,6 +1138,7 @@ mod tests {
         me.handle_event(&Event::MousePress {
             pos: Point::new(field.x + 10, field.y + field.height as i32 + 40),
             button: 1,
+            modifiers: 0
         });
         assert!(!me.focused, "a press below the drawn field must not focus it");
     }

@@ -753,6 +753,7 @@ mod tests {
         ladder.handle_event(&crate::event::Event::MousePress {
             pos: crate::core::Point { x: 100, y: 10 },
             button: 0,
+            modifiers: 0
         });
         assert_eq!(count.load(Ordering::SeqCst), 1, "a press on a row emits it");
     }

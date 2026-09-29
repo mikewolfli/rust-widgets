@@ -849,7 +849,7 @@ impl EventHandler for Heatmap {
                     self.base.request_redraw();
                 }
             }
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 if let Some((row, column)) = self.cell_at(*pos) {
                     self.cell_clicked.emit((row, column));
                 }
@@ -1167,12 +1167,13 @@ mod tests {
         // The last cell: row 2, column 3.
         let x = grid.x + grid.width as i32 - 3;
         let y = grid.y + grid.height as i32 - 3;
-        heatmap.handle_event(&Event::MousePress { pos: Point::new(x, y), button: 1 });
+        heatmap.handle_event(&Event::MousePress { pos: Point::new(x, y), button: 1, modifiers: 0 });
         assert_eq!(seen.load(Ordering::SeqCst), 2 * 16 + 3);
         seen.store(-1, Ordering::SeqCst);
         heatmap.handle_event(&Event::MousePress {
             pos: Point::new(grid.x - 20, grid.y - 20),
             button: 1,
+            modifiers: 0
         });
         assert_eq!(seen.load(Ordering::SeqCst), -1, "a click outside the grid emits nothing");
     }
@@ -1192,6 +1193,7 @@ mod tests {
         heatmap.handle_event(&Event::MousePress {
             pos: Point::new(grid.x + 3, grid.y + 3),
             button: 1,
+            modifiers: 0
         });
         assert!(!fired.load(Ordering::SeqCst), "a disabled heat map must not emit");
     }

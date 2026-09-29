@@ -214,6 +214,8 @@ impl MdiArea {
         self.registry.as_ref()
     }
     /// Adds a sub-window.
+    ///
+    /// Repaints: the sub-window frame is painted from the list this grows.
     pub fn add_sub_window(&mut self, widget: ObjectId, geometry: Rect) -> usize {
         let mut subwindow = MdiSubWindow::new(widget, geometry);
         subwindow.z_order = self.subwindows.len() as i32;
@@ -224,9 +226,15 @@ impl MdiArea {
             self.active_subwindow = Some(index);
             self.subwindow_activated.emit(widget);
         }
+        self.base.request_redraw();
         index
     }
     /// Removes a sub-window.
+    ///
+    /// Repaints: removing a frame changes the painted picture. The active index is
+    /// repaired in both directions — decremented when an earlier sub-window was removed
+    /// (so activation stays on the same window), and re-pointed when the active one
+    /// itself was removed.
     pub fn remove_sub_window(&mut self, widget: ObjectId) {
         if let Some(index) = self.subwindows.iter().position(|sw| sw.widget == widget) {
             self.base.remove_child_linked(widget);
@@ -244,6 +252,7 @@ impl MdiArea {
                     self.active_subwindow = Some(active_index - 1);
                 }
             }
+            self.base.request_redraw();
         }
     }
     /// Returns number of sub-windows.
@@ -596,7 +605,7 @@ impl EventHandler for MdiArea {
             return;
         }
         let mut hit_subwindow = false;
-        if let Event::MousePress { pos, button } = event {
+        if let Event::MousePress { pos, button, .. } = event {
             if *button == 1 {
                 // In `TabbedView` the tabs are the only clickable chrome, because the windows they
                 // name carry no title bar of their own and all sit in the same body. Resolving the
@@ -1464,11 +1473,11 @@ mod tests {
         assert_eq!(area.active_sub_window(), Some(widget_id_1()));
 
         // Click on second sub-window area
-        area.handle_event(&Event::MousePress { pos: Point::new(150, 150), button: 1 });
+        area.handle_event(&Event::MousePress { pos: Point::new(150, 150), button: 1, modifiers: 0 });
         assert_eq!(area.active_sub_window(), Some(widget_id_2()));
 
         // Click back on first sub-window
-        area.handle_event(&Event::MousePress { pos: Point::new(20, 20), button: 1 });
+        area.handle_event(&Event::MousePress { pos: Point::new(20, 20), button: 1, modifiers: 0 });
         assert_eq!(area.active_sub_window(), Some(widget_id_1()));
     }
 
@@ -1480,7 +1489,7 @@ mod tests {
         assert_eq!(area.active_sub_window(), Some(widget_id_1()));
 
         // Click outside all sub-windows
-        area.handle_event(&Event::MousePress { pos: Point::new(500, 300), button: 1 });
+        area.handle_event(&Event::MousePress { pos: Point::new(500, 300), button: 1, modifiers: 0 });
         assert_eq!(area.active_sub_window(), Some(widget_id_1()), "should not change");
     }
 

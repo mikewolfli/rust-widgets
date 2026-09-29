@@ -666,7 +666,7 @@ impl EventHandler for Button {
         // whether the release belonged to its own gesture. Handling first keeps the arm's
         // guard meaningful, and the base then records the same outcome from the same facts.
         match event {
-            Event::MousePress { pos, button } if self.base.is_enabled() => {
+            Event::MousePress { pos, button, .. } if self.base.is_enabled() => {
                 // Only a press that resolves to this control arms it. The runtime
                 // hit-tests before delivery, but a direct dispatch (a test, a host with
                 // its own routing, a designer preview) does not, and an unguarded press
@@ -1365,6 +1365,7 @@ mod tests {
         let event = Event::MousePress {
             pos: crate::core::Point::new(15, 25),
             button: crate::event::mouse_button::PRIMARY,
+            modifiers: 0
         };
         b.handle_event(&event);
         assert!(b.is_pressed());
@@ -1417,6 +1418,7 @@ mod tests {
         b.handle_event(&Event::MousePress {
             pos: crate::core::Point::new(20, 30),
             button: crate::event::mouse_button::PRIMARY,
+            modifiers: 0
         });
         assert!(b.is_pressed());
 
@@ -1446,6 +1448,7 @@ mod tests {
         b.handle_event(&Event::MousePress {
             pos: crate::core::Point::new(20, 30),
             button: crate::event::mouse_button::PRIMARY,
+            modifiers: 0
         });
         b.handle_event(&Event::MouseRelease {
             pos: crate::core::Point::new(30, 40),
@@ -1462,6 +1465,7 @@ mod tests {
         b.handle_event(&Event::MousePress {
             pos: crate::core::Point::new(20, 30),
             button: crate::event::mouse_button::PRIMARY,
+            modifiers: 0
         });
         assert!(b.is_pressed());
 
@@ -1479,6 +1483,7 @@ mod tests {
         b.handle_event(&Event::MousePress {
             pos: crate::core::Point::new(20, 30),
             button: crate::event::mouse_button::SECONDARY,
+            modifiers: 0
         });
         assert!(!b.is_pressed());
     }
@@ -1495,6 +1500,7 @@ mod tests {
         b.handle_event(&Event::MousePress {
             pos: crate::core::Point::new(20, 30),
             button: crate::event::mouse_button::PRIMARY,
+            modifiers: 0
         });
         b.handle_event(&Event::FocusLost);
         assert!(!b.is_pressed());
@@ -1589,6 +1595,7 @@ mod tests {
         b.handle_event(&Event::MousePress {
             pos: crate::core::Point::new(20, 30),
             button: crate::event::mouse_button::PRIMARY,
+            modifiers: 0
         });
         assert!(!b.is_pressed());
         b.handle_event(&Event::MouseRelease {

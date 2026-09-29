@@ -51,7 +51,7 @@ fn ink_segments(svg: &str) -> usize {
 
 /// Drives a press → moves → release, returning the pad for rendering.
 fn draw_stroke_through(pad: &mut SignaturePad, points: &[Point]) {
-    pad.handle_event(&Event::MousePress { pos: points[0], button: 1 });
+    pad.handle_event(&Event::MousePress { pos: points[0], button: 1, modifiers: 0 });
     for p in &points[1..] {
         pad.handle_event(&Event::MouseMove { pos: *p });
     }
@@ -110,7 +110,7 @@ fn probe_jitter_is_still_dropped() {
 
     // A press, then twenty moves that all land on the same pixel, all within the same
     // millisecond. Both the distance rule and the interval rule reject every one of them.
-    pad.handle_event(&Event::MousePress { pos: Point::new(10, 20), button: 1 });
+    pad.handle_event(&Event::MousePress { pos: Point::new(10, 20), button: 1, modifiers: 0 });
     for _ in 0..20 {
         pad.handle_event(&Event::MouseMove { pos: Point::new(10, 20) });
     }

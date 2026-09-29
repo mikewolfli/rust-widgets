@@ -432,7 +432,7 @@ impl EventHandler for AppBar {
         }
 
         match event {
-            Event::MousePress { pos, button } | Event::MouseRelease { pos, button } => {
+            Event::MousePress { pos, button, .. } | Event::MouseRelease { pos, button } => {
                 if *button != 1 {
                     return;
                 }
@@ -545,7 +545,7 @@ mod tests {
         });
 
         // Tap in left zone (first 48px)
-        bar.handle_event(&Event::MousePress { pos: Point::new(10, 28), button: 1 });
+        bar.handle_event(&Event::MousePress { pos: Point::new(10, 28), button: 1, modifiers: 0 });
         assert!(fired.load(Ordering::SeqCst));
     }
 
@@ -561,7 +561,7 @@ mod tests {
         });
 
         // Tap in center — falls through to back when show_back is true
-        bar.handle_event(&Event::MousePress { pos: Point::new(188, 28), button: 1 });
+        bar.handle_event(&Event::MousePress { pos: Point::new(188, 28), button: 1, modifiers: 0 });
         assert!(fired.load(Ordering::SeqCst));
     }
 
@@ -577,7 +577,7 @@ mod tests {
         });
 
         // Tap in right action zone (last 80px)
-        bar.handle_event(&Event::MousePress { pos: Point::new(340, 28), button: 1 });
+        bar.handle_event(&Event::MousePress { pos: Point::new(340, 28), button: 1, modifiers: 0 });
         assert!(fired.load(Ordering::SeqCst));
     }
 
@@ -594,7 +594,7 @@ mod tests {
         });
 
         // Tap in center — action should NOT fire
-        bar.handle_event(&Event::MousePress { pos: Point::new(188, 28), button: 1 });
+        bar.handle_event(&Event::MousePress { pos: Point::new(188, 28), button: 1, modifiers: 0 });
         assert!(!action_fired.load(Ordering::SeqCst));
     }
 
@@ -617,7 +617,7 @@ mod tests {
             a.store(true, Ordering::SeqCst);
         });
 
-        bar.handle_event(&Event::MousePress { pos: Point::new(10, 28), button: 1 });
+        bar.handle_event(&Event::MousePress { pos: Point::new(10, 28), button: 1, modifiers: 0 });
         assert!(!back_fired.load(Ordering::SeqCst));
         assert!(!action_fired.load(Ordering::SeqCst));
     }
@@ -681,7 +681,7 @@ mod tests {
         });
 
         // Right-button click should be ignored
-        bar.handle_event(&Event::MousePress { pos: Point::new(10, 28), button: 2 });
+        bar.handle_event(&Event::MousePress { pos: Point::new(10, 28), button: 2, modifiers: 0 });
         assert!(!fired.load(Ordering::SeqCst));
     }
 
@@ -834,13 +834,13 @@ mod tests {
         });
 
         // Right edge: the arrow. Its zone is 48 px wide, so 380 is inside it.
-        bar.handle_event(&Event::MousePress { pos: Point::new(380, 28), button: 1 });
+        bar.handle_event(&Event::MousePress { pos: Point::new(380, 28), button: 1, modifiers: 0 });
         assert!(back.load(Ordering::SeqCst), "tapping the drawn arrow must press back");
         assert!(!action.load(Ordering::SeqCst), "and must not press the action");
 
         // Left edge: the action, in an 80 px zone.
         back.store(false, Ordering::SeqCst);
-        bar.handle_event(&Event::MousePress { pos: Point::new(20, 28), button: 1 });
+        bar.handle_event(&Event::MousePress { pos: Point::new(20, 28), button: 1, modifiers: 0 });
         assert!(action.load(Ordering::SeqCst), "tapping the drawn action must fire the action");
         assert!(!back.load(Ordering::SeqCst), "and must not press back");
     }

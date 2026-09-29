@@ -710,7 +710,7 @@ mod tests {
     fn pie_chart_event_forwarding() {
         let mut pc = PieChart::new(Rect::new(0, 0, 200, 200));
         pc.handle_event(&Event::MouseMove { pos: Point::new(10, 10) });
-        pc.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        pc.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
     }
 
     /// Sector geometry must come from the shared engine, and the fill must still

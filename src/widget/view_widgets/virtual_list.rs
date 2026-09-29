@@ -513,7 +513,7 @@ impl crate::event::EventHandler for VirtualList {
         self.normalize_projection_state();
 
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 // The same derivation the hover uses, so the row a click selects and the row the
                 // pointer highlights cannot disagree.
                 if let Some(row) = self.row_at(*pos) {

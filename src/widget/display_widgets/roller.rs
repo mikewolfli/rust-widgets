@@ -273,7 +273,7 @@ impl EventHandler for Roller {
             }
             // Mouse press: determine which item was clicked relative to the
             // center of the visible wheel.
-            Event::MousePress { pos, button: _ } => {
+            Event::MousePress { pos, .. } => {
                 let band = self.wheel_band();
                 let item_h = self.item_height() as i32;
                 let center_y = band.y + (band.height as i32) / 2;
@@ -596,6 +596,7 @@ mod tests {
         roller.handle_event(&Event::MousePress {
             pos: Point::new(band.x + 10, center_y - item_h),
             button: 1,
+            modifiers: 0
         });
         // Should have moved one index up (if available).
         assert_eq!(roller.selected_index(), 0); // already at 0, can't go up
@@ -605,6 +606,7 @@ mod tests {
         roller.handle_event(&Event::MousePress {
             pos: Point::new(band.x + 10, center_y + item_h),
             button: 1,
+            modifiers: 0
         });
         assert_eq!(roller.selected_index(), 3);
     }
@@ -668,11 +670,12 @@ mod tests {
         roller.set_selected_index(1);
         let band = roller.wheel_band();
         assert!(band.y > 0, "the wheel is centred, so there is empty space above it");
-        roller.handle_event(&Event::MousePress { pos: Point::new(100, band.y - 10), button: 1 });
+        roller.handle_event(&Event::MousePress { pos: Point::new(100, band.y - 10), button: 1, modifiers: 0 });
         assert_eq!(roller.selected_index(), 1, "a press above the wheel must not select");
         roller.handle_event(&Event::MousePress {
             pos: Point::new(100, band.y + band.height as i32 + 10),
             button: 1,
+            modifiers: 0
         });
         assert_eq!(roller.selected_index(), 1, "a press below the wheel must not select");
     }

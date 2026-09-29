@@ -298,7 +298,7 @@ impl EventHandler for Canvas {
             return;
         }
         match event {
-            Event::MousePress { pos, button } if *button == 1 => {
+            Event::MousePress { pos, button, .. } if *button == 1 => {
                 self.last_mouse_pos = *pos;
                 self.base.set_mouse_pressed(true);
                 self.mouse_pressed.emit();
@@ -408,7 +408,7 @@ mod tests {
         let mut canvas = Canvas::new(Rect::new(0, 0, 200, 100));
         canvas.set_enabled(false);
         // Events should be ignored when disabled
-        canvas.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1 });
+        canvas.handle_event(&Event::MousePress { pos: Point::new(10, 10), button: 1, modifiers: 0 });
         // Signal should NOT have been emitted (disabled)
         // We just verify no panic and state unchanged
         assert_eq!(canvas.last_mouse_pos(), Point::new(0, 0));

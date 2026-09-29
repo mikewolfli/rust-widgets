@@ -550,7 +550,7 @@ impl EventHandler for DateRangePicker {
             return;
         }
 
-        if let Event::MousePress { pos, button: 1 } = event {
+        if let Event::MousePress { pos, button: 1, .. } = event {
             let rect = self.geometry();
             if !rect.contains_point(*pos) {
                 return;
@@ -715,7 +715,7 @@ mod tests {
         // Grid starts at x=4, y=40+20=60
         // Day 15 = cell index 4 + 14 = 18 => row=2 (18/7=2), col=4 (18%7=4)
         // Position: x=4 + 4*30 = 124, y=60 + 2*30 = 120
-        picker.handle_event(&Event::MousePress { pos: Point::new(124, 120), button: 1 });
+        picker.handle_event(&Event::MousePress { pos: Point::new(124, 120), button: 1, modifiers: 0 });
         assert_eq!(picker.start_date(), Some((2025, 1, 15)));
         assert!(picker.end_date().is_none());
     }
@@ -729,6 +729,7 @@ mod tests {
         picker.handle_event(&Event::MousePress {
             pos: Point::new(4, 250), // bottom of widget
             button: 1,
+            modifiers: 0
         });
         assert!(picker.start_date().is_none());
     }

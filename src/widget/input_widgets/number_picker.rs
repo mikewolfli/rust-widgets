@@ -393,7 +393,7 @@ impl EventHandler for NumberPicker {
         }
 
         match event {
-            Event::MousePress { pos, button: 1 } if self.contains(*pos) => {
+            Event::MousePress { pos, button: 1, .. } if self.contains(*pos) => {
                 // A drag is measured from where it started, so the state is
                 // recorded here and never accumulated during the move.
                 self.drag_origin_y = Some(pos.y);
@@ -799,7 +799,7 @@ mod tests {
         picker.set_value(50);
         let before = picker.value();
 
-        picker.handle_event(&Event::MousePress { pos: Point::new(30, 100), button: 1 });
+        picker.handle_event(&Event::MousePress { pos: Point::new(30, 100), button: 1, modifiers: 0 });
         // The pointer leaves upward without a release being delivered.
         picker.handle_event(&Event::MouseLeave { pos: Point::new(30, 5) });
 

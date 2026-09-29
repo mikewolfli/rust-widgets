@@ -341,7 +341,7 @@ mod tests {
     fn safe_area_event_delegation() {
         let mut sa = SafeArea::new(Rect::new(0, 0, 375, 812));
         // Events should not panic/crash.
-        sa.handle_event(&Event::MousePress { pos: Point::new(10, 5), button: 1 });
+        sa.handle_event(&Event::MousePress { pos: Point::new(10, 5), button: 1, modifiers: 0 });
         sa.handle_event(&Event::MouseRelease { pos: Point::new(10, 5), button: 1 });
         assert_eq!(sa.insets().top, 44);
     }

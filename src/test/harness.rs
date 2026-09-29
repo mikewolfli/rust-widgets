@@ -50,7 +50,7 @@ impl TestHarness {
     /// the queue length by two.
     pub fn send_mouse_click(&mut self, x: i32, y: i32, button: u32) {
         let point = Point::from_f32(x as f32, y as f32);
-        self.send_event(Event::MousePress { pos: point, button });
+        self.send_event(Event::MousePress { pos: point, button, modifiers: 0 });
         self.send_event(Event::MouseRelease { pos: point, button });
     }
     /// Queues a pointer move to `(x, y)`, with no buttons held.

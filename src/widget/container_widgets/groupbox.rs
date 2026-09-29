@@ -545,7 +545,7 @@ impl EventHandler for GroupBox {
         }
         // Handle checkbox toggle
         if self.checkable {
-            if let Event::MousePress { pos, button } = event {
+            if let Event::MousePress { pos, button, .. } = event {
                 if *button == 1 {
                     if let Some(checkbox_rect) = self.checkbox_rect() {
                         if checkbox_rect.contains(*pos) {

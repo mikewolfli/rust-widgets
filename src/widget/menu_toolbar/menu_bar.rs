@@ -327,7 +327,7 @@ impl EventHandler for MenuBar {
             Event::MouseLeave { .. } => {
                 self.hovered_index = None;
             }
-            Event::MousePress { pos, button: 1 } => {
+            Event::MousePress { pos, button: 1, .. } => {
                 if let Some(idx) = self.hit_entry(*pos) {
                     if self.entries[idx].is_enabled() {
                         self.active_index = Some(idx);
