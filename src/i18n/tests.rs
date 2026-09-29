@@ -692,3 +692,218 @@ fn test_i18n_reload_detects_change_with_identical_mtime() {
     );
     assert_eq!(manager.translate("k"), "bbbb");
 }
+
+/// The bug this pins: `process_reload_events` used to apply each announced reload
+/// through the *announcing* `reload_translation`, so the applied reload pushed a
+/// fresh `TranslationReloaded` onto the very channel being drained. The
+/// re-announcement was picked up by the same `while let Ok` loop, so one queued
+/// event caused the file to be read and parsed twice.
+///
+/// The contract this pins is therefore the count the caller can observe:
+/// **one queued event yields exactly one returned event**, and a following drain
+/// finds nothing left over.
+///
+/// `process_reload_events` reads the **global** manager (that is what the frame
+/// pump uses), so this drives the global one under the shared test lock.
+#[test]
+fn process_reload_events_does_not_feed_its_own_channel() {
+    use super::watcher::process_reload_events;
+    let _lock = crate::i18n::global::global_i18n_test_lock();
+
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("en.json");
+    fs::write(&file_path, r#"{"language":"en","translations":{"k":{"message":"one"}}}"#).unwrap();
+
+    let (sender, receiver) = unbounded();
+    let report = global::init_with_options(InitOptions {
+        language: "en".to_string(),
+        preload_dir: Some(temp_dir.path().to_str().unwrap().to_string()),
+        diagnostics: false,
+    });
+    assert_eq!(report.files_loaded, 1);
+    global::get_manager().as_mut().unwrap().enable_hot_reload(sender.clone());
+    assert_eq!(global::translate("k"), "one");
+
+    fs::write(&file_path, r#"{"language":"en","translations":{"k":{"message":"two"}}}"#).unwrap();
+
+    // Exactly one watcher notification for one file change.
+    sender
+        .send(ReloadEvent::TranslationReloaded {
+            language: "en".to_string(),
+            timestamp: SystemTime::now(),
+        })
+        .unwrap();
+
+    let applied = process_reload_events(&receiver);
+    assert_eq!(applied.len(), 1, "the single announced reload must be applied");
+    assert_eq!(global::translate("k"), "two", "the edit must reach the catalogue");
+
+    // The channel must be empty: applying the reload must not have re-announced
+    // it. A second drain therefore sees nothing and reloads nothing.
+    let second = process_reload_events(&receiver);
+    assert!(second.is_empty(), "applying a reload must not queue another reload; got {second:?}");
+
+    global::init();
+}
+
+/// A burst of platform events for one logical save must collapse to one reload.
+#[test]
+fn process_reload_events_deduplicates_a_burst_for_one_language() {
+    use super::watcher::process_reload_events;
+    let _lock = crate::i18n::global::global_i18n_test_lock();
+
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("en.json");
+    fs::write(&file_path, r#"{"language":"en","translations":{"k":{"message":"v"}}}"#).unwrap();
+
+    let (sender, receiver) = unbounded();
+    let _report = global::init_with_options(InitOptions {
+        language: "en".to_string(),
+        preload_dir: Some(temp_dir.path().to_str().unwrap().to_string()),
+        diagnostics: false,
+    });
+    global::get_manager().as_mut().unwrap().enable_hot_reload(sender.clone());
+
+    // Editors commonly emit several events for one save.
+    for _ in 0..3 {
+        sender
+            .send(ReloadEvent::TranslationReloaded {
+                language: "en".to_string(),
+                timestamp: SystemTime::now(),
+            })
+            .unwrap();
+    }
+
+    let applied = process_reload_events(&receiver);
+    assert_eq!(applied.len(), 1, "three events for one language are one reload");
+    assert_eq!(global::translate("k"), "v");
+
+    global::init();
+}
+
+/// Two languages announced in one drain must each be applied once. This is the
+/// case the per-call de-duplication cannot hide: with the announcing reload the
+/// file for `en` would be re-announced while `de` is still queued, and the
+/// returned count would exceed the number of distinct languages announced.
+#[test]
+fn process_reload_events_applies_each_language_once() {
+    use super::watcher::process_reload_events;
+    let _lock = crate::i18n::global::global_i18n_test_lock();
+
+    let temp_dir = TempDir::new().unwrap();
+    let en_path = temp_dir.path().join("en.json");
+    let de_path = temp_dir.path().join("de.json");
+    fs::write(&en_path, r#"{"language":"en","translations":{"k":{"message":"v"}}}"#).unwrap();
+    fs::write(&de_path, r#"{"language":"de","translations":{"k":{"message":"w"}}}"#).unwrap();
+
+    let (sender, receiver) = unbounded();
+    let report = global::init_with_options(InitOptions {
+        language: "en".to_string(),
+        preload_dir: Some(temp_dir.path().to_str().unwrap().to_string()),
+        diagnostics: false,
+    });
+    assert_eq!(report.files_loaded, 2);
+    global::get_manager().as_mut().unwrap().enable_hot_reload(sender.clone());
+
+    for language in ["en", "de"] {
+        sender
+            .send(ReloadEvent::TranslationReloaded {
+                language: language.to_string(),
+                timestamp: SystemTime::now(),
+            })
+            .unwrap();
+    }
+
+    let applied = process_reload_events(&receiver);
+    assert_eq!(
+        applied.len(),
+        2,
+        "two distinct languages announced must yield exactly two applications"
+    );
+    // Nothing left over: neither reload may have re-announced itself.
+    assert!(process_reload_events(&receiver).is_empty());
+
+    global::init();
+}
+
+/// The property the quiet path uniquely guarantees: applying a reload that a
+/// watcher already announced must leave **nothing new on the channel**.
+///
+/// This is asserted at the manager level, where the de-duplicating guard in
+/// `process_reload_events` cannot hide it. The announcing variant fails this:
+/// the reload pushes a `TranslationReloaded` back onto the channel, which is
+/// exactly what turns one announcement into an endless supply of them once the
+/// drain loop has no de-duplicating guard (verified by removing that guard:
+/// the loop does not terminate).
+#[test]
+fn quiet_reload_leaves_nothing_on_the_channel() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("en.json");
+    fs::write(&file_path, r#"{"language":"en","translations":{"k":{"message":"v"}}}"#).unwrap();
+
+    let (sender, receiver) = unbounded();
+    let mut manager = I18nManager::new();
+    manager.enable_hot_reload(sender);
+    manager.load_translations(file_path.to_str().unwrap()).unwrap();
+
+    // Drain is what a watcher-driven apply does. It must not queue anything.
+    manager.reload_translation_quiet("en").unwrap();
+    assert!(
+        receiver.try_recv().is_err(),
+        "a watcher-driven apply must not re-announce the reload it just applied"
+    );
+
+    // The announcing variant, by contrast, does queue -- which is why the drain
+    // loop must never call it.
+    manager.reload_translation("en").unwrap();
+    assert!(
+        receiver.try_recv().is_ok(),
+        "an explicit reload is expected to be observable on the channel"
+    );
+}
+
+/// `reload_translation` must still announce, so an explicit reload (a language
+/// switch driven by the app) is observable on the channel.
+#[test]
+fn reload_translation_still_announces_on_the_channel() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("en.json");
+    fs::write(&file_path, r#"{"language":"en","translations":{"k":{"message":"v"}}}"#).unwrap();
+
+    let (sender, receiver) = unbounded();
+    let mut manager = I18nManager::new();
+    manager.enable_hot_reload(sender);
+    manager.load_translations(file_path.to_str().unwrap()).unwrap();
+
+    manager.reload_translation("en").unwrap();
+    assert!(
+        matches!(
+            receiver.try_recv(),
+            Ok(ReloadEvent::TranslationReloaded { ref language, .. }) if language == "en"
+        ),
+        "an explicit reload must still be announced"
+    );
+}
+
+/// `reload_translation_quiet` must NOT announce: that is the whole point of it.
+#[test]
+fn reload_translation_quiet_does_not_announce() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("en.json");
+    fs::write(&file_path, r#"{"language":"en","translations":{"k":{"message":"v"}}}"#).unwrap();
+
+    let (sender, receiver) = unbounded();
+    let mut manager = I18nManager::new();
+    manager.enable_hot_reload(sender);
+    manager.load_translations(file_path.to_str().unwrap()).unwrap();
+
+    manager.reload_translation_quiet("en").unwrap();
+    assert!(receiver.try_recv().is_err(), "the quiet path must not announce");
+}
+
+/// The global pump is a no-op (and must not panic) when hot reload was never
+/// enabled — the state every frame is in unless the deployer opted in.
+#[test]
+fn pump_hot_reload_is_a_noop_when_disabled() {
+    assert_eq!(super::watcher::pump_hot_reload(), 0);
+}

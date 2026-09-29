@@ -37,4 +37,7 @@ pub use global::{
 pub use manager::I18nManager;
 pub use options::{InitOptions, InitReport};
 pub use types::{ReloadEvent, Translation, TranslationFile};
+pub use watcher::{
+    disable_global_hot_reload, enable_global_hot_reload, pump_hot_reload, HOT_RELOAD_ENV_VAR,
+};
 pub use watcher::{init_with_hot_reload, process_reload_events, I18nFileWatcher};

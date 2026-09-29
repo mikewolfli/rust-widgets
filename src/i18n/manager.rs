@@ -101,8 +101,34 @@ impl I18nManager {
     pub fn is_hot_reload_enabled(&self) -> bool {
         self.hot_reload_enabled
     }
-    /// Reload a specific translation file
+    /// Reload a specific translation file, re-reading it from disk.
+    ///
+    /// On success this also publishes a [`ReloadEvent::TranslationReloaded`] on
+    /// the hot-reload channel, so a consumer that asked for a reload explicitly
+    /// (for example a settings dialog changing the language) still observes the
+    /// outcome through the same channel as a watcher-driven reload.
+    ///
+    /// A reload that happens *in response to* an event already on that channel
+    /// must use [`I18nManager::reload_translation_quiet`] instead: announcing
+    /// again from inside the drain loop feeds the announcement back into the
+    /// channel it is being drained from, so the same language is reloaded (and
+    /// re-announced) once more on every pass.
     pub fn reload_translation(&mut self, language: &str) -> Result<(), String> {
+        self.reload_translation_quiet(language)?;
+        self.announce_reload(language);
+        Ok(())
+    }
+
+    /// Re-read a translation file from disk without announcing it on the channel.
+    ///
+    /// This is the reentrant-safe half of [`I18nManager::reload_translation`],
+    /// separated so [`crate::i18n::process_reload_events`] can apply a reload
+    /// that a watcher already announced without pushing a duplicate event back
+    /// into that watcher's channel.
+    ///
+    /// Returns the same error as [`I18nManager::reload_translation`] when the
+    /// language has no registered file or the file cannot be read and parsed.
+    pub fn reload_translation_quiet(&mut self, language: &str) -> Result<(), String> {
         if let Some(path) = self.translation_paths.get(language) {
             let mut file = File::open(path).map_err(|e| {
                 format!(
@@ -129,14 +155,6 @@ impl I18nManager {
             if let Some(fingerprint) = FileFingerprint::read(path) {
                 self.file_fingerprints.insert(language.to_string(), fingerprint);
             }
-            if let Some(ref sender) = self.reload_sender {
-                if let Err(e) = sender.send(ReloadEvent::TranslationReloaded {
-                    language: language.to_string(),
-                    timestamp: SystemTime::now(),
-                }) {
-                    log::error!("[i18n] Failed to send reload event: {e:?}");
-                }
-            }
             Ok(())
         } else {
             Err(format!(
@@ -146,7 +164,36 @@ impl I18nManager {
             ))
         }
     }
-    /// Check and reload all modified translation files
+
+    /// Publish a [`ReloadEvent::TranslationReloaded`] on the hot-reload channel.
+    ///
+    /// A no-op when hot reload is disabled (no sender attached), so a reload
+    /// performed before `enable_hot_reload` does not fabricate a listener that
+    /// does not exist. A failed send is logged rather than propagated: the
+    /// translation data itself was already swapped in successfully, and turning
+    /// a notification failure into a reload failure would misreport state that
+    /// has in fact changed.
+    fn announce_reload(&self, language: &str) {
+        if let Some(ref sender) = self.reload_sender {
+            if let Err(e) = sender.send(ReloadEvent::TranslationReloaded {
+                language: language.to_string(),
+                timestamp: SystemTime::now(),
+            }) {
+                log::error!("[i18n] Failed to send reload event: {e:?}");
+            }
+        }
+    }
+    /// Check every registered translation file for on-disk changes and reload
+    /// the ones that changed, returning the events to report to a caller.
+    ///
+    /// The reloads go through [`I18nManager::reload_translation_quiet`], not
+    /// [`I18nManager::reload_translation`]: the returned `Vec` **is** this
+    /// method's notification channel, so also publishing each success on the
+    /// hot-reload channel would deliver the same reload twice — once here and
+    /// once as a queued event a caller still has to drain. A caller that only
+    /// wants the channel populated with no return value is served by
+    /// [`crate::i18n::check_and_reload_all`], which discards this vector, so
+    /// dropping the duplicate send loses no notification.
     pub fn check_and_reload(&mut self) -> Vec<ReloadEvent> {
         let mut events = Vec::new();
         if !self.hot_reload_enabled {
@@ -164,7 +211,7 @@ impl I18nManager {
             }
         }
         for language in languages_to_reload {
-            match self.reload_translation(&language) {
+            match self.reload_translation_quiet(&language) {
                 Ok(()) => {
                     events.push(ReloadEvent::TranslationReloaded {
                         language,

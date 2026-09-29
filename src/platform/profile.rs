@@ -494,6 +494,13 @@ pub fn runtime_quit() {
 /// Replaces the four `init_i18n_runtime()` overloads: rather than a separate
 /// `cfg`-gated function per profile, one function asks the compiled-in feature
 /// flags. A profile without the `i18n` feature simply logs why it skipped.
+///
+/// When `RUST_WIDGETS_I18N_DIR` names a readable directory, translation hot
+/// reload is started here as well, so an application that sets the variable gets
+/// edited catalogues applied without a restart and without writing any code. The
+/// watcher is opt-in through that variable rather than always-on because
+/// watching a directory has a real per-platform cost (an inotify/fsevents/
+/// kqueue registration) that most applications do not need.
 pub fn init_optional_subsystems() {
     // `feature = "i18n"` is a *capability* feature, not a profile gate, so a
     // compile-time `cfg` on the call is still correct here — and necessary, since
@@ -501,6 +508,7 @@ pub fn init_optional_subsystems() {
     #[cfg(feature = "i18n")]
     if has_os_runtime() {
         crate::i18n::init();
+        start_i18n_hot_reload_from_env();
         return;
     }
 
@@ -513,6 +521,36 @@ pub fn init_optional_subsystems() {
             "the i18n feature is not enabled"
         }
     );
+}
+
+/// Starts i18n hot reload when `RUST_WIDGETS_I18N_DIR` names a directory.
+///
+/// Split out from [`init_optional_subsystems`] so the environment lookup and its
+/// failure handling are testable in isolation, and so the `cfg`-gated body there
+/// stays a flat sequence of "initialise, then optionally watch".
+///
+/// A configured-but-unusable directory is logged and skipped rather than fatal: the
+/// embedded catalogue is still loaded, so the application has readable (if
+/// unlocalised) text, which is strictly better than refusing to start.
+#[cfg(all(feature = "i18n", not(feature = "mini")))]
+fn start_i18n_hot_reload_from_env() {
+    let Ok(dir) = std::env::var(crate::i18n::HOT_RELOAD_ENV_VAR) else {
+        return;
+    };
+    if dir.is_empty() {
+        return;
+    }
+    match crate::i18n::enable_global_hot_reload(std::path::Path::new(&dir)) {
+        Ok(loaded) => log::info!(
+            "[i18n] hot reload enabled from {} ({} translation file(s))",
+            crate::i18n::HOT_RELOAD_ENV_VAR,
+            loaded
+        ),
+        Err(e) => log::warn!(
+            "[i18n] {} is set to '{dir}' but hot reload could not be started: {e}",
+            crate::i18n::HOT_RELOAD_ENV_VAR
+        ),
+    }
 }
 
 #[cfg(test)]

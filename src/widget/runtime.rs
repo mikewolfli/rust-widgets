@@ -1300,6 +1300,19 @@ pub fn drive_frame(delta_ms: u32) -> FrameOutcome {
     // and then scheduling stops.
     let needs_another_frame = animation_bus_needs_another_frame();
 
+    // Step 4 -- translations that changed on disk, so an edited catalogue reaches the
+    // screen without a restart. This runs *after* the animation step and before the
+    // repaint counts are taken, because applying a reload can invalidate text and thus
+    // submit a repaint; taking the counts first would attribute that repaint to the
+    // next frame and make this frame's ledger understate its own work.
+    //
+    // It is unconditionally cheap when hot reload is off: `pump_hot_reload` is one
+    // mutex acquisition and a `None` check. That matters because every platform loop
+    // calls `drive_frame` on a timer, and a `cfg` here would fork the frame driver per
+    // profile for a saving that is not measurable.
+    #[cfg(feature = "i18n")]
+    crate::i18n::pump_hot_reload();
+
     // The numbers the frame ledger will report. Taken together so the counts and the causes
     // describe the same frame: taking them apart would let a repaint be attributed to the
     // frame after the one that submitted it.
@@ -1996,7 +2009,7 @@ pub fn open_context_menu(menu_id: ObjectId, position: Point, viewport: Rect) -> 
 /// can pass every event through without testing the button itself.
 #[cfg(full_widgets)]
 pub fn open_context_menu_for_event(menu_id: ObjectId, event: &Event, viewport: Rect) -> bool {
-    let Event::MousePress { pos, button } = event else {
+    let Event::MousePress { pos, button, .. } = event else {
         return false;
     };
     if *button != crate::event::mouse_button::SECONDARY {
@@ -4586,8 +4599,10 @@ mod tests {
         editor.set_text("hello");
         let id = register(Box::new(editor)).expect("registry");
         // A click inside the text area must move the caret away from 0:0.
-        let delivered =
-            dispatch_event(id, &Event::MousePress { pos: Point::new(150, 90), button: 1 });
+        let delivered = dispatch_event(
+            id,
+            &Event::MousePress { pos: Point::new(150, 90), button: 1, modifiers: 0 },
+        );
         assert!(delivered, "event must reach the mounted widget");
         let cursor =
             with_widget_mut(id, |widget| editor_of(widget).map(|editor| editor.cursor())).flatten();
@@ -4610,6 +4625,7 @@ mod tests {
             &Event::MousePress {
                 pos: Point::new(120, 90),
                 button: crate::event::mouse_button::SECONDARY,
+                modifiers: 0,
             },
             viewport,
         );
@@ -4636,7 +4652,8 @@ mod tests {
             id,
             &Event::MousePress {
                 pos: Point::new(10, 10),
-                button: crate::event::mouse_button::PRIMARY
+                button: crate::event::mouse_button::PRIMARY,
+                modifiers: 0
             },
             viewport,
         ));
@@ -4821,7 +4838,7 @@ mod tests {
 
         let delivered = dispatch_pointer_event(
             parent,
-            &Event::MousePress { pos: Point::new(150, 130), button: 1 },
+            &Event::MousePress { pos: Point::new(150, 130), button: 1, modifiers: 0 },
             Point::new(150, 130),
         );
         assert!(delivered, "the editor under the point must receive the click");
@@ -4840,7 +4857,7 @@ mod tests {
         let (parent, first, second) = tree_with_two_children();
         let delivered = dispatch_pointer_event(
             parent,
-            &Event::MousePress { pos: Point::new(9_000, 9_000), button: 1 },
+            &Event::MousePress { pos: Point::new(9_000, 9_000), button: 1, modifiers: 0 },
             Point::new(9_000, 9_000),
         );
         assert!(!delivered);
@@ -4969,7 +4986,7 @@ mod tests {
         assert!(
             backend.route_pointer_event(
                 parent,
-                &Event::MousePress { pos: Point::new(50, 50), button: 1 },
+                &Event::MousePress { pos: Point::new(50, 50), button: 1, modifiers: 0 },
                 Point::new(50, 50),
             ),
             "a click inside the child must be delivered to it"
@@ -4979,7 +4996,7 @@ mod tests {
         assert!(
             backend.route_pointer_event(
                 parent,
-                &Event::MousePress { pos: Point::new(250, 250), button: 1 },
+                &Event::MousePress { pos: Point::new(250, 250), button: 1, modifiers: 0 },
                 Point::new(250, 250),
             ),
             "a click inside the root must still be delivered"
@@ -4989,7 +5006,7 @@ mod tests {
         assert!(
             !backend.route_pointer_event(
                 parent,
-                &Event::MousePress { pos: Point::new(9_000, 9_000), button: 1 },
+                &Event::MousePress { pos: Point::new(9_000, 9_000), button: 1, modifiers: 0 },
                 Point::new(9_000, 9_000),
             ),
             "a click outside the root must report that nothing accepted it"
