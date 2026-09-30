@@ -71,3 +71,34 @@ pub use generator::{
     shared_wire_rule_count, Availability, GeneratedSource, GenerationGap, GenerationReport,
     GenerationRequest, TargetProfile, DEFAULT_CHILD_CAPACITY, MINI_CHILD_CAPACITY,
 };
+
+#[cfg(test)]
+mod wire_prefix_agreement_tests {
+    /// The wire carrier's prefix must be the same string in `designer` and in `view`.
+    ///
+    /// # Why there are two spellings, and why this test is what keeps them together
+    ///
+    /// `crate::view` recognises the carrier so it does not write it as a property, but `crate::view`
+    /// compiles on profiles where `crate::designer` does not (the generator is `designer_tooling`-gated
+    /// because it needs `serde_json`). Reading the constant across that boundary broke the `tablet`
+    /// and `mobile` builds, so `view` owns a literal of its own.
+    ///
+    /// Duplication is only safe with an assertion that the two agree, which is this test. Without it
+    /// a change to one spelling would silently stop the engine from stripping the carrier, and the
+    /// symptom would be the one this prefix exists to remove: a `PropertyRefused` for every wired
+    /// node in a generated program.
+    #[test]
+    fn the_wire_prefix_is_the_same_string_in_view_and_designer() {
+        assert_eq!(
+            super::generator::WIRE_PROP_PREFIX,
+            crate::view::GENERATED_WIRE_PROP_PREFIX,
+            "`designer::generator::WIRE_PROP_PREFIX` and `view::GENERATED_WIRE_PROP_PREFIX` must \
+             be the same string: the generator writes the carrier and the view layer strips it, so a \
+             drift in either direction means one of the two stops recognising it"
+        );
+        assert!(
+            crate::view::is_generated_wire_prop(super::generator::WIRE_PROP_PREFIX),
+            "the predicate `view` uses must recognise the prefix `designer` writes"
+        );
+    }
+}

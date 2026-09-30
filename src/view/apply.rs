@@ -290,12 +290,47 @@ impl ApplyReport {
 /// `Insert` / `Remove` / `Move` / `Replace` maintain both the widget tree and the
 /// [`BoundJsonLayout`](crate::json::BoundJsonLayout) indexes, because a diff that leaves
 /// those two disagreeing produces an identity map describing controls that no longer exist.
+///
+/// # Portal hosts
+///
+/// A node declares **where it is created** separately from where it sits in the tree
+/// ([`Node::host`](crate::view::Node::host) / `Node::portal`). [`apply`] itself cannot create
+/// the overlay layer — that is engine-owned state — so a caller that needs portals honoured on
+/// an *insert* passes an [`OverlayHost`] through [`apply_with_reserved_and_overlay`]. Without
+/// one, an inserted portal is parented to its declared parent, which is the pre-portal
+/// behaviour; the engine always passes one, so the two paths agree.
 pub fn apply(
     layout: &mut crate::json::BoundJsonLayout,
     patches: &[Patch],
     create: &dyn Fn(&Node) -> Option<ObjectId>,
 ) -> ApplyReport {
     apply_with_reservations(layout, patches, create, &mut crate::compat::HashMap::new())
+}
+
+/// Resolves the layer a portal node is created into.
+///
+/// # Why this is injected rather than computed here
+///
+/// The overlay layer is a control the engine creates once and remembers, so only the engine can
+/// answer "which id is it" (and create it on first use). `apply` is a free function that owns no
+/// such state, so it takes the answer as a callback. Passing it is what makes an inserted portal
+/// land outside its parent's clip on the `update` path the same way `mount` already does —
+/// before this, `Node::portal`'s contract held only on the first build.
+pub type OverlayHost<'a> = &'a dyn Fn() -> Option<ObjectId>;
+
+/// [`apply_with_reservations`] with a portal-host resolver.
+pub fn apply_with_reserved_and_overlay(
+    layout: &mut crate::json::BoundJsonLayout,
+    patches: &[Patch],
+    create: &dyn Fn(&Node) -> Option<ObjectId>,
+    reserved: &mut crate::compat::HashMap<String, ObjectId>,
+    overlay: Option<OverlayHost<'_>>,
+) -> ApplyReport {
+    let mut report = ApplyReport::default();
+    for patch in patches {
+        apply_one(layout, patch, create, reserved, &mut report, overlay);
+    }
+    report
 }
 
 /// [`apply`], but adopting ids the caller already allocated for the batch's own insertions.
@@ -310,11 +345,7 @@ pub fn apply_with_reservations(
     create: &dyn Fn(&Node) -> Option<ObjectId>,
     reserved: &mut crate::compat::HashMap<String, ObjectId>,
 ) -> ApplyReport {
-    let mut report = ApplyReport::default();
-    for patch in patches {
-        apply_one(layout, patch, create, reserved, &mut report);
-    }
-    report
+    apply_with_reserved_and_overlay(layout, patches, create, reserved, None)
 }
 
 /// Carry out a single patch, recording the outcome in `report`.
@@ -324,6 +355,7 @@ fn apply_one(
     create: &dyn Fn(&Node) -> Option<ObjectId>,
     reserved: &mut crate::compat::HashMap<String, ObjectId>,
     report: &mut ApplyReport,
+    overlay: Option<OverlayHost<'_>>,
 ) {
     match patch {
         Patch::SetProperty { id, name, value } => {
@@ -345,7 +377,8 @@ fn apply_one(
                 report.errors.push(ViewError::UnknownParent { parent: *parent });
                 return;
             }
-            let created = insert_subtree(layout, *parent, *index, node, create, reserved, report);
+            let created =
+                insert_subtree(layout, *parent, *index, node, create, reserved, report, overlay);
             report.widgets_created += created;
         }
         Patch::Remove { id } => {
@@ -377,7 +410,8 @@ fn apply_one(
                 return;
             }
             report.widgets_removed += remove_subtree(layout, *id);
-            let created = insert_subtree(layout, *parent, *index, node, create, reserved, report);
+            let created =
+                insert_subtree(layout, *parent, *index, node, create, reserved, report, overlay);
             report.widgets_created += created;
         }
     }
@@ -412,6 +446,7 @@ fn insert_subtree(
     create: &dyn Fn(&Node) -> Option<ObjectId>,
     reserved: &mut crate::compat::HashMap<String, ObjectId>,
     report: &mut ApplyReport,
+    overlay: Option<OverlayHost<'_>>,
 ) -> usize {
     // ── Transparent nodes ──
     //
@@ -437,7 +472,8 @@ fn insert_subtree(
     if node.widget.eq_ignore_ascii_case("spacer") {
         let mut count = 0usize;
         for (i, child) in node.children.iter().enumerate() {
-            count += insert_subtree(layout, parent, index + i, child, create, reserved, report);
+            count +=
+                insert_subtree(layout, parent, index + i, child, create, reserved, report, overlay);
         }
         return count;
     }
@@ -463,17 +499,41 @@ fn insert_subtree(
 
     // Register before recursing: a child's `register_node` looks up its parent's child list
     // to append itself, so the parent must already exist in the index.
+    //
+    // # Where the control is *hosted*, which is not always where it is declared
+    //
+    // A portal node declares its place in the tree but is created into the overlay layer, so its
+    // control sits outside the parent's clip while its diff identity stays this parent's child
+    // (`Node::portal`). `ViewEngine::mount` has honoured that since portals were added; this path
+    // did not, so a tooltip or menu that appeared only after a breakpoint change (an `Insert`, not
+    // a `mount`) was parented to its declared parent and clipped by it. The resolver comes from the
+    // engine because the overlay layer is engine-owned state; when a caller passes none — a test
+    // driving `apply` directly — the declared parent is used and the behaviour is the pre-portal
+    // one, which is stated rather than accidental.
     let key = node.key.clone().unwrap_or_default();
-    layout.register_node(id, node.widget.clone(), key, Some(parent));
-    place_child_at(layout, parent, id, index);
+    let host = match node.host {
+        super::Host::Declared => Some(parent),
+        super::Host::Overlay => overlay.and_then(|resolve| resolve()).or(Some(parent)),
+    };
+    layout.register_node(id, node.widget.clone(), key, host);
+    if let Some(host) = host {
+        place_child_at(layout, host, id, index);
+    }
 
     let mut count = 1usize;
     for (i, child) in node.children.iter().enumerate() {
-        count += insert_subtree(layout, id, i, child, create, reserved, report);
+        count += insert_subtree(layout, id, i, child, create, reserved, report, overlay);
     }
     // The subtree's declared properties go through the same property contract as a patch,
     // so a control that refuses one reports it here rather than at the next diff.
     for (name, value) in &node.props {
+        // A generated wire carrier is read by the generated `create_for`, never by a control, so it
+        // must not be written — see `ViewEngine::write_declared_properties`, which shares this
+        // predicate. Without it a program generated from a document with wires reported a
+        // `PropertyRefused` for every wired node.
+        if super::is_generated_wire_prop(name) {
+            continue;
+        }
         match write_property(id, name, value.clone()) {
             Ok(()) => report.properties_written += 1,
             Err(reason) => {

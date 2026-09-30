@@ -129,7 +129,7 @@ pub use layout::{
 /// function says that in its signature. It forwards to the one binding body, so the generated path
 /// and the JSON path cannot disagree about which callback a name needs.
 pub use loader::bind_event_binding;
-pub use loader::{load_layout_from_str, JsonLoader};
+pub use loader::{is_loader_owned_key, load_layout_from_str, JsonLoader};
 pub use project::{JsonProject, ProjectNode, MAX_DEPTH as PROJECT_MAX_DEPTH};
 pub use properties::is_widget_property;
 

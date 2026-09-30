@@ -1117,17 +1117,31 @@ extern "C" fn dispatch_key_event(
             log::error!("[harmony] xcomponent: GetKeyEventCode failed (status={code_status})");
             return;
         }
-        // Only the down action produces a widget event; the up action has no counterpart in the
-        // library's event set, and synthesising one would double-fire every key.
+        // The **down** action produces `KeyPress` and the **up** action produces `KeyRelease`.
+        //
+        // This used to return early for anything but down, with the reason "the up action has no
+        // counterpart in the library's event set". That was not true: `Event::KeyRelease` is
+        // published, has a constructor and a `shortcut::Modifiers` accessor — it simply had no
+        // producer in any backend, so a control that tracks a held key could never learn the key
+        // came up (see `windows::types` for the same fix on Win32). The callback is registered as
+        // `RegisterKeyEventCallback`, which ArkUI invokes for both actions, so the release reaches
+        // this function and was being discarded.
         const KEY_ACTION_DOWN: i32 = 0;
-        if action != KEY_ACTION_DOWN {
-            return;
-        }
+        const KEY_ACTION_UP: i32 = 1;
         let target = crate::widget::runtime::focused_widget().unwrap_or(widget_id);
         // SAFETY: `key_event` was produced by `GetKeyEvent` at the top of this callback and is
         // valid for its duration, which is what the modifier accessor requires.
         let modifiers = unsafe { key_modifiers(key_event) };
-        let event = crate::event::Event::KeyPress { key: code as u32, modifiers };
+        let event = match action {
+            KEY_ACTION_DOWN => crate::event::Event::KeyPress { key: code as u32, modifiers },
+            KEY_ACTION_UP => crate::event::Event::KeyRelease { key: code as u32, modifiers },
+            // A third action value is not part of the SDK's contract; report it rather than
+            // guessing which of the two it meant.
+            other => {
+                log::debug!("[harmony] xcomponent: key action {other} is neither down nor up");
+                return;
+            }
+        };
         if crate::widget::runtime::dispatch_event(target, &event) {
             crate::request_repaint_because(widget_id, crate::RepaintReason::State);
         }

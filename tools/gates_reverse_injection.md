@@ -15,6 +15,29 @@
 > **Status column.** `✔` = verified in this round or a recorded earlier round; `—` = not yet
 > injected. A `—` is an honest gap, not a pass.
 
+## Designer generator / registry agreement round (2026-09-30)
+
+| gate | injected | reported |
+|---|---|---|
+| `check_generator_agrees_with_registry.sh` | removed the `btn` alias from `button_capability` in `src/widget/capability/properties.rs` (`aliases: &["pushbutton", "btn"]` → `&["pushbutton"]`) | `generator/registry agreement FAILED:` / `  - [0] the documented alias \`btn\` (for \`button\`) is no longer creatable, so a document spelling the control \`btn\` would generate a program that builds nothing for it` / `  - [0] the documented alias \`btn\` resolves to \`btn\` instead of \`button\`` / `FAIL: the generator and the registry disagree about what can be constructed` |
+| `check_event_variants_have_a_producer.sh` (strengthened, 2026-09-30) | renamed every real `Event::KeyRelease` construction site across the six backends **and** the `src/test/harness.rs` helper call | `event variant audit FAILED: these variants have no producer (principle #75):` / `  - Event::KeyRelease` / `FAIL: an Event variant has no producer` |
+
+> Two notes on the injections above, recorded because a reader will otherwise assume they
+> were first-try successes.
+>
+> `check_generator_agrees_with_registry.sh` did **not** fire on its first design. The first probe
+> iterated only the aliases *currently registered*, so removing `btn` merely shortened the list and
+> everything left passed — the gate stayed green on the very defect it was written for. The probe
+> now asserts a **fixed list of documented aliases** (`btn`, `pushbutton`, `text_label`,
+> `main_window`, `toggle`), which is what makes an alias that is *removed* detectable.
+>
+> `check_event_variants_have_a_producer.sh` passed for a long time while `Event::KeyRelease` had no
+> backend producer at all. Two holes let it: `src/test/harness.rs` is a **production** module
+> (`pub mod test;`) whose synthetic-event builders counted as producers, and a sibling `tests.rs`
+> gated by `#[cfg(test)] mod tests;` in its *parent* file carries no `#[cfg(test)]` of its own. Both
+> are now excluded, which is what turned the gate red on a variant that had only ever been built by
+> test code.
+
 ## Version and documentation-consistency round (2026-09-30)
 
 | gate | injected | reported |
@@ -276,6 +299,7 @@
 | `check_generated_font_table_integrity.sh` | ✅ see "BLUE25 C-wave 4" | ✅ |
 | `check_generated_sources.sh` | ✅ see "BLUE25 C-wave 7" | ✅ |
 | `check_generator_output_compiles.sh` | ✅ see "BLUE25 C-wave 7" | ✅ |
+| `check_generator_agrees_with_registry.sh` | ✅ see "Designer generator / registry agreement round" | ✅ |
 | `check_generator_reuses_wire_rules.sh` | ✅ see "BLUE25 C-wave 4" | ✅ |
 | `check_glyph_source_is_the_only_glyph_path.sh` | ✅ see "BLUE25 C-wave 4" | ✅ |
 | `check_harmony_cross.sh` | ✅ see "BLUE25 C-wave 5" | ✅ |

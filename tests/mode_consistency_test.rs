@@ -175,21 +175,61 @@ fn both_modes_agree_on_the_control_tree() {
     );
 }
 
-/// **Properties**: every scalar property mode 1 reads appears in mode 2's output with that value.
+/// **Properties**: every scalar property mode 1 reads is accounted for by mode 2.
+///
+/// # What "accounted for" means, and why it is not "appears as `.prop(..)`"
+///
+/// The first version of this test asserted a `.prop("name", ..)` for **every** scalar key, which
+/// encoded a defect rather than a contract: the JSON loader consumes `width`, `padding`,
+/// `background`, `x`, `col`, `stretch`, … through dedicated paths (`apply_geometry_shorthand`,
+/// `apply_style_padding`, `apply_hex_color`, `apply_child_placement`), and **no control publishes
+/// them as property names**. Emitting them as property writes therefore produced an `ApplyReport`
+/// full of `PropertyRefused { UnknownProperty }` on a document mode 1 applies cleanly — and this test
+/// called that correct because the substring was present.
+///
+/// The contract is the one `crate::json::is_loader_owned_key` states: a key the loader owns is
+/// **not** a property write, and the generator must record it rather than emit it. `text`/`title`
+/// are the exception (the generated `create_for` reads them for the constructor).
 #[test]
 fn both_modes_agree_on_property_values() {
     let project = JsonProject::parse(PROJECT).expect("the document must parse");
     let generated = generate(&request(TargetProfile::Default)).expect("generation must succeed");
 
-    let mut checked = 0usize;
+    let mut property_writes = 0usize;
+    let mut loader_owned = 0usize;
     for node in project.walk() {
         for (name, value) in node.scalar_properties() {
-            // A `Node::prop("name", CapabilityValue::...)` must exist for this pair. The value is
-            // checked by its literal rendering, so a generator that wrote the right name with the
-            // wrong value fails here rather than passing on the name alone.
-            let expected_name = format!(".prop(\"{name}\"");
+            let emitted = format!(".prop(\"{name}\"");
+            if rust_widgets::json::is_loader_owned_key(&name)
+                && !matches!(name.as_str(), "text" | "title")
+            {
+                // A loader-owned key must NOT be a property write, and must be recorded as handled
+                // rather than silently dropped (rule #12).
+                assert!(
+                    !generated.source.contains(&emitted),
+                    "`{name}` on {:?} is loader-owned but was emitted as a property write, which \
+                     the control's router refuses with `UnknownProperty`",
+                    node.path
+                );
+                assert!(
+                    generated
+                        .report
+                        .resolved_at_generation
+                        .iter()
+                        .any(|entry| entry.contains(&format!("`{name}`"))),
+                    "`{name}` on {:?} is loader-owned but the report does not say it was handled, so \
+                     its value is silently lost: {:?}",
+                    node.path,
+                    generated.report.resolved_at_generation
+                );
+                loader_owned += 1;
+                continue;
+            }
+
+            // A real property must be emitted, name and value together, so a generator that wrote
+            // the right name with the wrong value fails here rather than passing on the name alone.
             assert!(
-                generated.source.contains(&expected_name),
+                generated.source.contains(&emitted),
                 "`{name}` on {:?} is in the document but not in the generated tree",
                 node.path
             );
@@ -214,10 +254,14 @@ fn both_modes_agree_on_property_values() {
                     node.path
                 );
             }
-            checked += 1;
+            property_writes += 1;
         }
     }
-    assert!(checked >= 3, "the fixture must exercise several properties (got {checked})");
+    assert!(
+        property_writes + loader_owned >= 3,
+        "the fixture must exercise several properties (got {property_writes} writes, \
+         {loader_owned} loader-owned)"
+    );
 }
 
 /// **Events**: every handler the document declares is reachable, and every declared

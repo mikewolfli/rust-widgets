@@ -28,6 +28,7 @@ include = [
     # build surface and stays excluded.
     "tools/widget_gallery.rs",
     "tools/view_platform_gate_probe.rs",
+    "tools/generator_agreement_probe.rs",
     # The designer's generation entry point (D7-b-3). Declared as an example below, so
     # it must ship for the same reason: without it, a consumer who takes the crate from
     # the tarball has the `designer` feature and the `designer_generate` binary it
@@ -995,6 +996,21 @@ required-features = ["desktop"]
 [[test]]
 name = "view_platform_gate_probe"
 path = "tools/view_platform_gate_probe.rs"
+
+# The designer generator must be able to build every control the widget registry can.
+#
+# Declared under `tools/` rather than `tests/` for the same reason the platform gate probe is: it is
+# a gate's probe, not a suite, and `tools/check_generator_agrees_with_registry.sh` is what runs it.
+# It has a `main`-less `#[test]` body so `cargo test --test generator_agreement_probe` runs it
+# directly.
+#
+# `required-features = ["desktop"]` because the assertion needs `full_widgets` (the capability
+# registry the generated program itself uses). On a stripped profile there is no registry to agree
+# with, so the target is excluded rather than forced to compile into an assertion about nothing.
+[[test]]
+name = "generator_agreement_probe"
+path = "tools/generator_agreement_probe.rs"
+required-features = ["desktop"]
 
 [[bench]]
 name = "layout_bench"

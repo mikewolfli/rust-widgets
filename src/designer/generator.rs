@@ -315,7 +315,7 @@ pub fn generate(request: &GenerationRequest) -> Result<GeneratedSource, String> 
         }
     };
 
-    let source = assemble(request, &project, &body, &report);
+    let source = assemble(request, &project, &body, &report, &factory);
     Ok(GeneratedSource { source, report })
 }
 
@@ -498,12 +498,30 @@ fn emit_node(
     // The diff engine re-runs layout when the window resizes, so this template does **not** freeze
     // coordinates (d-3 applies to the stripped target, where nothing would re-run them). The root's
     // size is emitted so the first frame has a real client area to solve against.
+    //
+    // # Why the size is no longer emitted as a property
+    //
+    // It used to be `.prop("width", UInt(..)).prop("height", UInt(..))`, and both writes were
+    // refused. `WINDOW_PROPERTIES` (`properties_other.in.rs`) publishes `title`,
+    // `title_bar_height`, `close_button_size`, `button_spacing`, `enabled`, `visible`, `tooltip`
+    // and `geometry` — **no `width` and no `height`**. And `geometry`, the one name that does
+    // describe a rectangle, is explicitly **read-only** through this contract
+    // (`properties_trait.rs`: "a control's rectangle is owned by the layout that placed it").
+    //
+    // So the generated program reported `PropertyRefused` for its own root while mode 1 set the
+    // same size successfully through the loader's `apply_geometry_shorthand` — two front ends, one
+    // document, two different results (rule #101).
+    //
+    // The honest expression is the one the *root control's own storage* uses:
+    // `BaseWidget::geometry`, which the layout reads and which no property contract owns. The
+    // emitter records it in the report so its absence from the property list is a stated decision
+    // rather than a silent omission (rule #12).
     if depth == 1 {
-        line.push_str(&format!(
-            ".prop(\"width\", CapabilityValue::UInt({})).prop(\"height\", CapabilityValue::UInt({}))",
-            geometry.root.2, geometry.root.3
+        report.resolved_at_generation.push(format!(
+            "the root `{}` is sized {}x{} through its own geometry (a window publishes neither \
+             `width` nor `height`, and `geometry` is read-only through the property contract)",
+            node.widget, geometry.root.2, geometry.root.3
         ));
-        report.properties_emitted += 2;
     }
 
     for (name, value) in node.scalar_properties() {
@@ -513,6 +531,35 @@ fn emit_node(
         }
         if is_wire_key(&name) {
             // Handled below: a wire is not a property assignment in either mode.
+            continue;
+        }
+        // # Which loader-owned keys are still emitted, and why
+        //
+        // Most loader-led keys are consumed by the loader's own dedicated paths
+        // (`apply_geometry_shorthand`, `apply_style_padding`, `apply_hex_color`,
+        // `apply_child_placement`), and no control publishes them as property names. Emitting
+        // `.prop("background", ..)` therefore produced a write the router refused with
+        // `UnknownProperty` — a generated `ApplyReport` full of errors for a document mode 1 applies
+        // cleanly.
+        //
+        // `text` and `title` are the exception, and dropping them would be the *opposite* error: the
+        // generated `create_for` reads them from the node to supply the constructor's own `text`
+        // argument (`Label::new(text, geometry)`), so suppressing them produced a program whose
+        // labels were empty. They must travel; what must not travel is a key nothing can accept.
+        //
+        // # Why the predicate is the loader's own
+        //
+        // `crate::json::is_loader_owned_key` is the *loader's* list, not a second copy here: the two
+        // front ends have to answer "is this key a property?" identically or they will drift (rule
+        // #101). Before this the generator consulted `is_style_only_property`, which lists only
+        // CSS-internal words (`css_class`, `selector`, `transition`, …) and not one real JSON key.
+        if crate::json::is_loader_owned_key(&name) && !carries_constructor_text(&name) {
+            // Reported rather than silently dropped (rule #12): the value *is* carried, but by the
+            // control's own geometry/style storage rather than by a property write.
+            report.resolved_at_generation.push(format!(
+                "`{name}` on {:?} is applied through the loader-owned route, not a property write",
+                path
+            ));
             continue;
         }
         line.push_str(&format!(".prop({}, {})", quote(&name), capability_value_expr(&value)));
@@ -731,8 +778,12 @@ fn collect_stripped_nodes(
     // The text-bearing constructors take `String`, not `&str` (`Button::new(text: String, ..)`), and
     // the stripped target has `alloc` but not the standard prelude, so a bare `"Go"` does not coerce.
     // `String::from` is the one spelling that works in every profile.
-    let mut expr = if let Some(text) = node.text().filter(|_| constructor_takes_text(&node.widget))
-    {
+    //
+    // Both predicates are keyed on the **canonical** name, for the same reason `constructor_path`
+    // resolves through the registry: a document that spelled the control `"btn"` would otherwise get
+    // `Button::new(geometry)` — which does not compile — from a spelling that is perfectly valid.
+    let canonical = WidgetFactory::new_with_defaults().canonical_name(&node.widget);
+    let mut expr = if let Some(text) = node.text().filter(|_| constructor_takes_text(&canonical)) {
         format!(
             "{type_name}::new(String::from({}), Rect::new({}, {}, {}, {}))",
             quote(&text),
@@ -869,17 +920,24 @@ fn child_stretch(node: &ProjectNode) -> u32 {
     node.property("stretch").and_then(|v| v.as_u64()).unwrap_or(1) as u32
 }
 
-/// The Rust type name a document's widget name maps to, or `"UnsupportedControl"`.
+/// The Rust **type** name a document's widget name maps to, or `"UnsupportedControl"`.
+///
+/// # Why the answer is resolved through the registry
+///
+/// The document's spelling may be an alias (`"btn"`, `"main_window"`), and the type name is a
+/// property of the **control** rather than of the spelling. Resolving through
+/// [`WidgetFactory::canonical_name`](crate::widget::capability::WidgetFactory::canonical_name)
+/// first is what makes `"btn"` answer `"Button"` instead of `"UnsupportedControl"` — the defect
+/// that made a generated program emit no constructor arm while reporting a clean document.
 ///
 /// Exposed so a consumer that needs to compare a document against generated code can do it without
 /// re-deriving the mapping — `tests/mode_consistency_test.rs` reads the stripped template's `Type`
 /// names out of the source and compares them against mode 1's document names, and a second copy of
 /// this table in the test would be free to disagree with the generator it is checking.
 pub fn constructor_type_name(widget: &str) -> &'static str {
-    match constructor_path(widget).rsplit("::").next() {
-        Some(name) => name,
-        None => "UnsupportedControl",
-    }
+    constructor_type_for(&WidgetFactory::new_with_defaults(), widget)
+        .and_then(|path| path.rsplit("::").next())
+        .unwrap_or("UnsupportedControl")
 }
 
 /// Whether a control's constructor takes `(text, geometry)` or just `(geometry)`.
@@ -895,68 +953,100 @@ pub fn constructor_type_name(widget: &str) -> &'static str {
 /// A control absent from the list emits the geometry-only form: a **compile error** is the honest
 /// outcome for a control whose constructor signature nobody stated, and it points here rather than
 /// at the user's document.
-fn constructor_takes_text(widget: &str) -> bool {
+///
+/// # Why the argument is a canonical name
+///
+/// Same reason as [`canonical_constructor_path`]: the answer is a property of the *control*, and a
+/// caller that passed a document spelling would get `false` for `"btn"` and emit
+/// `Button::new(geometry)` — which does not compile. Callers resolve through the registry first.
+fn constructor_takes_text(canonical: &str) -> bool {
     matches!(
-        widget,
+        canonical,
         "window"
             | "button"
             | "label"
-            | "checkbox"
             | "check_box"
-            | "radiobutton"
             | "radio_button"
-            | "groupbox"
             | "group_box"
-            | "lineedit"
             | "line_edit"
-            | "textedit"
             | "text_edit"
     )
 }
 
-/// The Rust type name each control's **inherent** (ungated) constructor belongs to.
+/// The fully-qualified Rust **type** a control's constructor path names.
 ///
-/// # Why the name is returned as a path
+/// # Why this table exists at all
 ///
-/// A bare `Window::new(..)` does not compile: `Window` is re-exported at the crate root and under
-/// `widget`, and `Label`/`Button`/`Slider` live in different submodules. Emitting a bare name would
-/// rely on whatever the user's `use` list happens to contain. [`constructor_path`] returns the
-/// fully-qualified path instead, which is why the generated file needs no imports beyond `Widget`
-/// (for `try_add_child`) and `Rect`.
+/// The generator emits `Type::new(..)` rather than calling a `create_*` wrapper, because the
+/// wrappers are profile-gated while the inherent constructors are not — that is what lets the same
+/// template compile for `desktop` and for `mini`.
 ///
-/// # Why an allowlist rather than a name transform
+/// The problem this table has to solve is that **the type is not derivable from the name**:
+/// `line_edit` is `widget::LineEdit` (not `Lineedit`), `tab_widget` is `widget::TabWidget`, and
+/// `progress_bar` is `widget::ProgressBar`. A textual camel-case transform would emit
+/// `Lineedit::new(..)` and fail to compile.
 ///
-/// `create_button` → `Button::new` is not a textual transformation: the type name and the module
-/// path vary. Guessing would emit `Lineedit::new(..)` for `line_edit` and fail to compile on the
-/// target — the exact failure this template exists to avoid. A name that is not listed emits a call
-/// to a type that does not exist, so the failure is **localised here** rather than misattributed to
-/// the user's document, and `availability` has already reported it.
-fn constructor_path(widget: &str) -> &'static str {
-    match widget {
+/// # Why the *keys* are keyed on the canonical name, and why that is now enforced
+///
+/// Every key here is a **canonical** registry name (the same strings
+/// [`WidgetFactory::constructible_names`](crate::widget::capability::WidgetFactory::constructible_names)
+/// returns). Aliases are resolved *before* this lookup by [`constructor_type_for`], so there is
+/// exactly one entry per control instead of one per spelling.
+///
+/// That split is the fix for a real defect: this function used to be consulted with the
+/// **document's raw spelling**, so `"btn"` matched no arm, was rendered as `UnsupportedControl`,
+/// and was then silently skipped by the emitter — producing a generated program with no
+/// constructor arms at all while the report claimed the document was clean. Keying on the canonical
+/// name makes the answer a function of *which control*, not *how it was spelled*.
+fn canonical_constructor_path(canonical: &str) -> &'static str {
+    match canonical {
         "window" => "rust_widgets::widget::Window",
         "button" => "rust_widgets::widget::Button",
         "label" => "rust_widgets::widget::Label",
-        "checkbox" | "check_box" => "rust_widgets::widget::CheckBox",
-        "radiobutton" | "radio_button" => "rust_widgets::widget::RadioButton",
+        "check_box" => "rust_widgets::widget::CheckBox",
+        "radio_button" => "rust_widgets::widget::RadioButton",
         "slider" => "rust_widgets::widget::Slider",
-        "progressbar" | "progress_bar" => "rust_widgets::widget::ProgressBar",
-        "lineedit" | "line_edit" => "rust_widgets::widget::LineEdit",
-        "textedit" | "text_edit" => "rust_widgets::widget::TextEdit",
-        "combobox" | "combo_box" => "rust_widgets::widget::ComboBox",
-        "spinbox" | "spin_box" => "rust_widgets::widget::SpinBox",
-        "listbox" | "list_box" => "rust_widgets::widget::ListBox",
-        "groupbox" | "group_box" => "rust_widgets::widget::GroupBox",
+        "progress_bar" => "rust_widgets::widget::ProgressBar",
+        "line_edit" => "rust_widgets::widget::LineEdit",
+        "text_edit" => "rust_widgets::widget::TextEdit",
+        "combo_box" => "rust_widgets::widget::ComboBox",
+        "spin_box" => "rust_widgets::widget::SpinBox",
+        "list_box" => "rust_widgets::widget::ListBox",
+        "group_box" => "rust_widgets::widget::GroupBox",
         "frame" => "rust_widgets::widget::Frame",
         "arc" => "rust_widgets::widget::Arc",
         "meter" => "rust_widgets::widget::Meter",
-        "stackedwidget" | "stacked_widget" => "rust_widgets::widget::StackedWidget",
+        "stacked_widget" => "rust_widgets::widget::StackedWidget",
         "splitter" => "rust_widgets::widget::Splitter",
-        "scrollarea" | "scroll_area" => "rust_widgets::widget::ScrollArea",
-        "tabwidget" | "tab_widget" => "rust_widgets::widget::TabWidget",
-        // A name nothing can construct: emit a call to a type that does not exist so a compile error
-        // points at the generator rather than surfacing as a mysteriously missing control.
+        "scroll_area" => "rust_widgets::widget::ScrollArea",
+        "tab_widget" => "rust_widgets::widget::TabWidget",
+        // A canonical name nothing here can construct. Returning a type that does not exist makes a
+        // compile error point at this generator rather than surfacing as a mysteriously missing
+        // control. [`constructor_type_for`] is what decides whether this is reachable at all, and
+        // the emitter reports rather than silently skipping when it is.
         _ => "rust_widgets::designer::UnsupportedControl",
     }
+}
+
+/// The Rust type name each control's **inherent** (ungated) constructor belongs to, or
+/// `None` when this generator has no arm for the control.
+///
+/// # Why the answer is keyed on the canonical name
+///
+/// See [`canonical_constructor_path`]: the document's spelling is resolved through the registry
+/// first, so `"btn"`, `"pushbutton"` and `"button"` all reach the `"button"` arm. Resolving before
+/// matching is what makes "the registry can build this" and "the generator can emit this" the same
+/// question.
+fn constructor_type_for(factory: &WidgetFactory, widget: &str) -> Option<&'static str> {
+    let canonical = factory.canonical_name(widget);
+    let path = canonical_constructor_path(&canonical);
+    (!path.ends_with("UnsupportedControl")).then_some(path)
+}
+
+/// [`constructor_type_for`] against a freshly built registry, for the public spelling.
+pub fn constructor_path(widget: &str) -> &'static str {
+    constructor_type_for(&WidgetFactory::new_with_defaults(), widget)
+        .unwrap_or("rust_widgets::designer::UnsupportedControl")
 }
 
 /// A setter call for a scalar property, or `None` when the target has no setter for it.
@@ -1181,6 +1271,14 @@ fn capability_value_expr(value: &Value) -> String {
     String::from("CapabilityValue::Null")
 }
 
+/// The loader-owned keys the generated `create_for` reads as a constructor's text argument.
+///
+/// See the property loop in [`emit_node`]: these must be emitted even though they are
+/// loader-owned, because the generated code needs them on the node to build the control.
+fn carries_constructor_text(name: &str) -> bool {
+    matches!(name, "text" | "title")
+}
+
 /// The tree path of a node's `index`-th child.
 ///
 /// # Why this is a lookup and not `node.path + [index]`
@@ -1259,11 +1357,17 @@ pub fn wire_verdict_for(
 }
 
 /// Assembles the final file.
+///
+/// `report` is `&mut` because assembly is where a name the emitter could not construct a
+/// constructor arm for is recorded: the loop that writes those arms is the only place that knows
+/// which names a document used, and silently emitting nothing for one (the previous behaviour) is
+/// how a generated program came to mount no controls while its report said the document was clean.
 fn assemble(
     request: &GenerationRequest,
     project: &JsonProject,
     body: &str,
     report: &GenerationReport,
+    _factory: &WidgetFactory,
 ) -> String {
     let mut source = String::new();
     source.push_str(&format!(
@@ -1346,18 +1450,35 @@ fn assemble(
              }\n",
         );
 
-        // The `create` callback. It matches on the **type names this file was generated from**, so
-        // the program holds no name table of its own — which is the weight mode 1 pays and this
-        // mode does not. Each arm calls the control's own constructor, so no `create_*` wrapper is
-        // needed and nothing here depends on which profile wrappers are gated.
+        // The `create` callback. It builds the control through the **registry**, so every control the
+        // factory can construct is constructible here without this file naming one of them.
+        //
+        // # Why the registry rather than a hand-emitted arm per type
+        //
+        // This used to emit `"name" => Some(Box::new(Type::new(..)))` for the types `constructor_path`
+        // knew, and `assemble` silently `continue`d for any name it did not. That table covered
+        // **20 of the 188 registered controls**: a document placing a `table`, `tree_view`,
+        // `code_editor`, `gantt`, … generated a `create_for` with no arm for it, `ViewEngine::mount`
+        // reported `UnknownWidgetType`, and the report still called the document clean. The gap was
+        // invisible because the arms that did exist worked and the mode-consistency test only checks
+        // that a name *appears* in the source.
+        //
+        // Asking the factory fixes the whole class rather than the 168 instances: a control added to
+        // the registration table is constructible here the day it is registered, with no second
+        // table to update (rule #101). It also removes the per-type knowledge this file used to
+        // carry — `constructor_path`, `constructor_takes_text` and their tables exist only for the
+        // **stripped** template now, which cannot use the factory (`full_widgets` is absent there).
         source.push_str(
             "\n/// Builds one control for the generated tree, and wires the events it declares.\n\
              ///\n\
-             /// The arms are exactly the widget types this file uses, so no name table is linked.\n\
+             /// The control is built by the **widget registry**, so this file holds no per-type\n\
+             /// constructor table: every control the factory registers is constructible here. That\n\
+             /// is what lets a document place any control without the generator maintaining a\n\
+             /// parallel list that drifts behind the registry (BLUE19 rule #101).\n\
              ///\n\
              /// # Why the wires are bound here rather than by the caller\n\
              ///\n\
-             /// `node` is the description the tree was built from, and it carries the handler names\
+             /// `node` is the description the tree was built from, and it carries the handler names\n\
              /// the document declared (see `WIRE_PROP_PREFIX`). Binding them at creation is what\n\
              /// makes `events: { clicked: \"on_save\" }` mean something: before this the wires were\n\
              /// parsed and dropped, so the generated program contained no reference to the handler\n\
@@ -1368,47 +1489,21 @@ fn assemble(
              /// the control's own capability. A generated file that reimplemented that would be a\n\
              /// second rule set (rule #98).\n\
              fn create_for(node: &rust_widgets::view::Node) -> Option<rust_widgets::core::ObjectId> {\n\
-             \x20   let widget = node.widget.as_str();\n\
              \x20   let geometry = rust_widgets::core::Rect::new(0, 0, 0, 0);\n\
              \x20   let text = node\n\
              \x20       .prop_value(\"text\")\n\
              \x20       .or_else(|| node.prop_value(\"title\"))\n\
              \x20       .and_then(|v| v.as_str())\n\
              \x20       .unwrap_or(\"\");\n\
-             \x20   let mut control: Option<Box<dyn rust_widgets::widget::Widget>> = match widget {\n",
-        );
-        let mut names: Vec<String> = Vec::new();
-        for node in project.walk() {
-            if !names.contains(&node.widget) {
-                names.push(node.widget.clone());
-            }
-        }
-        names.sort();
-        for name in &names {
-            // Fully qualified, for the same reason the stripped template is: a bare `Button` would
-            // depend on the user's `use` list, and this file must stand alone.
-            let path = constructor_path(name);
-            if path.ends_with("UnsupportedControl") {
-                continue;
-            }
-            // The text argument is per-control: `Button::new(text, geometry)` takes one,
-            // `Slider::new(geometry)` does not, and emitting the wrong form is a compile error.
-            if constructor_takes_text(name) {
-                source.push_str(&format!(
-                    "\x20       \"{name}\" => Some(Box::new({path}::new(text.to_string(), geometry))),\n"
-                ));
-            } else {
-                source.push_str(&format!(
-                    "\x20       \"{name}\" => Some(Box::new({path}::new(geometry))),\n"
-                ));
-            }
-        }
-        source.push_str(
-            "\x20       _ => None,\n\
-             \x20   };\n\
-             \x20   // The registry assigns the id; a generated program has exactly one tree, so the\n\
-             \x20   // returned id is the one `ViewEngine` will address it by.\n\
-             \x20   let id = control.take().and_then(rust_widgets::widget::runtime::register)?;\n\
+             \x20   // A fresh registry per call is what the factory's own docs recommend for a\n\
+             \x20   // one-shot build; a generated program has exactly one tree, so the cost is paid\n\
+             \x20   // once at mount.\n\
+             \x20   let factory = rust_widgets::widget::capability::WidgetFactory::new_with_defaults();\n\
+             \x20   let control = factory.create(node.widget.as_str(), geometry, text)?;\n\
+             \x20   // The text a text-bearing control takes at construction is already applied by\n\
+             \x20   // `create`; the remaining declared properties are written by `ViewEngine` through\n\
+             \x20   // the same property contract every other front end uses.\n\
+             \x20   let id = rust_widgets::widget::runtime::register(control)?;\n\
              \x20   // Bind every wire the document declared. A refused name is reported at `warn!` by\n\
              \x20   // the library and counted, so a wire that cannot fire is visible rather than silent.\n\
              \x20   let prefix = \"__wire_\";\n\
@@ -1416,14 +1511,12 @@ fn assemble(
              \x20       let Some(suffix) = name.strip_prefix(prefix) else { continue };\n\
              \x20       let Some(handler) = value.as_str() else { continue };\n\
              \x20       if let Some(event) = suffix.strip_prefix(\"events.\") {\n\
-             \x20           rust_widgets::json::bind_published_event(id, widget, event, handler);\n\
+             \x20           rust_widgets::json::bind_published_event(id, node.widget.as_str(), event, handler);\n\
              \x20       } else if let Some(marker) = rust_widgets::json::marker_for_key(suffix) {\n\
              \x20           rust_widgets::json::bind_marker_event(id, suffix, marker, handler);\n\
              \x20       }\n\
              \x20       // An unrecognised suffix is impossible: the generator emits only keys from\n\
-             \x20       // `is_wire_key`, and `node.props` is built by this file. A branch here would\n\
-             \x20       // need a `log` dependency the generated crate does not have, which is the\n\
-             \x20       // shape that made the first version of this fail to compile.\n\
+             \x20       // `is_wire_key`, and `node.props` is built by this file.\n\
              \x20   }\n\
              \x20   Some(id)\n\
              }\n",

@@ -34,10 +34,10 @@ use winapi::um::winuser::{
     BeginPaint, CreateWindowExW, DefWindowProcW, EndPaint, GetClientRect, InvalidateRect,
     LoadCursorW, RegisterClassW, SetFocus, SetWindowPos, TrackMouseEvent, UpdateWindow, CS_HREDRAW,
     CS_OWNDC, CS_VREDRAW, IDC_ARROW, PAINTSTRUCT, SWP_NOACTIVATE, SWP_NOZORDER, TME_LEAVE,
-    TRACKMOUSEEVENT, WM_CHAR, WM_CLOSE, WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDBLCLK,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
-    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WM_TOUCH, WM_UNICHAR, WNDCLASSW, WS_CHILD, WS_TABSTOP,
-    WS_VISIBLE,
+    TRACKMOUSEEVENT, WM_CHAR, WM_CLOSE, WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS,
+    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+    WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETFOCUS, WM_SIZE, WM_TOUCH, WM_UNICHAR, WNDCLASSW,
+    WS_CHILD, WS_TABSTOP, WS_VISIBLE,
 };
 // Touch-only Win32 entry points. Grouped under one gate so a build without the
 // `touch` capability does not import symbols it never calls (which would be an
@@ -268,6 +268,27 @@ unsafe extern "system" fn canvas_wnd_proc(
         WM_KEYDOWN => {
             forward_key(hwnd, wparam);
             0
+        }
+        // The key came back up — see `forward_key_release` for why a surface needs this arm as
+        // much as a window does.
+        WM_KEYUP => {
+            forward_key_release(hwnd, wparam);
+            0
+        }
+        // The canvas regained the OS keyboard. The inverse of the `WM_KILLFOCUS` arm below, for
+        // the same reason the window procedure now has one: clearing a focus fact without ever
+        // restoring it leaves a control that can be typed into looking unfocused and routing keys
+        // to the window instead. See `windows::types` for the full reasoning — the two surfaces of
+        // one window must agree, which is exactly the asymmetry this arm removes.
+        WM_SETFOCUS => {
+            if let Some(widget_id) = widget_id_of(hwnd) {
+                crate::widget::runtime::report_state(
+                    widget_id,
+                    crate::widget::runtime::StateFact::Focused(true),
+                );
+                invalidate_canvas(hwnd);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         // The canvas lost the OS keyboard, so the library must stop believing a control
         // inside it is focused.
@@ -756,10 +777,41 @@ unsafe fn forward_key(hwnd: HWND, wparam: WPARAM) {
     let modifiers = current_modifiers();
     let event = Event::KeyPress { key, modifiers };
     // Keys follow focus: with nothing focused, the surface owner keeps them.
-    let target = crate::widget::runtime::focused_widget().unwrap_or(widget_id);
+    let target = key_target_for_id(widget_id);
     if crate::widget::runtime::dispatch_event(target, &event) {
         invalidate_canvas(hwnd);
     }
+}
+
+/// Forwards a `WM_KEYUP` to the control that received the matching press.
+///
+/// # Why the canvas needs a release arm too
+///
+/// The window procedure gained one for the same reason, and a canvas hosts the same kind of
+/// widget: a mounted control that tracks a held key must learn the key came up. The target is
+/// resolved through `key_target_for_id`, the helper `forward_key` also uses, so a release cannot
+/// be delivered to a different control than its press.
+///
+/// Tab is deliberately not special-cased here: focus traversal happens on the press, and repeating
+/// it on the release would move focus twice for one tab.
+unsafe fn forward_key_release(hwnd: HWND, wparam: WPARAM) {
+    let Some(widget_id) = widget_id_of(hwnd) else {
+        return;
+    };
+    let event = Event::KeyRelease { key: wparam as u32, modifiers: current_modifiers() };
+    let target = key_target_for_id(widget_id);
+    if crate::widget::runtime::dispatch_event(target, &event) {
+        invalidate_canvas(hwnd);
+    }
+}
+
+/// The widget a key message should be delivered to for surface `widget_id`.
+///
+/// Shared by [`forward_key`] and [`forward_key_release`] so the two cannot disagree about which
+/// control owns the keyboard — the defect two separate copies of
+/// `focused_widget().unwrap_or(..)` would eventually produce.
+fn key_target_for_id(widget_id: ObjectId) -> ObjectId {
+    crate::widget::runtime::focused_widget().unwrap_or(widget_id)
 }
 
 /// Reads the keyboard modifier state into the widget-layer bitfield.

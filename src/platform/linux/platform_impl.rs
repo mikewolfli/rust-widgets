@@ -636,7 +636,36 @@ impl Platform for LinuxPlatform {
                 // `keyval()` is a `gdk::keys::Key`, which derefs to its numeric GDK
                 // keyval — the value the widget layer's key handling expects.
                 let key = *event.keyval();
-                let key_event = crate::event::Event::KeyPress { key, modifiers: 0 };
+                // The **real** modifier state, not `0`.
+                //
+                // This arm used to hard-code `modifiers: 0`, so every Ctrl/Shift/Alt chord on a
+                // GTK window arrived unmodified: shortcuts never fired and Shift-selection behaved
+                // as plain input. The canvas half (`linux::canvas`) already read the GDK mask;
+                // this is the same call, so the two surfaces of one window cannot disagree — the
+                // identical defect the HarmonyOS key callback fixed (`harmony/xcomponent.rs`).
+                let modifiers = crate::platform::linux::canvas::modifier_bits(event);
+                let key_event = crate::event::Event::KeyPress { key, modifiers };
+                let target = crate::widget::runtime::focused_widget().unwrap_or(window_widget);
+                if crate::widget::runtime::dispatch_event(target, &key_event) {
+                    widget.queue_draw();
+                    crate::platform::linux::canvas::note_canvas_redraw(target);
+                }
+                glib::Propagation::Proceed
+            });
+
+            // The release half. `Event::KeyRelease` is published and consumed (`base.rs` turns it
+            // into `key_up`) but had no producer in any backend, so a control tracking a held key
+            // could never learn it came up. GTK delivers this signal for every key up, and the
+            // canvas half forwards it identically (`linux::canvas`).
+            paint_area.connect_key_release_event(move |widget, event| {
+                let Some(window_widget) = crate::widget::runtime::widget_id_for_host_window(id)
+                else {
+                    return glib::Propagation::Proceed;
+                };
+                let key_event = crate::event::Event::KeyRelease {
+                    key: *event.keyval(),
+                    modifiers: crate::platform::linux::canvas::modifier_bits(event),
+                };
                 let target = crate::widget::runtime::focused_widget().unwrap_or(window_widget);
                 if crate::widget::runtime::dispatch_event(target, &key_event) {
                     widget.queue_draw();

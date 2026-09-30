@@ -703,6 +703,88 @@ impl WidgetFactory {
         self.capabilities.get(idx)
     }
 
+    /// The **canonical** name of whichever control answers to `kind_or_name`.
+    ///
+    /// # Why a caller needs this rather than the spelling it passed in
+    ///
+    /// A registry resolves aliases, so `"btn"`, `"pushbutton"` and `"button"` all create
+    /// the same control. Any consumer that has to make a decision *per control* — rather
+    /// than per spelling — must fold those spellings onto one name first. The designer's
+    /// code generator is the motivating case: it probed availability with the factory
+    /// (which resolves `"btn"`) but then emitted a constructor arm by matching the raw
+    /// document string against its own table (which did not), so an alias resolved as
+    /// available and then produced **no arm at all** — a generated program that built
+    /// nothing, with a report that said it was clean.
+    ///
+    /// Returning the canonical name makes the two halves answer the same question about
+    /// the same control, because there is only one canonical name per control.
+    ///
+    /// Answers with the name that was passed in — normalised — when nothing is
+    /// registered, so a caller can still use the return value as a map key for an
+    /// unknown control without a second existence check.
+    pub fn canonical_name(&self, kind_or_name: &str) -> crate::compat::String {
+        let key = normalize_key(kind_or_name);
+        match self.key_to_index.get(&key) {
+            Some(index) => self
+                .capabilities
+                .get(*index)
+                .map(|capability| crate::compat::String::from(capability.canonical_name))
+                .unwrap_or(key),
+            None => key,
+        }
+    }
+
+    /// Every canonical name the factory can construct, sorted and deduplicated.
+    ///
+    /// # Why this is derived rather than listed
+    ///
+    /// This is the set a *generator* must be able to name. A hand-maintained copy of it
+    /// (the shape `constructor_path`'s match arms used to be) drifts the moment a control
+    /// or an alias is added, and the drift is silent because the consumer of the stale
+    /// copy reports success for a name it then cannot construct. Deriving it from the one
+    /// registry makes "what the factory can build" and "what the generator can emit" the
+    /// same fact by construction.
+    pub fn constructible_names(&self) -> crate::compat::Vec<crate::compat::String> {
+        let mut names: crate::compat::Vec<crate::compat::String> = self
+            .capabilities
+            .iter()
+            .filter(|capability| {
+                self.constructors.contains_key(&normalize_key(capability.canonical_name))
+            })
+            .map(|capability| crate::compat::String::from(capability.canonical_name))
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        names
+    }
+
+    /// The concrete constructor registered for `kind_or_name`, for a caller that needs
+    /// the **function** rather than an instance of what it builds.
+    ///
+    /// The generator uses this to reach a control's own `new` arity through the same
+    /// registration the runtime uses, instead of keeping a parallel table of which
+    /// constructors take text.
+    pub fn constructor_for(&self, kind_or_name: &str) -> Option<WidgetCtor> {
+        self.constructors.get(&normalize_key(kind_or_name)).copied()
+    }
+
+    /// Whether any registered control declares `alias` among its aliases.
+    ///
+    /// Answers the reverse question to [`Self::capability`]: not "what does this name
+    /// mean" but "is this name an alias of something". A generator that emits an arm per
+    /// canonical name still has to accept the alias spellings a document may use, and
+    /// this is how it knows which those are without keeping a second list.
+    pub fn aliases_of(&self, canonical: &str) -> crate::compat::Vec<crate::compat::String> {
+        let wanted = normalize_key(canonical);
+        self.capabilities
+            .iter()
+            .find(|capability| normalize_key(capability.canonical_name) == wanted)
+            .map(|capability| {
+                capability.aliases.iter().map(|alias| crate::compat::String::from(*alias)).collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Returns the capability that canonically represents `kind`.
     ///
     /// # Why "first registered" was wrong

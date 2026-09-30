@@ -246,6 +246,24 @@ pub(crate) fn mount_canvas(
         glib::Propagation::Proceed
     });
 
+    area.connect_key_release_event(move |widget, event| {
+        // The release half. `Event::KeyRelease` is published and consumed (`base.rs` turns it
+        // into `key_up`), but no backend produced it, so a control tracking a held key could
+        // never learn it came up. GTK delivers this signal for every key up, including the
+        // Tab path handled on the press, so a printable character and a Tab both get a
+        // release — which is what a control that watches both edges expects.
+        //
+        // The keyval is forwarded the same way the press forwards it; the widget layer owns
+        // the decision of what a given keyval means.
+        let key = *event.keyval();
+        let released = Event::KeyRelease { key, modifiers: modifier_bits(event) };
+        if forward_key_to_platform(id, &released) {
+            widget.queue_draw();
+            note_canvas_redraw(id);
+        }
+        glib::Propagation::Proceed
+    });
+
     area.connect_scroll_event(move |widget, event| {
         let (_, delta_y) = event.delta();
         // GTK reports direction for discrete wheels and a delta for smooth
@@ -482,7 +500,7 @@ fn printable_text(event: &gdk::EventKey) -> Option<String> {
 /// The key-event form is a thin wrapper over [`modifier_state_bits`] so a pointer press
 /// and a key press report the same bitfield for the same held keys: a `Shift` click has
 /// to be distinguishable from a plain one, or extended selection cannot work.
-fn modifier_bits(event: &gdk::EventKey) -> u32 {
+pub(crate) fn modifier_bits(event: &gdk::EventKey) -> u32 {
     modifier_state_bits(event.state())
 }
 

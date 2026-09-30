@@ -28,10 +28,15 @@ pub(crate) unsafe extern "system" fn wnd_proc(
     use winapi::um::winuser::NMHDR;
     use winapi::um::winuser::{
         DefWindowProcW, GetClientRect, GetDlgCtrlID, PostQuitMessage, WM_CHAR, WM_CLOSE,
-        WM_COMMAND, WM_DESTROY, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_KILLFOCUS,
-        WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-        WM_NOTIFY, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WM_UNICHAR,
+        WM_COMMAND, WM_DESTROY, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDBLCLK,
+        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NOTIFY,
+        WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WM_UNICHAR,
     };
+    // The focus- and key-release messages are only matched by arms gated on `widgets_unstripped`,
+    // so their imports are gated with them: importing unconditionally warns on a stripped profile,
+    // and a warning is a build failure for a downstream `-D warnings` consumer.
+    #[cfg(widgets_unstripped)]
+    use winapi::um::winuser::{WM_KEYUP, WM_KILLFOCUS, WM_SETFOCUS};
     match msg {
         // The window's own painting: every control the window owns, drawn as one frame.
         //
@@ -152,8 +157,42 @@ pub(crate) unsafe extern "system" fn wnd_proc(
                     invalidate_window(hwnd);
                     return 0;
                 }
-                let target = crate::widget::runtime::focused_widget().unwrap_or(window_id);
                 let event = crate::event::Event::KeyPress {
+                    key: wparam as u32,
+                    modifiers: super::canvas::current_modifiers(),
+                };
+                // Inline, matching this arm's existing dependencies exactly: `key_target_for_id`
+                // would be a second `widget::runtime` reference here, and on a stripped profile
+                // (where that module does not exist) it would add an error rather than share one.
+                let target = crate::widget::runtime::focused_widget().unwrap_or(window_id);
+                if crate::widget::runtime::dispatch_event(target, &event) {
+                    invalidate_window(hwnd);
+                }
+            }
+            0
+        }
+        // The key came back up.
+        //
+        // # Why the release half has to be forwarded
+        //
+        // `Event::KeyRelease` is part of the published event contract — it has a constructor, a
+        // harness helper and a `shortcut::Modifiers` accessor — but **no backend produced it**: the
+        // only construction site in the crate was `src/test/harness.rs`, which is a *production*
+        // module, so the producer gate counted it and the variant looked reachable. A control that
+        // tracks a held key (push-to-talk, hold-to-repeat, a game-style input) could therefore never
+        // learn the key was let go. `WM_KEYUP` is Win32's release message; forwarding it is what
+        // makes the variant reachable from a real keyboard.
+        //
+        // The target is resolved through `key_target_for`, the same helper the press arm uses, so a
+        // release is delivered to the same control the press went to — the two cannot drift.
+        //
+        // Gated with `widgets_unstripped` for the same reason the press arm's body is: this arm
+        // needs `widget::runtime` and the canvas's modifier reader, neither of which a stripped
+        // profile compiles.
+        #[cfg(widgets_unstripped)]
+        WM_KEYUP => {
+            if let Some(target) = key_target_for(hwnd) {
+                let event = crate::event::Event::KeyRelease {
                     key: wparam as u32,
                     modifiers: super::canvas::current_modifiers(),
                 };
@@ -182,6 +221,37 @@ pub(crate) unsafe extern "system" fn wnd_proc(
             }
             0
         }
+        // The window regained the OS keyboard (the user alt-tabbed back, or clicked it).
+        //
+        // # Why clearing on `WM_KILLFOCUS` needs this inverse
+        //
+        // `WM_KILLFOCUS` below reports `Focused(false)` for the window so a control stops drawing
+        // its focus ring and blinking a caret while another application has the keyboard. Nothing
+        // reported it **back**: after alt-tabbing away and returning, the library still believed no
+        // control was focused, so the ring and caret stayed gone and — worse — `WM_KEYDOWN` fell
+        // back to `focused_widget().unwrap_or(window_id)`, silently routing every keystroke to the
+        // window instead of the field the user had been typing into. The fix is the exact inverse: a
+        // `Focused(true)` for the window, which is what `WM_KILLFOCUS` took away.
+        //
+        // The control the user was editing is not re-derived here. `WM_KILLFOCUS` clears only the
+        // *window's* fact; the per-control owner is cleared by the same runtime call the ring reads
+        // (`StateFact::Focused(false)` is reported for the window, and `focus_widget` is re-entered
+        // by the next press). Reporting the window's own fact back is what this arm owes its
+        // counterpart — inventing a control to focus would be guessing at state the library owns.
+        // Gated with `widgets_unstripped`, like every other arm that talks to `widget::runtime`:
+        // that module does not exist in `mini`/`embedded`, so an ungated arm is a compile error
+        // there rather than a no-op. `WM_KILLFOCUS` below had the same gap.
+        #[cfg(widgets_unstripped)]
+        WM_SETFOCUS => {
+            if let Some(window_id) = window_widget_for(hwnd) {
+                crate::widget::runtime::report_state(
+                    window_id,
+                    crate::widget::runtime::StateFact::Focused(true),
+                );
+                invalidate_window(hwnd);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
         // The window lost the OS keyboard (the user clicked another application).
         //
         // # Why the library must be told
@@ -191,6 +261,9 @@ pub(crate) unsafe extern "system" fn wnd_proc(
         // and nothing gave it back: after alt-tabbing away, the last control stayed focused and
         // kept drawing its focus ring and blinking its caret while the keystrokes went to
         // another process. Clearing here is the exact inverse of the `SetFocus` above.
+        // Gated with `widgets_unstripped`: see the `WM_SETFOCUS` arm above for why an arm that
+        // calls `widget::runtime` cannot exist in a stripped profile.
+        #[cfg(widgets_unstripped)]
         WM_KILLFOCUS => {
             if let Some(window_id) = window_widget_for(hwnd) {
                 crate::widget::runtime::report_state(
@@ -474,6 +547,28 @@ unsafe fn paint_window_tree(hwnd: HWND) {
 #[cfg(target_os = "windows")]
 unsafe fn window_widget_for(hwnd: HWND) -> Option<u64> {
     crate::widget::runtime::widget_id_for_host_window(widget_id_by_native_handle(hwnd)?)
+}
+
+/// The widget a key message for `hwnd` should be delivered to.
+///
+/// # Why press and release must share this
+///
+/// A release that went to a different control than its press would be worse than no release: a
+/// control that tracks a held key would never clear it. Spelling the resolution once — focused
+/// control if there is one, otherwise the window — is what makes the two arms agree by
+/// construction rather than by two copies that happen to match today.
+///
+/// Gated with `widgets_unstripped` because its only callers are, and `widget::runtime` does not
+/// exist in a stripped profile.
+#[cfg(all(target_os = "windows", widgets_unstripped))]
+unsafe fn key_target_for(hwnd: HWND) -> Option<u64> {
+    window_widget_for(hwnd).map(key_target_for_id)
+}
+
+/// [`key_target_for`] from an already-resolved window id.
+#[cfg(all(target_os = "windows", widgets_unstripped))]
+fn key_target_for_id(window_id: u64) -> u64 {
+    crate::widget::runtime::focused_widget().unwrap_or(window_id)
 }
 
 /// The platform's own id for `hwnd`, or `None` when this backend did not create it.

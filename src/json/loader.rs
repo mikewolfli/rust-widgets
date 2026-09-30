@@ -1453,7 +1453,18 @@ fn apply_geometry_shorthand(
 /// `every_arm_consumed_key_is_loader_owned` in the tests extracts the arm keys from
 /// this file and asserts each one is listed here, so the two cannot drift apart
 /// again.
-fn is_loader_owned_key(key: &str) -> bool {
+///
+/// # Why this is `pub`
+///
+/// The designer's **generator** has to answer the same question and must not grow a
+/// second copy of the answer (rule #101: one concept, one implementation path). It
+/// used to grow one: [`crate::designer::is_style_only_property`] listed only CSS
+/// *internal* names (`css_class`, `selector`, `transition`, …), none of which is a
+/// JSON key, so every key below was emitted as a `.prop(..)` write on the generated
+/// `Node` and then refused by the control's property router — `background`,
+/// `padding`, `x`, `width`, … all reported `UnknownProperty` in a generated program's
+/// `ApplyReport`, while mode 1 applied the same document correctly.
+pub fn is_loader_owned_key(key: &str) -> bool {
     matches!(
         key,
         // Geometry shorthand (four keys form one geometry).

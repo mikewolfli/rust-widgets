@@ -5,7 +5,7 @@
 
 use crate::core::ObjectId;
 
-use super::apply::{apply_with_reservations, ApplyReport};
+use super::apply::ApplyReport;
 use super::diff::{diff, DiffReport};
 use super::node::{Host, Node};
 
@@ -244,6 +244,9 @@ impl ViewEngine {
         let layer_node = Node::new("overlay").key("__overlay_layer");
         let id = create(&layer_node).filter(|&id| id != 0)?;
         self.layout.register_node(id, layer_node.widget.clone(), "__overlay_layer", None);
+        // Record the layer as the second host root, so a later lookup for a portal's control can
+        // ask the layer rather than the node the portal was declared under.
+        self.layout.set_overlay_root(id);
         self.overlay_layer = Some(id);
         Some(id)
     }
@@ -420,8 +423,46 @@ impl ViewEngine {
         // control per inserted node, permanently — see `insert_subtree`.
         let mut reserved = self.reserve_ids_for_inserts(&next, &report.patches, create);
 
-        let applied =
-            apply_with_reservations(&mut self.layout, &report.patches, create, &mut reserved);
+        // The overlay resolver is passed so an inserted portal lands in the overlay layer exactly
+        // as it would on `mount`. Without it a tooltip declared behind a breakpoint or a
+        // `child_if` was parented to its declared parent on rebuild and clipped by it, so
+        // `Node::portal`'s contract held only on the first build.
+        //
+        // `overlay_layer` is engine state, but `insert_subtree` is the thing that decides when a
+        // layer is needed, so the id travels through `Cell` — the closure must be callable while
+        // `self.layout` is mutably borrowed by `apply`.
+        let overlay_cell = core::cell::Cell::new(self.overlay_layer);
+        let host: super::apply::OverlayHost<'_> = &|| {
+            if let Some(id) = overlay_cell.get() {
+                return Some(id);
+            }
+            let layer_node = Node::new("overlay").key("__overlay_layer");
+            let id = create(&layer_node).filter(|&id| id != 0)?;
+            overlay_cell.set(Some(id));
+            Some(id)
+        };
+        let applied = super::apply::apply_with_reserved_and_overlay(
+            &mut self.layout,
+            &report.patches,
+            create,
+            &mut reserved,
+            Some(host),
+        );
+        // The layer becomes part of the tree the layout knows about, registered with no parent:
+        // it is a host the engine owns, not a child of the root (the same shape
+        // `overlay_layer_for` uses on the `mount` path).
+        if let Some(layer) = overlay_cell.get() {
+            if self.overlay_layer.is_none() {
+                self.layout.register_node(
+                    layer,
+                    crate::compat::String::from("overlay"),
+                    "__overlay_layer",
+                    None,
+                );
+                self.layout.set_overlay_root(layer);
+                self.overlay_layer = Some(layer);
+            }
+        }
         // Sync the path map to the new tree's shape for the surviving nodes; a node the diff
         // did not mention keeps its path only if its ancestor chain is unchanged.
         self.reindex_paths(&next);
@@ -533,8 +574,28 @@ impl ViewEngine {
     }
 
     /// Write a node's declared properties to its control, reporting refusals.
+    ///
+    /// # Why the generated wire carrier is skipped
+    ///
+    /// A generated program carries its declared wires on the node as props under
+    /// [`crate::designer::WIRE_PROP_PREFIX`] (`__wire_`), because `create_for` is handed the `Node`
+    /// and nothing else (see `designer::generator`). Those names are **not** properties of any
+    /// control, so writing them drew a `PropertyRefused { UnknownProperty }` error for every wired
+    /// node: a generated program's `ApplyReport` was never clean, and a host that displays the
+    /// report showed a failure for a correct document. The prefix's own documentation said the prop
+    /// was "stripped before the node is used as a control description", which nothing implemented —
+    /// the code-versus-documentation split rule #18 forbids.
+    ///
+    /// The strip is by prefix and lives here rather than in `create_for`, because this is the one
+    /// place every write goes through: a `mount`, an `apply` and an `insert_subtree` all reach the
+    /// property contract here or through the same predicate, so a second spelling of the rule would
+    /// be a second chance to drift.
     fn write_declared_properties(&mut self, node: &Node, id: ObjectId, report: &mut ApplyReport) {
         for (name, value) in &node.props {
+            if super::is_generated_wire_prop(name) {
+                // Read by the generated `create_for`, never a control property.
+                continue;
+            }
             match super::apply::write_property(id, name, value.clone()) {
                 Ok(()) => report.properties_written += 1,
                 Err(reason) => report.errors.push(super::ViewError::PropertyRefused {
@@ -612,7 +673,22 @@ fn reindex_by_identity(
     for (index, child) in node.children.iter().enumerate() {
         let mut child_path = path.to_vec();
         child_path.push(index);
-        let resolved = match (child.key_str(), parent_id) {
+        // # A portal's control is not under its declared parent
+        //
+        // `Node::portal` keeps the node's *identity* in the declared tree and moves only its
+        // *host* to the overlay layer (BLUE23 §5A.2). So the lookup for a portal has to ask the
+        // layer, not the declared parent — otherwise the path is not found, this node is dropped
+        // from the map, and every later patch addressed by its path reports `UnknownWidget`. The
+        // declared **path** is still inserted under its position, which is what keeps a keyed
+        // rebuild matching it as this parent's child.
+        let lookup_parent = match child.host {
+            // A portal's control lives in the overlay layer, which is a **second host root** and not
+            // a child of the declared root. Asking the layer is what keeps the portal reachable by
+            // its declared path; without it the lookup failed and the node dropped out of the map.
+            super::Host::Overlay => layout.overlay_root(),
+            super::Host::Declared => parent_id,
+        };
+        let resolved = match (child.key_str(), lookup_parent) {
             (Some(key), Some(parent)) => layout.child_by_key(Some(parent), key),
             (Some(key), None) => layout.child_by_key(None, key),
             (None, Some(parent)) => layout.children(parent).get(index).copied(),
@@ -984,6 +1060,65 @@ mod tests {
         let ids = Ids::new(10);
         engine.mount(&Text("hi".into()), &ids.creator());
         assert_eq!(engine.overlay_layer(), None);
+    }
+
+    /// A portal that appears only on **rebuild** still lands in the overlay layer.
+    ///
+    /// # The defect this pins
+    ///
+    /// `mount` honours `Node::host` (`mount_children_named`), but the `update` path goes through
+    /// `apply::insert_subtree`, which ignored it and parented every inserted node to its declared
+    /// parent. So `Node::portal`'s contract — "create me into the overlay layer, outside the
+    /// parent's clip" — held only on the first build. A tooltip or menu that appeared after a
+    /// breakpoint change was therefore created **inside** the clip it declared itself outside of.
+    ///
+    /// This view declares the tip only once `show` is true, so the tip arrives as an `Insert`
+    /// (`Patch::Insert`), not as part of a `mount`. That is the path the fix changes, and the
+    /// assertion is on the *parent in the layout* rather than on the source, so it cannot pass
+    /// because a comment says the right thing.
+    struct PortalAppearsOnUpdate(bool);
+
+    impl View for PortalAppearsOnUpdate {
+        fn build(&self) -> Node {
+            let panel = Node::new("panel").key("panel");
+            let panel =
+                if self.0 { panel.child(Node::new("tooltip").key("tip").portal()) } else { panel };
+            Node::new("window").key("root").child(panel)
+        }
+    }
+
+    #[test]
+    fn a_portal_inserted_by_an_update_is_hosted_in_the_overlay_layer() {
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+        engine.mount(&PortalAppearsOnUpdate(false), &ids.creator());
+        assert_eq!(
+            engine.overlay_layer(),
+            None,
+            "the first build declares no portal, so no layer exists yet"
+        );
+
+        let report = engine.update(&PortalAppearsOnUpdate(true), &ids.creator());
+        assert_eq!(report.replaced_subtrees, 0, "the panel must survive: {report:?}");
+        assert_eq!(report.duplicate_keys, 0, "no key was claimed twice: {report:?}");
+        assert!(
+            !report.patches.is_empty(),
+            "the appearing portal must be an Insert, not a no-op: {report:?}"
+        );
+
+        let layer = engine.overlay_layer().expect("the inserted portal must materialise a layer");
+        let tip = engine.id_at(&[0, 0]).expect("the portal keeps its declared path");
+        let panel = engine.id_at(&[0]).expect("the panel");
+        assert_eq!(
+            engine.layout().parent(tip),
+            Some(layer),
+            "an inserted portal must be hosted in the layer, exactly as on mount"
+        );
+        assert_ne!(
+            engine.layout().parent(tip),
+            Some(panel),
+            "and specifically not under the panel it was declared in"
+        );
     }
 
     /// A portal node is the **same declaration** whether or not it is hosted elsewhere.

@@ -125,6 +125,43 @@ pub use engine::{Context, View, ViewEngine};
 pub use node::{Host, Node};
 pub use reactive::ReactiveHost;
 
+/// Whether `name` is the carrier a **generated** program uses to travel a declared wire on a
+/// [`Node`].
+///
+/// # Why this lives here rather than in the generator
+///
+/// The prefix is written by `crate::designer`, but the thing that has to *recognise* it is the
+/// engine: a wire carrier is not a control property, so every path that writes a node's props has
+/// to leave it alone. Spelling the prefix at each of those sites is how one of them comes to be
+/// missed — which is exactly what happened (`ViewEngine::write_declared_properties` wrote it and
+/// drew a `PropertyRefused` for every wired node). One predicate, called from every writer, is the
+/// shape that cannot drift.
+///
+/// # Why the literal, and not `crate::designer::WIRE_PROP_PREFIX`
+///
+/// `crate::designer` is gated on `designer_tooling` (it parses a project document, so it needs
+/// `serde_json`), while `crate::view` exists on every device profile. Reading the constant from
+/// there made `view` fail to compile on `tablet`/`mobile`, where the generator's module is absent —
+/// the probe crate in `check_generator_output_compiles.sh` caught it. `tools/check_generator_agrees_with_registry.sh`
+/// is not enough on its own here: it runs under `desktop`, where `designer` *is* present.
+///
+/// The literal is therefore duplicated deliberately, and `tests/`-level agreement is what keeps the
+/// two in step: `crate::designer` asserts in its own tests that
+/// `is_generated_wire_prop(WIRE_PROP_PREFIX)` is true, so changing one without the other fails.
+///
+/// Kept as a free `pub(crate)` function rather than a method on `Node`, because the carrier is the
+/// generator's vocabulary and not part of the declarative model: a caller of `crate::view` never
+/// sets it, only reads the tree the generator built (principle #4 — mechanism stays out of the
+/// model the caller describes).
+pub(crate) fn is_generated_wire_prop(name: &str) -> bool {
+    name.starts_with(GENERATED_WIRE_PROP_PREFIX)
+}
+
+/// The wire-carrier prefix a generated program uses, spelled once for this module.
+///
+/// See [`is_generated_wire_prop`] for why this is not read from `crate::designer`.
+pub(crate) const GENERATED_WIRE_PROP_PREFIX: &str = "__wire_";
+
 /// A compile-time probe for the platform gate (BLUE18 rule #92 / #94).
 ///
 /// It exists so the gate has an **executable** criterion rather than a source grep:

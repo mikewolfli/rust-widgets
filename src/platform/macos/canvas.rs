@@ -107,6 +107,7 @@ fn canvas_view_class() -> *const Class {
                 update_tracking_areas as extern "C" fn(&Object, Sel),
             );
             decl.add_method(sel!(keyDown:), key_down as extern "C" fn(&Object, Sel, id));
+            decl.add_method(sel!(keyUp:), key_up as extern "C" fn(&Object, Sel, id));
             // Touch: AppKit delivers finger contacts through these responder methods
             // rather than the mouse path. Without them the gesture engine never saw a
             // `TouchBegin`, so all eleven recognisers were reachable only from tests.
@@ -521,6 +522,44 @@ extern "C" fn key_down(this: &Object, _cmd: Sel, event: id) {
     });
     if outcome.is_err() {
         log::error!("[macos] canvas: panic while forwarding a key event");
+    }
+}
+
+/// AppKit's key-up selector.
+///
+/// # Why the release half has to be forwarded
+///
+/// `Event::KeyRelease` is published and consumed (`base.rs` turns it into `key_up`), but no
+/// backend produced it before this arm: a control that tracks a held key could never learn it came
+/// up. AppKit sends `keyUp:` for every key it sent `keyDown:` for, so registering the method is
+/// what makes the variant reachable. `windows::types` has the same fix on Win32 and
+/// `linux::canvas` on GTK, so the three desktop backends agree.
+///
+/// No printable-character branch: a release produces no text, so `KeyRelease` is the only event
+/// this can be. Tab is not special-cased either — focus traversal happened on the press, and
+/// repeating it here would move focus twice for one Tab.
+extern "C" fn key_up(this: &Object, _cmd: Sel, event: id) {
+    let outcome = std::panic::catch_unwind(|| {
+        // SAFETY: `this` is the live canvas view; `event` is the NSEvent AppKit
+        // delivered to this selector.
+        unsafe {
+            let view = this as *const Object as id;
+            let Some(widget_id) = widget_id_of(view) else { return };
+            let (key, modifiers) = super::types::translate_key_event(event);
+            let released = Event::KeyRelease { key, modifiers };
+            // Keys follow focus, the same rule `key_down` applies, so a release reaches the
+            // control its press did.
+            let target = crate::widget::runtime::focused_widget().unwrap_or(widget_id);
+            if !crate::widget::runtime::dispatch_event(target, &released) {
+                log::debug!("[macos] canvas: key release dropped, id={target} is not mounted");
+                return;
+            }
+            let _: () = msg_send![view, setNeedsDisplay: YES];
+            note_native_redraw(target);
+        }
+    });
+    if outcome.is_err() {
+        log::error!("[macos] canvas: panic while forwarding a key release event");
     }
 }
 

@@ -53,6 +53,51 @@ from check_event_producers import (  # noqa: E402
     production_construction_sites,
 )
 
+# The harness that *injects* synthetic events into a widget under test. Its construction sites are
+# what a test drives the widget with, not a platform producing an event, so they must not satisfy a
+# "has a producer" claim — see `helper_is_called`.
+TEST_INJECTION_DIR = "test"
+
+
+def is_test_only_module(path: pathlib.Path) -> bool:
+    """Whether `path` is a module declared `#[cfg(test)]` **from another file**.
+
+    # The second hole this closes
+
+    `check_event_producers.production_construction_sites` strips a file at its own in-file
+    `#[cfg(test)]` marker, which covers `mod tests { .. }` inside a production file. It does **not**
+    cover the other common spelling in this crate: a sibling `tests.rs` whose *parent* carries the
+    gate (`#[cfg(test)] mod tests;` in `shortcut/mod.rs`, `platform/tests.rs`, …). Those files hold
+    nothing but `#[test]` functions, so a construction inside one is test code — but the gate saw an
+    ordinary file.
+
+    That is how `Event::KeyRelease` stayed "produced": `src/shortcut/tests.rs` builds one, and the
+    file's own text has no `#[cfg(test)]` to strip at.
+
+    The test is on the **filename plus the parent's declaration**, not on the name alone, so a
+    production module that merely happens to be called `tests.rs` is still counted.
+    """
+    if path.name != "tests.rs":
+        # `*_tests.rs` is this crate's other spelling for the same thing; both are declared by the
+        # parent module rather than carrying their own gate.
+        if not path.stem.endswith("_tests"):
+            return False
+    parent = path.parent / "mod.rs"
+    if not parent.exists():
+        parent = path.parent.parent / (path.parent.name + ".rs")
+    if not parent.exists():
+        return False
+    text = parent.read_text(encoding="utf-8")
+    stem = path.stem
+    for decl in (f"mod {stem};", f"pub mod {stem};", f"pub(crate) mod {stem};"):
+        index = text.find(decl)
+        if index == -1:
+            continue
+        # Look at the small window before the declaration for the gate attribute.
+        window = text[max(0, index - 80) : index]
+        return "#[cfg(test)]" in window
+    return False
+
 # Variants the **host** is expected to produce, with the reason. Each entry is a deliberate
 # decision that the library cannot emit this event itself; the reason must say why.
 HOST_PRODUCED: dict[str, str] = {
@@ -115,7 +160,20 @@ def constructor_helpers() -> dict[str, str]:
 
 
 def helper_is_called(variant: str) -> bool:
-    """Whether some production module calls the helper that builds `variant`."""
+    """Whether some production module calls the helper that builds `variant`.
+
+    # Why `src/test/` is excluded (the defect this answers)
+
+    `src/test/harness.rs` is a real production module — it is declared `pub mod test;` and is not
+    behind `#[cfg(test)]` — so its `send_key_release` counted as a producer for
+    `Event::KeyRelease`. That made the variant report as produced while **no backend ever emitted
+    it**: the only construction site was the harness the *tests* use to fabricate input. A gate that
+    accepts a synthetic event builder as proof of a real producer is answering a different question
+    from the one it claims to answer, which is exactly the false-bar this file warns about.
+
+    The harness is where events are *injected*, not *observed*; a variant needs a producer on a real
+    input path. Excluding it is what makes the count mean "emitted by production code".
+    """
     import re
 
     helper = constructor_helpers().get(variant)
@@ -124,6 +182,12 @@ def helper_is_called(variant: str) -> bool:
     call = re.compile(rf"Event::{helper}\s*\(")
     for path in pathlib.Path("src").rglob("*.rs"):
         if path == EVENT_FILE:
+            continue
+        # The synthetic-input harness injects events; it does not observe them from a platform.
+        if TEST_INJECTION_DIR in path.parts:
+            continue
+        # A sibling `tests.rs` gate-declared by its parent holds only tests.
+        if is_test_only_module(path):
             continue
         text = path.read_text(encoding="utf-8")
         if re.search(r"#\[cfg\(test\)\]", text):
@@ -141,6 +205,10 @@ def main() -> int:
     produced: set[str] = set()
     for path in pathlib.Path("src").rglob("*.rs"):
         if path == EVENT_FILE:
+            continue
+        # Skip the synthetic-input harness and any sibling `tests.rs` the parent gate-declares:
+        # a literal they build is what a *test* feeds a widget, not a platform delivering an event.
+        if TEST_INJECTION_DIR in path.parts or is_test_only_module(path):
             continue
         produced |= production_construction_sites(path)
 

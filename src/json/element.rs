@@ -60,6 +60,20 @@ use crate::core::ObjectId;
 pub struct BoundJsonLayout {
     name_map: HashMap<String, ObjectId>,
     root: Option<ObjectId>,
+    /// The **overlay layer**, if one exists: a second host root that is not a child of `root`.
+    ///
+    /// # Why this is a field rather than "the parentless node that is not the root"
+    ///
+    /// A portal node's control is created into the overlay layer, so its parent is the layer and
+    /// not the node it was declared under (`Node::portal`). Every lookup that walks the declared
+    /// tree therefore needs to know **which host** a portal's control actually sits in — otherwise
+    /// the lookup fails, the portal drops out of the id map, and every later patch addressed by its
+    /// declared path reports `UnknownWidget`.
+    ///
+    /// Deriving it as "some parentless node" would be ambiguous the moment a second host exists, and
+    /// `root` holds exactly one id. Naming the layer makes the answer explicit and lets
+    /// [`Self::overlay_root`] answer `None` honestly when no portal has been declared.
+    overlay_root: Option<ObjectId>,
     parent_of: HashMap<ObjectId, ObjectId>,
     children_of: HashMap<ObjectId, Vec<ObjectId>>,
     kind_of: HashMap<ObjectId, String>,
@@ -82,10 +96,30 @@ impl BoundJsonLayout {
         Self {
             name_map: HashMap::new(),
             root: None,
+            overlay_root: None,
             parent_of: HashMap::new(),
             children_of: HashMap::new(),
             kind_of: HashMap::new(),
             key_of: HashMap::new(),
+        }
+    }
+
+    /// The overlay layer's id, if a portal declared one.
+    ///
+    /// A second host root: the layer is created by the view engine, registered with no parent, and
+    /// is **not** a child of [`Self::root`]. See the field's own documentation for why it is named
+    /// rather than inferred.
+    pub fn overlay_root(&self) -> Option<ObjectId> {
+        self.overlay_root
+    }
+
+    /// Record `id` as the overlay layer.
+    ///
+    /// Idempotent: the first answer wins, because every portal resolves to the same layer and a
+    /// second registration could only be the same control under a new id.
+    pub fn set_overlay_root(&mut self, id: ObjectId) {
+        if id != 0 && self.overlay_root.is_none() {
+            self.overlay_root = Some(id);
         }
     }
 
