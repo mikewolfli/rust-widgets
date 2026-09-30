@@ -187,6 +187,63 @@ for triple in "$PRIMARY" "${LINKABLE[@]}"; do
     rw_cargo_cached "$OHOS_BUILD_TIMEOUT" ohos build -t "$short" --no-default-features \
         --features "desktop,touch,i18n,serde,serde_json"
 
+    # The ArkUI XComponent bridge: the only configuration that actually links
+    # `libace_ndk.z`, so it is the only one where a wrong library name, a missing
+    # arch search path, or a symbol that does not exist on this SDK level shows up.
+    #
+    # It was not covered before, and that mattered: the bridge is *off by default*,
+    # so every other step here compiled a build in which `src/platform/harmony/
+    # xcomponent.rs` was not even part of the crate. A change that broke the bridge
+    # — a renamed SDK function, a `-L` path the SDK no longer has — would have been
+    # green everywhere in CI and failed only on a developer's device build.
+    #
+    # `touch` is included because the bridge's touch arm is `cfg(feature = "touch")`
+    # and is otherwise compiled out.
+    #
+    # A device profile (`desktop`) is required as well, and this is the subtle part:
+    # `src/lib.rs` gates the whole `bindings` module on `any(desktop, jni, mobile-api)`,
+    # and `rw_harmony_bind_xcomponent` — the entry point the ArkTS side calls — lives
+    # there. Without a profile that opens that gate the bridge still compiles but has no
+    # exported entry point, so the artifact links no `libace_ndk.z` at all. That is a
+    # real, checkable difference and exactly what the assertions below look for.
+    echo "[4c/6] ${triple}: ArkUI XComponent bridge (links libace_ndk.z)"
+    rw_cargo_cached "$OHOS_BUILD_TIMEOUT" ohos build -t "$short" --no-default-features \
+        --features "harmony,xcomponent,desktop,desktop-runtime,touch,serde,serde_json"
+
+    # The bridge really did link the SDK: `libace_ndk.z.so` must be a NEEDED entry,
+    # and the `OH_NativeXComponent_*` calls must be *undefined-but-resolvable* here
+    # (they resolve from the device library at run time). A build that quietly
+    # dropped the bridge would have neither, and a wrong library name fails earlier
+    # with `unable to find library`.
+    xso="target/${triple}/debug/librust_widgets.so"
+    if command -v readelf >/dev/null 2>&1 && [[ -f "$xso" ]]; then
+        if readelf -d "$xso" 2>/dev/null | grep -q 'libace_ndk\.z\.so'; then
+            xrefs=$(readelf -sW "$xso" 2>/dev/null | grep -c 'OH_NativeXComponent_\|OH_ArkUI_' || true)
+            # The C entry point must be *exported* and not merely linked: it is what the
+            # ArkTS side calls, and it is compiled out when no device profile opens the
+            # `bindings` gate (`src/lib.rs`). Checking only for the library reference
+            # would miss that, because a build without the entry point links no SDK at
+            # all — but a future edit could keep the link and drop the export.
+            xexport=$(readelf -sW "$xso" 2>/dev/null \
+                | grep -c 'GLOBAL.*rw_harmony_bind_xcomponent' || true)
+            if [[ "$xrefs" -eq 0 ]]; then
+                echo "  FAIL ${triple}: libace_ndk.z.so is linked but no OH_NativeXComponent_*/ \
+OH_ArkUI_* symbol references are present — the bridge was compiled out"
+                fail=1
+            elif [[ "$xexport" -eq 0 ]]; then
+                echo "  FAIL ${triple}: the bridge links the SDK but does not export \
+'rw_harmony_bind_xcomponent', so the ArkTS side has no entry point to call it through"
+                fail=1
+            else
+                note "${triple}: xcomponent linked; libace_ndk.z.so NEEDED, ${xrefs} SDK symbols \
+bound, rw_harmony_bind_xcomponent exported"
+            fi
+        else
+            echo "  FAIL ${triple}: the xcomponent build did not link libace_ndk.z.so"
+            fail=1
+        fi
+    fi
+
     so="target/${triple}/debug/librust_widgets.so"
     if [[ ! -f "$so" ]]; then
         echo "  FAIL ${triple}: no shared object at ${so}"

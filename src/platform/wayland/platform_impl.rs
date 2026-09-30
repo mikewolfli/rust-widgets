@@ -786,41 +786,61 @@ impl WaylandPlatform {
         let id = self.insert_widget(WaylandHandleKind::Window, title, x, y, width, height);
         log::info!("[wayland] Window {} registered with state backend", id);
 
-        // Record which window the session's configure events belong to. The dispatch
-        // handler is a free function with no access to the platform object, so this is
-        // how a compositor-driven resize finds its way back to the layout.
-        record_configured_window(id);
+        // Record which window this `xdg_toplevel`'s configure events belong to. The
+        // dispatch handler is a free function with no access to the platform object, so this
+        // is how a compositor-driven resize finds its way back to the layout. Keyed by the
+        // proxy, so a second window cannot displace the first.
+        record_configured_window(&toplevel, id);
 
         Some(id)
     }
 }
 
-// The window a session's `xdg_toplevel` configure events describe.
+// The window each session's `xdg_toplevel` configure events describe.
 //
 // Thread-local because a Wayland connection belongs to the thread that created it, and
-// a compositor callback arrives on that thread. `0` means "no window configured yet",
-// which the handler treats as "do not report".
+// a compositor callback arrives on that thread.
+//
+// # Why a map keyed by the proxy, and not one slot
+//
+// This was a single `Cell<ObjectId>` that `create_window` overwrote on every call. With
+// two toplevels the second `create_window` replaced the first's id, so **every** later
+// configure event was reported against the most recently created window: the wrong
+// window's size was recorded, the wrong window's layout re-ran with the other window's
+// dimensions, and the window the compositor actually configured never re-laid-out. It was
+// undetectable from the outside, because `window_client_size` answers from the recorded
+// size first and the wrong record therefore looked authoritative.
+//
+// The `xdg_toplevel` proxy is what the compositor names in the callback, so it is the
+// correct key. Keying on it is also the only version that survives a second window, which
+// the single slot could not express at all.
 //
 // A plain comment rather than a doc comment: rustdoc generates no documentation for a
 // macro invocation, so a `///` here is an unused doc comment (a denied warning).
 #[cfg(all(feature = "wayland-native", target_os = "linux"))]
 thread_local! {
-    static CONFIGURED_WINDOW: core::cell::Cell<ObjectId> = const { core::cell::Cell::new(0) };
+    static CONFIGURED_WINDOWS: core::cell::RefCell<crate::compat::HashMap<usize, ObjectId>> =
+        core::cell::RefCell::new(crate::compat::HashMap::new());
 }
 
-/// Records the window that subsequent configure events describe.
+/// Records that `proxy`'s configure events describe the widget `id`.
+///
+/// Called once per window at creation. The proxy is identified by its object address, which
+/// is stable for the life of the `wl_proxy`: `wayland-client` keeps the proxy alive in the
+/// connection's object map for as long as the compositor may send it events.
 #[cfg(all(feature = "wayland-native", target_os = "linux"))]
-fn record_configured_window(id: ObjectId) {
-    CONFIGURED_WINDOW.with(|slot| slot.set(id));
+fn record_configured_window(proxy: &impl wl_client::Proxy, id: ObjectId) {
+    let key = proxy.id().protocol_id() as usize;
+    CONFIGURED_WINDOWS.with(|map| {
+        map.borrow_mut().insert(key, id);
+    });
 }
 
 /// The window to report a configure event against, if one is known.
 #[cfg(all(feature = "wayland-native", target_os = "linux"))]
-pub(crate) fn configured_window_id() -> Option<ObjectId> {
-    CONFIGURED_WINDOW.with(|slot| match slot.get() {
-        0 => None,
-        id => Some(id),
-    })
+pub(crate) fn configured_window_id(proxy: &impl wl_client::Proxy) -> Option<ObjectId> {
+    let key = proxy.id().protocol_id() as usize;
+    CONFIGURED_WINDOWS.with(|map| map.borrow().get(&key).copied())
 }
 
 // ---------------------------------------------------------------------------
@@ -1056,7 +1076,7 @@ impl wl_client::Dispatch<wl_protocols::xdg::shell::client::xdg_toplevel::XdgTopl
 {
     fn event(
         _state: &mut Self,
-        _proxy: &wl_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel,
+        proxy: &wl_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel,
         event: <wl_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel as wl_client::Proxy>::Event,
         _data: &(),
         _conn: &wl_client::Connection,
@@ -1074,8 +1094,11 @@ impl wl_client::Dispatch<wl_protocols::xdg::shell::client::xdg_toplevel::XdgTopl
                 // The compositor told us the new size — this is Wayland's equivalent of
                 // a user dragging the window edge, so it must reach the layout. A zero
                 // dimension means "you choose", not a real size, so it is not reported.
+                //
+                // `proxy` is the toplevel the compositor named, so the id is looked up
+                // from *this* window rather than from a single remembered one.
                 if width > 0 && height > 0 {
-                    if let Some(id) = super::platform_impl::configured_window_id() {
+                    if let Some(id) = super::platform_impl::configured_window_id(proxy) {
                         crate::queue_resize_trigger(id, width as u32, height as u32);
                     }
                 }

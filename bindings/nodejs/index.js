@@ -360,6 +360,16 @@ function loadFunctions(libName) {
     rw_supports_surfaces: [cbool, []],
     rw_take_pending_repaint: [uint64, []],
     rw_report_window_resize: [cbool, [uint64, uint, uint]],
+    // The two input-dispatch entry points. A host that owns its own event loop (an
+    // embedded runtime, an engine integration) delivers a pointer or a synthetic event
+    // through these; without them the only way in is a surface the library created,
+    // which a host-driven loop does not have.
+    //
+    // `event_code` is an `unsigned int` code, not a pointer — the ABI takes an `int`
+    // because an enum travels as one, and the widget layer maps it to its own event
+    // type. `button` uses the same constants as the press/release codes.
+    rw_dispatch_pointer_event: [cbool, [uint64, uint, int, int, uint]],
+    rw_dispatch_event_to_widget: [cbool, [uint64, uint, int, int, uint]],
     // `out_pixels` is a `uint8**`: the callee allocates the frame and the caller
     // releases it with `rw_free_bytes(ptr, len)`, so the raw address has to come back
     // as a pointer rather than being copied into a Buffer here.

@@ -76,13 +76,28 @@ backend running on an OS it was not compiled for reports `false`.
 |----|:-----------:|:---:|:-------------:|:-----------:|
 | Windows | ✅ | ✅ | ✅ | ❌ |
 | macOS | ❌ | ✅ | ✅ | ❌ |
-| Linux / GTK | ✅ | ✅ | ✅ | ❌ |
-| Linux / Wayland | ✅ | ✅ | ✅ | ❌ |
-| iOS | ✅ | ✅ | ✅ | ❌ |
-| Android | ✅ | ✅ | ✅ | ❌ |
-| HarmonyOS | ✅ | ✅ | ✅ | ❌ |
+| Linux / GTK | ✅ ¹ | ✅ | ✅ | ❌ |
+| Linux / Wayland | ✅ | ❌ | ❌ | ❌ |
+| iOS | ❌ | ❌ | ❌ | ❌ |
+| Android | ❌ | ❌ | ❌ | ❌ |
+| HarmonyOS | ❌ | ❌ | ✅ ² | ❌ |
 | WASM | ❌ | ❌ | ❌ | ❌ |
 | Portable | ❌ | ❌ | ❌ | ❌ |
+
+¹ Linux/GTK derives `dpi_scaling` from `dpi_scale_factor() != 1.0`, so its value is a
+**runtime** answer about the display the process is on rather than a constant. On an
+unscaled host it reports `false` and is still a backend that can answer.
+
+² HarmonyOS reports `accessibility` only when the `xcomponent` feature is on — which is
+exactly when `accessibility_bridge()` is compiled in. Both the flag and the method are
+produced from the same `cfg`, so they cannot disagree: with the feature off, neither
+exists. Its `ime` is `false` on purpose — the XComponent bridge delivers keys and asks
+ArkUI for the on-screen keyboard, but that is direct key input, not an input-method
+*client*.
+
+This table is only as good as the last time someone checked it against `Platform::
+capabilities`. The values above were read from each backend's `platform_impl.rs`; when
+in doubt, call `capabilities()` rather than trusting a table.
 
 Wayland, Linux/GTK, macOS and Windows have no menu-bar protocol wired up in their
 backend, so they keep the menu tree in-process and the host renders it —

@@ -175,14 +175,133 @@ fn a_height_only_resize_is_reported() {
 }
 
 // ---------------------------------------------------------------------------
-// The backend side of the same path
+// The re-layout must be asked with the device context
 // ---------------------------------------------------------------------------
 //
-// The tests above call the crate-level entry point directly. A real resize does not:
-// the toolkit calls the *platform backend*, which is where the OS callback lands. These
-// tests therefore go in through `Platform::queue_resize_trigger` and read back through
-// `Platform::window_client_size`, which is the code path an OS callback actually takes.
-//
+// The window layout is where every control's placement is decided, so a device fact like
+// the text scale has to reach it. `apply_window_layout` used to call `Layout::update`,
+// which carries no context, so a `BoxLayout` at the window's top level laid its children
+// out with unscaled gaps while the very same `BoxLayout` nested inside a composite — which
+// goes through `arrange_with_context` — scaled them. The tests below pin the two facts a
+// dropped context changes observably: the scaled margin, and the touch floor.
+
+/// Builds a window with a horizontal `BoxLayout` of `children` labels, 1px margin.
+///
+/// The margin is the observable: it is scaled by the device context, so an unscaled run
+/// puts the first child at `x = 1`.
+fn window_with_horizontal_box(
+    children: usize,
+    margin: u32,
+    spacing: u32,
+) -> (Vec<u64>, rust_widgets::app::WindowHandle) {
+    let mut app = App::new();
+    app.init();
+    let win = app.new_window("context test", 0, 0, 600, 200);
+    let mut layout = BoxLayout::new(Orientation::Horizontal, spacing, margin);
+    let mut ids = Vec::new();
+    for index in 0..children {
+        let label = win.new_label(&format!("c{index}"), 0, 0, 0, 0);
+        layout.add_widget(label.raw_id(), 0);
+        ids.push(label.raw_id());
+    }
+    win.set_layout(layout);
+    (ids, win)
+}
+
+/// The **window** layout must be asked through the context-aware entry point.
+///
+/// # Why this does not assert a rectangle
+///
+/// `LayoutContext::default()` reads this machine's text scale and DPI. On a host with no
+/// text preference and no scaling — which is what CI and this development machine are —
+/// the scaled margin equals the nominal one, so a `BoxLayout`'s geometry is *identical*
+/// whether or not the context was passed. That was **measured**, not assumed: with
+/// `apply_window_layout` reverted to `update`, a geometry-based version of this test still
+/// passed, because `layout_scale == 1.0` and `font_scale == 1.0`. A test that passes
+/// against the broken code proves nothing, so the fact pinned here is the one that is
+/// stable across devices — *which entry point the window path called*, and with what
+/// scale.
+///
+/// # Why this is asserted through a *resize*
+///
+/// `set_layout` runs the same `apply_window_layout`, so a caller that set the layout once
+/// at startup exercises the identical code. Driving it through `queue_resize_trigger` is
+/// the stricter test: it is the path the OS callback takes, and it is the one that must
+/// not lose the context on the way.
+#[test]
+fn a_window_resize_asks_its_layout_with_the_device_context() {
+    let (_ids, win) = window_with_horizontal_box(2, 1, 0);
+
+    rust_widgets::queue_resize_trigger(win.raw_id(), 600, 200);
+    pump();
+
+    let seen = win.layout_context_scale();
+    let expected = rust_widgets::layout::LayoutContext::default();
+    assert_eq!(
+        seen,
+        Some(expected.layout_scale.max(expected.font_scale)),
+        "the resize path must ask the window's layout with the device context; asking with \
+         `update` would leave a BoxLayout/FlexLayout/WrapLayout at a window's top level with \
+         unscaled gaps and no touch floor while the same layout nested in a composite scaled"
+    );
+}
+
+/// The context must reach a **panel** nested inside the window layout.
+///
+/// `apply_panel_geometry` recurses into `PANEL_LAYOUTS` when the window layout has just
+/// moved a child that hosts its own layout. It carried the same defect as the window path,
+/// one level deeper, and fixing only the outer call would have left a panel's children
+/// scaled against a different device than the panel's own box.
+///
+/// # Why the observable is the geometry here
+///
+/// Unlike the window path above, this one *can* be asserted by geometry on any host: the
+/// panel's own layout is asked with the touch floor, and `grow_to_min_touch_size` grows a
+/// child that is smaller than the device's minimum touch target. That floor is 32x32 on a
+/// desktop class and non-zero on every class, so a child handed a smaller box comes back
+/// grown — which an unscaled (`update`) run does not do. The assertion therefore compares
+/// against a directly-computed expectation rather than a literal.
+#[test]
+fn a_nested_panels_children_are_laid_out_with_the_device_context() {
+    use rust_widgets::layout::{Layout, LayoutContext};
+
+    let mut app = App::new();
+    app.init();
+    let win = app.new_window("panel context test", 0, 0, 600, 8);
+    let panel = win.new_panel(0, 0, 600, 8);
+    let child = win.new_label("inside", 0, 0, 4, 4);
+
+    // A one-child window layout gives the panel the window's box; the panel's layout then
+    // places a deliberately tiny child, which the touch floor must grow.
+    let mut window_layout = BoxLayout::new(Orientation::Vertical, 0, 0);
+    window_layout.add_widget(panel.raw_id(), 1);
+    win.set_layout(window_layout);
+
+    let mut panel_layout = BoxLayout::new(Orientation::Vertical, 0, 0);
+    panel_layout.add_widget(child.raw_id(), 1);
+    panel.set_layout(Box::new(panel_layout));
+
+    rust_widgets::queue_resize_trigger(win.raw_id(), 600, 8);
+    pump();
+
+    // What the same layout produces when asked with a context, computed independently.
+    let mut expected = Vec::new();
+    let mut reference = BoxLayout::new(Orientation::Vertical, 0, 0);
+    reference.add_widget(1, 1);
+    reference.update_with_context(
+        Rect::new(0, 0, 600, 8),
+        &LayoutContext::default(),
+        &mut |id, rect| expected.push((id, rect)),
+    );
+    let expected = expected.first().expect("the reference layout ran").1;
+
+    let inside = geometry_of(child.raw_id()).expect("panel child mounted");
+    assert_eq!(
+        inside, expected,
+        "a panel's children must be laid out with the same device context the window path \
+         uses, including the touch floor"
+    );
+}
 // They need an override because the platform singleton is `OnceLock`-memoized and another
 // test has usually created the default backend already.
 

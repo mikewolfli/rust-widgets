@@ -110,39 +110,60 @@ impl Platform for HarmonyPlatform {
 
     /// Capabilities published by the Harmony backend.
     ///
-    /// # Why these are `false` even though ArkUI can supply them
+    /// # The rule these flags follow
     ///
     /// A flag on this struct means "the method behind it is implemented **by this backend**
-    /// and will answer for this host". Each of the three below has a named backing method —
-    /// `dpi_scale_factor()`, `ime_bridge()` and `accessibility_bridge()` — and this backend
-    /// overrides **none** of them, so each inherits the trait default (`1.0`, `None`, `None`).
-    /// A `true` here would therefore promise a method that cannot answer.
+    /// and will answer for this host". Each has a named backing method —
+    /// `dpi_scale_factor()`, `ime_bridge()` and `accessibility_bridge()` — so a `true` that
+    /// has no backing method promises a method that cannot answer, which is the one
+    /// direction a default must never err.
     ///
-    /// # This is a gap in *this backend*, not in OpenHarmony
+    /// # `accessibility` is now `true`, and why
     ///
-    /// ArkUI does expose all three: display density through the ArkUI display API, text input
-    /// through `OH_NativeXComponent`'s `OH_NativeXComponent_RegisterCallback` (which delivers
-    /// key events to the native surface), and the accessibility tree through
-    /// `OH_ArkUI_AccessibilityProvider`. They are unreachable *here* for one reason: this
-    /// backend holds no `OH_NativeXComponent` — `status.md` records the native view bridge as
-    /// "⬜ Not implemented", and `grep` over `src/platform/harmony/` finds no
-    /// `OH_NativeXComponent`, no `napi`, and no ArkUI header binding at all.
+    /// This backend now implements `accessibility_bridge()`
+    /// ([`super::accessibility::HarmonyAccessibilityBridge`]), so the flag has a real
+    /// method behind it and the pair is consistent. The bridge is gated on `xcomponent`
+    /// like the XComponent bind it depends on, because the `ArkUI_AccessibilityProvider`
+    /// is only reachable through a bound `OH_NativeXComponent`.
     ///
-    /// So the honest answer today is `false` (which **under**-claims, the direction a default
-    /// must err), and the fix that makes them `true` is binding the XComponent — not editing
-    /// this struct. See `status.md`'s "Capabilities" section, which now says the same thing.
+    /// # `dpi_scaling` and `ime` stay `false`
     ///
-    /// `typed_widget_trigger` is `true` and stays `true`: unlike the three above, it is
-    /// implemented by this backend (`inject_widget_trigger_event`, `poll_widget_trigger_event`)
-    /// over the shared queue rather than by the host, so it cannot be absent.
+    /// Neither has a method behind it, and one of them is deliberate:
+    ///
+    /// * `dpi_scaling` — no `dpi_scale_factor()` override exists. ArkUI reports the
+    ///   component's size in pixels, not a density, so this backend genuinely cannot answer.
+    /// * `ime` — no `ime_bridge()` override exists. The XComponent bridge *does* now deliver
+    ///   keys (with their modifier state) and now asks ArkUI for the soft keyboard, but that
+    ///   is direct key input, not an input-method client: nothing here speaks a composition
+    ///   protocol, and `ime: true` would claim one. This is under-claiming, which is the
+    ///   honest direction.
+    ///
+    /// `typed_widget_trigger` is `true` and stays `true`: unlike the others it is implemented
+    /// by this backend (`inject_widget_trigger_event`, `poll_widget_trigger_event`) over the
+    /// shared queue rather than by the host, so it cannot be absent.
     fn capabilities(&self) -> crate::platform::types::PlatformCapabilities {
         crate::platform::types::PlatformCapabilities {
             dpi_scaling: false,
             ime: false,
-            accessibility: false,
+            accessibility: cfg!(all(feature = "xcomponent", not(alloc_frugal))),
             native_menu: false,
             typed_widget_trigger: true,
         }
+    }
+
+    /// The ArkUI accessibility bridge, when the XComponent bridge is compiled in.
+    ///
+    /// Returns the process-wide bridge, which posts notifications through the
+    /// `ArkUI_AccessibilityProvider` of whatever component was last bound. It deliberately
+    /// answers `Some` even before a component is bound: the bridge exists and can hold
+    /// names, and its `notify_*` methods report — rather than hide — that they had no
+    /// provider to post through. Answering `None` would make the accessibility flag and
+    /// this method disagree, which is the inconsistency the capability contract forbids.
+    #[cfg(all(feature = "xcomponent", not(alloc_frugal)))]
+    fn accessibility_bridge(
+        &self,
+    ) -> Option<&'static dyn crate::platform::accessibility::AccessibilityBridge> {
+        Some(super::accessibility::bridge())
     }
     fn init(&self) {
         self.runtime.initialized.store(true, Ordering::SeqCst);
@@ -243,18 +264,67 @@ impl Platform for HarmonyPlatform {
     /// Before this the backend inherited the trait default and reported `false`, so a
     /// host that asked could not display anything even though nothing was missing but
     /// the wiring.
+    ///
+    /// # Why the XComponent bridge is told as well
+    ///
+    /// When `feature = "xcomponent"` is on there are **two** halves to this call, and only
+    /// one of them used to happen. Recording the mount makes the widget *visible* — the
+    /// repaint queue is how the ArkTS side learns a frame is ready. It does not make the
+    /// widget *interactive*: every input callback in `harmony::xcomponent` (touch, mouse,
+    /// hover, key, focus, blur) begins with `mounted_widget()`, and that is the bridge's
+    /// own record, written only by `xcomponent::set_mounted_widget`.
+    ///
+    /// Nothing called it. The bridge therefore bound its callbacks successfully, reported
+    /// success, and then dropped every event on the first line — a widget that painted and
+    /// never reacted, with no error at any log level. This is the mount that closes it.
+    ///
+    /// The bridge is best-effort here rather than a hard failure: a host that mounts
+    /// before the ArkTS `onLoad` has run has no XComponent yet, and
+    /// `set_mounted_widget` answers `false` for exactly that state. The surface record is
+    /// still written, because the widget really is displayed and the host can rebind later
+    /// — refusing the whole mount would break the presentation path over an input path the
+    /// host may not have wanted yet.
     fn mount_surface(&self, _parent: u64, id: u64, rect: crate::core::Rect) -> bool {
-        self.state.mount_surface_record(id, rect)
+        let recorded = self.state.mount_surface_record(id, rect);
+        #[cfg(all(feature = "xcomponent", not(alloc_frugal)))]
+        {
+            if !super::xcomponent::set_mounted_widget(id, rect) {
+                log::debug!(
+                    "[harmony] mount_surface: widget {id} is displayed but no XComponent is \
+                     bound yet, so input will not reach it until the ArkTS onLoad calls \
+                     rw_harmony_bind_xcomponent"
+                );
+            }
+        }
+        recorded
     }
 
     /// Updates the rect of a mounted surface. `false` when `id` is not mounted.
     fn resize_surface(&self, id: u64, rect: crate::core::Rect) -> bool {
-        self.state.resize_surface_record(id, rect)
+        let recorded = self.state.resize_surface_record(id, rect);
+        #[cfg(all(feature = "xcomponent", not(alloc_frugal)))]
+        {
+            // The bridge's rect is the input hit-test space, so a surface that moved
+            // without telling it would route touches to the old geometry.
+            if recorded {
+                super::xcomponent::set_mounted_widget(id, rect);
+            }
+        }
+        recorded
     }
 
     /// Releases a mounted surface.
     fn unmount_surface(&self, id: u64) -> bool {
-        self.state.unmount_surface_record(id)
+        let recorded = self.state.unmount_surface_record(id);
+        #[cfg(all(feature = "xcomponent", not(alloc_frugal)))]
+        {
+            // Only clear when the bridge is actually displaying *this* widget: unmounting
+            // some other surface must not silently stop input for the one on screen.
+            if recorded && super::xcomponent::mounted_widget() == Some(id) {
+                super::xcomponent::clear_mounted_widget();
+            }
+        }
+        recorded
     }
 
     /// The window's current client size, as last reported by the host.
@@ -304,11 +374,11 @@ impl Platform for HarmonyPlatform {
     ///
     /// # What this promises, and what it does not
     ///
-    /// `true` advertises [`Platform::mount_surface`](crate::platform::Platform::mount_surface):
+    /// `true` advertises [`mount_surface`](crate::platform::Platform::mount_surface):
     /// a mounted widget gets a surface the host presents. It is **not** a claim
     /// that an arbitrary window's frame draws its children — a host that needs
     /// that asks
-    /// [`Platform::invalidate_surface`](crate::platform::Platform::invalidate_surface),
+    /// [`invalidate_surface`](crate::platform::Platform::invalidate_surface),
     /// which on this backend queues a repaint for any widget it knows, window
     /// included.
     fn supports_surfaces(&self) -> bool {

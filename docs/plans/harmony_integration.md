@@ -40,6 +40,12 @@ XComponent({ id: 'rw', type: 'surface' })
 具体地，`onLoad` 回调里的 `OH_NativeXComponent*` 交给 `rw_harmony_bind_xcomponent`，
 之后 surface 尺寸、touch、mouse、key、focus 全部自动进入控件树，**不需要宿主逐控件转发**。
 
+> **2.8.3 之前这句话是假的。** 桥接的回调每一行都以 `mounted_widget() else { return; }`
+> 开场，而这个记录只由 `xcomponent::set_mounted_widget` 写入 —— 它当时**没有任何生产调用者**。
+> 于是 `bind()` 注册成功、返回成功，然后**丢掉每一个事件**。2.8.3 让 `mount_surface`
+> （以及 `resize_surface` / `unmount_surface`）同步告诉桥接，这句话才成立。
+> 换言之：**绑定本身不够，必须还要 mount**。
+
 未启用 `xcomponent` 时（默认）仍是 state-only 后端：完整 `Platform` 契约、菜单树、
 剪贴板、拖放、IME 元数据都在进程内实现，但**不创建任何 ArkUI 对象**——因为没有
 绑定 XComponent，也就没有原生 surface 可绘。
@@ -125,7 +131,10 @@ XComponent 桥接本身在 `feature = "xcomponent"` 下启用，需要
 | 菜单树、剪贴板、拖放、IME 元数据 | ✅ 已实现 |
 | 表面 ABI（`rw_mount_surface` 等 7 个 + `rw_report_window_resize`） | ✅ 已实现，发布在 `include/rw_generated.h` |
 | **ArkUI XComponent 桥接**（`feature = "xcomponent"`） | ✅ 已实现，已用真实 SDK 验证编译 + 链接 |
-| **输入投递进控件**（touch / mouse / key / focus） | ✅ 已接线，由桥接回调直接路由 |
+| **输入投递进控件**（touch / mouse / key / focus） | ✅ 已接线，由桥接回调直接路由 —— 但需 `mount_surface` 先告诉桥接显示的是哪个控件（见上）|
+| 键盘修饰键（Ctrl/Shift/Alt） | ✅ 由 `OH_NativeXComponent_GetKeyEventModifierKeyStates` 读取并做位序转换（ArkUI 与控件层的位序不同）|
+| **无障碍桥**（`accessibility_bridge()`） | ✅ 通过 `ArkUI_AccessibilityProvider` 真实发送通知；**不**回答服务的查询回调（需 C-ABI 可见的树）|
+| **软键盘**（`SetNeedSoftKeyboard`） | ✅ 绑定组件时请求，文本框获焦时 ArkUI 唤起键盘 |
 | 在无 SDK 环境下开发 demo | ✅ 走 state-only 后端；`supports_surfaces()` 仍报 `true`（队列是真的），但只有启用 `xcomponent` 才可交互 |
 | 真机 / 模拟器运行验证 | ⬜ 需 HarmonyOS 设备（`cargo ohos build` 只证明编译与链接） |
 

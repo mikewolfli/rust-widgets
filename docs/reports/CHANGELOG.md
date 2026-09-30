@@ -5,6 +5,141 @@ The canonical project changelog is maintained at [docs/reports/CHANGELOG.md](doc
 This root-level file exists for tools and release automation that expect `CHANGELOG.md` at repository root.
 When the two disagree, this file is the one that ships; `tools/check_changelog_sync.sh` keeps them identical.
 
+## 2.8.3 (2026-09-30) — The Window Paints Its Own Controls Again: desktop resize, a real HarmonyOS input bridge, and one cross-platform layout contract
+
+Backward compatible for every public signature; one new public accessor and one new module are
+added. The theme of this release is **the library owns its pixels, so it must own the path that
+puts them on screen** — and its own tests must measure that path rather than a neighbouring one.
+
+### 1. Windows painted a blank board: `WM_PAINT` asked the wrong painter
+
+`paint_window_tree` called `render_frame_cached`, whose chain bottoms out in `render_frame` — a
+function that draws **one** widget and never walks `direct_children_of`. On the self-drawn
+architecture an ordinary control (`create_button`, `create_label`, …) has no native control and is
+not a mounted surface either, so the window's own painter is the *only* thing that can draw it.
+The result was the window's background and chrome blitted over an otherwise empty client area.
+
+The arm's own comment claimed the opposite — *"both call `render_frame_tree`, which walks the
+window's child list"* — which is how the defect survived review. The Linux backend's `connect_draw`
+painter has always called `render_frame_tree`; Windows now does too.
+
+**Why the suite was green anyway:** `window_tree_paints_visible_controls_test.rs` called
+`render_frame_tree` *directly*. It measured the function, not the wiring. Two tests now pin the
+contract from both sides — that the per-widget painter must **not** reach the children (which is
+what makes the choice a real decision), and that the tree painter must.
+
+The size-keyed cache the old call took is dropped deliberately: a stale frame is a wrong picture,
+while re-rasterising is only slow.
+
+### 2. Windows never re-ran a layout the *user* asked for
+
+The `WM_SIZE` arm resolved the window with `widget_id_by_native_handle` — the **platform** id — and
+passed it to `crate::queue_resize_trigger`, which validates against `is_mounted` on **registry**
+ids. Every other message in the same procedure (`WM_KILLFOCUS`, the mouse arms, `paint_target_for`,
+`WM_CHAR`) performs the second hop through `window_widget_for`; this arm did not.
+
+Both id spaces are allocated from small integers, so for a single-window application they coincide
+and the mistake is invisible — which is why it lived this long. When they differ, the resize is
+refused and the `false` return was discarded, so it failed **with no output at any log level**. It
+now uses the two-hop helper and warns when the backend refuses.
+
+### 3. Resize re-layout ignored the device context on every platform
+
+`apply_window_layout` — the one place a top-level control's placement is decided — called
+`Layout::update`, which carries no `LayoutContext`. The three layouts that honour a context
+(`BoxLayout`, `FlexLayout`, `WrapLayout`) therefore laid the window's own children out with
+unscaled gaps and no minimum-touch floor, while the *same* layout nested inside a
+`CompositeBuilder` scaled correctly. Both the window path and the panel recursion now call
+`update_with_context`. The ten layouts that do not override it inherit the trait default, which
+forwards to `update`, so nothing else changes.
+
+New `WindowHandle::layout_context_scale()` publishes which scale the last pass ran with — the fact
+a host diagnosing "my layout ignores the text-size setting" actually needs.
+
+### 4. HarmonyOS: the XComponent bridge was bound, wired, and delivering nothing
+
+`set_mounted_widget` had **zero production callers** — only its own unit test. Every input callback
+in `xcomponent.rs` opens with `mounted_widget() else { return; }`, and that is the bridge's own
+record, written only by that function. So `bind()` registered its callbacks successfully, reported
+success, and then dropped every touch, mouse, hover, key, focus and blur on the first line.
+`Platform::mount_surface` now informs the bridge, and `resize_surface`/`unmount_surface` follow.
+
+Three more closure items in the same bridge:
+
+| Item | Was | Now |
+|---|---|---|
+| Key modifiers | hard-coded `0`, so no Ctrl/Shift chord could fire | bound `OH_NativeXComponent_GetKeyEventModifierKeyStates` (`@since 20`), with the ArkUI→widget bit mapping written out — the two disagree (`CTRL=1,SHIFT=2` vs `SHIFT=1,CTRL=2`), so passing the word through would swap Control and Shift |
+| Hover-leave position | passed `surface_offset()` — the component's origin in the *ArkUI* tree — as the pointer point, which hit-tests in the *widget* tree | the last position the mouse arm saw; an unrecorded one means the pointer never entered |
+| Accessibility | advertised in the module doc, unbound and uncalled | new `HarmonyAccessibilityBridge` over `ArkUI_AccessibilityProvider` (`@since 13`), plus `SetNeedSoftKeyboard` (`@since 12`) so a text control raises the on-screen keyboard |
+
+`capabilities().accessibility` now tracks the same `cfg` as the method that backs it. `ime` stays
+`false` on purpose: key input and a soft-keyboard request are not an input-method **client**, and
+over-claiming is the one direction a capability flag must never err.
+
+The accessibility bridge deliberately does **not** register the provider's query callbacks — those
+must answer over C callbacks that cannot name Rust types, and a provider that can only answer "not
+found" is worse than none, because the service would treat it as authoritative.
+
+### 5. The HarmonyOS bridge became testable on any machine
+
+`build.rs` emitted `-lace_ndk.z` for **every** target. That library exists only in the OpenHarmony
+sysroot, so *any* host `cargo test` failed at link — meaning nothing under `src/platform/harmony/`
+could be unit-tested anywhere, including CI. The link directives are now emitted only for
+`target_env = "ohos"`, and the FFI declarations and call sites are gated to match, so
+`--features "harmony xcomponent"` on a host is a configuration that compiles, runs its tests, and
+whose bridge is honestly inert.
+
+Five accessibility tests now run that previously could not run at all.
+
+### 6. One residual gap, in the same class, closed by a new gate
+
+`src/lib.rs` gates the whole `bindings` module on `any(desktop, jni, mobile-api)`.
+`rw_harmony_bind_xcomponent` lives there, so a build with `xcomponent` but **no device profile**
+compiled the bridge out entirely and linked no `libace_ndk.z` — while still succeeding. The
+HarmonyOS cross gate now builds the bridge for all three linkable ABIs and asserts three things:
+`libace_ndk.z.so` is a `NEEDED` entry, the `OH_NativeXComponent_*`/`OH_ArkUI_*` references exist,
+and the C entry point is **exported**. All three pass with 42 bound symbols.
+
+Found by the gate rather than assumed: an earlier reading of "21 symbols" had come from a
+different feature set.
+
+### 7. Other cross-platform fixes
+
+| Fix | Where |
+|---|---|
+| `--features harmony xcomponent` needed a device profile for the bridge to have an entry point | `tools/check_harmony_cross.sh` |
+| `mobile.rs::run()` logged and never drained, so a queued resize was delivered to nobody | `src/platform/mobile.rs` |
+| `embedded` popped each trigger and discarded it while still counting it as dispatched | `src/lib.rs` |
+| Wayland attributed every `xdg_toplevel` configure to one overwritten slot, so a second window stole the first's resizes | `src/platform/wayland/platform_impl.rs` |
+| `set_widget_text` never requested a repaint, unlike every sibling setter | `src/control_backend/custom/` |
+| `window_hwnd_for_widget_id` fell back to `unwrap_or(id)`, so an unassociated registry id could invalidate a different window's `HWND` and report success | `src/platform/windows/mod.rs` |
+| Attaching a window's host object did not request a repaint, leaving the empty frame the host had already drawn | `src/control_backend/custom/` |
+| `RenderFrame` for an unresolvable size was dropped with no diagnostic | `src/app/handle.rs` |
+| `TouchPhase` was dead in a `gtk-native` build without `touch` | `src/platform/linux/canvas.rs` |
+| Python and Node bindings were missing `rw_dispatch_pointer_event` and `rw_dispatch_event_to_widget` — the only entry points for a host that owns its own event loop | `bindings/` |
+
+### Verification
+
+| Check | Result |
+|---|---|
+| `cargo test --lib --features desktop` | 6429 passed; 0 failed |
+| `cargo check` × {desktop, tablet, mobile, embedded, mini} | all pass, 0 warnings |
+| `cargo clippy --lib --features desktop -- -D warnings` | 0 warnings |
+| Windows cross `cargo clippy -- -D warnings` | 0 warnings |
+| Wayland `cargo clippy -- -D warnings` | 0 warnings |
+| `cargo test platform::harmony` (host, `xcomponent`) | 22 passed |
+| `tools/check_android_cross.sh` | 4/4 ABI |
+| `tools/check_harmony_cross.sh` | all pass; 3 ABIs link `libace_ndk.z.so` with 42 symbols |
+| `tools/check_abi.sh` | 142 `rw_*` functions |
+| `tools/check_binding_symbol_coverage.py` | 143 symbols, all bindings |
+| `tools/check_profiles.sh` | all profile checks passed |
+
+**Honest boundaries.** There is no Windows, HarmonyOS or Apple host on the machine this was
+developed on, so the Windows and HarmonyOS fixes rest on cross-compilation plus line-by-line id and
+call-path tracing, **not** on runtime evidence. macOS was not touched, and `grep render_frame_tree
+src/platform/macos*/` finds zero matches: like Windows before this release, macOS has no
+window-level painter, so a control that is not mounted as a surface will not appear.
+
 ## 2.8.2 (2026-09-28) — The SVG snapshot tells the truth again: fonts, icons, alignment, and a gated gallery
 
 Backward compatible for every public signature; one new public helper is added. The theme of this

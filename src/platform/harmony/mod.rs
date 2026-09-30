@@ -13,6 +13,14 @@ pub mod types;
 #[cfg(all(feature = "xcomponent", not(alloc_frugal)))]
 pub mod xcomponent;
 
+/// The accessibility bridge over the XComponent's `ArkUI_AccessibilityProvider`.
+///
+/// Gated exactly like [`xcomponent`], because the provider is only reachable through a
+/// bound `OH_NativeXComponent`: without the bridge there is no component, so there is no
+/// provider to attach to.
+#[cfg(all(feature = "xcomponent", not(alloc_frugal)))]
+pub mod accessibility;
+
 pub use types::*;
 #[cfg(test)]
 pub mod tests;

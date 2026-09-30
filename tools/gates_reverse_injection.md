@@ -15,6 +15,30 @@
 > **Status column.** `✔` = verified in this round or a recorded earlier round; `—` = not yet
 > injected. A `—` is an honest gap, not a pass.
 
+## Version and documentation-consistency round (2026-09-30)
+
+| gate | injected | reported |
+|---|---|---|
+| `check_version_consistency.sh` | bumped only `Cargo.toml`: `version = "2.8.3"` → `version = "9.9.9"`, leaving every README, cookbook locale, changelog and lockfile at 2.8.3 | `declared version: 9.9.9` / `FAIL README.md names no version, expected 9.9.9` / `FAIL README.zh-CN.md …` / `FAIL cookbook/en/src/README.md …` / `version consistency: 26 problem(s).` |
+| `check_capability_flags_match_their_methods.sh` | flipped `ime: false` → `ime: true` in `src/platform/harmony/platform_impl.rs`, which defines no `ime_bridge` | `❌ a capability flag promises a method the backend does not define (1):` / `harmony: src/platform/harmony/platform_impl.rs declares \`ime: true\` but defines none of ('ime_bridge',) — the trait default would answer for it, so the flag promises a method that cannot answer. The flag escapes the process through \`rw_platform_capabilities()\`.` |
+| `check_status_docs_name_real_types.sh` | added `\| Window hosting \| ✅ Implemented \| creates a real \`OH_NativeWindow\` for every widget \|` to `src/platform/harmony/status.md` | `❌ a status page claims a native object its backend does not create (1):` / `src/platform/harmony/status.md:48 claims \`OH_NativeWindow\` in a ✅ row, but that identifier appears in none of ['src/platform/harmony'] — the row describes an object this backend does not create` |
+| `check_no_native_control_creation.sh` | appended a `_probe_native_control` creating `CreateWindowExW(.., WC_BUTTON, ..)` to `src/platform/windows/canvas.rs` | `❌ a host control creator appears in the widget path (1):` / `src/platform/windows/canvas.rs:637 creates a win32 control (\`WC_BUTTON\`). The library paints every \`WidgetKind\` itself on every backend, so no host control creator may appear in a widget path` |
+
+> Two notes on the injections above, recorded because a reader will otherwise assume they
+> were first-try successes.
+>
+> `check_status_docs_name_real_types.sh` did **not** report on the first two attempts. The
+> first named `NSWindow`/`HWND` in a harmony row, and the second put the row in a section the
+> scan skips; neither type is in the gate's harmony list. Reading
+> `NATIVE_TYPES` in `check_status_docs_name_real_types.py` and injecting a **listed** name
+> (`OH_NativeWindow`) is what produced the finding. An injection that does not fire is
+> evidence about the injection, not about the gate — the same distinction this file's own
+> header draws for `—` (not yet injected).
+>
+> `check_no_native_control_creation.sh` likewise missed on the first attempt: the probe was
+> inserted at `src/platform/windows/types.rs`, where the marker substring did not exist, so
+> nothing was injected at all and the gate passed for the honest reason.
+
 ## Control-gallery and icon-gate round (2026-09-28)
 
 | gate | injected | reported |

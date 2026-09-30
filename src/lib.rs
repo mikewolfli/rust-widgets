@@ -1955,19 +1955,46 @@ pub fn drain_triggers() -> usize {
     }
     #[cfg(not(alloc_frugal))]
     {
+        // Only a build with a router can dispatch, so only that build counts. Naming the
+        // two configurations separately keeps `mut` off the binding that never moves —
+        // the compiler then checks exactly the profile-conditional fact, instead of a
+        // `#[allow(unused_mut)]` suppressing it in one profile and the other profile's
+        // correctness going unchecked.
+        #[cfg(full_widgets)]
         let mut dispatched = 0usize;
+        #[cfg(not(full_widgets))]
+        let dispatched = 0usize;
         while let Some(event) = poll_widget_trigger_event() {
             #[cfg(full_widgets)]
             {
                 app::dispatch_trigger(event.widget_id, event.kind);
+                dispatched += 1;
             }
             #[cfg(not(full_widgets))]
             {
-                // No router in this profile. Reading the event above is what removes it
-                // from the queue; naming it keeps the binding exercised in every build.
+                // No router in this profile: `app` is gated `full_widgets`, so there is no
+                // `dispatch_trigger` to hand the event to. The event is still **removed**
+                // from the queue (the `poll` above did that), which is the part the queue
+                // owes its callers, and it is *not* counted as dispatched.
+                //
+                // # Why the count must stay `0` here
+                //
+                // This used to increment `dispatched` unconditionally, so `embedded` —
+                // which is a stripped profile with the trigger queue present but no router
+                // — reported `1` for a `Resized` event that reached no layout. The return
+                // value is the host's only signal that dispatch happened, and a count that
+                // is indistinguishable from a real delivery is the "reported success for
+                // something that did not happen" shape this crate names elsewhere. The
+                // honest answer for a profile with no router is "I consumed it and
+                // delivered nothing", i.e. zero, and the log line says which.
+                log::debug!(
+                    "drain_triggers: consumed a {:?} trigger for widget {} in a build with no \
+                     widget router (profile has no device class); nothing was dispatched",
+                    event.kind,
+                    event.widget_id
+                );
                 let _ = (event.widget_id, event.kind);
             }
-            dispatched += 1;
         }
         dispatched
     }

@@ -205,20 +205,49 @@ pub(crate) unsafe extern "system" fn wnd_proc(
         // size so the host can re-run its layout: without this a window resized by the
         // user kept every child at the geometry it had for the previous size, because
         // nothing else tells the library the window changed.
+        //
+        // # The id must be the *registry* id, and this arm was the one that forgot
+        //
+        // `widget_id_by_native_handle` answers with the id `bind_native_handle` stamped
+        // into `GWLP_USERDATA`, and `create_window` stamps the **platform** id — the one
+        // `WindowsPlatformState::create_widget` allocated, starting again at 1. The widget
+        // tree the layout walks is keyed by **registry** id. Every other window message
+        // performs the second hop through `window_widget_for` (`WM_KILLFOCUS`, the mouse
+        // arms, `paint_target_for`); this arm did not, so it handed
+        // `crate::queue_resize_trigger` a platform id.
+        //
+        // The two id spaces are both allocated from small integers, so for a plain
+        // single-window application they happen to **coincide** and the mistake is
+        // invisible — which is exactly why it survived. As soon as the first platform
+        // window is not also the first registry widget, the platform id names either
+        // nothing or, worse, an unrelated live widget. `queue_resize_trigger` refuses an
+        // id that is not `is_mounted` and returns `false`; that `false` used to be
+        // discarded here, so the resize disappeared with no error at any log level — the
+        // identical silent no-op the GTK backend documents having fixed in
+        // `linux/platform_impl.rs` ("reporting the platform id made every resize a silent
+        // no-op").
+        //
+        // `window_widget_for` is that fix, and the failure is now reported rather than
+        // swallowed: a resize that cannot be attributed to a widget is a defect in the
+        // host's window set-up, not a routine no-op.
         WM_SIZE => {
-            if let Some(platform) = notify::active_windows_platform() {
-                if let Some(widget_id) = unsafe { platform.widget_id_by_native_handle(hwnd) } {
-                    let mut rect =
-                        winapi::shared::windef::RECT { left: 0, top: 0, right: 0, bottom: 0 };
-                    // SAFETY: `hwnd` is the window this procedure was called for, and
-                    // Win32 fills the RECT we hand it. A failure leaves the zeros, which
-                    // are rejected below rather than reported as a size.
-                    if unsafe { GetClientRect(hwnd, &mut rect) } != 0 {
-                        let width = (rect.right - rect.left).max(0) as u32;
-                        let height = (rect.bottom - rect.top).max(0) as u32;
-                        if width > 0 && height > 0 {
-                            crate::queue_resize_trigger(widget_id, width, height);
-                        }
+            if let Some(widget_id) = unsafe { window_widget_for(hwnd) } {
+                let mut rect =
+                    winapi::shared::windef::RECT { left: 0, top: 0, right: 0, bottom: 0 };
+                // SAFETY: `hwnd` is the window this procedure was called for, and
+                // Win32 fills the RECT we hand it. A failure leaves the zeros, which
+                // are rejected below rather than reported as a size.
+                if unsafe { GetClientRect(hwnd, &mut rect) } != 0 {
+                    let width = (rect.right - rect.left).max(0) as u32;
+                    let height = (rect.bottom - rect.top).max(0) as u32;
+                    if width > 0
+                        && height > 0
+                        && !crate::queue_resize_trigger(widget_id, width, height)
+                    {
+                        log::warn!(
+                            "[windows] WM_SIZE for widget {widget_id} ({width}x{height}) was not \
+                             accepted by the backend; the window layout did not re-run"
+                        );
                     }
                 }
             }
@@ -388,29 +417,41 @@ unsafe fn paint_window_tree(hwnd: HWND) {
         return;
     };
     if let Some(widget_id) = paint_target_for(hwnd) {
-        // `render_frame_cached` rather than `render_frame_tree`.
+        // `render_frame_tree`, and **not** `render_frame_cached`.
         //
-        // This painter runs for every `WM_PAINT`, and `WM_PAINT` arrives from many places
-        // that are not a change of appearance: the window manager exposing the window, a
-        // highlight change on any sibling, the user dragging another window across this
-        // one. Handing a fresh frame to `blit_frame` for all of them meant converting the
-        // entire window's pixels into a DIB on the message thread each time — the work
-        // `RepaintMode` and the two `render_frame_cached` paths elsewhere in this crate
-        // exist to avoid. It is still not a *partial* present (a `StretchDIBits` call
-        // presents a whole bitmap), but a frame whose damage is worth regioning is now
-        // re-rasterised only where it changed; see `render_frame_incremental`.
+        // # Why this must walk the tree
         //
-        // The cache is keyed by size, so a resize is detected here and turns into a full
-        // paint automatically rather than reusing a frame of the wrong extent.
-        let Some(frame) = crate::widget::runtime::render_frame_cached(
+        // `render_frame_cached` bottoms out in `render_frame`, which draws **one** widget —
+        // the root — and never touches `direct_children_of`. On this backend an ordinary
+        // control (`create_button`, `create_label`, …) has no native control of its own and
+        // is not a mounted surface either, so the window's own painter is the *only* thing
+        // that can draw it. Asking for the root's single-widget frame therefore blitted the
+        // window's background and chrome over an otherwise empty client area: exactly the
+        // blank white board this arm exists to remove.
+        //
+        // This was a real defect, not a hypothetical one: the comment above this arm already
+        // claimed "both call `render_frame_tree`, which walks the window's child list" while
+        // the code called something that does not. The Linux backend
+        // (`linux/platform_impl.rs`, the `connect_draw` window painter) is the working
+        // reference and calls this same function.
+        //
+        // # Why the cache is not lost
+        //
+        // The previous code used the cached entry point to avoid re-rasterising the whole
+        // window on every expose. `render_frame_tree` has no size-keyed cache of its own, so
+        // the frame is built per paint. That is the correct trade here: a stale or partial
+        // frame is a wrong picture, whereas re-rasterising is only slow, and correctness of
+        // what is on screen outranks the saving. The clear colour must therefore cover the
+        // client area, which `render_frame_tree`'s own `begin_frame(clear)` does — and it
+        // does so even when no child paints.
+        let Some(frame) = crate::widget::runtime::render_frame_tree(
             widget_id,
             crate::core::Size::new(width, height),
             crate::core::Color::WHITE,
         ) else {
-            // Not an error: a window whose root widget does not implement `Draw` — or one
-            // whose association was torn down between the expose and this call — has
-            // nothing to present, and the `WM_ERASEBKGND` arm already left the background
-            // filled. Reported at debug so a blank window is still diagnosable.
+            // Not an error: a window whose association was torn down between the expose and
+            // this call has nothing to present, and the `WM_ERASEBKGND` arm already left the
+            // background filled. Reported at debug so a blank window is still diagnosable.
             log::debug!("[windows] WM_PAINT: widget id={widget_id} produced no frame to present");
             EndPaint(hwnd, &paint);
             return;

@@ -15,8 +15,9 @@ No ArkUI object is created. The library paints every `WidgetKind` itself
 (`src/widget/`), so a native ArkUI control has no role. What the backend owes a
 widget is a surface, and it supplies one: `mount_surface` records that the widget
 is being displayed and queues a repaint the ArkTS host drains to fetch the frame.
-The host is what puts pixels on screen; what is still missing is the reverse
-direction — ArkTS input events are not yet forwarded into the widgets (see below).
+The host is what puts pixels on screen, and with `feature = "xcomponent"` the reverse
+direction is wired too: ArkUI's own `XComponent` delivers touch, mouse, key and focus
+into the widget tree (see "The XComponent bridge" below).
 
 ## How the backend is selected
 
@@ -51,10 +52,11 @@ for development and testing.
 | Clipboard | ✅ Implemented | in-process store |
 | Drag & drop | ✅ Implemented | injectable drop-event queue |
 | IME / accessibility **metadata** (per-widget flags and names) | ✅ Implemented | `BackendState` fields that round-trip a boolean and a string |
-| IME / accessibility **bridges** | ⛔ Not implemented | neither `ime_bridge()` nor `accessibility_bridge()` is overridden, so both answer `None`; this is what `capabilities()` reports as `ime: false` / `accessibility: false`. The row above is not a counter-argument — a flag store is not an input-method client, and ArkUI's real IME arrives through the XComponent below, which is not bound |
+| Accessibility **bridge** | ✅ Implemented (`feature = "xcomponent"`) | `HarmonyAccessibilityBridge` over the XComponent's `ArkUI_AccessibilityProvider`; see below |
+| IME **bridge** | ⛔ Not implemented, on purpose | `ime_bridge()` is not overridden, so `capabilities()` reports `ime: false`. The XComponent bridge *does* deliver keys with their modifier state and *does* ask ArkUI for the on-screen keyboard, but that is direct key input, not an input-method **client** — nothing here speaks a composition protocol, and a `true` would claim one |
 | Typed widget-trigger events | ✅ Implemented | delegated to the shared `BackendState` queue |
 | Backend auto-selection on `ohos` target | ✅ Implemented | via `target_env`, see above |
-| **Widget surfaces** (`mount_surface` + repaint queue) | ✅ Implemented | records which widgets are displayed; the ArkTS side pulls frames |
+| **Widget surfaces** (`mount_surface` + repaint queue) | ✅ Implemented | records which widgets are displayed; the ArkTS side pulls frames, **and the bridge is told** so input can be routed |
 | **ArkUI XComponent bridge** (`feature = "xcomponent"`) | ✅ Implemented | binds `OH_NativeXComponent`; see below |
 | **Input delivery into widgets** | ✅ Implemented via the bridge | touch / mouse / key / focus callbacks route into the widget tree |
 
@@ -72,11 +74,29 @@ that pointer to `rw_harmony_bind_xcomponent`, and from there the bridge register
 | `OH_NativeXComponent_RegisterCallback` | `OnSurfaceCreated` / `Changed` / `Destroyed` | a surface to draw into, and its size and offset |
 | the same block, `DispatchTouchEvent` | `OH_NativeXComponent_GetTouchEvent` | multi-contact input → `Event::Touch*` |
 | `OH_NativeXComponent_RegisterMouseEventCallback` | `DispatchMouseEvent` / `DispatchHoverEvent` | click, move, hover → `Event::Mouse*` |
-| `OH_NativeXComponent_RegisterKeyEventCallback` | key down | typing → `Event::KeyPress` |
+| `OH_NativeXComponent_RegisterKeyEventCallback` | key down | typing → `Event::KeyPress`, with the modifier state from `OH_NativeXComponent_GetKeyEventModifierKeyStates` |
 | `OH_NativeXComponent_RegisterFocusEventCallback` / `Blur` | focus / blur | the library's focus model |
+| `OH_NativeXComponent_GetNativeAccessibilityProvider` (`@since 13`) | — | the component's `ArkUI_AccessibilityProvider`, which `accessibility_bridge()` posts through |
+| `OH_NativeXComponent_SetNeedSoftKeyboard` (`@since 12`) | — | ArkUI raises the on-screen keyboard for this component when a text control takes focus |
 
 Design points worth knowing before editing it:
 
+- **The modifier bits must be translated, not passed through.** ArkUI's
+  `ArkUI_ModifierKeyName` is `CTRL=1, SHIFT=2, ALT=4`; the widget layer's encoding (see
+  `windows/canvas.rs::current_modifiers`) is `SHIFT=1, CTRL=2, ALT=4`. Passing ArkUI's word
+  through would swap Control and Shift, so each bit is mapped explicitly. `FN` has no
+  widget-layer counterpart and is dropped rather than folded into another key.
+- **Only an OpenHarmony target links the SDK.** `build.rs` emits `-lace_ndk.z` for
+  `target_env = "ohos"` only, and the declarations and call sites are gated to match. On any
+  other target `feature = "xcomponent"` still compiles and its unit tests still run; the
+  bridge is simply inert, and says so. Without that split no host `cargo test` could link at
+  all, so nothing in this directory was testable on a developer machine.
+- **A device profile is required for the bridge to have an entry point.**
+  `rw_harmony_bind_xcomponent` lives in `src/bindings/`, which `src/lib.rs` gates on
+  `any(desktop, jni, mobile-api)`. A build with `xcomponent` but no device profile compiles
+  the bridge out and links no `libace_ndk.z` while still succeeding —
+  `tools/check_harmony_cross.sh` builds the bridge and asserts the library is `NEEDED`, that
+  the SDK symbols are referenced, and that the C entry point is **exported**.
 - **Hand-written `extern "C"`, not bindgen.** The declarations are a few dozen lines and this
   crate has no bindgen dependency. Each function records the header's own `@since`, and the
   module documents the SDK version it was transcribed from
@@ -141,25 +161,36 @@ surface functions now exist (`rw_mount_surface`, `rw_resize_surface`,
 delivers a size change to the ArkTS component's `onAreaChange`, not to this backend,
 so without forwarding it here the window's layout never re-runs after a resize.
 
-`mount_surface` makes a widget **visible**; it does not make it **interactive**.
-Forwarding ArkTS touches/keys into `crate::widget::runtime::dispatch_pointer_event`
-(or `dispatch_event` for a known id) is still to be wired, which is why the
-`rw_harmony_on_*` entry points exist.
+`mount_surface` makes a widget **visible**; it does not by itself make it
+**interactive**. Interactivity comes from the bridge: `mount_surface` now also tells
+`xcomponent::set_mounted_widget`, and the component's callbacks route touches and
+keys into the widget tree through `dispatch_pointer_event` / `dispatch_event`.
+
+That call was missing until 2.8.3, and its absence was invisible: every callback
+opens with `mounted_widget() else { return; }`, so the bridge bound its callbacks
+successfully, reported success, and then dropped every event on the first line. The
+`rw_harmony_on_*` entry points remain for a host that drives input itself.
 
 ## Capabilities (honest contract)
 
 `HarmonyPlatform::capabilities()` declares the flags explicitly rather than
 inheriting desktop defaults:
 
-- `dpi_scaling: false`, `ime: false`, `accessibility: false` — **not** because
-  OpenHarmony lacks these, but because this backend implements none of the methods
-  behind them. Each flag names a specific method (`dpi_scale_factor()`,
-  `ime_bridge()`, `accessibility_bridge()`), and `grep` over `src/platform/harmony/`
-  finds all three absent, so each would fall through to the trait default (`1.0`,
-  `None`, `None`). A `true` here promised a method that cannot answer. ArkUI *does*
-  expose display density, IME and an accessibility tree — they become reachable when
-  the XComponent bridge below is bound, and these three flags flip to `true` at that
-  point, not before.
+- `accessibility: cfg!(all(feature = "xcomponent", not(alloc_frugal)))` — `true`
+exactly when `accessibility_bridge()` is compiled in, which is exactly when the
+XComponent bridge is. Flag and method are produced from the **same** `cfg`, so they
+cannot drift; `the_accessibility_flag_matches_its_bridge` asserts the pair in both
+directions. The bridge posts real notifications through the component's
+`ArkUI_AccessibilityProvider` (`@since 13`).
+- `dpi_scaling: false`, `ime: false` — **not** because OpenHarmony lacks these, but
+because this backend implements none of the methods behind them. Each flag names a
+specific method (`dpi_scale_factor()`, `ime_bridge()`), so a `true` would promise a
+method that cannot answer and would fall through to the trait default (`1.0`,
+`None`). ArkUI *does* expose display density, and an input-method client is
+reachable in principle — each becomes honest when its method is implemented, not
+before. For `ime`, see the note in the table above: the bridge's key handling is not
+a composition client, so this is deliberate under-claiming, which is the direction a
+capability default must err.
 - `native_menu: false` — the menu is an in-process tree served through an injectable
   queue, **not** an OS menu. This is asserted by `capabilities_are_explicit_and_honest`.
 - `typed_widget_trigger: true` — implemented by this backend
@@ -169,6 +200,22 @@ inheriting desktop defaults:
 `supports_surfaces()` returns `true`: the backend records mounted surfaces and
 queues repaints for the host to drain. That claim is now reachable from outside the
 process, which it was not before — see "How a widget reaches the screen".
+
+## Accessibility
+
+`src/platform/harmony/accessibility.rs` implements `AccessibilityBridge` over the
+component's `ArkUI_AccessibilityProvider`, obtained with
+`OH_NativeXComponent_GetNativeAccessibilityProvider` at `bind` time. Each `notify_*`
+method creates an event object, stamps the type and element id, sends it, and
+destroys it — a real notification, not a log line.
+
+It deliberately does **not** register the provider's query callbacks
+(`ArkUI_AccessibilityProviderCallbacks`). Those must answer the accessibility
+service's questions over C callbacks, and this crate has no C-ABI-stable view of its
+own tree to answer with. A provider that can only reply "not found" is worse than
+none: the service would treat it as authoritative and report the surface as having no
+content, rather than falling back. Until the tree can be answered for, this half stays
+unimplemented on purpose.
 
 ## Build and test
 
@@ -235,10 +282,16 @@ state positively, so if upstream ever fixes it the gate asks to be updated.
 ## Next Steps
 
 1. Bind the ArkUI `Canvas` through N-API so the ArkTS side can act on the repaint
-   queue directly, and deliver its touches/keys into
-   `widget::runtime::dispatch_pointer_event` / `dispatch_event`.
-2. Wire the native window/event loop to the `ohos` lifecycle callbacks; the
+   queue directly. Input itself no longer needs this: the XComponent bridge delivers
+   touch, mouse, key and focus into the widget tree.
+2. Answer the accessibility provider's query callbacks, so a screen reader can walk
+   the tree rather than only be told that nodes changed. This needs a C-ABI-stable
+   view of `widget::runtime`'s tree, which is the reason it is unimplemented rather
+   than merely unwritten — see "Accessibility" above.
+3. Wire the native window/event loop to the `ohos` lifecycle callbacks; the
    ArkTS side drives the loop and polls `rw_poll_*` (see
    `docs/plans/harmony_integration.md`).
-3. The cross-compile job in `.github/workflows/ci.yml`
-   (`harmony-cross-check`) keeps the backend-selection contract from regressing.
+4. The cross-compile job in `.github/workflows/ci.yml`
+   (`harmony-cross-check`) keeps the backend-selection contract from regressing, and
+   `tools/check_harmony_cross.sh` now also builds and symbol-checks the
+   `xcomponent` bridge on all three linkable ABIs.

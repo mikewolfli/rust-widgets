@@ -63,13 +63,25 @@ rust-widgets 在九个支持的平台上提供了统一的 API。本章涵盖平
 |----|:-----------:|:---:|:-------------:|:-----------:|
 | Windows | ✅ | ✅ | ✅ | ❌ |
 | macOS | ❌ | ✅ | ✅ | ❌ |
-| Linux / GTK | ✅ | ✅ | ✅ | ❌ |
-| Linux / Wayland | ✅ | ✅ | ✅ | ❌ |
-| iOS | ✅ | ✅ | ✅ | ❌ |
-| Android | ✅ | ✅ | ✅ | ❌ |
-| HarmonyOS | ✅ | ✅ | ✅ | ❌ |
+| Linux / GTK | ✅ ¹ | ✅ | ✅ | ❌ |
+| Linux / Wayland | ✅ | ❌ | ❌ | ❌ |
+| iOS | ❌ | ❌ | ❌ | ❌ |
+| Android | ❌ | ❌ | ❌ | ❌ |
+| HarmonyOS | ❌ | ❌ | ✅ ² | ❌ |
 | WASM | ❌ | ❌ | ❌ | ❌ |
 | Portable | ❌ | ❌ | ❌ | ❌ |
+
+¹ Linux/GTK 的 `dpi_scaling` 由 `dpi_scale_factor() != 1.0` 得出，因此它是关于
+当前显示器的一个**运行时**答案，而非常量；在未缩放的机器上它报 `false`，但它仍是一个
+能够作答的后端。
+
+² HarmonyOS 只有在启用 `xcomponent` feature 时才报 `accessibility` —— 而那正是
+`accessibility_bridge()` 被编译进去的时候。标志与方法由同一个 `cfg` 产生，因此不可能不一致：
+feature 关闭时两者都不存在。它的 `ime` 故意为 `false` —— XComponent 桥确实投递按键并请求
+ArkUI 唤起软键盘，但那是直接的按键输入，不是一个输入法**客户端**。
+
+这张表只代表「上次有人对着 `Platform::capabilities` 核对过」的样子。上表的取值是从各后端
+的 `platform_impl.rs` 读出来的；有疑问时应直接调用 `capabilities()`，而不是相信一张表。
 
 Wayland 没有菜单栏协议，因此其后端把菜单树保存在进程内、由宿主负责渲染 ——
 在那里声称支持原生菜单将是虚假的。

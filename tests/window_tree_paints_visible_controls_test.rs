@@ -275,3 +275,107 @@ fn a_combo_box_paints_a_dropdown_affordance_apart_from_its_text() {
 
     let _ = global_theme_manager().set_appearance(AppearanceMode::Light);
 }
+
+// ---------------------------------------------------------------------------
+// The window painter's *entry point* must include the children
+// ---------------------------------------------------------------------------
+//
+// Every test above calls `render_frame_tree` directly, which is what the **Linux**
+// backend's `connect_draw` painter does. The Windows `WM_PAINT` arm called
+// `render_frame_cached`, whose chain bottoms out in `render_frame` — a function that draws
+// **one** widget and never walks `direct_children_of`.
+//
+// That is why the whole suite was green while Windows showed a blank white board: the
+// tests exercised a function the Windows path did not call. A test can only catch a wiring
+// mistake if it measures the wiring, so the assertions below are deliberately about **the
+// two entry points differing**, which is the fact the Windows arm got backwards.
+
+/// The per-widget painter must paint exactly one widget, not the window's children.
+///
+/// This negative half is asserted rather than assumed because it is what makes the choice
+/// in `WM_PAINT` a real decision: if `render_frame` already walked the tree, either
+/// function would do and the defect would have been invisible. `render_frame` is
+/// documented as painting exactly one widget into its own box, and a mounted control's own
+/// surface relies on that — so it must stay true, and the window path must use the other
+/// function.
+#[test]
+fn the_per_widget_painter_leaves_out_the_windows_children() {
+    let _guard = theme_guard();
+    let _ = global_theme_manager().set_appearance(AppearanceMode::Light);
+
+    let mut app = App::new();
+    app.init();
+    let win = demo_window(&mut app);
+    let size = Size::new(1120, 620);
+
+    let frame =
+        rust_widgets::widget::runtime::render_frame(win.raw_id(), size, Color::rgb(240, 240, 240))
+            .expect("the window widget itself must produce a frame");
+    let pixels: Vec<[u8; 4]> = frame.chunks_exact(4).map(|p| [p[0], p[1], p[2], p[3]]).collect();
+
+    let button_colors = distinct_colors(&pixels, size, BUTTON);
+    assert_eq!(
+        button_colors.len(),
+        1,
+        "`render_frame` must paint exactly one widget, but it covered the button's \
+         rectangle with {} distinct colours — so it is walking the tree. A mounted \
+         control's own surface depends on this staying single-widget",
+        button_colors.len()
+    );
+
+    let _ = global_theme_manager().set_appearance(AppearanceMode::Light);
+}
+
+/// The window painter **must** include the children — the exact Windows contract.
+///
+/// The Windows `WM_PAINT` arm resolves the window's registry id and asks for a frame. Its
+/// own comment claimed it used the tree walk; the code used the per-widget painter, so the
+/// window's background and chrome were blitted over an otherwise empty client area. Because
+/// an ordinary control on Windows has no native control and is not a mounted surface, that
+/// left **nothing** able to draw it — the blank white board.
+///
+/// This pins the property the arm depends on: nothing inside a child's rectangle changes
+/// between the two entry points unless the tree walk reached it.
+#[test]
+fn the_window_entry_point_contains_its_children_and_the_per_widget_one_does_not() {
+    let _guard = theme_guard();
+    let _ = global_theme_manager().set_appearance(AppearanceMode::Light);
+
+    let mut app = App::new();
+    app.init();
+    let win = demo_window(&mut app);
+    let size = Size::new(1120, 620);
+    let clear = Color::rgb(240, 240, 240);
+
+    let tree = rust_widgets::widget::runtime::render_frame_tree(win.raw_id(), size, clear)
+        .expect("the window tree must produce a frame");
+    let single = rust_widgets::widget::runtime::render_frame(win.raw_id(), size, clear)
+        .expect("the window widget itself must produce a frame");
+
+    let tree_pixels: Vec<[u8; 4]> =
+        tree.chunks_exact(4).map(|p| [p[0], p[1], p[2], p[3]]).collect();
+    let single_pixels: Vec<[u8; 4]> =
+        single.chunks_exact(4).map(|p| [p[0], p[1], p[2], p[3]]).collect();
+
+    // The child's rectangle is the whole difference: the tree walk paints it, the
+    // per-widget painter does not reach it at all.
+    let tree_child = distinct_colors(&tree_pixels, size, BUTTON);
+    let single_child = distinct_colors(&single_pixels, size, BUTTON);
+    assert!(
+        tree_child.len() > 1,
+        "the window's tree frame shows only {} colour inside the button at {BUTTON:?}, so \
+         the tree walk is not reaching the window's children — the blank-window contract \
+         the Windows `WM_PAINT` arm depends on",
+        tree_child.len()
+    );
+    assert!(
+        single_child.len() < tree_child.len(),
+        "the per-widget painter produced {} colours inside the button against the tree \
+         painter's {}: if the two are the same, `WM_PAINT` could call either and the tree \
+         would still paint — which is not the bug that was fixed",
+        single_child.len(),
+        tree_child.len()
+    );
+
+    let _ = global_theme_manager().set_appearance(AppearanceMode::Light);
+}

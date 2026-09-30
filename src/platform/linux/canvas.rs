@@ -530,6 +530,12 @@ const KEY_TAB: u32 = 0xFF09;
 ///
 /// GDK has four touch types and the widget layer has three: a cancelled contact is a
 /// termination exactly like a lifted one, so both map to `End`.
+///
+/// Gated on `touch` with its only user — the `connect_touch_event` handler below — because
+/// `Event::Touch*` itself does not exist without that capability. A `gtk-native` build that
+/// omits `touch` installs no touch handler, so leaving this ungated made it dead code in
+/// that configuration (a warning the `gtk-native` check reports).
+#[cfg(feature = "touch")]
 #[derive(Clone, Copy)]
 enum TouchPhase {
     Begin,

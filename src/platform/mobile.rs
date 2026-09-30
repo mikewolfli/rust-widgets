@@ -10,6 +10,16 @@ use crate::compat::atomic::{AtomicUsize, Ordering};
 use crate::compat::{HashMap, Mutex, OnceLock};
 use crate::core::{ObjectId, PlatformFamily};
 use crate::platform::types::{host_battery_probe, host_memory_probe, host_process_memory_probe};
+use std::thread;
+use std::time::Duration;
+
+/// How often the run loop ticks, in milliseconds — one 60 Hz frame.
+///
+/// The same value as the Android, iOS and HarmonyOS backends. It is a *frame* interval,
+/// not a poll interval for a network-like resource: this loop is the single place a
+/// backend turns "what the host queued" into "what the widgets did", so the tick rate is
+/// the upper bound on how quickly a resize or an animation reaches the tree.
+const FRAME_INTERVAL_MS: u64 = 16;
 
 /// Logical handle kinds that survive the self-drawn widget strategy.
 ///
@@ -48,6 +58,14 @@ pub struct AndroidMobilePlatform {
     state: BackendState<MobileHandleKind>,
     attached_native_view: AtomicUsize,
     menus: Mutex<MobileMenuState>,
+    /// Whether `init` has run, and whether the run loop is still going.
+    ///
+    /// Held here rather than in a shared `RuntimeState` because this backend has only
+    /// these two facts to keep: `run` must not depend on `init` having been called
+    /// explicitly (a host that goes straight to `run` still needs the drain), and `quit`
+    /// must be able to stop a loop that is already running.
+    initialized: std::sync::atomic::AtomicBool,
+    running: std::sync::atomic::AtomicBool,
 }
 impl AndroidMobilePlatform {
     /// Creates a new Android mobile platform adapter.
@@ -56,6 +74,8 @@ impl AndroidMobilePlatform {
             state: BackendState::new(),
             attached_native_view: AtomicUsize::new(0),
             menus: Mutex::new(MobileMenuState::default()),
+            initialized: std::sync::atomic::AtomicBool::new(false),
+            running: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -143,11 +163,44 @@ impl Platform for AndroidMobilePlatform {
     }
     fn init(&self) {
         log::info!("[mobile] AndroidMobilePlatform init (state-only preview backend)");
+        self.initialized.store(true, Ordering::SeqCst);
     }
+
+    /// The run loop: this backend's drain tick.
+    ///
+    /// # Why a state-only backend needs a loop at all
+    ///
+    /// `AndroidMobilePlatform` is the *preview* backend — what the mobile API falls back
+    /// to when the active platform has no mobile extension (`platform::runtime`), which is
+    /// the ordinary case when running the mobile API on a desktop host. It creates no
+    /// OS window, but it is still the backend a `create_window` call lands on, and
+    /// [`Platform::queue_resize_trigger`](super::Platform::queue_resize_trigger) still
+    /// forwards into the control backend, which records the size and queues a
+    /// `Resized` event.
+    ///
+    /// This method used to be a single `log::info!`. The queue was therefore filled and
+    /// never drained: the resize was accepted, the size was recorded, and the window's
+    /// layout never re-ran — the exact failure the HarmonyOS backend documents having
+    /// fixed (`harmony/platform_impl.rs`: "a `Resized` event sat in the queue and no window
+    /// layout re-ran"). Android, iOS, HarmonyOS and wasm all tick; this one did not, and
+    /// nothing reported it because the event is popped-if-something-pops-it.
+    ///
+    /// `crate::drive_frame` both drains the trigger queue and advances the animation bus,
+    /// in the order they must happen. See the HarmonyOS loop for the same reasoning.
     fn run(&self) {
+        if !self.initialized.load(Ordering::SeqCst) {
+            self.init();
+        }
+        self.running.store(true, Ordering::SeqCst);
         log::info!("[mobile] AndroidMobilePlatform run (state-only preview backend)");
+        while self.running.load(Ordering::SeqCst) {
+            crate::drive_frame(FRAME_INTERVAL_MS as u32);
+            thread::sleep(Duration::from_millis(FRAME_INTERVAL_MS));
+        }
     }
+
     fn quit(&self) {
+        self.running.store(false, Ordering::SeqCst);
         log::info!("[mobile] AndroidMobilePlatform quit");
     }
     /// Release every registry entry the backend holds for `widget_id`.

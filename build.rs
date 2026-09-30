@@ -242,6 +242,35 @@ fn check_xcomponent() {
     if !feature_enabled("xcomponent") {
         return;
     }
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+
+    // The link directives are emitted **only for an OpenHarmony target**.
+    //
+    // # Why the emission is gated and not just warned about
+    //
+    // `-lace_ndk.z` names a library that exists only in the OpenHarmony sysroot. Emitting it
+    // for a host build asked the host linker for a library that is not there, so *every*
+    // `cargo test` on a developer machine failed to link — which meant nothing in
+    // `src/platform/harmony/` could be unit-tested anywhere, including CI. The module's own
+    // tests are how a defect in the bridge's non-FFI half (the name store, the event-type
+    // constants, the "no provider ⇒ nothing posted" rule) gets caught, so an untestable
+    // module is the expensive outcome and a warning is the cheap one.
+    //
+    // `harmony xcomponent` remains a valid **host** configuration: the code still compiles,
+    // because the declarations it calls are themselves `#[cfg(target_env = "ohos")]`. What
+    // changes is that the host build no longer tries to link a device library it does not
+    // have. The warning below still says the bridge is inert there.
+    if target_env != "ohos" {
+        warn(&format!(
+            "'xcomponent' is enabled for target_os='{target_os}' target_env='{target_env}', which is \
+             not an OpenHarmony target. The bridge compiles but is inert here: it will not link \
+             the SDK's libace_ndk, so no accessibility provider is attached and no key, touch or \
+             mouse callback can fire. Build for a '*-unknown-linux-ohos' target to use it."
+        ));
+        return;
+    }
+
     // The library is `libace_ndk.z.so`, so the link name is `ace_ndk.z` and not `ace_ndk` —
     // the `.z` is part of the soname the SDK ships (`OHOS` uses it for the zh-CN build variant,
     // and it is present in every SDK layout). Getting this wrong compiles fine and then fails
@@ -282,21 +311,11 @@ fn check_xcomponent() {
             println!("cargo:rustc-link-arg=-Wl,-rpath-link,{lib_dir}");
         }
     } else {
-        warn("'xcomponent' is enabled but OHOS_SDK_NATIVE is not set.");
+        warn("'xcomponent' is enabled for an OpenHarmony target but OHOS_SDK_NATIVE is not set.");
         warn("  The ArkUI bridge links the SDK's 'libace_ndk.z.so':");
         warn("    export OHOS_SDK_NATIVE=<sdk>/linux/native");
-        warn("  and build for an ohos target, e.g.:");
+        warn("  and build with, e.g.:");
         warn("    cargo ohos build -t aarch64 --features 'harmony xcomponent'");
-        warn("  A host build will compile but fail to link (no libace_ndk on the host).");
-    }
-    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
-    if target_env != "ohos" {
-        warn(&format!(
-            "'xcomponent' is enabled for target_os='{target_os}' target_env='{target_env}', which is \
-             not an OpenHarmony target. The bridge needs the ohos sysroot's libace_ndk, so this \
-             build will fail to link. Use a '*-unknown-linux-ohos' target."
-        ));
     }
 }
 

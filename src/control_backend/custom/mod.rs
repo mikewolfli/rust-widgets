@@ -396,6 +396,28 @@ impl CustomPaintControlBackend {
         let host = crate::platform::get_platform().create_window(&title, x, y, width, height);
         if host != 0 {
             crate::widget::runtime::set_host_window(id, host);
+            // The association exists, so the window can now resolve a repaint — and it must be
+            // asked, because the host may already have painted.
+            //
+            // # Why attaching is not enough on its own
+            //
+            // `create_window` on Win32 shows and updates its new window immediately, so the
+            // host's own `WM_PAINT` runs **before** the caller has built a single child. That
+            // first paint cannot include children that do not exist yet — correctly, they are
+            // not there — and it leaves the window holding a frame of an empty client area.
+            //
+            // Attaching the association fixes the *lookup*; it does not by itself make anyone
+            // paint again. The repaint request for a control is issued by the caller
+            // (`adopt_widget_box` asks for the child's subtree, which walks up to this window),
+            // so a window whose first child is added later is covered — but a window created
+            // and left without children, or shown before its children were adopted, kept the
+            // empty frame until some unrelated expose arrived. That is the "blank until you
+            // nudge it" report this closes.
+            //
+            // The request comes **after** `set_host_window` for the reason the caller's
+            // comment gives: a request the backend cannot resolve is a request that does
+            // nothing.
+            crate::widget::runtime::request_repaint_subtree(id);
         } else {
             log::debug!(
                 "custom backend: backend '{}' built no host window for {id}; controls cannot be \

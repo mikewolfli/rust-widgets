@@ -148,6 +148,20 @@ macro_rules! impl_helpers {
                          {LABEL_PROPERTY_NAMES:?}, so the label could not be set"
                     );
                 }
+                // Repaint the widget **and its window**.
+                //
+                // A label is painted by the library, so a new caption reaches the screen
+                // only if something invalidates the frame it is part of. Every sibling
+                // setter in this file already does this — `set_widget_visible`,
+                // `set_widget_enabled`, `set_widget_geometry`, `add_item` — and this one
+                // did not, which produced the "I set the text and the window still shows
+                // the old one" report on any backend that paints the child list.
+                //
+                // The *subtree* is requested rather than the widget, for the reason
+                // `set_widget_visible` documents: an ordinary control has no surface of
+                // its own, so invalidating only the control reaches nothing — the request
+                // has to walk up to the window that actually paints.
+                crate::widget::runtime::request_repaint_subtree(widget_id);
             }
             // A stripped profile has no property registry, so a label cannot be
             // written there. Reporting that is more useful than silently doing

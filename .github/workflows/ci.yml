@@ -55,6 +55,24 @@ jobs:
           chmod +x tools/check_abi.sh
           ./tools/check_abi.sh
 
+      # The version is written by hand in the READMEs, all three cookbook locales and
+      # the two changelog copies, while the compiler reads it from `Cargo.toml`. A bump
+      # that misses one of them ships a README telling users to depend on a version that
+      # was never published — a defect they hit on their first command.
+      - name: Run version consistency gate
+        shell: bash
+        run: |
+          chmod +x tools/check_version_consistency.sh
+          ./tools/check_version_consistency.sh
+
+      # A release note is the one document a reader cannot check against the code, so two
+      # copies that can drift silently is the failure this catches.
+      - name: Run changelog sync gate
+        shell: bash
+        run: |
+          chmod +x tools/check_changelog_sync.sh
+          ./tools/check_changelog_sync.sh
+
       # The C ABI header is the contract every binding compiles against, so a
       # symbol that exists in Rust but not in a binding is an unreachable
       # capability (principle #71).

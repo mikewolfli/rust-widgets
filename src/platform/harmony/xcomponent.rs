@@ -66,7 +66,10 @@ use std::sync::{Mutex, OnceLock};
 
 /// `OH_NATIVE_XCOMPONENT_MAX_TOUCH_POINTS_NUMBER` from the header.
 const MAX_TOUCH_POINTS: usize = 10;
-/// `OH_XCOMPONENT_ID_LEN_MAX` from the header.
+/// `OH_XCOMPONENT_ID_LEN_MAX` from the header, the buffer size `component_id` asks for.
+///
+/// Read only by the OpenHarmony arm of `component_id`, so gated with it.
+#[cfg(target_env = "ohos")]
 const XCOMPONENT_ID_LEN_MAX: usize = 128;
 
 /// The opaque XComponent handle ArkUI creates.
@@ -88,6 +91,11 @@ pub enum TouchEventType {
     Unknown = 4,
 }
 
+// Available to the OpenHarmony build and to this module's unit tests. The conversions
+// and the thread guard touch no SDK, so keeping them under `test` is what lets the
+// pure half of this module be verified on a host — and their absence from a plain
+// host build is why that build is warning-free without an `#[allow(dead_code)]`.
+#[cfg(any(target_env = "ohos", test))]
 impl TouchEventType {
     /// Maps the raw discriminant, reporting `Unknown` rather than trusting the value.
     ///
@@ -120,6 +128,11 @@ pub enum MouseEventAction {
     Cancel = 4,
 }
 
+// Available to the OpenHarmony build and to this module's unit tests. The conversions
+// and the thread guard touch no SDK, so keeping them under `test` is what lets the
+// pure half of this module be verified on a host — and their absence from a plain
+// host build is why that build is warning-free without an `#[allow(dead_code)]`.
+#[cfg(any(target_env = "ohos", test))]
 impl MouseEventAction {
     fn from_raw(raw: i32) -> Option<Self> {
         match raw {
@@ -183,7 +196,11 @@ pub struct TouchEvent {
     pub x: f32,
     /// Y relative to the component.
     pub y: f32,
-    /// What happened, as a raw discriminant (converted via [`TouchEventType::from_raw`]).
+    /// What happened, as a raw discriminant (converted by `TouchEventType::from_raw`).
+    ///
+    /// Named as code rather than an intra-doc link because that conversion is compiled
+    /// only for OpenHarmony and for tests (it is meaningless without the SDK that produces
+    /// the discriminant), so a link would be unresolved in a host build's documentation.
     pub event_type: i32,
     /// Contact area.
     pub size: f64,
@@ -255,7 +272,19 @@ pub struct NativeXComponentMouseEventCallback {
 // One `extern "C"` block rather than a dependency on a `ohos` crate: the declarations are the
 // contract, and transcribing them here keeps the build free of a code generator. `@since`
 // notes are kept so a reader can tell which SDK level a call needs.
-
+//
+// # Why the declarations are gated on the OpenHarmony target
+//
+// `libace_ndk.z.so` exists only in the OpenHarmony sysroot, so any declaration that a host
+// build *references* makes the host test binary fail to link. `build.rs` no longer emits
+// `-lace_ndk.z` for a non-`ohos` target (a host build used to fail at link for that reason
+// alone), and this gate is the other half: with it, `feature = "xcomponent"` on a host is a
+// compilable, testable configuration whose bridge is simply inert, rather than a
+// configuration in which nothing in this directory can be exercised by a unit test.
+//
+// The call sites below are written once and guarded with `cfg` at the point where they would
+// run, so the two configurations share a single body wherever the body is meaningful.
+#[cfg(target_env = "ohos")]
 extern "C" {
     /// `@since 8`. Reads the touch event that `DispatchTouchEvent` was called for.
     fn OH_NativeXComponent_GetTouchEvent(
@@ -319,6 +348,10 @@ extern "C" {
 }
 
 /// The result constant the SDK uses for "succeeded" (`OH_NATIVEXCOMPONENT_RESULT_SUCCESS`).
+///
+/// Gated with the declarations it compares against: on a host build none of the calls that
+/// return a status are declared, so nothing reads this and it would be dead code.
+#[cfg(target_env = "ohos")]
 const RESULT_SUCCESS: i32 = 0;
 
 /// What the bridge knows about the live XComponent.
@@ -330,12 +363,24 @@ struct SurfaceState {
     /// The surface offset inside the ArkUI tree.
     offset: Point,
     /// Whether ArkUI currently considers the surface alive.
+    ///
+    /// Gated with its only writer and reader, which are the surface-lifecycle callbacks: off
+    /// an OpenHarmony target nothing sets it, so the field would be permanently `false` and
+    /// dead. Keeping it out of the host build is what lets that build be warning-free without
+    /// an `#[allow(dead_code)]` that would also silence a real future dead field.
+    #[cfg(target_env = "ohos")]
     alive: bool,
 }
 
 impl SurfaceState {
     const fn new() -> Self {
-        Self { mounted_widget: None, size: Size::new(0, 0), offset: Point::new(0, 0), alive: false }
+        Self {
+            mounted_widget: None,
+            size: Size::new(0, 0),
+            offset: Point::new(0, 0),
+            #[cfg(target_env = "ohos")]
+            alive: false,
+        }
     }
 }
 
@@ -357,6 +402,11 @@ fn surface() -> &'static Mutex<SurfaceState> {
 static BOUND: AtomicBool = AtomicBool::new(false);
 
 /// The thread the XComponent was bound on, so a callback from elsewhere can be refused.
+// Available to the OpenHarmony build and to this module's unit tests. The conversions
+// and the thread guard touch no SDK, so keeping them under `test` is what lets the
+// pure half of this module be verified on a host — and their absence from a plain
+// host build is why that build is warning-free without an `#[allow(dead_code)]`.
+#[cfg(any(target_env = "ohos", test))]
 static UI_THREAD: AtomicUsize = AtomicUsize::new(0);
 
 /// Whether the calling thread is the one that bound the XComponent.
@@ -368,11 +418,16 @@ static UI_THREAD: AtomicUsize = AtomicUsize::new(0);
 /// thread would dispatch into a *different* registry — the one for the transport's thread —
 /// and the events would vanish with no error. Refusing is the honest answer; the callback
 /// reports it so it is diagnosable rather than silent.
+///
+/// Not gated on the target even though only the OHOS callbacks call it: it reads two
+/// process-wide statics and touches no SDK, so keeping it available means the unit test
+/// below still checks the "guard is closed before a bind" rule on a host build — the rule
+/// that would otherwise be assertable only on a device.
+#[cfg(any(target_env = "ohos", test))]
 fn is_ui_thread() -> bool {
     let bound_on = UI_THREAD.load(Ordering::Acquire);
     bound_on != 0 && current_thread_id() == bound_on
 }
-
 /// The calling thread's id, as a number comparable with [`UI_THREAD`].
 ///
 /// # Why a thread-local address
@@ -382,6 +437,7 @@ fn is_ui_thread() -> bool {
 /// live threads, stable for that thread's lifetime, and cheap to take — which is exactly what
 /// an identity comparison needs. The cell is never written, so the value is only ever used as
 /// an address.
+#[cfg(any(target_env = "ohos", test))]
 fn current_thread_id() -> usize {
     // The `allow` sits on the item *inside* `thread_local!`, which is where the lint resolves:
     // applied to the macro invocation itself the attribute is ignored and clippy still fires.
@@ -415,84 +471,146 @@ pub unsafe fn bind(component: *mut NativeXComponent) -> bool {
         log::error!("[harmony] xcomponent: bind called with a null OH_NativeXComponent");
         return false;
     }
-    UI_THREAD.store(current_thread_id(), Ordering::Release);
-
-    // The callback block is `'static`: ArkUI keeps the pointer the registration stored, so it
-    // must outlive every callback. A `static mut` behind an address-stable `OnceLock` is the
-    // shape that guarantees that; the block is written exactly once, before registration.
-    static CALLBACKS: OnceLock<NativeXComponentCallback> = OnceLock::new();
-    let callbacks = CALLBACKS.get_or_init(|| NativeXComponentCallback {
-        on_surface_created: Some(on_surface_created),
-        on_surface_changed: Some(on_surface_changed),
-        on_surface_destroyed: Some(on_surface_destroyed),
-        dispatch_touch_event: Some(dispatch_touch_event),
-    });
-    // SAFETY: `component` is non-null per the guard above and valid per this function's
-    // contract; `callbacks` is a `'static` block, so the pointer stored by registration stays
-    // valid for as long as ArkUI may call it.
-    let registered = unsafe {
-        OH_NativeXComponent_RegisterCallback(
-            component,
-            callbacks as *const NativeXComponentCallback as *mut NativeXComponentCallback,
-        )
-    };
-    if registered != RESULT_SUCCESS {
-        log::error!(
-            "[harmony] xcomponent: OH_NativeXComponent_RegisterCallback failed (status={registered})"
+    // Only an OpenHarmony build has the SDK the registrations below call. On any other target
+    // the feature compiles (so this module is type-checked and its pure logic is unit-tested)
+    // but the bridge is inert, and saying so is the honest answer — pretending to register
+    // against a library that does not exist is what the `cfg` prevents.
+    #[cfg(not(target_env = "ohos"))]
+    {
+        let _ = component;
+        log::warn!(
+            "[harmony] xcomponent: this build is not for OpenHarmony, so it has no libace_ndk \
+             to register against; the bridge is inert"
         );
+        // The `return` is required rather than stylistic: this arm is the last statement in
+        // the host build (the OHOS block below is compiled out), while in the OHOS build it
+        // must leave early so the registrations are not also run. Clippy only sees one
+        // configuration at a time, so it calls the `return` needless in the host one.
+        #[allow(clippy::needless_return)]
         return false;
     }
+    #[cfg(target_env = "ohos")]
+    {
+        UI_THREAD.store(current_thread_id(), Ordering::Release);
 
-    static MOUSE_CALLBACKS: OnceLock<NativeXComponentMouseEventCallback> = OnceLock::new();
-    let mouse = MOUSE_CALLBACKS.get_or_init(|| NativeXComponentMouseEventCallback {
-        dispatch_mouse_event: Some(dispatch_mouse_event),
-        dispatch_hover_event: Some(dispatch_hover_event),
-    });
-    // A mouse callback is optional — a phone with no pointer never produces one — so a
-    // refusal here is logged and does not fail the bind. Touch is the required input path.
-    // SAFETY: as above; `mouse` is a `'static` block.
-    let mouse_status = unsafe {
-        OH_NativeXComponent_RegisterMouseEventCallback(
-            component,
-            mouse as *const NativeXComponentMouseEventCallback
-                as *mut NativeXComponentMouseEventCallback,
-        )
-    };
-    if mouse_status != RESULT_SUCCESS {
-        log::warn!(
-            "[harmony] xcomponent: mouse callback not registered (status={mouse_status}); \
+        // The callback block is `'static`: ArkUI keeps the pointer the registration stored, so it
+        // must outlive every callback. A `static mut` behind an address-stable `OnceLock` is the
+        // shape that guarantees that; the block is written exactly once, before registration.
+        static CALLBACKS: OnceLock<NativeXComponentCallback> = OnceLock::new();
+        let callbacks = CALLBACKS.get_or_init(|| NativeXComponentCallback {
+            on_surface_created: Some(on_surface_created),
+            on_surface_changed: Some(on_surface_changed),
+            on_surface_destroyed: Some(on_surface_destroyed),
+            dispatch_touch_event: Some(dispatch_touch_event),
+        });
+        // SAFETY: `component` is non-null per the guard above and valid per this function's
+        // contract; `callbacks` is a `'static` block, so the pointer stored by registration stays
+        // valid for as long as ArkUI may call it.
+        let registered = unsafe {
+            OH_NativeXComponent_RegisterCallback(
+                component,
+                callbacks as *const NativeXComponentCallback as *mut NativeXComponentCallback,
+            )
+        };
+        if registered != RESULT_SUCCESS {
+            log::error!(
+            "[harmony] xcomponent: OH_NativeXComponent_RegisterCallback failed (status={registered})"
+        );
+            return false;
+        }
+
+        static MOUSE_CALLBACKS: OnceLock<NativeXComponentMouseEventCallback> = OnceLock::new();
+        let mouse = MOUSE_CALLBACKS.get_or_init(|| NativeXComponentMouseEventCallback {
+            dispatch_mouse_event: Some(dispatch_mouse_event),
+            dispatch_hover_event: Some(dispatch_hover_event),
+        });
+        // A mouse callback is optional — a phone with no pointer never produces one — so a
+        // refusal here is logged and does not fail the bind. Touch is the required input path.
+        // SAFETY: as above; `mouse` is a `'static` block.
+        let mouse_status = unsafe {
+            OH_NativeXComponent_RegisterMouseEventCallback(
+                component,
+                mouse as *const NativeXComponentMouseEventCallback
+                    as *mut NativeXComponentMouseEventCallback,
+            )
+        };
+        if mouse_status != RESULT_SUCCESS {
+            log::warn!(
+                "[harmony] xcomponent: mouse callback not registered (status={mouse_status}); \
              pointer input will not be delivered to this surface"
-        );
-    }
+            );
+        }
 
-    // SAFETY: as above; the function pointers are `'static` items.
-    let key_status = unsafe {
-        OH_NativeXComponent_RegisterKeyEventCallback(component, Some(dispatch_key_event))
-    };
-    if key_status != RESULT_SUCCESS {
-        log::warn!(
-            "[harmony] xcomponent: key callback not registered (status={key_status}); \
+        // SAFETY: as above; the function pointers are `'static` items.
+        let key_status = unsafe {
+            OH_NativeXComponent_RegisterKeyEventCallback(component, Some(dispatch_key_event))
+        };
+        if key_status != RESULT_SUCCESS {
+            log::warn!(
+                "[harmony] xcomponent: key callback not registered (status={key_status}); \
              typing will not reach this surface"
-        );
-    }
-    // SAFETY: as above.
-    let focus_status =
-        unsafe { OH_NativeXComponent_RegisterFocusEventCallback(component, Some(on_focus_event)) };
-    if focus_status != RESULT_SUCCESS {
-        log::warn!("[harmony] xcomponent: focus callback not registered (status={focus_status})");
-    }
-    // SAFETY: as above.
-    let blur_status =
-        unsafe { OH_NativeXComponent_RegisterBlurEventCallback(component, Some(on_blur_event)) };
-    if blur_status != RESULT_SUCCESS {
-        log::warn!("[harmony] xcomponent: blur callback not registered (status={blur_status})");
-    }
+            );
+        }
+        // SAFETY: as above.
+        let focus_status = unsafe {
+            OH_NativeXComponent_RegisterFocusEventCallback(component, Some(on_focus_event))
+        };
+        if focus_status != RESULT_SUCCESS {
+            log::warn!(
+                "[harmony] xcomponent: focus callback not registered (status={focus_status})"
+            );
+        }
+        // SAFETY: as above.
+        let blur_status = unsafe {
+            OH_NativeXComponent_RegisterBlurEventCallback(component, Some(on_blur_event))
+        };
+        if blur_status != RESULT_SUCCESS {
+            log::warn!("[harmony] xcomponent: blur callback not registered (status={blur_status})");
+        }
 
-    BOUND.store(true, Ordering::Release);
-    log::info!(
+        // The accessibility provider is only reachable **through** a live component, so binding
+        // it is part of the bind rather than something a host could do beforehand. A refusal is
+        // logged and does not fail the bind: accessibility is a separate service, and a host
+        // that did not enable it still gets a working surface and input.
+        // SAFETY: `component` is non-null per the guard above and valid per this function's
+        // contract, which is what the provider accessor requires.
+        let a11y = unsafe {
+            super::accessibility::attach_for_component(super::accessibility::bridge(), component)
+        };
+        if !a11y {
+            log::debug!(
+                "[harmony] xcomponent: no accessibility provider for this component; the surface
+             and input work, but no accessibility notifications will be posted"
+            );
+        }
+
+        // Soft-keyboard demand, reported to ArkUI so the on-screen keyboard appears when a text
+        // control takes focus.
+        //
+        // # Why the library asks rather than the host
+        //
+        // Focus lives in `widget::runtime`, which the ArkTS side cannot read: ArkUI only knows
+        // that the whole XComponent has focus, not that the library's focus moved into a
+        // `LineEdit`. `SetNeedSoftKeyboard` is the bridge between the two — it tells ArkUI that
+        // this component wants text input, and ArkUI then raises the keyboard for it.
+        //
+        // `@since 12`, so this is available on every SDK level the rest of the bridge needs
+        // (`GetKeyEventModifierKeyStates` is `@since 20`, the newest thing bound here).
+        // SAFETY: `component` is ArkUI's own pointer and valid for this call.
+        let keyboard_status = unsafe { OH_NativeXComponent_SetNeedSoftKeyboard(component, true) };
+        if keyboard_status != RESULT_SUCCESS {
+            log::warn!(
+                "[harmony] xcomponent: SetNeedSoftKeyboard failed (status={keyboard_status}); the \
+             on-screen keyboard may not appear for text input"
+            );
+        }
+
+        BOUND.store(true, Ordering::Release);
+        log::info!(
         "[harmony] xcomponent: bound; surface, touch, mouse, key and focus callbacks registered"
     );
-    true
+        true
+    }
 }
 
 /// The ArkTS id of the bound XComponent, or `None` when nothing is bound.
@@ -507,26 +625,41 @@ pub fn component_id() -> Option<String> {
     if component == 0 {
         return None;
     }
-    // A zeroed buffer of the exact size the header requires (`OH_XCOMPONENT_ID_LEN_MAX + 1`,
-    // the `+ 1` being the NUL the SDK appends).
-    let mut buffer = vec![0u8; XCOMPONENT_ID_LEN_MAX + 1];
-    let mut size = XCOMPONENT_ID_LEN_MAX as u64;
-    // SAFETY: `component` is the pointer the last successful `bind` stored; `buffer` is
-    // `XCOMPONENT_ID_LEN_MAX + 1` bytes, which is the size the header requires.
-    let status = unsafe {
-        OH_NativeXComponent_GetXComponentId(
-            component as *mut NativeXComponent,
-            buffer.as_mut_ptr() as *mut core::ffi::c_char,
-            &mut size,
-        )
-    };
-    if status != RESULT_SUCCESS {
-        log::error!("[harmony] xcomponent: GetXComponentId failed (status={status})");
+    // A build without the SDK can hold a component address only if something published one,
+    // which only the OHOS arm of `bind` does — so this is unreachable there, and answering
+    // `None` keeps the signature honest rather than calling into a library that is not linked.
+    #[cfg(not(target_env = "ohos"))]
+    {
+        let _ = component;
+        // Same reasoning as `bind`'s host arm: the early exit is what keeps the OHOS block
+        // below from also running, so it is required in that configuration and merely final
+        // in this one.
+        #[allow(clippy::needless_return)]
         return None;
     }
-    let end = buffer.iter().position(|byte| *byte == 0).unwrap_or(buffer.len());
-    buffer.truncate(end);
-    String::from_utf8(buffer).ok()
+    #[cfg(target_env = "ohos")]
+    {
+        // A zeroed buffer of the exact size the header requires (`OH_XCOMPONENT_ID_LEN_MAX + 1`,
+        // the `+ 1` being the NUL the SDK appends).
+        let mut buffer = vec![0u8; XCOMPONENT_ID_LEN_MAX + 1];
+        let mut size = XCOMPONENT_ID_LEN_MAX as u64;
+        // SAFETY: `component` is the pointer the last successful `bind` stored; `buffer` is
+        // `XCOMPONENT_ID_LEN_MAX + 1` bytes, which is the size the header requires.
+        let status = unsafe {
+            OH_NativeXComponent_GetXComponentId(
+                component as *mut NativeXComponent,
+                buffer.as_mut_ptr() as *mut core::ffi::c_char,
+                &mut size,
+            )
+        };
+        if status != RESULT_SUCCESS {
+            log::error!("[harmony] xcomponent: GetXComponentId failed (status={status})");
+            return None;
+        }
+        let end = buffer.iter().position(|byte| *byte == 0).unwrap_or(buffer.len());
+        buffer.truncate(end);
+        String::from_utf8(buffer).ok()
+    }
 }
 
 /// The component pointer the last successful [`bind`] stored, for the on-demand queries.
@@ -590,42 +723,58 @@ pub fn surface_offset() -> Point {
 /// # Safety
 ///
 /// `component` and `window` must be the pointers ArkUI passed to the callback.
+#[cfg(target_env = "ohos")]
 unsafe fn record_surface_size(component: *mut NativeXComponent, window: *mut core::ffi::c_void) {
-    let mut width: u64 = 0;
-    let mut height: u64 = 0;
-    // SAFETY: both pointers come from ArkUI for the duration of this call, and the two out
-    // parameters are local.
-    let status = unsafe {
-        OH_NativeXComponent_GetXComponentSize(component, window, &mut width, &mut height)
-    };
-    if status != RESULT_SUCCESS {
-        log::error!("[harmony] xcomponent: GetXComponentSize failed (status={status})");
+    // A host build has no SDK to ask, so there is no size to record. Reported rather than
+    // guessed: inventing a size would place every control against a fabricated extent.
+    #[cfg(not(target_env = "ohos"))]
+    {
+        let _ = (component, window);
+        log::debug!(
+            "[harmony] xcomponent: this build is not for OpenHarmony, so the surface size \
+             cannot be read; no size was recorded"
+        );
         return;
     }
-    let mut offset_x: f64 = 0.0;
-    let mut offset_y: f64 = 0.0;
-    // SAFETY: as above.
-    let offset_status = unsafe {
-        OH_NativeXComponent_GetXComponentOffset(component, window, &mut offset_x, &mut offset_y)
-    };
-    if offset_status != RESULT_SUCCESS {
-        // Not fatal: the offset only shifts input hit-testing, and `(0, 0)` is the honest
-        // default for a component at the origin of its container.
-        log::warn!("[harmony] xcomponent: GetXComponentOffset failed (status={offset_status})");
+    #[cfg(target_env = "ohos")]
+    {
+        let mut width: u64 = 0;
+        let mut height: u64 = 0;
+        // SAFETY: both pointers come from ArkUI for the duration of this call, and the two out
+        // parameters are local.
+        let status = unsafe {
+            OH_NativeXComponent_GetXComponentSize(component, window, &mut width, &mut height)
+        };
+        if status != RESULT_SUCCESS {
+            log::error!("[harmony] xcomponent: GetXComponentSize failed (status={status})");
+            return;
+        }
+        let mut offset_x: f64 = 0.0;
+        let mut offset_y: f64 = 0.0;
+        // SAFETY: as above.
+        let offset_status = unsafe {
+            OH_NativeXComponent_GetXComponentOffset(component, window, &mut offset_x, &mut offset_y)
+        };
+        if offset_status != RESULT_SUCCESS {
+            // Not fatal: the offset only shifts input hit-testing, and `(0, 0)` is the honest
+            // default for a component at the origin of its container.
+            log::warn!("[harmony] xcomponent: GetXComponentOffset failed (status={offset_status})");
+        }
+        let mut state = surface().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.size = Size::new(width as u32, height as u32);
+        state.offset = Point::new(offset_x.round() as i32, offset_y.round() as i32);
+        log::debug!(
+            "[harmony] xcomponent: surface {}x{} at ({}, {})",
+            state.size.width,
+            state.size.height,
+            state.offset.x,
+            state.offset.y
+        );
     }
-    let mut state = surface().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    state.size = Size::new(width as u32, height as u32);
-    state.offset = Point::new(offset_x.round() as i32, offset_y.round() as i32);
-    log::debug!(
-        "[harmony] xcomponent: surface {}x{} at ({}, {})",
-        state.size.width,
-        state.size.height,
-        state.offset.x,
-        state.offset.y
-    );
 }
 
 /// ArkUI created the surface: it is now the thing this library draws into.
+#[cfg(target_env = "ohos")]
 extern "C" fn on_surface_created(component: *mut NativeXComponent, window: *mut core::ffi::c_void) {
     BOUND_COMPONENT.store(component as usize, Ordering::Release);
     // SAFETY: forwarded from ArkUI's own call.
@@ -635,6 +784,7 @@ extern "C" fn on_surface_created(component: *mut NativeXComponent, window: *mut 
 }
 
 /// The surface changed — most often a resize, which the window layout must follow.
+#[cfg(target_env = "ohos")]
 extern "C" fn on_surface_changed(component: *mut NativeXComponent, window: *mut core::ffi::c_void) {
     // SAFETY: forwarded from ArkUI's own call.
     unsafe { record_surface_size(component, window) };
@@ -650,6 +800,7 @@ extern "C" fn on_surface_changed(component: *mut NativeXComponent, window: *mut 
 }
 
 /// The surface is going away. Frames can no longer be presented.
+#[cfg(target_env = "ohos")]
 extern "C" fn on_surface_destroyed(
     _component: *mut NativeXComponent,
     _window: *mut core::ffi::c_void,
@@ -673,6 +824,7 @@ extern "C" fn on_surface_destroyed(
 /// One callback can carry several contacts. Each is dispatched separately, because the
 /// gesture recognizers expect one event per finger — `Pinch` and `Rotate` need two
 /// independent contacts, and they can only get them from separate events.
+#[cfg(target_env = "ohos")]
 extern "C" fn dispatch_touch_event(
     component: *mut NativeXComponent,
     window: *mut core::ffi::c_void,
@@ -684,26 +836,37 @@ extern "C" fn dispatch_touch_event(
     let Some(widget_id) = mounted_widget() else {
         return;
     };
-    // SAFETY: `touch` is a local, fully zeroed before the call, and the SDK fills it.
-    let mut touch: TouchEvent = unsafe { core::mem::zeroed() };
-    // SAFETY: `component`/`window` are ArkUI's own arguments for this call, and `&mut touch`
-    // is a valid out-parameter.
-    let status = unsafe { OH_NativeXComponent_GetTouchEvent(component, window, &mut touch) };
-    if status != RESULT_SUCCESS {
-        log::error!("[harmony] xcomponent: GetTouchEvent failed (status={status})");
+    // A host build has no SDK to read the event from. Reaching here at all would require a
+    // bound component, which only the OHOS arm of `bind` can publish, so this is a guard
+    // rather than a live path — see the module docs on why the bridge is inert off-target.
+    #[cfg(not(target_env = "ohos"))]
+    {
+        let _ = (component, window, widget_id);
         return;
     }
-    let event_type = TouchEventType::from_raw(touch.event_type);
-    let points = touch.num_points.min(MAX_TOUCH_POINTS as u32) as usize;
-    // `numPoints` is 0 for a single-contact event on some SDK levels, in which case the
-    // top-level `x`/`y`/`id` describe the only contact. Handling that here keeps a tap from
-    // being dropped on the floor.
-    if points == 0 {
-        dispatch_one_touch(widget_id, touch.id as u64, touch.x, touch.y, event_type);
-        return;
-    }
-    for point in touch.touch_points.iter().take(points) {
-        dispatch_one_touch(widget_id, point.id as u64, point.x, point.y, event_type);
+    #[cfg(target_env = "ohos")]
+    {
+        // SAFETY: `touch` is a local, fully zeroed before the call, and the SDK fills it.
+        let mut touch: TouchEvent = unsafe { core::mem::zeroed() };
+        // SAFETY: `component`/`window` are ArkUI's own arguments for this call, and `&mut touch`
+        // is a valid out-parameter.
+        let status = unsafe { OH_NativeXComponent_GetTouchEvent(component, window, &mut touch) };
+        if status != RESULT_SUCCESS {
+            log::error!("[harmony] xcomponent: GetTouchEvent failed (status={status})");
+            return;
+        }
+        let event_type = TouchEventType::from_raw(touch.event_type);
+        let points = touch.num_points.min(MAX_TOUCH_POINTS as u32) as usize;
+        // `numPoints` is 0 for a single-contact event on some SDK levels, in which case the
+        // top-level `x`/`y`/`id` describe the only contact. Handling that here keeps a tap from
+        // being dropped on the floor.
+        if points == 0 {
+            dispatch_one_touch(widget_id, touch.id as u64, touch.x, touch.y, event_type);
+            return;
+        }
+        for point in touch.touch_points.iter().take(points) {
+            dispatch_one_touch(widget_id, point.id as u64, point.x, point.y, event_type);
+        }
     }
 }
 
@@ -720,6 +883,7 @@ extern "C" fn dispatch_touch_event(
 /// The Windows canvas carries the same gate for the same reason (`windows/canvas.rs`,
 /// `WM_TOUCH`), so the two backends answer "no touch capability" identically.
 #[cfg(feature = "touch")]
+#[cfg(target_env = "ohos")]
 fn dispatch_one_touch(
     widget_id: ObjectId,
     touch_id: u64,
@@ -764,6 +928,7 @@ fn dispatch_one_touch(
 }
 
 /// A pointer event arrived.
+#[cfg(target_env = "ohos")]
 extern "C" fn dispatch_mouse_event(
     component: *mut NativeXComponent,
     window: *mut core::ffi::c_void,
@@ -775,48 +940,86 @@ extern "C" fn dispatch_mouse_event(
     let Some(widget_id) = mounted_widget() else {
         return;
     };
-    // SAFETY: `mouse` is a local the SDK fills; the two handles are ArkUI's own arguments.
-    let mut mouse: MouseEvent = unsafe { core::mem::zeroed() };
-    let status = unsafe {
-        // The header exposes `OH_NativeXComponent_GetMouseEvent` with the same shape as the
-        // touch getter.
-        OH_NativeXComponent_GetMouseEvent(component, window, &mut mouse)
-    };
-    if status != RESULT_SUCCESS {
-        log::error!("[harmony] xcomponent: GetMouseEvent failed (status={status})");
+    // A host build has no SDK to read the mouse event from; see `dispatch_touch_event` for why
+    // this guard is unreachable rather than a live path off-target.
+    #[cfg(not(target_env = "ohos"))]
+    {
+        let _ = (component, window, widget_id);
         return;
     }
-    let Some(action) = MouseEventAction::from_raw(mouse.action) else {
-        log::debug!("[harmony] xcomponent: unknown mouse action {}", mouse.action);
-        return;
-    };
-    // The header's button field is a bitfield; the library speaks one button number per event.
-    let button = if mouse.button & mouse_button::RIGHT != 0 {
-        crate::event::mouse_button::SECONDARY
-    } else if mouse.button & mouse_button::MIDDLE != 0 {
-        crate::event::mouse_button::MIDDLE
-    } else {
-        crate::event::mouse_button::PRIMARY
-    };
-    let position = Point::new(mouse.x.round() as i32, mouse.y.round() as i32);
-    let event = match action {
-        MouseEventAction::Press => {
-            crate::event::Event::mouse_press_with(position.x, position.y, button, 0)
+    #[cfg(target_env = "ohos")]
+    {
+        // SAFETY: `mouse` is a local the SDK fills; the two handles are ArkUI's own arguments.
+        let mut mouse: MouseEvent = unsafe { core::mem::zeroed() };
+        let status = unsafe {
+            // The header exposes `OH_NativeXComponent_GetMouseEvent` with the same shape as the
+            // touch getter.
+            OH_NativeXComponent_GetMouseEvent(component, window, &mut mouse)
+        };
+        if status != RESULT_SUCCESS {
+            log::error!("[harmony] xcomponent: GetMouseEvent failed (status={status})");
+            return;
         }
-        MouseEventAction::Release => crate::event::Event::MouseRelease { pos: position, button },
-        MouseEventAction::Move => crate::event::Event::MouseMove { pos: position },
-        // `None` is "the system told us nothing happened", and `Cancel` is the pointer leaving
-        // — which is what a `MouseLeave` reports, so it is delivered rather than dropped. A
-        // hover highlight that is never cleared is the defect that leaves.
-        MouseEventAction::Cancel => crate::event::Event::MouseLeave { pos: position },
-        MouseEventAction::None => return,
-    };
-    if crate::platform::platform_facts().route_pointer_event(widget_id, &event, position) {
-        crate::request_repaint_because(widget_id, crate::RepaintReason::State);
+        let Some(action) = MouseEventAction::from_raw(mouse.action) else {
+            log::debug!("[harmony] xcomponent: unknown mouse action {}", mouse.action);
+            return;
+        };
+        // The header's button field is a bitfield; the library speaks one button number per event.
+        let button = if mouse.button & mouse_button::RIGHT != 0 {
+            crate::event::mouse_button::SECONDARY
+        } else if mouse.button & mouse_button::MIDDLE != 0 {
+            crate::event::mouse_button::MIDDLE
+        } else {
+            crate::event::mouse_button::PRIMARY
+        };
+        let position = Point::new(mouse.x.round() as i32, mouse.y.round() as i32);
+        // Remembered so a subsequent `DispatchHoverEvent(false)` — which carries no position —
+        // can route its `MouseLeave` at the place the pointer actually was.
+        record_pointer_position(position);
+        let event = match action {
+            MouseEventAction::Press => {
+                crate::event::Event::mouse_press_with(position.x, position.y, button, 0)
+            }
+            MouseEventAction::Release => {
+                crate::event::Event::MouseRelease { pos: position, button }
+            }
+            MouseEventAction::Move => crate::event::Event::MouseMove { pos: position },
+            // `None` is "the system told us nothing happened", and `Cancel` is the pointer leaving
+            // — which is what a `MouseLeave` reports, so it is delivered rather than dropped. A
+            // hover highlight that is never cleared is the defect that leaves.
+            MouseEventAction::Cancel => crate::event::Event::MouseLeave { pos: position },
+            MouseEventAction::None => return,
+        };
+        if crate::platform::platform_facts().route_pointer_event(widget_id, &event, position) {
+            crate::request_repaint_because(widget_id, crate::RepaintReason::State);
+        }
     }
 }
 
 /// The pointer entered or left the component.
+///
+/// # Why the leave is routed at the last known pointer position, not the surface origin
+///
+/// This used to pass [`surface_offset()`] as the event's point. That is the component's
+/// **origin inside the ArkUI tree**, not a position in the widget tree — and
+/// `route_pointer_event` hit-tests with the point it is given. The leave was therefore
+/// aimed at whatever sat at the ArkUI origin (usually the root), and a second leave was
+/// produced on top of the one `dispatch_hover_transition` already fires at the previously
+/// hovered widget.
+///
+/// When the pointer genuinely leaves the component there is no new position to report, so
+/// the honest answer is to let the hover transition do its job from the position the
+/// pointer was last seen at, and to route the leave there. The mouse arm records that
+/// position; if it has never been recorded the pointer has not been inside yet and there is
+/// nothing to leave.
+///
+/// # Why entering is a no-op
+///
+/// ArkUI sends this once for the component as a whole. A hover *highlight* belongs to an
+/// individual control, and the mouse-move arm already delivers `MouseMove` at a real
+/// position, which is what drives per-control hover. Synthesising an enter here would
+/// highlight whatever happens to sit at a guessed coordinate.
+#[cfg(target_env = "ohos")]
 extern "C" fn dispatch_hover_event(_component: *mut NativeXComponent, is_hover: bool) {
     if !is_ui_thread() {
         return;
@@ -827,14 +1030,38 @@ extern "C" fn dispatch_hover_event(_component: *mut NativeXComponent, is_hover: 
     if is_hover {
         return;
     }
-    // Leaving the component is a leave for whatever inside it was hovered — the same event the
-    // mouse arm produces for `Cancel`, delivered with the surface origin since the pointer is
-    // already gone.
-    let position = surface_offset();
+    // The pointer is already gone, so the leave is delivered at the position it was last
+    // seen at — the same position the mouse arm recorded.
+    let Some(position) = last_pointer_position() else {
+        return;
+    };
     let event = crate::event::Event::MouseLeave { pos: position };
     if crate::platform::platform_facts().route_pointer_event(widget_id, &event, position) {
         crate::request_repaint_because(widget_id, crate::RepaintReason::State);
     }
+}
+
+/// The last pointer position the mouse arm saw, in component-local coordinates.
+///
+/// `None` until a pointer event has been delivered, which is exactly the state in which
+/// there is nothing to leave. Stored rather than recomputed because the pointer's position
+/// at the moment it left is not reported by ArkUI — the leave callback carries only a
+/// boolean.
+#[cfg(target_env = "ohos")]
+fn last_pointer_position() -> Option<Point> {
+    LAST_POINTER.with(|cell| cell.get())
+}
+
+/// Records the pointer position for a subsequent hover-leave to use.
+#[cfg(target_env = "ohos")]
+fn record_pointer_position(position: Point) {
+    LAST_POINTER.with(|cell| cell.set(Some(position)));
+}
+
+// A cell rather than a mutex: it is touched only from the ArkUI thread (every input
+// callback is guarded by `is_ui_thread`), and it holds a plain `Copy` pair.
+thread_local! {
+    static LAST_POINTER: core::cell::Cell<Option<Point>> = const { core::cell::Cell::new(None) };
 }
 
 /// A key event arrived.
@@ -846,6 +1073,7 @@ extern "C" fn dispatch_hover_event(_component: *mut NativeXComponent, is_hover: 
 /// composition is a separate concern: an IME commits through the ArkTS side's text input, not
 /// through this callback, so a committed string reaches the widget as `Event::TextInput` from
 /// there.
+#[cfg(target_env = "ohos")]
 extern "C" fn dispatch_key_event(
     component: *mut NativeXComponent,
     _window: *mut core::ffi::c_void,
@@ -857,42 +1085,137 @@ extern "C" fn dispatch_key_event(
     let Some(widget_id) = mounted_widget() else {
         return;
     };
-    let mut key_event: *mut core::ffi::c_void = core::ptr::null_mut();
-    // SAFETY: `component` is ArkUI's argument; `&mut key_event` is a valid out-parameter.
-    let status = unsafe { OH_NativeXComponent_GetKeyEvent(component, &mut key_event) };
-    if status != RESULT_SUCCESS || key_event.is_null() {
-        log::error!("[harmony] xcomponent: GetKeyEvent failed (status={status})");
+    // A host build has no SDK to read the key event from; see `dispatch_touch_event` for why
+    // this guard is unreachable rather than a live path off-target.
+    #[cfg(not(target_env = "ohos"))]
+    {
+        let _ = (component, widget_id);
         return;
     }
-    let mut action: i32 = 0;
-    // SAFETY: `key_event` was produced by the call above and is valid for this callback;
-    // `&mut action` is a valid out-parameter.
-    let action_status = unsafe { OH_NativeXComponent_GetKeyEventAction(key_event, &mut action) };
-    if action_status != RESULT_SUCCESS {
-        log::error!("[harmony] xcomponent: GetKeyEventAction failed (status={action_status})");
-        return;
+    #[cfg(target_env = "ohos")]
+    {
+        let mut key_event: *mut core::ffi::c_void = core::ptr::null_mut();
+        // SAFETY: `component` is ArkUI's argument; `&mut key_event` is a valid out-parameter.
+        let status = unsafe { OH_NativeXComponent_GetKeyEvent(component, &mut key_event) };
+        if status != RESULT_SUCCESS || key_event.is_null() {
+            log::error!("[harmony] xcomponent: GetKeyEvent failed (status={status})");
+            return;
+        }
+        let mut action: i32 = 0;
+        // SAFETY: `key_event` was produced by the call above and is valid for this callback;
+        // `&mut action` is a valid out-parameter.
+        let action_status =
+            unsafe { OH_NativeXComponent_GetKeyEventAction(key_event, &mut action) };
+        if action_status != RESULT_SUCCESS {
+            log::error!("[harmony] xcomponent: GetKeyEventAction failed (status={action_status})");
+            return;
+        }
+        let mut code: i32 = 0;
+        // SAFETY: as above.
+        let code_status = unsafe { OH_NativeXComponent_GetKeyEventCode(key_event, &mut code) };
+        if code_status != RESULT_SUCCESS {
+            log::error!("[harmony] xcomponent: GetKeyEventCode failed (status={code_status})");
+            return;
+        }
+        // Only the down action produces a widget event; the up action has no counterpart in the
+        // library's event set, and synthesising one would double-fire every key.
+        const KEY_ACTION_DOWN: i32 = 0;
+        if action != KEY_ACTION_DOWN {
+            return;
+        }
+        let target = crate::widget::runtime::focused_widget().unwrap_or(widget_id);
+        // SAFETY: `key_event` was produced by `GetKeyEvent` at the top of this callback and is
+        // valid for its duration, which is what the modifier accessor requires.
+        let modifiers = unsafe { key_modifiers(key_event) };
+        let event = crate::event::Event::KeyPress { key: code as u32, modifiers };
+        if crate::widget::runtime::dispatch_event(target, &event) {
+            crate::request_repaint_because(widget_id, crate::RepaintReason::State);
+        }
     }
-    let mut code: i32 = 0;
-    // SAFETY: as above.
-    let code_status = unsafe { OH_NativeXComponent_GetKeyEventCode(key_event, &mut code) };
-    if code_status != RESULT_SUCCESS {
-        log::error!("[harmony] xcomponent: GetKeyEventCode failed (status={code_status})");
-        return;
+}
+
+/// Reads the keyboard modifiers held during a key event, in the widget layer's encoding.
+///
+/// # Why this is bound separately
+///
+/// The key callback used to hard-code `modifiers: 0`, so every Ctrl/Shift/Alt chord on
+/// HarmonyOS arrived as an unmodified key: shortcuts never fired, and Shift-selection and
+/// Ctrl-click behaved as plain input. The SDK exposes the state
+/// (`OH_NativeXComponent_GetKeyEventModifierKeyStates`, `@since 20`), it simply was not
+/// called.
+///
+/// # Why the bits are translated rather than passed through
+///
+/// ArkUI's `ArkUI_ModifierKeyName` and this crate's widget-layer bits assign **different**
+/// values to the same three modifiers — ArkUI is `CTRL=1, SHIFT=2, ALT=4` while the widget
+/// layer (see `windows/canvas.rs::current_modifiers`) is `SHIFT=1, CTRL=2, ALT=4`. Passing
+/// ArkUI's word through untranslated would therefore swap Control and Shift, so a
+/// Ctrl-shortcut would fire on Shift. Each bit is mapped explicitly for that reason.
+///
+/// `FN` has no widget-layer counterpart and is deliberately dropped rather than folded into
+/// another key: it is a hardware-layer modifier, and guessing an equivalent would invent an
+/// input the user did not make.
+///
+/// A failed call is reported and answers "no modifiers", which is the honest direction: a
+/// chord that silently loses its modifier is a wrong action, while an unmodified key is at
+/// worst the behaviour this callback had before.
+///
+/// # Safety
+///
+/// `key_event` must be the pointer [`OH_NativeXComponent_GetKeyEvent`] produced for the
+/// callback currently running.
+#[cfg(target_env = "ohos")]
+unsafe fn key_modifiers(key_event: *mut core::ffi::c_void) -> u32 {
+    /// ArkUI's `ARKUI_MODIFIER_KEY_*` bits (`arkui/ui_input_event.h`).
+    const ARKUI_CTRL: u64 = 1 << 0;
+    const ARKUI_SHIFT: u64 = 1 << 1;
+    const ARKUI_ALT: u64 = 1 << 2;
+    /// The widget layer's bits, matching `windows/canvas.rs::current_modifiers`.
+    const WIDGET_SHIFT: u32 = 1;
+    const WIDGET_CONTROL: u32 = 2;
+    const WIDGET_ALT: u32 = 4;
+
+    // A host build has no accessor to call. `0` is the honest answer and the same one a
+    // failed call produces: no modifier, which is the behaviour this callback had before
+    // modifiers were read at all.
+    #[cfg(not(target_env = "ohos"))]
+    {
+        let _ = key_event;
+        return 0;
     }
-    // Only the down action produces a widget event; the up action has no counterpart in the
-    // library's event set, and synthesising one would double-fire every key.
-    const KEY_ACTION_DOWN: i32 = 0;
-    if action != KEY_ACTION_DOWN {
-        return;
-    }
-    let target = crate::widget::runtime::focused_widget().unwrap_or(widget_id);
-    let event = crate::event::Event::KeyPress { key: code as u32, modifiers: 0 };
-    if crate::widget::runtime::dispatch_event(target, &event) {
-        crate::request_repaint_because(widget_id, crate::RepaintReason::State);
+    #[cfg(target_env = "ohos")]
+    {
+        let mut keys: u64 = 0;
+        // SAFETY: `key_event` is the pointer the caller obtained from `GetKeyEvent` for this
+        // callback, which is what this accessor requires; `&mut keys` is a valid out-parameter.
+        let status =
+            unsafe { OH_NativeXComponent_GetKeyEventModifierKeyStates(key_event, &mut keys) };
+        if status != RESULT_SUCCESS {
+            // `@since 20`: on an older SDK the symbol is absent from `libace_ndk` and the call
+            // would not resolve at all, so a non-success result here is a real answer, not a
+            // version check to work around.
+            log::debug!(
+                "[harmony] xcomponent: GetKeyEventModifierKeyStates failed (status={status}); \
+             the key is delivered with no modifiers"
+            );
+            return 0;
+        }
+        let mut modifiers = 0u32;
+        if keys & ARKUI_SHIFT != 0 {
+            modifiers |= WIDGET_SHIFT;
+        }
+        if keys & ARKUI_CTRL != 0 {
+            modifiers |= WIDGET_CONTROL;
+        }
+        if keys & ARKUI_ALT != 0 {
+            modifiers |= WIDGET_ALT;
+        }
+        modifiers
     }
 }
 
 /// The component took focus.
+#[cfg(target_env = "ohos")]
 extern "C" fn on_focus_event(_component: *mut NativeXComponent, _window: *mut core::ffi::c_void) {
     if !is_ui_thread() {
         return;
@@ -906,6 +1229,7 @@ extern "C" fn on_focus_event(_component: *mut NativeXComponent, _window: *mut co
 }
 
 /// The component lost focus.
+#[cfg(target_env = "ohos")]
 extern "C" fn on_blur_event(_component: *mut NativeXComponent, _window: *mut core::ffi::c_void) {
     if !is_ui_thread() {
         return;
@@ -920,7 +1244,10 @@ extern "C" fn on_blur_event(_component: *mut NativeXComponent, _window: *mut cor
 
 // `OH_NativeXComponent_GetMouseEvent` and the key accessors are declared in a second block so
 // the first reads as "what a bind needs" and this one as "what an event needs".
-
+//
+// Gated on the target for the same reason as the first block: a host build has no
+// `libace_ndk`, so a declaration it references cannot link.
+#[cfg(target_env = "ohos")]
 extern "C" {
     /// `@since 9`. Reads the mouse event `DispatchMouseEvent` was called for.
     fn OH_NativeXComponent_GetMouseEvent(
@@ -945,6 +1272,26 @@ extern "C" {
     fn OH_NativeXComponent_GetKeyEventCode(
         key_event: *mut core::ffi::c_void,
         code: *mut i32,
+    ) -> i32;
+
+    /// `@since 20`. Reads the pressed modifier keys as an `ArkUI_ModifierKeyName` bitfield.
+    ///
+    /// Declared here rather than above because it is not needed to *receive* a key, only to
+    /// interpret one — the same split the two `extern "C"` blocks already make.
+    fn OH_NativeXComponent_GetKeyEventModifierKeyStates(
+        key_event: *mut core::ffi::c_void,
+        keys: *mut u64,
+    ) -> i32;
+
+    /// `@since 12`. Tells ArkUI whether this component wants the soft keyboard.
+    ///
+    /// Called from [`bind`] rather than from the key path: ArkUI decides whether a focus
+    /// change should raise the on-screen keyboard from this flag, and the library's focus
+    /// model moves between controls inside one component, so the component as a whole is
+    /// what must ask. Leaving it unset meant text input on a phone had no keyboard at all.
+    fn OH_NativeXComponent_SetNeedSoftKeyboard(
+        component: *mut NativeXComponent,
+        need_soft_keyboard: bool,
     ) -> i32;
 }
 

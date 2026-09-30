@@ -10,6 +10,11 @@
 use crate::platform::harmony::HarmonyPlatform;
 use crate::platform::Platform;
 use crate::WidgetTriggerKind;
+// `ToString` is not in the prelude of a `mini` (`no_std` + `alloc_frugal`) build, and this
+// test file is compiled under every profile the cross-target gate runs — including that one.
+// Importing it explicitly is what keeps `.to_string()` available everywhere rather than only
+// in the profiles that happen to use the `std` prelude.
+use alloc::string::ToString;
 
 #[test]
 fn platform_creates_and_runs() {
@@ -206,17 +211,118 @@ fn destroy_widget_reports_existence() {
 
 /// The Harmony backend is state-only, so it must not advertise a native menu or
 /// inherit desktop defaults that would overstate its capabilities.
+///
+/// # Why each flag is asserted as it is
+///
+/// A `PlatformCapabilities` flag means "the named backing method is implemented **by this
+/// backend** and will answer for this host": `dpi_scale_factor()`, `ime_bridge()` and
+/// `accessibility_bridge()`. So each expectation below is about whether a backing method
+/// exists, not about what ArkUI could theoretically do.
+///
+/// * `dpi_scaling` — always `false`: no `dpi_scale_factor()` override exists, and ArkUI
+///   reports the component's size in pixels, not a density.
+/// * `ime` — always `false`: no `ime_bridge()` override exists. The XComponent bridge does
+///   deliver keys (with modifier state) and does ask ArkUI for the soft keyboard, but that
+///   is direct key input, not an input-method client.
+/// * `accessibility` — **tracks the `xcomponent` feature**, because that is exactly when
+///   `accessibility_bridge()` is implemented. Asserting `false` unconditionally would be
+///   wrong in one of the two configurations, so the expectation is written as the same
+///   `cfg!` the backend uses; the two must agree by construction, and this pins that.
+///
+/// This test previously asserted all three `true` and had gone stale: it encoded a contract
+/// the backend deliberately moved away from when it stopped creating ArkUI controls. The
+/// rule is to **under**-claim rather than over-claim, which is the direction a default must
+/// err.
 #[test]
 fn capabilities_are_explicit_and_honest() {
     let backend = HarmonyPlatform::new();
     let caps = backend.capabilities();
 
     assert_eq!(backend.family(), crate::core::PlatformFamily::Desktop);
-    assert!(caps.dpi_scaling, "DPI scaling is tracked from the host");
-    assert!(caps.ime, "IME state is modelled");
-    assert!(caps.accessibility, "a11y metadata is modelled");
+    assert!(
+        !caps.dpi_scaling,
+        "no `dpi_scale_factor` override exists, so a `true` would promise a method that \
+         cannot answer"
+    );
+    assert!(!caps.ime, "no `ime_bridge` override exists; key input is not an IME client");
+    assert_eq!(
+        caps.accessibility,
+        cfg!(all(feature = "xcomponent", not(alloc_frugal))),
+        "`accessibility` must track whether `accessibility_bridge()` is compiled in, which is \
+         exactly when the XComponent bridge is"
+    );
     assert!(!caps.native_menu, "the Harmony menu is an in-process tree, not an OS menu");
     assert!(caps.typed_widget_trigger, "typed trigger events are supported");
+}
+
+/// The accessibility flag and its method must agree — the capability contract, locally.
+///
+/// `src/platform/tests.rs` states this relation for every backend the host can construct,
+/// but only in the one direction (`flag ⇒ method`). This asserts the pair for Harmony in
+/// **both** directions, because here the flag is not a constant: it is derived from the same
+/// `cfg` as the method, and a future edit that changed one and not the other would silently
+/// produce either an over-claim (a `true` promising `None`) or an under-claim that hides a
+/// working bridge.
+#[test]
+fn the_accessibility_flag_matches_its_bridge() {
+    let backend = HarmonyPlatform::new();
+    let claimed = backend.capabilities().accessibility;
+    let answers = backend.accessibility_bridge().is_some();
+    assert_eq!(
+        claimed, answers,
+        "`accessibility: {claimed}` but `accessibility_bridge()` answers \
+         {answers}; the two are one statement about one fact and must not drift"
+    );
+    if answers {
+        // A bridge that answers must be usable for the half that needs no provider.
+        let bridge = backend.accessibility_bridge().expect("just asserted");
+        bridge.set_accessibility_name(42, "Play");
+        assert_eq!(bridge.accessibility_name(42), Some("Play".to_string()));
+    }
+}
+
+/// Mounting a surface must also tell the XComponent bridge, or input is dead.
+///
+/// # The defect this pins
+///
+/// `mount_surface` used to write the `BackendState` record and nothing else. Recording
+/// the mount makes a widget *visible* (the repaint queue is how the ArkTS side learns a
+/// frame is ready) but not *interactive*: every input callback in `harmony::xcomponent`
+/// opens with `mounted_widget() else { return; }`, and that is the bridge's own record,
+/// written only by `xcomponent::set_mounted_widget`. With no caller, every touch, mouse,
+/// hover, key, focus and blur callback returned on its first line — so the bridge bound
+/// successfully, reported success, and delivered nothing.
+///
+/// # What is asserted, and what is not
+///
+/// Without a bound XComponent, `set_mounted_widget` deliberately **refuses** (a mount that
+/// no surface can present must not be recorded as interactive). So the assertion here is
+/// the observable one: mounting still succeeds for presentation, and the refusal is
+/// reported rather than silent. The positive half — that a bound component accepts the
+/// mount and then routes input — needs a real ArkUI host, and is asserted in
+/// `xcomponent.rs`'s own tests plus the OHOS cross-build.
+#[test]
+fn mounting_a_surface_also_informs_the_xcomponent_bridge() {
+    let backend = HarmonyPlatform::new();
+    let window = backend.create_window("w", 0, 0, 640, 480);
+    let rect = crate::core::Rect::new(0, 0, 100, 40);
+
+    assert!(
+        backend.mount_surface(window, window, rect),
+        "the presentation half must record the mount even with no XComponent bound"
+    );
+    assert_eq!(backend.state.surface_rect(window), Some(rect));
+
+    #[cfg(all(feature = "xcomponent", not(alloc_frugal)))]
+    {
+        // No ArkTS host ran `rw_harmony_bind_xcomponent`, so the bridge must have refused
+        // the mount rather than claiming a widget it cannot route input to.
+        assert_eq!(
+            crate::platform::harmony::xcomponent::mounted_widget(),
+            None,
+            "an unbound bridge must not record a mounted widget"
+        );
+    }
 }
 
 /// The surface contract: the backend hosts library-painted widgets and reports it.

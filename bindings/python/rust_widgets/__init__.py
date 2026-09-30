@@ -789,6 +789,19 @@ class RustWidgets:
         L.rw_take_pending_repaint.restype = c_uint64
         L.rw_report_window_resize.argtypes = [c_uint64, c_uint, c_uint]
         L.rw_report_window_resize.restype = c_bool
+        # The two input-dispatch entry points. A host that owns its own event loop (an
+        # embedded runtime, an engine integration) delivers a pointer or a synthetic
+        # event through these; without them the only way in is a surface the library
+        # created, which a host-driven loop does not have.
+        #
+        # `event_code` is `unsigned int` in the ABI and is a *code*, not a pointer: the
+        # C header takes an `int` because an enum travels as one, and the widget layer
+        # maps it to its own event type. `button` uses the same `mouse_button::*`
+        # constants as the press/release codes.
+        L.rw_dispatch_pointer_event.argtypes = [c_uint64, c_uint, c_int, c_int, c_uint]
+        L.rw_dispatch_pointer_event.restype = c_bool
+        L.rw_dispatch_event_to_widget.argtypes = [c_uint64, c_uint, c_int, c_int, c_uint]
+        L.rw_dispatch_event_to_widget.restype = c_bool
         # `out_pixels` is `c_void_p`, not `c_char_p`: the callee allocates the buffer
         # and the caller releases it with `rw_free_bytes(ptr, len)`, so the raw address
         # must survive the trip without ctypes turning it into a Python bytes object.

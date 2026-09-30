@@ -916,6 +916,18 @@ pub fn dispatch_trigger(widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
             // created through `create_window` actually lives and where the resize was
             // reported. Asking the platform instead would query a different store that
             // never saw this window.
+            //
+            // # Why the no-size case is reported rather than dropped
+            //
+            // This branch used to have no `else`. A `Resized` event whose size could not
+            // be resolved was consumed and discarded in silence — and because the size is
+            // the *only* thing that decides whether the branch does anything, a backend
+            // that queued the event against an id the control backend did not know looked
+            // identical to a window that had simply not been resized. That is how the
+            // Windows `WM_SIZE` arm reported a platform id for years without anyone
+            // noticing: the event was queued, refused on the way in, or resolved to
+            // nothing on the way out, and no log line existed at either point. Warning
+            // here makes the failure diagnosable from the host's own output.
             if let Some((width, height)) = crate::window_client_size(widget_id) {
                 set_window_size(widget_id, width, height);
                 apply_window_layout(widget_id);
@@ -927,6 +939,11 @@ pub fn dispatch_trigger(widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
                 // means a handler that reads its own geometry sees the new box, not the
                 // stale one.
                 crate::widget::runtime::dispatch_resize(widget_id, width, height);
+            } else {
+                log::warn!(
+                    "a Resized trigger arrived for widget {widget_id}, but no client size is \
+                     recorded for it; the layout was not re-run"
+                );
             }
             false
         }
@@ -1436,10 +1453,44 @@ impl WindowHandle {
         });
         apply_window_layout(self.id);
     }
+
+    /// Reports the device scale the window's last layout pass was **asked with**.
+    ///
+    /// # Why this exists
+    ///
+    /// A `BoxLayout`, `FlexLayout` or `WrapLayout` at a window's top level scales its
+    /// gaps and margins by the device's text/DPI scale, and applies a minimum touch
+    /// target. Whether that happened is therefore a property of *which entry point the
+    /// window path called*, and on a host with no text preference and no DPI scaling the
+    /// resulting rectangles are byte-identical either way — so geometry alone cannot
+    /// distinguish "the context was delivered" from "the context was dropped".
+    ///
+    /// This accessor answers that question directly instead of by inference, and it is
+    /// the whole reason it is public rather than test-only: a host diagnosing "my layout
+    /// does not follow the user's text-size setting" needs exactly this fact, and
+    /// `platform::profile::text_scale()` alone cannot tell it whether the layout was
+    /// told.
+    ///
+    /// Returns `None` when no layout is registered for this window, or when the last pass
+    /// ran without a context (`LayoutContext` is not `Copy`-reportable through a trait
+    /// object, so the scale is published rather than the struct).
+    pub fn layout_context_scale(&self) -> Option<f32> {
+        LAYOUT_CONTEXT_SCALES.with(|map| map.borrow().get(&self.id).copied())
+    }
 }
 
 thread_local! {
     static LAYOUTS: RefCell<HashMap<ObjectId, Box<dyn crate::layout::Layout>>> = RefCell::new(HashMap::new());
+}
+
+// The device scale each window's **last** layout pass was asked with.
+//
+// Separate from `LAYOUTS` so the layout itself stays a pure function of its input: a
+// layout has no business remembering the device it was asked for, and
+// `WindowHandle::layout_context_scale` needs the fact even when the caller's layout is an
+// opaque `Box<dyn Layout>` that never implemented `update_with_context`.
+thread_local! {
+    static LAYOUT_CONTEXT_SCALES: RefCell<HashMap<ObjectId, f32>> = RefCell::new(HashMap::new());
 }
 
 /// Apply a window's current layout to all child widget geometries.
@@ -1447,6 +1498,24 @@ thread_local! {
 /// Layouts use the window client area as their coordinate space. Geometry
 /// updates happen after the layout borrow is released so a backend callback
 /// cannot re-enter the layout map while it is borrowed.
+///
+/// # Why the layout is asked with a device context
+///
+/// The window layout is the one place every control's placement is decided, so it is the
+/// place a device fact like text scale and the minimum touch target has to reach. This
+/// used to call [`Layout::update`](crate::layout::Layout::update), which carries no
+/// context, so the three layouts that *do* honour a context — `BoxLayout`, `FlexLayout`,
+/// `WrapLayout` — laid the window's own children out with unscaled gaps and no touch
+/// floor. The same layouts were already being asked correctly one level down, because
+/// [`CompositeBuilder::arrange`](crate::widget::composite::CompositeBuilder::arrange)
+/// routes through `arrange_with_context`; a window whose top level is a `BoxLayout`
+/// therefore disagreed with the composites inside it about the same device.
+///
+/// [`LayoutContext::default`](crate::layout::types::LayoutContext::default) is not a
+/// literal: it reads this device's text scale and recommended touch target, which is what
+/// makes the fix a device fact rather than a constant. A layout that does not override
+/// `update_with_context` inherits the trait default, which forwards to `update`, so every
+/// layout that has not opted in lays out exactly as it did before.
 fn apply_window_layout(window_id: ObjectId) {
     let Some((width, height)) =
         WINDOW_STATES.with(|map| map.borrow().get(&window_id).map(|state| (state.w, state.h)))
@@ -1454,15 +1523,25 @@ fn apply_window_layout(window_id: ObjectId) {
         return;
     };
 
+    let context = crate::layout::types::LayoutContext::default();
+    // Published before the pass so a diagnostic can read the scale that was actually used
+    // even when the layout ignores the context entirely.
+    LAYOUT_CONTEXT_SCALES.with(|map| {
+        map.borrow_mut().insert(window_id, context.layout_scale.max(context.font_scale));
+    });
     let child_geometries = LAYOUTS.with(|map| {
         let map = map.borrow();
         let Some(layout) = map.get(&window_id) else {
             return Vec::new();
         };
         let mut geometries = Vec::new();
-        layout.update(Rect::new(0, 0, width, height), &mut |widget_id, geometry| {
-            geometries.push((widget_id, geometry));
-        });
+        layout.update_with_context(
+            Rect::new(0, 0, width, height),
+            &context,
+            &mut |widget_id, geometry| {
+                geometries.push((widget_id, geometry));
+            },
+        );
         geometries
     });
 
@@ -2744,13 +2823,14 @@ fn apply_panel_geometry(panel_id: ObjectId, rect: Rect) {
         return;
     }
 
+    let context = crate::layout::types::LayoutContext::default();
     let child_geometries = PANEL_LAYOUTS.with(|map| {
         let map = map.borrow();
         let Some(layout) = map.get(&panel_id) else {
             return Vec::new();
         };
         let mut geometries = Vec::new();
-        layout.update(rect, &mut |widget_id, geometry| {
+        layout.update_with_context(rect, &context, &mut |widget_id, geometry| {
             geometries.push((widget_id, geometry));
         });
         geometries
