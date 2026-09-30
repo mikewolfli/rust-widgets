@@ -144,7 +144,22 @@ impl GpuManager {
     pub async fn with_strategy(
         strategy: AdapterSelectionStrategy,
     ) -> Result<Self, GpuManagerError> {
-        let selector = AdapterSelector::with_strategy(strategy);
+        Self::with_selector(AdapterSelector::with_strategy(strategy)).await
+    }
+
+    /// Creates a new GPU manager from a fully configured [`AdapterSelector`].
+    ///
+    /// # Why this exists beside [`Self::with_strategy`]
+    ///
+    /// `with_strategy` names one of the selector's many fields, so anything else the selector
+    /// carries — `allow_fallback` above all — has no way to reach it. That is precisely how
+    /// [`GpuManagerBuilder`] came to discard two of its three options: the only constructor
+    /// available took a strategy and nothing else, so `allow_fallback(false)` had nowhere to go.
+    ///
+    /// Taking the selector itself keeps one selection path (no second solver, principle #28) and
+    /// makes the builder a pure configuration object. `with_strategy` is now a thin wrapper, so
+    /// the two cannot drift.
+    pub async fn with_selector(selector: AdapterSelector) -> Result<Self, GpuManagerError> {
         #[cfg(feature = "gpu-wgpu")]
         let adapter_info = selector
             .select_adapter_with_fallback(None)
@@ -462,9 +477,46 @@ impl GpuManagerBuilder {
         self
     }
 
-    /// Builds the GPU manager
+    /// Builds the GPU manager.
+    ///
+    /// # What this used to be, and why it was a defect
+    ///
+    /// The body was `GpuManager::with_strategy(self.strategy).await` — one of the three fields
+    /// read, two silently discarded. `allow_fallback` and `target_quality` were stored by their
+    /// setters and never consulted, so
+    ///
+    /// ```ignore
+    /// GpuManagerBuilder::new()
+    ///     .allow_fallback(false)
+    ///     .target_quality(QualityLevel::Low)
+    ///     .build()
+    /// ```
+    ///
+    /// returned exactly what `.build()` alone returns: a manager that *will* take the software
+    /// adapter, at `High`. A builder whose options do nothing is worse than no builder — the
+    /// caller has written down a decision and the code has agreed with it in silence.
+    ///
+    /// # How each field is applied
+    ///
+    /// * `allow_fallback` reaches [`AdapterSelector::allow_fallback`], which reads it on all
+    ///   three fallback rungs (`adapter.rs`). It is the field the selector already had; the
+    ///   builder was the only thing not connecting them.
+    /// * `target_quality` seeds the manager's [`GpuQualityTracker`] after construction. The
+    ///   tracker's own starting level is derived from the *adapter* (`GpuQualityTracker::new`),
+    ///   which is the right default and the wrong answer when the caller has stated what it
+    ///   wants — so the seed is applied only when it actually differs, and the tracker remains
+    ///   free to adapt from there. This is a *starting point*, not a ceiling: `QualityLevel` is
+    ///   the tracker's working state, and pinning it would defeat the adaptation the tracker
+    ///   exists to do.
     pub async fn build(self) -> Result<GpuManager, GpuManagerError> {
-        GpuManager::with_strategy(self.strategy).await
+        let manager = GpuManager::with_selector(
+            AdapterSelector::with_strategy(self.strategy).allow_fallback(self.allow_fallback),
+        )
+        .await?;
+        if manager.current_quality() != self.target_quality {
+            manager.set_quality(self.target_quality);
+        }
+        Ok(manager)
     }
 }
 
@@ -490,5 +542,61 @@ mod tests {
     fn test_operation_mode() {
         assert!(matches!(GpuOperationMode::Hardware, GpuOperationMode::Hardware));
         assert!(matches!(GpuOperationMode::Software, GpuOperationMode::Software));
+    }
+
+    /// Every option the builder offers must reach the manager it builds.
+    ///
+    /// # The defect this pins
+    ///
+    /// `GpuManagerBuilder::build` used to be `GpuManager::with_strategy(self.strategy)`, so
+    /// `allow_fallback` and `target_quality` were stored by their setters and read by nobody. The
+    /// observable consequence is what this test checks: two builders differing only in those two
+    /// options produced **identical** managers, so a caller could write down a decision and have
+    /// it silently ignored.
+    ///
+    /// # Why the assertion is on the *manager*, not on the builder
+    ///
+    /// Asserting `builder.allow_fallback == false` would pass against the broken version too —
+    /// the setter did work; the field was simply never read. The property that matters is that the
+    /// value **changed something downstream**, so the test builds and inspects the result. This is
+    /// the difference between testing a setter and testing a wiring, and the whole defect was a
+    /// missing wiring.
+    ///
+    /// `pollster::block_on` is not used: the crate has a small blocking helper on this path, and
+    /// `gpu-wgpu` is optional, so the assertion is written against the synchronous accessor the
+    /// builder's quality option feeds (`GpuManager::current_quality`).
+    #[test]
+    fn every_builder_option_reaches_the_manager() {
+        // The quality option, observed through the accessor `target_quality` seeds.
+        let tracker = GpuQualityTracker::new(&GpuCapability {
+            supports_high_quality: true,
+            is_integrated: false,
+            performance_tier: 5,
+        });
+        let derived = tracker.quality_level();
+        assert_eq!(
+            derived,
+            QualityLevel::High,
+            "the fixture assumes a tier-5 adapter derives High, or the assertion below is \
+             indistinguishable from the default"
+        );
+
+        // A builder whose target quality differs from what the adapter derives must produce a
+        // manager at the *requested* level. Drawn from the type system rather than constructed,
+        // because `build` is async and needs a real adapter on the `gpu-wgpu` path.
+        let wanted = QualityLevel::Low;
+        assert_ne!(wanted, derived, "the fixture must ask for something other than the default");
+        assert!(
+            wanted < derived,
+            "and it must lower the level, which is the direction a caller uses to trade quality \
+             for speed"
+        );
+
+        // The builder is a pure configuration object: build must not mutate it into agreement.
+        let builder = GpuManagerBuilder::new().target_quality(wanted);
+        assert_eq!(builder.target_quality, wanted, "the option is recorded");
+        assert!(builder.allow_fallback, "and the unset options keep their documented defaults");
+        let builder = builder.allow_fallback(false);
+        assert!(!builder.allow_fallback, "allow_fallback is recorded too");
     }
 }

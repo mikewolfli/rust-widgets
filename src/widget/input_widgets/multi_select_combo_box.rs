@@ -26,7 +26,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::collections::HashSet;
@@ -348,10 +348,16 @@ impl Widget for MultiSelectComboBox {
             bottom: side_air,
             left: dimensions::TEXT_FIELD_PADDING_H,
         };
-        // Content width: the summary's own text, at a nominal advance per character. A hint has
-        // no `RenderContext` to measure with, and a hint a few pixels generous is the safe
-        // direction — the paint path *fits* the summary into the box this produced.
-        let content = Size::new(self.summary_text().len() as u32 * 8, 0);
+        // Content width: the summary's own text, through the shared estimate. A hint has no
+        // `RenderContext` to measure with, and a hint a few pixels generous is the safe direction
+        // — the paint path *fits* the summary into the box this produced.
+        //
+        // It used to be `len() as u32 * 8` (UTF-8 bytes); see `editable_combo_box` for why a byte
+        // count is not the generous direction but a wrong one for any non-ASCII summary.
+        let content = Size::new(
+            estimate_text_width(&self.summary_text(), &crate::core::Font::default(), 1.0),
+            0,
+        );
         let floor = Size::new(
             dimensions::TEXT_FIELD_MIN_HEIGHT + trailing,
             dimensions::TEXT_FIELD_MIN_HEIGHT,

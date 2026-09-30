@@ -36,9 +36,7 @@ use super::types::{IosHandleKind, IosMobilePlatform};
 use crate::compat::atomic::Ordering;
 use crate::compat::{format, lock, String};
 use crate::core::PlatformFamily;
-use crate::platform::{
-    DropEvent, Platform, PlatformCapabilities, WidgetTriggerEvent, WidgetTriggerKind,
-};
+use crate::platform::{Platform, PlatformCapabilities, WidgetTriggerEvent, WidgetTriggerKind};
 use core::time::Duration;
 use std::thread;
 
@@ -52,6 +50,10 @@ use std::thread;
 const FRAME_INTERVAL_MS: u64 = 16;
 
 impl Platform for IosMobilePlatform {
+    // The uniform widget-property methods are answered once, over `self.state`, by the
+    // shared expansion in `platform::state_impl` rather than re-written per backend.
+    crate::impl_platform_state_properties!();
+
     fn as_any(&self) -> &dyn crate::compat::Any {
         self
     }
@@ -138,11 +140,28 @@ impl Platform for IosMobilePlatform {
         Some(self)
     }
 
+    /// Capabilities published by the iOS backend.
+    ///
+    /// # Why `dpi_scaling`, `ime` and `accessibility` are `false`
+    ///
+    /// All three used to be `true` with nothing behind them: `grep` over `src/platform/ios/`
+    /// finds no `dpi_scale_factor()`, no `ime_bridge()` and no `accessibility_bridge()`, so
+    /// each flag promised a method that fell through to the trait default (`1.0`, `None`,
+    /// `None`). `dpi_scaling: true` was additionally a **fabricated value** — the constant
+    /// `1.0` reported for a platform whose screens are 2x and 3x (principle #37).
+    ///
+    /// `set_widget_ime_enabled` and `set_widget_accessibility_name` are not a counter-argument:
+    /// they write per-widget fields in `BackendState`, which is a flag store, not an input
+    /// method client or an accessibility tree. A flag names the capability, not the storage of
+    /// a boolean about it.
+    ///
+    /// The honest values are `false`. `typed_widget_trigger` stays `true` — this backend
+    /// implements the queue (`poll_widget_trigger_event` et al.), so it cannot be absent.
     fn capabilities(&self) -> PlatformCapabilities {
         PlatformCapabilities {
-            dpi_scaling: true,
-            ime: true,
-            accessibility: true,
+            dpi_scaling: false,
+            ime: false,
+            accessibility: false,
             native_menu: false,
             typed_widget_trigger: true,
         }
@@ -236,48 +255,13 @@ impl Platform for IosMobilePlatform {
         id
     }
 
-    fn set_widget_text(&self, widget_id: u64, text: &str) {
-        let _ = self.state.set_text(widget_id, text);
-    }
-
-    fn set_widget_geometry(&self, widget_id: u64, x: i32, y: i32, width: u32, height: u32) {
-        self.state.set_geometry(widget_id, x, y, width, height);
-    }
-
-    fn set_widget_ime_enabled(&self, widget_id: u64, enabled: bool) -> bool {
-        self.state.set_ime_enabled(widget_id, enabled)
-    }
-
-    fn is_widget_ime_enabled(&self, widget_id: u64) -> bool {
-        self.state.ime_enabled(widget_id)
-    }
-
-    fn set_widget_accessibility_name(&self, widget_id: u64, name: &str) -> bool {
-        self.state.set_accessibility_name(widget_id, name)
-    }
-
-    fn get_widget_accessibility_name(&self, widget_id: u64) -> String {
-        self.state.accessibility_name(widget_id)
-    }
-
+    // ─── Menu Bar / Menu / Menu Item ───
     fn set_clipboard_text(&self, text: &str) -> bool {
         self.state.set_clipboard_text(text)
     }
 
     fn get_clipboard_text(&self) -> String {
         self.state.clipboard_text()
-    }
-
-    fn begin_drag(&self, source_widget_id: u64, mime: &str, payload: &[u8]) -> bool {
-        self.state.begin_drag(source_widget_id, mime, payload)
-    }
-
-    fn poll_drop_event(&self) -> Option<DropEvent> {
-        self.state.pop_drop_event()
-    }
-
-    fn inject_drop_event(&self, event: DropEvent) -> bool {
-        self.state.inject_drop_event(event)
     }
 
     // ─── Menu Bar / Menu / Menu Item ───
@@ -438,31 +422,7 @@ impl Platform for IosMobilePlatform {
 
     // ─── Show / Hide ───
 
-    fn show_widget(&self, widget_id: u64) {
-        self.state.set_visible(widget_id, true);
-    }
-
-    fn hide_widget(&self, widget_id: u64) {
-        self.state.set_visible(widget_id, false);
-    }
-
     // ─── Enabled / Visible ───
-
-    fn set_widget_enabled(&self, widget_id: u64, enabled: bool) {
-        self.state.set_enabled(widget_id, enabled);
-    }
-
-    fn is_widget_enabled(&self, widget_id: u64) -> bool {
-        self.state.enabled(widget_id)
-    }
-
-    fn set_widget_visible(&self, widget_id: u64, visible: bool) {
-        self.state.set_visible(widget_id, visible);
-    }
-
-    fn is_widget_visible(&self, widget_id: u64) -> bool {
-        self.state.visible(widget_id)
-    }
 }
 
 #[cfg(all(test, not(alloc_frugal)))]
@@ -525,17 +485,48 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    /// The iOS state backend's published capability set, asserted against the two documents that
+    /// publish it.
+    ///
+    /// # Why the expectations are `false` for three of the five
+    ///
+    /// This test previously asserted `dpi_scaling`, `ime` and `accessibility` were all `true`, and
+    /// the backend's `capabilities()` agreed with it — so the pair was self-consistently wrong. The
+    /// flags are promises about methods, and `grep` over `src/platform/ios/` finds no
+    /// `dpi_scale_factor()`, no `ime_bridge()` and no `accessibility_bridge()`: each flag promised
+    /// one that fell through to the trait default (`1.0`, `None`, `None`).
+    ///
+    /// `dpi_scaling: true` was the worst of the three because the default it hid is a
+    /// **fabricated value** — the constant `1.0`, reported for a platform whose screens are 2x and
+    /// 3x (principle #37). A host that trusted it would lay out a phone UI at desktop scale and
+    /// see it half-size.
+    ///
+    /// `typed_widget_trigger` stays `true` and is the one with a real producer: the backend owns
+    /// the queue and forwards it (`poll_widget_trigger_event` and friends).
+    ///
+    /// The three documents that publish this row — this test, `docs_paths_tests.rs`'s two tables
+    /// and the cookbook matrix in three languages — now agree, because a capability table that
+    /// only *some* of its copies were corrected is how the previous round's macOS row went stale.
+    ///
+    /// `native_menu: false` is unchanged and correct: the backend keeps the menu tree in-process.
     #[test]
     fn ios_platform_reports_explicit_mobile_capabilities() {
         let platform = IosMobilePlatform::new();
         let caps = platform.capabilities();
 
         assert_eq!(platform.family(), PlatformFamily::Mobile);
-        assert!(caps.dpi_scaling);
-        assert!(caps.ime);
-        assert!(caps.accessibility);
-        assert!(!caps.native_menu);
-        assert!(caps.typed_widget_trigger);
+        assert!(
+            !caps.dpi_scaling,
+            "no `dpi_scale_factor()` override exists, so the flag would promise the trait's \
+             default `1.0` — a fabricated scale for a 2x/3x screen"
+        );
+        assert!(!caps.ime, "no `ime_bridge()` override exists, so the flag would promise `None`");
+        assert!(
+            !caps.accessibility,
+            "no `accessibility_bridge()` override exists, so the flag would promise `None`"
+        );
+        assert!(!caps.native_menu, "the menu tree is kept in-process, so no OS menu is created");
+        assert!(caps.typed_widget_trigger, "the backend owns and forwards the trigger queue");
     }
 
     /// The host must create **no** control: the library paints every `WidgetKind`,

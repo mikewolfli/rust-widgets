@@ -766,6 +766,55 @@ class RustWidgets:
         L.rw_poll_drop_event.restype = c_bool
 
         # ------------------------------------------------------------------ #
+        # Widget surfaces (hosts that own their own drawing API)               #
+        # ------------------------------------------------------------------ #
+        L.rw_mount_surface.argtypes = [
+            c_uint64,  # parent
+            c_uint64,  # widget_id
+            c_int,  # x
+            c_int,  # y
+            c_uint,  # width
+            c_uint,  # height
+        ]
+        L.rw_mount_surface.restype = c_bool
+        L.rw_resize_surface.argtypes = [c_uint64, c_int, c_int, c_uint, c_uint]
+        L.rw_resize_surface.restype = c_bool
+        L.rw_unmount_surface.argtypes = [c_uint64]
+        L.rw_unmount_surface.restype = c_bool
+        L.rw_invalidate_surface.argtypes = [c_uint64]
+        L.rw_invalidate_surface.restype = c_bool
+        L.rw_supports_surfaces.argtypes = []
+        L.rw_supports_surfaces.restype = c_bool
+        L.rw_take_pending_repaint.argtypes = []
+        L.rw_take_pending_repaint.restype = c_uint64
+        L.rw_report_window_resize.argtypes = [c_uint64, c_uint, c_uint]
+        L.rw_report_window_resize.restype = c_bool
+        # `out_pixels` is `c_void_p`, not `c_char_p`: the callee allocates the buffer
+        # and the caller releases it with `rw_free_bytes(ptr, len)`, so the raw address
+        # must survive the trip without ctypes turning it into a Python bytes object.
+        L.rw_render_surface_frame.argtypes = [
+            c_uint64,  # widget_id
+            c_uint,  # width
+            c_uint,  # height
+            POINTER(c_uint),  # out_width
+            POINTER(c_uint),  # out_height
+            POINTER(c_uint),  # out_stride
+            POINTER(c_uint),  # out_len
+            POINTER(c_void_p),  # out_pixels
+        ]
+        L.rw_render_surface_frame.restype = c_bool
+
+        # ------------------------------------------------------------------ #
+        # ArkUI XComponent bridge (OpenHarmony, feature 'xcomponent')           #
+        # ------------------------------------------------------------------ #
+        L.rw_harmony_bind_xcomponent.argtypes = [c_uint64]
+        L.rw_harmony_bind_xcomponent.restype = c_bool
+        L.rw_harmony_xcomponent_id.argtypes = []
+        # `c_void_p`, not `c_char_p`: the callee allocates this and the caller frees it with
+        # `rw_free_string`, so the raw address has to survive the trip.
+        L.rw_harmony_xcomponent_id.restype = c_void_p
+
+        # ------------------------------------------------------------------ #
         # Error state                                                         #
         # ------------------------------------------------------------------ #
         L.rw_error_code.argtypes = [c_uint64]

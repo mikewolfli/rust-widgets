@@ -5,7 +5,7 @@
 </p>
 
 一个用纯 Rust 编写的跨平台 GUI 库。它**由自己绘制每一个控件**——整个 crate 里没有一处
-`CreateWindowExW`、`NSButton`、`gtk_button_new` 或 `android.widget.Button`——并且可以渲染到窗口、
+`NSButton`、`gtk_button_new` 或 `android.widget.Button`，唯一的 `CreateWindowExW` 就是创建窗口本身那一次——并且可以渲染到窗口、
 PNG 或 SVG。桌面、平板、移动、嵌入式，以及最小化的 `mini` 配置均在支持之列。
 
 自绘控件值得这份投入，是因为：
@@ -318,7 +318,7 @@ icon.set_icon("disclosure");
 
 ## 语言绑定
 
-`C ABI` 位于 `src/bindings/`，通过 130 个 `rw_*` 函数暴露每个控件，并提供基于能力的属性与事件模型。C、C++、
+`C ABI` 位于 `src/bindings/`，通过 142 个 `rw_*` 函数暴露每个控件，并提供基于能力的属性与事件模型。C、C++、
 Python 与 Java（JNI）绑定都在 CI 中运行；生成的头文件由 `tools/check_abi.sh` 检查漂移。
 
 见 [`cookbook/zh-CN/src/chapters/language-bindings.md`](cookbook/zh-CN/src/chapters/language-bindings.md)。

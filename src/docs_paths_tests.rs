@@ -176,22 +176,35 @@ fn documented_error_semantics_hold() {
     );
 }
 
-/// The OS capability matrix published in `README.md` must match the source.
+/// The OS capability matrix published in the cookbook must match the source.
 ///
 /// # Why this test exists
 ///
-/// The README prints a per-OS table of `PlatformCapabilities` flags — five columns
+/// The cookbook prints a per-OS table of `PlatformCapabilities` flags — four columns
 /// of check marks that a reader has no way to verify. It is exactly the kind of
-/// table that goes stale silently, and drafting it by hand already produced two
-/// errors: I had Linux/GTK and macOS down as `native_menu: ❌` when in fact they
-/// inherit the trait default for the `Desktop` family, which is `true`.
+/// table that goes stale silently, and drafting it by hand has now produced errors
+/// **twice**:
+///
+/// 1. Linux/GTK and macOS were down as `native_menu: ❌` when they inherit the trait
+///    default for the `Desktop` family, which was then `true`.
+/// 2. After the default became an honest all-`false`, Windows and macOS were left as
+///    `native_menu: ✅` / `dpi_scaling: ✅` even though **neither backend implements
+///    any menu method and the macOS backend never queries the screen scale**. The
+///    flag means "this backend wires the OS facility up", not "this OS has one", and
+///    the second reading is what the table had.
+///
+/// The second error is the instructive one: the first was a transcription slip, the
+/// second was a *semantic* error in how the column was understood. The assertions
+/// below therefore pin the meaning, not just the digits — see the doc comment on
+/// [`documented_matrix_matches_real_backends`], which cross-checks the same rows
+/// against live backend objects on any host that can construct them.
 ///
 /// # How it verifies, given backends cannot be constructed off-host
 ///
-/// Every backend now declares its own `capabilities()` (the trait default is an honest
+/// Every backend declares its own `capabilities()` (the trait default is an honest
 /// all-`false`, so an inheritance can no longer stand in for a real answer), and this test
-/// keeps the README from silently restating that default: a documented `Desktop` row that
-/// equals the default is a row that records nothing.
+/// keeps the published matrix from silently restating that default: a documented `Desktop`
+/// row that equals the default is a row that records nothing.
 ///
 /// [`documented_matrix_matches_real_backends`] closes the stronger hole by constructing
 /// every backend that can be built on the running host and comparing its *actual*
@@ -204,12 +217,21 @@ fn published_os_capability_matrix_matches_the_trait_default() {
     // The published table, as (name, dpi, ime, a11y, native_menu).
     // Transcribed from the cookbook's `chapters/platform-support.md` § "1.3 Platform services
     // do vary by OS", which is the matrix a host reads before choosing a build.
+    //
+    // `windows` and `macos` are `native_menu: false` and `macos` is additionally
+    // `dpi_scaling: false`, because the column records an implementation rather than an
+    // OS feature. Those two rows are the ones a reader is most likely to "correct" by
+    // hand, so the comment is here to say why they look surprising.
     let documented: &[(&str, PlatformFamily, bool, bool, bool, bool)] = &[
-        ("windows", PlatformFamily::Desktop, true, true, true, true),
-        ("macos", PlatformFamily::Desktop, true, true, true, true),
+        ("windows", PlatformFamily::Desktop, true, true, true, false),
+        ("macos", PlatformFamily::Desktop, false, true, true, false),
         ("linux-gtk", PlatformFamily::Desktop, true, true, true, false),
-        ("wayland", PlatformFamily::Desktop, true, true, true, false),
-        ("ios", PlatformFamily::Mobile, true, true, true, false),
+        // Wayland answers `dpi_scale_factor()` from `GDK_SCALE`/`QT_SCALE_FACTOR` (so `dpi_scaling`
+        // is honest) but overrides neither `ime_bridge()` nor `accessibility_bridge()`: there is no
+        // Wayland `text-input` binding and no Wayland a11y bridge in this crate, so both flags would
+        // promise a method that answers `None`.
+        ("wayland", PlatformFamily::Desktop, true, false, false, false),
+        ("ios", PlatformFamily::Mobile, false, false, false, false),
         ("android", PlatformFamily::Mobile, true, true, true, false),
         ("harmony", PlatformFamily::Desktop, true, true, true, false),
         ("wasm", PlatformFamily::Embedded, false, false, false, false),
@@ -289,19 +311,64 @@ fn documented_matrix_matches_real_backends() {
     use crate::core::PlatformFamily;
     use crate::platform::{Platform, PlatformCapabilities};
 
-    /// `(published_name, family, dpi, ime, a11y, native_menu)` — the README table's
-    /// per-backend row, named by `Platform::backend_name()`.
+    /// `(published_name, family, dpi, ime, a11y, native_menu)` — the per-backend row, keyed by
+    /// the name the test's own `built` list uses.
+    ///
+    /// # The keys are test keys, not `backend_name()`s — and that gap hid a stale row
+    ///
+    /// It used to say these were "named by `Platform::backend_name()`". They are not: the loop
+    /// uses the tuple name purely as a lookup key (see `find(..)` below) and never asserts
+    /// `name == backend.backend_name()`. Two rows were therefore describing backends that do not
+    /// answer to them — `"linux-gtk"` is a `LinuxPlatform` whose real name is `"gtk"` or
+    /// `"linux-state-backend"`, and the old `"android-desktop"` named a backend that exists
+    /// nowhere else in the tree. The names are kept as keys because renaming them is churn, but
+    /// the doc now says what they are.
+    ///
+    /// # Why `linux-gtk`'s `dpi_scaling` is computed rather than written
+    ///
+    /// `LinuxPlatform::capabilities()` reports
+    /// `dpi_scaling: self.dpi_scale_factor() != 1.0 || cfg!(feature = "gtk-native")` — a
+    /// **feature-and-environment-dependent** answer, not a constant. The published table said a
+    /// flat `true`, so the row and the backend disagreed on every build that is not GTK-native,
+    /// which is what this test caught. The expectation is computed the same way the backend
+    /// computes it rather than hard-coding one build's answer. (The cookbook's human-readable
+    /// matrix still prints `✅`, because it describes a GTK-backed build; this row has to hold on
+    /// any host the test runs on.)
     type Row = (&'static str, PlatformFamily, bool, bool, bool, bool);
-    const PUBLISHED: &[Row] = &[
-        ("WindowsPlatform", PlatformFamily::Desktop, true, true, true, true),
-        ("cocoa", PlatformFamily::Desktop, true, true, true, true),
-        ("macos-objc2-preview", PlatformFamily::Desktop, true, true, true, true),
-        ("linux-gtk", PlatformFamily::Desktop, true, true, true, false),
-        ("wayland", PlatformFamily::Desktop, true, true, true, false),
-        ("ios-state-backend", PlatformFamily::Mobile, true, true, true, false),
+    let expect_linux_dpi = {
+        #[cfg(target_os = "linux")]
+        {
+            crate::platform::linux::LinuxPlatform::new().dpi_scale_factor() != 1.0
+                || cfg!(feature = "gtk-native")
+        }
+        // The row is only ever compared on a host where `LinuxPlatform` is constructible, and the
+        // `built` list below gates it the same way — so this value is unreachable elsewhere and
+        // need not describe another host's answer.
+        #[cfg(not(target_os = "linux"))]
+        {
+            true
+        }
+    };
+    let published: &[Row] = &[
+        // `native_menu: false` on all three desktop backends with an OS menu API: the flag records
+        // an implementation, not an OS feature. See `PlatformCapabilities::native_menu` and each
+        // backend's `capabilities()` for the per-flag evidence.
+        ("WindowsPlatform", PlatformFamily::Desktop, true, true, true, false),
+        // macOS also reports `dpi_scaling: false`: AppKit supplies the screen scale, but this
+        // backend does not query it, so `dpi_scale_factor()` answers the trait default `1.0`.
+        ("cocoa", PlatformFamily::Desktop, false, true, true, false),
+        ("macos-objc2-preview", PlatformFamily::Desktop, false, false, false, false),
+        ("linux-gtk", PlatformFamily::Desktop, expect_linux_dpi, true, true, false),
+        // Wayland: `dpi_scaling` is true because `dpi_scale_factor()` really answers; `ime` and
+        // `accessibility` are false because neither bridge method is overridden. See its
+        // `capabilities()` doc for the grep evidence.
+        ("wayland", PlatformFamily::Desktop, true, false, false, false),
+        // iOS reports the honest absence of all three: no `dpi_scale_factor()` (so the flag would
+        // promise the fabricated `1.0` on a 2x/3x screen), no `ime_bridge()`, no
+        // `accessibility_bridge()`. See its `capabilities()` doc for the grep evidence.
+        ("ios-state-backend", PlatformFamily::Mobile, false, false, false, false),
         ("android-mobile", PlatformFamily::Mobile, true, true, true, false),
-        ("android-desktop", PlatformFamily::Mobile, true, true, true, false),
-        ("harmony-desktop", PlatformFamily::Desktop, true, true, true, false),
+        ("harmony-state-backend", PlatformFamily::Desktop, true, true, true, false),
         ("wasm-state-backend", PlatformFamily::Embedded, false, false, false, false),
         ("portable", PlatformFamily::Embedded, false, false, false, false),
     ];
@@ -352,10 +419,10 @@ fn documented_matrix_matches_real_backends() {
     assert!(!built.is_empty(), "no backend was constructible, so nothing was verified");
 
     for (name, backend) in &built {
-        let row = PUBLISHED.iter().find(|(row_name, ..)| row_name == name).unwrap_or_else(|| {
+        let row = published.iter().find(|(row_name, ..)| row_name == name).unwrap_or_else(|| {
             panic!(
                 "backend '{name}' is constructible but has no published README row; add \
-                     its row to PUBLISHED and to the README matrix"
+                     its row to `published` and to the README matrix"
             )
         });
         let actual = backend.capabilities();

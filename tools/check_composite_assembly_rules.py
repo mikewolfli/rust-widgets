@@ -105,6 +105,22 @@ CONCRETE_CTOR = re.compile(
 LAYOUT_ENTRY = re.compile(
     r"CompositeBuilder::new|\.arrange\(|\.add_widget\(|Layout::arrange\(\s*|layout\.add_widget\("
 )
+# Rule 9: the band an `arrange` is handed, so the check is about the *argument* rather than about
+# any invented rect in the function.
+ARRANGES_INTO = re.compile(r"\.arrange\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)", re.DOTALL)
+
+# Rule 9: an invented rect whose extent is a bare identifier rather than a literal.
+#
+# The optional `as <ty>` matters: `total as u32` is how the defect was actually spelled in
+# `tab_view` (`total + TAB_SPACING * n` with a cast to the rect's `u32`), so a pattern that stopped
+# at the identifier would have missed the very case it was written for. A literal extent does
+# **not** match — a fixed-size chrome rect is not derived from the children and cannot silently
+# absorb a shortfall.
+INVENTED_BAND = re.compile(
+    r"Rect::new\(\s*0\s*,\s*0\s*,\s*[A-Za-z_][A-Za-z0-9_.]*\s*(?:as\s+[A-Za-z_][A-Za-z0-9_]*\s*)?[,)]"
+)
+
+
 def production_part(text: str) -> str:
     """`text` with every `#[cfg(test)]` module removed.
 
@@ -235,6 +251,140 @@ def check_one_hints_channel() -> list[str]:
     return findings
 
 
+def check_rule_9_band_is_the_callers_room() -> list[str]:
+    """[9] A composite must lay its children out in the room it was **given**, not in a band
+    derived from the children's own total.
+
+    # The defect this catches
+
+    §B.6 rule 9 is that `min` and `fill` are separate declarations, and the whole point of
+    asking a layout is that it answers "what fits in the room I have?". A composite that
+    computes its arranging rect from the sum of the very sizes it is about to hand the layout
+    has not asked that question at all — it has handed the layout a band that fits *by
+    construction*, so `compute_main_sizes` always sees `remaining >= 0` and the shrink pass can
+    never run. Every `min` the children declare is then unobservable, and a strip that cannot
+    pay for its content silently overhangs its own control instead of compressing.
+
+    This is the §B.5.1 shape verbatim: the hand-rolled accumulator was not removed, it was
+    **moved** from `rect.x + i * width` into the rect's *width*. It is also why this gate had
+    to grow a rule: rules 1 and 2 are satisfied by any code that reaches the factory and the
+    layout, and this defect satisfies both while undermining the reason to reach them.
+
+    # The two shapes found in this crate
+
+    * `tab_view`: `let run = Rect::new(0, 0, total + TAB_SPACING * n, height)` where `total` is
+      the sum of the same `widths` the loop registers.
+    * `menu`: `column.arrange(Rect::new(0, 0, width, self.popup_height()), ..)` where
+      `popup_height()` is the sum of the row heights the loop just registered.
+
+    Both are matched by looking for a `Rect::new(0, 0, ..)` (a rect with no source rectangle —
+    an *invented* band) whose width or height argument is an identifier, **and whose construction
+    never mentions `geometry()`**, and which is then passed to `arrange`. A composite that
+    arranges into a rect it was handed (`band`, `strip`, `rect`, `content_row`) passes, and so
+    does one that derives its band from the control's own rectangle.
+
+    # What this deliberately does not attempt
+
+    Two shapes are out of scope, both because they are not the defect:
+
+    * A rect the composite genuinely owns — `scroll_area`'s
+      `Rect::new(0, 0, width, content_row_h)` derives a *fallback* for a child the layout did not
+      report, not the band it arranges in — is not passed to `arrange`.
+    * `tab_widget`'s `Rect::new(0, 0, extent, TAB_HEIGHT)`. It *is* an invented rect holding an
+      identifier, and it *is* arranged into, but it is **not** a defect: `tab_width_hints()`
+      compares the tabs' total against `rect`, the control's own real extent, and when they do not
+      fit computes an explicit `share` and declares *that* as the triple. The shortfall is known
+      to the control before the band is built, so the invented extent is the arithmetic that
+      follows the fit decision rather than one that replaces it. `tab_view`'s defect was the
+      opposite order: it never compared against anything, and the band encoded the answer.
+      The `geometry()` exclusion is exactly this distinction, and it is a *lexical* proxy for it —
+      narrow, so the check errs toward reporting.
+    """
+    findings: list[str] = []
+    for path in sorted(pathlib.Path("src/widget").rglob("*.rs")):
+        text = production_part(path.read_text())
+        if "CompositeBuilder::new" not in text:
+            continue
+        # The search is scoped to the enclosing function body rather than to a fixed window after
+        # `.arrange(`, because the band is an argument to `arrange` only half the time: `tab_view`
+        # built it in a `let` several lines above. A 220-character window seemed generous and was
+        # not — it stopped one line short of the binding, and the injection below proved it.
+        #
+        # A "function body" is approximated as "from the nearest preceding `fn ` to the `arrange`
+        # call", which is what makes the scope a statement about the code rather than about the
+        # gate's window size. It errs toward *reporting*: a false positive is visible and cheap to
+        # argue with, whereas a window that is one line too small is silent.
+        for match in re.finditer(r"\.arrange\s*\(", text):
+            body_start = text.rfind("fn ", 0, match.start())
+            body_start = body_start if body_start >= 0 else 0
+            bound = ARRANGES_INTO.search(text, match.start())
+            if not bound:
+                continue
+            # The *name* of the rect handed to `arrange`. A rect built inline at the call site
+            # (`arrange(Rect::new(0, 0, total, h), ..)`) has no name; the search then runs from the
+            # call itself so the inline form is still seen.
+            name = bound.group(1)
+            inline = text[match.start() : match.end() + 40]
+            bound_at = text.rfind(f"let {name} = ", body_start, match.start())
+            if bound_at < 0:
+                # Not a named binding: only the inline spelling can be the defect.
+                found = INVENTED_BAND.search(inline)
+                if not found:
+                    continue
+                line = text[: match.start()].count("\n") + 1
+                spelling = found.group(0).strip()
+            else:
+                # # Why the fit has to be decided *in this function*
+                #
+                # The distinguishing question is not "does a rectangle appear", and not "does
+                # the word `geometry()` appear somewhere in the file" — it is whether **the band
+                # is the room the caller supplied**. Two shapes pass that test and one does not:
+                #
+                # * A band that names the room (`band`, `strip`, `rect`, `content_row`) — table
+                #   stakes, handled by the `bound_at < 0` branch above.
+                # * A band derived from the control's own rectangle **in this function**. Nothing
+                #   else in the body can produce the room, so its presence proves the shortfall was
+                #   measured here.
+                #
+                # The shape that fails is the whole point of the rule: `tab_view`'s band was
+                # `Rect::new(0, 0, total + gaps, h)` with no reference to anything the control was
+                # given, so the layout could never see a shortfall.
+                #
+                # # Why `tab_widget` passes, and it is not a loophole
+                #
+                # Its band is `Rect::new(0, 0, extent, TAB_HEIGHT)` — invented, holding an
+                # identifier — but the band is only the *assembly's own coordinate frame*. The fit
+                # decision happens one level up and **is** measured against the room:
+                # `tab_width_hints()` compares the tabs' total against `rect`, the control's real
+                # extent, and when they do not fit computes an explicit `share` and declares that
+                # as the triple. The shortfall was therefore already resolved; the invented extent
+                # is the arithmetic that *follows* the fit decision instead of replacing it, and
+                # the run is translated into the control afterwards. That is the opposite order
+                # from `tab_view`, which is the defect.
+                #
+                # The proxy is deliberately lexical and narrow: the metric that the distinction
+                # rests on — "was the shortfall compared against the caller's room?" — is a data
+                # flow question this gate cannot answer without building a symbol table, so it
+                # asks the nearest checkable question instead. Being narrow is what makes a
+                # false negative possible; being broad made the check report `tab_widget`'s
+                # already-fixed design, which is worse.
+                production = text[body_start:match.start()]
+                if "geometry()" in production:
+                    continue
+                found = INVENTED_BAND.search(text[bound_at : match.start()])
+                if not found:
+                    continue
+                line = text[: found.start() + bound_at].count("\n") + 1
+                spelling = found.group(0).strip()
+            findings.append(
+                f"{path.as_posix()}:{line} arranges into a band invented from a bare extent "
+                f"(`{spelling}`) with no reference to the control's own geometry. §B.6 rule 9 "
+                f"requires the band to be the room the caller supplied, or the layout can never "
+                f"see a shortfall and every child `min` is unobservable"
+            )
+    return findings
+
+
 def check_rule_5_paired_links() -> list[str]:
     """[5] A host that puts a child on the tree must write **both** sides of the link.
 
@@ -315,6 +465,7 @@ def run() -> list[str]:
     findings += check_builder_still_offers_the_channel()
     findings += check_one_hints_channel()
     findings += check_rule_5_paired_links()
+    findings += check_rule_9_band_is_the_callers_room()
     checked = 0
     for name, path_str in COMPOSITES:
         path = pathlib.Path(path_str)
@@ -360,6 +511,36 @@ def inject() -> int:
     return 1
 
 
+def inject_rule_9() -> int:
+    """Break §B.6 rule 9 (the band is the caller's room) and require the gate to notice.
+
+    The injection restores exactly the shape the rule was written for — `tab_view`'s band
+    derived from the tabs' own measured widths — so the check is proven against the defect that
+    motivated it rather than against a synthetic string.
+    """
+    path_str = "src/widget/nav_widgets/tab_view.rs"
+    path = pathlib.Path(path_str)
+    original = path.read_text()
+    broken = original.replace(
+        "            let run = strip;",
+        "            let run = Rect::new(0, 0, widths_total as u32, height);",
+        1,
+    )
+    if broken == original:
+        print(f"❌ rule-9 injection point not found in {path_str}")
+        return 1
+    try:
+        path.write_text(broken)
+        found = check_rule_9_band_is_the_callers_room()
+    finally:
+        path.write_text(original)
+    if found:
+        print("✅ reverse injection: a band invented from a bare extent is detected")
+        return 0
+    print("❌ reverse injection: a band invented from a bare extent was NOT detected")
+    return 1
+
+
 def inject_rule_1() -> int:
     """Break §B.6 rule 1 and require the gate to notice."""
     name, path_str = COMPOSITES[0]
@@ -387,7 +568,7 @@ def inject_rule_1() -> int:
 
 def main() -> int:
     if "--inject" in sys.argv:
-        return inject() | inject_rule_1() | inject_rule_5()
+        return inject() | inject_rule_1() | inject_rule_5() | inject_rule_9()
 
     findings = run()
     print()

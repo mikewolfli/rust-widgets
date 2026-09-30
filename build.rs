@@ -189,6 +189,10 @@ fn check_system_dependencies() {
         "windows" => check_windows(),
         _ => {}
     }
+    // Not part of the match above: the XComponent bridge is a *feature*, not a target, and it
+    // can be enabled on any host (where it compiles and then fails to link). Checking it here
+    // means the message appears whichever target is being built.
+    check_xcomponent();
 }
 
 fn check_linux() {
@@ -214,6 +218,85 @@ fn check_macos() {
 fn check_windows() {
     if feature_enabled("video-codecs") {
         warn("'video-codecs' feature requires FFmpeg. Install: vcpkg install ffmpeg");
+    }
+}
+
+/// Emits the link directive for the ArkUI XComponent bridge, and warns when it cannot work.
+///
+/// # Why this is a build script concern and not a `#[link]` attribute
+///
+/// The library lives in the OpenHarmony SDK's sysroot, at a path only the environment knows.
+/// `cargo-ohos` computes the sysroot and passes `-L` for it; a `#[link(name = "ace_ndk")]`
+/// attribute would additionally require naming the library the same way on every SDK layout.
+/// Emitting `cargo:rustc-link-lib` from here keeps the name in one place and lets the preflight
+/// below explain a failure before the linker does — a link error alone reads as "undefined
+/// symbol: OH_NativeXComponent_*", which does not tell a reader that the SDK is missing.
+///
+/// # The honest half
+///
+/// On a host build (`x86_64-unknown-linux-gnu`, not `*-ohos`) there is no `libace_ndk` to
+/// link, so enabling the feature there links against nothing and fails at link time. That is
+/// the *correct* behaviour for a feature that requires a target SDK — but silently, it wastes
+/// a whole build. The warning below says so up front.
+fn check_xcomponent() {
+    if !feature_enabled("xcomponent") {
+        return;
+    }
+    // The library is `libace_ndk.z.so`, so the link name is `ace_ndk.z` and not `ace_ndk` —
+    // the `.z` is part of the soname the SDK ships (`OHOS` uses it for the zh-CN build variant,
+    // and it is present in every SDK layout). Getting this wrong compiles fine and then fails
+    // with `unable to find library -lace_ndk`, which names a library that does not exist rather
+    // than the one that does.
+    println!("cargo:rustc-link-lib=ace_ndk.z");
+    // The SDK's own sysroot is where the `.so` lives, and `cargo-ohos` sets `--sysroot` for the
+    // compiler but does not add the arch-specific library directory to the linker's search
+    // path. Adding it here is what makes the bridge linkable rather than merely compilable.
+    if let Ok(native) = std::env::var("OHOS_SDK_NATIVE") {
+        let target = std::env::var("TARGET").unwrap_or_default();
+        let arch_dir = match target.split('-').next().unwrap_or_default() {
+            "aarch64" => "aarch64-linux-ohos",
+            "armv7" | "arm" => "arm-linux-ohos",
+            "x86_64" => "x86_64-linux-ohos",
+            other => {
+                warn(&format!(
+                    "'xcomponent' is enabled for target '{target}', whose OHOS library directory \
+                     this build script does not know; expected one of aarch64/armv7/x86_64. \
+                     Link will fail unless the SDK's lib directory is passed with -L."
+                ));
+                let _ = other;
+                ""
+            }
+        };
+        if !arch_dir.is_empty() {
+            let lib_dir = format!("{native}/sysroot/usr/lib/{arch_dir}");
+            if std::path::Path::new(&lib_dir).is_dir() {
+                println!("cargo:rustc-link-search=native={lib_dir}");
+            } else {
+                warn(&format!(
+                    "'xcomponent': expected the OpenHarmony libraries at '{lib_dir}', which does \
+                     not exist. Check that OHOS_SDK_NATIVE points at the SDK's 'native' directory."
+                ));
+            }
+            // Rust needs to find the shared object at link time; the device supplies it at run
+            // time from its own system libraries.
+            println!("cargo:rustc-link-arg=-Wl,-rpath-link,{lib_dir}");
+        }
+    } else {
+        warn("'xcomponent' is enabled but OHOS_SDK_NATIVE is not set.");
+        warn("  The ArkUI bridge links the SDK's 'libace_ndk.z.so':");
+        warn("    export OHOS_SDK_NATIVE=<sdk>/linux/native");
+        warn("  and build for an ohos target, e.g.:");
+        warn("    cargo ohos build -t aarch64 --features 'harmony xcomponent'");
+        warn("  A host build will compile but fail to link (no libace_ndk on the host).");
+    }
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    if target_env != "ohos" {
+        warn(&format!(
+            "'xcomponent' is enabled for target_os='{target_os}' target_env='{target_env}', which is \
+             not an OpenHarmony target. The bridge needs the ohos sysroot's libace_ndk, so this \
+             build will fail to link. Use a '*-unknown-linux-ohos' target."
+        ));
     }
 }
 

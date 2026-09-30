@@ -2938,8 +2938,6 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
 
     // The root's own painting is part of the frame: a window draws its background and
     // chrome, which the children then sit on top of.
-    // TEMP DIAGNOSTIC: split the root draw from the child walk.
-    let t_root = std::time::Instant::now();
     let mut painted = with_widget_mut(id, |widget| {
         let Some(drawable) = widget.as_draw_mut() else {
             return false;
@@ -2954,10 +2952,7 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
         true
     })
     .unwrap_or(false);
-    let root_us = t_root.elapsed().as_micros();
 
-    let mut slowest: (u128, u64) = (0, 0);
-    let mut child_total = 0u128;
     if painted {
         // Children are drawn into the same frame, so the traversal only issues draw calls;
         // the frame was begun above and is ended once below.
@@ -2969,7 +2964,6 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
             if !is_visible(current) {
                 continue;
             }
-            let t_child = std::time::Instant::now();
             let drew = with_widget_mut(current, |widget| {
                 let Some(drawable) = widget.as_draw_mut() else {
                     return false;
@@ -2981,16 +2975,6 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
                 true
             })
             .unwrap_or(false);
-            let child_us = t_child.elapsed().as_micros();
-            child_total += child_us;
-            if child_us > slowest.0 {
-                slowest = (child_us, current);
-            }
-            if child_us > 300 {
-                let kind = with_widget(current, |w| format!("{:?}", w.kind()))
-                    .unwrap_or_else(|| "?".into());
-                eprintln!("[TREE-SLOW] {child_us}us kind={kind} id={current}");
-            }
             if drew {
                 painted = true;
             }
@@ -3003,10 +2987,6 @@ pub fn render_frame_tree(id: ObjectId, size: Size, clear: crate::core::Color) ->
     if !painted {
         return None;
     }
-    eprintln!(
-        "[TREE] root={root_us}us children_total={child_total}us slowest={}us(id={})",
-        slowest.0, slowest.1
-    );
     backend.end_frame();
     Some(backend.frame_rgba().to_vec())
 }

@@ -628,7 +628,18 @@ impl WidgetProperties for ListBox {
             "current_row" => {
                 match value {
                     CapabilityValue::Null => self.set_current_row(None),
-                    other => self.set_current_row(Some(expect_usize(other)?)),
+                    other => {
+                        let row = expect_usize(other)?;
+                        // See `ComboBox`'s `current_index` arm: the model setter ignores an
+                        // out-of-range row, so the *property* setter has to refuse it. Reporting
+                        // `Ok` for a write the control discarded is what made
+                        // `rw_list_box_set_current_index(99)` return `true` on a three-item box
+                        // and then read back as unselected.
+                        if row >= self.items().len() {
+                            return Err(CapabilityAccessError::OutOfRange);
+                        }
+                        self.set_current_row(Some(row));
+                    }
                 }
                 Ok(())
             }

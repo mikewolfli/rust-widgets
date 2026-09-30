@@ -94,18 +94,33 @@ impl Platform for MacOSPlatform {
         PlatformFamily::Desktop
     }
 
-    /// macOS honours all four host integrations, stated explicitly.
+    /// The host integrations this backend actually provides.
     ///
-    /// The trait default is now an honest all-`false` (see [`Platform::capabilities`]), so each
-    /// backend says what it actually provides instead of inheriting an inference from its family.
-    /// AppKit supplies the screen scale, the input-method client, the accessibility tree and the
-    /// application menu, so all four are `true` here.
+    /// # Why `native_menu` and `dpi_scaling` are `false`
+    ///
+    /// The comment above used to claim "AppKit supplies the screen scale, the
+    /// input-method client, the accessibility tree and the application menu, so all
+    /// four are `true`". The premise is true about AppKit and false about this type:
+    /// `grep` over `src/platform/macos/` finds **no** `create_menu_bar`,
+    /// `menu_add_item` or `attach_menu_bar_to_window`, and no `dpi_scale_factor`
+    /// override — so both flags promised methods that are not there.
+    ///
+    /// The distinction matters because a flag is a promise the negotiation acts on: a
+    /// host that reads `native_menu: true` asks the backend for a menu bar and gets id
+    /// `0`, and a host that reads `dpi_scaling: true` lays out for a scale factor the
+    /// backend cannot report and silently gets `1.0`.
+    ///
+    /// `ime` and `accessibility` stay `true`: both have real implementations reachable
+    /// from this backend (`ime_bridge()` → `ImeMacosBridge`, `accessibility_bridge()` →
+    /// the AppKit bridge), and `shortcut_style()` really is `Mac`. What is fixed here is
+    /// only the pair with no implementation behind it (principle #37 — an honest
+    /// absence, not a fabricated value).
     fn capabilities(&self) -> PlatformCapabilities {
         PlatformCapabilities {
-            dpi_scaling: true,
+            dpi_scaling: false,
             ime: true,
             accessibility: true,
-            native_menu: true,
+            native_menu: false,
             typed_widget_trigger: true,
         }
     }
@@ -206,6 +221,36 @@ impl Platform for MacOSPlatform {
             NSApp().stop_(nil);
         }
     }
+    /// Pops the next typed widget-trigger event from this backend's queue.
+    ///
+    /// # Why this backend must delegate
+    ///
+    /// [`PlatformCapabilities::typed_widget_trigger`] claims this backend produces and delivers
+    /// typed triggers, and it holds a `BackendState` (the shared queue) exactly like `harmony`,
+    /// `android`, `ios`, `wayland`, `windows` and `mobile` — every one of which writes these two
+    /// lines. This backend did not, so both methods fell through to the trait defaults (`None` /
+    /// `false`) while the flag said `true`.
+    ///
+    /// The gap is reachable rather than theoretical: `NativeControlBackend` forwards both straight
+    /// to `get_platform()`, so an injected trigger was accepted and then dropped on the floor.
+    fn poll_widget_trigger_event(&self) -> Option<crate::platform::WidgetTriggerEvent> {
+        self.state.pop_widget_trigger_event()
+    }
+
+    /// Pushes a typed widget-trigger event, refusing ids this backend never made.
+    fn inject_widget_trigger_event(
+        &self,
+        widget_id: ObjectId,
+        kind: crate::platform::WidgetTriggerKind,
+    ) -> bool {
+        self.state.inject_widget_trigger_event(widget_id, kind)
+    }
+
+    /// Pops the next pending trigger as a bare id, over the same queue as the typed view.
+    fn poll_widget_triggered(&self) -> Option<ObjectId> {
+        self.poll_widget_trigger_event().map(|event| event.widget_id)
+    }
+
     fn destroy_widget(&self, widget_id: ObjectId) -> bool {
         // Teardown is safe on any thread: nothing here messages AppKit. The
         // retained native objects (NSWindow/NSView instances) stay referenced by
@@ -565,6 +610,57 @@ impl Platform for MacOSPlatform {
 
     fn clipboard_backend(&self) -> Option<&dyn RichClipboardBackend> {
         Some(&self.clipboard)
+    }
+
+    // ── Drag and drop ───────────────────────────────────────────────────────
+    //
+    // # The gap this closes
+    //
+    // This backend implemented none of the three drag-and-drop methods, so it inherited the
+    // trait defaults (`false`/`None`) and a drag started here did nothing at all — while the
+    // same call worked on Windows, on every mobile backend and on the portable host. There was
+    // no error to notice: `begin_drag` returns `bool` and the callers that ignore it, ignore it.
+    //
+    // # What is implemented, and what is not
+    //
+    // These are the **state-backed** drag and drop the Windows backend also uses: a payload and
+    // a MIME type are recorded against the source widget, and a drop event is queued for the
+    // host to poll. That is a complete, usable in-process contract — a host that owns its own
+    // drag session (an `NSDraggingSession`, an ArkUI drag, a browser `dragstart`) reports the
+    // result through `inject_drop_event`, and a library-internal drag works end to end without
+    // any AppKit involvement.
+    //
+    // What is deliberately **not** here is a native `NSDraggingSession`: starting and driving
+    // one requires an `NSPasteboard`, an `IDraggingSource` implementation and a live event loop,
+    // none of which can be verified on a Linux host. Claiming it by writing the code and never
+    // running it is the failure mode the project's own standards forbid; the state contract
+    // above is what can be delivered honestly today, and the Windows backend records the same
+    // choice in the same words.
+
+    /// Records a drag originating at `source_widget_id`, with its payload.
+    ///
+    /// Returns `false` for an id this backend did not create, so a drag cannot be started from
+    /// a widget that is not there.
+    fn begin_drag(&self, source_widget_id: ObjectId, mime: &str, payload: &[u8]) -> bool {
+        self.state.begin_drag(source_widget_id, mime, payload)
+    }
+
+    /// Pops the next drop event, if one is queued.
+    fn poll_drop_event(&self) -> Option<crate::platform::DropEvent> {
+        self.state.pop_drop_event()
+    }
+
+    /// Queues a drop event, as a host-reported drop would.
+    ///
+    /// # Why the refusal is checked here and not left to the queue
+    ///
+    /// A drop naming a widget that does not exist could only be dispatched against a recycled
+    /// id, so an unknown target is refused rather than queued.
+    fn inject_drop_event(&self, event: crate::platform::DropEvent) -> bool {
+        if !self.state.contains_widget(event.target_widget_id) {
+            return false;
+        }
+        self.state.inject_drop_event(event)
     }
 
     fn accessibility_bridge(&self) -> Option<&dyn AccessibilityBridge> {

@@ -28,27 +28,42 @@ objc2 backend. **Both are now native-verified** (see below).
 
 ## What is implemented
 
+> **Corrected 2026-09-30.** The two tables below used to claim per-kind native controls, an
+> `NSMenu` menu bar and `NSAlert`/`NSOpenPanel` dialogs. **None of that is in the code.** BLUE15
+> #55/#56 removed per-kind control creation (the library paints every `WidgetKind`), and these rows
+> were never updated — `grep -rn "NSButton\|NSTextField\|NSAlert\|NSOpenPanel" src/platform/macos/`
+> matches only prose in this file, and `grep -c "fn create_" platform_impl.rs` returns **1**
+> (`create_window`). Because a status table is what a host reads before choosing a build, the
+> overstatement was the "documentation describes behaviour the code does not have" defect rather
+> than a stale note. Each row below now names what the backend actually overrides, and the
+> capability flags in `capabilities()` are the machine-checkable form of the same statement
+> (`tools/check_capability_flags_match_their_methods.sh`).
+
 ### cocoa-legacy backend (`src/platform/macos/platform_impl.rs`)
 
 | Area | Status | Notes |
 |---|---|---|
-| `Platform` contract (all `create_*`) | ✅ Implemented | real `NSWindow`/`NSButton`/`NSTextField`/`NSPopover`… on the main thread |
+| `create_window` | ✅ Implemented | a real `NSWindow` on the main thread |
 | Native window registered with AppKit | ✅ Verified | `NSApplication.windows.count >= 1` after `create_window` |
-| Menu bar (`NSMenu` + `NSMenuItem`) | ✅ Verified | installed as `NSApplication.mainMenu` |
-| Clipboard (`NSPasteboard`) | ✅ Verified | round-trip on the main thread |
-| Dialogs (`NSAlert`/`NSOpenPanel`/`NSColorPanel`/`NSFontPanel`) | ✅ Verified | objects created; modal presentation left to the caller |
-| Geometry / visibility / enabled | ✅ Verified | reflected on the live `NSButton.frame` |
+| Per-kind controls (`create_button`…) | ⛔ Removed | BLUE15 #55/#56 — the library paints every `WidgetKind`, so there is no `NSButton`/`NSTextField` and `grep` finds none |
+| Menu bar (`NSMenu`) | ⛔ Removed | no `create_menu_bar`/`menu_add_item` override; `native_menu: false`, and `menu_item_shortcut()`/`poll_menu_triggered()` are the only menu-shaped methods left |
+| Dialogs (`NSAlert` / `NSOpenPanel`) | ⛔ Removed | no `create_message_box`/`create_file_dialog` override |
+| Widget surfaces (`mount_surface` + repaint queue) | ✅ Implemented | the library-painted path every `WidgetKind` now uses |
+| Clipboard (`NSPasteboard`) | ✅ Verified | round-trip on the main thread; also `clipboard_backend()` for rich content |
+| IME / accessibility bridges | ✅ Implemented | `ime_bridge()` and `accessibility_bridge()` both answer with real bridges, which is why `capabilities()` reports `ime`/`accessibility` as `true` |
+| Geometry / visibility / text / enabled | ✅ Verified | reflected on the live native objects |
 | Off-main-thread calls | ✅ Guarded | state-only fallback (`ptr == 0`), never aborts |
 
 ### objc2 backend (`src/platform/macos_objc2/`)
 
 | Area | Status | Notes |
 |---|---|---|
-| `Platform` contract (all `create_*`) | ✅ Implemented | real AppKit objects; state fallback off-main |
+| `create_window` | ✅ Implemented | real AppKit object; state fallback off-main |
 | `init()` bootstraps `NSApplication` | ✅ Added 2026-09-11 | `sharedApplication` + `finishLaunching` |
 | Native window registered with AppKit | ✅ Verified | `NSApplication.windows.count >= 1` |
-| Menu bar (`NSMenu` + `NSMenuItem`) | ✅ Added 2026-09-11 | real items/submenus + `setMainMenu` install |
-| Clipboard / dialogs | ✅ Verified | `NSPasteboard`, `NSAlert`/`NSOpenPanel`/panels |
+| Per-kind controls / menu bar / dialogs | ⛔ Not implemented | this backend overrides no `create_*` except `create_window`; `capabilities()` reports `ime`, `accessibility`, `native_menu` and `dpi_scaling` all `false` for exactly that reason |
+| Widget surfaces | ✅ Implemented | records displayed widgets and returns their frames |
+| Clipboard | ✅ Verified | `NSPasteboard` |
 | Geometry / visibility / text | ✅ Verified | `setNative…` helpers |
 | Off-main-thread calls | ✅ Guarded | `objc2::MainThreadMarker::new()` before every `create_*` |
 

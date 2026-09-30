@@ -663,6 +663,43 @@ impl TabWidget {
         }
     }
 
+    /// The close affordance's rectangle inside `tab_rect`.
+    ///
+    /// # Why this is a method and not two copies
+    ///
+    /// `draw` and `handle_event` both need this rectangle, and they had it twice — differently.
+    /// The paint path used `CLOSE_SIZE` and centred on `tab_line.y` (the title's own line box, from
+    /// which the ✕ is drawn); the hit test used a bare `12` and centred on `tab_rect.y` (the whole
+    /// tab). Two consequences, both small enough to miss by eye:
+    ///
+    /// * the literal `12` was a second copy of `CLOSE_SIZE`, so changing the glyph size would have
+    ///   moved what is painted and left what is clickable where it was;
+    /// * the two origins differ by half a line, so the glyph's top and bottom rows fell outside its
+    ///   own hit area while a band of the tab *above* the glyph was clickable.
+    ///
+    /// # Why the line box is measured here rather than passed in
+    ///
+    /// `handle_event` has no `RenderContext` — a pointer event arrives without one — so the hit test
+    /// cannot call `text_line`. It can ask the same context-free quantity the centred line is built
+    /// from: `estimate_line_height`. `text_line` centres a glyph box of `measure_text("M")` height
+    /// inside the band, and `estimate_line_height` is that height's context-free counterpart — the
+    /// same relationship `Label::implicit_size` relies on. Deriving both from corresponding heights
+    /// keeps the two origins within a pixel rather than half a line, and having **one** derivation is
+    /// what stops them being edited apart again.
+    ///
+    /// Returns `None` when the control is not closable, so a caller cannot render or hit-test an
+    /// affordance that is not offered.
+    fn close_button_rect(&self, tab_rect: Rect, font: &Font) -> Option<Rect> {
+        if !self.closable {
+            return None;
+        }
+        let line_height = crate::widget::metrics::estimate_line_height(font, 1.0) as i32;
+        let line_top = tab_rect.y + ((tab_rect.height as i32 - line_height) / 2).max(0);
+        let close_x = tab_rect.x + tab_rect.width as i32 - CLOSE_SIZE - CLOSE_LABEL_GAP;
+        let close_y = line_top + (line_height - CLOSE_SIZE) / 2;
+        Some(Rect::new(close_x, close_y, CLOSE_SIZE as u32, CLOSE_SIZE as u32))
+    }
+
     fn tab_rect(&self, index: usize) -> Option<Rect> {
         if index >= self.tabs.len() {
             return None;
@@ -754,6 +791,14 @@ const TAB_TEXT_PADDING: i32 = 24;
 
 /// Side of a tab's close button, in logical pixels.
 const CLOSE_SIZE: i32 = 12;
+/// Gap between the close glyph and the tab's trailing edge.
+///
+/// Named because the paint path, the title's clip width and the hit test all need the same
+/// distance; the title additionally reserves [`CLOSE_TITLE_CLEARANCE`] so the elided caption stops
+/// before the glyph rather than underneath it.
+const CLOSE_LABEL_GAP: i32 = 5;
+/// Extra room the title reserves past [`CLOSE_LABEL_GAP`].
+const CLOSE_TITLE_CLEARANCE: i32 = 5;
 
 /// The drag payload type a tab move carries.
 ///
@@ -907,23 +952,19 @@ impl EventHandler for TabWidget {
             Event::MousePress { pos, button, .. } if *button == 1 => {
                 if let Some(index) = self.tab_at_position(*pos) {
                     if self.tabs[index].enabled {
-                        // Check if the click is on the close button area
-                        if self.closable {
-                            let close_size = 12;
-                            if let Some(tab_rect) = self.tab_rect(index) {
-                                let close_x = tab_rect.x + tab_rect.width as i32 - close_size - 5;
-                                let close_y =
-                                    tab_rect.y + (tab_rect.height as i32 - close_size) / 2;
-                                let close_rect = Rect::new(
-                                    close_x,
-                                    close_y,
-                                    close_size as u32,
-                                    close_size as u32,
-                                );
-                                if close_rect.contains(*pos) {
-                                    self.tab_close_requested.emit(index);
-                                    return;
-                                }
+                        // Check if the click is on the close button area.
+                        //
+                        // The rectangle comes from `close_button_rect`, the **same** method
+                        // `draw` uses. It used to be written out here with a bare `12` centred on
+                        // the tab instead of on the title's line box, so changing the glyph size
+                        // moved what was painted and left what was clickable behind — and the two
+                        // origins differed by half a line, which put the glyph's outer rows outside
+                        // its own hit area.
+                        if let Some(tab_rect) = self.tab_rect(index) {
+                            let close_rect = self.close_button_rect(tab_rect, &Font::default());
+                            if close_rect.is_some_and(|close_rect| close_rect.contains(*pos)) {
+                                self.tab_close_requested.emit(index);
+                                return;
                             }
                         }
                         self.set_current_index(index);
@@ -1074,7 +1115,7 @@ impl Draw for TabWidget {
                     x: tab_rect.x,
                     y: tab_line.y,
                     width: tab_rect.width.saturating_sub(if self.closable {
-                        (CLOSE_SIZE + 10) as u32
+                        (CLOSE_SIZE + CLOSE_LABEL_GAP + CLOSE_TITLE_CLEARANCE) as u32
                     } else {
                         0
                     }),
@@ -1087,12 +1128,15 @@ impl Draw for TabWidget {
                     text_color,
                     HorizontalAlignment::Center,
                 );
-                // Draw close button if closable
-                if self.closable {
-                    // Vertically centred on the title's own line box rather than on the tab's
-                    // middle: the two ruled the same row and used to disagree by half a line.
-                    let close_x = tab_rect.x + tab_rect.width as i32 - CLOSE_SIZE - 5;
-                    let close_y = tab_line.y + (tab_line.height as i32 - CLOSE_SIZE) / 2;
+                // Draw the close affordance if one is offered.
+                //
+                // The rectangle is the **same** one `handle_event` tests against
+                // (`close_button_rect`), so what looks clickable is clickable. It used to be
+                // derived here from `tab_line.y` while the hit test used `tab_rect.y` — the two
+                // ruled the same row and disagreed by half a line.
+                if let Some(close_rect) = self.close_button_rect(tab_rect, &font) {
+                    let close_x = close_rect.x;
+                    let close_y = close_rect.y;
                     context.draw_line(
                         Point::new(close_x, close_y),
                         Point::new(close_x + CLOSE_SIZE, close_y + CLOSE_SIZE),
@@ -1543,6 +1587,82 @@ mod tests {
         assert_eq!(tw.tab_shape(), TabShape::Rectangular);
         tw.set_tab_shape(TabShape::Rounded);
         assert_eq!(tw.tab_shape(), TabShape::Rounded);
+    }
+
+    /// The close affordance is one rectangle, offered to both the painter and the hit test.
+    ///
+    /// # The defect this pins
+    ///
+    /// `draw` and `handle_event` each derived this rectangle themselves, and they disagreed:
+    /// the paint path used [`CLOSE_SIZE`] and centred on the title's **line box**; the hit test
+    /// used a bare `12` and centred on the whole **tab**. Two consequences, both a few pixels and
+    /// therefore easy to miss by eye:
+    ///
+    /// * the literal was a second copy of `CLOSE_SIZE`, so resizing the glyph would move what is
+    ///   drawn and leave what is clickable behind — the classic two-derivations drift;
+    /// * the origins differ by half a line, so the glyph's outer rows were outside its own hit area
+    ///   while a band of tab *above* the glyph accepted clicks and closed the tab.
+    ///
+    /// # Why the assertions are about *both* halves
+    //
+    /// Asserting only that the rectangle exists would pass against the duplicated code, since both
+    /// copies produced *a* rectangle. The property that was missing is that they are the **same**
+    /// rectangle, so the check is: the drawn affordance's box, as the pointer path sees it, must (a)
+    /// be inside the tab, (b) be hit by a press at its own centre, and (c) not be hit by a press
+    /// just above it — the region the old hit rect wrongly claimed.
+    #[test]
+    fn the_close_affordance_is_the_same_rect_for_painting_and_hit_testing() {
+        let mut tw = TabWidget::new(Rect::new(0, 0, 300, 200));
+        tw.add_tab("One".to_string(), None);
+        tw.set_closable(true);
+        let tab_rect = tw.tab_rect(0).expect("the tab is placed");
+        let font = Font::default();
+        let close = tw.close_button_rect(tab_rect, &font).expect("the tab is closable");
+
+        assert!(
+            close.x >= tab_rect.x
+                && close.x + close.width as i32 <= tab_rect.x + tab_rect.width as i32,
+            "the affordance must sit inside its tab: {close:?} in {tab_rect:?}"
+        );
+        assert_eq!(
+            (close.width, close.height),
+            (CLOSE_SIZE as u32, CLOSE_SIZE as u32),
+            "and be exactly one glyph, so the constant is the only size there is"
+        );
+
+        // The centre is inside — the case both old copies got right.
+        let centre = Point::new(close.x + CLOSE_SIZE / 2, close.y + CLOSE_SIZE / 2);
+        assert!(close.contains(centre), "the glyph's own centre must be clickable: {centre:?}");
+
+        // And the row the *old* hit rect wrongly claimed, just above the glyph, must not be. The
+        // two derivations agreed on this control's nominal metrics *by coincidence* — a 24 px tab
+        // and a 14 px line box happen to give the same origin — so the discriminating assertion is
+        // made against a **device-scaled font**, where they genuinely diverge. Deriving the
+        // affordance from the line box is what makes it track the text it sits beside; deriving it
+        // from the tab's own height is what leaves it behind when the text grows.
+        let scaled_font = Font::simple("sans-serif", Font::default().size() * 2.0);
+        let scaled_close = tw.close_button_rect(tab_rect, &scaled_font).expect("still closable");
+        assert_ne!(
+            scaled_close.y, close.y,
+            "a larger font moves the line box, so it must move the affordance — a hit rect \
+             centred on the tab's own height would not budge: {scaled_close:?} vs {close:?}"
+        );
+        // The direction follows the line box, not a guess: `line_top` is the line box centred in
+        // the tab, floored at the tab's top edge, and the glyph is then centred *on the line*. So a
+        // line box taller than the tab pins the glyph to the tab's bottom, while a short one
+        // centres it. Asserting the relation rather than a direction is what keeps this test
+        // measuring the derivation instead of restating it.
+        let scaled_line = crate::widget::metrics::estimate_line_height(&scaled_font, 1.0) as i32;
+        let expected_line_top = tab_rect.y + ((tab_rect.height as i32 - scaled_line) / 2).max(0);
+        assert_eq!(
+            scaled_close.y,
+            expected_line_top + (scaled_line - CLOSE_SIZE) / 2,
+            "the affordance is centred on the line box, not on the tab"
+        );
+
+        // A control that does not offer the affordance offers no rectangle to either path.
+        tw.set_closable(false);
+        assert!(tw.close_button_rect(tab_rect, &font).is_none());
     }
 
     #[test]

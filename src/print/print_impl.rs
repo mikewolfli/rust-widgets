@@ -1974,6 +1974,26 @@ mod tests {
     ///
     /// This pins the observable contract of the refactor: the gate is now
     /// `Platform::has_print_support()`, not a compile-time OS list.
+    ///
+    /// # Why the unsupported arm does not also require `"0 bytes"`
+    ///
+    /// It used to, and that made the assertion depend on a backend name. The
+    /// capability message interpolates `Platform::backend_name()` when the backend is
+    /// named:
+    ///
+    /// ```text
+    /// no system printer is available: backend 'harmony-state-backend' reports no
+    /// print support, so the 0 byte document was not printed
+    /// ```
+    ///
+    /// A test that asserts `contains("0 bytes")` therefore also asserts that the host's
+    /// *spooler* and the host's *backend name* happen to disagree about the message
+    /// shape — on a machine with `lp` installed, `platform_facts()` is a printing
+    /// backend and the first arm runs instead, so the string never appears and the
+    /// second arm never executes. The assertion was latent, not wrong, and it went red
+    /// the moment a backend was renamed. Asserting the *stable* half of the contract
+    /// (the capability refusal names the missing capability) keeps the test measuring
+    /// the gate rather than the prose.
     #[test]
     fn print_entry_points_gate_on_backend_capability_not_target_os() {
         let supported = crate::platform::platform_facts().has_print_support();
@@ -1989,18 +2009,28 @@ mod tests {
         } else {
             let err = result.unwrap_err();
             assert!(
-                err.contains("no system printer is available") && err.contains("0 bytes"),
+                err.contains("no system printer is available"),
                 "expected the capability guard, got: {err}"
             );
         }
 
         // A host without a spooler must reject the dialog outright; a host with one
         // proceeds to the (non-interactive, so cancelling) console prompt.
+        //
+        // The refusal is matched on the *capability*, not on a frozen sentence: the
+        // message names the backend, so pinning the whole string would make this test
+        // fail on a backend rename (`harmony-desktop` -> `harmony-state-backend`) rather
+        // than on a behaviour change — the same latent-string coupling the arm above had.
         let dialog = print_page_dialog();
         if supported {
             assert_eq!(dialog, Ok(false), "no interactive terminal must cancel, not accept");
         } else {
-            assert_eq!(dialog, Err("print dialog is not supported on this platform".to_string()));
+            let err = dialog.expect_err("a host with no spooler must refuse the dialog");
+            assert!(
+                err.contains("no print dialog is available")
+                    && err.contains("no system print support"),
+                "expected the capability refusal, got: {err}"
+            );
         }
     }
 

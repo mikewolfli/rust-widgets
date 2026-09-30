@@ -32,7 +32,8 @@
 use std::sync::{Arc, Mutex};
 
 use rust_widgets::app::{App, AppConfig, WidgetHandle, WindowHandle};
-use rust_widgets::core::Orientation;
+use rust_widgets::core::{ObjectId, Orientation, Rect};
+use rust_widgets::layout::Layout as LayoutTrait;
 use rust_widgets::theme::{global_theme_manager, AppearanceMode};
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -89,10 +90,298 @@ impl EventLog {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// 响应式布局 —— 窗口缩放后重排所有控件
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// 一个控件在窗口里的行/列归属。
+///
+/// 行持有「纵坐标 + 高度」，列持有「横坐标 + 宽度」，两者按权重分配可用空间。
+/// 这样窗口拉大时每一行/列等比变宽，而不是像固定坐标那样把右侧留白。
+#[derive(Debug, Clone, Copy)]
+struct Slot {
+    /// 控件 id。
+    id: ObjectId,
+    /// 行索引，用于取纵坐标与高度。
+    row: usize,
+    /// 该行内的横向权重；`0` 表示「只占自身标称宽度，不拉伸」。
+    weight: u32,
+    /// 标称尺寸，在权重为 0 或窗口过小时使用。
+    nominal: (i32, i32, u32, u32),
+}
+
+/// 窗口版式：把标称坐标按窗口实际尺寸重新分配。
+///
+/// # 为什么需要它
+///
+/// 本 demo 以往的所有控件都用**绝对坐标**创建，且只有启动时算一次。用户拖动窗口
+/// 放大后，控件仍然停留在为 1120×620 算出的位置上——右下角空出一大片，而控件本身
+/// 一个都没动。库侧的链路其实是完整的（OS 报 resize → 后端入队 `Resized` →
+/// `app/handle.rs` 重跑窗口 layout，见 `apply_window_layout`），缺的只是
+/// **一个交给 `WindowHandle::set_layout` 的 layout**：调用了它，resize 才会真的重排。
+///
+/// `demo/finance` 修过同一个缺陷（见其 `PanelLayout` 的说明）；本 demo 当时漏掉了。
+///
+/// # 为什么记住上次应用的尺寸
+///
+/// 一次拖拽会重复投递同一个客户区尺寸。对同一个矩形重跑整套放置是不可见的工作量，
+/// 而逐帧累积的不可见工作量正是卡顿的来源。记住上次尺寸让重复投递变成空操作。
+struct ControlGridLayout {
+    /// 所有参与重排的控件。
+    slots: Vec<Slot>,
+    /// 日志，用于把重排结果写进事件面板。
+    log: Arc<EventLog>,
+    /// 上次应用过的尺寸；相同则跳过。
+    ///
+    /// `Cell` 是因为 `update` 取 `&self`：记不住「已经做过什么」的 layout 只能重复做。
+    last_applied: std::cell::Cell<Option<(u32, u32)>>,
+}
+
+impl ControlGridLayout {
+    /// 把窗口客户区切成各行的纵向范围。
+    ///
+    /// 行高按「标称高度」比例分配而不是平均分配：控件行本来就是高低不一的
+    /// （工具栏 32、列表 90、标签行 18），平均分会把它们挤变形。多出来的空间
+    /// 按比例分给每一行，等于整体等比放大，与固定坐标下的观感一致。
+    fn row_bands(&self, total_height: u32) -> Vec<(i32, u32)> {
+        // 每行的标称高度 = 该行所有控件里最大的高度。
+        let mut nominal: Vec<u32> = Vec::new();
+        for slot in &self.slots {
+            if nominal.len() <= slot.row {
+                nominal.resize(slot.row + 1, 0);
+            }
+            nominal[slot.row] = nominal[slot.row].max(slot.nominal.3);
+        }
+        if nominal.is_empty() {
+            return Vec::new();
+        }
+        let nominal_total: u32 = nominal.iter().sum::<u32>().max(1);
+        let mut bands = Vec::with_capacity(nominal.len());
+        let mut y = 0i32;
+        for (index, height) in nominal.iter().enumerate() {
+            // 最后一行吃掉余数，避免累计取整让底部漏出一条缝。
+            let band = if index + 1 == nominal.len() {
+                (total_height as i32 - y).max(0) as u32
+            } else {
+                ((*height as u64 * total_height as u64) / nominal_total as u64) as u32
+            };
+            bands.push((y, band));
+            y += band as i32;
+        }
+        bands
+    }
+}
+
+impl LayoutTrait for ControlGridLayout {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn add_widget(&mut self, widget_id: ObjectId, _stretch: u32) {
+        // 槽位在构建时一次性登记；多出来的 id 没有行归属，收下只会让控件落在 (0,0)。
+        let _ = widget_id;
+    }
+
+    fn remove_widget(&mut self, widget_id: ObjectId) {
+        self.slots.retain(|slot| slot.id != widget_id);
+    }
+
+    fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
+        if self.last_applied.get() == Some((rect.width, rect.height)) {
+            return;
+        }
+        self.last_applied.set(Some((rect.width, rect.height)));
+
+        let bands = self.row_bands(rect.height);
+        // 每行的可用宽度 = 窗口宽度减去左右留白。
+        let usable = rect.width.saturating_sub(MARGIN * 2);
+        let mut moved = 0usize;
+        for slot in &self.slots {
+            let Some(&(row_y, row_h)) = bands.get(slot.row) else {
+                continue;
+            };
+            // 有横向权重的控件按下标参与拉伸；权重为 0 的保持标称宽度。
+            let (x, w) = if slot.weight == 0 {
+                (MARGIN as i32 + slot.nominal.0, slot.nominal.2.min(usable.max(1)))
+            } else {
+                let weight_total: u32 = self
+                    .slots
+                    .iter()
+                    .filter(|other| other.row == slot.row)
+                    .map(|other| other.weight)
+                    .sum::<u32>()
+                    .max(1);
+                // 同行内按权重切分：先累加本控件之前的权重得到起点。
+                let before: u32 = self
+                    .slots
+                    .iter()
+                    .take_while(|other| other.id != slot.id)
+                    .filter(|other| other.row == slot.row)
+                    .map(|other| other.weight)
+                    .sum();
+                let start = MARGIN as u64 + (usable as u64 * before as u64) / weight_total as u64;
+                let end = MARGIN as u64
+                    + (usable as u64 * (before + slot.weight) as u64) / weight_total as u64;
+                (start as i32, (end.saturating_sub(start)).max(1) as u32)
+            };
+            // 纵向只让控件在自己的行带内居中，不做拉伸：控件高度是设计值，拉伸会破坏比例。
+            let height = slot.nominal.3.min(row_h.max(1));
+            let y = row_y + ((row_h as i32 - height as i32) / 2).max(0);
+            widgets(slot.id, Rect::new(x, y, w, height));
+            moved += 1;
+        }
+        if moved > 0 {
+            self.log.append(format!(
+                "[Layout] 窗口 {}x{} -> {} 个控件重排",
+                rect.width, rect.height, moved
+            ));
+        }
+    }
+}
+
+/// 窗口四周留白，与控件创建时的 x=20 保持一致。
+const MARGIN: u32 = 20;
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    /// 构造一个两行三列的版式：第 0 行三个等权控件，第 1 行一个满宽控件。
+    fn slots() -> Vec<Slot> {
+        vec![
+            Slot { id: 1, row: 0, weight: 1, nominal: (20, 20, 100, 30) },
+            Slot { id: 2, row: 0, weight: 1, nominal: (140, 20, 100, 30) },
+            Slot { id: 3, row: 0, weight: 1, nominal: (260, 20, 100, 30) },
+            Slot { id: 4, row: 1, weight: 1, nominal: (20, 60, 340, 30) },
+        ]
+    }
+
+    fn layout() -> ControlGridLayout {
+        ControlGridLayout {
+            slots: slots(),
+            log: Arc::new(EventLog::new()),
+            last_applied: std::cell::Cell::new(None),
+        }
+    }
+
+    fn arrange(layout: &ControlGridLayout, width: u32, height: u32) -> Vec<(ObjectId, Rect)> {
+        let mut out = Vec::new();
+        LayoutTrait::update(layout, Rect::new(0, 0, width, height), &mut |id, rect| {
+            out.push((id, rect));
+        });
+        out
+    }
+
+    /// 窗口变宽时，控件必须真的变宽 —— 这正是「固定坐标」做不到的事。
+    #[test]
+    fn a_wider_window_widens_the_controls() {
+        let layout = layout();
+        let narrow = arrange(&layout, 600, 400);
+        layout.last_applied.set(None);
+        let wide = arrange(&layout, 1200, 400);
+
+        for ((id, narrow_rect), (wide_id, wide_rect)) in narrow.iter().zip(wide.iter()) {
+            assert_eq!(id, wide_id, "两次重排必须覆盖同一批控件");
+            assert!(
+                wide_rect.width > narrow_rect.width,
+                "控件 {id} 在更宽的窗口里没有变宽：{} -> {}",
+                narrow_rect.width,
+                wide_rect.width
+            );
+        }
+    }
+
+    /// 同行控件在重排后不能重叠，且必须落在客户区内 —— 权重切分最容易在这两点上出错。
+    #[test]
+    fn same_row_slots_do_not_overlap_and_stay_inside() {
+        let layout = layout();
+        for width in [400u32, 800, 1600] {
+            layout.last_applied.set(None);
+            let rects: Vec<Rect> = arrange(&layout, width, 400)
+                .into_iter()
+                .filter(|(id, _)| *id <= 3)
+                .map(|(_, rect)| rect)
+                .collect();
+            let mut sorted = rects.clone();
+            sorted.sort_by_key(|rect| rect.x);
+            for pair in sorted.windows(2) {
+                assert!(
+                    pair[0].x + pair[0].width as i32 <= pair[1].x,
+                    "窗口宽 {width} 时同行控件重叠：{:?} 与 {:?}",
+                    pair[0],
+                    pair[1]
+                );
+            }
+            for rect in &sorted {
+                assert!(
+                    rect.x >= 0 && rect.x + rect.width as i32 <= width as i32,
+                    "窗口宽 {width} 时控件越界：{rect:?}"
+                );
+            }
+            assert_eq!(sorted.len(), 3, "三个同行控件都必须被放置");
+        }
+    }
+
+    /// 同尺寸重复投递必须被跳过 —— 一次拖拽会重复送来同一个尺寸。
+    #[test]
+    fn a_repeated_size_is_not_reapplied() {
+        let layout = layout();
+        let first = arrange(&layout, 900, 500);
+        assert_eq!(first.len(), 4, "第一次必须放置全部控件");
+        let second = arrange(&layout, 900, 500);
+        assert!(second.is_empty(), "同一尺寸重复投递不应再放一次");
+
+        layout.last_applied.set(None);
+        let third = arrange(&layout, 901, 500);
+        assert_eq!(third.len(), 4, "尺寸变了就必须重排");
+    }
+
+    /// 窗口比控件还窄时不能产生负宽度或 panic。
+    #[test]
+    fn a_very_narrow_window_still_produces_usable_rects() {
+        let layout = layout();
+        let rects = arrange(&layout, 10, 10);
+        assert_eq!(rects.len(), 4);
+        for (id, rect) in rects {
+            assert!(rect.width >= 1, "控件 {id} 宽度退化为 0：{rect:?}");
+            assert!(rect.height >= 1, "控件 {id} 高度退化为 0：{rect:?}");
+        }
+    }
+}
+
+/// 注册窗口 layout，使 resize 后所有控件重新排布。
+///
+/// 必须在所有控件都建好之后调用：layout 需要它们的 id。
+fn register_window_layout(win: &WindowHandle, slots: Vec<Slot>, log: &Arc<EventLog>) {
+    win.set_layout(ControlGridLayout {
+        slots,
+        log: Arc::clone(log),
+        last_applied: std::cell::Cell::new(None),
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // 构建所有控件 + 日志面板
 // ═══════════════════════════════════════════════════════════════════════════════
 
-fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
+fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) -> Vec<Slot> {
+    // 每个控件建好后把自己的 id 与行归属登记进来，供窗口 layout 在 resize 时重排。
+    // 行号只描述「同一水平带」，列内按权重分宽度。
+    let mut slots: Vec<Slot> = Vec::new();
+    macro_rules! row {
+        ($handle:expr, $row:expr, $weight:expr, $nominal:expr) => {{
+            slots.push(Slot {
+                id: $handle.raw_id(),
+                row: $row,
+                weight: $weight,
+                nominal: $nominal,
+            });
+            $handle
+        }};
+    }
     // ── 对话框（平常不显示） ─────────────────────────────────────────
     //
     // 先建出来但不显示：`show_modal()` 才让它出现。创建对话框不等于显示对话框 ——
@@ -120,7 +409,7 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
     // ── Row 0: Button Controls ───────────────────────────────────────
     log.append("═══ Row: Button Controls ═══");
 
-    let btn = win.new_button("Click Me", 20, 20, 150, 32);
+    let btn = row!(win.new_button("Click Me", 20, 20, 150, 32), 0, 1, (20, 20, 150, 32));
     let l = Arc::clone(log);
     let dialog_for_click = dialog.clone();
     btn.on_click(move || {
@@ -129,7 +418,7 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
     });
     log.append("[Button] at (20,20,150,32)");
 
-    let tog = win.new_button("Dark Mode", 180, 20, 150, 32);
+    let tog = row!(win.new_button("Dark Mode", 180, 20, 150, 32), 0, 1, (180, 20, 150, 32));
     let l = Arc::clone(log);
     let tog_label = tog.clone();
     tog.on_click(move || match switch_appearance(!dark_active()) {
@@ -145,14 +434,15 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
     log.append("[Button] at (180,20,150,32) (toggles appearance)");
 
     // Disabled button: proves the enable/disable mirror reaches the native control.
-    let disabled = win.new_button("Disabled", 340, 20, 150, 32);
+    let disabled = row!(win.new_button("Disabled", 340, 20, 150, 32), 0, 1, (340, 20, 150, 32));
     disabled.disable();
     log.append(format!("[Button] disabled sample enabled={}", disabled.is_enabled()));
 
     // ── Row 1: Toggle Controls ───────────────────────────────────────
     log.append("═══ Row: Toggle Controls ═══");
 
-    let cb = win.new_checkbox("Enable notifications", 20, 64, 200, 24);
+    let cb =
+        row!(win.new_checkbox("Enable notifications", 20, 64, 200, 24), 1, 1, (20, 64, 200, 24));
     let l = Arc::clone(log);
     let cb2 = cb.clone();
     cb2.on_value_changed(move |_val: String| {
@@ -163,7 +453,7 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
 
     // Tri-state check-box: all three states are reachable (Unchecked / Checked /
     // PartiallyChecked), which the mixed state requires tri-state mode to be on.
-    let tri = win.new_checkbox("Tri-state", 230, 64, 130, 24);
+    let tri = row!(win.new_checkbox("Tri-state", 230, 64, 130, 24), 1, 1, (230, 64, 130, 24));
     tri.set_tristate(true);
     tri.set_check_state(rust_widgets::app::CheckState::PartiallyChecked);
     log.append(format!(
@@ -176,7 +466,7 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
     // ── Row 2: Text Input Controls ───────────────────────────────────
     log.append("═══ Row: Text Input Controls ═══");
 
-    let le = win.new_line_edit("", 20, 104, 200, 26);
+    let le = row!(win.new_line_edit("", 20, 104, 200, 26), 2, 1, (20, 104, 200, 26));
     le.set_placeholder("Type here...");
     le.set_max_length(32);
     let l = Arc::clone(log);
@@ -188,15 +478,16 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
 
     // Password field: echo mode is a real widget property; a platform whose text
     // control cannot express it reports so via `false`/`None` instead of lying.
-    let pw = win.new_line_edit("secret", 230, 104, 150, 26);
+    let pw = row!(win.new_line_edit("secret", 230, 104, 150, 26), 2, 1, (230, 104, 150, 26));
     pw.set_echo_mode(rust_widgets::app::EchoMode::Password);
     log.append(format!("[LineEdit] echo_mode={:?}", pw.widget_echo_mode()));
 
-    let ro = win.new_line_edit("read-only value", 390, 104, 180, 26);
+    let ro =
+        row!(win.new_line_edit("read-only value", 390, 104, 180, 26), 2, 1, (390, 104, 180, 26));
     ro.set_read_only(true);
     log.append(format!("[LineEdit] read_only={:?}", ro.clone().is_read_only()));
 
-    let sb = win.new_spin_box(580, 104, 120, 26);
+    let sb = row!(win.new_spin_box(580, 104, 120, 26), 2, 1, (580, 104, 120, 26));
     sb.set_range(0, 100);
     sb.set_value(50);
     sb.set_prefix("$");
@@ -212,7 +503,7 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
     // ── Row 3: Selection Controls ────────────────────────────────────
     log.append("═══ Row: Selection Controls ═══");
 
-    let cbx = win.new_combo_box(20, 142, 180, 26);
+    let cbx = row!(win.new_combo_box(20, 142, 180, 26), 3, 1, (20, 142, 180, 26));
     cbx.add_item("Red");
     cbx.add_item("Green");
     cbx.add_item("Blue");
@@ -227,7 +518,7 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
     });
     log.append("[ComboBox] items=[Red,Green,Blue,Yellow]");
 
-    let lb = win.new_list_box(210, 142, 200, 90);
+    let lb = row!(win.new_list_box(210, 142, 200, 90), 3, 1, (210, 142, 200, 90));
     for item in ["Alpha", "Bravo", "Charlie", "Delta", "Echo"] {
         lb.add_item(item);
     }
@@ -243,7 +534,7 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
     log.append(format!("[ListBox] {} items", lb.item_count()));
 
     // Radio group lives beside the selection controls; it is a selection input.
-    let rb1 = win.new_radio_button("Option A", 420, 142, 100, 24);
+    let rb1 = row!(win.new_radio_button("Option A", 420, 142, 100, 24), 3, 0, (420, 142, 100, 24));
     rb1.set_group("opts");
     let rb2 = win.new_radio_button("Option B", 420, 168, 100, 24);
     rb2.set_group("opts");
@@ -264,7 +555,12 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
     // Orientation is a creation-time property on every native toolkit (Win32 has
     // no runtime message for it), so it is passed at construction instead of being
     // set afterwards.
-    let sl = win.new_slider_with_orientation(Orientation::Horizontal, 20, 242, 260, 32);
+    let sl = row!(
+        win.new_slider_with_orientation(Orientation::Horizontal, 20, 242, 260, 32),
+        4,
+        1,
+        (20, 242, 260, 32)
+    );
     sl.set_range(0, 100);
     sl.set_value(50);
     sl.set_step(5);
@@ -276,7 +572,7 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
     });
     log.append(format!("[Slider] value=50 orientation={:?}", sl.orientation()));
 
-    let pb = win.new_progress_bar(290, 242, 200, 24);
+    let pb = row!(win.new_progress_bar(290, 242, 200, 24), 4, 1, (290, 242, 200, 24));
     pb.set_min(0u32);
     pb.set_max(100u32);
     pb.set_value(75u32);
@@ -288,7 +584,7 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
     log.append("[ProgressBar] range=[0..100], value=75");
 
     // Indeterminate (busy) bar: a distinct native code path from a fixed fraction.
-    let busy = win.new_progress_bar(500, 242, 200, 24);
+    let busy = row!(win.new_progress_bar(500, 242, 200, 24), 4, 1, (500, 242, 200, 24));
     busy.set_indeterminate(true);
     log.append(format!("[ProgressBar] indeterminate={:?}", busy.is_indeterminate()));
 
@@ -299,7 +595,7 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
     // 只演示其中一侧会让人误以为另一侧不存在。
     //
     // 放在这里是因为它要引用 `tri`/`sl`/`busy`/`rb3`，四个控件都已创建。
-    let sync = win.new_button("Sync", 540, 20, 140, 32);
+    let sync = row!(win.new_button("Sync", 540, 20, 140, 32), 0, 1, (540, 20, 140, 32));
     let sync_log = Arc::clone(log);
     let sync_tri = tri.clone();
     let sync_sl = sl.clone();
@@ -339,7 +635,7 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
     // ── Row 5: Scrollable Text Area ──────────────────────────────────
     log.append("═══ Row: Scrollable Text Area ═══");
 
-    let _area = win.new_scroll_area(20, 286, 260, 90);
+    let _area = row!(win.new_scroll_area(20, 286, 260, 90), 5, 1, (20, 286, 260, 90));
     for i in 0..6 {
         // ASCII only: the default build's glyph face carries no em dash, so a `—` here
         // painted as a missing-glyph box. A separator that renders is worth more than a
@@ -351,20 +647,23 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) {
     // ── Row 6: Panel / Frame ─────────────────────────────────────────
     log.append("═══ Row: Panel / Frame ═══");
 
-    let panel = win.new_panel(290, 286, 200, 90);
+    let panel = row!(win.new_panel(290, 286, 200, 90), 5, 1, (290, 286, 200, 90));
     panel.set_title("Panel");
-    let frame = win.new_frame(500, 286, 200, 90);
+    let frame = row!(win.new_frame(500, 286, 200, 90), 5, 1, (500, 286, 200, 90));
     frame.set_text("Frame");
     log.append(format!("[Panel] id={:?}  [Frame] id={:?}", panel.raw_id(), frame.raw_id()));
 
     // ── Log Panel (底部 4 行标签) ─────────────────────────────────────
     log.append("═══ Log Panel ═══");
 
-    let _title = win.new_label("-- Event Log --", 20, 496, 680, 18);
+    let _title = row!(win.new_label("-- Event Log --", 20, 496, 680, 18), 6, 1, (20, 496, 680, 18));
     for i in 0..4 {
-        let _row = win.new_label("", 20, 518 + i * 20, 680, 18);
+        let _row =
+            row!(win.new_label("", 20, 518 + i * 20, 680, 18), 6, 1, (20, 518 + i * 20, 680, 18));
     }
     log.append("[LogPanel] 4 label rows at bottom");
+
+    slots
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -467,8 +766,15 @@ pub fn run() {
     // 窗口级 chrome：工具栏 + 状态栏
     build_window_chrome(&win, &log);
 
-    // 构建全部基础控件
-    build_all_controls(&win, &log);
+    // 构建全部基础控件，并交给窗口一个 layout
+    let slots = build_all_controls(&win, &log);
+    // 必须在控件都建好之后：layout 需要它们的 id。
+    //
+    // 没有这一步，窗口 resize 后**什么都不会重排**：库侧链路是完整的
+    // （OS 报 resize → 后端入队 `Resized` → `app/handle.rs` 重跑窗口 layout），
+    // 但 `LAYOUTS` 里没有本窗口的条目，`apply_window_layout` 拿到空列表，控件
+    // 停留在启动时为 1120×620 算出的坐标。
+    register_window_layout(&win, slots, &log);
     log.append("[App] controls ready — starting event loop");
 
     // 显示窗口：WindowHandle::show() → platform show_widget → GTK show_all。

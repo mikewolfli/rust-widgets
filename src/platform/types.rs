@@ -34,6 +34,19 @@ pub(crate) enum MousePhase {
     Release,
     /// Pointer moved while the button was held.
     Drag,
+    /// The secondary button went down (a context menu, a right-drag).
+    ///
+    /// A separate variant rather than a `button` parameter on [`Self::Press`]: the
+    /// button is what selects the *event*, and a backend that encodes it in the phase
+    /// cannot accidentally dispatch a primary press for a secondary one.
+    SecondaryPress,
+    /// The secondary button came up.
+    SecondaryRelease,
+    /// A second primary press arrived inside the system's double-click interval.
+    ///
+    /// This is a distinct event in the library ([`crate::event::Event::MouseDoubleClick`]),
+    /// not a press with a higher count, so it cannot share [`Self::Press`].
+    DoubleClick,
 }
 
 /// Whether the CUPS print clients (`lp` or `lpr`) are installed.
@@ -267,19 +280,30 @@ pub enum WindowStateFlag {
     /// Window has a title bar / borders drawn by the OS.
     Decorated,
 }
-/// Supported desktop backend families.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DesktopBackend {
-    /// Windows Win32 backend.
-    Win32,
-    /// Apple Cocoa backend.
-    Cocoa,
-    /// Linux GTK backend.
-    Gtk,
-    /// Harmony desktop backend.
-    HarmonyDesktop,
-}
 /// Supported mobile backend families.
+///
+/// # Why there is no `DesktopBackend` beside this
+///
+/// There used to be one, listing `Win32`/`Cocoa`/`Gtk`/`HarmonyDesktop`. It was the symmetric-looking
+/// twin of this enum and it was **dead in every direction**: `grep -rn "DesktopBackend::" src/
+/// bindings/` found no construction, no `match`, and no trait method returning it, so the only
+/// references in the tree were its own definition and the `pub use` that re-exported it. It was not
+/// a contract — it was a type that looked like one.
+///
+/// It was also **wrong**, which is the part that makes deleting it the honest fix rather than a
+/// tidy-up: its four variants covered neither Wayland nor `macos-objc2`, both of which are desktop
+/// backends this crate ships. A caller who had trusted it to enumerate the desktop backends would
+/// have silently mishandled two of them — the same "plausible value with nothing behind it" shape
+/// the capability flags kept showing up in.
+///
+/// What actually answers "which desktop backend is this" is [`Platform::backend_name`], which every
+/// backend implements and which is already the key the capability matrix and `runtime_gui_mode_for`
+/// use. An enum duplicating a name that is authoritative elsewhere is a second source for one fact
+/// (principle #54), and this one had already diverged.
+///
+/// `MobileBackend` stays because it is genuinely used: it is the return of
+/// [`MobilePlatformExtension::mobile_backend`], and `runtime.rs` matches on it to select the
+/// `android-mobile` / `ios-mobile` / `harmony-mobile` name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MobileBackend {
     /// Android mobile backend.
@@ -456,15 +480,42 @@ pub trait Platform: Send + Sync {
     }
     /// The host's text-size preference, as a multiplier on the nominal font size.
     ///
-    /// A backend answers this from its own platform's setting — Android's `fontScale`, iOS's
-    /// `UIContentSizeCategory`, Windows' text-scaling percentage. The default of `1.0` means "this
-    /// backend does not report a preference", which is honest rather than fabricated: a layout that
-    /// assumed a scaling factor nobody supplied would place text in a space it does not occupy.
+    /// A backend would answer this from its own platform's setting — Android's `fontScale`, iOS's
+    /// `UIContentSizeCategory`, Windows' text-scaling percentage. **None does yet**, so every
+    /// backend in this crate reports the default `1.0`; the paragraph below is what the method is
+    /// *for*, not a description of the current wiring. (This doc used to list the three platform
+    /// settings as though they were implemented, which is the "documentation describes behaviour
+    /// the code does not have" shape — a reader checking whether a backend honours a text-size
+    /// preference would have concluded three of them do.)
+    ///
+    /// # Behaviour of the default
+    ///
+    /// The default of `1.0` means "this backend does not report a preference", which is honest
+    /// rather than fabricated: a layout that assumed a scaling factor nobody supplied would place
+    /// text in a space it does not occupy. [`crate::platform::profile::text_scale`] clamps whatever
+    /// arrives into `1.0..=3.0` and is the accessor the layout and theme layers actually call.
     ///
     /// # Why it is on this trait rather than read from the environment
     ///
     /// The value is OS knowledge. A middle layer that read it would have to know each platform's
     /// spelling of the setting, which is exactly the layering rule #36 keeps inside the backends.
+    ///
+    /// # What implementing it requires
+    ///
+    /// A backend that binds the real setting: on Windows the text-scaling percentage is a
+    /// registered accessibility value, on iOS `UIContentSizeCategory` is on the trait's own
+    /// `UIApplication` object, and on Android `fontScale` is on the `Configuration` the Activity
+    /// holds. Each is a per-backend query, which is why the method is here and not in a shared
+    /// helper.
+    ///
+    /// # Implemented so far
+    ///
+    /// `WindowsPlatform` reads
+    /// `HKCU\Software\Microsoft\Accessibility\TextScaleFactor` and reports the user's chosen
+    /// percentage; the other ten backends report `1.0`, which says "no preference reported"
+    /// rather than "the user chose 100%". Those two facts are different and only the first is a
+    /// safe default — see the Windows override for why the DPI override is *not* the same
+    /// setting, and this method's sibling [`Self::dpi_scale_factor`] for the layout scale.
     fn text_scale(&self) -> f32 {
         1.0
     }
@@ -604,14 +655,73 @@ pub trait Platform: Send + Sync {
         false
     }
 
-    /// Marks a mounted surface as needing a repaint.
+    /// Marks a mounted surface — or **a widget this backend draws as part of a
+    /// container's frame** — as needing a repaint.
     ///
-    /// Returns `false` when `id` is not mounted on this backend. Backends that
-    /// do not implement it keep the default so unmounted ids stay a no-op.
-    fn invalidate_surface(&self, _id: ObjectId) -> bool {
+    /// # Why a window id is a legitimate argument
+    ///
+    /// Since 2.0 the library paints every `WidgetKind` itself, so an ordinary
+    /// control has no surface of its own: it is drawn into the frame of the
+    /// **window** it lives in. `widget::runtime::request_repaint_subtree` is the
+    /// function that acts on that fact, and it invalidates the top-level window
+    /// first and the control second — precisely because on a
+    /// [`mount_surface`](Platform::mount_surface)-style backend the second call
+    /// reaches nothing.
+    ///
+    /// A backend whose container really paints its children (the Windows window
+    /// procedure's `WM_PAINT`, GTK's `connect_draw`, AppKit's `drawRect:`) must
+    /// therefore accept a **window** id here and return `true`. A backend that
+    /// only ever repaints what [`mount_surface`](Platform::mount_surface)
+    /// registered is the honest exception, and answers `false` for a window.
+    ///
+    /// # Return value
+    ///
+    /// `true` when the backend accepted the request and will repaint. `false`
+    /// when `id` names nothing this backend can repaint — a widget it does not
+    /// know, or (for a surface-only host) a container it does not draw.
+    ///
+    /// # Why the default is the shared surface record
+    ///
+    /// The default used to be a flat `false`. Because *every* hand-written loop
+    /// in this file assigns into `Platform::invalidate_surface`, that made a
+    /// library-driven repaint a silent no-op on every host that mounts surfaces
+    /// only — `mobile`, `harmony`, `macos_objc2`, `portable` — while the same
+    /// call worked on the three desktop backends. Nothing reported the failure:
+    /// the control answered its event, the frame ledger counted the submission,
+    /// and the screen never changed.
+    ///
+    /// The shared [`BackendState`](crate::platform::state::BackendState) already
+    /// records which widgets this backend mounted and queues a repaint the host
+    /// drains ([`take_pending_repaint`](crate::platform::state::BackendState::take_pending_repaint)),
+    /// so a backend with no painter of its own inherits one honest definition of
+    /// "this surface is stale" instead of a stub that discards it. It stays an
+    /// *optional* method (principle #53), and it answers `false` for an id this
+    /// backend never mounted rather than claiming a repaint it cannot make.
+    ///
+    /// The three desktop backends override it with their real invalidation and
+    /// are unaffected; a backend that overrides it for another reason keeps its
+    /// own behaviour untouched.
+    fn invalidate_surface(&self, id: ObjectId) -> bool {
+        let _ = id;
         false
     }
 
+    /// Records a repaint against whatever this backend uses as its surface store.
+    ///
+    /// Provided for the backends that keep their surfaces in
+    /// [`BackendState`](crate::platform::state::BackendState) and used by the trait's
+    /// own default for [`Self::invalidate_surface`]. See that method for why a window
+    /// id — not only a mounted surface — is a legitimate argument.
+    ///
+    /// # Why this is a doc comment on the *next* method and not a declaration of its own
+    ///
+    /// It describes a *helper* (`BackendState::mark_needs_repaint`) rather than a trait method, so
+    /// there is no item for it to attach to. Left as written it was a doc comment followed by a
+    /// blank line and then another doc comment — which is what `clippy::empty_line_after_doc_comments`
+    /// flags, and, more importantly, what makes the next method's own documentation read as if it
+    /// belonged to this paragraph. The trait-method documentation is below; the helper's rationale
+    /// lives beside the helper.
+    ///
     /// Marks a *rectangle* of a mounted surface as needing a repaint.
     ///
     /// # Why this is a separate method rather than a parameter
@@ -637,11 +747,50 @@ pub trait Platform: Send + Sync {
         false
     }
 
+    /// Removes and returns the next widget whose surface is awaiting a repaint.
+    ///
+    /// # Who drains this
+    ///
+    /// A host that owns its own event loop and drawing API — OpenHarmony (ArkUI),
+    /// Android, iOS, the objc2 preview — cannot be called into by a toolkit's own
+    /// "this window is dirty" notification, so the backend records the stale surfaces
+    /// and the host pulls them through this method. On the desktop backends the
+    /// library drives the loop instead, and this is not on the path: they invalidate
+    /// the real window directly (see [`Self::invalidate_surface`]).
+    ///
+    /// # Return value
+    ///
+    /// `None` when nothing is pending. A widget already awaiting a repaint is not
+    /// queued twice, so a burst of invalidations in one frame costs one entry.
+    ///
+    /// # Why the default is `None` and not a stored queue
+    ///
+    /// The shared [`BackendState`](crate::platform::state::BackendState) does keep such
+    /// a queue, and the backends that mount surfaces override this to drain it. A
+    /// backend that mounts none has no queue to answer from, and `None` is the truthful
+    /// reply rather than a fabricated "nothing pending" over a store that does not
+    /// exist.
+    fn take_pending_repaint(&self) -> Option<ObjectId> {
+        None
+    }
+
     /// Returns `true` when this backend can host library-painted widgets.
     ///
-    /// Backends report `true` only once [`Platform::mount_surface`] is
-    /// actually implemented, so hosts can ask before building a UI that they
-    /// would not be able to display.
+    /// # What `true` promises
+    ///
+    /// The method this flag advertises is
+    /// [`mount_surface`](Platform::mount_surface): `true` means "asking me to mount
+    /// a widget will produce a surface that repaints". It says **nothing** about
+    /// how a surface is presented, and it must not be read as "the container's
+    /// frame shows its children" — a host answers that question with
+    /// [`invalidate_surface`](Platform::invalidate_surface), which on some
+    /// backends ([`portable`](crate::platform::portable), `harmony`, `mobile`,
+    /// `macos_objc2`) repaints only what was mounted while a desktop backend also
+    /// repaints a window's whole child list.
+    ///
+    /// Hosts ask before building a UI they could not display, so the answer must
+    /// be the truth about this build: a backend that has no surface path returns
+    /// the `false` default rather than promising one.
     fn supports_surfaces(&self) -> bool {
         false
     }

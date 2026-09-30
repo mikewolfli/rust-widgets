@@ -7,7 +7,7 @@ use super::types::{WasmHandleKind, WasmPlatform};
 use crate::compat::atomic::Ordering;
 use crate::compat::{format, String};
 use crate::core::PlatformFamily;
-use crate::platform::{DropEvent, Platform, PlatformCapabilities};
+use crate::platform::{Platform, PlatformCapabilities};
 #[cfg(not(target_arch = "wasm32"))]
 use core::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
@@ -20,9 +20,18 @@ use std::thread;
 /// must be the same number, or every transition runs at the ratio between them with
 /// nothing to notice the mismatch. A backend that later runs at the display's own rate
 /// changes exactly this value.
+///
+/// Gated with the loop that reads it: on `wasm32` the browser owns the clock and this
+/// backend's `run` returns immediately instead of sleeping, so the constant has no consumer
+/// there — and an ungated copy is the dead-code warning a build with `wasm` enabled produced.
+#[cfg(not(target_arch = "wasm32"))]
 const FRAME_INTERVAL_MS: u64 = 16;
 
 impl Platform for WasmPlatform {
+    // The uniform widget-property methods are answered once, over `self.state`, by the
+    // shared expansion in `platform::state_impl` rather than re-written per backend.
+    crate::impl_platform_state_properties!();
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -124,6 +133,37 @@ impl Platform for WasmPlatform {
     /// destroy and no side table keyed by widget id, so dropping the record is the
     /// whole teardown. `BackendState::destroy_widget` is the authority on whether
     /// the widget existed.
+    /// Pops the next typed widget-trigger event from this backend's queue.
+    ///
+    /// # Why this backend must delegate
+    ///
+    /// [`PlatformCapabilities::typed_widget_trigger`] claims this backend produces and delivers
+    /// typed triggers, and it holds a `BackendState<u64>` — the shared queue — exactly like
+    /// `harmony`, `android`, `ios`, `wayland`, `windows` and `mobile`, all of which write these two
+    /// lines. This backend did not, so both answered the trait defaults (`None` / `false`) while the
+    /// flag said `true`.
+    ///
+    /// The gap is reachable: `NativeControlBackend` forwards both methods to `get_platform()`, so
+    /// an injected trigger was accepted and then dropped on the floor — the "reported success for
+    /// something that did not happen" shape the default is documented to avoid claiming.
+    fn poll_widget_trigger_event(&self) -> Option<crate::platform::WidgetTriggerEvent> {
+        self.state.pop_widget_trigger_event()
+    }
+
+    /// Pushes a typed widget-trigger event, refusing ids this backend never made.
+    fn inject_widget_trigger_event(
+        &self,
+        widget_id: u64,
+        kind: crate::platform::WidgetTriggerKind,
+    ) -> bool {
+        self.state.inject_widget_trigger_event(widget_id, kind)
+    }
+
+    /// Pops the next pending trigger as a bare id, over the same queue as the typed view.
+    fn poll_widget_triggered(&self) -> Option<u64> {
+        self.poll_widget_trigger_event().map(|event| event.widget_id)
+    }
+
     fn destroy_widget(&self, widget_id: u64) -> bool {
         self.state.destroy_widget(widget_id)
     }
@@ -166,51 +206,78 @@ impl Platform for WasmPlatform {
         id
     }
 
-    /// Release the surface attached to this backend's canvas id.
+    /// Whether this backend can host library-painted widgets.
     ///
-    /// The trait method is about display surfaces, not about native window
-    /// handles, so it is answered here rather than in a window-mutator stub.
+    /// # Why this is `true` now, and was `false` before
+    ///
+    /// It was `false` because no surface method was implemented: the flag told a host "yes",
+    /// the host built a widget tree, and the first mount came back
+    /// `SurfaceMountError::RejectedByBackend` — the one thing `supports_surfaces` exists to let
+    /// a host avoid. The doc on this method then said the flag would turn `true` "in the same
+    /// commit as the implementation", and this is that commit.
+    ///
+    /// # What changed in the implementation
+    ///
+    /// The backend now implements the surface table over its own [`BackendState`] —
+    /// `mount_surface`, `resize_surface`, `unmount_surface`, `invalidate_surface` and
+    /// `take_pending_repaint` — which is the same record-plus-queue shape `harmony`, `android`,
+    /// `ios` and `macos_objc2` use. That is exactly what this backend was missing: it already
+    /// had a canvas to present into (`canvas_id`, the 2D context), and the trait's surface
+    /// table is the per-widget half that tells the host *what* to draw.
+    ///
+    /// The distinction the old doc drew — "painting into its own canvas is the presentation
+    /// path, while `supports_surfaces` asks about the per-widget surface table" — was correct,
+    /// and it is precisely why the fix is to add the table rather than to re-argue the flag.
+    ///
+    /// # What a host does with it
+    ///
+    /// Mount each widget, then each frame call `rw_take_pending_repaint` to learn which went
+    /// stale and `rw_render_surface_frame` to get its RGBA, blitting into the canvas. The
+    /// browser's own `ResizeObserver` (see [`Self::observe_canvas_resize`]) keeps the size and
+    /// the layout honest.
     fn supports_surfaces(&self) -> bool {
         true
     }
 
+    /// Mounts a widget onto a surface this host will present.
+    ///
+    /// See [`Self::supports_surfaces`] for what changed and why the canvas alone was not
+    /// enough. `false` for an id this backend did not create, so a host is told rather than
+    /// recorded into a table nothing can render.
+    fn mount_surface(&self, _parent: u64, id: u64, rect: crate::core::Rect) -> bool {
+        self.state.mount_surface_record(id, rect)
+    }
+
+    /// Updates the rect of a mounted surface. `false` when `id` is not mounted.
+    fn resize_surface(&self, id: u64, rect: crate::core::Rect) -> bool {
+        self.state.resize_surface_record(id, rect)
+    }
+
+    /// Releases a mounted surface.
+    fn unmount_surface(&self, id: u64) -> bool {
+        self.state.unmount_surface_record(id)
+    }
+
+    /// Queues a repaint for the host to pick up. `false` when `id` is unknown.
+    ///
+    /// A **window** id is accepted as well as a mounted surface's, because the library repaints
+    /// a window to reveal the ordinary children it draws into that window's frame — see
+    /// [`Platform::invalidate_surface`]. Answering only for mounted surfaces made those requests
+    /// silent no-ops on every record-backed backend.
+    fn invalidate_surface(&self, id: u64) -> bool {
+        self.state.record_repaint_request(id)
+    }
+
+    /// Pops the next widget awaiting a repaint, for the host page to render.
+    ///
+    /// This is the drain half of [`Self::invalidate_surface`]: the page learns which surface
+    /// went stale and pulls its frame. Without it the queue would grow without bound and the
+    /// canvas would never be told what to draw.
+    fn take_pending_repaint(&self) -> Option<crate::core::ObjectId> {
+        self.state.take_pending_repaint()
+    }
+
     // ─── Widget mutation ───────────────────────────────────────────────────────
-
-    fn show_widget(&self, widget_id: u64) {
-        self.state.set_visible(widget_id, true);
-    }
-
-    fn hide_widget(&self, widget_id: u64) {
-        self.state.set_visible(widget_id, false);
-    }
-
-    fn set_widget_geometry(&self, widget_id: u64, x: i32, y: i32, width: u32, height: u32) {
-        self.state.set_geometry(widget_id, x, y, width, height);
-    }
-
-    fn set_widget_text(&self, widget_id: u64, text: &str) {
-        self.state.set_text(widget_id, text);
-    }
-
-    fn get_widget_text(&self, widget_id: u64) -> String {
-        self.state.text(widget_id)
-    }
-
-    fn set_widget_enabled(&self, widget_id: u64, enabled: bool) {
-        self.state.set_enabled(widget_id, enabled);
-    }
-
-    fn is_widget_enabled(&self, widget_id: u64) -> bool {
-        self.state.enabled(widget_id)
-    }
-
-    fn set_widget_visible(&self, widget_id: u64, visible: bool) {
-        self.state.set_visible(widget_id, visible);
-    }
-
-    fn is_widget_visible(&self, widget_id: u64) -> bool {
-        self.state.visible(widget_id)
-    }
 
     fn set_clipboard_text(&self, text: &str) -> bool {
         #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
@@ -239,26 +306,6 @@ impl Platform for WasmPlatform {
             // successfully. A full async bridge is out of scope for MVP.
         }
         self.state.clipboard_text()
-    }
-
-    fn begin_drag(&self, source_widget_id: u64, mime: &str, payload: &[u8]) -> bool {
-        self.state.begin_drag(source_widget_id, mime, payload)
-    }
-
-    fn poll_drop_event(&self) -> Option<DropEvent> {
-        self.state.pop_drop_event()
-    }
-
-    fn inject_drop_event(&self, event: DropEvent) -> bool {
-        self.state.inject_drop_event(event)
-    }
-
-    fn set_widget_ime_enabled(&self, widget_id: u64, enabled: bool) -> bool {
-        self.state.set_ime_enabled(widget_id, enabled)
-    }
-
-    fn is_widget_ime_enabled(&self, widget_id: u64) -> bool {
-        self.state.ime_enabled(widget_id)
     }
 
     /// The window's current client size, as last reported by the host page.
@@ -364,12 +411,53 @@ mod tests {
         assert_eq!(p.get_widget_text(win), "probe");
     }
 
-    /// The WASM backend paints self-drawn widgets into the host canvas element it
-    /// was constructed with, so it advertises the capability.
+    /// The WASM backend advertises the per-widget surface capability, and the
+    /// implementation behind it is real.
+    ///
+    /// # Why this assertion flipped
+    ///
+    /// It previously asserted `false`, on the reasoning that painting into the host canvas is
+    /// this backend's own presentation path while [`Platform::supports_surfaces`] asks about
+    /// the *per-widget surface table*. That reasoning was right, and it named the fix rather
+    /// than a reason not to make it: the backend now **has** the table
+    /// (`mount_surface`/`resize_surface`/`unmount_surface`/`invalidate_surface`/
+    /// `take_pending_repaint` over its `BackendState`), so the flag and the methods agree.
+    ///
+    /// Asserting both halves together is the point: `true` alone would also be produced by a
+    /// backend that merely claims the capability, so the mount, the repaint queue and the
+    /// unmount are exercised too. This is the property the old test was protecting — that a
+    /// capability flag is a promise — kept while the promise became keepable.
     #[test]
-    fn custom_widget_support_is_advertised() {
+    fn the_surface_capability_is_advertised_and_backed_by_a_real_implementation() {
         let p = make_platform();
-        assert!(p.supports_surfaces());
+        assert!(
+            p.supports_surfaces(),
+            "the surface table is implemented, so the flag may promise one"
+        );
+
+        let window = p.create_window("wasm", 0, 0, 320, 240);
+        let rect = crate::core::Rect::new(0, 0, 40, 20);
+        assert!(p.mount_surface(window, window, rect), "a known id mounts");
+        assert_eq!(p.state.surface_rect(window), Some(rect));
+
+        // Invalidating queues exactly one repaint, which the host page then drains.
+        assert!(p.invalidate_surface(window));
+        assert!(p.invalidate_surface(window), "a second invalidate still reports the mount");
+        assert_eq!(p.state.pending_repaint_count(), 1, "repaints are coalesced");
+        assert_eq!(p.take_pending_repaint(), Some(window));
+
+        // A window id is accepted for the same reason a mounted surface is: the library
+        // repaints a window to reveal the ordinary children drawn into its frame.
+        let other = p.create_window("other", 0, 0, 10, 10);
+        assert!(p.invalidate_surface(other), "a window the backend knows can be repainted");
+
+        // A widget this backend never made is refused rather than recorded.
+        assert!(!p.mount_surface(window, 9_999, rect));
+        assert!(!p.invalidate_surface(9_999));
+
+        assert!(p.unmount_surface(window));
+        assert_eq!(p.state.surface_rect(window), None);
+        assert!(!p.unmount_surface(window), "unmounting twice reports no-op");
     }
 
     /// Teardown must report whether the widget existed, and a second call must not

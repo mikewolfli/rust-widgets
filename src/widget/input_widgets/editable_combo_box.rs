@@ -31,7 +31,7 @@ use crate::widget::capability::coercion::{
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, IconName, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 use std::cell::RefCell;
@@ -347,10 +347,18 @@ impl Widget for EditableComboBox {
             bottom: side_air,
             left: dimensions::TEXT_FIELD_PADDING_H,
         };
-        // Content width: the text the caller typed, at a nominal advance per character. A
-        // hint has no `RenderContext` to measure with, and a hint a few pixels generous is
-        // the safe direction — the paint path *fits* the value into the box this produced.
-        let content = Size::new(self.text.len() as u32 * 8, 0);
+        // Content width: the text the caller typed, through the shared estimate. A hint has no
+        // `RenderContext` to measure with, and a hint a few pixels generous is the safe direction
+        // — the paint path *fits* the value into the box this produced.
+        //
+        // It used to be `text.len() as u32 * 8`, which counts UTF-8 **bytes**. "A few pixels
+        // generous" is true of the flat per-cluster model and false of a byte count: a CJK
+        // summary measured three times its drawn width, so the field reserved room it would never
+        // use and pushed its neighbours around. `estimate_text_width` is still context-free, so the
+        // original reasoning holds — it is simply a per-*cluster* nominal advance rather than a
+        // per-byte one.
+        let content =
+            Size::new(estimate_text_width(&self.text, &crate::core::Font::default(), 1.0), 0);
         let floor = Size::new(
             dimensions::TEXT_FIELD_MIN_HEIGHT + trailing,
             dimensions::TEXT_FIELD_MIN_HEIGHT,

@@ -12,11 +12,11 @@
 //! report `target_env = "ohos"` and `target_os = "linux"`, so backend selection keys
 //! off `target_env` — see [`crate::platform::profile::is_openharmony_target`].
 
-use super::super::{DropEvent, Platform};
+use super::super::Platform;
 use super::types::*;
 use crate::compat::atomic::Ordering;
 use crate::compat::{format, String};
-use crate::core::PlatformFamily;
+use crate::core::{ObjectId, PlatformFamily};
 use crate::{WidgetTriggerEvent, WidgetTriggerKind};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -34,11 +34,36 @@ use std::thread;
 const FRAME_INTERVAL_MS: u64 = 16;
 
 impl Platform for HarmonyPlatform {
+    // The uniform widget-property methods are answered once, over `self.state`, by the
+    // shared expansion in `platform::state_impl` rather than re-written per backend.
+    crate::impl_platform_state_properties!();
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+    /// The backend identifier, in the open-ended `family-name` form every other
+    /// backend uses: `gtk`, `cocoa`, `wayland`, `wasm-state-backend`,
+    /// `android-state-backend`, `ios-state-backend`, `macos-objc2-preview`,
+    /// `portable`.
+    ///
+    /// # Why this is no longer `"harmony-desktop"`
+    ///
+    /// The name carried a *desktop* classification the backend does not act on. The
+    /// [`Self::family`] answer is [`PlatformFamily::Desktop`], so a backend that
+    /// models a phone still asks for desktop capability defaults, and the name
+    /// advertised that as if it were a decision. HarmonyOS is the mobile OS this
+    /// backend exists for; the only reason the desktop instance is the one that gets
+    /// constructed today is that no HarmonyOS mobile lane exists yet (the
+    /// `mobile-*` surface is Android/iOS, see [`MobilePlatformExtension`]).
+    ///
+    /// Renaming to the state-backed spelling makes the name describe **what the
+    /// backend is** — an in-process state backend, exactly like its Android and iOS
+    /// siblings — instead of which host happened to select it. `cocoa` is the only
+    /// remaining backend whose name is short, and that is the historical one.
+    ///
+    /// [`MobilePlatformExtension`]: crate::platform::types::MobilePlatformExtension
     fn backend_name(&self) -> &'static str {
-        "harmony-desktop"
+        "harmony-state-backend"
     }
     fn family(&self) -> PlatformFamily {
         PlatformFamily::Desktop
@@ -85,15 +110,36 @@ impl Platform for HarmonyPlatform {
 
     /// Capabilities published by the Harmony backend.
     ///
-    /// The backend is state-only: widget state, layout and event plumbing are all
-    /// modelled in-process against `BackendState`, so the flags describe the
-    /// in-process contract. Every `WidgetKind` is now painted by `src/widget/`,
-    /// so there is no native-control capability left to advertise.
+    /// # Why these are `false` even though ArkUI can supply them
+    ///
+    /// A flag on this struct means "the method behind it is implemented **by this backend**
+    /// and will answer for this host". Each of the three below has a named backing method —
+    /// `dpi_scale_factor()`, `ime_bridge()` and `accessibility_bridge()` — and this backend
+    /// overrides **none** of them, so each inherits the trait default (`1.0`, `None`, `None`).
+    /// A `true` here would therefore promise a method that cannot answer.
+    ///
+    /// # This is a gap in *this backend*, not in OpenHarmony
+    ///
+    /// ArkUI does expose all three: display density through the ArkUI display API, text input
+    /// through `OH_NativeXComponent`'s `OH_NativeXComponent_RegisterCallback` (which delivers
+    /// key events to the native surface), and the accessibility tree through
+    /// `OH_ArkUI_AccessibilityProvider`. They are unreachable *here* for one reason: this
+    /// backend holds no `OH_NativeXComponent` — `status.md` records the native view bridge as
+    /// "⬜ Not implemented", and `grep` over `src/platform/harmony/` finds no
+    /// `OH_NativeXComponent`, no `napi`, and no ArkUI header binding at all.
+    ///
+    /// So the honest answer today is `false` (which **under**-claims, the direction a default
+    /// must err), and the fix that makes them `true` is binding the XComponent — not editing
+    /// this struct. See `status.md`'s "Capabilities" section, which now says the same thing.
+    ///
+    /// `typed_widget_trigger` is `true` and stays `true`: unlike the three above, it is
+    /// implemented by this backend (`inject_widget_trigger_event`, `poll_widget_trigger_event`)
+    /// over the shared queue rather than by the host, so it cannot be absent.
     fn capabilities(&self) -> crate::platform::types::PlatformCapabilities {
         crate::platform::types::PlatformCapabilities {
-            dpi_scaling: true,
-            ime: true,
-            accessibility: true,
+            dpi_scaling: false,
+            ime: false,
+            accessibility: false,
             native_menu: false,
             typed_widget_trigger: true,
         }
@@ -136,53 +182,11 @@ impl Platform for HarmonyPlatform {
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> u64 {
         self.insert_widget(HarmonyHandleKind::Window, title, x, y, width, height)
     }
-    fn show_widget(&self, widget_id: u64) {
-        self.state.set_visible(widget_id, true);
-    }
-    fn hide_widget(&self, widget_id: u64) {
-        self.state.set_visible(widget_id, false);
-    }
-    fn set_widget_geometry(&self, widget_id: u64, x: i32, y: i32, width: u32, height: u32) {
-        self.state.set_geometry(widget_id, x, y, width, height);
-    }
-    fn set_widget_text(&self, widget_id: u64, text: &str) {
-        self.state.set_text(widget_id, text);
-    }
-    fn get_widget_text(&self, widget_id: u64) -> String {
-        self.state.text(widget_id)
-    }
-    fn set_widget_enabled(&self, widget_id: u64, enabled: bool) {
-        self.state.set_enabled(widget_id, enabled);
-    }
-    fn is_widget_enabled(&self, widget_id: u64) -> bool {
-        self.state.enabled(widget_id)
-    }
-    fn set_widget_visible(&self, widget_id: u64, visible: bool) {
-        self.state.set_visible(widget_id, visible);
-    }
-    fn is_widget_visible(&self, widget_id: u64) -> bool {
-        self.state.visible(widget_id)
-    }
-    fn set_widget_ime_enabled(&self, widget_id: u64, enabled: bool) -> bool {
-        self.state.set_ime_enabled(widget_id, enabled)
-    }
-    fn is_widget_ime_enabled(&self, widget_id: u64) -> bool {
-        self.state.ime_enabled(widget_id)
-    }
     fn set_clipboard_text(&self, text: &str) -> bool {
         self.state.set_clipboard_text(text)
     }
     fn get_clipboard_text(&self) -> String {
         self.state.clipboard_text()
-    }
-    fn begin_drag(&self, source_widget_id: u64, mime: &str, payload: &[u8]) -> bool {
-        self.state.begin_drag(source_widget_id, mime, payload)
-    }
-    fn poll_drop_event(&self) -> Option<DropEvent> {
-        self.state.pop_drop_event()
-    }
-    fn inject_drop_event(&self, event: DropEvent) -> bool {
-        self.state.inject_drop_event(event)
     }
 
     /// Pops the next typed widget-trigger event injected into this backend.
@@ -194,6 +198,34 @@ impl Platform for HarmonyPlatform {
     /// always returned `None`, so no injected trigger could ever be observed.
     fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
         self.state.pop_widget_trigger_event()
+    }
+
+    /// Pops the next pending trigger as a bare [`ObjectId`].
+    ///
+    /// # Why this had to be added, and why the comment above was only half true
+    ///
+    /// The doc on [`Self::poll_widget_trigger_event`] says the trait default made
+    /// "the pair below" asymmetric, and then restored only one half. There are
+    /// **two** FIFO views over the same queue — the `ObjectId` one here and the
+    /// typed one above — and the trait documents them as the same event stream seen
+    /// twice:
+    ///
+    /// > Returns the next pending widget activation.
+    /// > Returns the next pending typed widget activation. Default: none are produced.
+    ///
+    /// Every sibling state backend overrides both (`AndroidPlatform`,
+    /// `IosMobilePlatform`, `AndroidMobilePlatform`, `StubPlatform`), and
+    /// `platform::tests::consistency_compat_poll_widget_triggered_is_single_delivery_shim`
+    /// pins the two views as agreeing. Harmony overrode only the typed one, so
+    /// `poll_widget_triggered()` returned `None` while
+    /// `poll_widget_trigger_event()` returned an event — the *same* widget, observably
+    /// absent through one door and present through the other.
+    ///
+    /// It is derived from the typed event rather than draining the queue again, so
+    /// the two remain one stream: a caller that alternates between the views advances
+    /// one FIFO, which is what the consistency test asserts about the stub.
+    fn poll_widget_triggered(&self) -> Option<ObjectId> {
+        self.poll_widget_trigger_event().map(|event| event.widget_id)
     }
 
     /// Injects a typed widget-trigger event, refusing ids the backend never made.
@@ -254,12 +286,31 @@ impl Platform for HarmonyPlatform {
         crate::queue_resize_trigger(window_id, width, height)
     }
 
-    /// Queues a repaint for the host to pick up. `false` when `id` is not mounted.
+    /// Queues a repaint for the host to pick up. `false` when `id` is unknown.
+    ///
+    /// # Why a window id is accepted
+    ///
+    /// The library asks for the **window** to be repainted whenever one of its
+    /// ordinary children changes (`widget::runtime::request_repaint_subtree`),
+    /// because a window is what draws those children. A surface-only record
+    /// answered `false` for such a request, so an event could be handled and the
+    /// screen still never change — silently. This backend knows every widget it
+    /// created, so the honest test is membership, not "is it a mounted surface".
     fn invalidate_surface(&self, id: u64) -> bool {
-        self.state.invalidate_surface_record(id)
+        self.state.record_repaint_request(id)
     }
 
     /// The backend displays library-painted widgets by handing the host their frames.
+    ///
+    /// # What this promises, and what it does not
+    ///
+    /// `true` advertises [`Platform::mount_surface`](crate::platform::Platform::mount_surface):
+    /// a mounted widget gets a surface the host presents. It is **not** a claim
+    /// that an arbitrary window's frame draws its children — a host that needs
+    /// that asks
+    /// [`Platform::invalidate_surface`](crate::platform::Platform::invalidate_surface),
+    /// which on this backend queues a repaint for any widget it knows, window
+    /// included.
     fn supports_surfaces(&self) -> bool {
         true
     }

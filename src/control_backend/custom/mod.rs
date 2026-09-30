@@ -321,11 +321,34 @@ impl CustomPaintControlBackend {
             crate::widget::runtime::with_widget_mut(parent_id, |host| {
                 host.add_child(id);
             });
-            // A new control must become visible, and only the **window** can make that
-            // happen: it paints the whole child list, and the control just added has no
-            // surface of its own to invalidate. Without this the window kept the frame it
-            // drew when it was still empty — a blank client area that no later call
-            // repaired, because every other repaint request named the child.
+        }
+        // The window's host object is created **before** anything asks for a repaint.
+        //
+        // # Why the order is load-bearing
+        //
+        // `request_repaint_subtree` below walks up to the top-level window and asks the
+        // platform to repaint it, and that request can only be honoured through the
+        // registry-id → platform-id association `attach_window_host_if_needed` records.
+        // Running it afterwards meant the first request of a window's life — the one the
+        // comment below describes, "a control just added" — landed on a window the
+        // backend could not resolve, so the frame stayed as it was drawn when the window
+        // was still empty: a blank client area.
+        //
+        // It has to be **after** `add_child` as well: the host window's own creation can
+        // paint it (Win32 shows and updates a new window immediately), and that early
+        // paint must already be able to see the child it is about to include.
+        #[cfg(full_widgets)]
+        self.attach_window_host_if_needed(id);
+
+        // A new control must become visible, and only the **window** can make that
+        // happen: it paints the whole child list, and the control just added has no
+        // surface of its own to invalidate. Without this the window kept the frame it
+        // drew when it was still empty — a blank client area that no later call
+        // repaired, because every other repaint request named the child.
+        //
+        // A window is its own case and has nothing to do here: it has no parent to
+        // repaint it, and `add_child` above did not run for it.
+        if parent.is_some() {
             crate::widget::runtime::request_repaint_subtree(id);
         }
 
@@ -334,8 +357,6 @@ impl CustomPaintControlBackend {
         // and it mounts no controls for a host to draw. The registration above is ungated because
         // those profiles *do* own a widget runtime (they are not `alloc_frugal`), so an id handed
         // out there is a real id.
-        #[cfg(full_widgets)]
-        self.attach_window_host_if_needed(id);
 
         id
     }

@@ -27,6 +27,7 @@ use crate::platform::accessibility::linux::LinuxAccessibilityBridge;
 use crate::platform::accessibility::AccessibilityBridge;
 use crate::platform::Platform;
 use crate::platform::PlatformCapabilities;
+use crate::platform::{WidgetTriggerEvent, WidgetTriggerKind};
 #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
 use core::time::Duration;
 #[cfg(all(target_os = "linux", feature = "gtk-native"))]
@@ -48,6 +49,38 @@ use std::thread;
 /// is a ratio of the two, with nothing to notice the mismatch. Named here so a backend
 /// that later runs at the display's own rate changes exactly one value.
 const FRAME_INTERVAL_MS: u64 = 16;
+
+/// GDK's integer scale override (`GDK_SCALE`), or `1.0` when unset or unparsable.
+///
+/// Split out because it is read on the path where no GTK display is available
+/// ([`Platform::dpi_scale_factor`]): GDK honours this variable before a display exists, so a
+/// host that set it and read `1.0` back would be told its own setting does not apply. A value
+/// that is not a positive integer is ignored rather than treated as `0` — that would report a
+/// zero scale factor, which nothing downstream can interpret.
+///
+/// Gated on `gtk-native` because that is the only configuration whose
+/// `dpi_scale_factor` can answer at all: without GTK this backend opens no window, reports
+/// `1.0`, and [`Platform::capabilities`] says `dpi_scaling: false`.
+#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+fn gdk_scale_override() -> f32 {
+    match std::env::var("GDK_SCALE").ok().and_then(|value| value.trim().parse::<u32>().ok()) {
+        Some(scale) if scale > 0 => scale as f32,
+        _ => 1.0,
+    }
+}
+
+/// GDK's fractional DPI override (`GDK_DPI_SCALE`), or `1.0` when unset or unparsable.
+///
+/// The companion of [`gdk_scale_override`]: GDK multiplies the integer scale factor by this,
+/// which is how a host asks for 1.5x. A non-positive or unparsable value is ignored for the
+/// same reason as above, and it carries the same gate.
+#[cfg(all(target_os = "linux", feature = "gtk-native"))]
+fn gdk_dpi_scale_override() -> f32 {
+    match std::env::var("GDK_DPI_SCALE").ok().and_then(|value| value.trim().parse::<f32>().ok()) {
+        Some(scale) if scale > 0.0 => scale,
+        _ => 1.0,
+    }
+}
 
 impl Platform for LinuxPlatform {
     fn as_any(&self) -> &dyn crate::compat::Any {
@@ -77,9 +110,18 @@ impl Platform for LinuxPlatform {
     /// does not wire up. `dpi_scaling`, `ime` and `accessibility` are answered by the in-process
     /// toolkit layer; there is no host menu protocol, so `native_menu` is `false` — the same
     /// reasoning [`crate::platform::wayland`] records.
+    ///
+    /// # Why `dpi_scaling` follows `dpi_scale_factor`
+    ///
+    /// It used to be unconditionally `true` while `dpi_scale_factor()` inherited the trait's
+    /// constant `1.0` — a claim with no implementation behind it (principle #37), and a
+    /// fabricated value on any HiDPI display. Both are now derived from the one query this
+    /// backend actually performs: [`Self::dpi_scale_factor`] asks GDK's monitor when
+    /// `gtk-native` is on, and this flag reports whether it did.
     fn capabilities(&self) -> PlatformCapabilities {
         PlatformCapabilities {
-            dpi_scaling: true,
+            dpi_scaling: self.dpi_scale_factor() != 1.0
+                || cfg!(all(target_os = "linux", feature = "gtk-native")),
             ime: true,
             accessibility: true,
             native_menu: false,
@@ -90,6 +132,52 @@ impl Platform for LinuxPlatform {
     /// Reads `MemTotal` from `/proc/meminfo` via [`crate::platform::os_probes`].
     fn total_memory_mb(&self) -> Option<u64> {
         crate::platform::os_probes::total_memory_mb()
+    }
+
+    /// The display's scale factor, asked of GTK (or GDK's environment override).
+    ///
+    /// # Why this is not inherited
+    ///
+    /// The trait default is the constant `1.0`, which is the *unknown* answer, not a
+    /// measurement. Reporting it while [`Self::capabilities`] claimed `dpi_scaling: true` was a
+    /// fabricated value (principle #37), and on a HiDPI display it meant every control the
+    /// library paints was laid out at half or a third of its intended physical size.
+    ///
+    /// # The three sources, in order
+    ///
+    /// 1. **`gtk-native` with a live display**: the monitor's own `scale_factor()`. This is the
+    ///    authority — it is what GTK itself lays widgets out with.
+    /// 2. **`gtk-native` without one** (off the main thread, or no display): GDK's documented
+    ///    environment overrides, `GDK_SCALE` (an integer factor) and `GDK_DPI_SCALE` (a
+    ///    fractional one layered on top). GTK honours both, so a host that set one and read
+    ///    `1.0` back would be told its setting does not apply.
+    /// 3. **Neither**: `1.0`. This backend really is unscaled then — it opens no window at all
+    ///    — and [`Self::capabilities`] reports `dpi_scaling: false` to match.
+    fn dpi_scale_factor(&self) -> f32 {
+        #[cfg(all(target_os = "linux", feature = "gtk-native"))]
+        {
+            // GTK is main-thread-only; asking from anywhere else would abort the process.
+            if gtk::is_initialized_main_thread() {
+                if let Some(display) = gtk::gdk::Display::default() {
+                    // The monitor the pointer is on, which is the one a new window would open
+                    // on — asking the primary monitor instead would report the wrong scale on
+                    // a mixed-DPI setup.
+                    if let Some(monitor) = display.monitor(0) {
+                        let scale = monitor.scale_factor();
+                        if scale > 0 {
+                            // GDK's fractional component layers on the integer factor; applying
+                            // both is what matches how GTK sized the widgets.
+                            return (scale as f32) * gdk_dpi_scale_override();
+                        }
+                    }
+                }
+            }
+            return gdk_scale_override() * gdk_dpi_scale_override();
+        }
+        #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
+        {
+            1.0
+        }
     }
 
     /// Reports whether any battery in `/sys/class/power_supply` is discharging.
@@ -321,6 +409,37 @@ impl Platform for LinuxPlatform {
     /// Only the library's own bookkeeping is released here: no GTK call is made,
     /// and the native objects are dropped when their registry entries are removed
     /// (GTK keeps its own reference for objects still attached to a parent).
+    /// Pops the next typed widget-trigger event from this backend's queue.
+    ///
+    /// # Why Linux must delegate, and why `typed_widget_trigger: true` was a claim until it did
+    ///
+    /// [`PlatformCapabilities::typed_widget_trigger`] says this backend can produce and deliver a
+    /// typed trigger. The queue exists — Linux holds a `BackendState` like every other backend, and
+    /// the trait default for both methods is `None`/`false` — but neither method was overridden, so
+    /// the flag was a promise the backend did not keep.
+    ///
+    /// It is reachable: `NativeControlBackend::poll_widget_trigger_event` forwards straight to
+    /// `get_platform().poll_widget_trigger_event()` (`control_backend/native.rs`), so on a GTK or
+    /// state-backed Linux host an injected trigger was accepted by the API and then silently
+    /// dropped — the "reported success for something that did not happen" shape.
+    ///
+    /// Delegating to `BackendState` is the same two lines `harmony`, `android`, `ios`, `wayland`,
+    /// `windows` and `mobile` already write, so there is one queue implementation and not a
+    /// seventh.
+    fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
+        self.state.pop_widget_trigger_event()
+    }
+
+    /// Pushes a typed widget-trigger event, refusing ids this backend never made.
+    fn inject_widget_trigger_event(&self, widget_id: u64, kind: WidgetTriggerKind) -> bool {
+        self.state.inject_widget_trigger_event(widget_id, kind)
+    }
+
+    /// Pops the next pending trigger as a bare id, over the same queue as the typed view.
+    fn poll_widget_triggered(&self) -> Option<u64> {
+        self.poll_widget_trigger_event().map(|event| event.widget_id)
+    }
+
     fn destroy_widget(&self, widget_id: u64) -> bool {
         #[cfg(all(target_os = "linux", feature = "gtk-native"))]
         {
@@ -469,7 +588,7 @@ impl Platform for LinuxPlatform {
                 widget.set_can_focus(true);
                 if crate::widget::runtime::dispatch_pointer_event(
                     window_widget,
-                    &crate::event::mouse_press_with(
+                    &crate::event::Event::mouse_press_with(
                         point.x,
                         point.y,
                         1,

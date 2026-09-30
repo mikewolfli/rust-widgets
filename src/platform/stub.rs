@@ -27,7 +27,7 @@
 //! keep working for them without any per-kind code here.
 
 use crate::compat::{format, String};
-use crate::core::{ObjectId, Orientation, PlatformFamily};
+use crate::core::{ObjectId, PlatformFamily};
 use crate::platform::state::{BackendState, WindowStateRecord};
 use crate::platform::types::*;
 
@@ -122,24 +122,80 @@ pub(crate) fn stub_platform_singleton() -> &'static StubPlatform {
     HOST.get_or_init(|| StubPlatform::new("portable", PlatformFamily::Embedded))
 }
 
-/// Returns whether `widget_id` names a control that can carry tri-state mode.
-///
-/// Without the widget registry (the `mini` profile strips widgets entirely) no
-/// control exists, so the answer is an honest `false` rather than a stub value
-/// that would let a tri-state write through for a widget that cannot be painted.
-#[cfg(not(alloc_frugal))]
-fn widget_is_checkable(widget_id: ObjectId) -> bool {
-    crate::widget::runtime::widget_is_checkable(widget_id)
-}
-
-/// See the `not(alloc_frugal)` definition: the alloc-frugal profile has no widget
-/// layer, hence no checkable control.
-#[cfg(alloc_frugal)]
-fn widget_is_checkable(_widget_id: ObjectId) -> bool {
-    false
-}
-
 impl Platform for StubPlatform {
+    // The uniform widget-property methods — value/range/step/checked/tristate/
+    // selected-index/selection/placeholder/echo-mode/read-only/max-length/
+    // orientation/scroll/indeterminate/ime-enabled/accessibility-name, the window
+    // state trio, and the text/geometry/enabled/visible quartet — are all answered
+    // by this backend's `BackendState` record. They have exactly **one** definition
+    // (`platform::state_impl`'s macro) rather than a copy per backend, so the answer
+    // cannot drift between the portable host and the ten backends sharing the store.
+    crate::impl_platform_state_properties!();
+
+    // ── Widget surfaces ─────────────────────────────────────────────────────
+    //
+    // # Why this host above all others must carry these
+    //
+    // The portable host's whole definition is "the host supplies a window and a drawing surface and
+    // the library paints into it" (`platform/portable/mod.rs`). It is selected for `mini`, for
+    // `embedded` on a host with no backend, for a target with no backend module, and for the two
+    // macOS fallbacks. For every one of those, the surface *is* the contract — there is no toolkit
+    // object to fall back on and no other layer that can supply it.
+    //
+    // It nevertheless inherited the trait defaults, so `supports_surfaces()` answered `false` and
+    // `mount_surface` was absent: a `mini`/`embedded` host was told it could not display the
+    // widgets the library had just built for it, and the only thing it exists to provide was the
+    // one thing it could not. `linux`, `windows`, `macos`, `android`, `ios`, `harmony`, `wasm` and
+    // `wayland` all answer these over the same shared `BackendState` tables; this host holds the
+    // same record and simply had not been wired.
+    //
+    // The five methods below are therefore the **same delegations** every other record-backed
+    // backend makes, not a second implementation. `false` for an id this host did not create, so a
+    // host is told rather than recorded into a table nothing can render.
+
+    /// This host can display library-painted widgets: it is what it exists for.
+    fn supports_surfaces(&self) -> bool {
+        true
+    }
+
+    /// Records a widget as mounted on a surface this host will present.
+    fn mount_surface(
+        &self,
+        _parent: crate::core::ObjectId,
+        id: crate::core::ObjectId,
+        rect: crate::core::Rect,
+    ) -> bool {
+        self.state.mount_surface_record(id, rect)
+    }
+
+    /// Updates the rect of a mounted surface. `false` when `id` is not mounted.
+    fn resize_surface(&self, id: crate::core::ObjectId, rect: crate::core::Rect) -> bool {
+        self.state.resize_surface_record(id, rect)
+    }
+
+    /// Releases a mounted surface.
+    fn unmount_surface(&self, id: crate::core::ObjectId) -> bool {
+        self.state.unmount_surface_record(id)
+    }
+
+    /// Queues a repaint for the host to pick up. `false` when `id` is unknown.
+    ///
+    /// A **window** id is accepted as well as a mounted surface's, for the reason
+    /// [`Platform::invalidate_surface`] gives: repainting a window reveals the ordinary children
+    /// drawn into its frame, and answering only for mounted surfaces made those requests silent
+    /// no-ops on every record-backed backend.
+    fn invalidate_surface(&self, id: crate::core::ObjectId) -> bool {
+        self.state.record_repaint_request(id)
+    }
+
+    /// Pops the next widget awaiting a repaint, for the host to render.
+    ///
+    /// The drain half of [`Self::invalidate_surface`]: without it the queue grows without bound
+    /// and the host is never told what to draw.
+    fn take_pending_repaint(&self) -> Option<crate::core::ObjectId> {
+        self.state.take_pending_repaint()
+    }
+
     fn as_any(&self) -> &dyn core::any::Any {
         self
     }
@@ -278,265 +334,6 @@ impl Platform for StubPlatform {
         crate::queue_resize_trigger(window_id, width, height)
     }
 
-    fn show_widget(&self, widget_id: ObjectId) {
-        self.state.set_visible(widget_id, true);
-    }
-
-    fn hide_widget(&self, widget_id: ObjectId) {
-        self.state.set_visible(widget_id, false);
-    }
-
-    fn set_widget_geometry(&self, widget_id: ObjectId, x: i32, y: i32, width: u32, height: u32) {
-        self.state.set_geometry(widget_id, x, y, width, height);
-    }
-
-    fn set_widget_text(&self, widget_id: ObjectId, text: &str) {
-        self.state.set_text(widget_id, text);
-    }
-
-    fn get_widget_text(&self, widget_id: ObjectId) -> String {
-        self.state.text(widget_id)
-    }
-
-    fn set_widget_enabled(&self, widget_id: ObjectId, enabled: bool) {
-        self.state.set_enabled(widget_id, enabled);
-    }
-
-    fn is_widget_enabled(&self, widget_id: ObjectId) -> bool {
-        self.state.enabled(widget_id)
-    }
-
-    fn set_widget_visible(&self, widget_id: ObjectId, visible: bool) {
-        self.state.set_visible(widget_id, visible);
-    }
-
-    fn is_widget_visible(&self, widget_id: ObjectId) -> bool {
-        self.state.visible(widget_id)
-    }
-
-    fn set_widget_value(&self, widget_id: ObjectId, value: f64) -> bool {
-        // A record holds a numeric value only if its creator seeded one, and each
-        // self-drawn widget seeds exactly the properties its control has. That is
-        // the natural per-control answer — a slider accepts a value, a button
-        // does not — without any global classification table.
-        if !self.state.contains_widget(widget_id) {
-            return false;
-        }
-        self.state.set_value(widget_id, value)
-    }
-
-    fn widget_value(&self, widget_id: ObjectId) -> Option<f64> {
-        self.state.value(widget_id)
-    }
-
-    fn set_widget_range(&self, widget_id: ObjectId, min: f64, max: f64) -> bool {
-        if !self.state.contains_widget(widget_id) {
-            return false;
-        }
-        self.state.set_range(widget_id, min, max)
-    }
-
-    fn widget_range(&self, widget_id: ObjectId) -> Option<(f64, f64)> {
-        self.state.range(widget_id)
-    }
-
-    fn set_widget_selected_index(&self, widget_id: ObjectId, index: Option<usize>) -> bool {
-        if !self.state.contains_widget(widget_id) {
-            return false;
-        }
-        self.state.set_selected_index(widget_id, index)
-    }
-
-    fn widget_selected_index(&self, widget_id: ObjectId) -> Option<usize> {
-        self.state.selected_index(widget_id)
-    }
-
-    fn set_widget_checked(&self, widget_id: ObjectId, checked: bool) -> bool {
-        if !self.state.contains_widget(widget_id) {
-            return false;
-        }
-        self.state.set_checked(widget_id, checked)
-    }
-
-    fn is_widget_checked(&self, widget_id: ObjectId) -> Option<bool> {
-        self.state.checked(widget_id)
-    }
-
-    fn set_widget_step(&self, widget_id: ObjectId, step: f64) -> bool {
-        if !self.state.contains_widget(widget_id) {
-            return false;
-        }
-        self.state.set_step(widget_id, step)
-    }
-
-    fn widget_step(&self, widget_id: ObjectId) -> Option<f64> {
-        self.state.step(widget_id)
-    }
-
-    fn set_widget_indeterminate(&self, widget_id: ObjectId, indeterminate: bool) -> bool {
-        if !self.state.contains_widget(widget_id) {
-            return false;
-        }
-        self.state.set_indeterminate(widget_id, indeterminate)
-    }
-
-    fn is_widget_indeterminate(&self, widget_id: ObjectId) -> Option<bool> {
-        self.state.indeterminate(widget_id)
-    }
-
-    fn set_widget_read_only(&self, widget_id: ObjectId, read_only: bool) -> bool {
-        if !self.state.contains_widget(widget_id) {
-            return false;
-        }
-        self.state.set_read_only(widget_id, read_only)
-    }
-
-    fn is_widget_read_only(&self, widget_id: ObjectId) -> Option<bool> {
-        self.state.read_only(widget_id)
-    }
-
-    fn set_widget_max_length(&self, widget_id: ObjectId, max_length: u32) -> bool {
-        if !self.state.contains_widget(widget_id) {
-            return false;
-        }
-        self.state.set_max_length(widget_id, max_length)
-    }
-
-    fn widget_max_length(&self, widget_id: ObjectId) -> Option<u32> {
-        self.state.max_length(widget_id)
-    }
-
-    fn set_window_state(&self, widget_id: ObjectId, flag: WindowStateFlag, on: bool) -> bool {
-        // Only a window has window state; the state record is `None` for every
-        // other widget, so a control honestly reports refusal here.
-        self.state.set_window_state(widget_id, flag, on)
-    }
-
-    fn is_window_in_state(&self, widget_id: ObjectId, flag: WindowStateFlag) -> Option<bool> {
-        self.state.window_state(widget_id, flag)
-    }
-
-    fn set_window_min_size(&self, widget_id: ObjectId, width: u32, height: u32) -> bool {
-        self.state.set_window_min_size(widget_id, width, height)
-    }
-
-    fn window_min_size(&self, widget_id: ObjectId) -> Option<(u32, u32)> {
-        self.state.window_min_size(widget_id)
-    }
-
-    fn set_window_icon(&self, widget_id: ObjectId, path: &str) -> bool {
-        self.state.set_window_icon(widget_id, path)
-    }
-
-    fn window_icon(&self, widget_id: ObjectId) -> Option<String> {
-        self.state.window_icon(widget_id)
-    }
-
-    fn set_widget_selection(&self, widget_id: ObjectId, start: u32, end: u32) -> bool {
-        self.state.set_selection(widget_id, start, end)
-    }
-
-    fn widget_selection(&self, widget_id: ObjectId) -> Option<(u32, u32)> {
-        self.state.selection(widget_id)
-    }
-
-    fn set_widget_placeholder(&self, widget_id: ObjectId, text: &str) -> bool {
-        self.state.set_placeholder(widget_id, text)
-    }
-
-    fn widget_placeholder(&self, widget_id: ObjectId) -> Option<String> {
-        self.state.placeholder(widget_id)
-    }
-
-    fn set_widget_echo_mode(&self, widget_id: ObjectId, mode: EchoMode) -> bool {
-        self.state.set_echo_mode(widget_id, mode)
-    }
-
-    fn widget_echo_mode(&self, widget_id: ObjectId) -> Option<EchoMode> {
-        self.state.echo_mode(widget_id)
-    }
-
-    fn set_slider_orientation(&self, widget_id: ObjectId, orientation: Orientation) -> bool {
-        if !self.state.contains_widget(widget_id) {
-            return false;
-        }
-        self.state.set_orientation(widget_id, orientation)
-    }
-
-    fn slider_orientation(&self, widget_id: ObjectId) -> Option<Orientation> {
-        self.state.orientation(widget_id)
-    }
-
-    /// Enables tri-state mode on a *checkable* control.
-    ///
-    /// Whether a widget can be tri-state is a property of the **widget**, not of
-    /// the host, so the answer comes from the widget layer's own property table
-    /// instead of a second list of kinds kept here. Before this delegation the
-    /// stub answered from a local kind table, which is exactly the duplicated
-    /// semantics BLUE15 removes: two places had to agree on which controls are
-    /// checkable, and they eventually would not.
-    ///
-    /// Under `mini` there is no widget registry at all (widgets are stripped), so
-    /// no control exists that could carry tri-state and the request is refused
-    /// without reaching for a module that is not compiled in.
-    fn set_widget_tristate(&self, widget_id: ObjectId, enabled: bool) -> bool {
-        if !self.state.contains_widget(widget_id) {
-            return false;
-        }
-        if !widget_is_checkable(widget_id) {
-            return false;
-        }
-        self.state.set_tristate(widget_id, enabled)
-    }
-
-    fn is_widget_tristate(&self, widget_id: ObjectId) -> Option<bool> {
-        // Reads must agree with the write gate above: a label never has tri-state
-        // mode, so asking for it answers `None` rather than a stored `false` that
-        // would imply the question was meaningful.
-        if !widget_is_checkable(widget_id) {
-            return None;
-        }
-        self.state.tristate(widget_id)
-    }
-
-    fn set_widget_group(&self, widget_id: ObjectId, group: &str) -> bool {
-        if !self.state.contains_widget(widget_id) {
-            return false;
-        }
-        self.state.set_group(widget_id, group)
-    }
-
-    fn widget_group(&self, widget_id: ObjectId) -> Option<String> {
-        self.state.group(widget_id)
-    }
-
-    fn set_widget_scroll_position(&self, widget_id: ObjectId, x: i32, y: i32) -> bool {
-        if !self.state.contains_widget(widget_id) {
-            return false;
-        }
-        self.state.set_scroll(widget_id, x, y)
-    }
-
-    fn widget_scroll_position(&self, widget_id: ObjectId) -> Option<(i32, i32)> {
-        self.state.scroll(widget_id)
-    }
-
-    fn set_widget_ime_enabled(&self, widget_id: ObjectId, enabled: bool) -> bool {
-        self.state.set_ime_enabled(widget_id, enabled)
-    }
-
-    fn is_widget_ime_enabled(&self, widget_id: ObjectId) -> bool {
-        self.state.ime_enabled(widget_id)
-    }
-
-    fn set_widget_accessibility_name(&self, widget_id: ObjectId, name: &str) -> bool {
-        self.state.set_accessibility_name(widget_id, name)
-    }
-
-    fn get_widget_accessibility_name(&self, widget_id: ObjectId) -> String {
-        self.state.accessibility_name(widget_id)
-    }
-
     fn set_clipboard_text(&self, text: &str) -> bool {
         self.state.set_clipboard_text(text)
     }
@@ -547,17 +344,5 @@ impl Platform for StubPlatform {
 
     fn ime_bridge(&self) -> Option<&dyn crate::platform::ime::ImeBridge> {
         Some(&self.ime_bridge)
-    }
-
-    fn begin_drag(&self, source_widget_id: ObjectId, mime: &str, payload: &[u8]) -> bool {
-        self.state.begin_drag(source_widget_id, mime, payload)
-    }
-
-    fn poll_drop_event(&self) -> Option<DropEvent> {
-        self.state.pop_drop_event()
-    }
-
-    fn inject_drop_event(&self, event: DropEvent) -> bool {
-        self.state.inject_drop_event(event)
     }
 }

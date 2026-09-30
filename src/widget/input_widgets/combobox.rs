@@ -865,8 +865,27 @@ impl WidgetProperties for ComboBox {
         match name {
             "current_index" => {
                 match value {
+                    // Clearing the selection always succeeds: "nothing is selected" is a state
+                    // every combo box can hold, whatever its item count.
                     CapabilityValue::Null => self.set_current_index(None),
-                    other => self.set_current_index(Some(expect_usize(other)?)),
+                    other => {
+                        let index = expect_usize(other)?;
+                        // `set_current_index` **ignores** an out-of-range index (it is the model
+                        // setter, and refusing there would break the item-removal path that
+                        // relies on a stale index simply not taking). Reporting `Ok` for it here
+                        // is a different thing: this is the *property* contract, whose caller is
+                        // told whether the write landed. Answering `Ok` for an index the control
+                        // discarded is how `rw_combo_box_set_current_index(99)` on a three-item
+                        // box returned `true` and then read back as unselected.
+                        //
+                        // It also broke the round trip a property editor depends on: write `n`,
+                        // read `n`. The honest answer is `OutOfRange`, which is what the error
+                        // type is for.
+                        if index >= self.items.len() {
+                            return Err(CapabilityAccessError::OutOfRange);
+                        }
+                        self.set_current_index(Some(index));
+                    }
                 }
                 Ok(())
             }

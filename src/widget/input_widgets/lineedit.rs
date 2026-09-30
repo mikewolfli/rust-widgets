@@ -21,7 +21,14 @@ use crate::widget::capability::WidgetProperties;
 use crate::widget::decorations::{
     DecorationLayout, DecorationMetrics, DecorationSlots, DECORATION_GAP,
 };
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, estimate_text_width, ControlMetrics};
+
+/// Trailing room a text field leaves for the caret, added to the measured value.
+const LINE_EDIT_CARET_ROOM: u32 = 10;
+/// Narrowest a text field may be, so an empty one is still a field.
+const LINE_EDIT_MIN_WIDTH: u32 = 80;
+/// Height of a text field.
+const LINE_EDIT_HEIGHT: u32 = 24;
 use crate::widget::text_utils::{byte_index_of_char, floor_char_boundary};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
@@ -959,8 +966,13 @@ impl Widget for LineEdit {
     }
 
     fn size_hint(&self) -> Size {
-        let text_w = self.text().len() as u32 * 8 + 10;
-        Size::new(text_w.max(80), 24)
+        // The shared estimate plus the caret's own trailing room, rather than `len() * 8 + 10`.
+        // The 10 px was making the same point — a text field leaves the caret somewhere to be —
+        // but the multiplier was a byte count, so any non-ASCII value asked for three times the
+        // width it would draw.
+        let text_w = estimate_text_width(self.text(), &crate::core::Font::default(), 1.0)
+            + LINE_EDIT_CARET_ROOM;
+        Size::new(text_w.max(LINE_EDIT_MIN_WIDTH), LINE_EDIT_HEIGHT)
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();

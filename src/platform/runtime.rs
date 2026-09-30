@@ -483,6 +483,15 @@ pub fn backend_name() -> &'static str {
 }
 
 /// Runtime GUI mode contract used by demos/tools to explain visible behavior.
+///
+/// # Why this exists at all
+///
+/// A backend that compiles everywhere but creates no window is, on a host without its
+/// native toolkit, indistinguishable from a working one *from the log*: the event loop
+/// runs, the demo prints its progress, and no window appears. `runtime_gui_mode()` is
+/// the one call a demo makes before `run()` so that failure is announced instead of
+/// puzzled over. It is therefore a **user-visible contract**: a backend misclassified
+/// here produces a wrong message at startup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeGuiMode {
     /// Backend is expected to create native windows and run an interactive event loop.
@@ -492,37 +501,80 @@ pub enum RuntimeGuiMode {
 }
 
 /// Resolve GUI mode for a specific platform backend.
+///
+/// # The mapping is keyed on [`Platform::backend_name`], and that is the hazard
+///
+/// There is no `Platform::gui_mode()` method, so this function matches on the backend's
+/// own name string. Strings do not fail to compile when they go stale, which is exactly
+/// what happened here:
+///
+/// * `"harmony-desktop"` was still matched after the Harmony backend renamed itself to
+///   `"harmony-state-backend"`, so one arm was dead. It was masked because the same arm
+///   *also* listed the new name, and both answer `PreviewOrStub` — a coincidence, not a
+///   design.
+/// * `"android-state-backend"`, `"ios-state-backend"`, `"wasm-state-backend"`,
+///   `"portable"` and the two macOS fallback names were **not** listed at all. They fell
+///   through the `_` arm, which happens to answer `PreviewOrStub` — the *right* answer for
+///   the wrong reason, and one that would break silently the day a backend's honest mode
+///   becomes `NativeInteractive`.
+///
+/// # What the evidence for "can open a window" actually is
+///
+/// The **first** attempt at a fix required `platform.capabilities().dpi_scaling` as runtime
+/// evidence, on the reasoning that a backend with no display has nothing to scale against.
+/// That was wrong, and it was wrong in the same shape as the bug it replaced. Two facts
+/// conspired:
+///
+/// 1. The same round corrected the macOS backend's `capabilities()` to report
+///    `dpi_scaling: false` — correctly, because `MacOSPlatform` never overrides
+///    `dpi_scale_factor()` and so answers the trait default `1.0`.
+/// 2. `"cocoa"` is that backend, it **does** open AppKit windows (`init()` calls
+///    `NSApplication::sharedApplication`/`finishLaunching`; `run()` calls `NSApp().run()`),
+///    and it is the backend the shipped `desktop` profile selects on macOS.
+///
+/// So the conjunction made the real, reachable macOS backend answer `PreviewOrStub`, and a
+/// `desktop` build would have told every macOS user "no window will appear". Two individually
+/// correct changes met at one predicate and produced a third behaviour neither had been
+/// tested for — because both `cocoa` arms are `#[cfg]`-gated to a host that is not the one
+/// the test ran on.
+///
+/// `dpi_scaling` answers "can this backend *ask the display* its scale factor". That is not
+/// the question. The question is "is a native window path compiled in", and that is a
+/// **compile-time** fact about the build, which is what `cfg!` is for — it is not a runtime
+/// capability and cannot be read off `capabilities()`.
+///
+/// # The rule
+///
+/// A backend is interactive when **both** hold:
+///
+/// * its name is one whose native window path exists in the crate (`cocoa`,
+///   `WindowsPlatform`, `gtk`, `wayland`), and
+/// * that path is compiled into **this build** (`cfg!(...)`), because `gtk` and `wayland`
+///   answer the same `backend_name()` from a build with no toolkit behind them.
+///
+/// Everything else is a preview. The fallback is the honest direction: telling a user "no
+/// window will appear" about a backend that turns out to work costs a moment of confusion;
+/// telling them a window will appear and having none costs the whole session.
 #[cfg(not(alloc_frugal))]
 pub fn runtime_gui_mode_for(platform: &dyn Platform) -> RuntimeGuiMode {
-    match platform.backend_name() {
-        "cocoa" | "WindowsPlatform" => RuntimeGuiMode::NativeInteractive,
-        "wayland" => {
-            #[cfg(all(target_os = "linux", feature = "wayland-native"))]
-            {
-                RuntimeGuiMode::NativeInteractive
-            }
-            #[cfg(not(all(target_os = "linux", feature = "wayland-native")))]
-            {
-                RuntimeGuiMode::PreviewOrStub
-            }
-        }
-        "gtk" => {
-            #[cfg(all(target_os = "linux", feature = "gtk-native"))]
-            {
-                RuntimeGuiMode::NativeInteractive
-            }
-            #[cfg(not(all(target_os = "linux", feature = "gtk-native")))]
-            {
-                RuntimeGuiMode::PreviewOrStub
-            }
-        }
-        "harmony-desktop"
-        | "harmony-state-backend"
-        | "macos-objc2-preview"
-        | "macos-fallback-stub"
-        | "android-state-backend"
-        | "ios-mobile-stub" => RuntimeGuiMode::PreviewOrStub,
-        _ => RuntimeGuiMode::PreviewOrStub,
+    // `gtk` and `wayland` are conditional on the target *and* on their native feature: the
+    // same `backend_name()` is returned by a toolkit-less build (see
+    // `linux/platform_impl.rs`), so the name alone is not enough for them. The other two
+    // need no `cfg!`: their modules are only compiled on their own target with their own
+    // feature, so a `cocoa`/`WindowsPlatform` instance existing *is* the compile-time proof.
+    //
+    // `macos-objc2-preview` is deliberately absent. It reports the name it does because it is
+    // a preview, and the name is the honest statement of that.
+    let native_capable = match platform.backend_name() {
+        "cocoa" | "WindowsPlatform" => true,
+        "wayland" => cfg!(all(target_os = "linux", feature = "wayland-native")),
+        "gtk" => cfg!(all(target_os = "linux", feature = "gtk-native")),
+        _ => false,
+    };
+    if native_capable {
+        RuntimeGuiMode::NativeInteractive
+    } else {
+        RuntimeGuiMode::PreviewOrStub
     }
 }
 

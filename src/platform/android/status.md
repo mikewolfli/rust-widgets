@@ -71,31 +71,34 @@ use: the library paints every `WidgetKind` and the host supplies pixels.
 | `supports_surfaces()` | ✅ `true` | backed by the above, pinned by `android_hosts_widget_surfaces_and_queues_repaints` |
 | Input delivery into widgets | ⬜ Not wired | the Activity must forward its touch/key events into `widget::runtime::dispatch_pointer_event` |
 
-> The table that follows is the **historical** native-control inventory. It is kept
-> because the JNI view factory still exists for hosts that ask for a native view
-> directly; it is not the path self-drawn widgets take.
+> **No native controls exist — corrected 2026-09-30.** This section used to be an
+> `android.widget.*` inventory with a ✅ per kind. **There is nothing to inventory.** The library
+> paints every `WidgetKind` itself, on every backend:
+> `grep -c 'fn create_button\|fn create_label\|fn create_checkbox'
+> src/platform/android/platform_impl.rs` is `0`, and the same holds for all ten backends. The only
+> Android object a host supplies is a **window plus a drawing surface**; the library draws into it
+> and the host forwards input back through `widget::runtime::dispatch_pointer_event`.
+>
+> The `AndroidViewClass` / `AndroidLogicalKind` tables and the `create_native_view` factory existed
+> to build per-kind views and were **deleted** under BLUE15 #59 — `android_jni.rs`'s own module doc
+> records it. What this page had been describing was their residue.
+>
+> What survives, and what the table below lists, is the **JNI entry points a Java host may call**.
+> They mirror the C ABI one-for-one: `nativeCreateButton` forwards to `rw_create_button`, which
+> creates a **library widget**, not an `android.widget.Button`. So the parity worth stating is
+> *JNI symbol ↔ Rust export* (`tools/check_jni_signatures.sh`), **not** *logical kind ↔ Android class*.
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| Rust → Java view factory | ✅ Verified | `create_native_view` constructs any mapped `AndroidViewClass` |
-| Button | ✅ Verified | `android.widget.Button` |
-| TextView | ✅ Verified | `android.widget.TextView` (Label, StatusBar) |
-| EditText | ✅ Verified | `android.widget.EditText` |
-| CheckBox | ✅ Verified | `android.widget.CheckBox` |
-| RadioButton | ✅ Verified | `android.widget.RadioButton` |
-| SeekBar | ✅ Verified | `android.widget.SeekBar` (Slider) |
-| ProgressBar | ✅ Verified | `android.widget.ProgressBar` |
-| Spinner | ✅ Native | `android.widget.Spinner` (ComboBox) + adapter append |
-| ListView | ✅ Native | `android.widget.ListView` (ListBox/ListView) + adapter seed |
-| ScrollView | ✅ Native | `android.widget.ScrollView` |
-| NumberPicker | ✅ Native | `android.widget.NumberPicker` (SpinBox) |
-| FrameLayout | ✅ Verified | `android.widget.FrameLayout` (Panel/Window) |
-| View text/bounds/visibility/enabled | ✅ Verified | forwarded to the native setters |
-| MenuBar / Menu / MenuItem | 🔶 Logical only | No standalone Android View; consumed by the Activity's own menu |
-| ToolBar | 🔶 Logical only (verified constraint) | Not a framework class: `androidx.appcompat.widget.Toolbar` is app-bundled. Verified on-device (Xiaomi, Android 13) that the class loads but cannot be instantiated without AAR resource merging — `NoClassDefFoundError: androidx/appcompat/R$attr`. A host app that ships AndroidX (via Gradle) can adopt it; the library does not bundle it. See "Toolbar investigation" below |
-| MessageBox | ✅ Verified | `android.app.AlertDialog` (create / `show` / `dismiss` / `setMessage`) |
-| FileDialog | ✅ Verified | Launches real `ACTION_OPEN_DOCUMENT` (`com.android.documentsui` picker) via the stored Activity; see "File dialog" below |
-| ColorDialog / FontDialog | 🔶 Logical only | No platform picker on Android; emits an explicit diagnostic when the JNI bridge is ready |
+| `nativeCreate*` JNI entry points | ✅ Exported | one per logical kind, each forwarding to the same `rw_create_*` the C ABI uses. `tools/check_jni_signatures.sh` verifies every declaration has a matching Rust export |
+| Per-kind Android views (`android.widget.Button`, …) | ⛔ None | no `create_*` override exists in this backend, and none should — the library paints every kind. `create_native_view` and the class tables were deleted under BLUE15 #59 |
+| Widget surfaces (`mount_surface` + repaint queue) | ✅ Implemented | the path every kind actually takes: records the displayed widgets and lets the Activity drain what went stale |
+| Show / hide / geometry / text / enabled | ✅ Implemented | logical state round-trips on the shared `BackendState`; nothing is forwarded to an OS view, because there is none |
+| MenuBar / Menu / MenuItem | ✅ Implemented | in-process tree the host renders. `nativeCreateMenuBar`/`nativeCreateMenu` exist; no Android View is created for either |
+| ToolBar | ✅ Implemented | painted by the library. The former `androidx.appcompat.widget.Toolbar` note described a class this project never instantiated |
+| MessageBox | ✅ Implemented | a painted widget; no `android.app.AlertDialog` is constructed and no `create_native_dialog` is exported |
+| FileDialog | ✅ Verified | the one genuine **Activity operation** — launches `ACTION_OPEN_DOCUMENT` (`com.android.documentsui`) through the stored Activity. A host operation, not a control; see "File dialog" below |
+| ColorDialog / FontDialog | 🔶 Logical only | no system picker on Android; emits an explicit diagnostic when the JNI bridge is ready |
 | Menu kind validation | ✅ Enforced | `MenuBar`←Window, `Menu`←MenuBar/Menu, `MenuItem`←Menu, trigger←MenuItem |
 | JNI signature validation | ✅ Automated | `tools/check_jni_signatures.sh` (Java ↔ Rust ↔ exported symbols, plus `target/qa/jni_*_map*.json` mapping reports) |
 | Cross-compilation | ✅ Verified | NDK 30 clang link for `aarch64`/`x86_64`-linux-android |

@@ -17,7 +17,7 @@ use crate::platform::{Platform, StubPlatform, WidgetTriggerEvent, WidgetTriggerK
 #[test]
 fn runtime_selects_harmony_backend_when_feature_enabled() {
     let platform = crate::platform::get_platform();
-    assert_eq!(platform.backend_name(), "harmony-desktop");
+    assert_eq!(platform.backend_name(), "harmony-state-backend");
     assert_eq!(platform.family(), PlatformFamily::Desktop);
 }
 
@@ -300,4 +300,277 @@ fn format_shortcut_uses_the_backend_style() {
         platform.format_shortcut(&shortcut),
         format_shortcut_for_platform(&shortcut, platform.shortcut_style()),
     );
+}
+
+/// Every interactive backend is reported interactive, and every state-only backend is not.
+///
+/// # What this pins, and how the first version of it failed
+///
+/// [`crate::platform::runtime_gui_mode_for`] decides interactivity from a backend's name. That
+/// name is a string the backend chooses for itself, so the mapping has two failure modes and the
+/// first fix for it hit **both**:
+///
+/// 1. **A dead arm.** `"harmony-desktop"` stayed listed after the backend renamed itself, and it
+///    was masked because the same arm *also* carried the new name.
+/// 2. **A new false answer.** The fix required `capabilities().dpi_scaling` as evidence — and the
+///    same round had correctly set macOS's `dpi_scaling` to `false` (it never overrides
+///    `dpi_scale_factor`). So the real `cocoa` backend, which *does* open AppKit windows and *is*
+///    what the shipped `desktop` profile selects on macOS, answered `PreviewOrStub`. A `desktop`
+///    build would have told every macOS user "no window will appear".
+///
+/// The lesson is in the table below: correctness has to be checked at the **predicate**, where two
+/// individually-right changes can disagree, not only in the change itself. The original test only
+/// covered a synthetic `cocoa`-named struct, so the real backend — `#[cfg]`-gated to a host the
+/// suite does not run on — was never exercised.
+///
+/// # Why the rule is a compile-time fact now
+///
+/// `dpi_scaling` answers "can this backend ask the display its scale factor", which is not the
+/// question. "Is a native window path compiled in" is a fact about the build, so it is asked with
+/// `cfg!` where it is conditional (`gtk`, `wayland`, whose name is the same in a toolkit-less
+/// build) and is implied by the type existing where it is not.
+#[test]
+fn every_backend_is_reported_at_the_mode_it_actually_has() {
+    use crate::platform::{runtime_gui_mode_for, RuntimeGuiMode};
+
+    /// A backend with `name` and no behaviour at all. Only `backend_name` matters here, because
+    /// that is the whole input the predicate reads.
+    struct Named(&'static str);
+
+    impl Platform for Named {
+        fn as_any(&self) -> &dyn core::any::Any {
+            self
+        }
+        fn backend_name(&self) -> &'static str {
+            self.0
+        }
+        fn family(&self) -> PlatformFamily {
+            PlatformFamily::Desktop
+        }
+        fn init(&self) {}
+        fn run(&self) {}
+        fn quit(&self) {}
+        fn create_window(&self, _t: &str, _x: i32, _y: i32, _w: u32, _h: u32) -> ObjectId {
+            0
+        }
+    }
+
+    // The name-side rule, independent of which host this test runs on. `cocoa` and
+    // `WindowsPlatform` need no `cfg!` because their modules only exist on their own target with
+    // their own feature, so an instance existing *is* the compile-time proof — which is exactly
+    // what the previous fix got wrong by consulting a runtime capability instead.
+    for name in ["cocoa", "WindowsPlatform"] {
+        assert_eq!(
+            runtime_gui_mode_for(&Named(name)),
+            RuntimeGuiMode::NativeInteractive,
+            "{name} opens native windows, so it must be reported interactive regardless of what \
+             its capabilities() say about DPI — those are separate questions"
+        );
+    }
+
+    // `gtk` and `wayland` are conditional on the build, so their expectation is too.
+    let expected_gtk = if cfg!(all(target_os = "linux", feature = "gtk-native")) {
+        RuntimeGuiMode::NativeInteractive
+    } else {
+        RuntimeGuiMode::PreviewOrStub
+    };
+    assert_eq!(runtime_gui_mode_for(&Named("gtk")), expected_gtk);
+    let expected_wayland = if cfg!(all(target_os = "linux", feature = "wayland-native")) {
+        RuntimeGuiMode::NativeInteractive
+    } else {
+        RuntimeGuiMode::PreviewOrStub
+    };
+    assert_eq!(runtime_gui_mode_for(&Named("wayland")), expected_wayland);
+
+    // Every state-only backend, including the two macOS fallbacks the old code never listed and
+    // the harmony name the old arm had gone stale on. A state backend creates no window, so a
+    // `NativeInteractive` here is a false promise.
+    for name in [
+        "macos-objc2-preview",
+        "macos-fallback-stub",
+        "unknown-runtime-stub",
+        "harmony-state-backend",
+        "android-state-backend",
+        "android-mobile",
+        "ios-state-backend",
+        "wasm-state-backend",
+        "portable",
+        "recording-test-backend",
+        // The renamed-away spelling must not be treated as interactive on the strength of the
+        // word "desktop" in it — it is not a backend at all any more.
+        "harmony-desktop",
+    ] {
+        assert_eq!(
+            runtime_gui_mode_for(&Named(name)),
+            RuntimeGuiMode::PreviewOrStub,
+            "{name} creates no native window, so claiming it will open one is the silent \
+             failure this function exists to prevent"
+        );
+    }
+
+    // And the real constructible backend on this host must agree with its own row: the strongest
+    // available check that the predicate has not drifted from what the crate actually ships.
+    let stub = StubPlatform::new("portable", PlatformFamily::Embedded);
+    assert_eq!(runtime_gui_mode_for(&stub), RuntimeGuiMode::PreviewOrStub);
+}
+
+/// Every backend that **declares** `typed_widget_trigger` must actually deliver a trigger.
+///
+/// # The defect this pins
+///
+/// `PlatformCapabilities::typed_widget_trigger` was `true` on every backend — it is the one flag
+/// the trait default already sets, on the reasoning that the library implements it rather than the
+/// host. The reasoning is right about *why* the capability can exist and wrong about whether a
+/// given backend **wired it up**: the implementation is two one-line delegations to the shared
+/// `BackendState` queue, and six backends wrote them while `linux`, `macos`, `macos_objc2` and
+/// `wasm` did not. Each of those four answered the trait defaults (`None` / `false`) while
+/// claiming the flag.
+///
+/// It is host-visible, not theoretical: `NativeControlBackend` forwards both methods straight to
+/// `get_platform()` (`control_backend/native.rs`), so on a GTK/cocoa/objc2 desktop build an
+/// injected trigger was accepted by the API and then silently dropped.
+///
+/// # Why this is asserted over the *real* backends and not just the stub
+///
+/// `consistency_typed_widget_trigger_roundtrip` already covers `StubPlatform`, and it passed
+/// throughout — because the stub is one of the six that delegate. A test that only exercises the
+/// backend which happens to be correct is exactly how four others kept the flag without the
+/// methods, so this one builds each backend this host can construct and asks **them**.
+///
+/// # What it asserts, in order
+///
+/// The flag, then the round-trip, then that the two FIFO views share one queue. The middle step is
+/// the one that would have failed: `inject` returning `false` is a refusal, so a backend missing
+/// the delegation fails on `assert!` rather than silently passing on a `None` comparison.
+#[test]
+fn a_declared_typed_trigger_capability_is_backed_by_the_queue_that_delivers_it() {
+    use crate::platform::PlatformCapabilities;
+
+    /// `name` is only for the failure message; the backend is the subject.
+    fn assert_delivers(name: &str, platform: &dyn Platform) {
+        let caps: PlatformCapabilities = platform.capabilities();
+        if !caps.typed_widget_trigger {
+            // Under-claiming is honest and out of scope: the backend is saying it has no queue.
+            return;
+        }
+        let window = platform.create_window("trigger-probe", 0, 0, 100, 100);
+        assert!(
+            platform.inject_widget_trigger_event(window, WidgetTriggerKind::Clicked),
+            "{name}: declares `typed_widget_trigger: true` but `inject_widget_trigger_event` \
+             refused a window it just created, so the flag promises a queue this backend does \
+             not delegate to"
+        );
+        assert_eq!(
+            platform.poll_widget_trigger_event(),
+            Some(WidgetTriggerEvent { widget_id: window, kind: WidgetTriggerKind::Clicked }),
+            "{name}: the injected event must come back out of the typed view"
+        );
+        assert_eq!(
+            platform.poll_widget_triggered(),
+            None,
+            "{name}: and both views must be one queue, so the typed poll already consumed it"
+        );
+    }
+
+    // The always-constructible one, so the assertions themselves are never vacuous.
+    assert_delivers("stub", &StubPlatform::new("trigger-stub", PlatformFamily::Desktop));
+
+    // The real backend this host compiles in, if any. Each arm repeats the module's own gate,
+    // because a backend that is not compiled in cannot be constructed and must not be pretended.
+    #[cfg(target_os = "linux")]
+    assert_delivers("linux", &crate::platform::linux::LinuxPlatform::new());
+    #[cfg(all(target_os = "linux", feature = "wayland-native"))]
+    assert_delivers("wayland", &crate::platform::wayland::WaylandPlatform::new());
+    #[cfg(all(target_os = "macos", feature = "cocoa-legacy"))]
+    assert_delivers("cocoa", &crate::platform::macos::MacOSPlatform::default());
+    #[cfg(all(target_os = "macos", any(feature = "macos", feature = "cocoa-legacy")))]
+    assert_delivers("macos-objc2", &crate::platform::macos_objc2::MacOSObjc2Platform::default());
+    #[cfg(target_os = "windows")]
+    assert_delivers("windows", &crate::platform::windows::WindowsPlatform::new());
+    #[cfg(feature = "wasm")]
+    assert_delivers("wasm", &crate::platform::wasm::WasmPlatform::default());
+    #[cfg(feature = "harmony")]
+    assert_delivers("harmony", &crate::platform::harmony::HarmonyPlatform::new());
+}
+
+/// A backend's capability flags must agree with the methods those flags promise.
+///
+/// # Why the earlier flag fixes needed this and did not have it
+///
+/// Six backends were corrected by hand across two rounds, each time by a reader noticing that a
+/// flag's method was missing. Nothing prevented the next one, and the two closest calls are
+/// instructive because both were *individually correct changes*:
+///
+/// * `macos`'s `dpi_scaling` was corrected to `false` (right — it never overrides
+///   `dpi_scale_factor`), and `runtime_gui_mode_for` was reading that flag as evidence of "can open
+///   a window" — so the real, window-opening cocoa backend started answering `PreviewOrStub`.
+/// * `wayland` kept `ime: true` and `accessibility: true` for longer than any other backend, masked
+///   by the fact that it *did* override `dpi_scale_factor` — one honest flag beside two dishonest
+///   ones reads as a backend that checked.
+///
+/// Both are the same failure: a flag and its method are two statements about one fact, and only
+/// the method is checked by the compiler. This test states the relation for every backend this host
+/// can construct, so a flag cannot drift from its method without a failure naming the pair.
+///
+/// # Why the direction is one-way
+///
+/// The assertions are `flag implies method`. They deliberately do **not** assert the converse: a
+/// backend that implements a method and reports `false` is *under*-claiming, which the trait's own
+/// documentation calls the direction a default must err. Asserting both would make the honest
+/// default idiom unrepresentable and would fail a backend for being cautious.
+#[test]
+fn capability_flags_agree_with_the_methods_they_promise() {
+    use crate::platform::PlatformCapabilities;
+
+    fn assert_agrees(name: &str, platform: &dyn Platform) {
+        let caps: PlatformCapabilities = platform.capabilities();
+        if caps.ime {
+            assert!(
+                platform.ime_bridge().is_some(),
+                "{name}: claims `ime: true` but `ime_bridge()` answers None, so the flag \
+                 promises an input-method client that does not exist"
+            );
+        }
+        if caps.accessibility {
+            assert!(
+                platform.accessibility_bridge().is_some(),
+                "{name}: claims `accessibility: true` but `accessibility_bridge()` answers None"
+            );
+        }
+        if caps.dpi_scaling {
+            // Not asserted for `dpi_scaling: true` — plenty of honest backends report the flag
+            // while `dpi_scale_factor()` happens to be `1.0` on this host (an unscaled display is
+            // still a scaled-capable backend). What is *not* honest is `true` with no override at
+            // all, which is a compile-time fact the source gate checks
+            // (`check_capability_flags_match_their_methods.sh`); here the runtime value is only
+            // required to be a usable number rather than a NaN or a negative scale.
+            let scale = platform.dpi_scale_factor();
+            assert!(
+                scale.is_finite() && scale > 0.0,
+                "{name}: claims `dpi_scaling: true` but reports a scale of {scale}, which no \
+                 layout can use"
+            );
+        }
+    }
+
+    assert_agrees("stub", &StubPlatform::new("flags-stub", PlatformFamily::Desktop));
+
+    #[cfg(target_os = "linux")]
+    assert_agrees("linux", &crate::platform::linux::LinuxPlatform::new());
+    #[cfg(all(target_os = "linux", feature = "wayland-native"))]
+    assert_agrees("wayland", &crate::platform::wayland::WaylandPlatform::new());
+    #[cfg(all(target_os = "macos", feature = "cocoa-legacy"))]
+    assert_agrees("cocoa", &crate::platform::macos::MacOSPlatform::default());
+    #[cfg(all(target_os = "macos", any(feature = "macos", feature = "cocoa-legacy")))]
+    assert_agrees("macos-objc2", &crate::platform::macos_objc2::MacOSObjc2Platform::default());
+    #[cfg(target_os = "windows")]
+    assert_agrees("windows", &crate::platform::windows::WindowsPlatform::new());
+    #[cfg(feature = "wasm")]
+    assert_agrees("wasm", &crate::platform::wasm::WasmPlatform::default());
+    #[cfg(feature = "harmony")]
+    assert_agrees("harmony", &crate::platform::harmony::HarmonyPlatform::new());
+    #[cfg(target_os = "android")]
+    assert_agrees("android", &crate::platform::android::AndroidPlatform::new());
+    #[cfg(target_os = "ios")]
+    assert_agrees("ios", &crate::platform::ios::IosMobilePlatform::new());
 }

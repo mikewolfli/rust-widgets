@@ -49,9 +49,24 @@ use crate::core::ObjectId;
 use crate::core::PlatformFamily;
 use crate::event::EventLoop;
 use crate::platform::types::{
-    DropEvent, Platform, PlatformCapabilities, WidgetTriggerEvent, WidgetTriggerKind,
+    Platform, PlatformCapabilities, WidgetTriggerEvent, WidgetTriggerKind,
 };
 use crate::platform::wayland::types::{WaylandHandleKind, WaylandPlatform};
+
+/// The frame interval this backend advances the library by, in milliseconds.
+///
+/// # Why this is at file scope and not inside the loop
+///
+/// It was a `let`-scope `const` inside the native-fd loop, so only the `run()` loop could see
+/// it — and `dispatch_native_events`, the pump-callback spelling of the same tick, referenced a
+/// name that was not in *its* scope at all. The module therefore did not compile whenever the
+/// native Wayland path was enabled: `cargo check --features wayland-native` failed with
+/// `cannot find value FRAME_INTERVAL_MS`, which no CI job ran.
+///
+/// Same value and same reason as the other backends' twin constants: the number handed to
+/// [`crate::drive_frame`] is what makes a transition take the time the theme said it should, so
+/// it must not differ between the loop and the pump callback — nor from the other hosts.
+const FRAME_INTERVAL_MS: u32 = 16;
 
 #[cfg(all(feature = "wayland-native", target_os = "linux"))]
 use wayland_client as wl_client;
@@ -64,6 +79,10 @@ use wayland_protocols as wl_protocols;
 // ---------------------------------------------------------------------------
 
 impl Platform for WaylandPlatform {
+    // The uniform widget-property methods are answered once, over `self.state`, by the
+    // shared expansion in `platform::state_impl` rather than re-written per backend.
+    crate::impl_platform_state_properties!();
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -107,14 +126,45 @@ impl Platform for WaylandPlatform {
         crate::platform::types::unix_print_clients_available()
     }
 
+    /// The host integrations this backend actually provides.
+    ///
+    /// # Why `ime: false` and `accessibility: false`
+    ///
+    /// [`PlatformCapabilities::ime`] is a promise about [`Platform::ime_bridge`] and
+    /// `accessibility` about [`Platform::accessibility_bridge`]. This backend overrides
+    /// **neither**, so each inherits the trait default — `None` — and a `true` here told every
+    /// caller there was a bridge to ask for. `grep -rn "ime_bridge\|accessibility_bridge"
+    /// src/platform/wayland/` returns nothing: there is no Wayland IME integration and no
+    /// Wayland accessibility bridge in this crate, and unlike Linux/GTK there is not even a
+    /// candidate module to delegate to (`platform/ime_linux.rs` is IBus over D-Bus, which the
+    /// GTK backend owns; a Wayland client reaches the compositor's `text-input` protocol, which
+    /// is not bound here).
+    ///
+    /// The flag escapes the process: `rw_platform_capabilities()` packs these five into a C ABI
+    /// bitmask (`bindings/binding_impl.rs`), so a host application read the false `ime`/`access`
+    /// bits and would offer an input-method or screen-reader affordance that cannot answer.
+    ///
+    /// # Why `dpi_scaling` stays `true`
+    ///
+    /// It is the one of the three with an override behind it: [`Platform::dpi_scale_factor`]
+    /// reads `GDK_SCALE` / `QT_SCALE_FACTOR` / `RUST_WIDGETS_DPI_SCALE` and returns a real
+    /// number. Its values come from the *environment* rather than from the compositor, which is
+    /// weaker than the GTK backend's — but it is a measurement of the host, not a fabricated
+    /// constant, so the flag is honest (principle #37 draws the line at a value that was never
+    /// obtained, not at one obtained by a less direct route).
+    ///
+    /// # Why `native_menu` stays `false`
+    ///
+    /// Wayland has no menu protocol, so the menu tree this backend keeps is in-process data the
+    /// host renders and feeds back as injected triggers. Advertising a native menu would be false.
+    /// This was the only one of the five the backend had actually reasoned about before; the
+    /// comment above it was true and the two beside it were not, which is what made the pair easy
+    /// to miss.
     fn capabilities(&self) -> PlatformCapabilities {
         PlatformCapabilities {
             dpi_scaling: true,
-            ime: true,
-            accessibility: true,
-            // Wayland has no menu protocol, so the menu tree this backend keeps is
-            // in-process data the host renders and feeds back as injected triggers.
-            // Advertising a native menu would be false.
+            ime: false,
+            accessibility: false,
             native_menu: false,
             typed_widget_trigger: true,
         }
@@ -451,64 +501,77 @@ impl Platform for WaylandPlatform {
     }
 
     // -----------------------------------------------------------------------
-    // Widget lifecycle operations
+    // Widget surfaces
     // -----------------------------------------------------------------------
 
-    fn show_widget(&self, widget_id: ObjectId) {
-        self.state.set_visible(widget_id, true);
+    /// Whether this backend can host library-painted widgets.
+    ///
+    /// # Why this was `false` and is now `true`
+    ///
+    /// This backend inherited the trait's `false` because it implemented no surface method at
+    /// all — no `mount_surface`, `resize_surface`, `unmount_surface` or `invalidate_surface`. It
+    /// therefore could not display a library-painted control, even though it is otherwise a
+    /// complete backend: it talks to a real compositor, creates a real surface, and reports its
+    /// size and input.
+    ///
+    /// The gap was only the per-widget table. A Wayland window's pixels come from the same
+    /// record-plus-queue shape every other non-desktop backend uses ([`BackendState`]), and this
+    /// backend already owns a `BackendState` — so the fix is the table, not a new mechanism.
+    ///
+    /// # What a host does with it
+    ///
+    /// Mount each widget, then each frame/redraw call [`crate::take_pending_repaint`] to learn
+    /// which went stale and `widget::runtime::render_frame_cached` to get its RGBA for the
+    /// `wl_shm` buffer. `true` says the mount will succeed; it promises nothing about how the
+    /// compositor presents the buffer.
+    ///
+    /// [`BackendState`]: crate::platform::state::BackendState
+    fn supports_surfaces(&self) -> bool {
+        true
     }
 
-    fn hide_widget(&self, widget_id: ObjectId) {
-        self.state.set_visible(widget_id, false);
+    /// Mounts a widget onto a surface this backend will present.
+    ///
+    /// `false` for an id this backend did not create, so a host is told rather than recorded
+    /// into a table nothing can render.
+    fn mount_surface(&self, _parent: ObjectId, id: ObjectId, rect: crate::core::Rect) -> bool {
+        self.state.mount_surface_record(id, rect)
     }
 
-    fn set_widget_geometry(&self, widget_id: ObjectId, x: i32, y: i32, width: u32, height: u32) {
-        self.state.set_geometry(widget_id, x, y, width, height);
+    /// Updates the rect of a mounted surface. `false` when `id` is not mounted.
+    fn resize_surface(&self, id: ObjectId, rect: crate::core::Rect) -> bool {
+        self.state.resize_surface_record(id, rect)
     }
 
-    fn set_widget_text(&self, widget_id: ObjectId, text: &str) {
-        self.state.set_text(widget_id, text);
+    /// Releases a mounted surface.
+    fn unmount_surface(&self, id: ObjectId) -> bool {
+        self.state.unmount_surface_record(id)
     }
 
-    fn get_widget_text(&self, widget_id: ObjectId) -> String {
-        self.state.text(widget_id)
+    /// Queues a repaint for the compositor loop to pick up. `false` when `id` is unknown.
+    ///
+    /// A **window** id is accepted as well as a mounted surface's: the library repaints a window
+    /// to reveal the ordinary children drawn into that window's frame, and answering only for
+    /// mounted surfaces made those requests silent no-ops on every record-backed backend.
+    fn invalidate_surface(&self, id: ObjectId) -> bool {
+        self.state.record_repaint_request(id)
     }
 
-    fn set_widget_enabled(&self, widget_id: ObjectId, enabled: bool) {
-        self.state.set_enabled(widget_id, enabled);
+    /// Pops the next widget awaiting a repaint.
+    ///
+    /// The drain half of [`Self::invalidate_surface`]: without it the queue would grow without
+    /// bound and the compositor would never learn what to redraw.
+    fn take_pending_repaint(&self) -> Option<ObjectId> {
+        self.state.take_pending_repaint()
     }
 
-    fn is_widget_enabled(&self, widget_id: ObjectId) -> bool {
-        self.state.enabled(widget_id)
-    }
-
-    fn set_widget_visible(&self, widget_id: ObjectId, visible: bool) {
-        self.state.set_visible(widget_id, visible);
-    }
-
-    fn is_widget_visible(&self, widget_id: ObjectId) -> bool {
-        self.state.visible(widget_id)
-    }
+    // -----------------------------------------------------------------------
+    // Widget lifecycle operations
+    // -----------------------------------------------------------------------
 
     // -----------------------------------------------------------------------
     // IME / Accessibility
     // -----------------------------------------------------------------------
-
-    fn set_widget_ime_enabled(&self, widget_id: ObjectId, enabled: bool) -> bool {
-        self.state.set_ime_enabled(widget_id, enabled)
-    }
-
-    fn is_widget_ime_enabled(&self, widget_id: ObjectId) -> bool {
-        self.state.ime_enabled(widget_id)
-    }
-
-    fn set_widget_accessibility_name(&self, widget_id: ObjectId, name: &str) -> bool {
-        self.state.set_accessibility_name(widget_id, name)
-    }
-
-    fn get_widget_accessibility_name(&self, widget_id: ObjectId) -> String {
-        self.state.accessibility_name(widget_id)
-    }
 
     // -----------------------------------------------------------------------
     // Clipboard
@@ -525,18 +588,6 @@ impl Platform for WaylandPlatform {
     // -----------------------------------------------------------------------
     // Drag and drop
     // -----------------------------------------------------------------------
-
-    fn begin_drag(&self, source_widget_id: ObjectId, mime: &str, payload: &[u8]) -> bool {
-        self.state.begin_drag(source_widget_id, mime, payload)
-    }
-
-    fn poll_drop_event(&self) -> Option<DropEvent> {
-        self.state.pop_drop_event()
-    }
-
-    fn inject_drop_event(&self, event: DropEvent) -> bool {
-        self.state.inject_drop_event(event)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -562,12 +613,6 @@ impl WaylandPlatform {
         // Idle timeout: bounds quit latency when the compositor is silent.
         const IDLE_TIMEOUT_MS: i32 = 50;
 
-        // The frame interval this backend advances the library by. Same value and same
-        // reason as the other backends' twin constants: the delta handed to
-        // `crate::drive_frame` is what makes a transition take the time the theme said it
-        // should, so it must not be a different number than the one the other hosts use.
-        const FRAME_INTERVAL_MS: i32 = 16;
-
         log::info!("[wayland] Entering native fd-based event loop");
         loop {
             if !self.runtime.running.load(std::sync::atomic::Ordering::SeqCst) {
@@ -588,7 +633,7 @@ impl WaylandPlatform {
                 // run even in this session-less arm, or a transition that started before the
                 // window appeared would freeze instead of finishing (BLUE24 §0A.1
                 // measurement 1).
-                crate::drive_frame(FRAME_INTERVAL_MS as u32);
+                crate::drive_frame(FRAME_INTERVAL_MS);
                 std::thread::sleep(std::time::Duration::from_millis(FRAME_INTERVAL_MS as u64));
                 continue;
             };
@@ -637,7 +682,7 @@ impl WaylandPlatform {
             // never read. Without the animation step that follows it, every hover fade and
             // caret blink was inert on this backend for the same reason it was on the
             // others (BLUE24 §0A.1 measurement 1). See `crate::drive_frame`.
-            crate::drive_frame(FRAME_INTERVAL_MS as u32);
+            crate::drive_frame(FRAME_INTERVAL_MS);
         }
         log::info!("[wayland] Native event loop exited");
     }
@@ -657,7 +702,7 @@ impl WaylandPlatform {
         // deadlock on this mutex. This is the pump-callback spelling of the same tick
         // the `run()` loop performs, animation step included.
         drop(guard);
-        crate::drive_frame(FRAME_INTERVAL_MS as u32);
+        crate::drive_frame(FRAME_INTERVAL_MS);
     }
 
     /// Attempt to create a native Wayland xdg_toplevel for this window.

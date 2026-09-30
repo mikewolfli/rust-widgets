@@ -50,12 +50,65 @@ for development and testing.
 | Show / hide / geometry / text / enabled | ✅ Implemented | logical state round-trips |
 | Clipboard | ✅ Implemented | in-process store |
 | Drag & drop | ✅ Implemented | injectable drop-event queue |
-| IME + accessibility metadata | ✅ Implemented | modelled state |
+| IME / accessibility **metadata** (per-widget flags and names) | ✅ Implemented | `BackendState` fields that round-trip a boolean and a string |
+| IME / accessibility **bridges** | ⛔ Not implemented | neither `ime_bridge()` nor `accessibility_bridge()` is overridden, so both answer `None`; this is what `capabilities()` reports as `ime: false` / `accessibility: false`. The row above is not a counter-argument — a flag store is not an input-method client, and ArkUI's real IME arrives through the XComponent below, which is not bound |
 | Typed widget-trigger events | ✅ Implemented | delegated to the shared `BackendState` queue |
 | Backend auto-selection on `ohos` target | ✅ Implemented | via `target_env`, see above |
 | **Widget surfaces** (`mount_surface` + repaint queue) | ✅ Implemented | records which widgets are displayed; the ArkTS side pulls frames |
-| ArkUI native view bridge | ⬜ Not implemented | needs N-API/ArkUI headers bound at runtime |
-| **Input delivery into widgets** | ⬜ Not wired | the ArkTS side must forward its events; see below |
+| **ArkUI XComponent bridge** (`feature = "xcomponent"`) | ✅ Implemented | binds `OH_NativeXComponent`; see below |
+| **Input delivery into widgets** | ✅ Implemented via the bridge | touch / mouse / key / focus callbacks route into the widget tree |
+
+## The XComponent bridge
+
+`src/platform/harmony/xcomponent.rs` closes the two gaps this table used to record as
+"⬜ Not implemented" and "⬜ Not wired" — they were one gap, because without an
+`OH_NativeXComponent` the backend could neither receive a surface nor an event.
+
+ArkUI's `XComponent` hands its native side an `OH_NativeXComponent*`; the ArkTS `onLoad` passes
+that pointer to `rw_harmony_bind_xcomponent`, and from there the bridge registers:
+
+| Native entry point | Callback | What the library gains |
+|---|---|---|
+| `OH_NativeXComponent_RegisterCallback` | `OnSurfaceCreated` / `Changed` / `Destroyed` | a surface to draw into, and its size and offset |
+| the same block, `DispatchTouchEvent` | `OH_NativeXComponent_GetTouchEvent` | multi-contact input → `Event::Touch*` |
+| `OH_NativeXComponent_RegisterMouseEventCallback` | `DispatchMouseEvent` / `DispatchHoverEvent` | click, move, hover → `Event::Mouse*` |
+| `OH_NativeXComponent_RegisterKeyEventCallback` | key down | typing → `Event::KeyPress` |
+| `OH_NativeXComponent_RegisterFocusEventCallback` / `Blur` | focus / blur | the library's focus model |
+
+Design points worth knowing before editing it:
+
+- **Hand-written `extern "C"`, not bindgen.** The declarations are a few dozen lines and this
+  crate has no bindgen dependency. Each function records the header's own `@since`, and the
+  module documents the SDK version it was transcribed from
+  (OpenHarmony 6.0.0.46 Beta1).
+- **Enums are mapped explicitly, never `transmute`d.** `TouchEventType` and
+  `MouseEventAction` are `repr(C)` over SDK enums, so an out-of-range value reaching a
+  `transmute` would be undefined behaviour. `from_raw` keeps an `Unknown`/`None` arm for it.
+- **`touch` is orthogonal.** `Event::Touch*` is itself gated on `feature = "touch"`, so the
+  bridge's touch arms carry the same gate and drop contacts at `debug` when it is off —
+  identical to how the Windows canvas treats `WM_TOUCH`.
+- **A thread guard refuses foreign callbacks.** The widget runtime is thread-local and ArkUI
+  calls back on its own main thread; a callback from elsewhere would dispatch into a
+  *different* registry and the events would vanish with no error, so it is refused and logged.
+- **`on_surface_changed` does not run layout.** It queues a resize trigger and lets the
+  message loop re-run the layout — re-entering a control tree's layout from inside ArkUI's own
+  layout pass is how a resize becomes a stall.
+- **Off by default.** `xcomponent` links `ace_ndk` and needs the SDK's headers, so a build
+  without the SDK must still compile; that is principle #37's "honest absence" applied to a
+  build configuration. `rw_harmony_bind_xcomponent` returns `false` with a logged reason in
+  such a build, rather than failing to link.
+
+Verified with the SDK's real headers:
+
+```bash
+OHOS_SDK_NATIVE=<sdk>/linux/native cargo ohos check -t aarch64 --lib \
+  --no-default-features --features "harmony xcomponent desktop-runtime controls-custom"
+OHOS_SDK_NATIVE=<sdk>/linux/native cargo ohos check -t aarch64 --lib \
+  --no-default-features --features "harmony xcomponent touch i18n controls-native desktop-runtime"
+```
+
+Both pass, and `cargo check --lib --features "harmony xcomponent desktop-runtime"` on the host
+is warning-free.
 
 ## How a widget reaches the screen
 
@@ -63,16 +116,30 @@ The ArkTS host owns the pixels; the library hands them over as a frame.
 
 ```text
 1. ArkTS: rw_harmony_bind_node(node_handle, widget_id)
-2. ArkTS: rw_mount_surface(parent, widget_id, rect)   -> true
-3. library: invalidate_surface(widget_id)             -> queued (coalesced)
-4. ArkTS: take the pending repaint, then render the frame
-5. ArkTS: blit the RGBA into its Canvas
-6. ArkTS: unmount on teardown
+2. ArkTS: rw_mount_surface(parent, widget_id, x, y, w, h)   -> true
+3. library: invalidate_surface(widget_id)                    -> queued (coalesced)
+4. ArkTS: id = rw_take_pending_repaint()                     -> the stale widget
+5. ArkTS: rw_render_surface_frame(id, w, h, ...)             -> RGBA bytes
+6. ArkTS: blit the RGBA into its Canvas, then rw_free_bytes(...)
+7. ArkTS: rw_unmount_surface(widget_id) on teardown
 ```
 
 Because the queue lives in the backend, the host learns *which* widget went stale
 instead of repainting everything. Pinned by
 `widget_surfaces_are_advertised_and_round_trip`.
+
+Steps 2 and 4–6 cross the C ABI, and **before this round they had no entry point**:
+`Platform::mount_surface`/`invalidate_surface` are Rust trait methods, and no
+function produced frame pixels at all, so a host holding only the C ABI could not
+display anything while this backend reported `supports_surfaces() == true`. The
+surface functions now exist (`rw_mount_surface`, `rw_resize_surface`,
+`rw_unmount_surface`, `rw_invalidate_surface`, `rw_supports_surfaces`,
+`rw_take_pending_repaint`, `rw_render_surface_frame`) and are published in
+`include/rw_generated.h`, so the flow above is executable rather than aspirational.
+
+`rw_report_window_resize(window_id, w, h)` is the seventh piece: OpenHarmony
+delivers a size change to the ArkTS component's `onAreaChange`, not to this backend,
+so without forwarding it here the window's layout never re-runs after a resize.
 
 `mount_surface` makes a widget **visible**; it does not make it **interactive**.
 Forwarding ArkTS touches/keys into `crate::widget::runtime::dispatch_pointer_event`
@@ -84,18 +151,24 @@ Forwarding ArkTS touches/keys into `crate::widget::runtime::dispatch_pointer_eve
 `HarmonyPlatform::capabilities()` declares the flags explicitly rather than
 inheriting desktop defaults:
 
-- `dpi_scaling: true`, `ime: true`, `accessibility: true` — the state model
-  tracks these.
-- `native_menu: false` — the menu is an in-process tree served through an
-  injectable queue, **not** an OS menu. This is asserted by
-  `capabilities_are_explicit_and_honest`.
+- `dpi_scaling: false`, `ime: false`, `accessibility: false` — **not** because
+  OpenHarmony lacks these, but because this backend implements none of the methods
+  behind them. Each flag names a specific method (`dpi_scale_factor()`,
+  `ime_bridge()`, `accessibility_bridge()`), and `grep` over `src/platform/harmony/`
+  finds all three absent, so each would fall through to the trait default (`1.0`,
+  `None`, `None`). A `true` here promised a method that cannot answer. ArkUI *does*
+  expose display density, IME and an accessibility tree — they become reachable when
+  the XComponent bridge below is bound, and these three flags flip to `true` at that
+  point, not before.
+- `native_menu: false` — the menu is an in-process tree served through an injectable
+  queue, **not** an OS menu. This is asserted by `capabilities_are_explicit_and_honest`.
+- `typed_widget_trigger: true` — implemented by this backend
+  (`inject_widget_trigger_event`, `poll_widget_trigger_event`) over the shared queue,
+  so it cannot be absent.
 
 `supports_surfaces()` returns `true`: the backend records mounted surfaces and
-queues repaints for the host to drain, which is everything a host needs to put a
-widget on screen. It previously returned `false` because `mount_surface` was
-unimplemented; that is now closed, and the earlier assertion of the gap was
-rewritten into an assertion of the capability (see
-`widget_surfaces_are_advertised_and_round_trip`).
+queues repaints for the host to drain. That claim is now reachable from outside the
+process, which it was not before — see "How a widget reaches the screen".
 
 ## Build and test
 

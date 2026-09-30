@@ -664,6 +664,11 @@ impl ScrollArea {
             }
             let mut column_boxes: Vec<Rect> = Vec::new();
             column.arrange(rect, &mut |_, placed| column_boxes.push(placed));
+            // The solver emits one rectangle per registered item, so these are guards rather than
+            // routes. The fallbacks deliberately restate the *declaration* rather than the old
+            // hand-rolled chrome arithmetic they replaced: an unplaced content row is the band
+            // minus the horizontal bar, which is what was asked for, not a re-derivation of
+            // `rect.x + bar`.
             let content_row = column_boxes.first().copied().unwrap_or(Rect::new(
                 rect.x,
                 rect.y,

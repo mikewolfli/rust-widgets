@@ -317,6 +317,43 @@ where
         lock(&self.pending_repaints).pop_front()
     }
 
+    /// Records a repaint request for any widget this backend knows, including a
+    /// container.
+    ///
+    /// # Why this is separate from [`Self::invalidate_surface_record`]
+    ///
+    /// That method answers about a **mounted surface** and returns `false` for an
+    /// ordinary control, which is right when the caller is asking "will my
+    /// mounted surface repaint?". It is the wrong test for
+    /// [`Platform::invalidate_surface`](crate::platform::Platform::invalidate_surface) —
+    /// the call the library makes when it wants a widget redrawn — because a
+    /// widget the backend knows but never mounted is exactly the window case: the
+    /// library repaints windows to reveal their children (see
+    /// `widget::runtime::request_repaint_subtree`).
+    ///
+    /// So this records the request for every id in the registry and reports
+    /// `false` only for an id that addresses nothing, which is the one case where
+    /// no repaint can be truthful.
+    ///
+    /// # Why an id in the registry is the right test, and `entry` is not
+    ///
+    /// `crate::app` registers a window's *widget* id and associates it with the
+    /// **platform** id `create_window` returned, while both live in this registry.
+    /// A request naming the widget id — which is what the library holds — only
+    /// becomes a platform id through that association, so a host that wants to
+    /// present the frame should resolve it with `crate::app::window_handle_for`
+    /// (or read [`Self::surface_rect`] for a widget mounted directly).
+    pub fn record_repaint_request(&self, id: ObjectId) -> bool {
+        if !self.contains_widget(id) {
+            return false;
+        }
+        let mut pending = lock(&self.pending_repaints);
+        if !pending.contains(&id) {
+            pending.push_back(id);
+        }
+        true
+    }
+
     /// Returns how many widgets are awaiting a repaint.
     pub fn pending_repaint_count(&self) -> usize {
         lock(&self.pending_repaints).len()

@@ -155,6 +155,10 @@ pub mod ime_macos;
 pub mod ime_windows;
 pub(crate) mod runtime;
 pub mod state;
+/// The uniform widget-property `Platform` methods, shared by every backend whose widget
+/// state lives in [`state::BackendState`]. See the module docs for the defect it removes.
+#[macro_use]
+pub(crate) mod state_impl;
 mod stub;
 pub mod types;
 /// Pure Win32 notification-code semantics (host-compilable, no OS calls).

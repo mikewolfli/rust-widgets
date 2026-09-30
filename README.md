@@ -5,7 +5,8 @@
 </p>
 
 A cross-platform GUI library written in pure Rust. It paints **every control itself** — there is no
-`CreateWindowExW`, `NSButton`, `gtk_button_new` or `android.widget.Button` anywhere in the crate — and
+`NSButton`, `gtk_button_new` or `android.widget.Button` anywhere in the crate, and the only
+`CreateWindowExW` is the one that creates the window itself — and
 it can render to a window, to a PNG, or to SVG. Desktop, tablet, mobile, embedded and a minimal
 `mini` profile are all supported.
 
@@ -347,7 +348,7 @@ payload the caller did not ask for is wrong there. A profile build that wants ic
 
 ## Language bindings
 
-The `C ABI` lives in `src/bindings/` and exposes every control through **130 `rw_*` functions** with a
+The `C ABI` lives in `src/bindings/` and exposes every control through **142 `rw_*` functions** with a
 capability-based property and event model. C, C++, Python and Java (JNI) bindings are exercised in CI;
 the generated header is checked for drift by `tools/check_abi.sh`.
 

@@ -895,10 +895,125 @@ pub fn invalidate_surface_rect(_id: crate::core::ObjectId, _rect: crate::core::R
     false
 }
 
+/// Removes and returns the next widget whose surface is awaiting a repaint.
+///
+/// # Why a host outside the process needs this
+///
+/// On the three desktop backends the library drives the event loop, so an
+/// invalidation reaches the toolkit's own "this window is dirty" call directly. A
+/// host that owns its own loop and its own drawing API — OpenHarmony (ArkUI
+/// `Canvas`/XComponent), Android (`Bitmap`), iOS (`NSView`), the objc2 preview —
+/// cannot be called into that way, so the backend records the stale surfaces and the
+/// host pulls them. This is that pull, and it is the function
+/// [`rw_take_pending_repaint`](crate::bindings) exposes to the C ABI.
+///
+/// # Coalescing
+///
+/// A widget already awaiting a repaint is not queued twice, so a burst of
+/// invalidations in one frame costs the host one entry. That is what makes a drag
+/// that produces hundreds of geometry updates pay for one repaint per frame rather
+/// than one per update.
+///
+/// `None` when nothing is pending — the honest answer rather than an empty sentinel
+/// id, because `0` is a valid `ObjectId` in no backend but is equally not a widget
+/// this call could have returned.
+#[cfg(not(alloc_frugal))]
+pub fn take_pending_repaint() -> Option<crate::core::ObjectId> {
+    platform::get_platform().take_pending_repaint()
+}
+
+/// The alloc-frugal profile's [`take_pending_repaint`].
+///
+/// Reports `None` because this profile has no widget registry and therefore keeps no
+/// repaint queue to drain — the same truthful "nothing is pending" a full build
+/// answers for a window with no damage. See the full build's version for why the
+/// function exists at all.
+#[cfg(alloc_frugal)]
+pub fn take_pending_repaint() -> Option<crate::core::ObjectId> {
+    None
+}
+
 /// Returns `true` when the active backend can host library-painted widgets.
 #[cfg(not(alloc_frugal))]
 pub fn supports_surfaces() -> bool {
     platform::get_platform().supports_surfaces()
+}
+
+/// Delivers a pointer event that arrived on a host-owned drawing surface.
+///
+/// # Why this exists, and why it was missing
+///
+/// On the three desktop backends the library drives the event loop, so a click arrives
+/// through the toolkit's own callback and is routed inside it (`windows/types.rs`'
+/// window procedure, `linux/platform_impl.rs`' GTK handler). A host that owns its own
+/// loop — OpenHarmony's ArkUI, Android's `Activity`, iOS's touch handling, a browser page —
+/// **is never called into**, so it has the opposite obligation: it must hand its touches
+/// back. Until this function existed there was no way to do that.
+///
+/// That was not a documentation gap. `src/platform/android/status.md`,
+/// `src/platform/ios/status.md` and `docs/plans/harmony_integration.md` all told a host to
+/// call `rw_dispatch_pointer_event(...)`, and `grep -rn rw_dispatch_pointer_event src/
+/// include/` returned nothing: the documented integration step — without which a mounted
+/// widget is visible but completely inert — had no implementation at any layer.
+///
+/// # What `root` is, and why a hit test rather than an id
+///
+/// `point` is in the **window's** coordinate space, and `root` names the widget subtree to
+/// resolve it in — normally the window. The library hit-tests the point against that
+/// subtree ([`crate::widget::runtime::widget_at`]), so the host does not have to know which
+/// widget was under the finger. That is the whole point of keeping the routing here: a host
+/// that sent the event to a widget id would need the same hit test the library already owns,
+/// and the two would drift.
+///
+/// Returns whether a widget accepted the event. `false` means the point was outside every
+/// widget in `root`, or the resolved widget refused it (disabled, or blocked by a modal) —
+/// never "this host cannot route", which is a distinct case the alloc-frugal profile
+/// reports through [`route_pointer_event`](crate::platform::Platform::route_pointer_event).
+#[cfg(not(alloc_frugal))]
+pub fn dispatch_pointer_event(
+    root: crate::core::ObjectId,
+    event: &crate::event::Event,
+    point: crate::core::Point,
+) -> bool {
+    platform::get_platform().route_pointer_event(root, event, point)
+}
+
+/// The alloc-frugal profile's [`dispatch_pointer_event`].
+///
+/// Reports `false` because this profile compiles out the widget registry, so there is no
+/// subtree to hit-test and no widget that could accept the event. That is the same honest
+/// "this host cannot do it" answer [`crate::platform::Platform::route_pointer_event`]'s
+/// default gives, rather than a silent no-op that looks like a delivered event.
+#[cfg(alloc_frugal)]
+pub fn dispatch_pointer_event(
+    _root: crate::core::ObjectId,
+    _event: &crate::event::Event,
+    _point: crate::core::Point,
+) -> bool {
+    false
+}
+
+/// Delivers an event straight to `widget_id`, without hit-testing.
+///
+/// The counterpart to [`dispatch_pointer_event`] for the cases where the host **already
+/// knows** the target: a key event for the focused control, a text-input commit, a scroll
+/// from a surface the host tracks itself. Routing a pointer event this way skips the
+/// library's hit test, so a host that uses it for touches must do its own — which is why
+/// the pointer path above exists and is the one the integration documents name.
+///
+/// Returns whether the widget accepted the event: `false` when the id is not a live widget,
+/// when the control is disabled, or when a modal blocks it.
+#[cfg(not(alloc_frugal))]
+pub fn dispatch_event(widget_id: crate::core::ObjectId, event: &crate::event::Event) -> bool {
+    crate::widget::runtime::dispatch_event(widget_id, event)
+}
+
+/// The alloc-frugal profile's [`dispatch_event`].
+///
+/// `false` for the same reason as [`dispatch_pointer_event`]: no registry, so no widget.
+#[cfg(alloc_frugal)]
+pub fn dispatch_event(_widget_id: crate::core::ObjectId, _event: &crate::event::Event) -> bool {
+    false
 }
 
 /// Mounts a widget object on the platform's surface, or reports why it cannot.
@@ -2211,7 +2326,7 @@ pub use platform::{
     quit as platform_quit, run as platform_run, runtime_gui_mode, runtime_gui_mode_for,
 };
 pub use platform::{
-    CapabilityContract, DesktopBackend, DropEvent, EmbeddedCapabilityContract, MobileBackend,
+    CapabilityContract, DropEvent, EmbeddedCapabilityContract, MobileBackend,
     NativeCapabilityContract, PlatformCapabilities, RuntimeGuiMode, WidgetTriggerEvent,
     WidgetTriggerKind, WindowStateFlag,
 };

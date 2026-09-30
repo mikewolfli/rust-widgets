@@ -74,8 +74,8 @@ backend running on an OS it was not compiled for reports `false`.
 
 | OS | DPI scaling | IME | Accessibility | Native menu |
 |----|:-----------:|:---:|:-------------:|:-----------:|
-| Windows | ✅ | ✅ | ✅ | ✅ |
-| macOS | ✅ | ✅ | ✅ | ✅ |
+| Windows | ✅ | ✅ | ✅ | ❌ |
+| macOS | ❌ | ✅ | ✅ | ❌ |
 | Linux / GTK | ✅ | ✅ | ✅ | ❌ |
 | Linux / Wayland | ✅ | ✅ | ✅ | ❌ |
 | iOS | ✅ | ✅ | ✅ | ❌ |
@@ -84,16 +84,23 @@ backend running on an OS it was not compiled for reports `false`.
 | WASM | ❌ | ❌ | ❌ | ❌ |
 | Portable | ❌ | ❌ | ❌ | ❌ |
 
-Wayland and Linux/GTK have no menu-bar protocol, so their backends keep the menu tree
-in-process and the host renders it — advertising a native menu there would be false.
+Wayland, Linux/GTK, macOS and Windows have no menu-bar protocol wired up in their
+backend, so they keep the menu tree in-process and the host renders it —
+advertising a native menu there would be false.
 
 The `native_menu` column is easy to misread, so it is worth knowing where the
 values come from: `Platform::capabilities` defaults to an honest all-`false`, and a
-backend overrides it with what it actually wires up. Only Windows and macOS create
-an OS menu object; Linux (GTK), Wayland, iOS, Android and HarmonyOS keep the menu
-in-process, so their `native_menu` is `false`. `default_capabilities_for(family)`
-exposes the default so you can compare it against a backend's own report, and the
-table above is pinned by a test so it cannot drift from the source.
+backend overrides it with what it actually wires up. **The flag records an
+implementation, not an OS feature**: Windows and macOS both *have* an OS menu
+API (Win32 menus, `NSMenu`), and the flag is nevertheless `❌` on both because
+neither backend calls it — `grep` finds no `create_menu_bar` / `menu_add_item` in
+`src/platform/windows/` or `src/platform/macos/`. The same is true of the macOS
+`dpi_scaling` column: AppKit supplies the screen scale, but the backend does not
+query it, so it reports the honest `false` rather than a promise it cannot keep.
+Linux (GTK), Wayland, iOS, Android and HarmonyOS keep the menu in-process.
+`default_capabilities_for(family)` exposes the default so you can compare it
+against a backend's own report, and the table above is pinned by a test so it
+cannot drift from the source.
 
 ---
 
@@ -847,27 +854,53 @@ fn platform_specific_setup() { /* CoInitialize */ }
 
 ### Query Backend Identity at Runtime
 
-```rust
-let platform = rust_widgets::platform::get_platform();
+Prefer `runtime_gui_mode()` over matching on the name: the name is a string a backend chooses
+for itself and nothing fails to compile when it changes, so a hand-written `match` on it goes
+stale silently. `runtime_gui_mode()` answers the question you actually have.
 
-match platform.backend_name() {
-    "cocoa" | "WindowsPlatform" => {
-        // Desktop native mode
-    }
-    "wayland" => {
-        // Wayland native mode
-    }
-    "gtk" => {
-        // GTK native mode
-    }
-    "harmony-desktop" | "android-mobile" | "macos-objc2-preview" => {
-        // Preview/stub mode
-    }
-    _ => {
-        // Unknown — preview mode
-    }
+```rust
+use rust_widgets::{runtime_gui_mode, RuntimeGuiMode};
+
+if runtime_gui_mode() == RuntimeGuiMode::PreviewOrStub {
+    // This build creates no window: the host owns presentation, or the native
+    // toolkit is not compiled in. Tell the user rather than leaving them with a
+    // log full of progress and no window.
 }
 ```
+
+When you do need the identity itself (a diagnostic line, a support report), read it and print it —
+but do not branch on it for a capability decision, because `capabilities()` is the query that
+authoritatively answers those:
+
+```rust
+let platform = rust_widgets::platform::get_platform();
+let caps = platform.capabilities();
+println!("backend={} family={:?}", platform.backend_name(), platform.family());
+println!(
+    "dpi={} ime={} a11y={} native_menu={}",
+    caps.dpi_scaling, caps.ime, caps.accessibility, caps.native_menu
+);
+```
+
+The names to expect, as of this revision:
+
+| Backend | `backend_name()` |
+|---|---|
+| Windows | `WindowsPlatform` |
+| macOS (cocoa-legacy) | `cocoa` |
+| macOS (objc2 preview) | `macos-objc2-preview` |
+| Linux/GTK | `gtk` (or `linux-state-backend` without the `gtk-native` feature) |
+| Linux/Wayland | `wayland` |
+| iOS | `ios-state-backend` |
+| Android | `android-state-backend` (the JNI mobile preview is `android-mobile`) |
+| HarmonyOS | `harmony-state-backend` |
+| WASM | `wasm-state-backend` |
+| Portable / `mini` | `portable` |
+
+> An earlier revision of this section matched on `"harmony-desktop"`, which no longer exists — the
+> backend renamed itself to `harmony-state-backend` because the old name advertised a *desktop*
+> classification the backend does not act on (HarmonyOS is the mobile OS it exists for). Nothing
+> failed to compile. That is the whole argument for asking `runtime_gui_mode()` instead.
 
 ### Wire Accessibility to Focus Manager
 

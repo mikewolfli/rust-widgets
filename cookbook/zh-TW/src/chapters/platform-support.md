@@ -53,8 +53,8 @@ rust-widgets 在九個支援的平台上提供統一的 API。本章涵蓋平台
 
 | 作業系統 | DPI 縮放 | IME | 無障礙 | 原生選單 |
 |----|:-----------:|:---:|:-------------:|:-----------:|
-| Windows | ✅ | ✅ | ✅ | ✅ |
-| macOS | ✅ | ✅ | ✅ | ✅ |
+| Windows | ✅ | ✅ | ✅ | ❌ |
+| macOS | ❌ | ✅ | ✅ | ❌ |
 | Linux / GTK | ✅ | ✅ | ✅ | ❌ |
 | Linux / Wayland | ✅ | ✅ | ✅ | ❌ |
 | iOS | ✅ | ✅ | ✅ | ❌ |
@@ -65,7 +65,7 @@ rust-widgets 在九個支援的平台上提供統一的 API。本章涵蓋平台
 
 Wayland 沒有選單列的協議，因此它的後端會把選單樹留在行程內並由宿主渲染 —— 在此處宣稱有原生選單會是不實的。
 
-`native_menu` 這個欄位很容易誤讀，因此值得了解這些值的來源：`Platform::capabilities` 的預設是誠實的全 `false`，由後端覆寫為自己真正接通的能力。只有 Windows 與 macOS 會建立 OS 選單物件；Linux (GTK)、Wayland、iOS、Android 與 HarmonyOS 都把選單保存在行程內，因此它們的 `native_menu` 為 `false`。`default_capabilities_for(family)` 會公開這個預設值，讓你可以將它與後端自身的回報做比較，而且上表有測試把關，因此不會與原始碼脫節。
+`native_menu` 這個欄位很容易誤讀，因此值得了解這些值的來源：`Platform::capabilities` 的預設是誠實的全 `false`，由後端覆寫為自己真正接通的能力。**這個旗標記錄的是「有沒有實作」，不是「這個 OS 有沒有該功能」**：Windows 與 macOS 都*有* OS 選單 API（Win32 選單、`NSMenu`），但兩者的 `native_menu` 仍是 `❌`，因為這兩個後端都沒有呼叫它 —— `grep` 在 `src/platform/windows/` 與 `src/platform/macos/` 找不到任何 `create_menu_bar` / `menu_add_item`。macOS 的 `dpi_scaling` 同理：AppKit 能提供螢幕縮放，但後端沒有查詢，所以它誠實回報 `false`，而不是許下一個兌現不了的承諾。Linux (GTK)、Wayland、iOS、Android 與 HarmonyOS 都把選單保存在行程內。`default_capabilities_for(family)` 會公開這個預設值，讓你可以將它與後端自身的回報做比較，而且上表有測試把關，因此不會與原始碼脫節。
 
 ---
 
@@ -776,27 +776,51 @@ fn platform_specific_setup() { /* CoInitialize */ }
 
 ### 執行時期查詢後端身份
 
-```rust
-let platform = rust_widgets::platform::get_platform();
+請優先使用 `runtime_gui_mode()`，**不要**手寫 `match platform.backend_name()`。
+名字是後端自己挑的字串，改名時不會有任何東西編譯失敗，於是手寫的 match 會靜默變舊。
+`runtime_gui_mode()` 回答的才是你真正想問的那個問題。
 
-match platform.backend_name() {
-    "cocoa" | "WindowsPlatform" => {
-        // 桌面原生模式
-    }
-    "wayland" => {
-        // Wayland 原生模式
-    }
-    "gtk" => {
-        // GTK 原生模式
-    }
-    "harmony-desktop" | "android-mobile" | "macos-objc2-preview" => {
-        // 預覽/存根模式
-    }
-    _ => {
-        // 未知 — 預覽模式
-    }
+```rust
+use rust_widgets::{runtime_gui_mode, RuntimeGuiMode};
+
+if runtime_gui_mode() == RuntimeGuiMode::PreviewOrStub {
+    // 這個組建不會建立視窗：不是由宿主負責呈現，就是原生工具鏈沒編進來。
+    // 請明確告知使用者，而不是留給他們一份進度日誌正常、卻看不到視窗的執行。
 }
 ```
+
+確實需要身份本身時（診斷輸出、問題回報）就讀出來列印，
+但**不要**拿它做能力判斷 —— 能力判斷的權威查詢是 `capabilities()`：
+
+```rust
+let platform = rust_widgets::platform::get_platform();
+let caps = platform.capabilities();
+println!("backend={} family={:?}", platform.backend_name(), platform.family());
+println!(
+    "dpi={} ime={} a11y={} native_menu={}",
+    caps.dpi_scaling, caps.ime, caps.accessibility, caps.native_menu
+);
+```
+
+截至本修訂，各個名字如下：
+
+| 後端 | `backend_name()` |
+|---|---|
+| Windows | `WindowsPlatform` |
+| macOS（cocoa-legacy） | `cocoa` |
+| macOS（objc2 預覽） | `macos-objc2-preview` |
+| Linux/GTK | `gtk`（未啟用 `gtk-native` 時為 `linux-state-backend`） |
+| Linux/Wayland | `wayland` |
+| iOS | `ios-state-backend` |
+| Android | `android-state-backend`（JNI 行動預覽為 `android-mobile`） |
+| HarmonyOS | `harmony-state-backend` |
+| WASM | `wasm-state-backend` |
+| Portable / `mini` | `portable` |
+
+> 本節早先的版本 match 的是 `"harmony-desktop"`，該名字已不存在 —— 後端改名為
+> `harmony-state-backend`，因為舊名字聲稱了一個它並不執行的 *desktop* 分類
+> （HarmonyOS 才是它存在的那個行動 OS）。當時沒有任何東西編譯失敗。
+> 這就是「請改用 `runtime_gui_mode()`」的全部論據。
 
 ### 將無障礙系統連結到焦點管理器
 

@@ -158,9 +158,47 @@ fn platform_creates_and_runs() {
 fn host_creates_no_controls() {
     let backend = WaylandPlatform::new();
     backend.init();
+    let caps = backend.capabilities();
+    assert!(!caps.native_menu, "the Wayland menu is an in-process tree, not a compositor menu");
+
+    // # Every flag must agree with the method behind it
+    //
+    // A capability flag is a promise about a named method, and a promise nothing checks is how
+    // `ime: true` came to sit beside an `ime_bridge()` that returns `None`. The assertions below
+    // are that check.
+    //
+    // # Why the `dpi_scaling` assertion is *not* `caps.dpi_scaling == (dpi_scale_factor() != 1.0)`
+    //
+    // It used to be, and that relation is wrong: a backend with a **real** DPI override
+    // legitimately reports `1.0` whenever the host is genuinely unscaled (no `GDK_SCALE`, a
+    // 100% display), so the equality fails on exactly the machines where the backend is most
+    // correct. What the flag promises is "I have an implementation that measures this", not
+    // "the measurement is currently non-neutral" — the trait's own docs draw the same line.
+    //
+    // The true assertion is therefore that the value is a **plausible measurement**: within the
+    // supported range and not the fabricated sentinel a `0.0`/`NaN` would be. `ime`/
+    // `accessibility` keep the `!= None` form below, because "no bridge" and "a bridge" really
+    // are the two distinguishable states there — a bridge has no neutral value.
+    let scale = backend.dpi_scale_factor();
     assert!(
-        !backend.capabilities().native_menu,
-        "the Wayland menu is an in-process tree, not a compositor menu"
+        scale.is_finite() && scale > 0.0,
+        "`dpi_scaling` promises a measurement, and {scale} is not one"
+    );
+    assert!(
+        caps.dpi_scaling,
+        "this backend overrides `dpi_scale_factor()`, so the flag reports a real query rather \
+         than the trait's fabricated 1.0"
+    );
+    assert_eq!(
+        caps.ime,
+        backend.ime_bridge().is_some(),
+        "`ime` must match whether `ime_bridge()` answers; this backend binds no Wayland \
+         `text-input` protocol, so there is no bridge to promise"
+    );
+    assert_eq!(
+        caps.accessibility,
+        backend.accessibility_bridge().is_some(),
+        "`accessibility` must match whether `accessibility_bridge()` answers"
     );
 
     let window = backend.create_window("NoControls", 0, 0, 400, 300);
@@ -349,7 +387,7 @@ fn drag_and_drop() {
 }
 
 #[test]
-fn ime_and_accessibility() {
+fn ime_and_accessibility_stores_are_not_capabilities() {
     let backend = WaylandPlatform::new();
     backend.init();
 
@@ -373,4 +411,22 @@ fn ime_and_accessibility() {
         "InputField",
         "Accessibility name should match"
     );
+
+    // # What this test does *not* show, stated so it is not read as the opposite
+    //
+    // These round-trips are `BackendState` fields — a flag store. They prove the storage works;
+    // they say nothing about whether the *capability* exists, and treating them as evidence was
+    // how `ime: true`/`accessibility: true` stayed in `capabilities()` while both
+    // `ime_bridge()` and `accessibility_bridge()` returned the trait default `None`. A widget can
+    // have "IME enabled" in this store with no input-method client behind it, and an
+    // "accessibility name" with no accessibility tree to publish it to.
+    //
+    // The two assertions below pin that distinction, because it is the whole reason this test
+    // exists in this shape rather than as a capability check.
+    let caps = backend.capabilities();
+    assert!(
+        backend.is_widget_ime_enabled(window) == false && !caps.ime,
+        "nothing here may be read as the IME capability — see the note above"
+    );
+    assert!(!caps.accessibility, "nor may the name round-trip be read as an accessibility bridge");
 }

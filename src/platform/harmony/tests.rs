@@ -15,7 +15,7 @@ use crate::WidgetTriggerKind;
 fn platform_creates_and_runs() {
     let backend = HarmonyPlatform::new();
     backend.init();
-    assert_eq!(backend.backend_name(), "harmony-desktop");
+    assert_eq!(backend.backend_name(), "harmony-state-backend");
 
     let window = backend.create_window("TestWindow", 100, 200, 640, 480);
     assert!(window > 0, "Window should be created");
@@ -120,6 +120,50 @@ fn widget_trigger_events() {
     let event = event.unwrap();
     assert_eq!(event.widget_id, window);
     assert_eq!(event.kind, WidgetTriggerKind::ValueChanged);
+}
+
+/// The two FIFO views over one queue must agree, through either door.
+///
+/// # The defect this pins
+///
+/// [`Platform::poll_widget_triggered`] and [`Platform::poll_widget_trigger_event`]
+/// are documented as the same event stream seen twice — the first as a bare id, the
+/// second carrying the [`WidgetTriggerKind`] — and
+/// `platform::tests::consistency_compat_poll_widget_triggered_is_single_delivery_shim`
+/// asserts exactly that about `StubPlatform`. Harmony overrode only the typed view, so
+/// an injected trigger was observable through `poll_widget_trigger_event` and
+/// simultaneously absent through `poll_widget_triggered`.
+///
+/// The assertions are deliberately paired and *interleaved* rather than each view
+/// being tested in isolation, because the property is not "both return something" — a
+/// backend with two independent queues would satisfy that — it is "they are one queue".
+/// Draining through one view must consume the event the other would have returned.
+#[test]
+fn the_two_trigger_views_share_one_queue() {
+    let backend = HarmonyPlatform::new();
+    backend.init();
+    let window = backend.create_window("w", 0, 0, 200, 120);
+
+    assert!(backend.poll_widget_triggered().is_none(), "the queue starts empty");
+
+    assert!(backend.inject_widget_trigger_event(window, WidgetTriggerKind::Clicked));
+    assert_eq!(
+        backend.poll_widget_triggered(),
+        Some(window),
+        "the id view must see what was injected"
+    );
+    assert!(
+        backend.poll_widget_trigger_event().is_none(),
+        "and the typed view must agree it is gone: one queue, not two"
+    );
+
+    // Now the other order, so the test cannot pass by the typed view being the only
+    // one that drains.
+    assert!(backend.inject_widget_trigger_event(window, WidgetTriggerKind::ValueChanged));
+    let event = backend.poll_widget_trigger_event().expect("the typed view sees it");
+    assert_eq!(event.kind, WidgetTriggerKind::ValueChanged);
+    assert_eq!(event.widget_id, window);
+    assert!(backend.poll_widget_triggered().is_none(), "and the id view agrees it is gone");
 }
 
 #[test]

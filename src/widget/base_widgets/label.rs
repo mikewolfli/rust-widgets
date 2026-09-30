@@ -198,8 +198,17 @@ impl Draw for Label {
                 Color::rgb(0, 0, 0)
             });
             let font = self.font().cloned().unwrap_or_default();
-            // Compute text width approximately (8px per char)
-            let text_width = self.text.len() as u32 * 8;
+            // The **shared** estimate, because this is the same quantity `implicit_size` reports.
+            //
+            // This read `self.text.len() as u32 * 8` — a byte count, not an advance — while
+            // `implicit_size` two hundred lines above measured with `estimate_text_width`. So a
+            // centred or right-aligned label was *placed* with a width its own `hints()` disagreed
+            // with, and the disagreement grew with every non-ASCII caption: `estimate_text_width`
+            // counts clusters, `len()*8` counts UTF-8 bytes, so a CJK label drew from a width
+            // three times too large and drifted left. The label's own doc comment already claims
+            // the inline copy "would drift from the shared one on the first change to either" —
+            // it had, and this was the copy.
+            let text_width = estimate_text_width(&self.text, &font, 1.0);
             let text_x = match self.alignment {
                 crate::core::Alignment::Center => {
                     rect.x + (rect.width.saturating_sub(text_width) / 2) as i32

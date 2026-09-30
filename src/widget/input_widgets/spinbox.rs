@@ -35,7 +35,7 @@ use crate::widget::composite::CompositeBuilder;
 use crate::widget::decorations::{
     DecorationLayout, DecorationMetrics, DecorationSlots, DECORATION_GAP,
 };
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, estimate_text_width, ControlMetrics};
 
 use crate::widget::capability::coercion::{
     expect_bool, expect_f64, expect_horizontal_alignment, expect_i64, expect_string,
@@ -747,7 +747,11 @@ impl Widget for SpinBox {
         // generous is the safe direction; one that is short would elide the very digits the
         // caller asked for.
         let value = self.formatted_value();
-        let text_width = value.len() as u32 * 8;
+        // The shared estimate, not `len() * 8`: the paragraph above argues the hint may be a few
+        // pixels generous, which is true of a nominal per-cluster advance and false of a byte
+        // count — a CJK value measured three times its drawn width, so the step column was pushed
+        // further right than the digits needed and the hint stopped describing the control.
+        let text_width = estimate_text_width(&value, &crate::core::Font::default(), 1.0);
         let field_air = (dimensions::TEXT_FIELD_MIN_HEIGHT / 2).saturating_sub(8);
         let padding = EdgeOffsets {
             top: field_air,

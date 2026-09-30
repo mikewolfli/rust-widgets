@@ -11,7 +11,7 @@ use crate::core::{Color, Font, HorizontalAlignment, ObjectId, Rect};
 use crate::event::{Event, EventHandler};
 #[cfg(full_widgets)]
 use crate::layout::{
-    AlignItems, FlexDirection, FlexLayout, FlexWrap, JustifyContent, LayoutParams,
+    AlignItems, AxisHints, FlexDirection, FlexLayout, FlexWrap, Hints, JustifyContent, LayoutParams,
 };
 use crate::render::RenderContext;
 use crate::signal::Signal1;
@@ -268,13 +268,39 @@ impl TabView {
     /// The returned boxes are in **strip coordinates** (origin at the strip's own top-left), so
     /// the caller has one translation to apply and the geometry is independent of where the
     /// control was placed.
+    ///
+    /// # Why each tab declares a `min`/`pref`/`max` triple rather than one width
+    ///
+    /// This used to call `add_sized(.., Size::new(widths[index], height), ..)`, and `add_sized`
+    /// stores `Hints::fixed(width, height)` — the same number as `min`, `pref` and `max` alike.
+    /// Three consequences, all of them observable:
+    ///
+    /// 1. **The squeeze became impossible.** A crowded strip needs to tell the layout "this tab
+    ///    would like its share and may be squeezed toward [`TAB_MIN_WIDTH`]". One number cannot
+    ///    say that, and passing the share as all three turns the share into a *floor* the layout
+    ///    is obliged to honour — so a strip too narrow for its tabs overhung the band instead of
+    ///    compressing, and `TAB_MIN_WIDTH` (documented as "narrowest a tab may be **drawn**, so a
+    ///    one-character caption is still a tap target") never acted as a floor at all.
+    /// 2. **The touch floor inflated every tab.** `add_sized`'s `min == max` is exactly the shape
+    ///    `FlexLayout::arrange_with_context` reads as "the composite stated the size", which
+    ///    *exempts* the child from `grow_to_min_touch_size`. Measured tab widths here vary with
+    ///    the caption, so they are a measurement the layout is being *told*, not — as the
+    ///    doc comment on `add_sized` describes the legitimate case — "a column of a control"
+    ///    whose size the composite owns. A 2 px-tall tab is not a case the touch floor should
+    ///    skip.
+    /// 3. **`TAB_MAX_WIDTH` and `TAB_MIN_WIDTH` disagreed with the run.** `tab_widths()` clamps to
+    ///    that range, so the clamp and the layout's own squeeze were two independent statements
+    ///    about the same tab.
+    ///
+    /// Declaring the real triple — the measured width as the wish, [`TAB_MIN_WIDTH`] as the floor,
+    /// unconstrained above — restores all three, and it is the same shape `tab_widget`'s own strip
+    /// already uses (see `tab_width_hints`, BLUE22 · G-1).
     fn tab_run(&self, strip: Rect) -> crate::compat::Vec<Rect> {
         let widths = self.tab_widths();
         if widths.is_empty() {
             return crate::compat::Vec::new();
         }
         let height = strip.height;
-        let total: i32 = widths.iter().sum();
         // # Why the stripped profiles take the direct route
         //
         // `full_widgets` is "a device profile *and* an unstripped widget set" (principle #47),
@@ -293,8 +319,22 @@ impl TabView {
         #[cfg(full_widgets)]
         {
             use crate::compat::Box as _Box;
-            let run =
-                Rect::new(0, 0, (total + TAB_SPACING * widths.len() as i32).max(0) as u32, height);
+            // # Why the layout is given the *strip*, not the tabs' own total
+            //
+            // This used to be `Rect::new(0, 0, total + TAB_SPACING * n, height)` — a run
+            // **derived from the tabs' own widths**, so the band handed to the layout was by
+            // construction exactly as wide as what the layout was about to place in it. That
+            // makes `remaining == 0` at the solver, which means the shrink pass never runs:
+            // a tab can never be squeezed, the strip can never be over-full, and every
+            // `min`/`max` a tab declares is unobservable here. It is the shape §B.5.1 calls a
+            // change of address rather than a fix — the hand-computed accumulator moved from
+            // `rect.x + i * tab_width` into the rect's *width*.
+            //
+            // Supplying the real strip makes the layout answer the question the caller actually
+            // has ("what fits in the room I have?") and makes `strip.x`/`strip.y` meaningful: the
+            // layout now places inside the strip's own coordinates, so the caller's translation
+            // below is a plain `+= strip.x`, not an assumption that the run starts at zero.
+            let run = strip;
             let factory = crate::widget::WidgetFactory::new_with_defaults();
             let mut row = crate::widget::composite::CompositeBuilder::new(
                 _Box::new(FlexLayout::with_params(
@@ -309,20 +349,37 @@ impl TabView {
                 crate::core::Size::new(0, 0),
             );
             for (index, tab) in self.tabs.iter().enumerate() {
-                let along = widths.get(index).copied().unwrap_or(TAB_MIN_WIDTH) as u32;
-                let created = row.add_sized(
+                let along = widths.get(index).copied().unwrap_or(TAB_MIN_WIDTH);
+                // The measured width is the wish, `TAB_MIN_WIDTH` the floor it may be squeezed to,
+                // and the ceiling is left open: the strip supplies a finite `run`, so the layout
+                // cannot overshoot whatever the triple says.
+                let declared = Hints {
+                    width: AxisHints::new(
+                        TAB_MIN_WIDTH.max(0) as u32,
+                        along.max(TAB_MIN_WIDTH).max(0) as u32,
+                        u32::MAX,
+                    ),
+                    height: AxisHints::fixed(height),
+                };
+                let created = row.add_with_hints(
                     &factory,
                     "label",
                     &tab.title,
-                    crate::core::Size::new(along, height),
+                    declared,
                     LayoutParams::new(),
                 );
                 debug_assert!(created.is_some(), "a tab is a core control");
             }
             let mut placed: crate::compat::Vec<Rect> = crate::compat::Vec::new();
             row.arrange(run, &mut |_, rect| placed.push(rect));
+            // `FlexLayout`'s solver emits one rectangle per registered item, so the truncation
+            // below is a **guard**, not a route: it exists so the returned vector is total no
+            // matter what a future capacity cap in the solver does. When it does fire, a tab the
+            // layout did not place gets a zero-width box at the strip's leading edge, which reads
+            // as "not laid out" — the previous behaviour was `Rect::new(0, 0, 0, 0)`, an origin the
+            // caller had to translate like a real box and could not tell from one.
             while placed.len() < self.tabs.len() {
-                placed.push(Rect::new(0, 0, 0, 0));
+                placed.push(Rect::new(strip.x, strip.y, 0, height));
             }
             placed
         }
@@ -442,16 +499,19 @@ impl Draw for TabView {
         // Draw each tab header
         //
         // The boxes come from `tab_run`, the *same* derivation the hit test reads, so the tab a
-        // press selects is the tab that was painted. They are in strip coordinates, so one
-        // translation places them.
+        // press selects is the tab that was painted.
+        //
+        // # Why there is no translation here
+        //
+        // There used to be one (`tab_bar_rect.x + local.x`), because `tab_run` built its band from
+        // `(0, 0)`. It now hands the layout the **caller's strip**, and `FlexLayout::arrange` emits
+        // children in that band's own coordinates — so the boxes already carry `strip.x` and adding
+        // it again placed every tab at `2 * strip.x`. The hit test below subtracted `strip.x` from
+        // the pointer for the same reason and is now consistent with the paint by using the raw
+        // position. Both were latent: every tab test used a control at `x = 0`.
+        let strip = tab_bar_rect;
         let font = Font::simple("sans-serif", 12.0);
-        for (i, local) in self.tab_run(tab_bar_rect).into_iter().enumerate() {
-            let tab_rect = Rect::new(
-                tab_bar_rect.x + local.x,
-                tab_bar_rect.y + local.y,
-                local.width,
-                local.height,
-            );
+        for (i, tab_rect) in self.tab_run(strip).into_iter().enumerate() {
             let is_selected = i == self.selected_index;
 
             // Background
@@ -546,11 +606,14 @@ impl EventHandler for TabView {
                         // path used each tab's own width — so once tabs stopped being equal, a
                         // press on a tab selected its neighbour. Reading the boxes removes the
                         // second derivation rather than trying to keep the two in step.
-                        let local_x = pos.x - strip.x;
+                        //
+                        // The position is used **as given**, because `tab_run` returns boxes in the
+                        // strip's own coordinates (see `draw`). Subtracting `strip.x` here was the
+                        // mirror of the translation `draw` used to add; both are gone.
                         let clicked = self.tab_run(strip).into_iter().position(|box_rect| {
                             let left = box_rect.x;
                             let right = left + box_rect.width as i32;
-                            local_x >= left && local_x < right
+                            pos.x >= left && pos.x < right
                         });
                         if let Some(index) = clicked {
                             self.set_current_index(index);
@@ -829,7 +892,21 @@ mod tests {
         // The defect this pins: the strip used to be divided equally by the tab count, so a
         // short caption got a cell far wider than it needed and its neighbour's width changed
         // when a tab was added. A tab's width is now a fact about its own label.
-        let mut tv = make_tab_view();
+        //
+        // # Why the fixture is wider than the default
+        //
+        // Every assertion below is about a tab's **own** measured width, so the strip has to be
+        // roomy enough that squeezing is not in play — otherwise the test would be measuring the
+        // layout's compression instead. That is a real distinction the change below introduced:
+        // `tab_run` now hands the layout the *strip* rather than a band sized to the tabs' own
+        // sum, so a strip that cannot pay for its tabs compresses them (which is what
+        // `a_strip_too_narrow_for_its_tabs_keeps_them_inside_it` pins, with a deliberately narrow
+        // one). Before that change the band always fit by construction and this fixture's width
+        // was irrelevant; it is load-bearing now.
+        //
+        // 900 px pays for `TAB_MIN_WIDTH + 170 + 200` and the two `TAB_SPACING` gaps with room to
+        // spare, so each tab comes back at exactly its own measurement.
+        let mut tv = TabView::new(Rect::new(0, 0, 900, 400));
         tv.add_tab("I", None, None::<&str>);
         tv.add_tab("A much longer caption", None, None::<&str>);
         let boxes = tv.tab_run(tv.tab_bar_rect());
@@ -866,6 +943,58 @@ mod tests {
         // exactly the silent regression that made a long caption elide.
         assert_eq!(boxes[0].width, short, "an added sibling must not resize tab 0");
         assert_eq!(boxes[1].width, long, "nor tab 1");
+    }
+
+    /// A strip too narrow for its tabs **compresses** them instead of painting them past the band.
+    ///
+    /// # The defect this pins
+    ///
+    /// [`TabView::tab_run`] used to declare each tab with `add_sized(.., Size::new(width, height),
+    /// ..)`, and `add_sized` stores `Hints::fixed(width, height)` — the measured width as `min`,
+    /// `pref` *and* `max`. That made the measured width a **floor**, so a strip whose tabs did not
+    /// fit had nothing to give: the layout placed the tabs at their full widths, the last one
+    /// landed past the control's right edge, and because the SVG backend emits absolute
+    /// coordinates it was not clipped — it was simply drawn outside the control, or off the
+    /// picture entirely.
+    ///
+    /// The assertion is the invariant rather than a pixel count: **every tab stays inside the
+    /// strip**, and none is dropped. [`TAB_MIN_WIDTH`] is what makes that achievable — it is
+    /// documented as "narrowest a tab may be **drawn**", and before this change it was only ever
+    /// applied as a *ceiling on the same axis it floors*, in `tab_widths()`'s `clamp`, so it
+    /// never reached the layout as a floor at all.
+    ///
+    /// The second half asserts the strip still *asks* for the room: the caller is told the tabs
+    /// want more than they got, which is what lets a container grow. A test asserting only
+    /// containment would also pass against a control that had silently shrunk every tab to
+    /// nothing.
+    #[test]
+    fn a_strip_too_narrow_for_its_tabs_keeps_them_inside_it() {
+        // Three long captions in a strip far too short for them: 3 x TAB_MAX_WIDTH at
+        // TAB_SPACING between is the un-squeezed requirement, and 90 px cannot pay it.
+        let mut tv = TabView::new(Rect::new(0, 0, 90, 400));
+        for caption in ["Alpha is a long caption", "Beta is a long caption", "Gamma too"] {
+            tv.add_tab(caption, None, None::<&str>);
+        }
+        let strip = tv.tab_bar_rect();
+        let boxes = tv.tab_run(strip);
+        assert_eq!(boxes.len(), 3, "no tab may be dropped when the strip is crowded");
+
+        let unsqueezed: u32 = tv.tab_widths().iter().map(|w| *w as u32).sum();
+        assert!(
+            unsqueezed > strip.width,
+            "the fixture must actually be over-full, or this test proves nothing: \
+             wanted {unsqueezed} in {}",
+            strip.width
+        );
+
+        for (index, tab) in boxes.iter().enumerate() {
+            assert!(tab.width > 0, "a crowded tab is squeezed, not erased: tab {index} is {tab:?}");
+            assert!(
+                tab.x >= strip.x && tab.x + tab.width as i32 <= strip.x + strip.width as i32,
+                "tab {index} must stay inside the strip, or it is painted off the control: \
+                 {tab:?} in {strip:?}"
+            );
+        }
     }
 
     #[test]

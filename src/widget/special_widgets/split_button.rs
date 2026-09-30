@@ -319,11 +319,23 @@ impl SplitButton {
 
     /// The width the trigger's own label asks for.
     ///
-    /// The label control measures itself (`len * 8 + 2 * BUTTON_PADDING_H`), which is the same
-    /// model `SplitButton` used, so the assembled face's columns tile exactly as the hand-computed
-    /// pair did while now being derived from the text.
+    /// # What this used to claim, and why it was false
+    ///
+    /// The doc read: "The label control measures itself (`len * 8 + 2 * BUTTON_PADDING_H`), which
+    /// is the same model `SplitButton` used, so the assembled face's columns tile exactly as the
+    /// hand-computed pair did while now being derived from the text."
+    ///
+    /// Three things were wrong with it. `Label::implicit_size` measures with
+    /// `estimate_text_width` (clusters, plus `letter_spacing`) and pads with `LABEL_PADDING`, not
+    /// `len * 8` and not `BUTTON_PADDING_H`. So the two were neither the same model nor derived
+    /// from the same quantity, and a non-ASCII caption was charged three bytes per character here
+    /// and one cluster per character there.
+    ///
+    /// It now states the width in the label's own terms — the shared estimate plus the padding the
+    /// label actually carries — so the face tiles from a number the child control would agree with,
+    /// rather than from a restatement of it.
     fn trigger_hint_width(&self) -> u32 {
-        self.text.len() as u32 * 8 + dimensions::BUTTON_PADDING_H * 2
+        split_hint_width(&self.text)
     }
 
     fn primary_rect(&self) -> Rect {
@@ -744,6 +756,24 @@ impl Draw for SplitButton {
     }
 }
 
+/// The width a trigger label is measured at: the **shared** text estimate plus
+/// [`dimensions::BUTTON_PADDING_H`] on each side.
+///
+/// # Why this is a production function rather than a test helper
+///
+/// It began as a test-local duplicate of [`SplitButton::trigger_hint_width`], and that is
+/// precisely the shape this crate keeps paying for: two copies of one measurement, which agree on
+/// the day they are written and are edited one at a time afterwards. `trigger_hint_width` now
+/// calls it, so the face the control assembles and the width the invariant tests assert are the
+/// same derivation instead of two that must be kept in step.
+///
+/// It replaced `text.len() as u32 * 8`, which counted UTF-8 **bytes**; see `trigger_hint_width`
+/// for why that was wrong.
+fn split_hint_width(text: &str) -> u32 {
+    crate::widget::metrics::estimate_text_width(text, &crate::core::Font::default(), 1.0)
+        + dimensions::BUTTON_PADDING_H * 2
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1020,11 +1050,6 @@ mod tests {
             primary.width,
             arrow.width
         );
-    }
-
-    /// The width `SplitButton` measures a trigger label at: `len * 8 + 2 * BUTTON_PADDING_H`.
-    fn split_hint_width(text: &str) -> u32 {
-        text.len() as u32 * 8 + dimensions::BUTTON_PADDING_H * 2
     }
 
     /// A wider arrow column pushes the trigger narrower rather than overlapping it.

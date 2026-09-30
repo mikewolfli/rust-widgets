@@ -567,7 +567,6 @@ impl Menu {
         if self.items.is_empty() {
             return Vec::new();
         }
-        let height = self.popup_height() as u32;
         let factory = WidgetFactory::new_with_defaults();
         let mut column = CompositeBuilder::new(
             Box::new(FlexLayout::with_params(
@@ -600,13 +599,30 @@ impl Menu {
             debug_assert!(created.is_some(), "a menu row is a core control");
         }
         let mut placed: Vec<Rect> = Vec::new();
-        // The column is given the popup's own extent: the control's width, and the height the rows
-        // between them add up to (already the sum of the same two constants the loop above used).
-        column.arrange(Rect::new(0, 0, self.geometry().width, height), &mut |_, rect| {
-            placed.push(rect)
-        });
+        // # Why the column is given a height it has to squeeze into
+        //
+        // This used to arrange inside `Rect::new(0, 0, width, self.popup_height())`, where
+        // `popup_height` is *the sum of the very row heights the loop above just registered*. The
+        // band therefore fit the children by construction, `compute_main_sizes` always saw
+        // `remaining >= 0`, and the shrink pass could only ever run when a caller docked the popup
+        // in less than `popup_height` — it had no way to notice, because the rect it was handed was
+        // not the caller's room. It also silently masked a real over-subscription: a menu of N
+        // rows whose title heading pushed the content past the control's own height would place
+        // the last rows past the popup's bottom edge, and (the SVG backend emits absolute
+        // coordinates, nothing clips here) they would be drawn outside it.
+        //
+        // Supplying the popup's actual extent makes the layout answer "what fits in the popup I
+        // have", which is the question the caller has. `popup_height` remains the *preference*
+        // reported to a parent by `hints()`; the two are different statements and were previously
+        // conflated into one number used as both.
+        let available = Rect::new(0, 0, self.geometry().width, self.geometry().height);
+        column.arrange(available, &mut |_, rect| placed.push(rect));
+        // `FlexLayout` emits one rectangle per registered item, so this is a guard against a
+        // future cap rather than a route. When it fires the row is placed at the column's leading
+        // edge with a zero extent, which is distinguishable from a placed box; the previous
+        // `Rect::new(0, 0, 0, 0)` was not.
         while placed.len() < self.items.len() {
-            placed.push(Rect::new(0, 0, 0, 0));
+            placed.push(Rect::new(available.x, available.y, 0, 0));
         }
         placed
     }

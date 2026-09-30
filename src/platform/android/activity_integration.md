@@ -9,24 +9,29 @@ The Android bridge supports both directions between Rust and Java:
 
 ### 1. Java → Rust (existing `#[no_mangle]` entry points)
 
-Java code declares `native` methods and calls into Rust. These remain the
-canonical entry points for Java-driven creation:
+Java code declares `native` methods and calls into Rust. These are the canonical
+entry points for Java-driven creation.
+
+> The list below is the **actual exported set** — it is verified against the Rust exports by
+> `tools/check_jni_signatures.sh`. An earlier revision named `nativeCreateTextView`,
+> `nativeCreateEditText`, `nativeCreateCheckBox`, `nativeCreateSeekBar` and `nativeSetViewText`,
+> none of which exist: the real names are `nativeCreateLabel`, `nativeCreateLineEdit`,
+> `nativeCreateCheckbox`, `nativeCreateSlider`, and there is no `nativeSetView*` family at all.
+> `tools/check_status_docs_name_real_types.sh` now covers the class-name half of the same class.
 
 ```kotlin
 object RustWidgets {
     init { System.loadLibrary("rust_widgets") }
     external fun nativeInit()
-    external fun nativeCreateButton(
-        context: android.content.Context, text: String,
-        x: Int, y: Int, w: Int, h: Int
-    ): Long
-    // … nativeCreateTextView / nativeCreateEditText / nativeCreateCheckBox /
-    //    nativeCreateRadioButton / nativeCreateProgressBar / nativeCreateSeekBar
-    external fun nativeSetViewText(nativePtr: Long, text: String)
-    external fun nativeSetViewBounds(nativePtr: Long, x: Int, y: Int, w: Int, h: Int)
-    external fun nativeSetViewVisibility(nativePtr: Long, visible: Boolean)
-    external fun nativeSetViewEnabled(nativePtr: Long, enabled: Boolean)
-    external fun nativeDestroyView(nativePtr: Long)
+    external fun nativeAttachContext(context: android.content.Context)
+    // Typed widget creators — one per logical kind the backend publishes:
+    external fun nativeCreateButton(parent: Long, text: String, x: Int, y: Int, w: Int, h: Int): Long
+    external fun nativeCreateCheckbox(parent: Long, text: String, x: Int, y: Int, w: Int, h: Int): Long
+    external fun nativeCreateLabel(parent: Long, text: String, x: Int, y: Int, w: Int, h: Int): Long
+    external fun nativeCreateLineEdit(parent: Long, text: String, x: Int, y: Int, w: Int, h: Int): Long
+    external fun nativeCreateRadioButton(parent: Long, text: String, x: Int, y: Int, w: Int, h: Int): Long
+    // … plus Slider / ProgressBar / ComboBox / ListBox / ListView / ScrollArea / SpinBox /
+    //    StatusBar / ToolBar / Panel / MenuBar / Menu / the three dialog creators.
 }
 ```
 
@@ -49,27 +54,41 @@ creation stays state-backed.
 
 ## Method parity table
 
-Each Rust-created view mirrors the class used by the Java entry points:
+> **Corrected 2026-09-30.** Earlier revisions of this page framed each logical kind as a mapping onto
+> an Android widget class (`Button` → `android.widget.Button`, …) with a `Rust factory` column reading
+> `create_native_view`. **That model no longer exists.** The library paints every `WidgetKind` itself
+> (BLUE15 #55/#56): `grep -c 'fn create_button' src/platform/android/platform_impl.rs` is `0`, and
+> the same holds for **every** backend. There is no per-kind Android view to name — the only native
+> object an Android host supplies is a **window plus a drawing surface**, and the library draws into
+> it. The `create_native_view` factory and its `AndroidViewClass` table were deleted under BLUE15 #59
+> (`src/platform/android_jni.rs`'s module doc records it).
+>
+> What follows is therefore **not** a parity table between logical kinds and OS widgets — there is no
+> such correspondence to state. It is the inventory of entry points a Java host may call, derived
+> from the **actual exported set** in `src/bindings/java_jni.rs` (verified by
+> `tools/check_jni_signatures.sh`). `nativeCreateButton` does **not** build an Android `Button`; it
+> creates a library widget, exactly as `rw_create_button` does in C, which is why the two are one
+> line of forwarding in `java_jni.rs`.
 
-| Logical kind | Android class | Java entry point | Rust factory |
-|---|---|---|---|
-| Window / Panel | `FrameLayout` | — | `create_native_view` |
-| Button | `Button` | `nativeCreateButton` | `create_native_view` |
-| Label / StatusBar | `TextView` | `nativeCreateTextView` | `create_native_view` |
-| LineEdit | `EditText` | `nativeCreateEditText` | `create_native_view` |
-| CheckBox | `CheckBox` | `nativeCreateCheckBox` | `create_native_view` |
-| RadioButton | `RadioButton` | `nativeCreateRadioButton` | `create_native_view` |
-| Slider | `SeekBar` | `nativeCreateSeekBar` | `create_native_view` |
-| ProgressBar | `ProgressBar` | `nativeCreateProgressBar` | `create_native_view` |
-| ComboBox | `Spinner` | — | `create_native_view` + `append_spinner_item` |
-| ListBox / ListView | `ListView` | — | `create_native_view` + `append_list_item` |
-| ScrollArea | `ScrollView` | — | `create_native_view` |
-| SpinBox | `NumberPicker` | — | `create_native_view` |
-| MenuBar / Menu / MenuItem | (none) | — | logical handle only |
-| ToolBar | (none) | — | logical handle only |
-| MessageBox | `AlertDialog` | `nativeSelfTestDialog` | `create_native_dialog` |
-| FileDialog | `ACTION_OPEN_DOCUMENT` (Activity operation) | `nativeSelfTestFileDialog` | `launch_file_dialog` |
-| ColorDialog / FontDialog | (none) | — | logical handle only (Android ships no picker) |
+| Logical kind | Exported JNI entry point | What the library does |
+|---|---|---|
+| Window / Panel | `nativeCreatePanel` | creates a library widget; the host supplies the surface it is painted into |
+| Button | `nativeCreateButton` | paints `WidgetKind::Button` |
+| Label / StatusBar | `nativeCreateLabel` / `nativeCreateStatusBar` | painted |
+| LineEdit | `nativeCreateLineEdit` | painted |
+| CheckBox | `nativeCreateCheckbox` | painted |
+| RadioButton | `nativeCreateRadioButton` | painted |
+| Slider | `nativeCreateSlider` | painted |
+| ProgressBar | `nativeCreateProgressBar` | painted |
+| ComboBox | `nativeCreateComboBox` | painted |
+| ListBox / ListView | `nativeCreateListBox` / `nativeCreateListView` | painted |
+| ScrollArea | `nativeCreateScrollArea` | painted |
+| SpinBox | `nativeCreateSpinBox` | painted |
+| MenuBar / Menu / MenuItem | `nativeCreateMenuBar` / `nativeCreateMenu` | logical handle only — the library keeps the menu tree in-process and the host renders it |
+| ToolBar | `nativeCreateToolBar` | logical handle only |
+| MessageBox | — | no `create_native_dialog` is exported; a message box is a painted widget in this library |
+| FileDialog | `nativeSelfTestFileDialog` | the one genuine **Activity operation**: launches `ACTION_OPEN_DOCUMENT` and hands the picked URI back (see below). Not a control |
+| ColorDialog / FontDialog | — | logical handle only (Android ships no system picker) |
 
 ## File dialog wiring
 

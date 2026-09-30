@@ -22,6 +22,43 @@ fn harmony_lookup_widget(node_handle: u64) -> Option<u64> {
     }
     harmony_node_registry().lock().unwrap_or_else(|e| e.into_inner()).get(&node_handle).copied()
 }
+/// Convert a stable C ABI pointer-event code into an [`crate::event::Event`].
+///
+/// # The codes, and why `0` is not one of them
+///
+/// A host that owns its own event loop forwards touches and mouse events through
+/// `rw_dispatch_pointer_event`. It has to name *which* event it is, and an `int` is the only
+/// vocabulary a C ABI shares, so the mapping is: `1` press, `2` release, `3` move, `4` enter,
+/// `5` leave. Any other value — including `0` — yields `None`, and the caller refuses the call.
+///
+/// # Why an unknown code is refused rather than defaulted
+///
+/// The tempting default is "treat anything unrecognised as a move", because a move is the
+/// least destructive. It is also the *worst* choice: a host that sends `0` because it
+/// mis-encoded a press would have every click silently become a hover — the control highlights
+/// and never activates, with no error anywhere. Reporting "I do not know this event" is the
+/// answer a caller can act on.
+///
+/// Returning `Option` rather than a sentinel `Event` is the same reasoning: there is no
+/// "invalid event" variant to smuggle out, so a caller cannot accidentally dispatch one.
+fn pointer_event_from_code(
+    code: c_uint,
+    x: c_int,
+    y: c_int,
+    button: c_uint,
+) -> Option<crate::event::Event> {
+    // `button` is passed straight through; a move has none and the library ignores it there.
+    let _ = button;
+    match code {
+        1 => Some(crate::event::Event::mouse_press(x, y, crate::event::mouse_button::PRIMARY)),
+        2 => Some(crate::event::Event::mouse_release(x, y, crate::event::mouse_button::PRIMARY)),
+        3 => Some(crate::event::Event::mouse_move(x, y)),
+        4 => Some(crate::event::Event::MouseEnter { pos: crate::core::Point::new(x, y) }),
+        5 => Some(crate::event::Event::MouseLeave { pos: crate::core::Point::new(x, y) }),
+        _ => None,
+    }
+}
+
 /// Convert stable C ABI trigger code to internal typed trigger enum.
 fn trigger_kind_from_code(code: c_uint) -> crate::platform::WidgetTriggerKind {
     match code {
@@ -1460,19 +1497,35 @@ pub extern "C" fn rw_combo_box_clear_items(combo_box: u64) -> CBool {
 #[no_mangle]
 /// Selects the item at `index`, which is zero-based.
 ///
+/// # Why this goes through the crate-level function and not `Platform`
+///
+/// It used to call `platform::get_platform().combo_box_set_current_index(..)`, which every
+/// backend answers with the trait default — `false`. The combo box **is** a library-painted
+/// control whose selection lives on the widget itself (`ComboBox::current_index`), and the
+/// crate-level [`crate::combo_box_set_current_index`] is the function that reaches it. The
+/// Platform trait's copy is a leftover from the native-control era, when a host could own the
+/// control and its selection for real.
+///
+/// The effect of the wrong route was a **split brain** that reads as success: `rw_combo_box_add_item`
+/// worked (it already went through the control backend), so a C/Python/Java host added its items,
+/// then `rw_combo_box_set_current_index` returned `false` and `rw_combo_box_current_index`
+/// answered `-1` forever. The host had populated a combo box it could never select in and never
+/// read back.
+///
 /// Returns `false` if the index is out of range or the widget is unknown.
 pub extern "C" fn rw_combo_box_set_current_index(combo_box: u64, index: c_uint) -> CBool {
-    c_try!({
-        crate::platform::get_platform().combo_box_set_current_index(combo_box, index as usize)
-    })
+    c_try!({ crate::combo_box_set_current_index(combo_box, index as usize) })
 }
 #[no_mangle]
 /// The index of the selected item, zero-based, or `-1` when nothing is selected
 /// or the widget is unknown.
 pub extern "C" fn rw_combo_box_current_index(combo_box: u64) -> c_int {
     c_try!({
-        match crate::platform::get_platform().combo_box_current_index(combo_box) {
-            Some(idx) => idx as c_int,
+        // The crate-level accessor, not `Platform`'s: a combo box is library-painted, so its
+        // selection lives on the widget. See `rw_combo_box_set_current_index` for the split-brain
+        // this routing fixes.
+        match crate::combo_box_current_index(combo_box) {
+            Some(index) => index as c_int,
             None => -1,
         }
     })
@@ -1480,7 +1533,7 @@ pub extern "C" fn rw_combo_box_current_index(combo_box: u64) -> c_int {
 #[no_mangle]
 /// The number of items currently in the combo box; `0` if it is unknown.
 pub extern "C" fn rw_combo_box_item_count(combo_box: u64) -> c_uint {
-    c_try!({ crate::platform::get_platform().combo_box_item_count(combo_box) as c_uint })
+    c_try!({ crate::combo_box_item_count(combo_box) as c_uint })
 }
 #[no_mangle]
 /// The text of the item at zero-based `index`.
@@ -1490,7 +1543,7 @@ pub extern "C" fn rw_combo_box_item_count(combo_box: u64) -> c_uint {
 /// with `rw_free_string`.
 pub extern "C" fn rw_combo_box_item_text(combo_box: u64, index: c_uint) -> *const c_char {
     c_try!({
-        let text = crate::platform::get_platform().combo_box_item_text(combo_box, index as usize);
+        let text = crate::combo_box_item_text(combo_box, index as usize);
         to_c_string_or_empty(text.unwrap_or_default())
     })
 }
@@ -1520,14 +1573,14 @@ pub extern "C" fn rw_list_box_clear_items(list_box: u64) -> CBool {
 ///
 /// Returns `false` if the index is out of range or the widget is unknown.
 pub extern "C" fn rw_list_box_set_current_index(list_box: u64, index: c_uint) -> CBool {
-    c_try!({ crate::platform::get_platform().list_box_set_current_index(list_box, index as usize) })
+    c_try!({ crate::list_box_set_current_index(list_box, index as usize) })
 }
 #[no_mangle]
 /// The index of the selected item, zero-based, or `-1` when nothing is selected
 /// or the widget is unknown.
 pub extern "C" fn rw_list_box_current_index(list_box: u64) -> c_int {
     c_try!({
-        match crate::platform::get_platform().list_box_current_index(list_box) {
+        match crate::list_box_current_index(list_box) {
             Some(idx) => idx as c_int,
             None => -1,
         }
@@ -1536,7 +1589,7 @@ pub extern "C" fn rw_list_box_current_index(list_box: u64) -> c_int {
 #[no_mangle]
 /// The number of items currently in the list box; `0` if it is unknown.
 pub extern "C" fn rw_list_box_item_count(list_box: u64) -> c_uint {
-    c_try!({ crate::platform::get_platform().list_box_item_count(list_box) as c_uint })
+    c_try!({ crate::list_box_item_count(list_box) as c_uint })
 }
 #[no_mangle]
 /// The text of the item at zero-based `index`.
@@ -1546,7 +1599,7 @@ pub extern "C" fn rw_list_box_item_count(list_box: u64) -> c_uint {
 /// with `rw_free_string`.
 pub extern "C" fn rw_list_box_item_text(list_box: u64, index: c_uint) -> *const c_char {
     c_try!({
-        let text = crate::platform::get_platform().list_box_item_text(list_box, index as usize);
+        let text = crate::list_box_item_text(list_box, index as usize);
         to_c_string_or_empty(text.unwrap_or_default())
     })
 }
@@ -2379,9 +2432,467 @@ pub unsafe extern "C" fn rw_free_bytes(ptr: *mut u8, len: c_uint) {
 pub unsafe extern "C" fn rw_free_rust_string(s: *mut c_char) {
     rw_free_string(s);
 }
+
+// ── Widget surfaces ─────────────────────────────────────────────────────────
+//
+// The four functions below are what a host needs to **display** a widget on a
+// platform that owns its own pixels but does not paint library widgets itself.
+//
+// # Why they exist, and why they were missing
+//
+// `docs/plans/harmony_integration.md` documents the ArkTS flow as "mount a
+// surface, pull the pending repaint, render the frame, blit it", and
+// `src/platform/harmony/status.md` claimed the same ("the ArkTS side pulls
+// frames"). Neither was reachable: `Platform::mount_surface` and
+// `invalidate_surface` are Rust trait methods with no C ABI entry point, and there
+// was **no** function that produced frame pixels at all. So the Harmony backend
+// reported `supports_surfaces() == true` — correctly, the queue exists — while a
+// host holding only the C ABI could not mount anything.
+//
+// These are not Harmony-only: `AndroidMobilePlatform`, `IosMobilePlatform` and
+// `MacOSObjc2Platform` answer `supports_surfaces() == true` over the same
+// record-plus-queue store, so the same four calls are how any of them is driven
+// from outside the process.
+
+/// Mounts a widget onto a surface and returns whether the backend accepted it.
+///
+/// The caller must have created the widget first; `parent` is the window it should
+/// be displayed in, and `x`/`y`/`width`/`height` are the rectangle it occupies.
+///
+/// Returns `false` when the backend cannot display library-painted widgets
+/// (`Platform::supports_surfaces()`), or when the id is not one this backend
+/// created. A caller must treat `false` as "cannot display here" and say so, rather
+/// than presenting an empty surface.
+#[no_mangle]
+pub extern "C" fn rw_mount_surface(
+    parent: u64,
+    widget_id: u64,
+    x: c_int,
+    y: c_int,
+    width: c_uint,
+    height: c_uint,
+) -> CBool {
+    c_try!({ crate::mount_surface(parent, widget_id, crate::core::Rect::new(x, y, width, height)) })
+}
+
+/// Updates the rectangle of a mounted surface.
+///
+/// Returns `false` when `widget_id` is not mounted, which is the honest answer for
+/// a surface that was never mounted or has already been released.
+#[no_mangle]
+pub extern "C" fn rw_resize_surface(
+    widget_id: u64,
+    x: c_int,
+    y: c_int,
+    width: c_uint,
+    height: c_uint,
+) -> CBool {
+    c_try!({ crate::resize_surface(widget_id, crate::core::Rect::new(x, y, width, height)) })
+}
+
+/// Releases a mounted surface.
+///
+/// The widget itself stays alive in the registry; only its display surface is
+/// released. Returns `false` when it was not mounted.
+#[no_mangle]
+pub extern "C" fn rw_unmount_surface(widget_id: u64) -> CBool {
+    c_try!({ crate::unmount_surface(widget_id) })
+}
+
+/// Marks a mounted surface — or a window the backend draws — as needing a repaint.
+///
+/// Returns `false` when the id names nothing this backend can repaint. A window id
+/// is a legitimate argument: the library repaints a window to reveal the children
+/// it draws into the window's frame (see `Platform::invalidate_surface`).
+#[no_mangle]
+pub extern "C" fn rw_invalidate_surface(widget_id: u64) -> CBool {
+    c_try!({ crate::invalidate_surface(widget_id) })
+}
+
+/// Whether this backend can host library-painted widgets.
+///
+/// `true` means [`rw_mount_surface`] will produce a surface that repaints; it says
+/// nothing about how a surface is presented. A host that builds a UI it cannot
+/// display should ask this first, because the alternative is a blank window with no
+/// error — the exact failure mode these entry points were added to remove.
+#[no_mangle]
+pub extern "C" fn rw_supports_surfaces() -> CBool {
+    c_try!({ crate::platform::get_platform().supports_surfaces() })
+}
+
+/// Renders one frame of a mounted widget and hands the caller its RGBA pixels.
+///
+/// # Why this is a getter rather than a "blit into my buffer" call
+///
+/// The host owns the drawing API (ArkUI `Canvas`, Android `Bitmap`, `NSView`,
+/// Skia), so the library cannot draw into it without knowing every toolkit. What it
+/// can do — and what this does — is produce the frame in the one layout all of them
+/// consume: top-down, straight (non-premultiplied) alpha, `width * height * 4`
+/// bytes.
+///
+/// # Contract
+///
+/// `x`/`y`/`width`/`height` describe the surface rectangle to render. `out_width`
+/// and `out_height` receive the pixel dimensions actually produced, `out_len` the
+/// byte length of the returned buffer, and `out_stride` the bytes between the start
+/// of two consecutive rows (always `width * 4` today, but published rather than
+/// assumed, because a host that hard-codes it shears the image the day a backend
+/// pads a row).
+///
+/// The pixel buffer is returned through `out_pixels`, which the caller owns and must
+/// release with [`rw_free_bytes`]. It is set to null when the widget is not mounted,
+/// has no `Draw` implementation, or the area is empty — and that null is **not** an
+/// error to swallow: it is why the surface stayed blank.
+///
+/// # Why the buffer is an out-parameter and not the return value
+///
+/// The error channel (`c_try!`) has no `CAbiSafe` implementation for `*mut u8`, and
+/// that absence is deliberate: a raw byte pointer cannot be round-tripped through the
+/// numeric fallback the macro uses for its primitives. Publishing the pointer through
+/// an out-parameter keeps the frame path on the same error handling every other
+/// function here uses, instead of needing a second, weaker convention for one call.
+///
+/// Returns `true` when a frame was produced. On `false`, every out-parameter is left
+/// untouched.
+///
+/// # Safety
+///
+/// Every out-pointer may be null, in which case that value is simply not reported. A
+/// non-null pointer must be valid and writable for one value of its type for the
+/// duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn rw_render_surface_frame(
+    widget_id: u64,
+    width: c_uint,
+    height: c_uint,
+    out_width: *mut c_uint,
+    out_height: *mut c_uint,
+    out_stride: *mut c_uint,
+    out_len: *mut c_uint,
+    out_pixels: *mut *mut u8,
+) -> CBool {
+    c_try!({
+        let Some(frame) = crate::widget::runtime::render_frame_cached(
+            widget_id,
+            crate::core::Size::new(width, height),
+            crate::core::Color::WHITE,
+        ) else {
+            return false;
+        };
+        let byte_len = frame.len() as c_uint;
+        // Leaked as one allocation, exactly like `rw_poll_drop_event`'s payload, so
+        // `rw_free_bytes(ptr, len)` reconstructs it with the length the caller echoed
+        // back. Handing out a `Vec` pointer without its length is what forced the
+        // separate free function to exist in the first place.
+        let mut buffer = frame.into_boxed_slice();
+        let pointer = buffer.as_mut_ptr();
+        core::mem::forget(buffer);
+        // SAFETY: each out-pointer is null-checked before use, and the caller's
+        // contract is that a non-null one is writable for one value of its type.
+        unsafe {
+            if !out_pixels.is_null() {
+                *out_pixels = pointer;
+            }
+            if !out_width.is_null() {
+                *out_width = width;
+            }
+            if !out_height.is_null() {
+                *out_height = height;
+            }
+            if !out_stride.is_null() {
+                *out_stride = width * 4;
+            }
+            if !out_len.is_null() {
+                *out_len = byte_len;
+            }
+        }
+        true
+    })
+}
+
+/// Reads the next widget awaiting a repaint, or `0` when none is queued.
+///
+/// # Why this is a queue rather than a callback
+///
+/// The host owns the event loop on these platforms, so the library cannot call
+/// "please repaint" into it. It records which surfaces went stale and the host pulls
+/// them — which is also what makes a burst of invalidations cost one entry instead of
+/// one per call (they are coalesced, see
+/// `BackendState::record_repaint_request`).
+///
+/// # Both id spaces
+///
+/// The id returned is the one the invalidation named, which is the **widget id**
+/// for an ordinary control and may be a widget id or a mounted-surface id depending
+/// on the caller. A host that needs a window handle from it can resolve it with the
+/// same association `rw_get_widget_geometry` uses.
+#[no_mangle]
+pub extern "C" fn rw_take_pending_repaint() -> u64 {
+    c_try!({ crate::take_pending_repaint().unwrap_or(0) })
+}
+
+/// Delivers a pointer event that arrived on a host-owned drawing surface.
+///
+/// # Why a host needs this, and why it was missing
+///
+/// On the desktop backends the library drives the event loop, so a click is routed inside the
+/// toolkit callback (`windows/types.rs`' window procedure, `linux/platform_impl.rs`' GTK
+/// handler). A host that owns its own loop — ArkUI, an Android `Activity`, iOS touch
+/// handling, a browser page — is never called into, so it must hand its touches back. There
+/// was no way to do that.
+///
+/// This is not a nicety. `src/platform/android/status.md`, `src/platform/ios/status.md` and
+/// `docs/plans/harmony_integration.md` all instruct a host to call
+/// `rw_dispatch_pointer_event(...)`, and `grep -rn rw_dispatch_pointer_event src/ include/`
+/// returned nothing — the documented integration step, without which a mounted widget is
+/// visible but completely inert, had no implementation at any layer.
+///
+/// # Arguments
+///
+/// * `root` — the widget subtree to resolve the point in, normally the window. The library
+///   hit-tests `point` against it, so the host does **not** need to know which widget was
+///   under the finger. Sending an event to a chosen widget id is the separate
+///   `rw_dispatch_event_to_widget` below, and is only right when the host already knows the
+///   target (a key event for the focused control, a text commit).
+/// * `event_code` — `1` press, `2` release, `3` move, `4` enter, `5` leave. Any other value,
+///   including `0`, returns `false` rather than being silently treated as a move: a
+///   mis-encoded press that became a hover would highlight the control and never activate it,
+///   with no error anywhere.
+/// * `x`/`y` — in the **window's** coordinate space.
+/// * `button` — reserved for a future multi-button path; the library's press/release events
+///   carry the primary button, and the value is passed through unchanged.
+///
+/// # Returns
+///
+/// Whether a widget accepted the event. `false` means the point was outside every widget in
+/// `root`, the resolved widget refused it (disabled, or blocked by a modal), or `event_code`
+/// was not one of the five codes.
+#[no_mangle]
+pub extern "C" fn rw_dispatch_pointer_event(
+    root: u64,
+    event_code: c_uint,
+    x: c_int,
+    y: c_int,
+    button: c_uint,
+) -> CBool {
+    c_try!({
+        match pointer_event_from_code(event_code, x, y, button) {
+            Some(event) => {
+                crate::dispatch_pointer_event(root, &event, crate::core::Point::new(x, y))
+            }
+            None => false,
+        }
+    })
+}
+
+/// Delivers an event straight to `widget_id`, without hit-testing.
+///
+/// The counterpart to `rw_dispatch_pointer_event` for a host that already knows the target —
+/// a key event for the focused control, a text-input commit, a scroll it tracks itself. It
+/// shares the same event codes, so a host needs one vocabulary rather than two.
+///
+/// Routing a pointer event this way **skips the library's hit test**, so a host that uses it
+/// for touches must do its own; the pointer path above is the one the integration documents
+/// name for that reason.
+///
+/// Returns whether the widget accepted it: `false` when the id is not a live widget, when the
+/// control is disabled, when a modal blocks it, or when `event_code` is unknown.
+#[no_mangle]
+pub extern "C" fn rw_dispatch_event_to_widget(
+    widget_id: u64,
+    event_code: c_uint,
+    x: c_int,
+    y: c_int,
+    button: c_uint,
+) -> CBool {
+    c_try!({
+        match pointer_event_from_code(event_code, x, y, button) {
+            Some(event) => crate::dispatch_event(widget_id, &event),
+            None => false,
+        }
+    })
+}
+
+/// Reports a container's new client size, so the app layer re-runs its layout.
+///
+/// # Why a host must call this
+///
+/// On these platforms the library holds no native window handle, so it cannot
+/// subscribe to a size change: OpenHarmony delivers one to the ArkTS component's
+/// `onAreaChange`, Android to the view's layout callback, iOS to the view
+/// controller. Without forwarding it here, a window the user resized keeps every
+/// child at the geometry it had for the previous size — the layout never re-runs,
+/// and nothing looks wrong enough to report.
+///
+/// Returns `false` for an id this backend did not create, in which case neither the
+/// size nor the trigger is recorded.
+#[no_mangle]
+pub extern "C" fn rw_report_window_resize(window_id: u64, width: c_uint, height: c_uint) -> CBool {
+    c_try!({ crate::queue_resize_trigger(window_id, width, height) })
+}
+
+/// Bind the ArkUI **XComponent** this library should draw into.
+///
+/// # Why this is the first call an ArkTS host makes
+///
+/// Everything else on this page assumes the library has somewhere to put pixels and some way
+/// to receive input. On OpenHarmony both arrive through an `XComponent`: the ArkTS side creates
+/// one and its `onLoad` receives the `OH_NativeXComponent*` that this function takes.
+///
+/// # Contract
+///
+/// Call it from the `XComponent`'s `onLoad`, passing the component pointer ArkUI supplied.
+/// After it returns `true`, `rw_mount_surface` becomes usable and input callbacks are live.
+///
+/// # Why it is not part of `rw_init`
+///
+/// The pointer does not exist until ArkUI has built the component tree, and `rw_init` runs
+/// before that. Folding the two would either delay initialisation past where a host calls it or
+/// register against a component ArkUI has not created.
+///
+/// # Build configuration
+///
+/// Returns `false` in every build without `feature = "xcomponent"`, which is the default.
+/// That is the honest answer rather than a link error: a host that has not enabled the bridge
+/// learns it cannot display anything, instead of the library pretending to have a surface.
+///
+/// # Safety
+///
+/// `component` must be the pointer ArkUI passed to the ArkTS `XComponent`'s native `onLoad`,
+/// and must stay valid for the component's lifetime — the bridge stores it and ArkUI calls back
+/// into the registered function pointers until the component is destroyed.
+#[no_mangle]
+pub unsafe extern "C" fn rw_harmony_bind_xcomponent(component: u64) -> CBool {
+    c_try!({
+        #[cfg(all(feature = "xcomponent", not(alloc_frugal)))]
+        {
+            // SAFETY: forwarded from this function's own contract — the caller passes the
+            // pointer ArkUI gave it, valid for the component's lifetime.
+            unsafe {
+                crate::platform::harmony::xcomponent::bind(component as *mut core::ffi::c_void)
+            }
+        }
+        #[cfg(not(all(feature = "xcomponent", not(alloc_frugal))))]
+        {
+            if component != 0 {
+                log::error!(
+                    "rw_harmony_bind_xcomponent called, but this build has no XComponent bridge \
+                     (feature 'xcomponent' is off); the library has no surface to draw into"
+                );
+            }
+            false
+        }
+    })
+}
+
+/// The ArkUI id of the bound `XComponent`, or `0` when none is bound.
+///
+/// The ArkTS side uses this to confirm which component the library is drawing into — an
+/// application with more than one `XComponent` can otherwise not tell which one it handed over.
+/// A fresh string is returned and must be released with `rw_free_string`.
+#[no_mangle]
+pub extern "C" fn rw_harmony_xcomponent_id() -> *mut c_char {
+    c_try!({
+        #[cfg(all(feature = "xcomponent", not(alloc_frugal)))]
+        {
+            match crate::platform::harmony::xcomponent::component_id() {
+                Some(id) => CString::new(id).unwrap_or_default().into_raw(),
+                None => std::ptr::null_mut(),
+            }
+        }
+        #[cfg(not(all(feature = "xcomponent", not(alloc_frugal))))]
+        {
+            std::ptr::null_mut()
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a C host writes through the ABI must be what it reads back.
+    ///
+    /// # The defect this closes
+    ///
+    /// The combo-box and list-box **writes** went through the control backend (which reaches
+    /// the widget) while the **reads** went through `Platform` (whose every backend answers the
+    /// trait default). So a host could add four items and then be told the box holds zero, and
+    /// `rw_combo_box_set_current_index` returned `false` for an index it had just added.
+    ///
+    /// That is the "reported success for something that did not happen" shape from the other
+    /// direction: the failure is a *read* that always answers `0`/`-1`, which no caller can
+    /// distinguish from a genuinely empty control.
+    ///
+    /// # Why the round trip and not the individual calls
+    ///
+    /// Asserting `rw_combo_box_item_count(..) == 2` alone would pass for a backend that stored
+    /// the items itself. Writing through one entry point and reading through another is what
+    /// pins that the two agree — which is exactly the property that was broken, and the one a
+    /// split between storage locations breaks again the moment either side moves.
+    #[test]
+    fn combo_box_items_round_trip_through_the_c_abi() {
+        crate::init();
+        let window = crate::create_window("abi", 0, 0, 400, 300);
+        let combo = crate::create_combo_box(window, 0, 0, 120, 24);
+        let labels = ["Red", "Green", "Blue"];
+        for label in labels {
+            let text = CString::new(label).unwrap();
+            assert!(rw_combo_box_add_item(combo, text.as_ptr()), "adding '{label}'");
+        }
+
+        assert_eq!(rw_combo_box_item_count(combo), labels.len() as c_uint);
+        for (index, label) in labels.iter().enumerate() {
+            let text = rw_combo_box_item_text(combo, index as c_uint);
+            assert!(!text.is_null(), "item {index} has text");
+            // SAFETY: `text` was produced by `to_c_string_or_empty` above and is still live.
+            let read = unsafe { CStr::from_ptr(text) }.to_str().unwrap().to_owned();
+            assert_eq!(&read, label, "item {index} round-trips its text");
+        }
+
+        // Selection is the other half: a host that can add items but cannot select one has a
+        // read-only list.
+        assert!(rw_combo_box_set_current_index(combo, 1), "index 1 exists");
+        assert_eq!(rw_combo_box_current_index(combo), 1);
+        assert!(!rw_combo_box_set_current_index(combo, 99), "an out-of-range index is refused");
+        assert_eq!(rw_combo_box_current_index(combo), 1, "and does not clear the selection");
+
+        rw_destroy_widget(window);
+    }
+
+    /// The list box is the same contract through its own entry points.
+    #[test]
+    fn list_box_items_round_trip_through_the_c_abi() {
+        crate::init();
+        let window = crate::create_window("abi", 0, 0, 400, 300);
+        let list = crate::create_list_box(window, 0, 0, 120, 80);
+        for label in ["Alpha", "Bravo", "Charlie"] {
+            let text = CString::new(label).unwrap();
+            assert!(rw_list_box_add_item(list, text.as_ptr()), "adding '{label}'");
+        }
+
+        assert_eq!(rw_list_box_item_count(list), 3);
+
+        let text = rw_list_box_item_text(list, 1);
+        assert!(!text.is_null());
+        // SAFETY: produced by the call above and still live.
+        let read = unsafe { CStr::from_ptr(text) }.to_str().unwrap().to_owned();
+        assert_eq!(read, "Bravo");
+
+        assert!(rw_list_box_set_current_index(list, 2));
+        assert_eq!(rw_list_box_current_index(list), 2);
+
+        // Removing shifts the later items up, which is the property a host with a delete
+        // button depends on: the item after the removed one must still be readable.
+        assert!(rw_list_box_remove_item(list, 0));
+        assert_eq!(rw_list_box_item_count(list), 2);
+        let first = rw_list_box_item_text(list, 0);
+        // SAFETY: produced by the call above and still live.
+        let first = unsafe { CStr::from_ptr(first) }.to_str().unwrap().to_owned();
+        assert_eq!(first, "Bravo", "removal shifts later items up");
+
+        rw_destroy_widget(window);
+    }
 
     /// The payload a drop event hands out must be reclaimable through
     /// `rw_free_bytes`, and through nothing else.
@@ -3454,5 +3965,139 @@ mod tests {
         assert_eq!(rw_get_embedded_target_fps(), 240);
         rw_set_embedded_target_fps(original);
         assert_eq!(rw_get_embedded_target_fps(), original.clamp(1, 240));
+    }
+
+    /// A host-owned event loop can deliver a touch and have the widget act on it.
+    ///
+    /// # The gap this closes
+    ///
+    /// `src/platform/android/status.md`, `src/platform/ios/status.md` and
+    /// `docs/plans/harmony_integration.md` all told a host to call
+    /// `rw_dispatch_pointer_event(...)`. The symbol did not exist in `binding_impl.rs` or in
+    /// `include/rw_generated.h`, so the documented integration step — the one without which a
+    /// mounted widget is visible but completely inert — had no implementation at any layer.
+    ///
+    /// # Why the assertions are an end-to-end round trip
+    ///
+    /// Asserting that the function returns `true` would pass against a function that hit-tests
+    /// and then drops the event. So the test creates a real button through the C ABI, dispatches
+    /// a press and a release at its centre, and reads back the trigger the widget produced.
+    /// That is the only evidence that the event reached a control and it acted.
+    #[test]
+    fn a_host_can_deliver_a_pointer_event_through_the_c_abi() {
+        use std::ffi::CString;
+        let c = |s: &str| CString::new(s).expect("no interior NUL");
+
+        // The event codes the ABI documents; named here so a renumbering breaks this test.
+        const PRESS: c_uint = 1;
+        const RELEASE: c_uint = 2;
+        const MOVE: c_uint = 3;
+        const UNKNOWN: c_uint = 0;
+
+        {
+            let title = c("pointer-round-trip");
+            let window = rw_create_window(title.as_ptr(), 0, 0, 320, 240);
+            assert_ne!(window, 0, "the fixture needs a real window to route in");
+
+            let label = c("OK");
+            let button = rw_create_button(window, label.as_ptr(), 20, 30, 80, 30);
+            assert_ne!(button, 0, "and a real button to click");
+
+            // An unknown code is refused rather than mis-read as a move: a host that
+            // mis-encoded a press must not have it silently become a hover.
+            assert!(!rw_dispatch_pointer_event(window, UNKNOWN, 60, 45, 0));
+
+            // A move over the control routes (hover) but activates nothing.
+            assert!(
+                rw_dispatch_pointer_event(window, MOVE, 60, 45, 0),
+                "a move inside the button's rect must be routed to it"
+            );
+
+            // A press far outside every child is not accepted and must be reported.
+            assert!(
+                !rw_dispatch_pointer_event(window, PRESS, 3000, 3000, 0),
+                "a point outside the subtree must be refused, not silently dropped"
+            );
+
+            // The real path: press then release inside the button, which is what a click is.
+            assert!(
+                rw_dispatch_pointer_event(window, PRESS, 60, 45, 0),
+                "a press inside the button must be accepted"
+            );
+            assert!(rw_dispatch_pointer_event(window, RELEASE, 60, 45, 0), "and its release too");
+
+            // # What the widget does with it, and what it deliberately does *not*
+            //
+            // A click that arrives this way makes the button emit its **own** `clicked` signal
+            // — the in-process path a Rust caller hooks. It does **not** push an entry onto the
+            // platform trigger queue: that queue carries triggers a *host* injects (a native
+            // `onClick`, a designer action), which is why `SurfaceHandle::on_click` documents that
+            // a widget "emits its own signals rather than a platform click callback".
+            //
+            // Asserting a queued trigger here was my first version and it failed — correctly. The
+            // evidence that the event reached a control and was acted on is the signal, so the test
+            // hooks `BaseWidget::clicked` and counts the emissions over a full press+release.
+            let clicks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counter = std::sync::Arc::clone(&clicks);
+            let hooked = crate::widget::runtime::with_widget_mut(button, |widget| {
+                widget.base().clicked.connect(move || {
+                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                });
+            });
+            assert!(hooked.is_some(), "the button must be a live widget to hook");
+
+            // A press whose release lands *outside* must not activate — the other half of the
+            // click contract, and what proves the routing carried a real position rather than
+            // just "some event".
+            //
+            // # What the two return values mean, verified rather than assumed
+            //
+            // `route_pointer_event` answers "did this reach a live widget":
+            //
+            // * the **press** returns `true` — the point hit the button;
+            // * the **release at (400,400)** returns `false` — that point hits nothing, and this
+            //   widget does not take pointer *capture*. `Button::press` sets its own `grabbed`
+            //   flag, which makes it paint as held, but it never calls `capture_pointer`, so
+            //   `capturing_widget()` is `None` and the release resolves against the hit test like
+            //   any other event.
+            //
+            // Both readings were wrong before I checked: I first asserted a queued trigger (the
+            // queue carries *host-injected* triggers, not clicks — a click emits the widget's own
+            // signal), then asserted the outside release was delivered (it is not, and should not
+            // be). The signal count is the assertion that distinguishes "the button acted" from
+            // "the event went somewhere".
+            assert!(
+                rw_dispatch_pointer_event(window, PRESS, 60, 45, 0),
+                "a press inside the button must reach it"
+            );
+            assert!(
+                !rw_dispatch_pointer_event(window, RELEASE, 400, 400, 0),
+                "a release outside every widget must be reported, not silently dropped"
+            );
+            assert_eq!(
+                clicks.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "a release outside the button must not activate it"
+            );
+
+            // Inside ⇒ activate.
+            assert!(rw_dispatch_pointer_event(window, PRESS, 60, 45, 0));
+            assert!(rw_dispatch_pointer_event(window, RELEASE, 60, 45, 0));
+            assert_eq!(
+                clicks.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "press and release inside the button must activate it exactly once"
+            );
+
+            // The direct route reaches a widget the host already knows, without hit-testing.
+            assert!(
+                rw_dispatch_event_to_widget(button, MOVE, 60, 45, 0),
+                "the direct route must reach a live widget"
+            );
+            assert!(
+                !rw_dispatch_event_to_widget(button, UNKNOWN, 60, 45, 0),
+                "and refuse an unknown event code like the routing path does"
+            );
+        }
     }
 }

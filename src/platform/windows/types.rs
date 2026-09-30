@@ -5,7 +5,8 @@
 
 use super::notify;
 use crate::platform::state::BackendState;
-use crate::platform::{Platform, WidgetTriggerEvent, WidgetTriggerKind};
+use crate::platform::{Platform, WidgetTriggerEvent};
+use winapi::um::winuser::{GetWindowLongPtrW, SetWindowLongPtrW, GWLP_ID, GWLP_USERDATA};
 
 pub use crate::platform::windows_notify::WindowsHandleKind;
 
@@ -26,9 +27,10 @@ pub(crate) unsafe extern "system" fn wnd_proc(
 ) -> isize {
     use winapi::um::winuser::NMHDR;
     use winapi::um::winuser::{
-        DefWindowProcW, GetClientRect, GetDlgCtrlID, PostQuitMessage, WM_COMMAND, WM_DESTROY,
-        WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE,
-        WM_MOUSEMOVE, WM_NOTIFY, WM_PAINT, WM_SIZE,
+        DefWindowProcW, GetClientRect, GetDlgCtrlID, PostQuitMessage, WM_CHAR, WM_CLOSE,
+        WM_COMMAND, WM_DESTROY, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_KILLFOCUS,
+        WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+        WM_NOTIFY, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WM_UNICHAR,
     };
     match msg {
         // The window's own painting: every control the window owns, drawn as one frame.
@@ -74,10 +76,6 @@ pub(crate) unsafe extern "system" fn wnd_proc(
             0
         }
         WM_LBUTTONDOWN => {
-            eprintln!(
-                "[CLICK] WM_LBUTTONDOWN hwnd={hwnd:?} window_widget={:?}",
-                window_widget_for(hwnd)
-            );
             forward_window_mouse(hwnd, lparam, MousePhase::Press);
             0
         }
@@ -85,13 +83,52 @@ pub(crate) unsafe extern "system" fn wnd_proc(
             forward_window_mouse(hwnd, lparam, MousePhase::Release);
             0
         }
+        // A second click is a press with a different multiplicity, and the library's router
+        // keys double-click handling off `button`'s second bit (see `event::mouse_button`).
+        // Without this arm Win32's own double-click synthesis would be swallowed by
+        // `DefWindowProcW` and a `Button` would simply activate twice.
+        WM_LBUTTONDBLCLK => {
+            forward_window_mouse(hwnd, lparam, MousePhase::DoubleClick);
+            0
+        }
+        // The secondary button is a press/release pair of its own: context menus, and any
+        // control that distinguishes a right-click, are unreachable without them.
+        WM_RBUTTONDOWN => {
+            forward_window_mouse(hwnd, lparam, MousePhase::SecondaryPress);
+            0
+        }
+        WM_RBUTTONUP => {
+            forward_window_mouse(hwnd, lparam, MousePhase::SecondaryRelease);
+            0
+        }
+        // The wheel is a *screen*-relative point plus a signed delta in `wParam`'s high word
+        // (`GET_WHEEL_DELTA_WPARAM`), not a client point in `lParam`. Both halves are decoded
+        // in `forward_window_wheel`, which is also where the `WHEEL_DELTA`-multiples rule is
+        // applied — a scroll area needs the direction, not the raw tick count.
+        WM_MOUSEWHEEL => {
+            forward_window_wheel(hwnd, wparam, lparam);
+            0
+        }
         // A hover highlight has to be cleared when the pointer leaves, or it sticks.
         WM_MOUSELEAVE => {
-            if window_widget_for(hwnd).is_some() {
+            if let Some(window_id) = window_widget_for(hwnd) {
                 // The point is only carried into the `MouseLeave` the router delivers, and
                 // the pointer has already left the client area, so zero is the honest
                 // coordinate rather than a stale one.
-                crate::widget::runtime::clear_hover(crate::core::Point::new(0, 0));
+                //
+                // The leave is **routed**, not applied to the tree globally. An
+                // unconditional `clear_hover` would also drop the highlight of a control
+                // the pointer is still inside on a *canvas* child — a mixed window has
+                // both, and the window's leave fires when the pointer moves from the
+                // window into the canvas. So the same event a move would produce is
+                // dispatched here, and only the widget that actually loses the pointer
+                // clears its hover.
+                let leave = crate::event::Event::MouseLeave { pos: crate::core::Point::new(0, 0) };
+                crate::widget::runtime::dispatch_pointer_event(
+                    window_id,
+                    &leave,
+                    crate::core::Point::new(0, 0),
+                );
                 invalidate_window(hwnd);
             }
             0
@@ -99,15 +136,70 @@ pub(crate) unsafe extern "system" fn wnd_proc(
         // Keys go to whatever the pointer router focused, so typing reaches a field the
         // user clicked rather than always the window. Tab is forwarded too, which is how
         // focus moves between controls.
+        //
+        // Tab is handled here rather than by the shared dispatch for the reason
+        // `windows::canvas::forward_key` records: it is not a printable character, so
+        // sending it to a widget is a no-op and the user could never leave the first
+        // control. The canvas learned this first and the window did not, so the very
+        // keyboard the window gives focus to could not be used to leave it.
         WM_KEYDOWN => {
             if let Some(window_id) = window_widget_for(hwnd) {
+                const VK_TAB: u32 = 0x09;
+                const WIDGET_SHIFT: u32 = 1;
+                if wparam as u32 == VK_TAB {
+                    let forward = super::canvas::current_modifiers() & WIDGET_SHIFT == 0;
+                    crate::widget::runtime::focus_next(forward);
+                    invalidate_window(hwnd);
+                    return 0;
+                }
                 let target = crate::widget::runtime::focused_widget().unwrap_or(window_id);
-                let event = crate::event::Event::KeyPress { key: wparam as u32, modifiers: 0 };
+                let event = crate::event::Event::KeyPress {
+                    key: wparam as u32,
+                    modifiers: super::canvas::current_modifiers(),
+                };
                 if crate::widget::runtime::dispatch_event(target, &event) {
                     invalidate_window(hwnd);
                 }
             }
             0
+        }
+        // The **character** the key produced, which `WM_KEYDOWN` cannot supply.
+        //
+        // # Why forwarding `WM_KEYDOWN` was not enough
+        //
+        // `wParam` of `WM_KEYDOWN` is a *virtual-key code*: `0x41` for A, but `0x31` for the
+        // digit `1`, `0xBE` for `.`, `0xBB` for `+`. A text control that receives those as
+        // characters prints a row of unrelated Latin letters for a typed number, and IME,
+        // dead keys and any non-Latin layout (`VK_PROCESSKEY` = 0xE5) produce nothing at all.
+        //
+        // Win32 translates the key into a character and reposts it as `WM_CHAR` (and
+        // `WM_UNICHAR` for `WM_UNICHAR`-aware windows), which is the message a text control
+        // must consume. `TranslateMessage` in the run loop is what performs the translation,
+        // and the canvas procedure had the same gap — see `canvas::forward_char`.
+        WM_CHAR | WM_UNICHAR => {
+            if let Some(window_id) = window_widget_for(hwnd) {
+                forward_window_char(hwnd, window_id, wparam as u32);
+            }
+            0
+        }
+        // The window lost the OS keyboard (the user clicked another application).
+        //
+        // # Why the library must be told
+        //
+        // The library tracks focus in `widget::runtime` so a caret and a focus ring have one
+        // owner. `SetFocus` on the window is what *gives* it that keyboard (see the click arm),
+        // and nothing gave it back: after alt-tabbing away, the last control stayed focused and
+        // kept drawing its focus ring and blinking its caret while the keystrokes went to
+        // another process. Clearing here is the exact inverse of the `SetFocus` above.
+        WM_KILLFOCUS => {
+            if let Some(window_id) = window_widget_for(hwnd) {
+                crate::widget::runtime::report_state(
+                    window_id,
+                    crate::widget::runtime::StateFact::Focused(false),
+                );
+                invalidate_window(hwnd);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         // The user resized the window (or the window manager did). Report the new client
         // size so the host can re-run its layout: without this a window resized by the
@@ -115,7 +207,7 @@ pub(crate) unsafe extern "system" fn wnd_proc(
         // nothing else tells the library the window changed.
         WM_SIZE => {
             if let Some(platform) = notify::active_windows_platform() {
-                if let Some(widget_id) = platform.widget_id_by_native_handle(hwnd) {
+                if let Some(widget_id) = unsafe { platform.widget_id_by_native_handle(hwnd) } {
                     let mut rect =
                         winapi::shared::windef::RECT { left: 0, top: 0, right: 0, bottom: 0 };
                     // SAFETY: `hwnd` is the window this procedure was called for, and
@@ -136,17 +228,6 @@ pub(crate) unsafe extern "system" fn wnd_proc(
             let command_id = (wparam & 0xFFFF) as u32;
             let notify_code = ((wparam >> 16) & 0xFFFF) as u32;
             if let Some(platform) = notify::active_windows_platform() {
-                if let Ok(map) = platform.menu_state.menu_command_to_item.lock() {
-                    if let Some(item_id) = map.get(&command_id).copied() {
-                        if let Ok(mut queue) = platform.menu_state.pending_menu_events.lock() {
-                            queue.push_back(WidgetTriggerEvent {
-                                widget_id: item_id,
-                                kind: WidgetTriggerKind::Clicked,
-                            });
-                        }
-                        return 0;
-                    }
-                }
                 if let Ok(map) = platform.menu_state.control_command_to_widget.lock() {
                     if let Some(widget_id) = map.get(&command_id).copied() {
                         if notify::enqueue_control_notify_event(platform, widget_id, notify_code) {
@@ -154,6 +235,10 @@ pub(crate) unsafe extern "system" fn wnd_proc(
                         }
                     }
                 }
+                // A native control whose id was not stamped by `SetWindowLongPtrW` still
+                // identifies itself through the `HWND` in `lParam`, which is what
+                // `GetDlgCtrlID` reads back. Kept as the fallback for a control the host
+                // created itself and handed to this backend.
                 if lparam != 0 {
                     let hwnd_from = lparam as HWND;
                     let fallback_command_id = unsafe { GetDlgCtrlID(hwnd_from) } as u32;
@@ -174,13 +259,20 @@ pub(crate) unsafe extern "system" fn wnd_proc(
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
+        // `WM_NOTIFY` is the common-controls route: a ListView scrolls, a TreeView expands, a
+        // Tab control is asked for its new page. Nothing in this backend posts it, because the
+        // library paints every control and no native common control exists — but a host that
+        // puts one of its *own* native controls in a window this backend owns still reaches
+        // here, and this is the arm that turns it into a library trigger.
         WM_NOTIFY => {
             if let Some(platform) = notify::active_windows_platform() {
                 let hdr = lparam as *const NMHDR;
                 if !hdr.is_null() {
                     let hwnd_from = unsafe { (*hdr).hwndFrom };
                     let notify_code = unsafe { (*hdr).code };
-                    if let Some(widget_id) = platform.widget_id_by_native_handle(hwnd_from) {
+                    if let Some(widget_id) =
+                        unsafe { platform.widget_id_by_native_handle(hwnd_from) }
+                    {
                         if let Some(kind) =
                             platform.state.kind_of(widget_id).and_then(|widget_kind| {
                                 notify::notify_kind_for_widget(widget_kind, notify_code)
@@ -203,7 +295,7 @@ pub(crate) unsafe extern "system" fn wnd_proc(
         // constraint was applied.
         WM_GETMINMAXINFO => {
             if let Some(platform) = notify::active_windows_platform() {
-                if let Some(widget_id) = platform.widget_id_by_native_handle(hwnd) {
+                if let Some(widget_id) = unsafe { platform.widget_id_by_native_handle(hwnd) } {
                     if let Some((min_w, min_h)) = platform.state.window_min_size(widget_id) {
                         if !lparam_is_null(lparam) {
                             let info = lparam as *mut winapi::um::winuser::MINMAXINFO;
@@ -217,6 +309,35 @@ pub(crate) unsafe extern "system" fn wnd_proc(
                             return 0;
                         }
                     }
+                }
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        // The user asked to close the window, by the title bar's X or the system menu.
+        //
+        // # Why this is not left to `DefWindowProcW`
+        //
+        // The default handler calls `DestroyWindow`, which reaches the library only as a
+        // `WM_DESTROY` — a message with no widget identity attached. The window therefore
+        // closed without its `on_close` callbacks running, while a programmatic
+        // `WindowHandle::close` did run them, so the two paths disagreed about what closing
+        // a window means. `crate::close_widget` is that one path (`BaseWidget::closed`),
+        // documented as "the signal is the one path a close is announced on, so there is no
+        // second table to keep in step" — routing the OS close through it is what makes the
+        // statement true for both.
+        //
+        // `DefWindowProcW` still runs afterwards, which destroys the window and reaches
+        // `WM_DESTROY` below.
+        WM_CLOSE => {
+            if let Some(window_id) = window_widget_for(hwnd) {
+                if !crate::close_widget(window_id) {
+                    // The id exists in the registry (the painter found it) but carries no
+                    // widget to close. Reported rather than swallowed: a close that ran no
+                    // callback is exactly the silent failure this arm exists to remove.
+                    log::error!(
+                        "[windows] WM_CLOSE for window widget {window_id}, which is not a \
+                         live widget; no close callback was run"
+                    );
                 }
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -262,33 +383,39 @@ unsafe fn paint_window_tree(hwnd: HWND) {
     let mut paint: PAINTSTRUCT = std::mem::zeroed();
     let hdc = BeginPaint(hwnd, &mut paint);
 
-    match super::canvas::client_size(hwnd) {
-        Some((width, height)) => {
-            // TEMP DIAGNOSTIC: time the root draw and the child walk separately.
-            if let Some(widget_id) = paint_target_for(hwnd) {
-                let t0 = std::time::Instant::now();
-                let kids = crate::widget::runtime::children_of(widget_id);
-                let kids_us = t0.elapsed().as_micros();
-                let t1 = std::time::Instant::now();
-                let frame = crate::widget::runtime::render_frame_tree(
-                    widget_id,
-                    crate::core::Size::new(width, height),
-                    crate::core::Color::WHITE,
-                );
-                let render_us = t1.elapsed().as_micros();
-                eprintln!(
-                    "[PAINT] kids_lookup={kids_us}us render={render_us}us kids={} per_kid={}us",
-                    kids.len(),
-                    render_us / (kids.len().max(1) as u128)
-                );
-                if let Some(frame) = frame {
-                    let t2 = std::time::Instant::now();
-                    super::canvas::blit_frame(hdc, width, height, &frame);
-                    eprintln!("[PAINT]   blit={}us", t2.elapsed().as_micros());
-                }
-            }
-        }
-        None => {}
+    let Some((width, height)) = super::canvas::client_size(hwnd) else {
+        EndPaint(hwnd, &paint);
+        return;
+    };
+    if let Some(widget_id) = paint_target_for(hwnd) {
+        // `render_frame_cached` rather than `render_frame_tree`.
+        //
+        // This painter runs for every `WM_PAINT`, and `WM_PAINT` arrives from many places
+        // that are not a change of appearance: the window manager exposing the window, a
+        // highlight change on any sibling, the user dragging another window across this
+        // one. Handing a fresh frame to `blit_frame` for all of them meant converting the
+        // entire window's pixels into a DIB on the message thread each time — the work
+        // `RepaintMode` and the two `render_frame_cached` paths elsewhere in this crate
+        // exist to avoid. It is still not a *partial* present (a `StretchDIBits` call
+        // presents a whole bitmap), but a frame whose damage is worth regioning is now
+        // re-rasterised only where it changed; see `render_frame_incremental`.
+        //
+        // The cache is keyed by size, so a resize is detected here and turns into a full
+        // paint automatically rather than reusing a frame of the wrong extent.
+        let Some(frame) = crate::widget::runtime::render_frame_cached(
+            widget_id,
+            crate::core::Size::new(width, height),
+            crate::core::Color::WHITE,
+        ) else {
+            // Not an error: a window whose root widget does not implement `Draw` — or one
+            // whose association was torn down between the expose and this call — has
+            // nothing to present, and the `WM_ERASEBKGND` arm already left the background
+            // filled. Reported at debug so a blank window is still diagnosable.
+            log::debug!("[windows] WM_PAINT: widget id={widget_id} produced no frame to present");
+            EndPaint(hwnd, &paint);
+            return;
+        };
+        super::canvas::blit_frame(hdc, width, height, &frame);
     }
 
     EndPaint(hwnd, &paint);
@@ -311,7 +438,9 @@ unsafe fn window_widget_for(hwnd: HWND) -> Option<u64> {
 /// The platform's own id for `hwnd`, or `None` when this backend did not create it.
 #[cfg(target_os = "windows")]
 unsafe fn widget_id_by_native_handle(hwnd: HWND) -> Option<u64> {
-    notify::active_windows_platform()?.widget_id_by_native_handle(hwnd)
+    // SAFETY: forwarded from this function's own unsafe contract — `hwnd` is a live handle
+    // Win32 handed to a callback, which is what `widget_id_by_native_handle` requires.
+    unsafe { notify::active_windows_platform()?.widget_id_by_native_handle(hwnd) }
 }
 
 /// Marks `hwnd`'s whole client area as needing a repaint.
@@ -361,15 +490,28 @@ unsafe fn forward_window_mouse(hwnd: HWND, lparam: isize, phase: MousePhase) {
     // exactly the client point Win32 reports, and the root is the widget whose bounds do
     // not describe that space at all.
     let position = Point::new(client_x, client_y);
+    let modifiers = crate::platform::windows::canvas::current_modifiers();
     let event = match phase {
-        MousePhase::Press => crate::event::Event::mouse_press_with(
+        MousePhase::Press => {
+            crate::event::Event::mouse_press_with(position.x, position.y, MOUSE_PRIMARY, modifiers)
+        }
+        MousePhase::Release => {
+            crate::event::Event::MouseRelease { pos: position, button: MOUSE_PRIMARY }
+        }
+        MousePhase::Drag => crate::event::Event::MouseMove { pos: position },
+        MousePhase::SecondaryPress => crate::event::Event::mouse_press_with(
             position.x,
             position.y,
-            1,
-            crate::platform::windows::canvas::current_modifiers(),
+            crate::event::mouse_button::SECONDARY,
+            modifiers,
         ),
-        MousePhase::Release => crate::event::Event::MouseRelease { pos: position, button: 1 },
-        MousePhase::Drag => crate::event::Event::MouseMove { pos: position },
+        MousePhase::SecondaryRelease => crate::event::Event::MouseRelease {
+            pos: position,
+            button: crate::event::mouse_button::SECONDARY,
+        },
+        MousePhase::DoubleClick => {
+            crate::event::Event::mouse_double_click(position.x, position.y, MOUSE_PRIMARY)
+        }
     };
     let delivered = crate::widget::runtime::dispatch_pointer_event(window_id, &event, position);
     if matches!(phase, MousePhase::Drag) {
@@ -382,11 +524,132 @@ unsafe fn forward_window_mouse(hwnd: HWND, lparam: isize, phase: MousePhase) {
         winapi::um::winuser::TrackMouseEvent(&mut track);
     }
     if delivered {
-        if matches!(phase, MousePhase::Press) {
-            // A click can move focus to a nested control; give the window the keyboard so
-            // subsequent keys are delivered here.
+        // Any button press can move focus to a nested control, so the window keeps the
+        // keyboard and subsequent keys are delivered here. A right-click counts: the
+        // library's router focuses whatever it hits regardless of button.
+        if matches!(phase, MousePhase::Press | MousePhase::SecondaryPress | MousePhase::DoubleClick)
+        {
             winapi::um::winuser::SetFocus(hwnd);
         }
+        invalidate_window(hwnd);
+    }
+}
+
+/// The library's button number for the primary (left) button.
+///
+/// Spelled once here rather than as a bare `1` at each construction site: the value is
+/// [`crate::event::mouse_button::PRIMARY`], and a raw `1` next to a named `SECONDARY`
+/// reads as if the two came from different conventions.
+#[cfg(target_os = "windows")]
+const MOUSE_PRIMARY: u32 = crate::event::mouse_button::PRIMARY;
+
+/// Translates a `WM_MOUSEWHEEL` into a widget wheel event and delivers it.
+///
+/// # Why this is not `forward_window_mouse`
+///
+/// Win32 packs the wheel message differently from a pointer message in two ways, and both
+/// matter:
+///
+/// 1. the delta is the **high word of `wParam`**, signed, in multiples of `WHEEL_DELTA`
+///    (120) — `lParam` holds no wheel data at all; and
+/// 2. the point in `lParam` is in **screen** coordinates, not client ones, because Win32
+///    delivers the wheel to the focused window wherever the pointer happens to be.
+///
+/// Decoding the delta as pixels would make one notch scroll 120 lines, and skipping the
+/// `ScreenToClient` conversion would scroll whatever control sits at the pointer's *screen*
+/// position, which is normally a different control (or none) entirely.
+///
+/// # Why the wheel goes to the widget under the pointer
+///
+/// That is what every desktop toolkit does, and it is what makes scrolling the control the
+/// user is pointing at work while a text field elsewhere keeps focus. The library's router
+/// already hit-tests a point against the tree, so no extra routing logic is needed here.
+///
+/// The division by `WHEEL_DELTA` rounds the sub-notch deltas a high-resolution or
+/// touchpad-driven wheel produces to the nearest whole notch. Rounding *away* from zero
+/// when the quotient is `0` is deliberate: a delta of `-1..-119` is still a scroll in that
+/// direction, and discarding it would make a slow touchpad scroll do nothing at all.
+#[cfg(target_os = "windows")]
+unsafe fn forward_window_wheel(hwnd: HWND, wparam: usize, lparam: isize) {
+    use crate::core::Point;
+    use winapi::um::winuser::{ScreenToClient, GET_WHEEL_DELTA_WPARAM, WHEEL_DELTA};
+    let Some(window_id) = window_widget_for(hwnd) else {
+        return;
+    };
+    // `GET_WHEEL_DELTA_WPARAM` masks and sign-extends the high word for us.
+    let raw_delta = GET_WHEEL_DELTA_WPARAM(wparam);
+    if raw_delta == 0 {
+        return;
+    }
+    // The point arrives in screen space; the tree is laid out in client space.
+    let mut screen = winapi::shared::windef::POINT {
+        x: (lparam & 0xFFFF) as u16 as i16 as i32,
+        y: ((lparam >> 16) & 0xFFFF) as u16 as i16 as i32,
+    };
+    if ScreenToClient(hwnd, &mut screen) == 0 {
+        return;
+    }
+    let position = Point::new(screen.x, screen.y);
+    // The widget layer speaks in whole notches with a downward-positive convention; a
+    // positive Win32 delta means "away from the user", so the sign is inverted.
+    let notches = match raw_delta / WHEEL_DELTA {
+        0 if raw_delta > 0 => 1,
+        0 => -1,
+        whole => whole as i32,
+    };
+    let event = crate::event::Event::Wheel {
+        delta: Point::new(0, -notches),
+        modifiers: crate::platform::windows::canvas::current_modifiers(),
+    };
+    if crate::widget::runtime::dispatch_pointer_event(window_id, &event, position) {
+        invalidate_window(hwnd);
+    }
+}
+
+/// Delivers a produced character to the focused widget of `window_id`.
+///
+/// # Why this is separate from `forward_window_mouse`'s key handling
+///
+/// The character comes from `WM_CHAR`/`WM_UNICHAR`, not from `WM_KEYDOWN`, and the two
+/// carry different things: `WM_KEYDOWN`'s `wParam` is a virtual-key code, while this is the
+/// character the key produced (see the `WM_CHAR` arm for why forwarding the code was
+/// wrong). `Event::TextInput` is the event the widget layer defines for it, so a text
+/// control receives the character and a non-text control ignores it.
+///
+/// # Which controls can be typed into is decided by the library
+///
+/// Nothing is filtered here: `dispatch_event` reaches the focused widget and the widget
+/// decides whether a character means anything to it. That is the same contract the Linux
+/// backend's key handler follows, and it keeps this backend from carrying a list of "text
+/// kinds" that would drift from the widget set.
+#[cfg(target_os = "windows")]
+unsafe fn forward_window_char(hwnd: HWND, window_id: u64, character: u32) {
+    // Control characters (backspace 0x08, tab 0x09, escape 0x1B, the C0 range generally)
+    // are *commands*, not text, and `WM_KEYDOWN` already delivered them as key presses.
+    // Forwarding them here as `TextInput` would ask a `LineEdit` to insert a paragraph
+    // mark for Enter and a literal tab character for Tab, which is not what either means.
+    //
+    // `VK_PROCESSKEY` (0xE5) is the IME's "I am composing" placeholder: Win32 posts it as
+    // a `WM_KEYDOWN` and the real characters arrive later as `WM_CHAR`, so dropping it here
+    // is correct rather than lossy.
+    if character < 0x20 || character == 0x7F {
+        return;
+    }
+    let Some(character) = char::from_u32(character) else {
+        // A surrogate half or an invalid scalar. `WM_CHAR` can deliver UTF-16 code units
+        // for text outside the BMP, which are not valid `char`s on their own; reporting
+        // rather than guessing keeps a mojibake string out of the document.
+        log::debug!(
+            "[windows] WM_CHAR delivered U+{character:04X}, which is not a Unicode scalar value"
+        );
+        return;
+    };
+    let target = crate::widget::runtime::focused_widget().unwrap_or(window_id);
+    // `Event::text_input` rather than a struct literal: the variant carries a `String`
+    // (the committed text, which may be several code units once a layout or an IME has
+    // had its say), so the constructor is the one place that spelling lives.
+    let event = crate::event::Event::text_input(character.to_string());
+    if crate::widget::runtime::dispatch_event(target, &event) {
         invalidate_window(hwnd);
     }
 }
@@ -443,10 +706,18 @@ impl WindowsPlatform {
     }
     /// Returns the native window handle recorded for `id`, if any.
     ///
-    /// Only ids that were bound via [`Self::bind_native_handle`] are present; a
-    /// widget id that the library created without a host window has no handle and
-    /// yields `None`. A poisoned handle map is logged and treated as `None` rather
-    /// than panicking.
+    /// # Why this is a map and not `GWLP_USERDATA`
+    ///
+    /// The two directions have different information available. Given an `HWND`, Win32 can
+    /// answer "which widget is this?" through `GWLP_USERDATA` — see
+    /// [`Self::widget_id_by_native_handle`], which is the direction every window procedure
+    /// needs and the hot path. Given an **id**, nothing in Win32 can name the window: the
+    /// association exists only because this backend created it, so it has to be remembered.
+    /// That is what this map is, and it is the only per-widget side table still kept here.
+    ///
+    /// Only ids that were bound via [`Self::bind_native_handle`] are present; a widget id the
+    /// library created without a host window has no handle and yields `None`. A poisoned map
+    /// is logged and treated as `None` rather than panicking inside a message-pump callback.
     pub fn get_native_handle(&self, id: u64) -> Option<HWND> {
         #[cfg(target_os = "windows")]
         {
@@ -454,7 +725,8 @@ impl WindowsPlatform {
                 Ok(handles) => handles.get(&id).map(|&h| h as HWND),
                 Err(_) => {
                     log::error!(
-                        "[rust_widgets][windows] get_native_handle: handles mutex poisoned"
+                        "[rust_widgets][windows] get_native_handle: handles mutex poisoned; \
+                         widget id={id} cannot be resolved to its window"
                     );
                     None
                 }
@@ -462,63 +734,173 @@ impl WindowsPlatform {
         }
         #[cfg(not(target_os = "windows"))]
         {
+            let _ = id;
             None
         }
     }
     /// Records `hwnd` as the native window for `id`.
     ///
-    /// Also registers the handle with the accessibility bridge, so UIAutomation
-    /// notifications can be raised against the real window. Binding an id twice
-    /// replaces the previous handle. A poisoned map is ignored: the handle is
-    /// dropped rather than panicking inside a message-pump callback.
-    pub fn bind_native_handle(&self, id: u64, hwnd: HWND) {
+    /// # Both directions are recorded, and why both are needed
+    ///
+    /// * `GWLP_USERDATA` on the window answers "which widget is this `HWND`?" — the question
+    ///   every window procedure asks, in O(1) with no lock.
+    /// * `menu_state.handles` answers "which `HWND` is this widget?" — the question the
+    ///   platform API asks when it is handed an id, which Win32 cannot answer at all.
+    ///   See [`Self::get_native_handle`] for why that direction needs a map.
+    ///
+    /// Binding an id twice replaces the previous handle. A null `hwnd` is rejected: it names
+    /// no window, so recording it would destroy a previously valid association.
+    ///
+    /// # Safety
+    ///
+    /// `hwnd` must be a valid window handle that stays alive for as long as it is recorded
+    /// here: it is written into `GWLP_USERDATA` and stored in the id → `HWND` map, and a
+    /// later `WM_*` message for it would be dispatched against the widget it names.
+    #[cfg(target_os = "windows")]
+    pub unsafe fn bind_native_handle(&self, id: u64, hwnd: HWND) {
         #[cfg(target_os = "windows")]
         {
-            if let Ok(mut handles) = self.menu_state.handles.lock() {
-                handles.insert(id, hwnd as usize);
-            } else {
-                // Handle lock error explicitly
+            if hwnd.is_null() {
+                log::error!(
+                    "[rust_widgets][windows] bind_native_handle called with a null HWND for \
+                     widget id={id}; the association was not recorded"
+                );
+                return;
+            }
+            // SAFETY: `hwnd` is non-null and was created by this backend (or adopted from the
+            // host through `create_window`), so it is a live window; `GWLP_USERDATA` is
+            // reserved for the owning application by Win32's own contract and holds nothing
+            // else. The value round-trips as `isize` and is read back by
+            // `widget_id_by_native_handle`.
+            unsafe {
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, id as isize);
+            }
+            match self.menu_state.handles.lock() {
+                Ok(mut handles) => {
+                    handles.insert(id, hwnd as usize);
+                }
+                Err(_) => log::error!(
+                    "[rust_widgets][windows] bind_native_handle: handles mutex poisoned; \
+                     widget id={id} cannot be resolved back to its window"
+                ),
             }
             self.a11y_bridge.register_handle(id, hwnd as usize);
         }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (id, hwnd);
+        }
     }
-    #[cfg(target_os = "windows")]
+    /// Stamps `hwnd` with a fresh command id and maps that id to `widget_id`.
+    ///
+    /// # Why a control needs this at all
+    ///
+    /// Win32 reports a control activation as `WM_COMMAND`, whose `wParam` carries the
+    /// control's **`GWLP_ID`** and not its `HWND`. The `WM_COMMAND` arm can therefore only
+    /// resolve the originating widget if the id was stamped and recorded at creation time,
+    /// which is what this does. `DlgCtrlID` is not a substitute: it reads back whatever is
+    /// already in `GWLP_ID`, so a control that was never stamped answers `0`.
+    ///
+    /// # Who calls it
+    ///
+    /// A host that puts one of its *own* native controls in a window this backend owns —
+    /// the library creates none, because it paints every `WidgetKind` itself. That is why a
+    /// control made by this crate never reaches here, and why the `WM_COMMAND` arm is still
+    /// correct: it resolves the host's controls rather than a library control's.
+    ///
     /// # Safety
     ///
-    /// Caller must ensure that `hwnd` is a valid native window handle
-    /// and that it remains valid for the duration of this call.
-    /// Modifying the window's identifier via `SetWindowLongPtrW` can
-    /// affect window procedure behavior; callers should ensure this
+    /// Caller must ensure that `hwnd` is a valid native window handle and that it remains
+    /// valid for the duration of this call. Modifying the window's identifier via
+    /// `SetWindowLongPtrW` can affect window procedure behavior; callers should ensure this
     /// is done only for windows owned by this platform adapter.
+    #[cfg(target_os = "windows")]
     pub unsafe fn bind_control_command(&self, widget_id: u64, hwnd: HWND) {
-        use winapi::um::winuser::{SetWindowLongPtrW, GWLP_ID};
+        if hwnd.is_null() {
+            log::error!(
+                "[rust_widgets][windows] bind_control_command called with a null HWND for \
+                 widget id={widget_id}; WM_COMMAND will not resolve it"
+            );
+            return;
+        }
         let command_id = self.menu_state.next_command_id.fetch_add(1, Ordering::SeqCst) as u32;
         unsafe {
             SetWindowLongPtrW(hwnd, GWLP_ID, command_id as isize);
         }
-        if let Ok(mut map) = self.menu_state.control_command_to_widget.lock() {
-            map.insert(command_id, widget_id);
+        match self.menu_state.control_command_to_widget.lock() {
+            Ok(mut map) => {
+                map.insert(command_id, widget_id);
+            }
+            Err(_) => log::error!(
+                "[rust_widgets][windows] bind_control_command: the command map is poisoned, so \
+                 command id {command_id} (widget {widget_id}) was not recorded and WM_COMMAND \
+                 will not resolve it"
+            ),
         }
+    }
+    /// Forgets both halves of the association [`Self::bind_native_handle`] recorded.
+    ///
+    /// # Why `bind` alone is not enough
+    ///
+    /// [`Self::unmount_surface`] destroys the canvas window. The id → `HWND` map would then
+    /// keep pointing at a handle Win32 has destroyed and may already have recycled for an
+    /// unrelated window, so a later [`Self::get_native_handle`] would hand out an `HWND`
+    /// belonging to something else — and `invalidate_surface` would call `GetParent` on it.
+    /// That is worse than a stale entry: it is a wrong entry that looks valid.
+    ///
+    /// # Safety
+    ///
+    /// `hwnd` must be a live window handle, so that clearing its `GWLP_USERDATA` cannot
+    /// write through a recycled handle. Call it *before* destroying the window, which is
+    /// what `unmount_surface` does.
+    #[cfg(target_os = "windows")]
+    pub unsafe fn unbind_native_handle(&self, id: u64, hwnd: HWND) {
+        if !hwnd.is_null() {
+            // SAFETY: the caller guarantees a live handle; this only clears the marker, so a
+            // later `widget_id_by_native_handle` for the same handle answers `None` rather
+            // than naming a widget that is no longer mounted.
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        }
+        match self.menu_state.handles.lock() {
+            Ok(mut handles) => {
+                handles.remove(&id);
+            }
+            Err(_) => log::error!(
+                "[rust_widgets][windows] unbind_native_handle: handles mutex poisoned; the \
+                 entry for widget id={id} was not released"
+            ),
+        }
+        self.a11y_bridge.unregister_handle(id);
     }
     /// Returns the widget id whose native handle is `hwnd`.
     ///
-    /// The reverse of [`Self::get_native_handle`], used to map a `WM_COMMAND`
-    /// notification back to the library widget that owns it. Linear in the number
-    /// of bound handles. `None` when no widget owns that handle, or when the handle
-    /// map is poisoned (logged, not panicked).
+    /// # Why the identity is read from the window rather than looked up
+    ///
+    /// Win32 hands every callback an `HWND` and nothing else, while a widget is addressed by
+    /// a library id. The association has to be stored somewhere, and `GWLP_USERDATA` on the
+    /// window is where Win32 convention puts it — one write at bind time, one read at lookup
+    /// time, no map and no lock. The first version of this used a `HashMap<u64, usize>` and
+    /// answered with a **linear scan under a mutex**, which every `WM_MOUSEMOVE`, `WM_PAINT`
+    /// and `WM_SIZE` paid, on the message thread that is also the only thread painting.
+    ///
+    /// `None` is the honest answer for a handle this backend did not bind — a window the
+    /// host created and handed over without `bind_native_handle`, or a canvas that has since
+    /// been unmounted. It is not an error and is not logged here; the callers that need one
+    /// (`paint_target_for`) say so with the context that makes it diagnosable.
+    ///
+    /// # Safety
+    ///
+    /// `hwnd` must be a live window handle. Win32 callbacks are the only callers and they
+    /// receive it from the message, which is what makes it live for the duration of the call.
     #[cfg(target_os = "windows")]
-    pub fn widget_id_by_native_handle(&self, hwnd: HWND) -> Option<u64> {
-        match self.menu_state.handles.lock() {
-            Ok(handles) => handles
-                .iter()
-                .find_map(|(widget_id, native)| ((*native as HWND) == hwnd).then_some(*widget_id)),
-            Err(_) => {
-                log::error!(
-                    "[rust_widgets][windows] widget_id_by_native_handle: handles mutex poisoned"
-                );
-                None
-            }
+    pub unsafe fn widget_id_by_native_handle(&self, hwnd: HWND) -> Option<u64> {
+        if hwnd.is_null() {
+            return None;
         }
+        // SAFETY: the caller guarantees a live handle; `GetWindowLongPtrW` reads one
+        // pointer-sized word and does not dereference it.
+        let marker = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+        (marker != 0).then_some(marker as u64)
     }
 }
 /// Extension trait for downcasting `dyn Platform` to concrete platform types.
@@ -569,17 +951,37 @@ pub struct WindowsPlatform {
     #[cfg(not(target_os = "windows"))]
     pub a11y_bridge: (),
 }
-/// Win32 menu state holder.
-/// Reserved for Windows platform menu integration — stores HWND handles and
-/// command-to-widget mappings. Only compiled on Windows targets.
+/// Per-widget state this backend keeps outside the shared [`BackendState`].
+///
+/// # What is here, and what used to be
+///
+/// It began as the menu/command router and the name stuck. Two of its original maps were
+/// genuinely dead and have been removed rather than left as scaffolding:
+///
+/// * `menu_command_to_item` / `pending_menu_events` had **no writer anywhere in the
+///   crate**, so the `WM_COMMAND` branch that read them could never be taken. A router
+///   whose inputs are never produced is a claim, not a capability (principle #4/#41).
+/// * `pending_widget_events` is fed by `WM_NOTIFY` from the host's own adopted controls,
+///   which is a real path and stays.
+///
+/// Every field below is written by a live producer and read by a live consumer.
 #[cfg(target_os = "windows")]
 pub struct Win32MenuState {
-    // SAFETY: HWND is only used on the main thread, and Win32MenuState is not shared across threads in this context.
+    /// Widget id → `HWND`, for every widget this backend bound a window to.
+    ///
+    /// Only the **reverse** direction needs a map: `HWND` → id is answered by Win32 through
+    /// `GWLP_USERDATA` (see [`WindowsPlatform::widget_id_by_native_handle`]), which is the
+    /// hot path taken by every message procedure. Nothing in Win32 can turn an id into a
+    /// window, so that direction is remembered here.
     pub(crate) handles: Mutex<HashMap<u64, usize>>,
-    pub(crate) menu_command_to_item: Mutex<HashMap<u32, u64>>,
+    /// Command id → widget id, for a native control the host put in one of this backend's
+    /// windows. Stamped onto the control with `SetWindowLongPtrW(GWLP_ID)`.
     pub(crate) control_command_to_widget: Mutex<HashMap<u32, u64>>,
-    pub(crate) pending_menu_events: Mutex<VecDeque<WidgetTriggerEvent>>,
+    /// Triggers produced by native notifications, waiting for the host to poll them.
     pub(crate) pending_widget_events: Mutex<VecDeque<WidgetTriggerEvent>>,
+    /// Allocator for the command ids [`WindowsPlatform::bind_control_command`] stamps.
+    /// Seeded past the range a dialog template uses for its own ids, so a template control
+    /// and a stamped one cannot collide.
     pub(crate) next_command_id: AtomicU64,
 }
 #[cfg(target_os = "windows")]
@@ -587,9 +989,7 @@ impl Win32MenuState {
     fn new() -> Self {
         Self {
             handles: Mutex::new(HashMap::new()),
-            menu_command_to_item: Mutex::new(HashMap::new()),
             control_command_to_widget: Mutex::new(HashMap::new()),
-            pending_menu_events: Mutex::new(VecDeque::new()),
             pending_widget_events: Mutex::new(VecDeque::new()),
             next_command_id: AtomicU64::new(1000),
         }

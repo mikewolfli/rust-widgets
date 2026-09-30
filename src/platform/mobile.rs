@@ -87,6 +87,10 @@ impl AndroidMobilePlatform {
     }
 }
 impl Platform for AndroidMobilePlatform {
+    // The uniform widget-property methods are answered once, over `self.state`, by the
+    // shared expansion in `platform::state_impl` rather than re-written per backend.
+    crate::impl_platform_state_properties!();
+
     fn as_any(&self) -> &dyn crate::compat::Any {
         self
     }
@@ -256,33 +260,6 @@ impl Platform for AndroidMobilePlatform {
             .push(item_id);
         item_id
     }
-    fn show_widget(&self, widget_id: ObjectId) {
-        self.state.set_visible(widget_id, true);
-    }
-    fn hide_widget(&self, widget_id: ObjectId) {
-        self.state.set_visible(widget_id, false);
-    }
-    fn set_widget_geometry(&self, widget_id: ObjectId, x: i32, y: i32, width: u32, height: u32) {
-        self.state.set_geometry(widget_id, x, y, width, height);
-    }
-    fn set_widget_text(&self, widget_id: ObjectId, text: &str) {
-        let _ = self.state.set_text(widget_id, text);
-    }
-    fn get_widget_text(&self, widget_id: ObjectId) -> String {
-        self.state.text(widget_id)
-    }
-    fn set_widget_enabled(&self, widget_id: ObjectId, enabled: bool) {
-        self.state.set_enabled(widget_id, enabled);
-    }
-    fn is_widget_enabled(&self, widget_id: ObjectId) -> bool {
-        self.state.enabled(widget_id)
-    }
-    fn set_widget_visible(&self, widget_id: ObjectId, visible: bool) {
-        self.state.set_visible(widget_id, visible);
-    }
-    fn is_widget_visible(&self, widget_id: ObjectId) -> bool {
-        self.state.visible(widget_id)
-    }
     fn poll_menu_triggered(&self) -> Option<ObjectId> {
         self.state.pop_menu_event()
     }
@@ -351,11 +328,32 @@ impl Platform for AndroidMobilePlatform {
     }
 
     /// Queues a repaint for the host to pick up. `false` when `id` is not mounted.
+    ///
+    /// # Why this is overridden rather than inherited
+    ///
+    /// The trait's default for a surface record would answer `false` for a window
+    /// — it asks "is `id` a mounted surface?" and a window is not one. But the
+    /// library asks for a **window** to be repainted whenever a child control
+    /// changes (see `widget::runtime::request_repaint_subtree`), because a window's
+    /// frame is what draws its ordinary children. Inheriting the surface-only
+    /// default therefore made every such request a silent no-op on this backend,
+    /// so a control could answer its event and never appear to change.
+    ///
+    /// [`BackendState::record_repaint_request`] is the honest question here — "do
+    /// I know this widget?" — and it queues for a window exactly as it does for a
+    /// mounted surface. A host draining [`crate::platform::state::BackendState::take_pending_repaint`]
+    /// resolves the id it receives with `crate::app::window_handle_for` (a widget
+    /// id) or `surface_rect` (a directly mounted one); see that method's docs.
     fn invalidate_surface(&self, id: ObjectId) -> bool {
-        self.state.invalidate_surface_record(id)
+        self.state.record_repaint_request(id)
     }
 
     /// The backend displays library-painted widgets by handing the host their frames.
+    ///
+    /// See [`crate::platform::Platform::supports_surfaces`] and
+    /// [`crate::platform::Platform::invalidate_surface`] for what this does and does
+    /// not promise: it advertises [`crate::platform::Platform::mount_surface`], not
+    /// "the container's frame shows its children".
     fn supports_surfaces(&self) -> bool {
         true
     }

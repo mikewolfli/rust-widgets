@@ -1,0 +1,12 @@
+[package]
+name = "audit-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+rust_widgets = { path = "../..", default-features = false }
+
+[features]
+default = ["desktop"]
+desktop = ["rust_widgets/desktop"]

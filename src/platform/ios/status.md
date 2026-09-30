@@ -48,7 +48,8 @@ and widgets are then displayed through `Platform::mount_surface` — see below.
 | Show / hide / geometry / text / enabled | ✅ Implemented | logical state round-trips |
 | Clipboard | ✅ Implemented | in-process store |
 | Drag & drop | ✅ Implemented | injectable drop-event queue |
-| IME + accessibility metadata | ✅ Implemented | modelled state |
+| IME / accessibility **metadata** (the per-widget flags and names) | ✅ Implemented | `BackendState` fields: `set_widget_ime_enabled` and `set_widget_accessibility_name` round-trip a boolean and a string |
+| IME / accessibility **bridges** (an input-method client, an accessibility tree) | ⛔ Not implemented | neither `ime_bridge()` nor `accessibility_bridge()` is overridden, so both inherit `None` — which is why `capabilities()` reports `ime: false` and `accessibility: false`. The row above is **not** a counter-argument: a flag store is not an input-method client |
 | Print facts | ✅ Implemented | honest error: `UIPrintInteractionController` is not bound |
 | **Input delivery into widgets** | ⬜ Not wired | the host must forward its touch/key events; see below |
 

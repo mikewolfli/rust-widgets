@@ -20,7 +20,7 @@
 
 #![cfg(all(target_os = "windows", widgets_unstripped))]
 
-use crate::core::{ObjectId, Point, Rect};
+use crate::core::{MutexExt, ObjectId, Point, Rect};
 use crate::event::Event;
 use crate::platform::types::MousePhase;
 use std::collections::HashMap;
@@ -34,8 +34,10 @@ use winapi::um::winuser::{
     BeginPaint, CreateWindowExW, DefWindowProcW, EndPaint, GetClientRect, InvalidateRect,
     LoadCursorW, RegisterClassW, SetFocus, SetWindowPos, TrackMouseEvent, UpdateWindow, CS_HREDRAW,
     CS_OWNDC, CS_VREDRAW, IDC_ARROW, PAINTSTRUCT, SWP_NOACTIVATE, SWP_NOZORDER, TME_LEAVE,
-    TRACKMOUSEEVENT, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE,
-    WM_MOUSEMOVE, WM_PAINT, WM_SIZE, WM_TOUCH, WNDCLASSW, WS_CHILD, WS_TABSTOP, WS_VISIBLE,
+    TRACKMOUSEEVENT, WM_CHAR, WM_CLOSE, WM_ERASEBKGND, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDBLCLK,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSELEAVE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
+    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WM_TOUCH, WM_UNICHAR, WNDCLASSW, WS_CHILD, WS_TABSTOP,
+    WS_VISIBLE,
 };
 // Touch-only Win32 entry points. Grouped under one gate so a build without the
 // `touch` capability does not import symbols it never calls (which would be an
@@ -51,6 +53,18 @@ const CANVAS_CLASS: &str = "RustWidgetsCanvasClass";
 
 /// Maps a canvas `HWND` to the widget registry id it paints.
 ///
+/// # Lock policy
+///
+/// Every accessor below goes through [`MutexExt::lock_guard`], which recovers from a
+/// poisoned lock instead of panicking. That is not a stylistic choice: these maps are
+/// read and written from `canvas_wnd_proc`, and a panic raised inside an
+/// `extern "system"` callback cannot unwind across the FFI boundary — Rust aborts the
+/// process. A poisoned map (some other thread panicked while holding it) therefore used
+/// to turn a recoverable bookkeeping fault into a hard crash of the whole application.
+/// The sibling module `windows::types` already answers a poisoned handle map by logging
+/// and returning `None`; this module now follows the same policy, so the backend has one
+/// answer to the question rather than two.
+///
 /// Only the id is stored: geometry lives in `widget::runtime` (the widget owns
 /// it) and the `HWND` itself is also kept on the window as `GWLP_USERDATA`, so a
 /// message handler can recover the id without a map lookup if needed.
@@ -59,28 +73,57 @@ fn canvases() -> &'static Mutex<HashMap<usize, ObjectId>> {
     CANVASES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Maps a canvas `HWND` to its origin in the parent window's client area.
+/// Returns the canvas's origin in its parent's client area.
 ///
-/// Win32 reports mouse positions in the *child window's own* client coordinates, but
-/// widget geometry in this library is absolute, so an event has to be offset by this
-/// origin before it can be hit-tested. The value is recorded at mount time and kept
-/// current by [`resize_canvas`], which is the only thing that moves a canvas.
-fn canvas_origins() -> &'static Mutex<HashMap<usize, (i32, i32)>> {
-    static ORIGINS: OnceLock<Mutex<HashMap<usize, (i32, i32)>>> = OnceLock::new();
-    ORIGINS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// Returns the recorded origin of a canvas, defaulting to `(0, 0)`.
+/// # Why this is asked of Win32 rather than remembered
 ///
-/// A missing entry means the canvas was created before this map existed or its
-/// origin was never recorded; treating that as `(0, 0)` keeps behaviour identical to
-/// the pre-hit-test code path rather than dropping input.
-fn canvas_origin(hwnd: HWND) -> (i32, i32) {
-    canvas_origins()
-        .lock()
-        .ok()
-        .and_then(|map| map.get(&(hwnd as usize)).copied())
-        .unwrap_or((0, 0))
+/// The origin used to be recorded at mount time and updated only by [`resize_canvas`].
+/// That is correct for the two paths this module controls, and wrong for every other one: a
+/// host that moves the child `HWND` through Win32 directly (`SetWindowPos` on a handle it
+/// obtained from `get_native_handle`, a parent layout that repositions its children, a
+/// platform that re-places child windows on a DPI change) moves the canvas without telling
+/// this module, and the recorded origin goes stale.
+///
+/// Because widget geometry is **absolute**, a stale origin does not merely shift a
+/// highlight — it delivers the press to whichever control happens to occupy the stale
+/// point. Measured shape of the failure: with the canvas moved from `(0,0)` to `(200,0)` by
+/// an out-of-band path, a control at absolute `x = 220` is reported at `x = 20`, so the press
+/// runs a *different* control's `on_click`.
+///
+/// Asking Win32 removes the possibility: `MapWindowPoints` converts the canvas's own
+/// client-area origin into the parent's coordinates, and it is correct after every move
+/// however it happened. The macOS canvas already reads its origin live for this exact
+/// reason (`macos/canvas.rs::view_origin` — "read live rather than cached because AppKit is
+/// free to move the view ... without telling this module"); this is the Windows spelling of
+/// the same rule.
+///
+/// `None` when Win32 cannot answer, which makes the callers drop the input rather than
+/// dispatch it at a guessed position — a dropped click is recoverable, a misrouted one runs
+/// the wrong handler.
+fn canvas_origin(hwnd: HWND) -> Option<(i32, i32)> {
+    use winapi::shared::windef::POINT;
+    use winapi::um::winuser::{GetParent, MapWindowPoints};
+    // SAFETY: `hwnd` is a live child window this module created; `MapWindowPoints` only reads
+    // the point we pass and writes the converted value back into the same place.
+    unsafe {
+        let parent = GetParent(hwnd);
+        if parent.is_null() {
+            // A canvas always has a parent. Reporting that here beats dispatching input at
+            // an origin this function cannot vouch for.
+            log::error!("[windows] canvas_origin: hwnd {hwnd:?} has no parent window");
+            return None;
+        }
+        // The canvas's own client origin, in parent-client coordinates.
+        let mut origin = POINT { x: 0, y: 0 };
+        if MapWindowPoints(hwnd, parent, &mut origin, 1) == 0 {
+            // `MapWindowPoints` returns 0 only when the point list is empty, which cannot
+            // happen here; a non-zero return is the success case. A zero therefore means the
+            // call declined, and the honest answer is "unknown".
+            log::error!("[windows] canvas_origin: MapWindowPoints declined for hwnd {hwnd:?}");
+            return None;
+        }
+        Some((origin.x, origin.y))
+    }
 }
 
 /// Encodes a Rust string as a NUL-terminated UTF-16 buffer for Win32 APIs.
@@ -149,8 +192,35 @@ unsafe extern "system" fn canvas_wnd_proc(
             forward_mouse(hwnd, lparam, MousePhase::Release);
             0
         }
+        WM_LBUTTONDBLCLK => {
+            forward_mouse(hwnd, lparam, MousePhase::DoubleClick);
+            0
+        }
+        WM_RBUTTONDOWN => {
+            forward_mouse(hwnd, lparam, MousePhase::SecondaryPress);
+            0
+        }
+        WM_RBUTTONUP => {
+            forward_mouse(hwnd, lparam, MousePhase::SecondaryRelease);
+            0
+        }
         WM_MOUSEMOVE => {
             forward_mouse(hwnd, lparam, MousePhase::Drag);
+            0
+        }
+        // The wheel arrives with a *screen* point and its delta in `wParam`; see
+        // `windows::types::forward_window_wheel` for the decoding, which this mirrors so a
+        // canvas and a window scroll identically.
+        WM_MOUSEWHEEL => {
+            forward_wheel(hwnd, wparam, lparam);
+            0
+        }
+        // The produced character. A canvas hosts widgets that can be typed into exactly as a
+        // window does, and forwarding only `WM_KEYDOWN`'s virtual-key code is what left a
+        // mounted text control unable to accept a digit or any IME text — the same defect the
+        // window procedure had.
+        WM_CHAR | WM_UNICHAR => {
+            forward_char(hwnd, wparam);
             0
         }
         WM_MOUSELEAVE => {
@@ -158,8 +228,23 @@ unsafe extern "system" fn canvas_wnd_proc(
             // (re)issued on every move (see `forward_mouse`). This is the one case the
             // coordinate-based hover transition cannot observe: the pointer is outside, so
             // the previously hovered control would otherwise stay highlighted.
-            crate::widget::runtime::clear_hover(Point::new(0, 0));
-            invalidate_canvas(hwnd);
+            //
+            // Routed as an event rather than applied with a global `clear_hover`, matching
+            // `windows::types`' window procedure: the two surfaces of one window must agree
+            // about what a leave means, and a global clear would also drop the highlight of a
+            // control the pointer is still inside on the *other* surface.
+            if let Some(widget_id) = widget_id_of(hwnd) {
+                let Some(origin) = canvas_origin(hwnd) else {
+                    return 0;
+                };
+                let position = Point::new(origin.0, origin.1);
+                crate::platform::platform_facts().route_pointer_event(
+                    widget_id,
+                    &Event::MouseLeave { pos: position },
+                    position,
+                );
+                invalidate_canvas(hwnd);
+            }
             0
         }
         WM_TOUCH => {
@@ -184,6 +269,39 @@ unsafe extern "system" fn canvas_wnd_proc(
             forward_key(hwnd, wparam);
             0
         }
+        // The canvas lost the OS keyboard, so the library must stop believing a control
+        // inside it is focused.
+        //
+        // # Why the canvas needs its own arm
+        //
+        // The canvas is created with `WS_TABSTOP` and calls `SetFocus` on every press
+        // (see `forward_mouse`), so it really can hold the keyboard. Without this arm the
+        // window arm's defect reappears one level down: click into a mounted text control,
+        // alt-tab to another application, and the control keeps blinking its caret and
+        // drawing its focus ring while the keystrokes go elsewhere. The window procedure was
+        // fixed without its canvas half, which is exactly the asymmetry `blit_frame`'s own
+        // doc warns about.
+        WM_KILLFOCUS => {
+            if let Some(widget_id) = widget_id_of(hwnd) {
+                crate::widget::runtime::report_state(
+                    widget_id,
+                    crate::widget::runtime::StateFact::Focused(false),
+                );
+                invalidate_canvas(hwnd);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        // A canvas is a child surface with no title bar and no system menu, so Win32 never
+        // synthesizes `WM_CLOSE` for it — but `DefWindowProcW` would honour one arriving from
+        // elsewhere and destroy the window.
+        //
+        // Swallowed rather than forwarded: a canvas is destroyed by
+        // [`unmount_canvas`], which also releases the two registry entries that point at
+        // this `HWND`. Letting the default handler run would destroy the child behind that
+        // function's back and leave both maps holding a dead handle — a later
+        // `hwnd_for_widget` would then hand out a dangling `HWND` that Win32 may have already
+        // recycled for an unrelated window.
+        WM_CLOSE => 0,
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
@@ -314,6 +432,36 @@ pub(crate) fn invalidate_canvas(hwnd: HWND) {
     }
 }
 
+/// Marks `hwnd` as needing a repaint, whichever kind of window it turns out to be.
+///
+/// # Why the hook is chosen here and not by the caller
+///
+/// `Platform::invalidate_surface` is handed an id, and this backend resolves it to a
+/// canvas child or a toplevel before it knows which it found. The two are not
+/// interchangeable: a canvas paints only its own client area, while a toplevel erases
+/// its background (`WM_ERASEBKGND` returns 1) and repaints its whole child list — which
+/// is what makes a repaint of the *window* the right response to a change in one of its
+/// ordinary children, none of which owns an `HWND` (see `paint_window_tree`).
+///
+/// `GetParent` is exactly that distinction and is the driver's own answer to it, so the
+/// caller does not have to carry a kind alongside the handle. A null parent means
+/// toplevel; `InvalidateRect` is the same call either way, but the two doors are kept
+/// distinct so a later change to one (a canvas that invalidates only its damage rect,
+/// say) cannot silently change the other.
+pub(crate) fn invalidate_for_handle(hwnd: HWND) {
+    // SAFETY: `hwnd` is a live window handle this backend resolved from its own state;
+    // `GetParent` only reads it and a null RECT (below) means "the whole client area".
+    unsafe {
+        if winapi::um::winuser::GetParent(hwnd).is_null() {
+            // A toplevel: its paint procedure redraws the tree, so the whole client area
+            // is the right damage.
+            InvalidateRect(hwnd, std::ptr::null(), 0);
+        } else {
+            invalidate_canvas(hwnd);
+        }
+    }
+}
+
 /// Invalidates one rectangle of a canvas's client area.
 ///
 /// # Why this rejects a rectangle outside the client area
@@ -368,14 +516,34 @@ unsafe fn forward_mouse(hwnd: HWND, lparam: LPARAM, phase: MousePhase) {
     // The low/high words of lparam hold signed client-area coordinates.
     let x = (lparam & 0xFFFF) as u16 as i16 as i32;
     let y = ((lparam >> 16) & 0xFFFF) as u16 as i16 as i32;
-    let (origin_x, origin_y) = canvas_origin(hwnd);
+    let Some((origin_x, origin_y)) = canvas_origin(hwnd) else {
+        return;
+    };
     let position = Point::new(origin_x + x, origin_y + y);
+    let modifiers = current_modifiers();
     let event = match phase {
-        MousePhase::Press => {
-            Event::mouse_press_with(position.x, position.y, 1, current_modifiers())
+        MousePhase::Press => Event::mouse_press_with(
+            position.x,
+            position.y,
+            crate::event::mouse_button::PRIMARY,
+            modifiers,
+        ),
+        MousePhase::Release => {
+            Event::MouseRelease { pos: position, button: crate::event::mouse_button::PRIMARY }
         }
-        MousePhase::Release => Event::MouseRelease { pos: position, button: 1 },
         MousePhase::Drag => Event::MouseMove { pos: position },
+        MousePhase::SecondaryPress => Event::mouse_press_with(
+            position.x,
+            position.y,
+            crate::event::mouse_button::SECONDARY,
+            modifiers,
+        ),
+        MousePhase::SecondaryRelease => {
+            Event::MouseRelease { pos: position, button: crate::event::mouse_button::SECONDARY }
+        }
+        MousePhase::DoubleClick => {
+            Event::mouse_double_click(position.x, position.y, crate::event::mouse_button::PRIMARY)
+        }
     };
     let delivered =
         crate::platform::platform_facts().route_pointer_event(widget_id, &event, position);
@@ -390,11 +558,49 @@ unsafe fn forward_mouse(hwnd: HWND, lparam: LPARAM, phase: MousePhase) {
         TrackMouseEvent(&mut track);
     }
     if delivered {
-        if matches!(phase, MousePhase::Press) {
+        if matches!(phase, MousePhase::Press | MousePhase::SecondaryPress | MousePhase::DoubleClick)
+        {
             // A click can move focus to a nested control; give the canvas the
             // keyboard so subsequent keys are delivered here.
             SetFocus(hwnd);
         }
+        invalidate_canvas(hwnd);
+    }
+}
+
+/// Translates a `WM_MOUSEWHEEL` on a canvas into a widget wheel event and delivers it.
+///
+/// Mirrors `windows::types::forward_window_wheel`, including the two Win32 quirks it
+/// records: the delta is in `wParam`'s high word and the point is in *screen* space. The
+/// only difference is the extra canvas origin, because widget geometry is absolute while
+/// this child window's client area starts at its own corner.
+unsafe fn forward_wheel(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
+    use winapi::um::winuser::{GET_WHEEL_DELTA_WPARAM, WHEEL_DELTA};
+    let Some(widget_id) = widget_id_of(hwnd) else {
+        return;
+    };
+    let raw_delta = GET_WHEEL_DELTA_WPARAM(wparam);
+    if raw_delta == 0 {
+        return;
+    }
+    let mut screen = winapi::shared::windef::POINT {
+        x: (lparam & 0xFFFF) as u16 as i16 as i32,
+        y: ((lparam >> 16) & 0xFFFF) as u16 as i16 as i32,
+    };
+    if winapi::um::winuser::ScreenToClient(hwnd, &mut screen) == 0 {
+        return;
+    }
+    let Some((origin_x, origin_y)) = canvas_origin(hwnd) else {
+        return;
+    };
+    let position = Point::new(origin_x + screen.x, origin_y + screen.y);
+    let notches = match raw_delta / WHEEL_DELTA {
+        0 if raw_delta > 0 => 1,
+        0 => -1,
+        whole => whole as i32,
+    };
+    let event = Event::Wheel { delta: Point::new(0, -notches), modifiers: current_modifiers() };
+    if crate::platform::platform_facts().route_pointer_event(widget_id, &event, position) {
         invalidate_canvas(hwnd);
     }
 }
@@ -448,7 +654,9 @@ unsafe fn forward_touch(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
         CloseTouchInputHandle(lparam as *mut _);
         return;
     };
-    let (origin_x, origin_y) = canvas_origin(hwnd);
+    let Some((origin_x, origin_y)) = canvas_origin(hwnd) else {
+        return;
+    };
     let mut delivered = false;
 
     for input in inputs.iter().take(input_count as usize) {
@@ -491,6 +699,38 @@ unsafe fn forward_touch(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
     CloseTouchInputHandle(lparam as *mut _);
 
     if delivered {
+        invalidate_canvas(hwnd);
+    }
+}
+
+/// Translates a produced character into a widget text-input event and delivers it.
+///
+/// # Why a canvas needs this at all
+///
+/// `WM_KEYDOWN` carries a *virtual-key code*: `0x31` for the digit `1`, `0xBE` for `.`,
+/// `0xE5` (`VK_PROCESSKEY`) for whatever an IME is composing. Forwarding that code as if
+/// it were a character is what made a mounted text control print the wrong glyphs for
+/// digits and punctuation and nothing at all for IME text. Win32 translates the key and
+/// reposts it as `WM_CHAR`, which is the message text input must consume.
+///
+/// Control characters are dropped for the reason `windows::types::forward_window_char`
+/// records: they are commands (`WM_KEYDOWN` already delivered them) rather than text.
+unsafe fn forward_char(hwnd: HWND, wparam: WPARAM) {
+    let Some(widget_id) = widget_id_of(hwnd) else {
+        return;
+    };
+    let value = wparam as u32;
+    if value < 0x20 || value == 0x7F {
+        return;
+    }
+    let Some(character) = char::from_u32(value) else {
+        log::debug!("[windows] canvas: WM_CHAR delivered U+{value:04X}, not a Unicode scalar");
+        return;
+    };
+    // Keys follow focus, and a canvas that never took focus has none: without this the
+    // wheel of `focused_widget` would reach a control in another tree.
+    let target = crate::widget::runtime::focused_widget().unwrap_or(widget_id);
+    if crate::widget::runtime::dispatch_event(target, &Event::text_input(character.to_string())) {
         invalidate_canvas(hwnd);
     }
 }
@@ -560,6 +800,22 @@ pub(crate) fn mount_canvas(parent: HWND, id: ObjectId, rect: Rect) -> Option<HWN
         );
         return None;
     }
+    // One canvas per widget. A second mount would create a second child `HWND` recorded
+    // against the same id, and every reverse lookup (`hwnd_for_widget`) would then answer
+    // with an **arbitrary** one of the two — `HashMap` iteration order — so `resize_surface`
+    // and `unmount_surface` could operate on the wrong window and leak the other. Both would
+    // also paint the same widget into the shared frame cache at different sizes.
+    //
+    // Refused rather than silently accepted: the caller asked for something that cannot be
+    // honoured unambiguously, and `mount_surface` returning `false` is how this trait reports
+    // that (see `windows::canvas`'s note on the honest `false`).
+    if hwnd_for_widget(id).is_some() {
+        log::error!(
+            "[windows] mount_surface: id={id} already has a canvas; a widget can be mounted \
+             once, so this request was refused"
+        );
+        return None;
+    }
     // SAFETY: all Win32 calls run on the UI thread; the class was registered just
     // above and `parent` is a live window handle supplied by the caller.
     unsafe {
@@ -586,13 +842,7 @@ pub(crate) fn mount_canvas(parent: HWND, id: ObjectId, rect: Rect) -> Option<HWN
             );
             return None;
         }
-        canvases().lock().expect("windows canvas lock poisoned").insert(hwnd as usize, id);
-        // Record where this canvas sits so pointer coordinates can be made absolute
-        // before hit-testing (see `canvas_origin`).
-        canvas_origins()
-            .lock()
-            .expect("windows canvas origin lock poisoned")
-            .insert(hwnd as usize, (rect.x, rect.y));
+        canvases().lock_guard().insert(hwnd as usize, id);
         // Opt in to `WM_TOUCH`. Win32 delivers finger contacts only to windows that
         // asked, and the call is what makes the touch path above reachable. A failure
         // is not fatal: a machine with no digitiser simply keeps using mouse input, so
@@ -635,34 +885,47 @@ pub(crate) fn resize_canvas(hwnd: HWND, rect: Rect) -> bool {
             log::error!("[windows] resize_surface: SetWindowPos failed");
             return false;
         }
-        // The canvas moved, so its origin — and therefore the offset applied to
-        // pointer coordinates — must move with it, or hit-testing drifts by the
-        // resize delta.
-        canvas_origins()
-            .lock()
-            .expect("windows canvas origin lock poisoned")
-            .insert(hwnd as usize, (rect.x, rect.y));
         invalidate_canvas(hwnd);
         true
     }
 }
 
 /// Destroys a canvas child window and forgets its state.
+///
+/// # Why the registry entry is released even when the destroy fails
+///
+/// `DestroyWindow` failing means the window is still alive, so the entry is *not* stale —
+/// but leaving it in place while reporting `false` makes the caller (`unmount_surface`)
+/// believe the surface is gone while a later `hwnd_for_widget` still hands out a live
+/// `HWND` for a widget the library no longer considers mounted. Those two facts cannot both
+/// be true. The entry is therefore always released, and the failure is reported through the
+/// return value so the caller can say so.
+///
+/// The widget registry is the authority on whether a surface exists, and this function only
+/// maintains this module's own table, so removing the entry can never hide a mount from the
+/// library — only from this backend's lookup, which is exactly what "unmounted" means here.
 pub(crate) fn unmount_canvas(hwnd: HWND) -> bool {
     // SAFETY: `hwnd` came from `mount_canvas`; DestroyWindow is valid on a child
     // window and synchronously delivers WM_DESTROY.
-    unsafe {
+    let destroyed = unsafe {
         use winapi::um::winuser::DestroyWindow;
-        if DestroyWindow(hwnd) == 0 {
-            log::error!("[windows] unmount_surface: DestroyWindow failed");
-            return false;
-        }
+        DestroyWindow(hwnd) != 0
+    };
+    if !destroyed {
+        log::error!(
+            "[windows] unmount_surface: DestroyWindow failed for hwnd {hwnd:?}; the window is \
+             still alive, but its registry entry was released so this backend can no longer \
+             route input or invalidation to it"
+        );
     }
-    let _ = canvas_origins()
-        .lock()
-        .expect("windows canvas origin lock poisoned")
-        .remove(&(hwnd as usize));
-    canvases().lock().expect("windows canvas lock poisoned").remove(&(hwnd as usize)).is_some()
+    let removed = canvases().lock_guard().remove(&(hwnd as usize)).is_some();
+    if !removed {
+        // Reached when `unmount_canvas` is called for a handle this module does not track —
+        // a double unmount, or a canvas destroyed behind its back. Reported rather than
+        // silently answering the caller's question with "yes, removed".
+        log::error!("[windows] unmount_surface: hwnd {hwnd:?} was not a mounted canvas");
+    }
+    destroyed
 }
 
 /// Looks up the canvas window for a mounted widget id.

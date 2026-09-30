@@ -115,6 +115,13 @@ impl GroupBox {
     }
     /// Sets title.
     pub fn set_title(&mut self, title: String) {
+        // The cached width belongs to the *old* title, and it is read by `title_row` (placement)
+        // and by `size_hint` (the width reported to a parent). Leaving it set would make the box
+        // reserve the previous caption's room until the next draw happened to run — and since the
+        // cache was only written when the title was non-empty, clearing the title would have kept
+        // a stale non-zero width indefinitely. Dropping it here falls back to the context-free
+        // estimate until the next `draw` measures the new title exactly.
+        self.cached_title_width = None;
         self.title = title;
         self.base.request_redraw();
     }
@@ -573,11 +580,20 @@ impl EventHandler for GroupBox {
 }
 impl Draw for GroupBox {
     fn draw(&mut self, context: &mut RenderContext) {
-        // Cache actual title width from render context.
-        if !self.title.is_empty() {
-            let metrics = context.measure_text(&self.title, &Font::default());
-            self.cached_title_width = Some(metrics.width);
-        }
+        // Cache the title width from the render context, so the hint path can use a real
+        // measurement instead of the context-free estimate.
+        //
+        // # Why the cache is assigned unconditionally
+        //
+        // This used to be `if !self.title.is_empty() { self.cached_title_width = Some(..) }`, so
+        // setting the title to `""` after a draw left the **previous** title's width in the cache.
+        // `title_row` and the hint then kept reserving room for a caption that is no longer drawn —
+        // an empty group box whose title band is as wide as the title it used to have. The `if` was
+        // guarding nothing: measuring an empty string is cheap and yields `0`, which is exactly the
+        // honest answer, so an empty title now caches `Some(0)` and the `.unwrap_or_else` fallbacks
+        // stop being reached from a `draw`ed control at all.
+        let metrics = context.measure_text(&self.title, &Font::default());
+        self.cached_title_width = Some(metrics.width);
         // Draw base widget
         let rect = self.geometry();
         let content = self.content_rect();
@@ -1055,6 +1071,70 @@ mod tests {
             plain.matches("<line").count(),
             0,
             "an unchecked box draws no tick, so the checked state is not implied"
+        );
+    }
+
+    /// A cleared title must not leave its width behind in the cache.
+    ///
+    /// # The defect this pins
+    ///
+    /// `cached_title_width` is written in `draw` from the render context and read by
+    /// `title_row` (which places the caption) and `size_hint` (the width the box reports to its
+    /// parent). Two things were wrong with it:
+    ///
+    /// 1. `draw` only assigned it `if !self.title.is_empty()`, so setting the title to `""`
+    ///    left the *previous* caption's width in the cache. `title_row` then kept reserving
+    ///    that room — an empty group box whose title band is as wide as the title it used to
+    ///    have — and `size_hint` kept asking its parent for the same room.
+    /// 2. `set_title` did not invalidate it at all, so any retitled box read the old caption's
+    ///    measurement until the next draw happened to run. That is a wrong *size* being reported
+    ///    to the layout for the whole interval, which is when a layout asks.
+    ///
+    /// # The assertion is on `size_hint`, which is the quantity the cache actually drives
+    ///
+    /// The cache reaches the **reported width** directly: `size_hint`'s floor is
+    /// `title + padding + insets`, so a stale cache makes a cleared box ask its parent for the
+    /// old caption's room. (It barely reaches `title_row`'s *width* — the title column is `filled`,
+    /// so a preferred width only nudges a distribution the row's own extent decides — which is why
+    /// an assertion on the row would have been too weak to fail. It did: the first draft of this
+    /// test passed against the unfixed code.)
+    ///
+    /// The direction is what makes the assertion meaningful: a long caption must make the box
+    /// **want more room than an empty one**, and clearing the title must take that room back. A
+    /// test asserting only `cleared <= wide` passes against the defect whenever the caption happens
+    /// to be narrower than the floor, which is the usual case.
+    #[test]
+    fn a_cleared_title_does_not_leave_its_width_cached() {
+        let frame = Rect::new(0, 0, 300, 120);
+        // A caption longer than the chrome floor, so its width is what the hint reports rather
+        // than the floor absorbing it.
+        let caption = "A very long caption indeed, longer than the chrome floor";
+
+        let mut empty = GroupBox::new(frame);
+        let _ = crate::widget::svg::render_widget_to_svg(&mut empty, frame);
+        let empty_width = empty.size_hint().width;
+
+        let mut gb = GroupBox::new(frame);
+        gb.set_title(caption.to_string());
+        // Draw once so the cache is populated from the render context — the wider measurement may
+        // only take effect on the *next* read, which is the ordering the control has.
+        let _ = crate::widget::svg::render_widget_to_svg(&mut gb, frame);
+        let long_width = gb.size_hint().width;
+        assert!(
+            long_width > empty_width,
+            "a long caption must widen the box's wish, or this test cannot distinguish a stale \
+             cache from a correct one: {long_width} vs {empty_width}"
+        );
+
+        // Clear it: the box must stop asking for the old caption's room. Rendering first is what
+        // gives the unfixed version its chance to keep the stale value, because the old `draw` only
+        // ever *wrote* the cache for a non-empty title and never cleared it.
+        gb.set_title(String::new());
+        let _ = crate::widget::svg::render_widget_to_svg(&mut gb, frame);
+        assert_eq!(
+            gb.size_hint().width,
+            empty_width,
+            "a cleared title must report the same wish as a box that never had one"
         );
     }
 }

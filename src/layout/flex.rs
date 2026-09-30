@@ -1157,24 +1157,105 @@ impl FlexLayout {
                             origin.clamp(band_origin, latest)
                         }
                     };
-                    Rect::new(
-                        slide(
-                            grown.x,
-                            grown.width,
-                            child_rect.width,
-                            content_rect.x,
-                            content_rect.width,
-                        ),
-                        slide(
-                            grown.y,
-                            grown.height,
-                            child_rect.height,
-                            content_rect.y,
-                            content_rect.height,
-                        ),
+                    // # The grown box is clamped only on the axis whose slot does *not* span
+                    //
+                    // `slide` returns `origin` unchanged when `slot_extent >= band_extent`,
+                    // on the reasoning in the comment above: "the slot already owns the band,
+                    // there is nowhere to slide to, so the symmetric overhang is intended".
+                    //
+                    // That reasoning is right about the **main axis** and was wrong once
+                    // `grow_to_min_touch_size` grew **both**. On the main axis, a slot that spans
+                    // the band is a child the layout gave the whole run to, and the overhang is
+                    // the documented answer (see the `#[test]` note further up: "the growth is
+                    // centred on the space the layout allocated"). On the **cross** axis,
+                    // however, a `Stretch` child's slot is *also* the whole band — `stretch_cross`
+                    // — so `slide` no-ops there too, and the re-centring that `Stretch` had already
+                    // resolved was applied a second time. Measured on `TabView`'s 90 px strip: a tab
+                    // laid out at `x = 0, width = 87, height = 40` came back `x = -5, width = 97` —
+                    // drawn 5 px before its own control's content origin.
+                    //
+                    // So the clamp is conditional on the axis: it applies exactly where `slide`
+                    // declined to act *and* the axis is not the one the layout actually allocated.
+                    // `Slide` on the main axis keeps its documented overhang, which is what
+                    // `flex_layout_update_with_context_scales_gap_and_padding` pins.
+                    //
+                    // Only the **origin** is clamped, never the extent: a child whose floor
+                    // legitimately exceeds its room keeps that overhang on the far side. Shrinking
+                    // it would re-create the contradicted-floor case G-1 resolved by scaling rather
+                    // than clamping, and the near side is the one that loses content, because
+                    // content before the content origin is drawn over whatever is behind it.
+                    // Slide the grown box back inside the band, then clamp its **origin** into
+                    // the band on the axes where the box is *smaller* than the band.
+                    //
+                    // # The two axes are not symmetric here, and that is the whole point
+                    //
+                    // `slide` already clamps an origin into the band whenever the box fits inside
+                    // it. It deliberately does **not** clamp when `extent >= band_extent`, on the
+                    // reasoning quoted above: "the slot already owns the band, there is nowhere to
+                    // slide to, so the symmetric overhang is intended".
+                    //
+                    // That reasoning is right, but it was only ever *reached* on the axis the
+                    // layout allocates — and `grow_to_min_touch_size` grows **both** axes. Two
+                    // distinct situations came out of the single `slot_extent >= band_extent`
+                    // test that `slide` saw:
+                    //
+                    // * **The box really is at least as large as the band** (a child the layout
+                    //   gave the whole run, grown by the touch floor). The overhang is intended;
+                    //   `flex_layout_update_with_context_scales_gap_and_padding` pins it.
+                    // * **The slot spans the band but the box does not** — the `Stretch` case, or
+                    //   any child whose slot is the full run on one axis while its box is
+                    //   narrower. Here `slide` no-ops because of the *slot*, and the re-centring
+                    //   `Stretch` had already resolved is applied a second time. Measured on
+                    //   `TabView`'s 90 px strip before this fix: a tab laid out at
+                    //   `x = 62, width = 28` grew to `x = 60, width = 32`, i.e. 2 px past the
+                    //   strip's trailing edge — and 5 px *before* the leading edge in the first
+                    //   version of the fixture, because `grow_to_min_touch_size` centres.
+                    //
+                    // The first case is recognised by comparing the **grown box** against the
+                    // band, not the slot; the second is not, and so gets clamped. Comparing the
+                    // box is also what keeps `G-1`'s contradicted-floor case intact: a child whose
+                    // floor genuinely exceeds the band still reports `extent >= band_extent` and
+                    // keeps its overhang rather than being shrunk.
+                    //
+                    // Only the **origin** moves; the extent is never touched. The near side is
+                    // the one that loses content, because content before the content origin is
+                    // drawn over whatever is behind it.
+                    let realize = |origin: i32,
+                                   box_extent: u32,
+                                   slot_extent: u32,
+                                   band_origin: i32,
+                                   band_extent: u32|
+                     -> i32 {
+                        if box_extent >= band_extent {
+                            // The box owns the band: keep the documented centring overhang.
+                            return origin;
+                        }
+                        // The box fits, so it must not be pushed out of the band — either by a
+                        // slot that spans it (`slide` declines) or by the origin clamp.
+                        let latest = band_origin + band_extent as i32 - box_extent as i32;
+                        origin.clamp(band_origin, latest.max(band_origin)).max(slide(
+                            origin,
+                            box_extent,
+                            slot_extent,
+                            band_origin,
+                            band_extent,
+                        ))
+                    };
+                    let clamped_x = realize(
+                        grown.x,
                         grown.width,
+                        child_rect.width,
+                        content_rect.x,
+                        content_rect.width,
+                    );
+                    let clamped_y = realize(
+                        grown.y,
                         grown.height,
-                    )
+                        child_rect.height,
+                        content_rect.y,
+                        content_rect.height,
+                    );
+                    Rect::new(clamped_x, clamped_y, grown.width, grown.height)
                 };
                 out(widget_id, floored);
             }

@@ -376,26 +376,6 @@ impl CompositeBuilder {
         self.dirty.set(true);
     }
 
-    /// Creates a child and registers it at its own `hints()`, derived from the child itself.
-    ///
-    /// Kept separate from [`Self::add`] and marked `pub(crate)` because [`Self::add`]'s
-    /// `geometry` argument is read by every existing sample; a migration that does not need the
-    /// caller to hand in a starting rectangle goes through here.
-    #[allow(dead_code)]
-    pub(crate) fn add_at_hint(
-        &mut self,
-        factory: &WidgetFactory,
-        kind_or_name: &str,
-        text: &str,
-        params: LayoutParams,
-    ) -> Option<Box<dyn Widget>> {
-        let widget = factory.create(kind_or_name, Rect::new(0, 0, 0, 0), text)?;
-        let id = widget.id();
-        let hints = widget.hints();
-        self.register(id, hints, params);
-        Some(widget)
-    }
-
     /// The composite's own size wish, derived from its children's.
     ///
     /// # How the composite axis and the cross axis differ

@@ -288,6 +288,18 @@ android = ["dep:jni"]
 jni = ["dep:jni"]
 wasm = ["dep:wasm-bindgen", "dep:web-sys", "dep:js-sys", "serde"]
 harmony = []
+# The ArkUI **XComponent** bridge for the HarmonyOS backend: binds
+# `OH_NativeXComponent` so the library gets a real surface plus touch/mouse/key/focus
+# input instead of a state-only model.
+#
+# Off by default, and deliberately: turning it on makes the build link `ace_ndk` and
+# needs the OpenHarmony SDK headers, so a build on a machine without the SDK must not
+# be forced to have it. CI enables it only in the OHOS cross job (see
+# `tools/check_harmony_cross.sh`).
+#
+# Needs the `harmony` backend to have anything to bind: enabling this alone is a no-op,
+# which is why it is declared here beside it rather than as a standalone capability.
+xcomponent = ["harmony"]
 
 
 # ── Axis 3: CAPABILITIES (arbitrary composition) ──

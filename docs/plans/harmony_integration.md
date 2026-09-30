@@ -17,9 +17,32 @@
 关键差异：桌面平台 Rust 持有主线程并跑事件循环；鸿蒙上 Rust 是 `cdylib`，主线程在
 ArkUI 手里。所以 Rust 侧不能"等事件"，只能"被调用 + 提供队列让 ArkTS 来取"。
 
-当前 `src/platform/harmony/` 是 **state-only 后端**：完整的 `Platform` 契约、菜单树、
+当前 `src/platform/harmony/` 是 **state-only 后端**作为默认形态：完整的 `Platform` 契约、菜单树、
+剪贴板、拖放、IME 元数据都在进程内实现。
+
+**但 `feature = "xcomponent"` 时不再只是 state-only**：`src/platform/harmony/xcomponent.rs`
+绑定 `OH_NativeXComponent`，拿到真实的 surface 与 touch / mouse / key / focus 回调。
+启用方式：
+
+```bash
+export OHOS_SDK_NATIVE=<sdk>/linux/native
+cargo ohos build -t aarch64 --no-default-features \
+  --features "harmony xcomponent desktop-runtime controls-custom"
+```
+
+ArkTS 侧的接入点只有两个新函数（已发布在 `include/rw_generated.h`）：
+
+```text
+XComponent({ id: 'rw', type: 'surface' })
+  .onLoad((ctx) => rw_harmony_bind_xcomponent(ctx.xcomponentId ? getComponentPtr(ctx) : 0))
+```
+
+具体地，`onLoad` 回调里的 `OH_NativeXComponent*` 交给 `rw_harmony_bind_xcomponent`，
+之后 surface 尺寸、touch、mouse、key、focus 全部自动进入控件树，**不需要宿主逐控件转发**。
+
+未启用 `xcomponent` 时（默认）仍是 state-only 后端：完整 `Platform` 契约、菜单树、
 剪贴板、拖放、IME 元数据都在进程内实现，但**不创建任何 ArkUI 对象**——因为没有
-OpenHarmony SDK 的 N-API/ArkUI 头文件（见 `src/platform/harmony/status.md`）。
+绑定 XComponent，也就没有原生 surface 可绘。
 
 ## 2. 标准接入五步
 
@@ -74,15 +97,25 @@ ArkTS 拿到 `menuId` / `widgetId` / `kind` 后，自己决定调用哪些业务
 `CodeEditor` 这类自绘型控件**没有 ArkUI 组件对应**，ArkTS 侧无法"转发点击给它",
 因为点击本来就该由 Rust 自己处理。正确做法是：
 
-1. ArkTS 建一个 `Canvas` 组件作为宿主；
-2. 调用 `rw_mount_custom_widget(canvas_widget_id, x, y, w, h)`（**待实现**）；
-3. ArkTS 侧拿到 `Canvas` 的 `onDraw` 回调 → 调 `rw_render_frame(pixel_buffer)` 把
-   Rust 渲染的 RGBA 写进去；
-4. ArkTS 的触摸/按键回调 → `rw_dispatch_self_drawn_event(id, event_code, x, y)`。
+1. ArkTS 建一个 `XComponent`（`type: 'surface'`）；
+2. 在其 `onLoad` 里调 `rw_harmony_bind_xcomponent(component_ptr)` —— **一次调用**，
+   之后 surface 尺寸、touch、mouse、key、focus 全部自动进控件树；
+3. 每帧轮询 `rw_take_pending_repaint()` 得知哪个控件变脏，再调
+   `rw_render_surface_frame(widget_id, w, h, ...)` 拿到 RGBA 写进画面，
+   最后用 `rw_free_bytes(ptr, len)` 释放；
+4. 不需要逐控件转发输入 —— 桥接的回调已接管（见 `src/platform/harmony/xcomponent.rs`）。
 
-也就是说，**鸿蒙需要实现 `Platform::mount_custom_widget` 等四个方法**，把"画一帧"和
-"转发输入"映射到 ArkUI `Canvas` 上。这与其他三平台是同一套 trait，只是底层调用不同。
-装好 SDK 后按 `docs/plans/custom_widget_mounting.md` 的接口逐个实现即可。
+这七个 surface 函数（`rw_mount_surface` / `rw_resize_surface` / `rw_unmount_surface` /
+`rw_invalidate_surface` / `rw_supports_surfaces` / `rw_take_pending_repaint` /
+`rw_render_surface_frame`）**已经在 `src/bindings/binding_impl.rs` 实现并导出**，
+发布在 `include/rw_generated.h`。它们对应 `Platform` trait 上的同名方法，底层是共享的
+`mount_surface_record` + 重绘队列，所以 Android / iOS / macos_objc2 用同一套调用即可驱动。
+
+XComponent 桥接本身在 `feature = "xcomponent"` 下启用，需要
+`OHOS_SDK_NATIVE` 与一个 `*-unknown-linux-ohos` 目标。
+
+另需 `rw_report_window_resize(window_id, w, h)`：启用了 `xcomponent` 时
+`on_surface_changed` 会自动入队，但宿主自己处理尺寸变化（例如嵌套布局）时仍可直接调用。
 
 ## 4. 现在能做什么 / 不能做什么
 
@@ -90,15 +123,16 @@ ArkTS 拿到 `menuId` / `widgetId` / `kind` 后，自己决定调用哪些业务
 |---|---|
 | `Platform` 全契约（状态层） | ✅ 已实现 |
 | 菜单树、剪贴板、拖放、IME 元数据 | ✅ 已实现 |
-| ArkUI 原生控件创建 | ⬜ 需 SDK |
-| N-API 桥接（`rw_harmony_*`） | ⬜ 需 SDK（C 头文件已备好） |
-| `mount_custom_widget`（自绘型控件） | ⬜ 需 SDK |
-| 在无 SDK 环境下开发 demo | ✅ 走 state-only 后端，`supports_custom_widgets()` 返回 `false`，demo 如实报错 |
+| 表面 ABI（`rw_mount_surface` 等 7 个 + `rw_report_window_resize`） | ✅ 已实现，发布在 `include/rw_generated.h` |
+| **ArkUI XComponent 桥接**（`feature = "xcomponent"`） | ✅ 已实现，已用真实 SDK 验证编译 + 链接 |
+| **输入投递进控件**（touch / mouse / key / focus） | ✅ 已接线，由桥接回调直接路由 |
+| 在无 SDK 环境下开发 demo | ✅ 走 state-only 后端；`supports_surfaces()` 仍报 `true`（队列是真的），但只有启用 `xcomponent` 才可交互 |
+| 真机 / 模拟器运行验证 | ⬜ 需 HarmonyOS 设备（`cargo ohos build` 只证明编译与链接） |
 
 ## 5. 相关文件
 
 - 桥接流程：`examples/harmony_napi_bridge_flow.md`
 - C 示例：`examples/harmony_napi_bridge_sample.c`
 - 后端状态：`src/platform/harmony/status.md`
-- C ABI 总览：`docs/HARMONY_NATIVE_BRIDGE.md`
-- 自绘挂载设计：`docs/plans/custom_widget_mounting.md`
+- C ABI 头文件：`include/rw_generated.h`（由 `tools/generate_c_header.py` 生成，
+  `tools/check_abi.sh` 校验）

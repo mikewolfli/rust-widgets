@@ -71,6 +71,12 @@ echo "Detected ABI version: ${RUST_ABI_VERSION}"
 echo "[6/6] Check required exported ABI symbols and documented function count"
 # The published header is the contract consumers compile against, so both the
 # required-symbol sweep and the count assertion read it (not examples/).
+#
+# The list includes the host-side input path — `rw_dispatch_pointer_event` /
+# `rw_dispatch_event_to_widget` — because three integration documents instruct a host to
+# call them and, until 2026-09-30, neither existed: a mounted widget was visible and
+# completely inert, with no symbol to deliver a touch through. Requiring them here is what
+# keeps that from recurring silently.
 for symbol in \
   rw_bindings_api_version \
   rw_create_label \
@@ -79,6 +85,10 @@ for symbol in \
   rw_destroy_widget \
   rw_platform_capabilities \
   rw_platform_dpi_scale_factor \
+  rw_dispatch_pointer_event \
+  rw_dispatch_event_to_widget \
+  rw_take_pending_repaint \
+  rw_mount_surface \
   rw_harmony_bind_node \
   rw_harmony_on_widget_event
   do

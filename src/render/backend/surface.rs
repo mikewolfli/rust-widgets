@@ -248,15 +248,35 @@ pub enum VerticalAlignment {
 /// let line = text_line(cell, &font, context);
 /// context.draw_text_fitted(line, label, &font, ink, HorizontalAlignment::Left);
 /// ```
+///
+/// # Why there is no timing instrumentation here
+///
+/// This function sits on the hot path of every caption in the frame — `grep` counts 228 call sites
+/// in `src/widget/` — and it briefly carried
+///
+/// ```ignore
+/// let t0 = std::time::Instant::now();
+/// let height = context.measure_text("M", font).height.max(1) as i32;
+/// eprintln!("[MEAS] text_line measure_text('M') = {}us", t0.elapsed().as_micros());
+/// ```
+///
+/// which printed one line to stderr **per measured caption, per frame**, together with the clocks
+/// to time it. That is a permanently-armed diagnostic rather than a temporary one: it was
+/// committed, not `cfg(test)`-gated, not behind a log level, and the only thing distinguishing it
+/// from intentional output was a `[MEAS]` prefix. A `grep` for debug output does not find it either
+/// — the crate's own `log::` macros are the sanctioned channel, and this bypassed them.
+///
+/// The measurement it was after is real work (a `text_line` per caption is worth knowing the cost
+/// of), so the honest home for it is a `log::trace!` behind the `log` facade, where the host
+/// chooses whether to pay for it. Until that exists, the timing is removed rather than left
+/// un-flagged: a hot path may not print.
 pub fn text_line(
     band: Rect,
     font: &Font,
     alignment: VerticalAlignment,
     context: &RenderContext,
 ) -> Rect {
-    let t0 = std::time::Instant::now();
     let height = context.measure_text("M", font).height.max(1) as i32;
-    eprintln!("[MEAS] text_line measure_text('M') = {}us", t0.elapsed().as_micros());
     let offset = match alignment {
         VerticalAlignment::Top => 0,
         VerticalAlignment::Center => ((band.height as i32 - height) / 2).max(0),

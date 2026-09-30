@@ -353,6 +353,22 @@ function loadFunctions(libName) {
 
     // ── Clipboard ──────────────────────────────────────────────────────
     rw_set_clipboard_text: [cbool, ["string"]],
+    rw_mount_surface: [cbool, [uint64, uint64, int, int, uint, uint]],
+    rw_resize_surface: [cbool, [uint64, int, int, uint, uint]],
+    rw_unmount_surface: [cbool, [uint64]],
+    rw_invalidate_surface: [cbool, [uint64]],
+    rw_supports_surfaces: [cbool, []],
+    rw_take_pending_repaint: [uint64, []],
+    rw_report_window_resize: [cbool, [uint64, uint, uint]],
+    // `out_pixels` is a `uint8**`: the callee allocates the frame and the caller
+    // releases it with `rw_free_bytes(ptr, len)`, so the raw address has to come back
+    // as a pointer rather than being copied into a Buffer here.
+    rw_render_surface_frame: [
+        cbool,
+        [uint64, uint, uint, uintPtr, uintPtr, uintPtr, uintPtr, bytePtrPtr],
+    ],
+    rw_harmony_bind_xcomponent: [cbool, [uint64]],
+    rw_harmony_xcomponent_id: [charPtr, []],
     rw_get_clipboard_text: [charPtr, []],
 
     // ── Drag & Drop ────────────────────────────────────────────────────

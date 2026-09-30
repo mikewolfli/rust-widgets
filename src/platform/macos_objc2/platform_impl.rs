@@ -16,7 +16,7 @@ use crate::compat::atomic::Ordering;
 use crate::compat::String;
 use crate::core::ObjectId;
 use crate::core::PlatformFamily;
-use crate::platform::{DropEvent, Platform, PlatformCapabilities};
+use crate::platform::{Platform, PlatformCapabilities};
 use core::time::Duration;
 use std::thread;
 
@@ -30,6 +30,10 @@ use std::thread;
 const FRAME_INTERVAL_MS: u64 = 16;
 
 impl Platform for MacOSObjc2Platform {
+    // The uniform widget-property methods are answered once, over `self.state`, by the
+    // shared expansion in `platform::state_impl` rather than re-written per backend.
+    crate::impl_platform_state_properties!();
+
     // ---- Lifecycle & identity ----
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -41,17 +45,44 @@ impl Platform for MacOSObjc2Platform {
         PlatformFamily::Desktop
     }
 
-    /// The objc2 preview honours the same four host integrations as the legacy macOS backend,
-    /// stated explicitly.
+    /// The host integrations this backend actually provides.
     ///
-    /// The trait default is now an honest all-`false` (see [`Platform::capabilities`]); a backend
-    /// that provides a capability must say so rather than inherit it from its family.
+    /// # Why all four are `false`, and not the four the legacy backend claims
+    ///
+    /// This used to answer the same all-`true` set as `cocoa`, on the reasoning that
+    /// "the objc2 preview honours the same four host integrations as the legacy macOS
+    /// backend". It does not, and the mismatch was invisible because a capability flag
+    /// is a *promise* no test had ever checked against the methods it promises.
+    ///
+    /// The evidence, per flag:
+    ///
+    /// * `native_menu` — this backend implements **no** menu method at all:
+    ///   `create_menu_bar`, `create_menu`, `menu_add_item`,
+    ///   `attach_menu_bar_to_window` and `poll_menu_triggered` all fall through to the
+    ///   trait defaults, and its own test suite asserts
+    ///   `create_menu_bar(window, ..) == 0` (`tests.rs`).
+    /// * `ime` — `ime_bridge()` is not overridden, so it inherits the `None` default.
+    /// * `accessibility` — `accessibility_bridge()` is likewise not overridden.
+    /// * `dpi_scaling` — `dpi_scale_factor()` is not overridden, so it answers the
+    ///   trait default `1.0`. A backend that reports DPI awareness must be able to
+    ///   *ask* the display; there is no display behind this type.
+    ///
+    /// What the backend genuinely does provide is the state model plus real AppKit
+    /// objects where `native` is bound, and both of those are reachable without any of
+    /// these flags. Reporting `false` is the honest answer (principle #37) and it is
+    /// the answer the capability negotiation then acts on: a host that reads
+    /// `native_menu: false` builds a library-painted menu bar instead of asking for one
+    /// that will not appear.
+    ///
+    /// `typed_widget_trigger` stays `true` because it is the one claim with a real
+    /// producer: the backend inherits `BackendState`'s trigger queue and forwards it
+    /// (see [`Self::poll_widget_trigger_event`]).
     fn capabilities(&self) -> PlatformCapabilities {
         PlatformCapabilities {
-            dpi_scaling: true,
-            ime: true,
-            accessibility: true,
-            native_menu: true,
+            dpi_scaling: false,
+            ime: false,
+            accessibility: false,
+            native_menu: false,
             typed_widget_trigger: true,
         }
     }
@@ -156,15 +187,24 @@ impl Platform for MacOSObjc2Platform {
         self.state.unmount_surface_record(id)
     }
 
-    /// Queues a repaint for the host to pick up. `false` when `id` is not mounted.
+    /// Queues a repaint for the host to pick up. `false` when `id` is unknown.
+    ///
+    /// # Why a window id is accepted
+    ///
+    /// The library asks for the **window** to be repainted whenever one of its
+    /// ordinary children changes (`widget::runtime::request_repaint_subtree`),
+    /// because a window is what draws those children. A surface-only record
+    /// answered `false` for such a request, so an event could be handled and the
+    /// screen still never change — silently.
     fn invalidate_surface(&self, id: ObjectId) -> bool {
-        self.state.invalidate_surface_record(id)
+        self.state.record_repaint_request(id)
     }
 
     /// This backend displays library-painted widgets by handing the host their frames.
     ///
-    /// Must agree with the cocoa backend on the same machine — see
-    /// [`Self::mount_surface`] for what went wrong when it did not.
+    /// See [`crate::platform::Platform::supports_surfaces`] for what this does and does
+    /// not promise, and [`crate::platform::Platform::invalidate_surface`] for how a
+    /// repaint request for a window (as opposed to a mounted surface) is answered.
     fn supports_surfaces(&self) -> bool {
         true
     }
@@ -211,6 +251,33 @@ impl Platform for MacOSObjc2Platform {
     fn quit(&self) {
         self.runtime.running.store(false, Ordering::SeqCst);
     }
+    /// Pops the next typed widget-trigger event from this backend's queue.
+    ///
+    /// # Why this backend must delegate
+    ///
+    /// [`PlatformCapabilities::typed_widget_trigger`] claims this preview backend produces and
+    /// delivers typed triggers, and it holds a `BackendState` (the shared queue) like every other
+    /// state backend — but neither method was overridden, so both answered the trait defaults while
+    /// the flag said `true`. `NativeControlBackend` forwards to `get_platform()`, so an injected
+    /// trigger was accepted and silently dropped.
+    fn poll_widget_trigger_event(&self) -> Option<crate::platform::WidgetTriggerEvent> {
+        self.state.pop_widget_trigger_event()
+    }
+
+    /// Pushes a typed widget-trigger event, refusing ids this backend never made.
+    fn inject_widget_trigger_event(
+        &self,
+        widget_id: ObjectId,
+        kind: crate::platform::WidgetTriggerKind,
+    ) -> bool {
+        self.state.inject_widget_trigger_event(widget_id, kind)
+    }
+
+    /// Pops the next pending trigger as a bare id, over the same queue as the typed view.
+    fn poll_widget_triggered(&self) -> Option<ObjectId> {
+        self.poll_widget_trigger_event().map(|event| event.widget_id)
+    }
+
     fn destroy_widget(&self, widget_id: ObjectId) -> bool {
         let existed = self.state.destroy_widget(widget_id);
 
@@ -258,14 +325,5 @@ impl Platform for MacOSObjc2Platform {
     }
     fn get_clipboard_text(&self) -> String {
         self.state.clipboard_text()
-    }
-    fn begin_drag(&self, source_widget_id: u64, mime: &str, payload: &[u8]) -> bool {
-        self.state.begin_drag(source_widget_id, mime, payload)
-    }
-    fn poll_drop_event(&self) -> Option<DropEvent> {
-        self.state.pop_drop_event()
-    }
-    fn inject_drop_event(&self, event: DropEvent) -> bool {
-        self.state.inject_drop_event(event)
     }
 }

@@ -7,7 +7,9 @@ use crate::core::{ObjectId, PlatformFamily};
 use crate::platform::accessibility::AccessibilityBridge;
 use crate::platform::clipboard::RichClipboardBackend;
 use crate::platform::ime::ImeBridge;
-use crate::platform::{Platform, PlatformCapabilities, WindowStateFlag};
+use crate::platform::{
+    Platform, PlatformCapabilities, WidgetTriggerEvent, WidgetTriggerKind, WindowStateFlag,
+};
 
 // `String` and `Vec` are imported from the compat bridge rather than used bare:
 // the `mini` profile is `no_std`, so the std prelude that normally supplies them
@@ -20,6 +22,8 @@ use crate::platform::windows::notify;
 use crate::platform::windows::types::*;
 use crate::platform::DropEvent;
 use std::sync::atomic::Ordering;
+#[cfg(target_os = "windows")]
+use winapi::um::winuser::{SW_HIDE, SW_SHOW};
 
 // SAFETY: All Win32 FFI calls in this module follow standard Windows API safety patterns:
 // - `CreateWindowExW` return values are checked for null (via `hwnd.is_null()`) before use.
@@ -241,6 +245,78 @@ impl Platform for WindowsPlatform {
         "WindowsPlatform"
     }
 
+    /// The user's **text-size** preference, read from the accessibility setting.
+    ///
+    /// # Why not the DPI override
+    ///
+    /// `SPI_GETLOGICALDPIOVERRIDE` reports the DPI *layout* scale, which
+    /// [`Self::dpi_scale_factor`] already answers. Text scaling is a separate, deliberate user
+    /// choice — Settings → Accessibility → Text size — and Windows stores it as a percentage
+    /// under `HKCU\\Software\\Microsoft\\Accessibility\\TextScaleFactor`.
+    ///
+    /// # Why this matters enough to implement
+    ///
+    /// [`crate::platform::profile::text_scale`] feeds [`crate::style::environment`], which
+    /// scales every control's text. Before this override the trait default reported `1.0`, so a
+    /// user who had set 150% got 100% text — the library paid for the plumbing and discarded
+    /// the fact. That is the capability gap this closes, and it is the only universally
+    /// unimplemented `Platform` method with a live consumer.
+    ///
+    /// # Return value
+    ///
+    /// `1.0` whenever the setting cannot be read (a pre-1703 system, no key, a wrong value type,
+    /// or a stored `0` that would make text invisible). Every failure returns the honest "no
+    /// preference reported" rather than a guess, which is what the trait's documentation
+    /// requires.
+    #[cfg(target_os = "windows")]
+    fn text_scale(&self) -> f32 {
+        use winapi::um::winnt::{KEY_READ, REG_DWORD};
+        use winapi::um::winreg::{RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER};
+        // SAFETY: both names are NUL-terminated UTF-16 buffers that outlive the calls; `key` is
+        // written only on success and closed on every path; `data`/`size`/`kind` are local
+        // out-parameters sized before the query.
+        unsafe {
+            let subkey: Vec<u16> = "Software\\Microsoft\\Accessibility"
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let value_name: Vec<u16> =
+                "TextScaleFactor".encode_utf16().chain(std::iter::once(0)).collect();
+            let mut key = std::ptr::null_mut();
+            if RegOpenKeyExW(HKEY_CURRENT_USER, subkey.as_ptr(), 0, KEY_READ, &mut key) != 0 {
+                return 1.0;
+            }
+            let mut data: u32 = 0;
+            let mut size = std::mem::size_of::<u32>() as u32;
+            let mut kind: u32 = 0;
+            let status = RegQueryValueExW(
+                key,
+                value_name.as_ptr(),
+                std::ptr::null_mut(),
+                &mut kind,
+                &mut data as *mut u32 as *mut u8,
+                &mut size,
+            );
+            RegCloseKey(key);
+            if status != 0 || kind != REG_DWORD || data == 0 {
+                return 1.0;
+            }
+            // Stored as a percentage (`125` means 125%).
+            data as f32 / 100.0
+        }
+    }
+
+    /// The non-Windows arm inherits the trait's "no preference reported" value.
+    ///
+    /// Stated explicitly rather than omitted so the Windows implementation above and this one
+    /// read together: the pair is one decision ("report it where the host exposes it"), and a
+    /// reader searching for `text_scale` should not have to reason about which `cfg` arm applies
+    /// to the build they are looking at.
+    #[cfg(not(target_os = "windows"))]
+    fn text_scale(&self) -> f32 {
+        1.0
+    }
+
     /// Reads installed physical memory via `GlobalMemoryStatusEx`.
     fn total_memory_mb(&self) -> Option<u64> {
         #[cfg(target_os = "windows")]
@@ -371,7 +447,9 @@ impl Platform for WindowsPlatform {
         let Some(hwnd) = super::canvas::mount_canvas(parent_hwnd, id, rect) else {
             return false;
         };
-        self.bind_native_handle(id, hwnd);
+        // SAFETY: `hwnd` was just created by `super::canvas::mount_canvas` (a live child
+        // window) and is kept alive for as long as the surface is mounted.
+        unsafe { self.bind_native_handle(id, hwnd) };
         crate::widget::runtime::set_geometry(id, rect);
         true
     }
@@ -395,6 +473,12 @@ impl Platform for WindowsPlatform {
             log::error!("[windows] unmount_surface: id={id} is not mounted");
             return false;
         };
+        // The handle association is released **before** the window is destroyed, so the
+        // backend can never hand out an `HWND` that Win32 has reclaimed. See
+        // `unbind_native_handle` for what a stale (rather than absent) entry would cost.
+        // SAFETY: `hwnd` came from `mount_canvas` and is destroyed immediately below, so it
+        // is live for the duration of this call.
+        unsafe { self.unbind_native_handle(id, hwnd) };
         super::canvas::unmount_canvas(hwnd)
     }
 
@@ -402,6 +486,54 @@ impl Platform for WindowsPlatform {
     #[cfg(widgets_unstripped)]
     fn supports_surfaces(&self) -> bool {
         true
+    }
+
+    /// Shows or hides a top-level window.
+    ///
+    /// # Why this has to exist
+    ///
+    /// Nothing else showed or hid a window on Win32. The trait default does nothing, so
+    /// `WindowHandle::show()` — which `demo/control` calls and documents as the call that
+    /// makes its window visible — was a silent no-op here, and the same for `hide()`. A
+    /// window that only appears because `create_window` happened to pass `WS_VISIBLE` is a
+    /// window whose visibility the host cannot actually control: hiding it would leave it on
+    /// screen, and a host that created one hidden would never get it back.
+    ///
+    /// # Both id spaces
+    ///
+    /// A caller reaches here with either the **platform** id `create_window` returned (what a
+    /// `WindowHandle` carries) or the **widget-registry** id of the window itself, depending
+    /// on which layer it sits in. [`super::window_hwnd_for_widget_id`] resolves both, and an
+    /// id that names no window this backend owns is ignored rather than reported: the trait
+    /// returns `()`, and most ids arriving here are ordinary controls for which the library's
+    /// own `visible` flag is the whole story.
+    fn set_widget_visible(&self, widget_id: ObjectId, visible: bool) {
+        #[cfg(widgets_unstripped)]
+        {
+            let Some(hwnd) = super::window_hwnd_for_widget_id(self, widget_id) else {
+                return;
+            };
+            // A canvas child is a surface, not a window: it is shown by mounting it, and
+            // toggling it here would disagree with `unmount_surface`.
+            if !unsafe { winapi::um::winuser::GetParent(hwnd) }.is_null() {
+                return;
+            }
+            // SAFETY: `hwnd` is a toplevel this backend created and still holds; `SW_SHOW`
+            // and `SW_HIDE` only change its visibility state.
+            unsafe {
+                let command = if visible { SW_SHOW } else { SW_HIDE };
+                winapi::um::winuser::ShowWindow(hwnd, command);
+            }
+            // A window revealed now must be painted now: the message loop only delivers
+            // `WM_PAINT` for a non-empty update region, and revealing a window that nothing
+            // has invalidated yet shows its old (or unstyled) pixels until something else
+            // happens to dirty it.
+            super::canvas::invalidate_for_handle(hwnd);
+        }
+        #[cfg(not(widgets_unstripped))]
+        {
+            let _ = (widget_id, visible);
+        }
     }
 
     /// The window's current client size, asked of Win32.
@@ -462,20 +594,31 @@ impl Platform for WindowsPlatform {
     ///
     /// The translation is therefore two hops, and it is the same pair the tree painter
     /// needs in the opposite direction: registry id → host window → platform id.
+    ///
+    /// # Why the two hooks are decided by the id, not by trying them in turn
+    ///
+    /// A canvas `HWND` and a toplevel `HWND` have deliberately different invalidation
+    /// behaviour: `invalidate_canvas` marks exactly that child's client area, while a
+    /// toplevel is repainted *with* its children — `WM_ERASEBKGND` returns 1, so
+    /// `BeginPaint` hands out the whole client area and `paint_window_tree` redraws the
+    /// tree over it. Asking Win32 whether the handle has a parent (`GetParent`) picks the
+    /// hook for the id instead of guessing, and it is the same distinction the handle
+    /// table's client/window kinds encode on the control side.
+    ///
+    /// A window's `HWND` is preferred over a canvas's when an id somehow has both, because
+    /// the window is what draws the tracked children — but in practice an id is exactly
+    /// one of the two.
     #[cfg(widgets_unstripped)]
     fn invalidate_surface(&self, id: ObjectId) -> bool {
+        if let Some(hwnd) = super::window_hwnd_for_widget_id(self, id) {
+            super::canvas::invalidate_for_handle(hwnd);
+            return true;
+        }
         if let Some(hwnd) = super::canvas::hwnd_for_widget(id) {
             super::canvas::invalidate_canvas(hwnd);
             return true;
         }
-        // Not a mounted surface: it may be a window, whose `HWND` this backend bound when
-        // it created it. `id` addresses the widget registry, so the host window must be
-        // resolved first, and only the host window's id keys the handle table.
-        let Some(hwnd) = super::window_hwnd_for_widget_id(self, id) else {
-            return false;
-        };
-        super::canvas::invalidate_canvas(hwnd);
-        true
+        false
     }
 
     /// Invalidate one rectangle of the canvas window.
@@ -513,12 +656,34 @@ impl Platform for WindowsPlatform {
             None
         }
     }
+    /// The host integrations this backend actually provides.
+    ///
+    /// # Why `native_menu` is `false`
+    ///
+    /// [`PlatformCapabilities::native_menu`] is documented as "native menu creation and
+    /// trigger support", and this backend has none: `grep` over `src/platform/windows/`
+    /// finds no `create_menu_bar`, `create_menu`, `menu_add_item`,
+    /// `attach_menu_bar_to_window` or `poll_menu_triggered`, so every one of those falls
+    /// through to the trait default. A host that trusted the flag would build a native
+    /// menu bar and get id `0` back.
+    ///
+    /// The menu *data* path that does exist (`control_command_to_widget`, driven by
+    /// `bind_control_command` and read by `WM_COMMAND`) serves a **host's** own native
+    /// controls: the library creates none, because it paints every `WidgetKind` itself, so a
+    /// control made through `create_*` never produces a `WM_COMMAND` at all. That is a
+    /// routing facility for adopted controls, not a menu bar this backend can build, and it
+    /// does not make this flag true. See the notes on the two fields it feeds.
+    ///
+    /// The other three flags have real implementations behind them:
+    /// `dpi_scale_factor()` queries `LOGPIXELSX` on the primary monitor's DC,
+    /// `ime_bridge()` returns the TSF bridge, `accessibility_bridge()` the MSAA/UIA one,
+    /// and typed triggers come from the shared queue (principle #37).
     fn capabilities(&self) -> PlatformCapabilities {
         PlatformCapabilities {
             dpi_scaling: true,
             ime: true,
             accessibility: true,
-            native_menu: true,
+            native_menu: false,
             typed_widget_trigger: true,
         }
     }
@@ -616,11 +781,16 @@ impl Platform for WindowsPlatform {
 
     /// Release every registry entry the backend holds for `widget_id`.
     ///
-    /// Beyond the authoritative `BackendState` record, the Win32 backend keeps
-    /// per-widget entries in the native handle map (`handles`). All of them must be
-    /// purged, otherwise a UI rebuilt in a create/destroy loop would leak one entry
-    /// per discarded widget. Every lock is scoped to its own statement so no two
-    /// guards are ever held at the same time.
+    /// Beyond the authoritative `BackendState` record, this backend keeps four per-widget
+    /// side tables: the id → `HWND` map, the accessibility bridge's handle registration, the
+    /// `control_command_to_widget` map, and the typed-trigger queue. All of them must be
+    /// purged, otherwise a UI rebuilt in a create/destroy loop would leak one entry per
+    /// discarded widget — and a queued trigger for a widget that no longer exists would be
+    /// drained and dispatched against a recycled id.
+    ///
+    /// The `GWLP_USERDATA` marker on the window needs no cleanup of its own: it lives on the
+    /// `HWND`, which dies with the window. Every lock guard is released at the end of its own
+    /// statement so no two of this backend's mutexes are ever held at the same time.
     ///
     /// Only the library's own bookkeeping is released here: no Win32 message is
     /// sent and no window is destroyed — the process-wide HWND may still be owned
@@ -628,15 +798,153 @@ impl Platform for WindowsPlatform {
     fn destroy_widget(&self, widget_id: ObjectId) -> bool {
         #[cfg(target_os = "windows")]
         {
-            if let Ok(mut handles) = self.menu_state.handles.lock() {
-                handles.remove(&widget_id);
-            } else {
-                log::error!("[rust_widgets][windows] destroy_widget: handles mutex poisoned");
+            match self.menu_state.handles.lock() {
+                Ok(mut handles) => {
+                    handles.remove(&widget_id);
+                }
+                Err(_) => log::error!(
+                    "[rust_widgets][windows] destroy_widget: handles mutex poisoned; the entry \
+                     for widget {widget_id} was not released"
+                ),
             }
+            match self.menu_state.control_command_to_widget.lock() {
+                Ok(mut commands) => commands.retain(|_, owner| *owner != widget_id),
+                Err(_) => log::error!(
+                    "[rust_widgets][windows] destroy_widget: command map poisoned; command ids \
+                     for widget {widget_id} were not released"
+                ),
+            }
+            // A trigger already queued for a widget that is going away would otherwise be
+            // drained and delivered to whatever id is recycled next. `macos_objc2` and
+            // `wayland` both retain the same way; this backend did not.
+            match self.menu_state.pending_widget_events.lock() {
+                Ok(mut events) => events.retain(|event| event.widget_id != widget_id),
+                Err(_) => log::error!(
+                    "[rust_widgets][windows] destroy_widget: trigger queue poisoned; queued \
+                     events for widget {widget_id} were not released"
+                ),
+            }
+            self.a11y_bridge.unregister_handle(widget_id);
         }
 
         // The state record is the authority on whether the widget existed.
         self.state.destroy_widget(widget_id)
+    }
+
+    // ── Typed trigger queue ─────────────────────────────────────────────────
+    //
+    // `capabilities().typed_widget_trigger` reports `true`, and before these three methods
+    // existed that was a **lie**: `WM_COMMAND` and `WM_NOTIFY` pushed events into
+    // `menu_state.pending_widget_events`, and nothing ever popped them. A host that trusted
+    // the flag, adopted one of its own native controls, clicked it and polled would get
+    // `None` forever, while the queue grew without bound.
+    //
+    // The flag was not wrong to be `true` — the queue really is produced by this backend and
+    // really is typed (`WidgetTriggerEvent` carries a `WidgetTriggerKind`, not a bare id).
+    // What was missing was the drain. These are the same three methods `android`, `ios`,
+    // `harmony` and `wayland` implement over their own queues, so the trait's contract is now
+    // met the same way as its siblings.
+
+    /// Pops the oldest queued typed activation.
+    ///
+    /// Reports nothing for a poisoned queue rather than panicking: the poll happens on
+    /// whatever thread the host drains from, and a wedged queue is a condition to surface at
+    /// the point of failure (logged below), not to unwind out of a trait method.
+    fn poll_widget_trigger_event(&self) -> Option<WidgetTriggerEvent> {
+        #[cfg(target_os = "windows")]
+        {
+            match self.menu_state.pending_widget_events.lock() {
+                Ok(mut events) => events.pop_front(),
+                Err(_) => {
+                    log::error!(
+                        "[rust_widgets][windows] poll_widget_trigger_event: trigger queue \
+                         poisoned; queued activations cannot be delivered"
+                    );
+                    None
+                }
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            None
+        }
+    }
+
+    /// Pops the oldest activation, without its payload.
+    ///
+    /// # Why this maps onto the typed queue rather than a second store
+    ///
+    /// The two methods answer the same question at two levels of detail, and a backend that
+    /// kept them in separate queues would be able to deliver the same activation twice (once
+    /// through each). Deriving the untyped answer from the typed queue makes that impossible
+    /// by construction: an event can only be popped once, from one place.
+    fn poll_widget_triggered(&self) -> Option<ObjectId> {
+        self.poll_widget_trigger_event().map(|event| event.widget_id)
+    }
+
+    /// Pops the oldest queued activation belonging to `widget_id`.
+    ///
+    /// The targeted pop [`crate::drain_widget_triggers_for`] uses, so a host that polls per
+    /// widget does not steal a sibling's events. Unknown ids are refused rather than queued: a
+    /// trigger for a widget that does not exist could only be dispatched against a recycled
+    /// id, which is the defect `destroy_widget` now also guards against.
+    fn pop_widget_trigger_event_for(&self, widget_id: ObjectId) -> Option<WidgetTriggerEvent> {
+        #[cfg(target_os = "windows")]
+        {
+            if !self.state.contains_widget(widget_id) {
+                return None;
+            }
+            match self.menu_state.pending_widget_events.lock() {
+                Ok(mut events) => events
+                    .iter()
+                    .position(|event| event.widget_id == widget_id)
+                    .and_then(|index| events.remove(index)),
+                Err(_) => {
+                    log::error!(
+                        "[rust_widgets][windows] pop_widget_trigger_event_for: trigger queue \
+                         poisoned; the activation for widget {widget_id} cannot be delivered"
+                    );
+                    None
+                }
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = widget_id;
+            None
+        }
+    }
+
+    /// Queues a typed activation as if the host's own control had produced it.
+    ///
+    /// This is the injection half of the same contract, and the one a test uses: it is how a
+    /// host can synthesise an activation for a control that has no native notification route
+    /// here (the library paints every `WidgetKind`, so most controls produce none).
+    fn inject_widget_trigger_event(&self, widget_id: ObjectId, kind: WidgetTriggerKind) -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            if !self.state.contains_widget(widget_id) {
+                return false;
+            }
+            match self.menu_state.pending_widget_events.lock() {
+                Ok(mut events) => {
+                    events.push_back(WidgetTriggerEvent { widget_id, kind });
+                    true
+                }
+                Err(_) => {
+                    log::error!(
+                        "[rust_widgets][windows] inject_widget_trigger_event: trigger queue \
+                         poisoned; the activation for widget {widget_id} was not queued"
+                    );
+                    false
+                }
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (widget_id, kind);
+            false
+        }
     }
 
     fn create_window(&self, title: &str, x: i32, y: i32, width: u32, height: u32) -> ObjectId {
@@ -683,7 +991,9 @@ impl Platform for WindowsPlatform {
             }
             let widget_id =
                 self.state.create_widget(WindowsHandleKind::Window, title, x, y, width, height);
-            self.bind_native_handle(widget_id, hwnd);
+            // SAFETY: `hwnd` was just returned by `CreateWindowExW` above and checked
+            // non-null, so it is a live window for the life of this backend.
+            unsafe { self.bind_native_handle(widget_id, hwnd) };
             // `WS_OVERLAPPEDWINDOW` is titled + resizable, so a fresh Win32 window
             // starts restored, windowed, resizable and decorated.
             self.state.init_window_state(

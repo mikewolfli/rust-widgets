@@ -65,8 +65,8 @@ fn objc2_reports_no_native_controls() {
     assert_eq!(backend.create_status_bar(window, "Ready", 0, 96, 200, 24), 0);
 }
 
-/// Control state is owned by the widget, so the trait defaults report absence
-/// rather than a value invented by this backend.
+/// Control *values* the host does not own are absent, but a window's own text is
+/// recorded by the shared `BackendState`, so it reads back rather than answering `""`.
 #[test]
 fn objc2_owns_no_control_state() {
     let backend = MacOSObjc2Platform::new();
@@ -75,14 +75,14 @@ fn objc2_owns_no_control_state() {
 
     assert_eq!(backend.widget_value(window), None, "no numeric value to report");
     assert_eq!(backend.is_widget_checked(window), None, "nothing here is checkable");
-    assert_eq!(backend.get_widget_text(window), "", "no control text to read back");
+    assert_eq!(backend.get_widget_text(window), "w", "the recorded window text reads back");
 }
 
 /// A window must get a usable id and keep it across the lifecycle calls.
 ///
-/// Visibility is control state the widget now owns, so this backend reports
-/// absence there rather than pretending a window was shown. The id contract is
-/// what it still owes a caller.
+/// Visibility is window state the shared `BackendState` owns: a freshly created
+/// window is visible and stops being visible once hidden. The id contract is the
+/// other half this backend owes a caller.
 #[test]
 fn objc2_window_lifecycle_parity() {
     let backend = MacOSObjc2Platform::new();
@@ -90,8 +90,10 @@ fn objc2_window_lifecycle_parity() {
     let window = backend.create_window("TestWindow", 100, 200, 640, 480);
     assert!(window > 0, "Window should be created");
 
-    // Visibility is not this host's state to report.
-    assert!(!backend.is_widget_visible(window), "the host holds no control visibility");
+    // A newly created window is visible, and set_widget_visible round-trips through state.
+    assert!(backend.is_widget_visible(window), "a new window is visible");
+    backend.set_widget_visible(window, false);
+    assert!(!backend.is_widget_visible(window), "a window hidden through state is not visible");
     // Teardown reports whether the widget existed, which is state this host owns.
     assert!(backend.destroy_widget(window), "an existing window must be destroyable");
     assert!(!backend.destroy_widget(window), "a destroyed window must not report existence twice");

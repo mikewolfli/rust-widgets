@@ -10,7 +10,7 @@ use crate::widget::capability::coercion::{expect_bool, expect_string};
 use crate::widget::capability::properties_trait::{base_property_get, base_property_set};
 use crate::widget::capability::types::{CapabilityAccessError, CapabilityValue};
 use crate::widget::capability::WidgetProperties;
-use crate::widget::metrics::{dimensions, ControlMetrics};
+use crate::widget::metrics::{dimensions, estimate_text_width, ControlMetrics};
 use crate::widget::{BaseWidget, Draw, Widget, WidgetKind};
 use crate::{impl_widget_property_hooks, property_names_of};
 /// Toggle button state enumeration.
@@ -274,7 +274,16 @@ impl Widget for ToggleButton {
         // literal pair (`75`/`28`) disagreed with `Button`'s `BUTTON_MIN` (64x40) about how
         // big a push button is, so two buttons that look identical reported different sizes
         // and — once `draw` started deriving its band from this hint — drew at two heights.
-        let label_width = self.text().len() as u32 * 8;
+        //
+        // # Why the width comes from the shared estimate and not `len() * 8`
+        //
+        // This read `self.text().len() as u32 * 8`, which counts UTF-8 **bytes**, while
+        // `Button::implicit_size` — the sibling this comment says it matches — measures with
+        // `estimate_text_width`, which counts **clusters** and applies the font's `letter_spacing`.
+        // The comment was therefore describing an agreement the code did not have: a `Button` and a
+        // `ToggleButton` with the same caption reported different widths, and the gap widened with
+        // every non-ASCII character (a CJK caption measured three times its drawn width).
+        let label_width = estimate_text_width(self.text(), &crate::core::Font::default(), 1.0);
         ControlMetrics::implicit_size(
             Size::new(label_width, dimensions::FONT_SIZE_BASE + 4),
             EdgeOffsets::symmetric(dimensions::BUTTON_PADDING_V, dimensions::BUTTON_PADDING_H),
