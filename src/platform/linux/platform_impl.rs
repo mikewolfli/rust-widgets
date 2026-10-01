@@ -572,7 +572,10 @@ impl Platform for LinuxPlatform {
                 gtk::gdk::EventMask::BUTTON_PRESS_MASK
                     | gtk::gdk::EventMask::BUTTON_RELEASE_MASK
                     | gtk::gdk::EventMask::POINTER_MOTION_MASK
-                    | gtk::gdk::EventMask::SCROLL_MASK,
+                    | gtk::gdk::EventMask::SCROLL_MASK
+                    | gtk::gdk::EventMask::KEY_PRESS_MASK
+                    | gtk::gdk::EventMask::KEY_RELEASE_MASK
+                    | gtk::gdk::EventMask::LEAVE_NOTIFY_MASK,
             );
             let click_area = paint_area.clone();
             paint_area.connect_button_press_event(move |widget, event| {
@@ -623,6 +626,141 @@ impl Platform for LinuxPlatform {
                 release_area.queue_draw();
                 glib::Propagation::Proceed
             });
+
+            // Hover, and the wheel.
+            //
+            // # Why the masks above were not enough
+            //
+            // `POINTER_MOTION_MASK` and `SCROLL_MASK` were already requested, so GTK was
+            // delivering both signals to a widget that had never connected them — the
+            // request made the work happen and the result was discarded. Two capabilities
+            // were therefore unreachable on a GTK **window** while working on a GTK
+            // **canvas** (which connects both): no control ever showed a hover highlight,
+            // and a scroll area never scrolled. That is the same window/canvas asymmetry
+            // this block's own doc records for the click and key paths, one message later.
+            let motion_area = paint_area.clone();
+            paint_area.connect_motion_notify_event(move |widget, event| {
+                let (x, y) = event.position();
+                let point = crate::core::Point::new(x as i32, y as i32);
+                let Some(window_widget) = crate::widget::runtime::widget_id_for_host_window(id)
+                else {
+                    return glib::Propagation::Proceed;
+                };
+                // Routed through the same path a click uses, which is what lets the router
+                // own the enter/leave pair: the widget layer synthesises `MouseEnter` and
+                // `MouseLeave` from a move, so a plain `MouseMove` carries the hover.
+                if crate::widget::runtime::dispatch_pointer_event(
+                    window_widget,
+                    &crate::event::Event::MouseMove { pos: point },
+                    point,
+                ) {
+                    widget.queue_draw();
+                    crate::platform::linux::canvas::note_canvas_redraw(window_widget);
+                }
+                glib::Propagation::Proceed
+            });
+
+            let wheel_area = paint_area.clone();
+            paint_area.connect_scroll_event(move |widget, event| {
+                let Some(window_widget) = crate::widget::runtime::widget_id_for_host_window(id)
+                else {
+                    return glib::Propagation::Proceed;
+                };
+                // The canvas decodes the wheel the same way; see `linux::canvas` for why
+                // `direction()` wins over `delta()` when it is set.
+                let (_, delta_y) = event.delta();
+                let dy = match event.direction() {
+                    gtk::gdk::ScrollDirection::Up => -1.0,
+                    gtk::gdk::ScrollDirection::Down => 1.0,
+                    _ => delta_y,
+                };
+                let wheel = crate::event::Event::Wheel {
+                    delta: crate::core::Point::new(0, dy.round() as i32),
+                    modifiers: 0,
+                };
+                let target = crate::widget::runtime::hovered_widget().unwrap_or(window_widget);
+                if crate::widget::runtime::dispatch_event(target, &wheel) {
+                    wheel_area.queue_draw();
+                    crate::platform::linux::canvas::note_canvas_redraw(target);
+                }
+                glib::Propagation::Proceed
+            });
+
+            // The pointer left the window entirely, which the coordinate-based hover
+            // transition cannot observe: there is no control under the pointer any more, so
+            // whatever was highlighted would stay highlighted forever. The canvas connects
+            // the same signal for the same reason.
+            let leave_area = paint_area.clone();
+            paint_area.connect_leave_notify_event(move |widget, _| {
+                crate::widget::runtime::clear_hover(crate::core::Point::new(0, 0));
+                widget.queue_draw();
+                if let Some(window_widget) = crate::widget::runtime::widget_id_for_host_window(id) {
+                    crate::platform::linux::canvas::note_canvas_redraw(window_widget);
+                }
+                leave_area.queue_draw();
+                glib::Propagation::Proceed
+            });
+
+            // Touch, and drag-and-drop.
+            //
+            // # Why the canvas had gestures and the window did not
+            //
+            // `linux::canvas` requests `TOUCH_MASK` and connects `connect_touch_event`, so a
+            // mounted surface feeds the eleven gesture recognisers. The window requested no
+            // such mask, so on a touch-capable desktop (or a `tablet` build on a touchscreen)
+            // a pinch or a swipe over a **window-hosted** control produced nothing at all,
+            // while the same gesture over a mounted surface worked. Same window, same user,
+            // two answers — the asymmetry this block's own doc warns about.
+            //
+            // Gated on `touch` exactly as the canvas is: `Event::Touch*` does not exist
+            // without the capability (see `crate::event::types`).
+            #[cfg(feature = "touch")]
+            {
+                paint_area.add_events(gtk::gdk::EventMask::TOUCH_MASK);
+                paint_area.connect_touch_event(move |widget, event| {
+                    // Narrowing to `EventTouch` first: `position()` is declared on the concrete
+                    // type, not on the generic `gdk::Event` the handler receives.
+                    let Some(touch) = event.downcast_ref::<gtk::gdk::EventTouch>() else {
+                        return glib::Propagation::Proceed;
+                    };
+                    let Some(window_widget) = crate::widget::runtime::widget_id_for_host_window(id)
+                    else {
+                        return glib::Propagation::Proceed;
+                    };
+                    let (x, y) = touch.position();
+                    let point = crate::core::Point::new(x as i32, y as i32);
+                    // `GdkEventSequence` identifies the contact for its whole lifetime, which is
+                    // what the recognisers follow. Its pointer is used as the id and only ever
+                    // compared — the canvas makes the same choice.
+                    let touch_id = touch
+                        .event_sequence()
+                        .map(|sequence| sequence.as_ptr() as u64)
+                        .unwrap_or(0);
+                    let translated = match touch.event_type() {
+                        gtk::gdk::EventType::TouchBegin => {
+                            crate::event::Event::TouchBegin { pos: point, touch_id }
+                        }
+                        gtk::gdk::EventType::TouchUpdate => {
+                            crate::event::Event::TouchMove { pos: point, touch_id }
+                        }
+                        // A cancel terminates the contact like an end does; reporting nothing
+                        // would leave `PinchGesture` holding a phantom finger forever.
+                        gtk::gdk::EventType::TouchEnd | gtk::gdk::EventType::TouchCancel => {
+                            crate::event::Event::TouchEnd { pos: point, touch_id }
+                        }
+                        _ => return glib::Propagation::Proceed,
+                    };
+                    if crate::widget::runtime::dispatch_pointer_event(
+                        window_widget,
+                        &translated,
+                        point,
+                    ) {
+                        widget.queue_draw();
+                        crate::platform::linux::canvas::note_canvas_redraw(window_widget);
+                    }
+                    glib::Propagation::Proceed
+                });
+            }
 
             // Key events go to whatever the router focused, so typing reaches a field the
             // user clicked rather than always the window. Tab is forwarded too, which is

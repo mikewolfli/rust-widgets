@@ -463,6 +463,27 @@ impl ViewEngine {
                 self.overlay_layer = Some(layer);
             }
         }
+
+        // ── Lifecycle hooks for the subtrees this batch created and destroyed ──
+        //
+        // # Why this is here and not left to `mount`
+        //
+        // `Node::on_mount`/`on_unmount` are documented as **always paired** (see `node.rs`), and
+        // `mount_with` honoured that pair. The update path did not: a node that appeared through a
+        // breakpoint or a `child_if` — the exact structural change a diff exists to handle — got
+        // its control created and its `on_mount` never called, while a node that disappeared got
+        // its control detached and its `on_unmount` never called. A subscription or timer opened in
+        // one and released in the other therefore leaked on every rebuild.
+        //
+        // # Order, and why the paths come from the *old* map
+        //
+        // Unmounts must be resolved against the tree that was mounted until now, so they run
+        // **before** `reindex_paths` replaces `id_of_path` with the new tree's paths — after that
+        // call a removed node has no path to be found at. Mounts must be resolved against the new
+        // tree, so they run **after** the reindex. The walks are over the trees rather than over the
+        // patch list, because a hook belongs to a node; the patches only say *which* nodes changed.
+        self.run_unmount_hooks_for_removals(&previous, &report.patches);
+
         // Sync the path map to the new tree's shape for the surviving nodes; a node the diff
         // did not mention keeps its path only if its ancestor chain is unchanged.
         self.reindex_paths(&next);
@@ -485,8 +506,143 @@ impl ViewEngine {
             );
         }
 
+        // Mounts run last: a hook is allowed to read the engine's own view of the tree
+        // (`Self::current`) and to address siblings through `id_of_path`, both of which describe
+        // the new tree only once it is installed.
+        // Mounts run last: a hook is allowed to read the engine's own view of the tree
+        // (`Self::current`) and to address siblings through `id_of_path`, both of which describe
+        // the new tree only once it is installed. `created` is computed from `next` **before** the
+        // move into `self.current`, so no clone of the whole tree is needed.
+        let created = self.created_ids_this_batch(&next, &report.patches);
         self.current = Some(next);
+        if let Some(next) = self.current.as_ref() {
+            self.run_mount_hooks_for_created(next, &[], &created);
+        }
+
         report
+    }
+
+    /// The ids a batch created, found by locating each inserted subtree in the **new** tree.
+    ///
+    /// Read from the tree rather than from `reserved`, because a `Replace` does not go through
+    /// `reserved` at all — `apply` calls `create` inline for it — and its new id is not named by
+    /// the patch. Locating by node value covers both variants with one rule.
+    ///
+    /// A `Replace`'s new control is found because the replacement subtree appears in `next` at the
+    /// replaced node's path; an `Insert`'s because the inserted subtree appears at its new path.
+    fn created_ids_this_batch(
+        &self,
+        next: &Node,
+        patches: &[super::Patch],
+    ) -> crate::compat::HashMap<ObjectId, ()> {
+        let mut created = crate::compat::HashMap::new();
+        for patch in patches {
+            let node = match patch {
+                super::Patch::Insert { node, .. } | super::Patch::Replace { node, .. } => node,
+                _ => continue,
+            };
+            if let Some(path) = find_path_of(next, node) {
+                if let Some(id) = self.id_at(&path) {
+                    created.insert(id, ());
+                }
+            }
+        }
+        created
+    }
+
+    /// Runs `on_unmount` for each subtree a batch removed, from the **old** tree.
+    ///
+    /// Walks `previous` so the hooks being torn down are the ones the *declaration* carried, and
+    /// matches a node to a removal by the id the layout recorded for its path. Parent-first, as
+    /// [`Self::run_unmount_hooks`] documents.
+    fn run_unmount_hooks_for_removals(&self, previous: &Node, patches: &[super::Patch]) {
+        let mut removed: crate::compat::HashMap<ObjectId, ()> = crate::compat::HashMap::new();
+        for patch in patches {
+            match patch {
+                super::Patch::Remove { id } | super::Patch::Replace { id, .. } => {
+                    removed.insert(*id, ());
+                }
+                _ => {}
+            }
+        }
+        if removed.is_empty() {
+            return;
+        }
+        self.run_unmount_hooks_for_ids(previous, &[], &removed);
+    }
+
+    /// Walks `node`'s subtree, running `on_unmount` for each node whose control id is in `removed`.
+    fn run_unmount_hooks_for_ids(
+        &self,
+        node: &Node,
+        path: &[usize],
+        removed: &crate::compat::HashMap<ObjectId, ()>,
+    ) {
+        // Parent-first, mirroring `run_unmount_hooks`. The id comes from `id_of_path`, which still
+        // describes `previous` because it is only rewritten by `reindex_paths` — called below this.
+        if let Some(id) = self.id_at(path) {
+            if removed.contains_key(&id) {
+                if let Some(hook) = &node.on_unmount {
+                    hook(id);
+                }
+            }
+        }
+        for (index, child) in node.children.iter().enumerate() {
+            let mut child_path = path.to_vec();
+            child_path.push(index);
+            self.run_unmount_hooks_for_ids(child, &child_path, removed);
+        }
+    }
+
+    /// Runs `on_mount` for each node of the **new** tree whose control id the batch created.
+    ///
+    /// A node qualifies when its control id is in `created`, or when it has a parent that
+    /// qualified and the parent is a newly created subtree's root — the recursion carries that
+    /// fact so a whole inserted subtree mounts rather than only its top node.
+    fn run_mount_hooks_for_created(
+        &self,
+        node: &Node,
+        path: &[usize],
+        created: &crate::compat::HashMap<ObjectId, ()>,
+    ) {
+        let id = self.id_at(path);
+        // A root node is never "created" by a batch: `Replace` at the root is refused
+        // (`root_replaced`), so the root's id is the one it already had. Reading it as created when
+        // the map happens to contain it would fire a root's hook on every rebuild.
+        let is_new = !path.is_empty() && id.is_some_and(|id| created.contains_key(&id));
+        if is_new {
+            // Children-first, mirroring `run_mount_hooks`: a parent hook may read its own subtree.
+            for (index, child) in node.children.iter().enumerate() {
+                let mut child_path = path.to_vec();
+                child_path.push(index);
+                self.run_mount_hooks_for_created_subtree(child, &child_path);
+            }
+            if let Some(hook) = &node.on_mount {
+                if let Some(id) = id {
+                    hook(id);
+                }
+            }
+            return;
+        }
+        for (index, child) in node.children.iter().enumerate() {
+            let mut child_path = path.to_vec();
+            child_path.push(index);
+            self.run_mount_hooks_for_created(child, &child_path, created);
+        }
+    }
+
+    /// Runs `on_mount` (children-first) for every node of a subtree known to be new.
+    fn run_mount_hooks_for_created_subtree(&self, node: &Node, path: &[usize]) {
+        for (index, child) in node.children.iter().enumerate() {
+            let mut child_path = path.to_vec();
+            child_path.push(index);
+            self.run_mount_hooks_for_created_subtree(child, &child_path);
+        }
+        if let Some(hook) = &node.on_mount {
+            if let Some(id) = self.id_at(path) {
+                hook(id);
+            }
+        }
     }
 
     /// The tree currently mounted, if any.
@@ -1269,6 +1425,91 @@ mod tests {
         engine.mount(&One(Rc::clone(&seen)), &ids.creator());
         let id = seen.borrow().expect("the mount hook ran and saw an id");
         assert_eq!(engine.id_at(&[0]), Some(id), "and the id addresses the mounted label");
+    }
+
+    /// A view whose label is present only when `shown`, and counts its own mounts/unmounts.
+    struct Toggled {
+        shown: Rc<RefCell<bool>>,
+        mounts: Rc<RefCell<u32>>,
+        unmounts: Rc<RefCell<u32>>,
+    }
+
+    impl View for Toggled {
+        fn build(&self) -> Node {
+            let mut root = Node::new("window").key("root");
+            if *self.shown.borrow() {
+                let mounts = Rc::clone(&self.mounts);
+                let unmounts = Rc::clone(&self.unmounts);
+                root = root.child(
+                    Node::new("label")
+                        .key("value")
+                        .on_mount(move |_id| *mounts.borrow_mut() += 1)
+                        .on_unmount(move |_id| *unmounts.borrow_mut() += 1),
+                );
+            }
+            root
+        }
+    }
+
+    /// An `Insert` on the update path fires `on_mount` for the subtree it created.
+    ///
+    /// # The defect this pins
+    ///
+    /// `Node::on_mount`/`on_unmount` are documented as **always paired** (`node.rs`), and the mount
+    /// path honoured that. The update path did not: a control that appeared through a breakpoint or
+    /// a `child_if` — the exact structural change a diff exists to handle — had its `on_mount`
+    /// silently skipped, so a subscription or timer opened there never ran and its paired
+    /// `on_unmount` had nothing to release.
+    #[test]
+    fn an_inserted_subtree_fires_its_mount_hook() {
+        let shown = Rc::new(RefCell::new(false));
+        let mounts = Rc::new(RefCell::new(0));
+        let unmounts = Rc::new(RefCell::new(0));
+        let view = Toggled {
+            shown: Rc::clone(&shown),
+            mounts: Rc::clone(&mounts),
+            unmounts: Rc::clone(&unmounts),
+        };
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+
+        // Mount without the label: one control (the window), no hook yet.
+        engine.mount(&view, &ids.creator());
+        assert_eq!(*mounts.borrow(), 0, "the label is absent on the first build");
+
+        // Turn it on. The diff reports an `Insert`, which must mount the new subtree.
+        *shown.borrow_mut() = true;
+        engine.update(&view, &ids.creator());
+        assert_eq!(*mounts.borrow(), 1, "the inserted subtree must fire its mount hook");
+        assert!(
+            engine.id_at(&[0]).is_some(),
+            "and the hook's node must be addressable in the new tree"
+        );
+    }
+
+    /// A `Remove` on the update path fires `on_unmount` for the subtree it destroyed.
+    #[test]
+    fn a_removed_subtree_fires_its_unmount_hook() {
+        let shown = Rc::new(RefCell::new(true));
+        let mounts = Rc::new(RefCell::new(0));
+        let unmounts = Rc::new(RefCell::new(0));
+        let view = Toggled {
+            shown: Rc::clone(&shown),
+            mounts: Rc::clone(&mounts),
+            unmounts: Rc::clone(&unmounts),
+        };
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+
+        engine.mount(&view, &ids.creator());
+        assert_eq!(*mounts.borrow(), 1, "the label mounted");
+        assert_eq!(*unmounts.borrow(), 0, "and has not left yet");
+
+        // Turn it off. The diff reports a `Remove`, which must unmount the subtree.
+        *shown.borrow_mut() = false;
+        engine.update(&view, &ids.creator());
+        assert_eq!(*unmounts.borrow(), 1, "the removed subtree must fire its unmount hook");
+        assert_eq!(*mounts.borrow(), 1, "and nothing remounted");
     }
 
     // ── Context propagation (BLUE23 §5A.4) ──────────────────────────────

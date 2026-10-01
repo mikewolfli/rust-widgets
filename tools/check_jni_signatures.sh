@@ -88,7 +88,7 @@ for SO in target/*-linux-android/debug/librust_widgets.so; do
     --report "$QA_DIR/jni_binding_map.$(basename "$(dirname "$(dirname "$SO")")").json"
 done
 if [[ "$SO_FOUND" -eq 0 ]]; then
-  echo "  (skipped — no Android .so built; run: cargo build --lib --target aarch64-linux-android --features \"android-jni jni mobile-api\")"
+  echo "  (skipped — no Android .so built; run: cargo build --lib --target aarch64-linux-android --features \"android-jni jni mobile controls-custom controls-native serde serde_json\")"
 fi
 
 echo "✅ JNI signature checks passed (mapping reports in $QA_DIR/)"

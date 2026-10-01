@@ -31,14 +31,18 @@
 //! # Java-side usage
 //!
 //! ```java
-//! package rust.widgets;
+//! package rust_widgets;
 //!
 //! public class RustWidgets {
 //!     static { System.loadLibrary("rust_widgets"); }
 //!
 //!     public static native void nativeInit();
-//!     public static native void nativeAttachContext(android.content.Context context);
-//!     public static native long nativeOpenDocument(String mimeType);
+//!     // `int`, not `void`/`boolean`: the Rust exports return `jint` (1/0). See
+//!     // `bindings/android/java/rust_widgets/RustWidgets.java` for why the return type is
+//!     // ABI rather than decoration, and `tools/check_jni_signatures.sh` for the gate that
+//!     // now compares it.
+//!     public static native int nativeAttachContext(android.content.Context context);
+//!     public static native int nativeOpenDocument(String mimeType);
 //! }
 //! ```
 //!
@@ -223,7 +227,7 @@ pub fn android_integration_ready() -> IntegrationStatus {
 /// Kept as a named constant next to the functions it counts, and asserted by a
 /// test, so adding an entry point without updating it fails the build rather than
 /// silently misreporting the integration's surface.
-pub const NATIVE_METHOD_COUNT: u32 = 8;
+pub const NATIVE_METHOD_COUNT: u32 = 9;
 
 /// Runs `f` with a JNI environment, attaching the current thread if needed.
 ///
@@ -449,6 +453,157 @@ pub extern "system" fn Java_rust_1widgets_RustWidgets_nativeInstallLogging(
     _class: jni::objects::JClass,
 ) {
     init_logging();
+}
+
+/// Runs the on-device widget self-test and returns a pass/fail bitmask.
+///
+/// # Why the bridge needs this
+///
+/// Everything else in this file proves the **plumbing**: the VM is stored, a Context is
+/// attached, a resize is reported. None of it proves that the library can create, mutate
+/// and read back a control on Android — and that is the part a host app actually depends
+/// on. The iOS probe has exercised the same path through the C ABI since it was written
+/// (`rw_create_window` → `rw_create_button` → `rw_set_widget_text` → `rw_get_widget_text`),
+/// so Android was the platform whose widget path had no runtime evidence at all.
+///
+/// # Why this is a JNI entry point and not a `nativeCreate*` JS declaration
+///
+/// The Android Java wrapper deliberately exposes no per-kind creators: the library paints
+/// every `WidgetKind` itself, so a host supplies a window and a drawing surface rather than
+/// one native `View` per kind (BLUE15 #55/#56). Adding `nativeCreateButton` back just to
+/// test would re-introduce exactly the API the project removed. A single self-test entry
+/// point that drives the real widget API keeps the Java surface honest and still produces
+/// on-device evidence.
+///
+/// Returns a bitmask so a host can log *which* step failed rather than only that one did:
+///
+/// | bit | step |
+/// |---|---|
+/// | 0 | `create_window` returned a live id |
+/// | 1 | `create_button` returned a live id under it |
+/// | 2 | the button's text round-trips through the property contract |
+/// | 3 | geometry is recorded and read back |
+/// | 4 | visibility toggles and reads back |
+/// | 5 | `destroy` actually unmounted both controls |
+/// | 6 | the backend does not claim a native menu it has none of |
+/// | 7 | the backend identifies itself |
+///
+/// A return of `0b11111111` (255) is a full pass.
+#[no_mangle]
+pub extern "system" fn Java_rust_1widgets_RustWidgets_nativeWidgetSelfTest(
+    _env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+) -> jni::sys::jint {
+    widget_self_test()
+}
+
+/// The widget self-test body, separate from the JNI shim so its steps can be unit-tested.
+///
+/// See [`Java_rust_1widgets_RustWidgets_nativeWidgetSelfTest`] for the bit meanings.
+#[cfg(not(alloc_frugal))]
+fn widget_self_test() -> jni::sys::jint {
+    let mut passed = 0;
+
+    // 1. A window. This is the `create_*` entry a host actually calls, so the test
+    //    exercises the same path an application does rather than reaching past it.
+    let window = crate::create_window("Self Test", 0, 0, 1080, 1920);
+    if window == 0 {
+        log::error!("[android-jni] widget self-test: create_window returned 0");
+        return passed;
+    }
+    passed |= 1;
+
+    // 2. A child control under it.
+    let button = crate::create_button(window, "Self Test", 16, 16, 240, 64);
+    if button == 0 {
+        log::error!("[android-jni] widget self-test: create_button returned 0");
+        destroy(window);
+        return passed;
+    }
+    passed |= 1 << 1;
+
+    // 3. Text round-trip through the real property contract.
+    crate::set_widget_text(button, "Round Tripped");
+    let read_back = crate::get_widget_text(button);
+    if read_back == "Round Tripped" {
+        passed |= 1 << 2;
+    } else {
+        log::error!("[android-jni] widget self-test: text read back as {read_back:?}");
+    }
+
+    // 4. Geometry is recorded and read back by the painter.
+    let (x, y, w, h) = (32, 48, 320, 80);
+    crate::set_widget_geometry(button, x, y, w, h);
+    match crate::widget_geometry(button) {
+        Some(rect) if rect == (x, y, w, h) => {
+            passed |= 1 << 3;
+        }
+        other => log::error!("[android-jni] widget self-test: geometry read back as {other:?}"),
+    }
+
+    // 5. Visibility toggles and reads back through the same predicate a painter consults.
+    crate::hide_widget(button);
+    let hidden = !crate::is_widget_visible(button);
+    crate::show_widget(button);
+    let shown = crate::is_widget_visible(button);
+    if hidden && shown {
+        passed |= 1 << 4;
+    } else {
+        log::error!("[android-jni] widget self-test: hidden={hidden} shown={shown}");
+    }
+
+    // 6. Nothing was left mounted behind the test: the ids are gone, so a host that runs
+    //    this cannot inherit controls it never created.
+    destroy(button);
+    destroy(window);
+    if !crate::widget::runtime::is_mounted(button) && !crate::widget::runtime::is_mounted(window) {
+        passed |= 1 << 5;
+    } else {
+        log::error!("[android-jni] widget self-test: a control survived destroy");
+    }
+
+    // 7. The platform facts the host reads to decide which affordances to offer.
+    //
+    // `capabilities()` is a **claim**: a set bit promises the method behind it answers. The
+    // Android backend inherits the trait default (all false except `typed_widget_trigger`),
+    // so the only assertion worth making here is that it does not claim a native menu — an
+    // over-claim on this platform is the defect `src/platform/ios/status.md` records for its
+    // own flags, and the one `capabilities()` was written to stop.
+    let caps = crate::platform::capabilities();
+    if !caps.native_menu {
+        passed |= 1 << 6;
+    } else {
+        log::error!("[android-jni] widget self-test: Android claims a native menu it has none of");
+    }
+
+    // 8. The backend identifies itself, so a host can report which one it linked.
+    let backend = crate::platform::backend_name();
+    if !backend.is_empty() {
+        passed |= 1 << 7;
+    } else {
+        log::error!("[android-jni] widget self-test: the backend reported no name");
+    }
+
+    passed
+}
+
+/// Tears a control down through the same backend call the C ABI's `rw_destroy_widget` uses.
+///
+/// Named locally rather than reaching for `crate::destroy_widget`, which does not exist: the
+/// crate's public surface creates controls and the backend destroys them, so calling the
+/// backend directly is what makes this the same path a host's teardown takes.
+#[cfg(not(alloc_frugal))]
+fn destroy(widget_id: crate::core::ObjectId) {
+    let _ = crate::control_backend::get_control_backend().destroy_widget(widget_id);
+}
+
+/// `alloc_frugal` compiles `widget::runtime` out, so there is no registry to self-test.
+///
+/// Answers `0` — "nothing was verified" — rather than a fabricated pass, which is the same
+/// honest-absence rule the rest of this module follows.
+#[cfg(alloc_frugal)]
+fn widget_self_test() -> jni::sys::jint {
+    0
 }
 
 /// Releases the stored `Activity` `Context`.

@@ -333,3 +333,28 @@
 | `check_web_engine_honest.sh` | ✅ see "BLUE25 C-wave 8" | ✅ |
 | `check_widget_registration_fidelity.sh` | ✅ see "BLUE25 C-wave 6" | ✅ |
 | `check_wire_rules_are_data.sh` | ✅ see "BLUE25 C-wave 4" | ✅ |
+
+## Android runtime round (2026-10-01)
+
+| gate | injected | reported |
+|---|---|---|
+| `check_jni_signatures.sh` (strengthened, 2026-10-01) | changed `public static native int nativeMethodCount();` in `bindings/android/java/rust_widgets/RustWidgets.java` to `String nativeMethodCount()` | `  -- Android testapp wrapper` / `❌ \`nativeMethodCount\` return: Java implies jstring, Rust declares jni::sys::jint (Java_rust_1widgets_RustWidgets_nativeMethodCount)` / `JNI signature check: 8 declarations, 1 error(s)` |
+| `check_android_runtime.sh` (new) | replaced the macOS SDK-layout fallback in `tools/run_android_testapp.sh` with `SDK_ROOT="/nonexistent-sdk-for-injection"`, i.e. re-created the state the gate was written for (the scripts could only find the SDK on the Linux layout) | the gate's own banner still printed (`SDK=/Users/mikewolfli/Library/Android/sdk AVD=Medium_Phone_API_36.1`) and the probe then refused: `error: adb not found at /nonexistent-sdk-for-injection/platform-tools/adb`; exit status **2** with **no** `unsupported host` marker, so `run_all_gates.sh` classifies it `FAIL` rather than `SKIP` |
+| `check_status_docs_name_real_types.sh` | added `external fun nativeCreateSeekBar(parent: Long): Long` to the ```kotlin``` sample in `src/platform/android/activity_integration.md` (whose `package rust_widgets` attributes it to the Android wrapper) | `platform docs: 38 native type name(s) checked across 6 document(s); 57 JNI entry point(s) derived from src/bindings/java_jni.rs` / `❌ a status page claims a native object its backend does not create (1):` / `   src/platform/android/activity_integration.md:32 sample (package rust_widgets) calls \`nativeCreateSeekBar\`, which bindings/android/java/rust_widgets/RustWidgets.java does not declare` |
+| `check_gates_are_worth_running.sh` | adding `tools/check_android_runtime.sh` without a line here | `FAIL  these gates have no line in tools/gates_reverse_injection.md:` / `        check_android_runtime.sh` |
+
+> **Why this gate did not exist before, and what it would have caught.** `check_android_cross.sh`
+> compiles the four Android ABIs and `check_profiles.sh` compiles the JNI feature set, but nothing
+> **ran** the probe. Five defects were therefore sitting behind green compile gates, each one fatal
+> to the first real run on a macOS host: the NDK toolchain directory hardcoded to `linux-x86_64`;
+> a JDK resolved as `command -v javac` (11) where `avdmanager` demands 17+; `$JAVA_HOME/bin/keytool`
+> read while `JAVA_HOME` was unset (aborting under `set -u`); `mapfile` (bash 4+) used where macOS
+> ships bash 3.2; and the system-image package hardcoded to `android-34`. All five are type-clean
+> and run-fatal, which is precisely the asymmetry `check_apple_native.sh` covers on the Apple side.
+
+> **The Java-wrapper check is the same lesson one level up.** `activity_integration.md` quoted the
+> *desktop* wrapper's 44-method surface as an Android sample, while the Android class it names
+> declares 8 and only one of them was in the sample. The existing JNI check passed because every
+> name *is* exported from `src/bindings/java_jni.rs` — the wrong question. A document that shows a
+> host what to bind against has to be checked against **that** wrapper's declarations, and the
+> sample's `package` line is the only thing that says which wrapper it means.

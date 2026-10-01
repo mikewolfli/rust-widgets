@@ -30,15 +30,54 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}"
+# Same macOS layout fallback the build script applies, and for the same reason: without
+# it the whole runner reported `adb not found` on a machine whose SDK was right there
+# under `~/Library/Android/sdk`.
+if [[ ! -d "$SDK_ROOT" && -d "$HOME/Library/Android/sdk" ]]; then
+  SDK_ROOT="$HOME/Library/Android/sdk"
+fi
+
+# `avdmanager` needs JDK 17+, and resolving it here — through the shared helper — is what
+# keeps the runner and the build script from disagreeing about which JDK "the" JDK is.
+. "$ROOT_DIR/tools/lib_jdk.sh"
+rw_resolve_jdk
 ANDROID_ABI="${ANDROID_ABI:-arm64-v8a}"
 API_LEVEL="${ANDROID_JAR_LEVEL:-34}"
 
 case "$ANDROID_ABI" in
-  arm64-v8a) DEFAULT_AVD="rw_arm64"; SYS_IMG="system-images;android-$API_LEVEL;google_apis;arm64-v8a" ;;
-  x86_64)    DEFAULT_AVD="rw_x64";   SYS_IMG="system-images;android-$API_LEVEL;google_apis;x86_64" ;;
+  arm64-v8a) DEFAULT_AVD="rw_arm64"; SYS_IMG_ABI="arm64-v8a" ;;
+  x86_64)    DEFAULT_AVD="rw_x64";   SYS_IMG_ABI="x86_64"    ;;
   *) echo "error: unsupported ANDROID_ABI '$ANDROID_ABI'" >&2; exit 2 ;;
 esac
 AVD="${ANDROID_AVD:-$DEFAULT_AVD}"
+
+# `avdmanager create avd` needs the exact system-image package id, and the API level the
+# script defaulted to is not necessarily one this machine has installed:
+#
+#   error: package path is not valid […] system-images;android-34;google_apis;arm64-v8a
+#
+# while `system-images/android-36.1/google_apis_playstore/arm64-v8a` sat right there. The
+# package id is therefore derived from what is installed, and only when nothing is do we
+# report the `sdkmanager` line that would fix it. Naming a package that may not exist made
+# a working emulator setup look like a broken one.
+SYS_IMG=""
+if [[ -d "$SDK_ROOT/system-images/android-$API_LEVEL" ]]; then
+  SYS_IMG="system-images;android-$API_LEVEL;google_apis;$SYS_IMG_ABI"
+  [[ -d "$SDK_ROOT/system-images/android-$API_LEVEL/google_apis/$SYS_IMG_ABI" ]] || SYS_IMG=""
+fi
+if [[ -z "$SYS_IMG" ]]; then
+  # Any installed image with a matching ABI, newest first, from either the `google_apis`
+  # or `google_apis_playstore` flavour (both run the probe identically).
+  for flavour in google_apis google_apis_playstore; do
+    for level_dir in $(ls -d "$SDK_ROOT"/system-images/android-* 2>/dev/null | sort -Vr); do
+      level="${level_dir##*/android-}"
+      if [[ -d "$level_dir/$flavour/$SYS_IMG_ABI" ]]; then
+        SYS_IMG="system-images;android-$level;$flavour;$SYS_IMG_ABI"
+        break 2
+      fi
+    done
+  done
+fi
 
 ADB="$SDK_ROOT/platform-tools/adb"
 EMULATOR="$SDK_ROOT/emulator/emulator"
@@ -67,7 +106,14 @@ if [[ -n "${ANDROID_SERIAL:-}" ]]; then
   ADB_ARGS=(-s "$ANDROID_SERIAL")
   echo "[2/4] Targeting device ANDROID_SERIAL=$ANDROID_SERIAL"
 else
-  mapfile -t ATTACHED < <("$ADB" devices | awk 'NR>1 && $2=="device" {print $1}')
+  # `mapfile` is a bash 4+ builtin and macOS ships bash 3.2, where it does not exist:
+  # every run on a stock macOS aborted here with `mapfile: command not found` even
+  # though `adb` was present and the APK had just been built. Reading the lines into an
+  # array through a `while read` loop works on both and needs no version check.
+  ATTACHED=()
+  while IFS= read -r serial; do
+    [[ -n "$serial" ]] && ATTACHED+=("$serial")
+  done < <("$ADB" devices | awk 'NR>1 && $2=="device" {print $1}')
   if [[ "${#ATTACHED[@]}" -eq 1 ]]; then
     ADB_ARGS=(-s "${ATTACHED[0]}")
     echo "[2/4] Using the only attached device: ${ATTACHED[0]}"
@@ -93,9 +139,28 @@ fi
 
 if [[ -z "$TARGET_SERIAL" ]]; then
   echo "      no device attached; booting emulator $AVD"
-  if ! "$SDK_ROOT/cmdline-tools/latest/bin/avdmanager" list avd 2>/dev/null | grep -q "Name: $AVD"; then
+  AVDMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/avdmanager"
+  # `2>/dev/null` here used to swallow a real failure ("This tool requires JDK 17 or
+  # later"), so the existence check quietly answered "no such AVD" for an AVD that
+  # existed, and the script then tried to recreate it against a system image the
+  # machine did not have. The check now keeps the tool's own output when it fails, so
+  # the reason is visible rather than looking like a missing AVD.
+  if ! AVD_LIST="$("$AVDMANAGER" list avd 2>&1)"; then
+    echo "error: `avdmanager list avd` failed; its output was:" >&2
+    printf '  %s\n' "$AVD_LIST" >&2
+    echo "       (a common cause is a JDK older than 17 on PATH; see build_android_testapp.sh)" >&2
+    exit 2
+  fi
+  if ! printf '%s\n' "$AVD_LIST" | grep -q "Name: $AVD"; then
+    if [[ -z "$SYS_IMG" ]]; then
+      echo "error: no installed system image for ABI $SYS_IMG_ABI, so AVD '$AVD' cannot be created." >&2
+      echo "       install one with:" >&2
+      echo "         sdkmanager 'system-images;android-34;google_apis;$SYS_IMG_ABI'" >&2
+      echo "       or point the runner at an existing AVD: ANDROID_AVD=<name> bash tools/run_android_testapp.sh" >&2
+      exit 2
+    fi
     echo "      creating AVD $AVD from $SYS_IMG"
-    echo "no" | "$SDK_ROOT/cmdline-tools/latest/bin/avdmanager" create avd \
+    echo "no" | "$AVDMANAGER" create avd \
       -n "$AVD" -k "$SYS_IMG" -d pixel_5 --force >/dev/null
   fi
   nohup "$EMULATOR" -avd "$AVD" -no-window -no-audio -no-boot-anim \

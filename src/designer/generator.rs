@@ -526,7 +526,10 @@ fn emit_node(
 
     for (name, value) in node.scalar_properties() {
         if is_style_only_property(&name) {
-            report.resolved_at_generation.push(format!("`{name}` on {:?}", path));
+            report.resolved_at_generation.push(format!(
+                "`{name}` on {} is resolved into the style",
+                node_label(path, &node.widget)
+            ));
             continue;
         }
         if is_wire_key(&name) {
@@ -557,8 +560,8 @@ fn emit_node(
             // Reported rather than silently dropped (rule #12): the value *is* carried, but by the
             // control's own geometry/style storage rather than by a property write.
             report.resolved_at_generation.push(format!(
-                "`{name}` on {:?} is applied through the loader-owned route, not a property write",
-                path
+                "`{name}` on {} is applied through the loader-owned route, not a property write",
+                node_label(path, &node.widget)
             ));
             continue;
         }
@@ -802,7 +805,10 @@ fn collect_stripped_nodes(
     let mut setters = String::new();
     for (name, value) in node.scalar_properties() {
         if is_style_only_property(&name) {
-            report.resolved_at_generation.push(format!("`{name}` on {path:?}"));
+            report.resolved_at_generation.push(format!(
+                "`{name}` on {} is resolved into the style",
+                node_label(path, &node.widget)
+            ));
             continue;
         }
         if is_wire_key(&name) {
@@ -1208,6 +1214,28 @@ fn binding_name(path: &[usize]) -> String {
         name.push_str(&format!("{index}"));
     }
     name
+}
+
+/// A human-readable name for a node's position, for the generation report.
+///
+/// # Why this exists rather than `{:?}` on the raw path
+///
+/// The report lines that name a node used the `path` slice directly, and the root's
+/// path is **empty**, so every message about the root printed the bare `[]`:
+///
+/// ```text
+/// - `height` on [] is applied through the loader-owned route, not a property write
+/// ```
+///
+/// That is the one node a reader most needs identified — it is the window, and the
+/// surrounding lines discuss its geometry — and the placeholder names neither the node
+/// nor its widget. Naming it `<root>` and appending the widget makes every line in the
+/// report readable without the reader reconstructing an index path.
+fn node_label(path: &[usize], widget: &str) -> String {
+    if path.is_empty() {
+        return format!("<root> (a `{widget}`)");
+    }
+    format!("{} (a `{widget}`)", binding_name(path))
 }
 
 /// A Rust string literal for `value`.

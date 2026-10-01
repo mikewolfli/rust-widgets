@@ -28,6 +28,26 @@ fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
 }
 
+/// Whether an event should be handed to the gesture engine.
+///
+/// # Why this is not `Event::is_touch`
+///
+/// The engine's recognisers are driven by touch coordinates, so `is_touch()` was the obvious gate
+/// — and it stranded two of them. `LongPressGesture`'s timeout lives in a `_` arm, and
+/// `LongPressDragGesture` requires `Event::Timer` outright (`gesture/press.rs`), because a finger
+/// held still produces **no** further touch event: time is the only thing that changes, and the
+/// only thing that reports time is a timer tick. Gating on `is_touch()` therefore meant a stationary
+/// 500 ms hold produced no `LongPress` on the real loop at all — the recogniser only ever fired in
+/// its unit test, which fed it a `Timer` directly.
+///
+/// A timer is fed through for exactly that reason. Every other non-touch event is still skipped, so
+/// the engine is not asked to interpret a `KeyPress` or a `Resize` as a gesture, and the events the
+/// engine itself produces (`Tap`, `Swipe`, …) are `is_touch()`-true and so still round-trip.
+#[cfg(feature = "touch")]
+fn feeds_the_gesture_engine(event: &Event) -> bool {
+    event.is_touch() || matches!(event, Event::Timer { .. })
+}
+
 /// Canonical event name for animation frame requests.
 /// Used instead of a string literal to avoid fragile string matching.
 pub const ANIMATION_FRAME_EVENT_NAME: &str = "animation_frame";
@@ -237,7 +257,7 @@ impl EventLoop {
                     }
 
                     #[cfg(feature = "touch")]
-                    let maybe_gesture_event = if event.is_touch() {
+                    let maybe_gesture_event = if feeds_the_gesture_engine(event) {
                         gesture_engine.process(event, now_ms())
                     } else {
                         None
@@ -278,7 +298,7 @@ impl EventLoop {
                     }
 
                     #[cfg(feature = "touch")]
-                    let maybe_gesture_event = if event.is_touch() {
+                    let maybe_gesture_event = if feeds_the_gesture_engine(event) {
                         gesture_engine.process(event, now_ms())
                     } else {
                         None
@@ -327,7 +347,7 @@ impl EventLoop {
                             continue;
                         }
                         #[cfg(feature = "touch")]
-                        let maybe_gesture_event = if event.is_touch() {
+                        let maybe_gesture_event = if feeds_the_gesture_engine(&event) {
                             gesture_engine.process(&event, now_ms())
                         } else {
                             None
@@ -566,6 +586,39 @@ mod tests {
     // Importing it unconditionally left an `unused_imports` warning on wasm32 builds.
     #[cfg(all(not(alloc_frugal), not(target_arch = "wasm32")))]
     use core::sync::atomic::AtomicBool;
+
+    /// A timer tick must reach the gesture engine, or long press can never fire.
+    ///
+    /// # The defect this pins
+    ///
+    /// The loop gated the engine on `Event::is_touch()`. A finger held still emits no further
+    /// touch event, so the only input that reports the passage of time is a `Timer` — and
+    /// `is_touch()` excludes `Timer`. `LongPressGesture`'s timeout lives in a `_` arm reached only
+    /// by a non-touch event, and `LongPressDragGesture` requires `Event::Timer` outright, so both
+    /// were unreachable from the real loop while passing their own unit tests (which fed the
+    /// recogniser a `Timer` directly).
+    #[test]
+    #[cfg(feature = "touch")]
+    fn a_timer_reaches_the_gesture_engine() {
+        use crate::core::Point;
+        assert!(
+            feeds_the_gesture_engine(&Event::Timer { id: 0 }),
+            "a timer must reach the engine, or a long press can never time out"
+        );
+        assert!(
+            feeds_the_gesture_engine(&Event::touch_begin(1, 1, 7)),
+            "touch input is what the recognisers follow"
+        );
+        // A keyboard or geometry event is not a gesture, and must not be interpreted as one.
+        assert!(!feeds_the_gesture_engine(&Event::KeyPress { key: 65, modifiers: 0 }));
+        assert!(!feeds_the_gesture_engine(&Event::Resize { size: crate::core::Size::new(10, 10) }));
+        assert!(!feeds_the_gesture_engine(&Event::Custom {
+            name: "x".to_string(),
+            payload: alloc::vec::Vec::new(),
+        }));
+        // And the engine's own output still round-trips.
+        assert!(feeds_the_gesture_engine(&Event::LongPress { pos: Point::new(0, 0) }));
+    }
 
     /// An idle task must actually run once the loop ticks enough frames.
     ///

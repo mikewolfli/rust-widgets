@@ -749,6 +749,36 @@ impl Widget for Menu {
 
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+    /// Resolves a published event name to the control's own signal.
+    ///
+    /// # Why this is explicit
+    ///
+    /// `connect_event` validates a name against the capability table and registers a hub slot; only
+    /// `event_signal_dyn` joins that name to the signal the control actually **emits**. Without an
+    /// arm a published name is valid and inert, which is the silent failure
+    /// `tools/check_event_signal_dyn.sh` exists to make impossible: the arm set is compared against
+    /// the capability's published names, so the two cannot drift.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "triggered" => Some(EventSignalRef::mapped("triggered", &self.triggered, |v| {
+                CapabilityValue::String(v.clone())
+            })),
+            "triggered_index" => {
+                Some(EventSignalRef::mapped("triggered_index", &self.triggered_index, |v| {
+                    CapabilityValue::Int(*v as i64)
+                }))
+            }
+            "about_to_show" => Some(EventSignalRef::unit("about_to_show", &self.about_to_show)),
+            "submenu_requested" => {
+                Some(EventSignalRef::mapped("submenu_requested", &self.submenu_requested, |v| {
+                    CapabilityValue::String(v.clone())
+                }))
+            }
+            "about_to_hide" => Some(EventSignalRef::unit("about_to_hide", &self.about_to_hide)),
+            _ => None,
+        }
+    }
 }
 
 /// `Menu`'s property contract.

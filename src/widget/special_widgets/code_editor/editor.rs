@@ -4413,6 +4413,57 @@ impl Widget for CodeEditor {
     fn is_animating(&self) -> bool {
         self.is_editable()
     }
+    /// Resolves a published event name to the control's own signal.
+    ///
+    /// # Why this is explicit
+    ///
+    /// `connect_event` validates a name against the capability table and registers a hub slot; only
+    /// `event_signal_dyn` joins that name to the signal the control actually **emits**. Without an
+    /// arm a published name is valid and inert, which is the silent failure
+    /// `tools/check_event_signal_dyn.sh` exists to make impossible: the arm set is compared against
+    /// the capability's published names, so the two cannot drift.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "text_changed" => {
+                Some(EventSignalRef::mapped("text_changed", &self.text_changed, |v| {
+                    CapabilityValue::String(v.clone())
+                }))
+            }
+            "cursor_moved" => {
+                Some(EventSignalRef::mapped("cursor_moved", &self.cursor_moved, |v| {
+                    CapabilityValue::String(format!("{v:?}"))
+                }))
+            }
+            "selection_changed" => {
+                Some(EventSignalRef::mapped("selection_changed", &self.selection_changed, |v| {
+                    match v {
+                        Some(value) => CapabilityValue::String(format!("{value:?}")),
+                        None => CapabilityValue::Null,
+                    }
+                }))
+            }
+            "tab_changed" => Some(EventSignalRef::mapped("tab_changed", &self.tab_changed, |v| {
+                CapabilityValue::UInt(*v as u64)
+            })),
+            "fold_changed" => {
+                Some(EventSignalRef::mapped("fold_changed", &self.fold_changed, |v| {
+                    CapabilityValue::Int(*v as i64)
+                }))
+            }
+            "search_changed" => {
+                Some(EventSignalRef::mapped("search_changed", &self.search_changed, |v| {
+                    CapabilityValue::Int(*v as i64)
+                }))
+            }
+            "completion_changed" => {
+                Some(EventSignalRef::mapped("completion_changed", &self.completion_changed, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// `CodeEditor`'s property contract, published under the `RichEdit` kind.

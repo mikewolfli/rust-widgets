@@ -8,8 +8,8 @@
 // resolved at generation time (not calls in this file):
 //   - the document's layout was solved into constant coordinates against 640x480
 //   - the root `window` is sized 640x480 through its own geometry (a window publishes neither `width` nor `height`, and `geometry` is read-only through the property contract)
-//   - `height` on [] is applied through the loader-owned route, not a property write
-//   - `width` on [] is applied through the loader-owned route, not a property write
+//   - `height` on <root> (a `window`) is applied through the loader-owned route, not a property write
+//   - `width` on <root> (a `window`) is applied through the loader-owned route, not a property write
 
 use rust_widgets::view::Node;
 use rust_widgets::widget::capability::CapabilityValue;

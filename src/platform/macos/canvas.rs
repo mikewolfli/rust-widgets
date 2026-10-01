@@ -99,8 +99,28 @@ fn canvas_view_class() -> *const Class {
             decl.add_method(sel!(mouseDown:), mouse_down as extern "C" fn(&Object, Sel, id));
             decl.add_method(sel!(mouseUp:), mouse_up as extern "C" fn(&Object, Sel, id));
             decl.add_method(sel!(mouseDragged:), mouse_dragged as extern "C" fn(&Object, Sel, id));
-            // Hover: AppKit calls these through the tracking area installed in
-            // `updateTrackingAreas`, which is how a control learns the pointer left.
+            // Plain movement, which is what drives hover. AppKit sends this only because the
+            // tracking area above asks for `NSTrackingMouseMoved`; see that constant for why a
+            // surface without it has no hover at all. Its absence was a real gap, not a style
+            // choice: the other two backends both deliver a button-less move.
+            decl.add_method(sel!(mouseMoved:), mouse_moved as extern "C" fn(&Object, Sel, id));
+            // Secondary button. AppKit routes the right button through its own responder
+            // methods, so without these a context menu (or any right-drag) never reached a
+            // widget — the sibling `windows::canvas` has had the equivalent
+            // `WM_RBUTTONDOWN`/`WM_RBUTTONUP` arms all along, and `MousePhase` carried the
+            // `Secondary*` variants for exactly this purpose (rule #54: one enum, two
+            // backends, and only one of them consuming it is a half-wired feature).
+            decl.add_method(
+                sel!(rightMouseDown:),
+                right_mouse_down as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(sel!(rightMouseUp:), right_mouse_up as extern "C" fn(&Object, Sel, id));
+            // Hover: AppKit calls both through the tracking area installed in
+            // `updateTrackingAreas`, which is how a control learns the pointer entered or
+            // left. **Both** selectors have to be registered: the area requests
+            // `NSTrackingMouseEntered` as well, and an unimplemented responder method
+            // raises rather than being ignored (see `mouse_entered`).
+            decl.add_method(sel!(mouseEntered:), mouse_entered as extern "C" fn(&Object, Sel, id));
             decl.add_method(sel!(mouseExited:), mouse_exited as extern "C" fn(&Object, Sel, id));
             decl.add_method(
                 sel!(updateTrackingAreas),
@@ -202,6 +222,50 @@ extern "C" fn mouse_exited(this: &Object, _cmd: Sel, _event: id) {
     }
 }
 
+/// `-mouseEntered:` re-establishes the hover target.
+///
+/// # Why an enter handler is required, not merely symmetric
+///
+/// The tracking area installed by [`install_tracking_area`] requests both
+/// `NSTrackingMouseEntered` **and** `NSTrackingMouseExited`. AppKit therefore sends
+/// `-mouseEntered:` to the owner whenever the pointer crosses in, and a view that does
+/// not implement the selector does not merely miss the event: AppKit's default
+/// `NSView` implementation of the tracking-area protocol calls
+/// `doesNotRecognizeSelector:`, which raises `NSInvalidArgumentException`. A foreign
+/// exception cannot unwind through Rust, so the process **aborts**.
+///
+/// It is also a real capability gap: `clear_hover` runs on the way out and nothing ever
+/// re-enters, so a control hovered by moving *into* the surface (rather than by moving
+/// within it) stayed unhighlighted. `-mouseEntered:` carries a coordinate in window
+/// space, which is converted the same way a click is and handed to the router, so the
+/// control under the pointer is entered exactly as a move would enter it.
+extern "C" fn mouse_entered(this: &Object, _cmd: Sel, event: id) {
+    let outcome = std::panic::catch_unwind(|| {
+        // SAFETY: `this` is the live canvas view; `event` is the NSEvent AppKit passed to
+        // the tracking-area message, valid for the duration of this call.
+        unsafe {
+            let view = this as *const Object as id;
+            let Some(widget_id) = widget_id_of(view) else { return };
+            let Some(local) = event_local_point(view, event) else { return };
+            let origin = view_origin(view);
+            let position = Point::new(origin.x + local.x, origin.y + local.y);
+            // Routed rather than applied directly: the router is what owns the enter/leave
+            // pair and updates the previous-target cell, so an enter delivered here and a
+            // move delivered beside it cannot produce two enters for one control.
+            crate::platform::platform_facts().route_pointer_event(
+                widget_id,
+                &Event::MouseMove { pos: position },
+                position,
+            );
+            let _: () = msg_send![view, setNeedsDisplay: YES];
+            note_native_redraw(widget_id);
+        }
+    });
+    if outcome.is_err() {
+        log::error!("[macos] canvas: panic while handling mouseEntered:");
+    }
+}
+
 /// Installs the tracking area that makes `-mouseExited:` fire.
 ///
 /// AppKit rebuilds tracking areas whenever the view's geometry changes, so the areas
@@ -223,7 +287,7 @@ unsafe fn install_tracking_area(view: id) {
     let area: id = msg_send![class!(NSTrackingArea), alloc];
     let area: id = msg_send![area,
         initWithRect: bounds
-        options: TRACKING_ACTIVE_IN_KEY_WINDOW | TRACKING_MOUSE_ENTERED | TRACKING_MOUSE_EXITED | TRACKING_IN_VISIBLE_RECT
+        options: TRACKING_ACTIVE_IN_KEY_WINDOW | TRACKING_MOUSE_ENTERED | TRACKING_MOUSE_EXITED | TRACKING_MOUSE_MOVED | TRACKING_IN_VISIBLE_RECT
         owner: view
         userInfo: std::ptr::null::<Object>()];
     if area != nil {
@@ -238,6 +302,22 @@ const TRACKING_ACTIVE_IN_KEY_WINDOW: usize = 0x0040;
 const TRACKING_MOUSE_ENTERED: usize = 0x0001;
 /// `NSTrackingArea` option: send `-mouseExited:`.
 const TRACKING_MOUSE_EXITED: usize = 0x0002;
+/// `NSTrackingArea` option: send `-mouseMoved:` while the pointer is inside.
+///
+/// # Why hover needs this one specifically
+///
+/// AppKit delivers `-mouseMoved:` **only** to a view that asked for it. `-mouseDragged:`
+/// (button held) and the tracking-area enter/exit pair are separate messages, so a
+/// surface that registers only those three learns where the pointer *is* when a button
+/// goes down and when it crosses the boundary — but never while it travels between two
+/// controls inside the view.
+///
+/// That is the whole of hover: `widget::runtime::dispatch_pointer_event` synthesises the
+/// `MouseEnter`/`MouseLeave` pair from a plain move (see `dispatch_hover_transition`), and
+/// Windows (`WM_MOUSEMOVE`) and GTK (`connect_motion_notify_event`) both deliver one with
+/// no button held. Without this option the macOS canvas was the one backend where no
+/// control ever highlighted under the pointer.
+const TRACKING_MOUSE_MOVED: usize = 0x0004;
 /// `NSTrackingArea` option: track within the view's visible rect.
 const TRACKING_IN_VISIBLE_RECT: usize = 0x0080;
 
@@ -279,6 +359,18 @@ unsafe fn ns_event_modifier_flags(event: id) -> u64 {
     flags
 }
 
+/// Reads `NSEvent.clickCount`, the number of presses in the current click run.
+///
+/// Returns `0` for a null event, which callers compare with `>= 2`, so a missing
+/// event degrades to a single click rather than panicking. `clickCount` is an
+/// `NSInteger`, i.e. `isize` in the C ABI the runtime uses here.
+unsafe fn click_count(event: id) -> isize {
+    if event == nil {
+        return 0;
+    }
+    msg_send![event, clickCount]
+}
+
 /// Returns the canvas view's origin within its parent.
 ///
 /// AppKit reports pointer positions in view-local space, but widget geometry in this
@@ -292,6 +384,19 @@ unsafe fn view_origin(view: id) -> Point {
 
 /// Reads the modifier bitfield out of an AppKit event using the shared mapping.
 extern "C" fn mouse_down(this: &Object, _cmd: Sel, event: id) {
+    // A second primary press inside the system's double-click interval is its own
+    // event ([`Event::MouseDoubleClick`]), not a press with a higher count: widgets
+    // that act on a double click (an in-place editor, a list row) match on the
+    // variant. AppKit reports the run length in `clickCount`, which is where the
+    // interval's own definition lives, so this module never re-derives one.
+    // SAFETY: `event` is the NSEvent AppKit passed to this selector; `clickCount` is
+    // read-only NSView API and the call is bounded by the `catch_unwind` in
+    // `forward_mouse` for the dispatch half. A null event is handled inside
+    // `click_count`, which returns 0.
+    if unsafe { click_count(event) } >= 2 {
+        forward_mouse(this, event, MousePhase::DoubleClick);
+        return;
+    }
     forward_mouse(this, event, MousePhase::Press);
 }
 
@@ -301,6 +406,30 @@ extern "C" fn mouse_up(this: &Object, _cmd: Sel, event: id) {
 
 extern "C" fn mouse_dragged(this: &Object, _cmd: Sel, event: id) {
     forward_mouse(this, event, MousePhase::Drag);
+}
+
+/// `-mouseMoved:` — the pointer travelled with **no** button held.
+///
+/// A drag and a move both reach the widget as [`Event::MouseMove`] (that is what
+/// `MousePhase::Drag` produces), so the translation is shared rather than duplicated: the
+/// difference between them is which AppKit message delivered it, and the router treats
+/// the payload identically. What the two are *not* interchangeable for is hover, which is
+/// why this handler has to exist at all — see [`TRACKING_MOUSE_MOVED`].
+extern "C" fn mouse_moved(this: &Object, _cmd: Sel, event: id) {
+    forward_mouse(this, event, MousePhase::Drag);
+}
+
+/// `-rightMouseDown:` — the secondary button went down.
+///
+/// A distinct responder method from `-mouseDown:`, so the phase (and therefore the
+/// button the widget sees) cannot be confused with the primary one.
+extern "C" fn right_mouse_down(this: &Object, _cmd: Sel, event: id) {
+    forward_mouse(this, event, MousePhase::SecondaryPress);
+}
+
+/// `-rightMouseUp:` — the secondary button came up.
+extern "C" fn right_mouse_up(this: &Object, _cmd: Sel, event: id) {
+    forward_mouse(this, event, MousePhase::SecondaryRelease);
 }
 
 /// Which touch responder method AppKit called.
@@ -450,6 +579,17 @@ fn forward_mouse(this: &Object, event: id, phase: MousePhase) {
                 ),
                 MousePhase::Release => Event::MouseRelease { pos: position, button: 1 },
                 MousePhase::Drag => Event::MouseMove { pos: position },
+                MousePhase::SecondaryPress => Event::mouse_press_with(
+                    position.x,
+                    position.y,
+                    crate::event::mouse_button::SECONDARY,
+                    super::types::map_modifiers(ns_event_modifier_flags(event)),
+                ),
+                MousePhase::SecondaryRelease => Event::MouseRelease {
+                    pos: position,
+                    button: crate::event::mouse_button::SECONDARY,
+                },
+                MousePhase::DoubleClick => Event::mouse_double_click(position.x, position.y, 1),
             };
             let delivered = crate::platform::platform_facts().route_pointer_event(
                 widget_id,
@@ -460,7 +600,10 @@ fn forward_mouse(this: &Object, event: id, phase: MousePhase) {
                 log::debug!("[macos] canvas: mouse event dropped, id={widget_id} is not mounted");
                 return;
             }
-            if matches!(phase, MousePhase::Press) {
+            if matches!(
+                phase,
+                MousePhase::Press | MousePhase::SecondaryPress | MousePhase::DoubleClick
+            ) {
                 // A click can move focus to a nested control; take the keyboard so
                 // subsequent keys are delivered to this view.
                 let window: id = msg_send![view, window];

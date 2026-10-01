@@ -33,8 +33,19 @@ fi
 
 # Reverse injection. `set -e` is deliberately suspended for this one command: a non-zero exit is
 # the expected outcome, and it is the *assertion* rather than an error.
+#
+# Two modes, because the gate checks two different things. `--inject` corrupts a *row* and proves
+# the signal-type comparison runs; `--inject-delivery` corrupts an *arm* and proves the carrier
+# comparison runs. One mode would leave the other half untested, and the half that has no injection
+# is exactly the half a regression can quietly disable.
 if "$PYTHON" tools/check_event_payload_types.py --inject=slider.value_changed >/dev/null 2>&1; then
     echo "FAIL: injecting a wrong payload did not make the check fail, so it is not checking"
+    exit 1
+fi
+
+if "$PYTHON" tools/check_event_payload_types.py --inject-delivery=tool_bar.orientation_changed \
+    >/dev/null 2>&1; then
+    echo "FAIL: injecting a wrong delivery carrier did not make the check fail"
     exit 1
 fi
 

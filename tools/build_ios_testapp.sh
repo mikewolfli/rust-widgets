@@ -56,9 +56,26 @@ echo "[1/4] Building librust_widgets.a for $RUST_TARGET"
 # Build the crate as a `staticlib` so the Objective-C host can link a single
 # self-contained archive (an rlib cannot be linked by clang directly because it
 # still references Rust std and the transitive dependency rlibs).
+#
+# # Why the profile is `mobile` and not `desktop`
+#
+# This asked for `desktop` because it had to name *some* device profile — `build.rs` derives
+# `full_widgets` from "a profile is on AND the widget set is not stripped", and `mobile-api`
+# is an empty marker that satisfies neither half. Without a profile, `mount_widget_of_kind`
+# returns `0` for every kind and `rw_create_window` produces nothing. The Android build made
+# exactly that mistake and its on-device widget path was dead for it (see
+# `build_android_testapp.sh`); this one happened to dodge the symptom by naming the **wrong**
+# profile, so it worked while compiling the desktop surface — window chrome, print, PDF, CJK
+# faces — into an iOS phone binary.
+#
+# `mobile` is the profile that describes the target, so the probe now links the surface an
+# iOS app actually ships rather than a desktop build that happens to boot.
+#
+# `ios-uikit-ffi` selects the Apple-mobile backend; `controls-custom` is the one creation
+# mechanism (every `WidgetKind` is library-painted).
 cargo rustc --lib --target "$RUST_TARGET" --no-default-features \
   --crate-type staticlib \
-  --features "desktop,ios-uikit-ffi,mobile-api,controls-custom,controls-native"
+  --features "mobile,ios-uikit-ffi,controls-custom,controls-native"
 
 STATIC_LIB="$ROOT_DIR/target/$RUST_TARGET/debug/librust_widgets.a"
 if [[ ! -f "$STATIC_LIB" ]]; then

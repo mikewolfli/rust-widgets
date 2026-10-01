@@ -341,6 +341,37 @@ impl Widget for ToggleButton {
 
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+    /// Resolves a published event name to the control's own signal.
+    ///
+    /// # Why the field is named per arm
+    ///
+    /// The published name and the Rust field name are not always the same (`find_next` is backed by
+    /// `find_next_signal`, `dismissed` by a `Signal1<()>` field). `connect_event` validates a name
+    /// against the capability table and registers a hub slot; only `event_signal_dyn` joins that
+    /// name to the signal the control actually **emits**. A wrong arm is worse than no arm, because
+    /// it reports a wire as live and never fires it, so each field is named explicitly here rather
+    /// than derived from the published name.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "toggled" => Some(EventSignalRef::mapped("toggled", &self.toggled, |v| {
+                CapabilityValue::Bool(*v)
+            })),
+            "checked_changed" => {
+                Some(EventSignalRef::mapped("checked_changed", &self.checked_changed, |v| {
+                    CapabilityValue::Bool(*v)
+                }))
+            }
+            "pressed" => Some(EventSignalRef::unit("pressed", &self.pressed_signal)),
+            "released" => Some(EventSignalRef::unit("released", &self.released_signal)),
+            "state_changed" => {
+                Some(EventSignalRef::mapped("state_changed", &self.state_changed, |v| {
+                    CapabilityValue::String(format!("{v:?}"))
+                }))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// `ToggleButton`'s property contract.

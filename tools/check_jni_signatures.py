@@ -45,9 +45,11 @@ import sys
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-# Java primitive/reference type -> JNI C type used in the Rust signature.
+# Java primitive/reference type -> canonical JNI ABI type. The canonical spellings match
+# `norm_type`'s, so the two sides compare on one name per ABI type rather than on which
+# Rust wrapper happens to hold it.
 JAVA_TO_JNI: Dict[str, str] = {
-    "String": "JString",
+    "String": "jstring",
     "long": "jlong",
     "int": "jint",
     "boolean": "jboolean",
@@ -56,6 +58,7 @@ JAVA_TO_JNI: Dict[str, str] = {
     "float": "jfloat",
     "short": "jshort",
     "char": "jchar",
+    "void": "void",
 }
 
 # The two leading parameters every JNI export receives.
@@ -93,7 +96,7 @@ def java_type_to_jni(t: str) -> Optional[str]:
     # leading JNI type family to compare against the Rust declaration.
     if t.endswith("[]"):
         return None
-    return "JObject"
+    return "jobject"
 
 
 def mangle(package: str, class_name: str, method: str) -> str:
@@ -118,14 +121,40 @@ def mangle(package: str, class_name: str, method: str) -> str:
 
 
 def norm_type(t: str) -> str:
-    """Normalise a Rust type token to its final path segment.
+    """Normalise a Rust type token to its canonical JNI ABI type.
 
-    The same JNI type may be written `jint` or `jni::sys::jint` depending on the
-    module's imports; both mean the same ABI type, so compare on the last
-    segment.
+    The same ABI type has several spellings in this crate, and they are all equivalent:
+
+      `jni::sys::jint` / `jint` / `jni_sys::jint`   — the raw C type
+      `JString` / `jstring`                          — the safe wrapper and the raw pointer
+      `JObject` / `jobject`                          — likewise
+      `()` / `void` / no return arrow                — no return value
+
+    Comparing the *last path segment* alone was not enough and produced fifteen false
+    positives the first time the return type was checked: `jstring` (raw) against
+    `JString` (safe wrapper) are the same JNI value and differ only in which Rust type
+    holds it, while `jobject` against `void` is a real mismatch. Canonicalising both
+    sides to one name per ABI type is what tells those two apart.
     """
     t = t.strip().split("<")[0].strip()
-    return t.rsplit("::", 1)[-1]
+    last = t.rsplit("::", 1)[-1].strip()
+    # A reference-returning wrapper and its raw pointer are the same JNI type; the choice
+    # between them is a Rust ergonomics decision the ABI does not see.
+    canonical = {
+        "JString": "jstring",
+        "jstring": "jstring",
+        "JObject": "jobject",
+        "jobject": "jobject",
+        "JClass": "jclass",
+        "jclass": "jclass",
+        "JByteArray": "jbyteArray",
+        "jbyteArray": "jbyteArray",
+        # No return value, spelled three ways in this crate.
+        "()": "void",
+        "void": "void",
+        "": "void",
+    }
+    return canonical.get(last, last)
 
 
 def parse_java(path: pathlib.Path, package: str, class_name: str) -> Dict[str, JavaNative]:
@@ -316,7 +345,7 @@ def validate(java: Dict[str, JavaNative], rust: Dict[str, Tuple[List[str], str]]
             print(f"❌ Java native `{name}` has no Rust export `{decl.mangled}`")
             errors += 1
             continue
-        rust_params, _rust_ret = rust[decl.mangled]
+        rust_params, rust_ret = rust[decl.mangled]
         # Skip the leading (JNIEnv, JClass) on the Rust side.
         body_params = rust_params[len(JNI_PREFIX_PARAMS):]
         expected = [java_type_to_jni(t) for t in decl.params]
@@ -334,6 +363,32 @@ def validate(java: Dict[str, JavaNative], rust: Dict[str, Tuple[List[str], str]]
                 print(
                     f"❌ `{name}` param #{idx}: Java implies {want}, "
                     f"Rust declares {got} ({decl.mangled})"
+                )
+                errors += 1
+        # The **return** type, which this function used to bind to `_rust_ret` and discard.
+        #
+        # # Why that was a real defect and not tidiness
+        #
+        # A JNI return type is part of the ABI, not a hint. `jboolean` is one byte and `jint`
+        # is four, so a Java declaration of `static native boolean nativeOpenDocument(…)`
+        # against a Rust `-> jni::sys::jint` is a genuine mismatch: the Java side reads one
+        # byte of a four-byte return, and on a little-endian device `1` happens to survive and
+        # `0` does not — a failure that only appears when the call *fails*, which is exactly
+        # when a host is least able to diagnose it.
+        #
+        # It was measured. `bindings/android/java/rust_widgets/RustWidgets.java` declared
+        # `boolean nativeOpenDocument(String uri)` while the Rust entry point returned `jint`,
+        # and this gate reported `8 declarations match 8 Rust exports`. The docstring above
+        # claims the check covers "name, arity, or parameter type" — which was accurate about
+        # its own behaviour, and wrong about the requirement.
+        java_ret = java_type_to_jni(decl.return_type)
+        if java_ret is not None:
+            # `norm_type` maps `()`, `void` and the empty token (no arrow) to `void`, so the
+            # three spellings of "no return value" compare equal without special-casing here.
+            if norm_type(rust_ret) != java_ret:
+                print(
+                    f"❌ `{name}` return: Java implies {java_ret}, "
+                    f"Rust declares {rust_ret or 'void'} ({decl.mangled})"
                 )
                 errors += 1
 

@@ -56,13 +56,18 @@ pub(crate) enum ApplyOutcome {
 
 /// Normalise a property name the way the capability layer does.
 ///
-/// Mirrors `crate::widget::capability::coercion::normalize_key`: lower-case and
-/// drop `-`, `_` and spaces. Kept here as a small private copy rather than
-/// re-exported, because the capability helper is crate-private and this module
-/// only needs the comparison, not the lookup tables it guards.
-fn normalize(name: &str) -> String {
-    name.chars().filter(|c| !matches!(c, '-' | '_' | ' ')).flat_map(char::to_lowercase).collect()
-}
+/// # Why this is a re-export and not a copy
+///
+/// It used to be a private copy, justified by "the capability helper is crate-private".
+/// [`normalize_key`] is in fact `pub` — the crate's own `capability` module re-exports it —
+/// so that premise was false, and the copy was a second implementation of one rule. The two
+/// happened to agree when this was written, but nothing kept them agreeing: the loader and
+/// the capability layer decide "is this key a property?" independently, and the day one
+/// spelling changed the answer would differ between the two front ends (principle #101).
+///
+/// Re-exported under the local name so every call site in this module reads the same, and so
+/// there is exactly one implementation to change.
+use crate::widget::capability::coercion::normalize_key as normalize;
 
 /// Whether `name` is published by the widget's property contract.
 ///

@@ -736,6 +736,32 @@ impl Widget for CandlestickChart {
         Some(self)
     }
     impl_widget_property_hooks!();
+    /// Resolves a published event name to the control's own signal.
+    ///
+    /// # Why this is explicit
+    ///
+    /// `connect_event` validates a name against the capability table and registers a hub slot; only
+    /// `event_signal_dyn` joins that name to the signal the control actually **emits**. Without an
+    /// arm a published name is valid and inert, which is the silent failure
+    /// `tools/check_event_signal_dyn.sh` exists to make impossible: the arm set is compared against
+    /// the capability's published names, so the two cannot drift.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "bar_clicked" => Some(EventSignalRef::mapped("bar_clicked", &self.bar_clicked, |v| {
+                CapabilityValue::UInt(*v as u64)
+            })),
+            "bar_hovered" => Some(EventSignalRef::mapped("bar_hovered", &self.bar_hovered, |v| {
+                CapabilityValue::UInt(*v as u64)
+            })),
+            "bar_unhovered" => {
+                Some(EventSignalRef::mapped("bar_unhovered", &self.bar_unhovered, |v| {
+                    CapabilityValue::Int(*v as i64)
+                }))
+            }
+            _ => None,
+        }
+    }
 }
 
 impl EventHandler for CandlestickChart {

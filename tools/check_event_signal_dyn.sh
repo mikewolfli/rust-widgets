@@ -41,8 +41,21 @@ if ! "$PYTHON" tools/check_event_signal_dyn.py; then
 fi
 
 # A non-zero exit is the expected outcome here, and it is the assertion rather than an error.
+#
+# The `--inject` name must be a control that is genuinely in `CONVERTED` and genuinely has the arm:
+# the script itself now fails when the injection matches no arm literal, so a control renamed or
+# withdrawn from the table turns this step red instead of quietly injecting into nothing.
 if "$PYTHON" tools/check_event_signal_dyn.py --inject=button.state_changed >/dev/null 2>&1; then
     echo "FAIL: pretending an arm is missing did not make the check fail, so it is not checking"
+    exit 1
+fi
+
+# An injection that names something outside the table must be *reported as such* rather than
+# silently passing. `|| true` lets the non-zero exit through so the text can be inspected.
+injection_output="$("$PYTHON" tools/check_event_signal_dyn.py \
+    --inject=no_such_control.no_such_event 2>&1 || true)"
+if ! printf '%s' "$injection_output" | grep -q "not in CONVERTED"; then
+    echo "FAIL: an injection naming a control outside the table was not reported"
     exit 1
 fi
 

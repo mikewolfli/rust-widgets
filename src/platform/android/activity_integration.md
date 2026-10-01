@@ -18,39 +18,70 @@ entry points for Java-driven creation.
 > none of which exist: the real names are `nativeCreateLabel`, `nativeCreateLineEdit`,
 > `nativeCreateCheckbox`, `nativeCreateSlider`, and there is no `nativeSetView*` family at all.
 > `tools/check_status_docs_name_real_types.sh` now covers the class-name half of the same class.
+>
+> **This page is about the Android host**, so the sample must show the **Android** wrapper —
+> `bindings/android/java/rust_widgets/RustWidgets.java` in package `rust_widgets`. It had been
+> quoting the *desktop* wrapper's method list (package `io.github.rustwidgets`, 44 creators) as if
+> it were this one. They are different classes with different contents, and a reader who copied
+> the sample would have bound against names this class does not declare — `UnsatisfiedLinkError`
+> at the first call, which is exactly the failure the Android test's own header records having
+> been fixed once already.
+
+The Android wrapper is eight methods, all of which exist (`bindings/android/java/rust_widgets/RustWidgets.java`):
 
 ```kotlin
+package rust_widgets
+
 object RustWidgets {
     init { System.loadLibrary("rust_widgets") }
+    // Lifecycle: capture the JavaVM, then the Activity Context the bridge resolves
+    // platform facilities through.
     external fun nativeInit()
-    external fun nativeAttachContext(context: android.content.Context)
-    // Typed widget creators — one per logical kind the backend publishes:
-    external fun nativeCreateButton(parent: Long, text: String, x: Int, y: Int, w: Int, h: Int): Long
-    external fun nativeCreateCheckbox(parent: Long, text: String, x: Int, y: Int, w: Int, h: Int): Long
-    external fun nativeCreateLabel(parent: Long, text: String, x: Int, y: Int, w: Int, h: Int): Long
-    external fun nativeCreateLineEdit(parent: Long, text: String, x: Int, y: Int, w: Int, h: Int): Long
-    external fun nativeCreateRadioButton(parent: Long, text: String, x: Int, y: Int, w: Int, h: Int): Long
-    // … plus Slider / ProgressBar / ComboBox / ListBox / ListView / ScrollArea / SpinBox /
-    //    StatusBar / ToolBar / Panel / MenuBar / Menu / the three dialog creators.
+    external fun nativeAttachContext(context: android.content.Context): Boolean
+    external fun nativeDetachContext()
+    // Diagnostics, so a stale .so is caught at startup instead of at the first call.
+    external fun nativeIntegrationStatus(): Int
+    external fun nativeMethodCount(): Int
+    external fun nativeInstallLogging()
+    // The one fact only the host observes: the surface resized. `windowId` is the
+    // library's window handle, which the host got from `rw_create_window`.
+    external fun nativeNotifyResize(windowId: Long, width: Int, height: Int): Int
+    external fun nativeOpenDocument(uri: String): Boolean
 }
+
+// Typed per-kind creators (`nativeCreateButton`, `nativeCreateLabel`, …) live in the
+// *desktop* wrapper, `io.github.rustwidgets.RustWidgets`. They are not part of this class:
+// on Android the library paints every WidgetKind itself, so the host supplies a window and
+// a drawing surface rather than one native View per kind (BLUE15 #55/#56).
 ```
 
 ### 2. Rust → Java (feature `android-jni`)
 
-`platform_impl.rs` drives native view creation directly through
-`android_jni::create_native_view`, so the `Platform` trait API constructs real
-Android Views without requiring a Java call per widget.
+> **What this direction is *not*.** It does not construct Android Views. The library paints every
+> `WidgetKind` itself (BLUE15 #55/#56), so a `nativeCreateButton` call creates a **library**
+> widget that the library draws, exactly as `rw_create_button` does in C — it does not build an
+> `android.widget.Button`. The `create_native_view` factory and its `AndroidViewClass` table that
+> earlier revisions of this paragraph described were deleted under BLUE15 #59, and this sentence
+> was left claiming they still ran. See the parity-table note below, which had been corrected
+> while this section had not — the two halves of one page disagreeing is the documentation defect
+> rule #18 forbids.
+>
+> What *is* real in this direction: the bridge captures the `JavaVM` at `nativeInit` and a host
+> `Context` when one is supplied, and those two facts are what `AndroidPlatform::jni_available()`
+> reports. Nothing consumes that answer in production because there is no per-kind native creation
+> to gate — it exists so a host can ask `nativeIntegrationStatus` rather than probing blindly, and
+> the integration test asserts it.
 
 For this direction the bridge needs the host `Context`, supplied in one of two
 ways:
 
-- Call `set_activity_context(env, context)` from Java after `nativeInit()`.
+- Call `nativeAttachContext(context)` from Java after `nativeInit()`.
 - Call the C ABI `rw_mobile_attach_native_view(contextPtr)` (or the Rust
   `mobile_attach_to_native_view(handle)`), passing the Activity's Java object
   pointer. The handle is converted to a `GlobalRef` so it outlives the call.
 
 Until a Context is stored, `AndroidPlatform::jni_available()` is `false` and
-creation stays state-backed.
+every platform request is answered from the state backend.
 
 ## Method parity table
 

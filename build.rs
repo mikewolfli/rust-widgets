@@ -164,6 +164,11 @@ fn declare_cfg_aliases() {
         "embedded",
         "portable",
         "no-declarative-view",
+        // The positive spelling (see the feature's own note in `Cargo.toml`). It does not generate a
+        // `rustc-cfg` on its own — `declarative_view` is resolved from the opt-out — but it is
+        // listed because toggling it changes the *feature set* the resolution reads, and a stale
+        // cached alias would then describe a configuration this build is not.
+        "declarative-view",
         // `designer` is in this list for the same reason as `no-declarative-view`: it
         // becomes an `rustc-cfg`, so without the directive, toggling it on an
         // already-built tree would reuse the cached aliases and appear to do nothing.

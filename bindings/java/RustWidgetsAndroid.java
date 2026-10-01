@@ -55,9 +55,17 @@ public final class RustWidgets {
      * <p>Once stored, the backend can resolve Android system services (the
      * document picker, logging) without a per-call Java entry point.
      *
-     * @return {@code true} when the Context was accepted
+     * <p><b>The return type is {@code int}, not {@code boolean}.</b> The Rust export
+     * returns {@code jint} ({@code 1} on success, {@code 0} otherwise), and JNI return
+     * types are ABI, not decoration: {@code jboolean} is one byte where {@code jint} is
+     * four, so declaring {@code boolean} here made the JVM read one byte of a
+     * four-byte return. On a little-endian device {@code 1} survives that read and
+     * {@code 0} does not, so the failure would have appeared only when the call
+     * *failed*. Compare against {@code != 0}.
+     *
+     * @return {@code 1} when the Context was accepted, {@code 0} otherwise
      */
-    public static native boolean nativeAttachContext(android.content.Context context);
+    public static native int nativeAttachContext(android.content.Context context);
 
     /**
      * Drop the stored {@code Context}.
@@ -113,13 +121,22 @@ public final class RustWidgets {
     public static native int nativeMethodCount();
 
     /**
-     * Report the bridge's integration state as a human-readable string.
+     * Report the bridge's integration state as a bit mask.
      *
-     * <p>Intended for a host self-test or a crash-report breadcrumb.
+     * <p>Intended for a host self-test or a crash-report breadcrumb. Bit 0 = the
+     * {@code JavaVM} is stored; bit 1 = a {@code Context} is attached.
      *
-     * @return a description of which bridge features are wired up
+     * <p><b>This returns {@code int}, not {@code String}.</b> The Rust export returns
+     * {@code jint}. Declaring {@code String} here was the dangerous direction of the
+     * same mistake: the JVM would take a small integer and dereference it as a
+     * {@code jstring} pointer, which is an access violation rather than a wrong
+     * number. It is what `tools/check_jni_signatures.sh` can now detect — it compared
+     * parameter types and arity but bound the return type to an unused variable and
+     * discarded it.
+     *
+     * @return a bit mask of the wired-up bridge features
      */
-    public static native String nativeIntegrationStatus();
+    public static native int nativeIntegrationStatus();
 
     // ---- Platform actions -------------------------------------------------
 
@@ -136,4 +153,25 @@ public final class RustWidgets {
      * @return {@code 1} on success, {@code 0} on failure
      */
     public static native int nativeOpenDocument(String mimeType);
+
+    // ---- Diagnostics ------------------------------------------------------
+
+    /**
+     * Run the on-device widget self-test and return a pass/fail bit mask.
+     *
+     * <p>The other entry points here prove the *plumbing*: the VM is stored, a Context is
+     * attached, a resize is reported. This one proves the library can create a control,
+     * change it and read it back **on this device** — which is what an application
+     * depends on, and which no other check in this repository covers at runtime.
+     *
+     * <p>It is one entry point rather than a set of per-kind creators on purpose: the
+     * library paints every {@code WidgetKind} itself, so the host supplies a window and a
+     * drawing surface rather than one native {@code View} per kind.
+     *
+     * @return a bit mask; {@code 255} ({@code 0b11111111}) is a full pass. Bit 0 = window
+     *         created, 1 = button created, 2 = text round-trips, 3 = geometry round-trips,
+     *         4 = visibility toggles, 5 = both were destroyed, 6 = no native-menu over-claim,
+     *         7 = the backend names itself
+     */
+    public static native int nativeWidgetSelfTest();
 }

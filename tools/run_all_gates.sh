@@ -165,8 +165,19 @@ GATE_BUDGET="${RW_GATE_TIMEOUT:-900}"
 # arithmetically identical, from the outside, to one where the first gate wedged.
 # This cap makes the difference observable: when it fires, the run stops and
 # names every gate it did not reach, so the remaining work is a *list* rather
-# than a wait. Default 45 minutes, which covers a fully cold run of all gates.
-RUN_BUDGET="${RW_RUN_TIMEOUT:-2700}"
+# than a wait.
+#
+# # Why 3600 rather than 2700
+#
+# The suite gained a gate that boots an Android emulator and drives a real
+# JNI probe (`check_android_runtime.sh`), measured cold at 86 s on a warm SDK
+# with a cold emulator (boot ≈ 60 s, build + install + launch ≈ 26 s). At the
+# previous 2700 s the worst case — every gate cold — started reporting
+# `NOT-RUN` for gates it never reached, and a `NOT-RUN` gate is a piece of the
+# verification that did not happen. 3600 s keeps that list empty for a fully
+# cold run while still capping the pathological case (58 gates × the 900 s
+# per-gate bound would otherwise be a 14-hour worst case).
+RUN_BUDGET="${RW_RUN_TIMEOUT:-3600}"
 
 # Gates that cannot run on this host by design (they need a specific toolchain or
 # operating system). They are still executed; the classification below only

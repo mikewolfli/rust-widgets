@@ -106,7 +106,7 @@ pub struct EventSignalBinder {
     /// two instances of one control resolve the same set of names.
     #[cfg(full_widgets)]
     wiring_outcomes: &'static crate::compat::Mutex<
-        alloc::collections::BTreeMap<crate::widget::WidgetKind, WiringOutcome>,
+        alloc::collections::BTreeMap<(crate::widget::WidgetKind, usize), WiringOutcome>,
     >,
 }
 
@@ -133,11 +133,11 @@ struct WiringOutcome {
 /// resolve is a property of its implementation, so two instances of one kind always agree.
 #[cfg(full_widgets)]
 fn wiring_outcomes() -> &'static crate::compat::Mutex<
-    alloc::collections::BTreeMap<crate::widget::WidgetKind, WiringOutcome>,
+    alloc::collections::BTreeMap<(crate::widget::WidgetKind, usize), WiringOutcome>,
 > {
     static TABLE: crate::compat::OnceLock<
         crate::compat::Mutex<
-            alloc::collections::BTreeMap<crate::widget::WidgetKind, WiringOutcome>,
+            alloc::collections::BTreeMap<(crate::widget::WidgetKind, usize), WiringOutcome>,
         >,
     > = crate::compat::OnceLock::new();
     TABLE.get_or_init(|| crate::compat::Mutex::new(alloc::collections::BTreeMap::new()))
@@ -280,24 +280,55 @@ impl EventSignalBinder {
 
     /// Remembers how many of a control's published events `forward_all` was able to wire.
     ///
-    /// Keyed by the control's kind **and** the count, so [`Self::unwired_events_for`] can answer
-    /// "did this control publish more than was wired" without holding a reference to it. The
-    /// table is process-wide because wiring happens at mount time and the question is asked later
-    /// (a designer asking which of its wires will never fire); it is keyed by kind rather than by
-    /// `ObjectId` because two instances of one control have the same set of resolvable names.
+    /// # Why the key is the kind **and** the count
+    ///
+    /// `WidgetKind` is not one-to-one with capability. `WidgetKind::Table` backs five of them
+    /// (`table_widget` and `table` at 2 events each, `data_grid`, `virtual_table` and `diff_viewer`
+    /// at 1), and `WidgetKind::WebEngineView` backs two (`web_engine_view` at 11, `media_player` at
+    /// 4). Keyed by kind alone, a control would be answered with a sibling's numbers.
+    ///
+    /// Keying by `(kind, published)` separates them: two capabilities sharing a kind are only
+    /// confusable when they also publish the same number of events, and even then the answer
+    /// (`0` unwired, because both are fully wired) is right. Folding with `max` on a
+    /// kind-only key was the earlier shape, and it mixed a small control's `published` with a large
+    /// sibling's `wired` whenever those came from different registrations.
+    ///
+    /// The table is per-binder because wiring happens at mount time and the question is asked
+    /// later; `ObjectId` is not the key because the counts are properties of the code, not of one
+    /// instance.
     #[cfg(full_widgets)]
     fn record_wiring_outcome<W>(&self, widget: &W, published: usize, wired: usize)
     where
         W: crate::widget::Widget,
     {
-        let kind = widget.kind();
+        let key = (widget.kind(), published);
         if let Ok(mut table) = self.wiring_outcomes.lock() {
-            // `max` rather than overwrite: a later mount of a control that resolved fewer names
-            // must not erase the evidence that an earlier one could resolve more. The counts are
-            // properties of the code, not of the instance.
-            let entry = table.entry(kind).or_insert(WiringOutcome { published: 0, wired: 0 });
-            entry.published = entry.published.max(published);
+            // `max` on `wired` rather than overwrite: a later mount of the same capability that
+            // resolved fewer names must not erase the evidence that an earlier one could resolve
+            // more. With `published` in the key the two counts always describe one capability, so
+            // the fold no longer mixes them.
+            let entry = table.entry(key).or_insert(WiringOutcome { published: 0, wired: 0 });
+            entry.published = published;
             entry.wired = entry.wired.max(wired);
+        }
+    }
+
+    /// Adds `wired` to the outcome already recorded for this control's capability.
+    ///
+    /// The counterpart of [`Self::record_wiring_outcome`] for the one-name-at-a-time path:
+    /// [`Self::forward_one`] is called once per name, so the counts must **sum** rather than each
+    /// call replacing the last. `max` would report a control wired name by name as having wired
+    /// only its best single call.
+    #[cfg(full_widgets)]
+    fn accumulate_wiring_outcome<W>(&self, widget: &W, published: usize, wired: usize)
+    where
+        W: crate::widget::Widget,
+    {
+        let key = (widget.kind(), published);
+        if let Ok(mut table) = self.wiring_outcomes.lock() {
+            let entry = table.entry(key).or_insert(WiringOutcome { published: 0, wired: 0 });
+            entry.published = published;
+            entry.wired = entry.wired.saturating_add(wired).min(published);
         }
     }
 
@@ -309,13 +340,20 @@ impl EventSignalBinder {
     /// This is the query BLUE19 #97 requires: `connect_event` returning `Ok` proves only that a
     /// name is valid, so without this a host cannot tell "this wire is live" from "this wire was
     /// accepted and will never fire".
+    ///
+    /// The lookup key is the kind **and** the number of events the control's capability publishes,
+    /// which is what keeps two controls sharing a `WidgetKind` (`web_engine_view` and
+    /// `media_player`, or the five `WidgetKind::Table` capabilities) from reading each other's
+    /// numbers.
     #[cfg(full_widgets)]
     pub fn unwired_events_for<W>(&self, widget: &W) -> Option<usize>
     where
         W: crate::widget::Widget,
     {
+        let factory = crate::widget::capability::WidgetFactory::new_with_defaults();
+        let published = factory.capability_for_kind_instance(widget)?.events.len();
         let table = self.wiring_outcomes.lock().ok()?;
-        let outcome = table.get(&widget.kind())?;
+        let outcome = table.get(&(widget.kind(), published))?;
         Some(outcome.published.saturating_sub(outcome.wired))
     }
 
@@ -332,11 +370,29 @@ impl EventSignalBinder {
     ///
     /// The single-event form of [`Self::forward_all`], for a caller that wants to skip a name (a
     /// designer with one hand-made exception) or to check a name without wiring the rest.
+    ///
+    /// # It records too, and why that matters
+    ///
+    /// The wired count is accumulated into the same outcome table `forward_all` writes: a caller
+    /// that wires a control name by name must not read `None` from [`Self::unwired_events_for`]
+    /// afterwards, which would say "never wired" about a control it just wired. `published` comes
+    /// from the capability, so the two entry points agree on the denominator and differ only in
+    /// which names they added to the numerator.
     pub fn forward_one<W>(&mut self, widget: &W, event_name: &str) -> bool
     where
         W: crate::widget::Widget,
     {
-        self.wire_one(widget, event_name)
+        let wired = usize::from(self.wire_one(widget, event_name));
+        #[cfg(full_widgets)]
+        {
+            let factory = crate::widget::capability::WidgetFactory::new_with_defaults();
+            if let Some(capability) = factory.capability_for_kind_instance(widget) {
+                // `accumulate` rather than `record` so two `forward_one` calls for two names of one
+                // control sum instead of each overwriting the other's count.
+                self.accumulate_wiring_outcome(widget, capability.events.len(), wired);
+            }
+        }
+        wired == 1
     }
 
     /// The shared body of [`Self::forward_all`] and [`Self::forward_one`].
@@ -350,13 +406,26 @@ impl EventSignalBinder {
         let Some(reference) = widget.event_signal_dyn(event_name) else {
             return false;
         };
+        // The reference must *declare* the name it was asked for.
+        //
+        // Without this, the declared name was write-only: `event_signal_dyn` could resolve
+        // `"clicked"` to a reference built over `self.value_changed` and `wire_one` would subscribe
+        // to that signal anyway, reporting success. The hub name came from the argument rather than
+        // the reference, so the mismatch was invisible — a subscriber to `"clicked"` would be
+        // attached to an event the control never fires under that name, which is precisely the
+        // silent "valid but inert" failure rule #97 exists to rule out. `EventSignalRef::name`
+        // existed solely for this check and, before it, had no reader anywhere in the crate.
+        if reference.name() != event_name {
+            return false;
+        }
         let Some(hub) = self.hub.clone() else {
             // A detached binder registers nothing; it is documented as a no-op, and reporting
             // `true` here would claim a wire that no slot backs.
             return false;
         };
-        // The slot owns the name because it outlives this call.
-        let name = alloc::string::String::from(event_name);
+        // The slot owns the name because it outlives this call. It is the reference's own name, so
+        // the name a caller subscribes to and the name the slot emits cannot drift apart.
+        let name = alloc::string::String::from(reference.name());
         let handle = reference.subscribe(alloc::boxed::Box::new(move |_value| hub.emit(&name)));
 
         // `EventSignalRef` is not `Clone` (its closures are not), so the disconnect closure resolves
@@ -391,10 +460,11 @@ impl EventSignalBinder {
         W: crate::widget::Widget,
     {
         match widget.event_signal_dyn(event_name) {
-            // A subscriber count on the signal itself, so this cannot report wired when the slot was
-            // dropped, nor unwired when a slot another binder added is live.
-            Some(reference) => reference.slot_count() > 0,
-            None => false,
+            // The same declared-name check `wire_one` makes, for the same reason: a reference that
+            // answers to another name is not a wire to *this* name, and reporting it as one would
+            // tell a host an event is live when the hub will never see it under `event_name`.
+            Some(reference) if reference.name() == event_name => reference.slot_count() > 0,
+            _ => false,
         }
     }
 
@@ -561,5 +631,248 @@ impl Drop for EventSignalBinder {
     fn drop(&mut self) {
         // A binder that outlives its control must not leave slots pointing into it.
         self.unbind_all();
+    }
+}
+
+#[cfg(all(test, full_widgets))]
+mod tests {
+    use super::EventSignalBinder;
+    use crate::core::Rect;
+
+    /// Every control whose `event_signal_dyn` is implemented must wire **all** its published names.
+    ///
+    /// # What this proves that the source-level gate cannot
+    ///
+    /// `tools/check_event_signal_dyn.sh` reads the `match` arms and compares their literals to the
+    /// capability table. That catches a missing or misspelled arm, but it is a text check: it
+    /// cannot see that the signal behind an arm is the one the control actually **emits**. A
+    /// control that resolved `clicked` to a signal it never fires would satisfy the gate and still
+    /// deliver nothing.
+    ///
+    /// This drives the real path — `forward_all` walks the capability's published names and asks
+    /// the control to resolve each — and then asks `unwired_events_for` how many were left. Zero
+    /// is the only acceptable answer for a converted control, and the shortfall is what the
+    /// binder records when a name resolves to nothing.
+    ///
+    /// # Why the list is explicit
+    ///
+    /// It is the same commitment `check_event_signal_dyn.py`'s `CONVERTED` table makes, and it has
+    /// to be stated for the same reason: a control that has *not* been converted is
+    /// indistinguishable, from the outside, from one that has and is missing an arm — both wire
+    /// zero. Naming the converted set is what turns "the gap is fine" into a checked claim.
+    #[test]
+    fn converted_controls_wire_every_published_event() {
+        fn check<W: crate::widget::Widget>(name: &str, widget: &W) {
+            let hub = std::sync::Arc::new(crate::signal::hub::CustomSignalHub::new());
+            let mut binder = EventSignalBinder::new(hub);
+            let wired = binder.forward_all(widget);
+            assert!(
+                wired > 0,
+                "{name}: `forward_all` wired nothing, so either the control is not converted or \
+                 its capability publishes no events"
+            );
+            assert_eq!(
+                binder.unwired_events_for(widget),
+                Some(0),
+                "{name}: some published event did not resolve to a signal the control emits"
+            );
+        }
+
+        let r = Rect::new(0, 0, 100, 40);
+        check("button", &crate::widget::base_widgets::button::Button::new("b".to_string(), r));
+        check("check_box", &crate::widget::base_widgets::checkbox::CheckBox::new(r));
+        check(
+            "color_well",
+            &crate::widget::display_widgets::color_well::ColorWell::new(
+                crate::core::Color::WHITE,
+                r,
+            ),
+        );
+        check(
+            "dropdown",
+            &crate::widget::input_widgets::dropdown::Dropdown::new(vec!["one".to_string()], r),
+        );
+        check("empty_state", &crate::widget::display_widgets::empty_state::EmptyState::new(r));
+        check("progress_dialog", &crate::widget::dialog::progress_dialog::ProgressDialog::new(r));
+        check(
+            "refresh_control",
+            &crate::widget::overlay_widgets::refresh_control::RefreshControl::new(r),
+        );
+        check(
+            "text_area",
+            &crate::widget::input_widgets::textarea::TextArea::new(String::new(), r),
+        );
+        check("window", &crate::widget::window::Window::new("w".to_string(), r));
+
+        // The second batch: the controls converted after the first nine, so the set the runtime
+        // check covers keeps pace with the `CONVERTED` table rather than trailing it. A control is
+        // added here only when a call reaches every name its capability publishes without a
+        // `_ = ` discard, which is what makes the count meaningful.
+        check("app_bar", &crate::widget::nav_widgets::app_bar::AppBar::new("t", r));
+        check("bottom_sheet", &crate::widget::dialog::bottom_sheet::BottomSheet::new(r));
+        check("dialog", &crate::widget::dialog::dialog_widget::Dialog::new(r));
+        check(
+            "modal_bottom_sheet",
+            &crate::widget::dialog::modal_bottom_sheet::ModalBottomSheet::new(r),
+        );
+        check("popup_window", &crate::widget::dialog::popup_window::PopupWindow::new(r));
+        check(
+            "hero_animation",
+            &crate::widget::media_widgets::hero_animation::HeroAnimation::new(r),
+        );
+        check("lottie_widget", &crate::widget::media_widgets::lottie_widget::LottieWidget::new(r));
+        check("rive_widget", &crate::widget::media_widgets::rive_widget::RiveWidget::new(r));
+        check("mini_canvas", &crate::widget::display_widgets::mini_canvas::MiniCanvas::new(r));
+        check(
+            "mobile_date_picker",
+            &crate::widget::misc_widgets::mobile_date_picker::MobileDatePicker::new(r),
+        );
+        check("status_bar", &crate::widget::menu_toolbar::status_bar::StatusBar::new(r));
+        check("tool_button", &crate::widget::menu_toolbar::tool_button::ToolButton::new("t", r));
+        check(
+            "terminal_view",
+            &crate::widget::special_widgets::terminal_view::TerminalView::new(r),
+        );
+        check(
+            "timeline_widget",
+            &crate::widget::special_widgets::timeline_widget::TimelineWidget::new(r),
+        );
+        check("progress_bar", &crate::widget::display_widgets::progressbar::ProgressBar::new(r));
+        check("rating", &crate::widget::display_widgets::rating::Rating::new(r));
+        check("switch", &crate::widget::display_widgets::switch::Switch::new(r));
+        check("scroll_bar", &crate::widget::display_widgets::scrollbar::ScrollBar::new(r));
+        check("stepper", &crate::widget::container_widgets::stepper::Stepper::new(r));
+        check(
+            "animated_image",
+            &crate::widget::media_widgets::animated_image::AnimatedImage::new(r),
+        );
+        check("chip", &crate::widget::special_widgets::chip::Chip::new(r));
+        check("group_box", &crate::widget::container_widgets::groupbox::GroupBox::new(r));
+
+        // A delegating newtype must forward the *resolution* too, not just the behaviour.
+        // `CupertinoSwitch` publishes `toggled` and delegates everything to its inner `Switch`;
+        // before the forward it accepted a subscription and never fired it.
+        check("cupertino_switch", &crate::widget::cupertino::core::CupertinoSwitch::new(r));
+    }
+
+    /// A control sharing a `WidgetKind` with a larger control must not inherit its shortfall.
+    ///
+    /// # The defect this pins
+    ///
+    /// `WidgetKind` is not one-to-one with capability: `WidgetKind::WebEngineView` backs both
+    /// `media_player` (4 published events) and `web_engine_view` (11). The wiring-outcome table was
+    /// keyed by kind alone and folded the two counts with `max` **independently**, so a fully-wired
+    /// `MediaPlayer` inherited `published = 11` from its larger sibling while keeping `wired = 4` of
+    /// its own — `unwired_events_for` then reported **7 unwired events that do not exist**, which is
+    /// precisely the false shortfall this query exists to make impossible.
+    ///
+    /// `WidgetKind::Table` is the extreme case: five capabilities (2, 2, 1, 1, 1 events) share one
+    /// kind.
+    ///
+    /// The two controls must share **one binder** for the defect to appear: the table is per-binder,
+    /// so a fresh binder for each control would hide the cross-contamination entirely. That is also
+    /// what a real host looks like — one binder wires every control in a window.
+    ///
+    /// The order is the one that exposes it: the **larger** control goes first, so a smaller sibling
+    /// wired afterwards is answered from an entry that already holds the larger `published`. To make
+    /// the fold bite, the smaller control is left with a genuine shortfall — one published name
+    /// skipped — so a kind-only entry would compute `11 - 3 = 8` (the larger sibling's published
+    /// minus the smaller control's wired) instead of the true `4 - 3 = 1`.
+    ///
+    /// The shortfall is produced with [`EventSignalBinder::forward_one`] rather than a wrapper type:
+    /// the capability tie-break downcasts to the concrete control, so a wrapper would resolve no
+    /// capability at all and `forward_all` would return `0` for a reason unrelated to the keying.
+    /// Skipping one name is also exactly what a host with a hand-made exception does — the case the
+    /// single-event form exists for, and the case the count has to stay honest about.
+    #[test]
+    fn a_control_on_a_shared_kind_reports_its_own_shortfall() {
+        let r = Rect::new(0, 0, 100, 40);
+        let hub = std::sync::Arc::new(crate::signal::hub::CustomSignalHub::new());
+        let mut binder = EventSignalBinder::new(hub);
+
+        let view = crate::widget::web_widgets::web_engine::WebEngineView::new(r);
+        assert_eq!(binder.forward_all(&view), 11, "`web_engine_view` publishes eleven events");
+
+        let player = crate::widget::special_widgets::media_player::MediaPlayer::new(r);
+        for name in ["playback_changed", "position_changed", "volume_changed"] {
+            assert!(binder.forward_one(&player, name), "`{name}` resolves on `media_player`");
+        }
+
+        assert_eq!(
+            binder.unwired_events_for(&player),
+            Some(1),
+            "the shortfall is this control's own (4 published - 3 wired), not `WebEngineView`'s \
+             four extra names folded in through a shared `WidgetKind`"
+        );
+        // The larger sibling is still fully wired; neither answer may be read off the other.
+        assert_eq!(binder.unwired_events_for(&view), Some(0));
+    }
+
+    /// A reference that declares a different name than it was asked for must not wire.
+    ///
+    /// # The defect this pins
+    ///
+    /// `EventSignalRef::name` was **write-only**: `forward_one`/`forward_all` took the hub name
+    /// from their own argument and never compared it to the name the reference declared. A control
+    /// whose `event_signal_dyn` resolved `"clicked"` to a signal built under another name therefore
+    /// wired "successfully" while the control emitted the real `"clicked"` into nothing. Both
+    /// queries a host has — the `wired` count and [`EventSignalBinder::event_is_wired`] — reported
+    /// success.
+    ///
+    /// This test builds one control whose resolver lies about the name and asserts the binder
+    /// refuses it, so the check cannot be dropped without a failure. It is deliberately not written
+    /// against a real control: no shipping control lies, so only a synthetic one can reach the
+    /// branch, and the branch is what the test is about.
+    #[test]
+    fn a_reference_that_declares_another_name_does_not_wire() {
+        use crate::widget::Widget;
+
+        /// A `ColorWell` that answers `"clicked"` with a signal declaring a different name — the
+        /// shape a copy-paste mistake in a real `event_signal_dyn` produces.
+        ///
+        /// Only `handle_event` and `base`/`base_mut` are delegated: `kind` has a default body that
+        /// reads the base, so the wrapper reports the same kind as the control it wraps — which is
+        /// what lets the capability lookup find the real event list.
+        struct Misnamed(crate::widget::display_widgets::color_well::ColorWell);
+
+        impl crate::event::EventHandler for Misnamed {
+            fn handle_event(&mut self, event: &crate::event::Event) {
+                self.0.handle_event(event);
+            }
+        }
+
+        impl Widget for Misnamed {
+            fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+                match name {
+                    "clicked" => {
+                        Some(crate::signal::EventSignalRef::unit("not_clicked", &self.0.clicked))
+                    }
+                    _ => None,
+                }
+            }
+            fn base(&self) -> &crate::widget::BaseWidget {
+                Widget::base(&self.0)
+            }
+            fn base_mut(&mut self) -> &mut crate::widget::BaseWidget {
+                Widget::base_mut(&mut self.0)
+            }
+        }
+
+        let widget = Misnamed(crate::widget::display_widgets::color_well::ColorWell::new(
+            crate::core::Color::WHITE,
+            Rect::new(0, 0, 100, 40),
+        ));
+        let hub = std::sync::Arc::new(crate::signal::hub::CustomSignalHub::new());
+        let mut binder = EventSignalBinder::new(hub);
+
+        assert!(
+            !binder.forward_one(&widget, "clicked"),
+            "a reference declaring `not_clicked` must not satisfy a request for `clicked`"
+        );
+        assert!(
+            !binder.event_is_wired(&widget, "clicked"),
+            "`event_is_wired` must agree with `forward_one`: neither may report a wire whose hub \
+             name and signal name disagree"
+        );
     }
 }

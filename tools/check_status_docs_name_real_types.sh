@@ -28,6 +28,27 @@
 # A row that names any of these **in order to deny it** ("no `android.app.AlertDialog`
 # is constructed", "⛔ Deleted", "used to") is skipped: that is true history, and
 # reporting it would be reporting the correction as the defect.
+#
+# # The fourth check: a Java sample must match the wrapper it names
+#
+# Added 2026-10-01. `activity_integration.md`'s `kotlin` sample declared
+# `package rust_widgets` — the Android wrapper — but listed the **desktop** wrapper's
+# methods (`nativeCreateLabel`, `nativeCreateLineEdit`, …). Both classes are called
+# `RustWidgets` and both symbols are exported from `src/bindings/java_jni.rs`, so check
+# 3 passed: every name *was* an export. It was answering the wrong question. The right
+# one is "does the class this sample sits inside declare it?", and the `package` line
+# is the only thing that says which class that is:
+#
+#   bindings/java/RustWidgets.java          package io.github.rustwidgets
+#   bindings/android/java/rust_widgets/…    package rust_widgets
+#
+# A reader who copied the sample bound against methods the Android class does not
+# declare and got `UnsatisfiedLinkError` at the first call — the same failure the
+# Android test's own header records having been fixed once before. So every `native*`
+# name in a fenced `java`/`kotlin` block whose `package` names one of those wrappers is
+# checked against that class. A block with no `package` line is not attributed and is
+# skipped, because guessing which wrapper it means is how the wrong answer gets written
+# down.
 # ============================================================================
 
 set -euo pipefail

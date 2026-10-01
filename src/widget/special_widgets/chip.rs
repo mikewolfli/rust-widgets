@@ -289,6 +289,28 @@ impl Widget for Chip {
     }
 
     impl_widget_property_hooks!();
+    /// Resolves a published event name to the control's own signal.
+    ///
+    /// # Why this is explicit per control
+    ///
+    /// `connect_event` validates a name against the capability table and registers a hub slot; only
+    /// `event_signal_dyn` joins that name to the signal the control actually emits. Without it a name
+    /// is valid and inert, which is the silent failure `tools/check_event_signal_dyn.sh` exists to
+    /// make impossible. The arm set is checked against the capability's published names, so this
+    /// list cannot drift from what the control advertises.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        #[allow(unused_imports)]
+        use crate::widget::capability::CapabilityValue;
+        match name {
+            "chip_toggled" => {
+                Some(EventSignalRef::mapped("chip_toggled", &self.chip_toggled, |_| {
+                    CapabilityValue::Null
+                }))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// `Chip`'s property contract, published under the `CheckListBox` kind.

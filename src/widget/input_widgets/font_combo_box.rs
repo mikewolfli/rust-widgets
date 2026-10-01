@@ -407,6 +407,47 @@ impl Widget for FontComboBox {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+    /// Resolves a published event name to the control's own signal.
+    ///
+    /// # Why this is explicit
+    ///
+    /// `connect_event` validates a name against the capability table and registers a hub slot; only
+    /// `event_signal_dyn` joins that name to the signal the control actually **emits**. Without an
+    /// arm a published name is valid and inert, which is the silent failure
+    /// `tools/check_event_signal_dyn.sh` exists to make impossible: the arm set is compared against
+    /// the capability's published names, so the two cannot drift.
+    ///
+    /// # Payload mapping
+    ///
+    /// A hub name carries no value, so a `Signal1<T>` needs a conversion. The one used here is the
+    /// same spelling the property side uses, so a designer reads one representation per kind: a
+    /// number as `Int`, a float as `Float`, a flag as `Bool`, text as `String`, and a structured
+    /// payload as its debug spelling. A `None` maps to `Null`, which is the same value an absent
+    /// optional property uses — so "no selection" is distinguishable from "selection 0".
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "current_font_changed" => Some(EventSignalRef::mapped(
+                "current_font_changed",
+                &self.current_font_changed,
+                |v| CapabilityValue::String(format!("{v:?}")),
+            )),
+            "current_index_changed" => Some(EventSignalRef::mapped(
+                "current_index_changed",
+                &self.current_index_changed,
+                |v| CapabilityValue::Int(*v as i64),
+            )),
+            "activated" => Some(EventSignalRef::mapped("activated", &self.activated, |v| {
+                CapabilityValue::Int(*v as i64)
+            })),
+            "text_edited" => Some(EventSignalRef::mapped("text_edited", &self.text_edited, |v| {
+                CapabilityValue::String(v.clone())
+            })),
+            "popup_shown" => Some(EventSignalRef::unit("popup_shown", &self.popup_shown)),
+            "popup_hidden" => Some(EventSignalRef::unit("popup_hidden", &self.popup_hidden)),
+            _ => None,
+        }
+    }
 }
 
 /// `FontComboBox`'s property contract.

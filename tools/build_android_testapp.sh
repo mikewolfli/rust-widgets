@@ -28,8 +28,17 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 . "$ROOT_DIR/tools/lib_python.sh"
+. "$ROOT_DIR/tools/lib_jdk.sh"
 
 SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}"
+# macOS installs the SDK under `~/Library/Android/sdk` — a different layout from the Linux
+# default above, and a different spelling (`Sdk` vs `sdk`) from the env var's own name.
+# Falling back to it means the documented invocation
+# (`ANDROID_SDK_ROOT=... bash tools/...`) is not needed on a stock macOS install, which is
+# what made this path look Linux-only in the first place.
+if [[ ! -d "$SDK_ROOT" && -d "$HOME/Library/Android/sdk" ]]; then
+  SDK_ROOT="$HOME/Library/Android/sdk"
+fi
 NDK_ROOT="${ANDROID_NDK_HOME:-$(ls -d "$SDK_ROOT"/ndk/* 2>/dev/null | sort -V | tail -1)}"
 API_LEVEL="${ANDROID_JAR_LEVEL:-34}"
 ANDROID_JAR="$SDK_ROOT/platforms/android-$API_LEVEL/android.jar"
@@ -52,16 +61,9 @@ esac
 OUT_DIR="$ROOT_DIR/target/android-testapp-$ANDROID_ABI"
 LIB_SO="$ROOT_DIR/target/$RUST_TARGET/debug/librust_widgets.so"
 
-if [[ -n "${JAVA_HOME:-}" && -x "$JAVA_HOME/bin/javac" ]]; then
-  JAVAC="$JAVA_HOME/bin/javac"
-  JAVA="$JAVA_HOME/bin/java"
-elif [[ -x "/home/mikeli/Desktop/app/android-studio/jbr/bin/javac" ]]; then
-  JAVAC="/home/mikeli/Desktop/app/android-studio/jbr/bin/javac"
-  JAVA="/home/mikeli/Desktop/app/android-studio/jbr/bin/java"
-else
-  JAVAC="$(command -v javac)"
-  JAVA="$(command -v java)"
-fi
+# Locate a JDK the Android build tools accept. See `tools/lib_jdk.sh` for why the bundled
+# JBRs are preferred over `PATH` and why a version check happens here.
+rw_resolve_jdk
 
 for tool in "$ANDROID_JAR" "$BUILD_TOOLS/aapt2" "$BUILD_TOOLS/d8" "$BUILD_TOOLS/zipalign"; do
   if [[ ! -e "$tool" ]]; then
@@ -70,21 +72,102 @@ for tool in "$ANDROID_JAR" "$BUILD_TOOLS/aapt2" "$BUILD_TOOLS/d8" "$BUILD_TOOLS/
   fi
 done
 
-echo "[1/5] Building librust_widgets.so for $RUST_TARGET ($ANDROID_ABI)"
-NDK_BIN="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+# The NDK ships one prebuilt toolchain per **host**, and its directory name is not
+# the same as the host's rust triple: `linux-x86_64`, `darwin-x86_64`, `windows-x86_64`.
+#
+# This was hardcoded to `linux-x86_64`, so the whole Android verification path could
+# only ever run on Linux — on macOS the linker was reported as missing:
+#
+#   error: linker `.../prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang` not found
+#
+# even though `prebuilt/darwin-x86_64/bin/` held exactly that binary. A script that
+# verifies a cross-platform library must not itself be single-host, and the fix is to
+# read the tag from the host rather than to assume one.
+case "$(uname -s)" in
+  Darwin) NDK_HOST_TAG="darwin-x86_64" ;;
+  Linux)  NDK_HOST_TAG="linux-x86_64"  ;;
+  MINGW*|MSYS*|CYGWIN*) NDK_HOST_TAG="windows-x86_64" ;;
+  *)
+    echo "error: unsupported host '$(uname -s)' for the Android NDK toolchain" >&2
+    exit 2
+    ;;
+esac
+
+# Apple silicon runs the x86_64 prebuilt under Rosetta, which is what the NDK
+# publishes; there is no `darwin-arm64` toolchain directory in current releases. If a
+# future NDK ships one, prefer it rather than relying on Rosetta silently.
+if [[ "$NDK_HOST_TAG" == "darwin-x86_64" ]] && [[ -x "$NDK_ROOT/toolchains/llvm/prebuilt/darwin-arm64/bin/clang" ]]; then
+  NDK_HOST_TAG="darwin-arm64"
+fi
+
+NDK_PREBUILT="$NDK_ROOT/toolchains/llvm/prebuilt/$NDK_HOST_TAG"
+if [[ ! -d "$NDK_PREBUILT/bin" ]]; then
+  echo "error: the NDK at $NDK_ROOT has no '$NDK_HOST_TAG' toolchain." >&2
+  echo "       available: $(ls "$NDK_ROOT/toolchains/llvm/prebuilt" 2>/dev/null | tr '\n' ' ')" >&2
+  exit 2
+fi
+
+echo "[1/5] Building librust_widgets.so for $RUST_TARGET ($ANDROID_ABI) with $NDK_HOST_TAG"
+# # Why `mobile`, and not `mobile-api`
+#
+# This built with `mobile-api` alone for a long time, and the difference is not cosmetic.
+# `mobile-api` is an empty marker feature (`mobile-api = []`); `mobile` is a **device profile**,
+# and `build.rs` derives `full_widgets` from "a device profile is on AND the widget set is not
+# stripped". `mobile-api` satisfies neither half, so `full_widgets` was **false** in this build
+# and `control_backend::custom::mount_widget_of_kind` takes its `#[cfg(not(full_widgets))]`
+# arm — which returns `0` for *every* kind, with a warning that the constructor registry is
+# not compiled in.
+#
+# The measured consequence, once the on-device probe was deepened to actually create a widget:
+#
+#   I RustWidgetsTest: nativeWidgetSelfTest -> 0 (0b0)
+#   E rust_widgets: [android-jni] widget self-test: create_window returned 0
+#
+# Every `create_*` on Android returned `0`. Nothing in the tree noticed, because the probe
+# exercised only the JNI plumbing and every compile gate is satisfied by an empty registry:
+# the code builds, warns, and creates nothing. See `check_android_runtime.sh`.
+NDK_BIN="$NDK_PREBUILT/bin"
 export CARGO_TARGET_$(echo "$RUST_TARGET" | tr 'a-z-' 'A-Z_')_LINKER="$NDK_BIN/${NDK_TRIPLE}24-clang"
 export "CC_${RUST_TARGET//-/_}=$NDK_BIN/${NDK_TRIPLE}24-clang"
 export "AR_${RUST_TARGET//-/_}=$NDK_BIN/llvm-ar"
 cargo build --lib --target "$RUST_TARGET" --no-default-features \
-  --features "android-jni jni mobile-api controls-custom controls-native serde serde_json"
+  --features "android-jni jni mobile controls-custom controls-native serde serde_json"
 
 echo "[2/5] Compiling Java sources"
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR/classes" "$OUT_DIR/dex" "$OUT_DIR/lib/$ANDROID_ABI"
-"$JAVAC" -source 8 -target 8 -bootclasspath "$ANDROID_JAR" -classpath "$ANDROID_JAR" \
+
+# javac's status has to be the pipeline's status.
+#
+# # Why the obvious spelling is wrong
+#
+# This used to be:
+#
+#   "$JAVAC" ... 2>&1 | grep -v "bootstrap class path" || true
+#
+# which reads as "compile, quieten one noisy warning". It is not. A pipeline's status is the
+# **last** command's, so `grep`'s (or `true`'s) status replaced javac's, and under `set -e`
+# a **failed compile continued to the next step**. The consequence was measured: a Javadoc
+# block closed early by a stray `*` in a comment made javac emit `错误: 非法的类型开始`,
+# the script printed no error, built an APK with no classes in it, and the failure surfaced
+# three steps later as `INSTALL_FAILED_INVALID_APK: … code is missing` — a message that
+# describes the symptom and points nowhere near the cause.
+#
+# So the output goes to a file, the status is captured from javac itself (`PIPESTATUS` is
+# bash-specific and this script runs under `sh` in places), the filtered view is printed, and
+# a non-zero status aborts with the unfiltered log so the real line is visible.
+JAVAC_LOG="$OUT_DIR/javac.log"
+if ! "$JAVAC" -source 8 -target 8 -bootclasspath "$ANDROID_JAR" -classpath "$ANDROID_JAR" \
   -d "$OUT_DIR/classes" \
   "$APP_DIR/java/rust_widgets/RustWidgets.java" \
-  "$APP_DIR/java/rust_widgets/testapp/MainActivity.java" 2>&1 | grep -v "bootstrap class path" || true
+  "$APP_DIR/java/rust_widgets/testapp/MainActivity.java" > "$JAVAC_LOG" 2>&1; then
+  echo "error: javac failed; full output follows" >&2
+  cat "$JAVAC_LOG" >&2
+  exit 1
+fi
+# The `-source 8` deprecation notes and the bootclasspath notice are noise on every run; the
+# errors are not, and they are already reported by the branch above.
+grep -v -e "bootstrap class path" -e "已过时" -e "deprecat" "$JAVAC_LOG" || true
 
 echo "[3/5] Dexing"
 # d8's --output must be an existing directory; it writes classes.dex inside it.
@@ -126,9 +209,22 @@ ls -la "$OUT_DIR/app-aligned.apk"
 # A stable keystore is reused across runs to keep the signature consistent
 # (Android rejects updates signed with a different key).
 KEYSTORE="${ANDROID_DEBUG_KEYSTORE:-$HOME/.android/rw_debug.keystore}"
+# The same resolution order as `javac`/`java` above, for the same reason: `JAVA_HOME`
+# may be unset entirely, and the JDK that supplied `javac` is exactly the one that has
+# `keytool` beside it. Reading `$JAVA_HOME/bin/keytool` directly aborted the whole build
+# with `JAVA_HOME: unbound variable` under `set -u` on any host that did not export it.
+KEYTOOL="$(dirname "$JAVAC")/keytool"
+if [[ ! -x "$KEYTOOL" ]]; then
+  KEYTOOL="$(command -v keytool || true)"
+fi
+if [[ ! -x "$KEYTOOL" ]]; then
+  echo "error: keytool not found (looked beside javac at $JAVAC, then on PATH);" >&2
+  echo "       it ships with every JDK, so set JAVA_HOME to one." >&2
+  exit 2
+fi
 if [[ ! -f "$KEYSTORE" ]]; then
   mkdir -p "$(dirname "$KEYSTORE")"
-  "$JAVA_HOME/bin/keytool" -genkeypair -v -keystore "$KEYSTORE" \
+  "$KEYTOOL" -genkeypair -v -keystore "$KEYSTORE" \
     -storepass android -keypass android -alias androiddebugkey \
     -keyalg RSA -keysize 2048 -validity 10000 \
     -dname "CN=Android Debug,O=Android,C=US" >/dev/null 2>&1 || true

@@ -236,6 +236,39 @@ mini = [
 ## a breaking change for a capability that is on today.
 no-declarative-view = []
 
+## The declarative view layer, as a *capability* a feature can depend on.
+##
+## `no-declarative-view` above is the caller-facing switch and remains opt-out (it
+## must not break a caller who never named it). This feature is the **positive**
+## spelling of the same fact, and it exists so another feature can say "I need the
+## declarative layer" without enumerating the device profiles:
+##
+##     designer = ["declarative-view", ...]
+##
+## Cargo unifies features additively, so asking for `no-declarative-view` and
+## `declarative-view` in one build turns **both** on and `build.rs` resolves the
+## result the only defensible way: the opt-out wins, because it is the narrower
+## request and the one a caller makes deliberately about *this* build (see
+## `build.rs` — `declarative_view` is emitted only when the opt-out is absent; the
+## `cfg(declarative_view)` alias is the single thing any code gates on, never
+## either feature name).
+##
+## # Why this is needed at all
+##
+## `designer` emits code that names `crate::view`, so it cannot compile without
+## it. Declaring the dependency here makes an impossible configuration
+## **unbuildable by construction**, instead of failing deep inside the generator
+## with `cannot find \`view\` in \`crate\``. The two are not equivalent: the
+## constructor is a fact about the feature graph that every command honours,
+## whereas the error only appears once `--all-targets` happens to build the test
+## module that names the path.
+##
+## It is **not** enabled by `desktop`/`tablet`/`mobile` directly: those profiles
+## get `crate::view` from the `declarative_view` alias in `build.rs` (the same
+## fact, expressed once as a `cfg`). This feature is the *dependency-edge* spelling,
+## and duplicating it into the three profiles would be a second source of truth.
+declarative-view = []
+
 # ── Axis 2: OS BACKENDS (composable) ──
 #
 # Backend selection is performed by `cfg(target_os)` / `cfg(target_env)` arms in
@@ -330,7 +363,15 @@ a11y = []
 ## Declaring the dependency here rather than in each profile keeps the alias honest:
 ## `--features tablet,designer` fails with a clear missing-dependency error instead
 ## of compiling a module that cannot read its input.
-designer = ["serde_json"]
+##
+## It also needs the declarative view layer, because the source it emits names
+## `crate::view`. `declarative-view` is the positive spelling of that requirement;
+## a build that pairs `designer` with `no-declarative-view` turns both on, and
+## `build.rs` resolves the conflict in the opt-out's favour — the generator then
+## compiles and *reports* rather than emitting template code (see
+## `check_profiles.sh`'s `desktop,no-declarative-view` line), which is the honest
+## outcome for a host that asked the layer away.
+designer = ["serde_json", "declarative-view"]
 
 image = ["dep:miniz_oxide", "image-codecs", "svg-rasterizer"]
 image-codecs = ["dep:image-codecs"]
@@ -771,6 +812,11 @@ winapi = { version = "0.3", features = [
     # in the Windows backend.
     "sysinfoapi",
     "psapi",
+    # `ImmGetContext` / `ImmReleaseContext` (imm) are the real OS probe
+    # `platform::ime_windows::native_ime_available` makes, replacing a
+    # `GetProcAddress("TF_GetThreadMgr")` symbol lookup that never called anything
+    # and so reported an IME connection that did not exist (rule #26).
+    "imm",
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

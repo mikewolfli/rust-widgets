@@ -95,11 +95,153 @@ def table_by_control() -> dict[str, list[tuple[str, str, str]]]:
     return by_control
 
 
+def delivery_failures(inject: str | None = None) -> list[str]:
+    """Arms whose closure delivers a carrier their declared payload kind does not use.
+
+    # What this catches that the type check cannot
+
+    The payload table says what a subscriber will *receive*; the signal type says what the control
+    *emits*. `event_signal_dyn` sits between them and decides the carrier, so it is the one place
+    where the two can silently disagree — a `Signal1<String>` resolved with `|_| Null` satisfies
+    both the type check and the name check and still delivers nothing.
+
+    # Why the comparison is per control, read from the arm source
+
+    The arm text is read from the file `check_event_signal_dyn.py` records for the control, so the
+    two gates agree on where a control lives. A control with no arm at all is not this gate's
+    business — the wiring gate owns that — so it is skipped rather than double-reported.
+    """
+    # The carrier each declared kind travels as. `K::UInt` travels as `CapabilityValue::UInt`, not
+    # `Int`: the enum has a variant for it precisely so a count or index can be relied on never to be
+    # negative, and the property side already uses it for `PropertyValueKind::UInt`. Converting an
+    # unsigned payload with `*v as i64` throws away that guarantee (and is lossy above `i64::MAX`),
+    # which is exactly the mismatch this table is here to stop.
+    #
+    # A tuple or list payload has no single scalar, and the conversion for it is the debug spelling,
+    # which arrives as `String`; those rows are accepted for either their own carrier or `String`.
+    carrier = {
+        "UInt": "UInt",
+        "Int": "Int",
+        "Float": "Float",
+        "Bool": "Bool",
+        "String": "String",
+        "Color": "String",
+        "Rect": "String",
+    }
+    composite_shapes = {"Tuple2", "Tuple3", "Tuple4", "Mixed", "ListScalar", "OptionalTuple2"}
+    shape_by_key = {
+        (control, name): shape for control, rows in table_by_control().items() for name, _, shape in rows
+    }
+
+    try:
+        import check_event_signal_dyn as wiring  # type: ignore[import-not-found]
+    except ImportError:  # pragma: no cover - the module is a sibling script
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "check_event_signal_dyn", REPO / "tools/check_event_signal_dyn.py"
+        )
+        wiring = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(wiring)
+
+    failures: list[str] = []
+    inject_control, _, inject_event = (inject or "").partition(".")
+    if inject and inject_control not in wiring.CONVERTED:
+        return [f"--inject-delivery={inject}: `{inject_control}` is not a converted control"]
+    injected = False
+    for control, relative in sorted(wiring.CONVERTED.items()):
+        path = REPO / relative
+        if not path.exists():
+            continue
+        source = path.read_text()
+        region = wiring._struct_impl_body(source, wiring.STRUCT_IMPL.get(control, ""))
+        if region is None:
+            continue
+        for match in re.finditer(
+            r'"([a-z0-9_]+)"\s*=>\s*Some\(EventSignalRef::(unit|mapped)\(', region
+        ):
+            name, constructor = match.group(1), match.group(2)
+            row = next(
+                ((k, s) for n, k, s in table_by_control().get(control, []) if n == name), None
+            )
+            if row is None:
+                continue
+            kind, shape = row
+            if kind == "-":
+                want = "Null"
+            else:
+                want = carrier.get(kind, "String")
+                if shape in composite_shapes and want != "String":
+                    # A composite payload may legitimately arrive as its debug spelling.
+                    want_alt = "String"
+                else:
+                    want_alt = want
+            if constructor == "unit":
+                produced = "Null"
+            else:
+                produced = _closure_carrier(region, match.end())
+            if (
+                inject
+                and control == inject_control
+                and name == inject_event
+                and constructor == "mapped"
+            ):
+                # Pretend the arm delivers the wrong carrier: whichever variant it currently
+                # produces, report a different one. A no-op injection (an arm that already
+                # delivers `Null`) must still be observable, so `Null` is never chosen as the lie.
+                produced = "Bool" if produced != "Bool" else "String"
+                injected = True
+            acceptable = {want} if kind == "-" or want_alt == want else {want, want_alt}
+            if produced not in acceptable:
+                failures.append(
+                    f"{control}.{name}: declares payload={kind}/shape={shape}, so a subscriber "
+                    f"expects {sorted(acceptable)}, but the arm delivers `{produced}`"
+                )
+
+    if inject and not injected:
+        failures.append(
+            f"--inject-delivery={inject}: no `mapped` arm was found to corrupt, so the injection "
+            "proved nothing"
+        )
+
+    return failures
+
+
+def _closure_carrier(region: str, from_index: int) -> str:
+    """The `CapabilityValue` variant the `mapped` closure at `from_index` produces.
+
+    The closure body is located by the **arm's own** delimiters rather than by searching for the
+    next `|v| {`: an arm written on one line (`|v| CapabilityValue::Int(*v as i64)`) has no braced
+    body at all, and a search for one would run past it into a *later* arm and report that arm's
+    carrier as this one's. The body therefore ends at the first `)` that closes the `mapped(`
+    call, which is found by counting parens from the `mapped(` the caller matched.
+    """
+    body = region[from_index:]
+    depth = 1  # the `mapped(` call's own open paren
+    end = 0
+    for end, ch in enumerate(body):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                break
+    body = body[:end]
+    for variant in ("UInt", "Int", "Float", "Bool", "String", "Null"):
+        if f"CapabilityValue::{variant}" in body:
+            return variant
+
+    return "?"
+
+
 def main() -> int:
     inject = None
+    inject_delivery = None
     for argument in sys.argv[1:]:
         if argument.startswith("--inject="):
             inject = argument.split("=", 1)[1]
+        elif argument.startswith("--inject-delivery="):
+            inject_delivery = argument.split("=", 1)[1]
     published = derive.read_census()
     declared = table_by_control()
     failures: list[str] = []
@@ -161,6 +303,30 @@ def main() -> int:
 
     print(f"published events checked: {checked}")
     print(f"controls covered: {len(published)}")
+
+    # ── Delivery: the carrier `event_signal_dyn` produces must match the declared kind ──
+    #
+    # A declared kind is a promise about the `CapabilityValue` a subscriber receives. The signal
+    # type is one half of that promise (checked above); the `mapped` closure in
+    # `Widget::event_signal_dyn` is the other, and until this check existed nothing compared the
+    # two: a control could declare `K::String`, resolve the name, and deliver `Null` — a wire that
+    # type-checks as text and arrives empty. That is the shape BLUE19 #95 rules out, and it is
+    # exactly what a bulk conversion produces when it maps `Signal1<String>` with `|_| Null`.
+    #
+    # The comparison is over the *carrier variant*, not the Rust type: `K::UInt` and `K::Int` both
+    # travel as `CapabilityValue::Int`, and a tuple or list payload travels as the debug spelling
+    # because a hub name has no arity. Only the kind's own carrier is required.
+    delivery = delivery_failures(inject=inject_delivery)
+    if delivery:
+        print()
+        print(f"❌ {len(delivery)} `event_signal_dyn` arm(s) deliver a carrier their row does not declare:")
+        for failure in delivery:
+            print(f"   {failure}")
+        print()
+        print("   Fix the arm's closure, or correct the declared payload.")
+        return 1
+
+    print(f"controls wired: {sum(1 for c in declared if declared[c])}")
     shapes: dict[str, int] = {}
     for rows in declared.values():
         for _, _, shape in rows:

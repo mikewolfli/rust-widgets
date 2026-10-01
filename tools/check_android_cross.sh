@@ -49,11 +49,22 @@ TARGETS=(
   x86_64-linux-android
 )
 
-# The feature set `tools/build_android_testapp.sh` passes. It has **no device profile**, so
-# `crate::theme` and `crate::json` are compiled out while `src/bindings/` is compiled in — the
-# combination `check_profiles.sh` step [6c/9] calls out as historically broken. Reusing the same set
-# here means this gate covers the build script's actual configuration rather than a convenient one.
-FEATURES="android-jni jni mobile-api controls-custom controls-native serde serde_json"
+# The feature set `tools/build_android_testapp.sh` passes. It includes the `mobile` **device
+# profile**, which is what turns on `full_widgets` in `build.rs` and therefore the constructor
+# registry the `create_*` path needs.
+#
+# # Why this was `mobile-api`, and what that cost
+#
+# `mobile-api` is an empty marker (`mobile-api = []`) and satisfies neither half of build.rs's
+# `full_widgets = <device profile> && !<stripped>` rule. Built that way, this gate passed on a
+# configuration where `mount_widget_of_kind` takes its `#[cfg(not(full_widgets))]` arm and returns
+# `0` for every kind — so every `create_*` on Android created nothing, and the gate compiled the
+# behaviour away instead of testing it. Four ABIs × a full widget layer that cannot construct a
+# control, all green.
+#
+# `ANDROID_JAR_LEVEL`-style profile note kept: the set has a device profile (`mobile`) and is not
+# stripped, so `crate::theme` and `crate::json` are now compiled in alongside `src/bindings/`.
+FEATURES="android-jni jni mobile controls-custom controls-native serde serde_json"
 
 # `ANDROID_HOME` is exported when the SDK is in a standard location, because `cargo check` for an
 # Android target resolves the NDK's linker search path from it. The check does not link, but a host

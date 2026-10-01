@@ -72,9 +72,18 @@ pub use generator::{
     GenerationRequest, TargetProfile, DEFAULT_CHILD_CAPACITY, MINI_CHILD_CAPACITY,
 };
 
-#[cfg(test)]
+#[cfg(all(test, declarative_view))]
 mod wire_prefix_agreement_tests {
     /// The wire carrier's prefix must be the same string in `designer` and in `view`.
+    ///
+    /// # Why this is only built with the declarative layer
+    ///
+    /// The assertion exists to keep two spellings of one prefix in step, and one of
+    /// them belongs to `crate::view`. On a build that opted the layer away
+    /// (`desktop,no-declarative-view`) there is nothing to compare against, so the test
+    /// is gated on `declarative_view` rather than being compiled into a failing `use`.
+    /// That is the same gate the module it names is under (rule #53: a capability gap is
+    /// a runtime/build fact expressed once, not two parallel test bodies).
     ///
     /// # Why there are two spellings, and why this test is what keeps them together
     ///

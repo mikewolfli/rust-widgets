@@ -22,10 +22,23 @@
 //! |---|---|---|
 //! | `OH_NativeXComponent_RegisterCallback` | `OnSurfaceCreated/Changed/Destroyed` | a surface to mount into, and its size |
 //! | the same, `DispatchTouchEvent` | `OH_NativeXComponent_GetTouchEvent` | multi-finger input → `Event::Touch*` |
-//! | `OH_NativeXComponent_RegisterMouseEventCallback` | `DispatchMouseEvent` | click, move, wheel → `Event::Mouse*` |
+//! | `OH_NativeXComponent_RegisterMouseEventCallback` | `DispatchMouseEvent` / `DispatchHoverEvent` | click, move, leave → `Event::Mouse*` |
 //! | `OH_NativeXComponent_RegisterKeyEventCallback` | key down/up | typing → `Event::KeyPress` / `TextInput` |
 //! | `OH_NativeXComponent_RegisterFocusEventCallback` | focus/blur | the library's focus model |
 //! | `OH_NativeXComponent_GetNativeAccessibilityProvider` | — | the accessibility tree |
+//!
+//! # What this bridge does **not** deliver
+//!
+//! | Input | Why not |
+//! |---|---|
+//! | Wheel / scroll | `OH_NativeXComponent_MouseEvent` has no wheel field. Published as *screenX, screenY, timestamp, action, button* (`native_interface_xcomponent.h`, SDK 20) — there is nothing to read a delta from, and no separate wheel callback exists. A host that needs wheel input must deliver it as a `Event::Wheel` through its own channel. |
+//! | Double click | `OH_NativeXComponent_MouseEventAction` is *NONE, PRESS, RELEASE, MOVE, CANCEL*. There is no multiplicity, so a double click would have to be synthesised from timestamps; the library does not invent one, and a control that needs it must derive it from the press stream. |
+//! | Back / forward buttons | The header defines `OH_NATIVEXCOMPONENT_BACK_BUTTON` / `_FORWARD_BUTTON`, and this bridge maps only LEFT/RIGHT/MIDDLE — the three the library's `mouse_button` vocabulary has. A back/forward press therefore arrives as `PRIMARY`, which is the honest reading of "a button the library has no name for". |
+//!
+//! This table is stated because the line above it used to read "click, move, wheel →
+//! `Event::Mouse*`", which named a capability the platform does not have and the code therefore
+//! could not have implemented — the documentation defect principle #18 forbids, and the harder
+//! kind to notice because it reads as a feature list rather than a promise.
 //!
 //! # Why hand-written `extern "C"` rather than a generated binding
 //!
@@ -159,6 +172,35 @@ pub mod mouse_button {
 }
 
 /// `OH_NativeXComponent_TouchPoint`.
+///
+/// # The header has one more field than this struct, and why that is safe
+///
+/// The SDK 20 declaration is *id, screenX, screenY, x, y, **type**, size, force,
+/// timeStamp, isPressed*. `type` is not carried here — this is the per-*point* record,
+/// and the type of the gesture is read from the enclosing [`TouchEvent`], which is the
+/// field the dispatcher actually switches on.
+///
+/// Leaving it out is safe **because of alignment, not by luck of ordering**: `type` is a
+/// 4-byte enum at offset 20, and `size: f64` must start at a multiple of 8 — so offset
+/// 20..24 is padding whether or not the field is declared. Measured against the SDK:
+///
+/// ```text
+/// C  : sizeof=56  id=0 screenX=4 screenY=8 x=12 y=16 type=20 size=24 force=32 ts=40 pressed=48
+/// Rust: sizeof=56 id=0 screenX=4 screenY=8 x=12 y=16  ---    size=24 force=32 ts=40 pressed=48
+/// ```
+///
+/// Every field after `type` therefore lands on the same offset, and the two layouts are
+/// interchangeable for a `#[repr(C)]` reader. It is written down because it is the one
+/// place in this module where a field is deliberately dropped, and a reader comparing the
+/// two declarations would otherwise have to redo that measurement to know it is fine.
+///
+/// # If the SDK ever moves `type`
+///
+/// The safety argument depends on `type` being the field immediately before a
+/// `double`-aligned one. A future header that appended a field after `isPressed`, or moved
+/// `size`, would break it silently — the struct would still compile and the reads would be
+/// wrong. Re-measuring the two layouts is the check; there is no way to make the compiler
+/// perform it without binding the header itself.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct TouchPoint {

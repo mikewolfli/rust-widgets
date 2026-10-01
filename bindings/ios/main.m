@@ -54,6 +54,13 @@ extern void rw_set_widget_geometry(uint64_t widget, int x, int y, unsigned width
 extern void rw_show_widget(uint64_t widget);
 extern void rw_hide_widget(uint64_t widget);
 extern bool rw_is_widget_visible(uint64_t widget);
+extern bool rw_destroy_widget(uint64_t widget);
+// Platform facts. `rw_platform_capabilities` returns the negotiated bitmask the host reads to
+// decide which affordances to offer; see `rw_platform_capabilities` in `binding_impl.rs` for the
+// bit layout.
+extern const char *rw_backend_name(void);
+extern unsigned int rw_platform_capabilities(void);
+extern float rw_platform_dpi_scale_factor(void);
 
 // ── Test bookkeeping ────────────────────────────────────────────────────────
 
@@ -219,6 +226,60 @@ static void writeResultFile(NSString *text) {
     BOOL shown = rw_is_widget_visible(button);
     record(@"visibility_geometry", hidden && shown,
            [NSString stringWithFormat:@"hidden_reported=%d shown_reported=%d", hidden, shown]);
+
+    // 6. Destroying a control must actually unmount it, and re-reading it must fail.
+    //
+    // Every other assertion here proves a control can be *created* and *driven*; this one
+    // proves it can be *released*, which is the half a long-lived app depends on. It was
+    // absent, so a `destroy_widget` that silently did nothing would have kept every check
+    // above green while leaking the whole tree.
+    BOOL destroyed = rw_destroy_widget(label) != 0;
+    const char *after_destroy = rw_get_widget_text(label);
+    BOOL gone = after_destroy == NULL || after_destroy[0] == '\0';
+    if (after_destroy) {
+        rw_free_string((char *)after_destroy);
+    }
+    record(@"destroy_unmounts", destroyed && gone,
+           [NSString stringWithFormat:@"rw_destroy_widget=%d text_after=%s", destroyed,
+                                      gone ? "(empty)" : "(still present)"]);
+
+    // 7. Platform facts must be real, and must agree with each other.
+    //
+    // # Why this is asserted on-device rather than in a unit test
+    //
+    // `rw_platform_capabilities` is a **claim** about the host: bit 0 promises DPI scaling,
+    // bit 1 promises an IME bridge. A backend that sets one it cannot honour makes the host
+    // offer an affordance nothing answers — the "reported a capability it does not have"
+    // defect (principle #37). The claim can only be checked where the platform actually is,
+    // so the probe reads it here and cross-checks the flags that *can* be cross-checked:
+    // a positive DPI-scaling bit must be accompanied by a positive scale factor.
+    const char *backend = rw_backend_name();
+    unsigned caps = rw_platform_capabilities();
+    float scale = rw_platform_dpi_scale_factor();
+    record(@"backend_identified", backend != NULL && backend[0] != '\0',
+           [NSString stringWithFormat:@"rw_backend_name = %s",
+                                      (backend && backend[0]) ? backend : "(empty)"]);
+
+    BOOL dpi_bit = (caps & (1u << 0)) != 0;
+    record(@"dpi_claim_matches_the_measurement", !dpi_bit || scale > 0.0f,
+           [NSString stringWithFormat:@"caps=0x%x dpi_scaling=%d scale=%.3f", caps, dpi_bit,
+                                      scale]);
+
+    // The iOS backend must not claim a native menu (it has none) and must not claim an IME
+    // bridge unless one is compiled in — see `src/platform/ios/status.md` for the reasoning
+    // each flag carries. Bit 3 is `native_menu`; a set bit here would be the over-claim this
+    // assertion exists to catch.
+    BOOL menu_bit = (caps & (1u << 3)) != 0;
+    record(@"no_native_menu_claim", !menu_bit,
+           [NSString stringWithFormat:@"caps=0x%x native_menu=%d", caps, menu_bit]);
+
+    // 8. `rw_quit` must shut the backend down cleanly rather than aborting.
+    //
+    // The lifecycle's last step, and the one a host calls on teardown. It is asserted last
+    // because everything above needs a live runtime; a probe that never reached this point
+    // would leave the `rw_init`/`rw_quit` pair untested and say nothing about it.
+    rw_quit();
+    record(@"quit_is_clean", YES, @"rw_quit returned without aborting");
 
     NSString *result = nil;
     if (gFailures.count == 0) {

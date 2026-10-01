@@ -16,6 +16,75 @@ use crate::WidgetTriggerKind;
 // in the profiles that happen to use the `std` prelude.
 use alloc::string::ToString;
 
+/// The `#[repr(C)]` input structs must keep the byte layout the SDK declares.
+///
+/// # Why this is a test and not a comment
+///
+/// These three structs are hand-written mirrors of `native_interface_xcomponent.h` (the module
+/// explains why the binding is not generated). A field added, removed or reordered in the wrong
+/// place does not fail to compile — it silently shifts every field after it, so the dispatcher
+/// reads a timestamp where it expected a coordinate. `#[repr(C)]` guarantees the *rule*; it
+/// cannot check that the rule was applied to the right *declaration*.
+///
+/// Gated on `feature = "xcomponent"` because that is what compiles the module the structs live
+/// in — the plain harmony cross-target build does not enable it (it links `libace_ndk`, which
+/// only an OpenHarmony link step can satisfy), so an ungated reference fails to resolve there.
+///
+/// The expected offsets below are measured from the SDK header, not derived:
+///
+/// ```text
+/// $ cc -o probe probe.c && ./probe        # with the SDK 20 header declarations
+/// sizeof=56
+/// id=0 screenX=4 screenY=8 x=12 y=16 type=20 size=24 force=32 ts=40 pressed=48
+/// ```
+///
+/// `TouchPoint` deliberately omits `type`; see its own documentation for why that lands on the
+/// same offsets anyway. This test is what would catch it **ceasing** to be true.
+#[cfg(feature = "xcomponent")]
+#[test]
+fn the_sdk_structs_keep_their_declared_layout() {
+    use core::mem::{align_of, size_of};
+
+    // Offsets without `offset_of!` (unstable on the MSRV), by measuring a zeroed value.
+    macro_rules! off {
+        ($ty:ty, $field:ident) => {{
+            let value = core::mem::MaybeUninit::<$ty>::zeroed();
+            let base = value.as_ptr() as usize;
+            #[allow(unused_unsafe)]
+            let field = unsafe { &(*value.as_ptr()).$field } as *const _ as usize;
+            field - base
+        }};
+    }
+
+    assert_eq!(size_of::<crate::platform::harmony::xcomponent::TouchPoint>(), 56);
+    assert_eq!(align_of::<crate::platform::harmony::xcomponent::TouchPoint>(), 8);
+    assert_eq!(off!(crate::platform::harmony::xcomponent::TouchPoint, id), 0);
+    assert_eq!(off!(crate::platform::harmony::xcomponent::TouchPoint, screen_x), 4);
+    assert_eq!(off!(crate::platform::harmony::xcomponent::TouchPoint, screen_y), 8);
+    assert_eq!(off!(crate::platform::harmony::xcomponent::TouchPoint, x), 12);
+    assert_eq!(off!(crate::platform::harmony::xcomponent::TouchPoint, y), 16);
+    assert_eq!(off!(crate::platform::harmony::xcomponent::TouchPoint, size), 24);
+    assert_eq!(off!(crate::platform::harmony::xcomponent::TouchPoint, force), 32);
+    assert_eq!(off!(crate::platform::harmony::xcomponent::TouchPoint, time_stamp), 40);
+    assert_eq!(off!(crate::platform::harmony::xcomponent::TouchPoint, is_pressed), 48);
+
+    assert_eq!(off!(crate::platform::harmony::xcomponent::MouseEvent, x), 0);
+    assert_eq!(off!(crate::platform::harmony::xcomponent::MouseEvent, y), 4);
+    assert_eq!(off!(crate::platform::harmony::xcomponent::MouseEvent, screen_x), 8);
+    assert_eq!(off!(crate::platform::harmony::xcomponent::MouseEvent, screen_y), 12);
+    assert_eq!(off!(crate::platform::harmony::xcomponent::MouseEvent, time_stamp), 16);
+    assert_eq!(off!(crate::platform::harmony::xcomponent::MouseEvent, action), 24);
+    assert_eq!(off!(crate::platform::harmony::xcomponent::MouseEvent, button), 28);
+
+    // The event struct's own prefix, up to and including `device_id`.
+    assert_eq!(off!(crate::platform::harmony::xcomponent::TouchEvent, id), 0);
+    assert_eq!(off!(crate::platform::harmony::xcomponent::TouchEvent, event_type), 20);
+    assert_eq!(off!(crate::platform::harmony::xcomponent::TouchEvent, size), 24);
+    assert_eq!(off!(crate::platform::harmony::xcomponent::TouchEvent, force), 32);
+    assert_eq!(off!(crate::platform::harmony::xcomponent::TouchEvent, device_id), 40);
+    assert_eq!(off!(crate::platform::harmony::xcomponent::TouchEvent, time_stamp), 48);
+}
+
 #[test]
 fn platform_creates_and_runs() {
     let backend = HarmonyPlatform::new();

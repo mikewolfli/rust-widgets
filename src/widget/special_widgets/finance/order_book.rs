@@ -279,6 +279,36 @@ impl Widget for OrderBookWidget {
         Some(self)
     }
     impl_widget_property_hooks!();
+    /// Resolves a published event name to the control's own signal.
+    ///
+    /// # Why this is explicit
+    ///
+    /// `connect_event` validates a name against the capability table and registers a hub slot; only
+    /// `event_signal_dyn` joins that name to the signal the control actually **emits**. Without an
+    /// arm a published name is valid and inert, which is the silent failure
+    /// `tools/check_event_signal_dyn.sh` exists to make impossible: the arm set is compared against
+    /// the capability's published names, so the two cannot drift.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "level_clicked" => {
+                Some(EventSignalRef::mapped("level_clicked", &self.level_clicked, |v| {
+                    CapabilityValue::String(format!("{v:?}"))
+                }))
+            }
+            "level_hovered" => {
+                Some(EventSignalRef::mapped("level_hovered", &self.level_hovered, |v| {
+                    CapabilityValue::String(format!("{v:?}"))
+                }))
+            }
+            "level_unhovered" => {
+                Some(EventSignalRef::mapped("level_unhovered", &self.level_unhovered, |v| {
+                    CapabilityValue::String(format!("{v:?}"))
+                }))
+            }
+            _ => None,
+        }
+    }
 }
 
 impl crate::event::EventHandler for OrderBookWidget {

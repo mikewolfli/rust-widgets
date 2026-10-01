@@ -21,7 +21,11 @@ import rust_widgets.RustWidgets;
  * </ol>
  *
  * <p>Results are written to logcat under the {@code RustWidgetsTest} tag so a CI
- * job can assert on them without a UI harness.
+ * job can assert on them without a UI harness. The widget-level half of the probe
+ * runs through {@code nativeWidgetSelfTest}, which creates a real window and
+ * button, round-trips their text and geometry, toggles visibility and destroys
+ * them — the same assertions the iOS probe makes through the C ABI, so neither
+ * mobile platform is verified more shallowly than the other.
  *
  * <h3>What this test deliberately does not do</h3>
  *
@@ -77,14 +81,19 @@ public class MainActivity extends Activity {
 
         // The host hands over the Activity Context; the bridge stores a global
         // reference so it can resolve platform facilities on the library's behalf.
-        boolean attached;
+        //
+        // `nativeAttachContext` returns an **int** (1/0), not a boolean: it mirrors the Rust
+        // export's `jint`. Assigning it to a `boolean` is a compile error, which is how this
+        // line was found — the build script used to discard javac's exit status, so the error
+        // had been invisible and the failure appeared later as an uninstallable APK.
+        int attached;
         try {
             attached = RustWidgets.nativeAttachContext(this);
         } catch (UnsatisfiedLinkError e) {
             Log.e(TAG, "nativeAttachContext not linked: " + e.getMessage());
             return false;
         }
-        if (!attached) {
+        if (attached == 0) {
             Log.e(TAG, "nativeAttachContext refused the context");
             return false;
         }
@@ -116,6 +125,47 @@ public class MainActivity extends Activity {
         int resized = RustWidgets.nativeNotifyResize(0L, 1080, 1920);
         Log.i(TAG, "nativeNotifyResize -> " + resized);
 
-        return true;
+        // Everything above proves the JNI **plumbing**. This proves the library can create
+        // and drive a control on this device, which is what an app depends on — and it is
+        // the assertion the iOS probe has made through the C ABI since it was written,
+        // while Android's widget path had no runtime evidence at all.
+        return runWidgetSelfTest();
+    }
+
+    /**
+     * Drive the widget-level self-test and report each bit, so a failure names its step.
+     *
+     * <p>The bit meanings are documented on the Rust entry point; logging them individually
+     * is what turns "self test failed" into "the text did not round-trip".
+     */
+    private boolean runWidgetSelfTest() {
+        int bits;
+        try {
+            bits = RustWidgets.nativeWidgetSelfTest();
+        } catch (UnsatisfiedLinkError e) {
+            Log.e(TAG, "nativeWidgetSelfTest not linked: " + e.getMessage());
+            return false;
+        }
+        Log.i(TAG, "nativeWidgetSelfTest -> " + bits + " (0b" + Integer.toBinaryString(bits) + ")");
+
+        final String[] steps = {
+            "window created",
+            "child button created",
+            "text round-trips",
+            "geometry round-trips",
+            "visibility toggles",
+            "both destroyed",
+            "no native-menu over-claim",
+            "backend names itself",
+        };
+        boolean ok = true;
+        for (int i = 0; i < steps.length; i++) {
+            boolean passed = (bits & (1 << i)) != 0;
+            if (!passed) {
+                ok = false;
+            }
+            Log.i(TAG, (passed ? "  [PASS] " : "  [FAIL] ") + steps[i]);
+        }
+        return ok;
     }
 }

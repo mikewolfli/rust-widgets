@@ -1137,17 +1137,26 @@ pub unsafe extern "C" fn rw_widget_set_layout(
             );
             return false;
         }
-        let spec = serde_json::json!({
-            "type": name,
-            "spacing": spacing,
-            "margin": margin,
-        });
         // `crate::json` is gated on the JSON engine (a device profile building with
         // the JSON surface). A build with this ABI but without it has no layout-kind
         // parser, so the honest answer is a recorded refusal rather than a link
         // error; the symbol stays available either way (principle #41).
+        //
+        // The spec is built **inside** the branch that reads it. It used to be built
+        // unconditionally above the `#[cfg]`, which is a build error rather than a dead value
+        // whenever `serde_json` is not a feature of this build: `serde_json::json!` names the
+        // crate in the macro expansion, and the crate is not linked. That combination
+        // (this ABI, no `serde_json`) was never built by a gate — `check_profiles.sh` passes
+        // `serde_json` alongside `mobile-api` — so the unconditional build looked fine while a
+        // profile list without it could not compile at all. Constructing it here makes the two
+        // branches independent, which is what the `#[cfg]` was meant to express.
         #[cfg(all(device_profile, feature = "serde_json"))]
         {
+            let spec = serde_json::json!({
+                "type": name,
+                "spacing": spacing,
+                "margin": margin,
+            });
             match crate::json::parse_layout_kind(&spec)
                 .map(|kind| crate::json::create_layout_from_kind(&kind))
             {
@@ -1163,7 +1172,9 @@ pub unsafe extern "C" fn rw_widget_set_layout(
         }
         #[cfg(not(all(device_profile, feature = "serde_json")))]
         {
-            let _ = spec;
+            // The three parameters are still read so their presence in the signature is not a
+            // silent lie about being used; the refusal is what the caller observes.
+            let _ = (name, spacing, margin);
             crate::error::ffi::record_message_error(
                 "this build has no JSON layout engine, so a declarative layout kind cannot be \
                  created here",

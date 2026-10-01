@@ -511,8 +511,15 @@ impl Platform for WaylandPlatform {
     /// This backend inherited the trait's `false` because it implemented no surface method at
     /// all — no `mount_surface`, `resize_surface`, `unmount_surface` or `invalidate_surface`. It
     /// therefore could not display a library-painted control, even though it is otherwise a
-    /// complete backend: it talks to a real compositor, creates a real surface, and reports its
-    /// size and input.
+    /// complete backend: it talks to a real compositor, creates a real surface and reports its
+    /// size, and its **host** feeds pointer and key input back in through the injected-trigger
+    /// channel.
+    ///
+    /// That last clause is deliberately not "it reports input". This backend binds no
+    /// `wl_seat`, so it receives no pointer or keyboard events of its own; the host application
+    /// owns them and routes them to the widget layer. Saying it "reports input" attributed to
+    /// the backend a capability that lives in the host, which is the same class of claim
+    /// `capabilities` above had to correct for `ime`/`accessibility`.
     ///
     /// The gap was only the per-widget table. A Wayland window's pixels come from the same
     /// record-plus-queue shape every other non-desktop backend uses ([`BackendState`]), and this

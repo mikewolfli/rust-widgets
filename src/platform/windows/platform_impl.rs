@@ -674,14 +674,23 @@ impl Platform for WindowsPlatform {
     /// routing facility for adopted controls, not a menu bar this backend can build, and it
     /// does not make this flag true. See the notes on the two fields it feeds.
     ///
-    /// The other three flags have real implementations behind them:
+    /// # Why `ime` is queried rather than asserted
+    ///
+    /// It was a hard-coded `true`, justified by "`ime_bridge()` returns the TSF bridge". The
+    /// bridge **existed**, but its connection flag was set from a `GetProcAddress("TF_GetThreadMgr")`
+    /// symbol lookup that called nothing — `msctf.dll` exports that symbol on essentially every
+    /// Windows install — so the flag promised an OS IME connection that did not exist. The bridge
+    /// now probes with a real `ImmGetContext` query (see `platform::ime_windows::native_ime_available`),
+    /// and this flag reports that measurement rather than the presence of a module. On a host where
+    /// the probe cannot reach an input context the flag is honestly `false`.
+    ///
     /// `dpi_scale_factor()` queries `LOGPIXELSX` on the primary monitor's DC,
-    /// `ime_bridge()` returns the TSF bridge, `accessibility_bridge()` the MSAA/UIA one,
-    /// and typed triggers come from the shared queue (principle #37).
+    /// `accessibility_bridge()` returns the MSAA/UIA bridge, and typed triggers come from the
+    /// shared queue (principle #37).
     fn capabilities(&self) -> PlatformCapabilities {
         PlatformCapabilities {
             dpi_scaling: true,
-            ime: true,
+            ime: self.ime_bridge.has_native_ime(),
             accessibility: true,
             native_menu: false,
             typed_widget_trigger: true,
@@ -1148,6 +1157,39 @@ impl Platform for WindowsPlatform {
 
     fn is_widget_ime_enabled(&self, widget_id: ObjectId) -> bool {
         self.state.ime_enabled(widget_id)
+    }
+
+    // ── Accessibility metadata ──────────────────────────────────────────────
+
+    /// Records a widget's accessible name and posts it to the OS.
+    ///
+    /// # Why this exists
+    ///
+    /// `capabilities().accessibility` promises a native accessibility bridge, and
+    /// `accessibility_bridge()` does return a live `WindowsAccessibilityBridge`. But this backend
+    /// overrode **neither** of these two methods — nor did it use `impl_platform_state_properties!`,
+    /// which is how every other state-backed backend gets them — so the trait default answered
+    /// `false`/empty and the bridge's `set_accessibility_name` was unreachable from the `Platform`
+    /// API. A host that named a control for a screen reader got a silent no-op: the same "promised
+    /// capability with no path to it" shape as the IME flag above.
+    ///
+    /// The `state` store is where the name lives (so it reads back even with no OS handle yet), and
+    /// the bridge is what turns it into a real `NotifyWinEvent` for a registered handle.
+    fn set_widget_accessibility_name(&self, widget_id: ObjectId, name: &str) -> bool {
+        let stored = self.state.set_accessibility_name(widget_id, name);
+        // The OS half is best-effort and does not change the answer: recording the name succeeded,
+        // which is what the caller asked about. `set_accessibility_name` also stores the name in the
+        // bridge, so a handle that was not registered yet still gets it when `register_handle` runs.
+        #[cfg(target_os = "windows")]
+        {
+            // `AccessibilityBridge` is imported at the module top.
+            self.a11y_bridge.set_accessibility_name(widget_id, name);
+        }
+        stored
+    }
+
+    fn get_widget_accessibility_name(&self, widget_id: ObjectId) -> String {
+        self.state.accessibility_name(widget_id)
     }
 
     fn ime_bridge(&self) -> Option<&dyn ImeBridge> {

@@ -411,6 +411,24 @@ impl Widget for TabView {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+    /// Resolves a published event name to the control's own signal.
+    ///
+    /// # Why this is explicit
+    ///
+    /// `connect_event` validates a name against the capability table and registers a hub slot; only
+    /// `event_signal_dyn` joins that name to the signal the control actually **emits**. Without an
+    /// arm a published name is valid and inert, which is the silent failure
+    /// `tools/check_event_signal_dyn.sh` exists to make impossible: the arm set is compared against
+    /// the capability's published names, so the two cannot drift.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "tab_changed" => Some(EventSignalRef::mapped("tab_changed", &self.tab_changed, |v| {
+                CapabilityValue::UInt(*v as u64)
+            })),
+            _ => None,
+        }
+    }
 }
 
 /// `TabView`'s property contract.

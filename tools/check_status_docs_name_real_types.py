@@ -26,6 +26,12 @@ For each `status.md` under `src/platform/`, every **native type name** it mentio
 looked for in that backend's own sources. A name that appears nowhere in the code, in a row that
 claims the capability, is a claim about an object this backend does not create.
 
+A fourth check covers a Java/Kotlin **sample**: if a fenced block declares `package
+io.github.rustwidgets` or `package rust_widgets`, every `native*` name inside it must be declared
+by that wrapper's class. The two wrappers share the name `RustWidgets` and do not share their
+methods, so the `package` line is the only thing that identifies which one a sample is quoting —
+see `JAVA_WRAPPERS` for the defect that made this necessary.
+
 # Why the check is this narrow, and what it deliberately does not attempt
 
 The hard part is not the comparison, it is knowing which prose is a *claim*. A status page also
@@ -313,6 +319,89 @@ def check_status_doc(backend: str, status_path: pathlib.Path, roots: tuple[str, 
     return findings
 
 
+# The Java wrappers a document may be quoting, keyed by the **package** the sample declares.
+#
+# # Why the package, and not the class name
+#
+# Both wrappers are called `RustWidgets`, and they do not contain the same methods:
+#
+#   bindings/java/RustWidgets.java            package io.github.rustwidgets  → the desktop surface
+#   bindings/android/java/rust_widgets/…      package rust_widgets           → the Android surface
+#
+# `src/platform/android/activity_integration.md` quoted the **desktop** wrapper's method list as
+# an Android sample — while its own class-name note said the Android class is the one under
+# scrutiny. A reader copying it would bind against names the Android class does not declare and
+# get `UnsatisfiedLinkError` at the first call. The class name cannot distinguish the two, so the
+# sample's `package` line is what says which wrapper it is describing.
+JAVA_WRAPPERS: tuple[tuple[str, str], ...] = (
+    ("io.github.rustwidgets", "bindings/java/RustWidgets.java"),
+    ("rust_widgets", "bindings/android/java/rust_widgets/RustWidgets.java"),
+)
+
+# A `native*` method named in a Java/Kotlin sample. Wider than `JNI_ENTRY_RE` because a sample also
+# calls lifecycle and diagnostic methods that are not per-kind creators.
+SAMPLE_METHOD_RE = re.compile(r"\bnative[A-Za-z0-9_]+")
+
+
+def declared_java_methods(path: str) -> set[str]:
+    """The `native*` methods a Java wrapper class actually declares."""
+    file = pathlib.Path(path)
+    if not file.exists():
+        return set()
+    return set(re.findall(r"public static native\s+[\w.<>\[\]]+\s+(native[A-Za-z0-9_]+)", file.read_text(encoding="utf-8")))
+
+
+def check_java_samples(status_path: pathlib.Path) -> list[str]:
+    """Every `native*` name inside a fenced Java/Kotlin sample must be one the named wrapper has.
+
+    A sample is identified by its fence language (`java`, `kotlin`) and attributed to a wrapper by
+    the `package` line inside it. A sample with no `package` line is not attributed and is skipped,
+    because guessing which wrapper it means is how the wrong answer gets written down.
+    """
+    lines = status_path.read_text(encoding="utf-8").splitlines()
+    findings: list[str] = []
+    fence: str | None = None
+    start_line = 0
+    body: list[str] = []
+    for lineno, line in enumerate(lines, 1):
+        stripped = line.strip()
+        if fence is None:
+            if stripped.startswith("```"):
+                lang = stripped[3:].strip().lower()
+                if lang in ("java", "kotlin"):
+                    fence = lang
+                    start_line = lineno
+                    body = []
+            continue
+        if stripped.startswith("```"):
+            fence = None
+            package = None
+            for body_line in body:
+                m = re.match(r"\s*package\s+([\w.]+)", body_line)
+                if m:
+                    package = m.group(1)
+                    break
+            declared = dict(JAVA_WRAPPERS).get(package or "")
+            if declared is not None:
+                methods = declared_java_methods(declared)
+                for body_line in body:
+                    # A sample comment may name a method **to deny it belongs here** (""typed
+                    # creators live in the *desktop* wrapper, not this class"" ). That is true
+                    # history, and reporting it would be reporting the correction as the defect —
+                    # the same rule `NEGATION_MARKERS` applies to the prose checks.
+                    if body_line.lstrip().startswith(("//", "*", "/*")):
+                        continue
+                    for name in set(SAMPLE_METHOD_RE.findall(body_line)):
+                        if name not in methods:
+                            findings.append(
+                                f"{status_path.as_posix()}:{start_line} sample (package {package}) "
+                                f"calls `{name}`, which {declared} does not declare"
+                            )
+            continue
+        body.append(line)
+    return findings
+
+
 def declared_jni_entry_points() -> set[str]:
     """The `native*` JNI entry points actually declared in `src/bindings/java_jni.rs`.
 
@@ -412,9 +501,37 @@ def inject() -> int:
     return 1
 
 
+def inject_java_sample() -> int:
+    """Add a method the Android wrapper does not declare and require the gate to notice.
+
+    This is the injection for the fourth check: a sample's `package` line attributes it to one of
+    two same-named wrapper classes, and the name it calls has to exist in *that* class. The defect
+    it was written for listed the desktop wrapper's methods under the Android wrapper's package.
+    """
+    path = pathlib.Path("src/platform/android/activity_integration.md")
+    original = path.read_text(encoding="utf-8")
+    marker = "    external fun nativeInstallLogging()"
+    if marker not in original:
+        print("❌ injection point not found in src/platform/android/activity_integration.md")
+        return 1
+    try:
+        path.write_text(
+            original.replace(marker, marker + "\n    external fun nativeCreateSeekBar(id: Long): Long", 1),
+            encoding="utf-8",
+        )
+        found = check_java_samples(path)
+    finally:
+        path.write_text(original, encoding="utf-8")
+    if found:
+        print("✅ reverse injection: a sample calling a method its named wrapper lacks is detected")
+        return 0
+    print("❌ reverse injection: the wrong-wrapper sample was NOT detected")
+    return 1
+
+
 def main() -> int:
     if "--inject" in sys.argv:
-        return inject() | inject_native_widget_row() | inject_jni()
+        return inject() | inject_native_widget_row() | inject_jni() | inject_java_sample()
 
     findings: list[str] = []
     checked = 0
@@ -427,6 +544,7 @@ def main() -> int:
         visited += 1
         checked += len(NATIVE_TYPES.get(backend, ()))
         findings += check_status_doc(backend, status_path, roots)
+        findings += check_java_samples(status_path)
 
     print(f"platform docs: {checked} native type name(s) checked across {visited} document(s); "
           f"{len(declared_jni_entry_points())} JNI entry point(s) derived from {JNI_EXPORT_SOURCE}")

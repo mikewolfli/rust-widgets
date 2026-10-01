@@ -52,7 +52,9 @@ cd "$ROOT_DIR"
 
 RUNNER="tools/run_all_gates.sh"
 INJECTION="tools/gates_reverse_injection.md"
-CEILING_SECS=2700   # 45 minutes — BLUE24 §9.2 criterion 2
+CEILING_SECS=3600   # 60 minutes — raised from 2700 when `check_android_runtime.sh` (an
+                    # emulator boot + JNI probe, 86 s cold) joined the suite; see the budget
+                    # comment in `run_all_gates.sh`. BLUE24 §9.2 criterion 2.
 
 echo "[1/3] every gate is reachable from the runner"
 if [ ! -f "$RUNNER" ]; then

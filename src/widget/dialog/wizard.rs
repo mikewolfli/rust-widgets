@@ -281,6 +281,28 @@ impl Widget for WizardDialog {
     }
 
     impl_widget_property_hooks!();
+    /// Resolves a published event name to the control's own signal.
+    ///
+    /// # Why this is explicit
+    ///
+    /// `connect_event` validates a name against the capability table and registers a hub slot; only
+    /// `event_signal_dyn` joins that name to the signal the control actually **emits**. Without an
+    /// arm a published name is valid and inert, which is the silent failure
+    /// `tools/check_event_signal_dyn.sh` exists to make impossible: the arm set is compared against
+    /// the capability's published names, so the two cannot drift.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "finished" => Some(EventSignalRef::unit("finished", &self.finished)),
+            "cancelled" => Some(EventSignalRef::unit("cancelled", &self.cancelled)),
+            "step_changed" => {
+                Some(EventSignalRef::mapped("step_changed", &self.step_changed, |v| {
+                    CapabilityValue::Int(*v as i64)
+                }))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// `WizardDialog`'s property contract.

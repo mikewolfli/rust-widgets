@@ -196,12 +196,22 @@ impl WidgetHandle for SurfaceHandle {
     /// click callback to. This deliberately does **not** register a callback
     /// that would never fire — read the widget's own signals instead (for the
     /// editor: `text_changed`, `cursor_moved`, `selection_changed`).
+    ///
+    /// # Why the refusal is recorded, not only logged
+    ///
+    /// The other handles route an unwired binding through `record_unwired_binding`, which is
+    /// what makes "how many of my handlers are unwired?" answerable afterwards
+    /// (see [`unwired_binding_count`]). This override only logged, so a caller asking that
+    /// question got **one answer for a `SurfaceHandle` and another for every other handle** —
+    /// for exactly the case the count exists to surface. The log line and the count now agree,
+    /// and the count is the one a program can branch on.
     fn on_click<F: FnMut() + Send + 'static>(&self, _f: F) {
         log::debug!(
             "SurfaceHandle::on_click ignored for id={}: the widget emits its \
              own signals rather than a platform click callback",
             self.id
         );
+        record_unwired_binding(self.id);
     }
 
     /// See [`SurfaceHandle::on_click`]; the same reasoning applies.
@@ -211,6 +221,7 @@ impl WidgetHandle for SurfaceHandle {
              emits its own signals",
             self.id
         );
+        record_unwired_binding(self.id);
     }
 }
 
@@ -1875,8 +1886,16 @@ struct SliderState {
 }
 
 impl Default for SliderState {
+    /// `value: 0`, matching [`Slider::new`](crate::widget::display_widgets::slider::Slider::new)
+    /// and the capability default (`Int(0)`).
+    ///
+    /// It used to be `50`, which made a freshly created slider disagree three ways: the control's
+    /// own property route answered `0`, the schema default was `0`, and the handle reported and
+    /// **wrote back** `50` (see `set_value`, which re-reads this mirror to push the clamped value to
+    /// the backend). A caller that created a slider, called `set_range(0, 100)`, and never touched
+    /// `set_value` therefore shipped `50` to the platform while every declarative route said `0`.
     fn default() -> Self {
-        Self { value: 50, min: 0, max: 100, step: 1, orientation: Orientation::Horizontal }
+        Self { value: 0, min: 0, max: 100, step: 1, orientation: Orientation::Horizontal }
     }
 }
 
@@ -1906,8 +1925,17 @@ impl SliderHandle {
     ///
     /// The in-process mirror is authoritative: it is what the self-drawn path
     /// renders and what a native write was clamped to, so both agree.
+    ///
+    /// An id with no mirror entry falls back to `SliderState::default().value` rather than to a
+    /// literal, so the "not yet written" answer is the same one `Default` gives and cannot drift
+    /// from the control's own starting value.
     pub fn value(&self) -> i32 {
-        SLIDER_STATES.with(|map| map.borrow().get(&self.raw_id()).map(|s| s.value).unwrap_or(50))
+        SLIDER_STATES.with(|map| {
+            map.borrow()
+                .get(&self.raw_id())
+                .map(|s| s.value)
+                .unwrap_or(SliderState::default().value)
+        })
     }
 
     /// Set the slider range (min/max). The current value is clamped into it.
@@ -2638,6 +2666,39 @@ thread_local! {
     static SPINBOX_STATES: RefCell<HashMap<ObjectId, SpinBoxState>> = RefCell::new(HashMap::new());
 }
 
+/// Writes one of a spin box's affix properties through its published contract.
+///
+/// # Why the write goes through the capability rather than a cast to `SpinBox`
+///
+/// The handle holds an `ObjectId`, not a `SpinBox`, so reaching the control's own
+/// `set_prefix` would need a downcast — and the capability layer is the one place that
+/// already knows which controls publish `prefix`/`suffix` and what kind they are. Going
+/// through it also means a control that does **not** publish the name refuses the write
+/// instead of silently accepting it into a mirror nothing reads.
+///
+/// The result is logged rather than propagated: `SpinBoxHandle::set_prefix` returns `()`,
+/// so there is no channel to report a refusal on, and dropping it silently is the defect
+/// this helper exists to remove. A control that refuses (an unmounted id, or a backend
+/// build where `SpinBox` is absent) says so at `warn`.
+fn write_spinbox_affix(id: ObjectId, property: &str, value: &str) {
+    let written = crate::widget::runtime::with_widget_mut(id, |widget| {
+        crate::widget::capability::WidgetFactory::new_with_defaults().write_property(
+            widget,
+            property,
+            crate::widget::capability::CapabilityValue::String(value.to_string()),
+        )
+    });
+    match written {
+        Some(Ok(())) => {}
+        Some(Err(error)) => {
+            log::warn!("[handle] spin box `{property}` was refused for id={id}: {error:?}")
+        }
+        None => log::warn!(
+            "[handle] spin box `{property}` ignored for id={id}: the id is not a mounted widget"
+        ),
+    }
+}
+
 /// # Spin-box specific operations
 impl SpinBoxHandle {
     /// Set the spin-box value (clamped to range).
@@ -2683,31 +2744,40 @@ impl SpinBoxHandle {
 
     /// Set the prefix text displayed before the value.
     ///
-    /// Stored in the in-process state for callers that render the value
-    /// themselves. There is no cross-OS native control with an affix
-    /// concept — AppKit `NSStepper`/`NSTextField`, Win32 `UPDOWN_CLASS` and GTK
-    /// `SpinButton` all render a bare number — and the library's own self-drawn
-    /// path does not consume this mirror either, so it has **no effect on
-    /// rendering**; a caller that needs an affix must format the value where it is
-    /// displayed. This is a genuine platform gap rather than a dropped write.
+    /// # Why this now reaches the control
+    ///
+    /// It used to write only a `SpinBoxState` mirror and say the value "has **no effect on
+    /// rendering** by the library (… the self-drawn path does not read this mirror)". That was
+    /// false for this library's own `SpinBox`, which stores `prefix`/`suffix` fields, paints them
+    /// either side of the value (`SpinBox::display_text`) and answers them through its property
+    /// contract. So the handle held a value nothing read while the control kept its own, and the
+    /// two entry points for one control disagreed silently — the *other* one
+    /// (`write_property(id, "prefix", ..)`) did render.
+    ///
+    /// The mirror is kept (it is the value a caller can still read back and the one a host that
+    /// formats the value itself consults) and the write is **also** routed through the widget's
+    /// published property contract, so both spellings now agree.
+    ///
+    /// A backend with a native affix is still not involved: the property route reaches the
+    /// library's control, not the OS control, which is the same division `set_title` uses.
     pub fn set_prefix(&self, prefix: &str) {
         SPINBOX_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).prefix =
                 prefix.to_owned();
         });
+        write_spinbox_affix(self.raw_id(), "prefix", prefix);
     }
 
     /// Set the suffix text displayed after the value.
     ///
-    /// See [`SpinBoxHandle::set_prefix`]: the value is stored in the in-process
-    /// state for callers that render it themselves, and has **no effect on
-    /// rendering** by the library (no native backend honours an affix, and the
-    /// self-drawn path does not read this mirror).
+    /// See [`SpinBoxHandle::set_prefix`]: the value reaches the control's own `suffix`
+    /// property as well as the in-process mirror.
     pub fn set_suffix(&self, suffix: &str) {
         SPINBOX_STATES.with(|map| {
             map.borrow_mut().entry(self.raw_id()).or_insert_with(Default::default).suffix =
                 suffix.to_owned();
         });
+        write_spinbox_affix(self.raw_id(), "suffix", suffix);
     }
 
     /// Set the spin-box step increment.
@@ -3287,6 +3357,35 @@ mod tests {
         CLICK_CALLBACKS.with(|map| {
             assert!(!map.borrow().contains_key(&id));
         });
+    }
+
+    /// A refused binding on a `SurfaceHandle` must reach the same observable count as any other.
+    ///
+    /// # Why this is not just a logging concern
+    ///
+    /// `unwired_binding_count()` exists so a program can ask "was anything I wired left
+    /// unwired?" (rule #97: "reported success for something that did not happen" must be
+    /// queryable). `SurfaceHandle::on_click` genuinely cannot register a callback — the widget
+    /// emits its own signals — so it is correct for it to refuse; but it refused **silently as
+    /// far as that count was concerned**, so the answer depended on which handle type was
+    /// asked. One question, one answer.
+    #[test]
+    fn a_surface_handle_refusal_reaches_the_unwired_count() {
+        reset_unwired_binding_count();
+        assert_eq!(unwired_binding_count(), 0, "the slate starts clean");
+
+        let handle = SurfaceHandle::from_raw(9001);
+        handle.on_click(|| {});
+        assert_eq!(
+            unwired_binding_count(),
+            1,
+            "a refused click binding on a surface must be counted, not only logged"
+        );
+
+        handle.on_value_changed(|_| {});
+        assert_eq!(unwired_binding_count(), 2, "and so must a refused value binding");
+
+        reset_unwired_binding_count();
     }
 
     /// A click callback that panics must stay registered.

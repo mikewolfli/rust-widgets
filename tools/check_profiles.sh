@@ -164,11 +164,21 @@ else
   echo "   install it with: rustup target add x86_64-pc-windows-msvc"
 fi
 
-# Android JNI build — the feature set `tools/build_android_testapp.sh` actually
-# passes. It has no device profile, so `crate::theme` and `crate::json` are
-# compiled out while `src/bindings/` is compiled in; any unconditional reference
-# to either from the ABI is a hard error. That combination was broken (9 errors)
-# and nothing checked it, so it is checked here.
+# Android JNI build **without a device profile** — deliberately *not* the set
+# `tools/build_android_testapp.sh` passes.
+#
+# This step asks a narrow, historically-broken question: does the C ABI compile with no device
+# profile at all? `mobile-api` is an empty marker, so naming it instead of the `mobile` profile
+# produces exactly that configuration — `crate::theme` and `crate::json` compiled out while
+# `src/bindings/` is compiled in, where any unconditional reference to either is a hard error.
+# That combination was broken (9 errors) and nothing checked it, which is why this step exists.
+#
+# So the two feature sets differ **on purpose**: `check_android_cross.sh` covers the shipping
+# configuration, this covers the profile-less one that must still build. Do not "align" them:
+# this step is the only coverage of the profile-less ABI, and the shipping configuration is
+# covered elsewhere. (The comment above used to claim this was the shipping set, which is what
+# made the two easy to conflate — and conflating them in the other direction is what left the
+# Android widget path dead; see `build_android_testapp.sh`.)
 echo "[6c/9] cargo check (android-jni feature set, no device profile)"
 rw_cargo_cached "$PROFILE_TIMEOUT" check \
   --no-default-features \

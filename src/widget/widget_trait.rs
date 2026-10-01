@@ -778,13 +778,27 @@ pub trait Widget: EventHandler + Any {
     /// # Contract
     ///
     /// The name must be one the control's capability publishes; a name it does not publish, or an
-    /// event whose signal this control does not expose, returns `None`. The default implementation
-    /// returns `None` for every name, so a control that has not been converted yet is honest about
-    /// it rather than appearing to offer wiring it cannot do.
+    /// event whose signal this control does not expose, returns `None`. A returned reference must
+    /// also **declare** the name it was asked for — `EventSignalRef::name()` is compared against the
+    /// request by `EventSignalBinder`, so an arm that resolves `"clicked"` to a signal built under
+    /// another name is refused rather than wired to the wrong signal.
     ///
     /// The list this resolves against is the one [`connect_event`] validates against, so a name
     /// this returns `Some` for is a name that method accepts — and, with the binder, actually
     /// reaches.
+    ///
+    /// # The default is a trap, and it is now checked
+    ///
+    /// This default returns `None` for every name. That is the honest answer for a control with no
+    /// events, but it is **indistinguishable** from a control that publishes events and forgot to
+    /// convert: in both cases `forward_all` wires nothing and a validated subscription never fires.
+    ///
+    /// Every control that publishes an event now overrides this — `tools/check_event_signal_dyn.sh`
+    /// holds the two lists (the capability table and the arms) in agreement for each of them, and
+    /// `EventSignalBinder`'s runtime test drives the real path. The practical consequence for a new
+    /// control is: **a control that publishes an event and does not override this will fail the
+    /// gate**, not silently ship an inert wire. Reach for `EventSignalRef::unit` for a payload-free
+    /// signal and `EventSignalRef::mapped` for one that carries a value.
     ///
     /// # Why it is an addition rather than a change
     ///

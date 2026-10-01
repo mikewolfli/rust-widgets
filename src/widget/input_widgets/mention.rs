@@ -548,6 +548,38 @@ impl Widget for Mention {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+    /// Resolves a published event name to the control's own signal.
+    ///
+    /// # Why this is explicit per control
+    ///
+    /// `connect_event` validates a name against the capability table and registers a hub slot; only
+    /// `event_signal_dyn` joins that name to the signal the control actually emits. Without it a name
+    /// is valid and inert, which is the silent failure `tools/check_event_signal_dyn.sh` exists to
+    /// make impossible. The arm set is checked against the capability's published names, so this
+    /// list cannot drift from what the control advertises.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        #[allow(unused_imports)]
+        use crate::widget::capability::CapabilityValue;
+        match name {
+            "mention_inserted" => {
+                Some(EventSignalRef::mapped("mention_inserted", &self.mention_inserted, |_| {
+                    CapabilityValue::Null
+                }))
+            }
+            "popup_toggled" => {
+                Some(EventSignalRef::mapped("popup_toggled", &self.popup_toggled, |_| {
+                    CapabilityValue::Null
+                }))
+            }
+            "text_changed" => {
+                Some(EventSignalRef::mapped("text_changed", &self.text_changed, |_| {
+                    CapabilityValue::Null
+                }))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// `Mention`'s property contract.

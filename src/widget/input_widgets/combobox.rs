@@ -837,6 +837,42 @@ impl Widget for ComboBox {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+    /// Resolves a published event name to the control's own signal.
+    ///
+    /// # Why this is explicit
+    ///
+    /// `connect_event` validates a name against the capability table and registers a hub slot; only
+    /// `event_signal_dyn` joins that name to the signal the control actually **emits**. Without an
+    /// arm a published name is valid and inert, which is the silent failure
+    /// `tools/check_event_signal_dyn.sh` exists to make impossible: the arm set is compared against
+    /// the capability's published names, so the two cannot drift.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "current_index_changed" => Some(EventSignalRef::mapped(
+                "current_index_changed",
+                &self.current_index_changed,
+                |v| match v {
+                    Some(index) => CapabilityValue::UInt(*index as u64),
+                    None => CapabilityValue::Null,
+                },
+            )),
+            "current_text_changed" => Some(EventSignalRef::mapped(
+                "current_text_changed",
+                &self.current_text_changed,
+                |v| CapabilityValue::String(v.clone()),
+            )),
+            "activated" => Some(EventSignalRef::mapped("activated", &self.activated, |v| {
+                CapabilityValue::UInt(*v as u64)
+            })),
+            "popup_visibility_changed" => Some(EventSignalRef::mapped(
+                "popup_visibility_changed",
+                &self.popup_visibility_changed,
+                |v| CapabilityValue::Bool(*v),
+            )),
+            _ => None,
+        }
+    }
 }
 
 /// `ComboBox`'s property contract.

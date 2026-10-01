@@ -601,6 +601,41 @@ impl Widget for GridTableWidget {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+    /// Resolves a published event name to the control's own signal.
+    ///
+    /// # Why this is explicit
+    ///
+    /// `connect_event` validates a name against the capability table and registers a hub slot; only
+    /// `event_signal_dyn` joins that name to the signal the control actually **emits**. Without an
+    /// arm a published name is valid and inert, which is the silent failure
+    /// `tools/check_event_signal_dyn.sh` exists to make impossible: the arm set is compared against
+    /// the capability's published names, so the two cannot drift.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "cell_selected" => {
+                Some(EventSignalRef::mapped("cell_selected", &self.cell_selected, |v| {
+                    CapabilityValue::String(format!("{v:?}"))
+                }))
+            }
+            "cell_double_clicked" => Some(EventSignalRef::mapped(
+                "cell_double_clicked",
+                &self.cell_double_clicked,
+                |v| CapabilityValue::String(format!("{v:?}")),
+            )),
+            "sort_changed" => {
+                Some(EventSignalRef::mapped("sort_changed", &self.sort_changed, |v| {
+                    CapabilityValue::String(format!("{v:?}"))
+                }))
+            }
+            "header_clicked" => {
+                Some(EventSignalRef::mapped("header_clicked", &self.header_clicked, |v| {
+                    CapabilityValue::Int(*v as i64)
+                }))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// `GridTableWidget`'s property contract.

@@ -110,6 +110,23 @@ impl Widget for CupertinoSwitch {
     fn kind(&self) -> WidgetKind {
         WidgetKind::CupertinoSwitch
     }
+
+    /// Forwards to the inner [`Switch`].
+    ///
+    /// # Why a wrapper has to forward this explicitly
+    ///
+    /// The capability table registers `CupertinoSwitch` with `events_of!("cupertino_switch")`,
+    /// whose single name is `toggled`. `WidgetFactory::connect_event` therefore accepts `toggled`
+    /// on this kind and registers a hub slot. Without this forward the accept was the whole
+    /// story: the trait default would return `None`, so
+    /// [`EventSignalBinder::forward_all`](crate::signal::EventSignalBinder::forward_all) wired
+    /// nothing and a subscription that validated never fired. All the behaviour is delegated to
+    /// the inner switch, so the signal must be too — resolving it here is what makes the
+    /// "behaves identically to the wrapped control" claim true for the event side as well.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        self.0.event_signal_dyn(name)
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }
@@ -264,6 +281,23 @@ impl Widget for MaterialSnackbar {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+    /// Resolves a published event name to the control's own signal.
+    ///
+    /// # Why this is explicit
+    ///
+    /// `connect_event` validates a name against the capability table and registers a hub slot; only
+    /// `event_signal_dyn` joins that name to the signal the control actually **emits**. Without an
+    /// arm a published name is valid and inert, which is the silent failure
+    /// `tools/check_event_signal_dyn.sh` exists to make impossible: the arm set is compared against
+    /// the capability's published names, so the two cannot drift.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "action_pressed" => Some(EventSignalRef::unit("action_pressed", &self.action_pressed)),
+            "dismissed" => Some(EventSignalRef::unit("dismissed", &self.dismissed)),
+            _ => None,
+        }
+    }
 }
 
 /// `MaterialSnackbar`'s property contract.
@@ -593,6 +627,23 @@ impl Widget for CupertinoAlertDialog {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+    /// Resolves a published event name to the control's own signal.
+    ///
+    /// # Why this is explicit
+    ///
+    /// `connect_event` validates a name against the capability table and registers a hub slot; only
+    /// `event_signal_dyn` joins that name to the signal the control actually **emits**. Without an
+    /// arm a published name is valid and inert, which is the silent failure
+    /// `tools/check_event_signal_dyn.sh` exists to make impossible: the arm set is compared against
+    /// the capability's published names, so the two cannot drift.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "confirmed" => Some(EventSignalRef::unit("confirmed", &self.confirmed)),
+            "cancelled" => Some(EventSignalRef::unit("cancelled", &self.cancelled)),
+            _ => None,
+        }
+    }
 }
 
 /// `CupertinoAlertDialog`'s property contract.
@@ -1017,6 +1068,28 @@ impl Widget for CupertinoSlider {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+    /// Resolves a published event name to the control's own signal.
+    ///
+    /// # Why this is explicit per control
+    ///
+    /// `connect_event` validates a name against the capability table and registers a hub slot; only
+    /// `event_signal_dyn` joins that name to the signal the control actually emits. Without it a name
+    /// is valid and inert, which is the silent failure `tools/check_event_signal_dyn.sh` exists to
+    /// make impossible. The arm set is checked against the capability's published names, so this
+    /// list cannot drift from what the control advertises.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        #[allow(unused_imports)]
+        use crate::widget::capability::CapabilityValue;
+        match name {
+            "value_changed" => {
+                Some(EventSignalRef::mapped("value_changed", &self.value_changed, |_| {
+                    CapabilityValue::Null
+                }))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// `CupertinoSlider`'s property contract.
@@ -1311,6 +1384,26 @@ impl Widget for MaterialNavigationRail {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+    /// Resolves a published event name to the control's own signal.
+    ///
+    /// # Why this is explicit
+    ///
+    /// `connect_event` validates a name against the capability table and registers a hub slot; only
+    /// `event_signal_dyn` joins that name to the signal the control actually **emits**. Without an
+    /// arm a published name is valid and inert, which is the silent failure
+    /// `tools/check_event_signal_dyn.sh` exists to make impossible: the arm set is compared against
+    /// the capability's published names, so the two cannot drift.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "selected_changed" => {
+                Some(EventSignalRef::mapped("selected_changed", &self.selected_changed, |v| {
+                    CapabilityValue::Int(*v as i64)
+                }))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// `MaterialNavigationRail`'s property contract.

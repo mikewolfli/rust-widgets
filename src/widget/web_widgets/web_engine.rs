@@ -262,6 +262,18 @@ macro_rules! impl_web_engine_wrapper_traits {
                 fn base_mut(&mut self) -> &mut BaseWidget {
                     self.0.base_mut()
                 }
+
+                /// Forwards to the wrapped view.
+                ///
+                /// All ten wrappers report `WebEngineView` as their kind (see
+                /// `WidgetKind::WebEngineView`), so the capability lookup resolves them to
+                /// `web_engine_view` and its eleven published names. Without this forward each
+                /// name was accepted by `connect_event` and wired to nothing: the wrapper
+                /// delegates its behaviour, so it must delegate its signal resolution too, or the
+                /// "behaves identically to the wrapped view" claim stops at the event side.
+                fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+                    self.0.event_signal_dyn(name)
+                }
             }
 
             impl EventHandler for $ty {
@@ -641,6 +653,77 @@ impl Widget for WebEngineView {
     fn size_hint(&self) -> crate::core::Size {
         crate::core::Size::new(400, 300)
     }
+
+    /// Resolves a published event name to this view's own signal.
+    ///
+    /// `web_engine_view` publishes eleven names and the view emits all eleven, so the mapping is
+    /// one-to-one. Without an arm each name was accepted by `connect_event` and never reached: the
+    /// load pipeline emitted `loading_started`, the hub held a slot nobody called.
+    ///
+    /// The payload spellings follow the same rule as the rest of the crate — a string travels as
+    /// `String`, an identifier as `Int`, and the two composite payloads (`navigation_state_changed`,
+    /// `console_message`) as their debug spelling, which is the honest lossy form for a value the
+    /// hub cannot carry field by field.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "loading_started" => {
+                Some(EventSignalRef::mapped("loading_started", &self.loading_started, |v| {
+                    crate::widget::capability::CapabilityValue::String(v.clone())
+                }))
+            }
+            "loading_finished" => {
+                Some(EventSignalRef::mapped("loading_finished", &self.loading_finished, |v| {
+                    crate::widget::capability::CapabilityValue::String(v.clone())
+                }))
+            }
+            "title_changed" => {
+                Some(EventSignalRef::mapped("title_changed", &self.title_changed, |v| {
+                    crate::widget::capability::CapabilityValue::String(v.clone())
+                }))
+            }
+            "url_changed" => Some(EventSignalRef::mapped("url_changed", &self.url_changed, |v| {
+                crate::widget::capability::CapabilityValue::String(v.clone())
+            })),
+            "error_occurred" => {
+                Some(EventSignalRef::mapped("error_occurred", &self.error_occurred, |v| {
+                    crate::widget::capability::CapabilityValue::String(v.clone())
+                }))
+            }
+            "navigation_state_changed" => Some(EventSignalRef::mapped(
+                "navigation_state_changed",
+                &self.navigation_state_changed,
+                |v| crate::widget::capability::CapabilityValue::String(format!("{v:?}")),
+            )),
+            "page_created" => {
+                Some(EventSignalRef::mapped("page_created", &self.page_created, |v| {
+                    crate::widget::capability::CapabilityValue::Int(*v as i64)
+                }))
+            }
+            "page_destroyed" => {
+                Some(EventSignalRef::mapped("page_destroyed", &self.page_destroyed, |v| {
+                    crate::widget::capability::CapabilityValue::Int(*v as i64)
+                }))
+            }
+            "console_message" => {
+                Some(EventSignalRef::mapped("console_message", &self.console_message, |v| {
+                    crate::widget::capability::CapabilityValue::String(format!("{v:?}"))
+                }))
+            }
+            "download_requested" => {
+                Some(EventSignalRef::mapped("download_requested", &self.download_requested, |v| {
+                    crate::widget::capability::CapabilityValue::String(v.clone())
+                }))
+            }
+            "certificate_error" => {
+                Some(EventSignalRef::mapped("certificate_error", &self.certificate_error, |v| {
+                    crate::widget::capability::CapabilityValue::String(v.clone())
+                }))
+            }
+            _ => None,
+        }
+    }
+
     impl_draw_bridge!();
     impl_widget_property_hooks!();
 }

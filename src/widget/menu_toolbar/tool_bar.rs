@@ -520,6 +520,43 @@ impl Widget for ToolBar {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+    /// Resolves a published event name to the control's own signal.
+    ///
+    /// # Why this is explicit per control
+    ///
+    /// `connect_event` validates a name against the capability table and registers a hub slot; only
+    /// `event_signal_dyn` joins that name to the signal the control actually emits. Without it a name
+    /// is valid and inert, which is the silent failure `tools/check_event_signal_dyn.sh` exists to
+    /// make impossible. The arm set is checked against the capability's published names, so this
+    /// list cannot drift from what the control advertises.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        #[allow(unused_imports)]
+        use crate::widget::capability::CapabilityValue;
+        match name {
+            "action_triggered" => {
+                Some(EventSignalRef::mapped("action_triggered", &self.action_triggered, |_| {
+                    CapabilityValue::Null
+                }))
+            }
+            "orientation_changed" => Some(EventSignalRef::mapped(
+                "orientation_changed",
+                &self.orientation_changed,
+                |v| CapabilityValue::Bool(*v),
+            )),
+            "top_level_changed" => {
+                Some(EventSignalRef::mapped("top_level_changed", &self.top_level_changed, |_| {
+                    CapabilityValue::Null
+                }))
+            }
+            "visibility_changed" => {
+                Some(EventSignalRef::mapped("visibility_changed", &self.visibility_changed, |_| {
+                    CapabilityValue::Null
+                }))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// `ToolBar`'s property contract.

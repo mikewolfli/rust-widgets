@@ -436,6 +436,41 @@ impl Widget for FindReplaceDialog {
     }
     impl_draw_bridge!();
     impl_widget_property_hooks!();
+    /// Resolves a published event name to the control's own signal.
+    ///
+    /// # Why the field is named per arm
+    ///
+    /// The published name and the Rust field name are not always the same (`find_next` is backed by
+    /// `find_next_signal`, `dismissed` by a `Signal1<()>` field). `connect_event` validates a name
+    /// against the capability table and registers a hub slot; only `event_signal_dyn` joins that
+    /// name to the signal the control actually **emits**. A wrong arm is worse than no arm, because
+    /// it reports a wire as live and never fires it, so each field is named explicitly here rather
+    /// than derived from the published name.
+    fn event_signal_dyn(&self, name: &str) -> Option<crate::signal::EventSignalRef> {
+        use crate::signal::EventSignalRef;
+        match name {
+            "find_next" => Some(EventSignalRef::mapped("find_next", &self.find_next_signal, |v| {
+                CapabilityValue::String(format!("{v:?}"))
+            })),
+            "find_previous" => {
+                Some(EventSignalRef::mapped("find_previous", &self.find_previous_signal, |v| {
+                    CapabilityValue::String(format!("{v:?}"))
+                }))
+            }
+            "replace" => Some(EventSignalRef::mapped("replace", &self.replace_signal, |v| {
+                CapabilityValue::String(format!("{v:?}"))
+            })),
+            "replace_all" => {
+                Some(EventSignalRef::mapped("replace_all", &self.replace_all_signal, |v| {
+                    CapabilityValue::String(format!("{v:?}"))
+                }))
+            }
+            "close" => {
+                Some(EventSignalRef::mapped("close", &self.close_signal, |_| CapabilityValue::Null))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// `FindReplaceDialog`'s property contract.

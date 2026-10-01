@@ -16,116 +16,92 @@ use crate::compat::{lock, Mutex, String, ToString};
 use crate::core::ObjectId;
 use crate::platform::ime::{ImeBridge, ImeCandidatePosition, ImeComposition};
 
-#[cfg(target_os = "windows")]
-use winapi::um::libloaderapi::{GetProcAddress, LoadLibraryA};
-
-#[cfg(target_os = "windows")]
-use std::ffi::CString;
-
 // ──────────────────────────────────────────────
-// TSF constants & types (inlined for build safety;
-// real TSF bindings would come from `windows` / `winapi` crates).
+// Bridge struct
 // ──────────────────────────────────────────────
 
-/// Opaque wrapper around a TSF thread manager COM pointer.
-/// Available on all platforms; TSF COM calls are only made on Windows.
-struct TsfThreadMgr {
-    /// Handle to msctf.dll — kept alive to prevent DLL unloading.
-    /// In a full implementation this also holds TSF COM interfaces:
-    ///   thread_mgr: winapi::um::ctfutb::ITfThreadMgr,
-    ///   doc_mgr:    winapi::um::ctfutb::ITfDocumentMgr,
-    ///   context:    winapi::um::ctfutb::ITfContext,
-    #[cfg(target_os = "windows")]
-    _dll_handle: *mut winapi::ctypes::c_void,
-    #[cfg(not(target_os = "windows"))]
-    _private: (),
-}
+/// Whether the process can actually reach the OS input-method layer.
+///
+/// # Why this replaces the TSF symbol probe
+///
+/// This module used to call `LoadLibraryA("msctf.dll")` + `GetProcAddress("TF_GetThreadMgr")`,
+/// treat a **non-null function pointer** as "TSF initialized successfully", and set
+/// `tsf_available = true` from it. Nothing called the function. `msctf.dll` exports
+/// `TF_GetThreadMgr` on effectively every Windows install, so the flag was `true` on any normal
+/// machine and [`ImeBridge::is_active`](super::ime::ImeBridge::is_active) reported an active IME
+/// **connection that did not exist** — precisely the "reported success for something that did not
+/// happen" the field's own doc says rule #26 forbids, and precisely the log-placeholder the module
+/// claimed to have removed.
+///
+/// winapi 0.3.9 ships no TSF (`ctfutb`) bindings, so there is no way to create the `ITfThreadMgr`
+/// this module's doc sketched — but there **is** a real, universally available OS call that answers
+/// the same question at this layer: IMM32. `ImmGetContext(hwnd)` returns the input context for a
+/// window, or `NULL` when the platform has no IME for it. That is a genuine measurement, not a
+/// symbol lookup, so it is what the flag is now derived from.
+///
+/// The consequence is honest and worth stating: a build with no window to ask answers `false`, and
+/// `is_active` stays `false` even with focus — because the bridge really has no OS connection. A
+/// host that wants composition lifted to the OS must drive `set_marked_text`/`commit_text` from the
+/// platform event loop (see [`WindowsImeBridge::set_cursor_rect`] and the `WM_IME_*` path).
+#[cfg(target_os = "windows")]
+fn native_ime_available() -> bool {
+    use winapi::shared::windef::HWND;
+    use winapi::um::imm::ImmGetContext;
+    use winapi::um::winuser::{GetForegroundWindow, GetWindow};
 
-// SAFETY: `TsfThreadMgr` holds an msctf.dll handle that is only touched from
-// the Windows message-loop thread. It lives inside the process-global platform
-// singleton (a `OnceLock`), and is never shared across threads *concurrently*
-// -- the same discipline used for HWNDs, which the Windows backend stores as
-// `usize` in `Win32MenuState`.
-//
-// `Send` is required because the singleton is stored behind a `Mutex` that any
-// thread may lock to fetch the handle.
-//
-// `Sync` is deliberately NOT implemented: it would additionally promise that
-// `&TsfThreadMgr` may be shared across threads, but TSF COM objects require
-// apartment-threaded access, so that promise is not one this type can keep.
-unsafe impl Send for TsfThreadMgr {}
-
-impl TsfThreadMgr {
-    /// Attempt to create a TSF thread manager by loading `msctf.dll` at
-    /// runtime and calling `TF_GetThreadMgr` via dynamic dispatch.
-    ///
-    /// winapi does not ship `CLSID_TF_ThreadMgr` or `IID_ITfThreadMgr`,
-    /// so we use `LoadLibrary` + `GetProcAddress` to resolve the entry
-    /// point.  If the DLL or symbol is unavailable, we fall back to the
-    /// pure state-machine mode.
-    ///
-    /// Full implementation notes (once a TSF binding crate is available):
-    ///   ```text
-    ///   let clsid = GUID::from(CLSID_TF_THREAD_MGR);
-    ///   let iid   = IID_ITfThreadMgr;
-    ///   let ptr: *mut ITfThreadMgr = std::ptr::null_mut();
-    ///   let hr = CoCreateInstance(&clsid, None, CLSCTX_INPROC_SERVER,
-    ///                              &iid, &mut ptr);
-    ///   if hr >= 0 { ptr.Activate(); … }
-    ///   ```
-    fn try_create() -> Option<Self> {
-        #[cfg(target_os = "windows")]
-        {
-            unsafe {
-                let dll_name = CString::new("msctf.dll").ok()?;
-                let h_module = LoadLibraryA(dll_name.as_ptr());
-                if h_module.is_null() {
-                    log::warn!("[Windows IME] msctf.dll not found — using state-machine fallback");
-                    return None;
-                }
-
-                let func_name = CString::new("TF_GetThreadMgr").ok()?;
-                let proc = GetProcAddress(h_module, func_name.as_ptr());
-                if proc.is_null() {
-                    log::warn!(
-                        "[Windows IME] TF_GetThreadMgr not found in msctf.dll — using state-machine fallback"
-                    );
-                    return None;
-                }
-
-                log::info!("[Windows IME] TSF initialized successfully");
-                Some(TsfThreadMgr { _dll_handle: h_module as *mut winapi::ctypes::c_void })
+    unsafe {
+        // Ask for the foreground window's input context, falling back to its owner: a top-level
+        // window without a context of its own may still be covered by one the IME attached to an
+        // ancestor. `ImmGetContext` is the query IMM32 exposes for exactly this.
+        let foreground: HWND = GetForegroundWindow();
+        if foreground.is_null() {
+            return false;
+        }
+        for candidate in [foreground, GetWindow(foreground, winapi::um::winuser::GW_OWNER)] {
+            if candidate.is_null() {
+                continue;
+            }
+            let context = ImmGetContext(candidate);
+            if !context.is_null() {
+                // Matching release: the context is a reference the caller owns.
+                winapi::um::imm::ImmReleaseContext(candidate, context);
+                return true;
             }
         }
-
-        #[cfg(not(target_os = "windows"))]
-        {
-            log::warn!("[Windows IME] TSF not available — using state-machine fallback");
-            None
-        }
+        false
     }
+}
+
+/// Off Windows there is no IME to reach, and the truthful answer is `false` rather than a
+/// fabricated `true`. See [`native_ime_available`].
+#[cfg(not(target_os = "windows"))]
+fn native_ime_available() -> bool {
+    false
 }
 
 // ──────────────────────────────────────────────
 // Bridge struct
 // ──────────────────────────────────────────────
 
-/// Real Windows IME bridge backed by state tracking and optional TSF
-/// `ITfThreadMgr` integration.
+/// Real Windows IME bridge backed by state tracking and a live OS input-context probe.
 ///
 /// # What "real" means here, honestly
 ///
 /// The composition/**state** half of this bridge (focus, marked text, cursor, candidate position) is
 /// a genuine, target-independent state machine and is always correct.
 ///
-/// The **OS connection** half — driving the Windows candidate window and receiving composition from
-/// the system IME — requires the TSF COM interfaces (`ITfThreadMgr` etc.). `winapi` ships neither
-/// `CLSID_TF_ThreadMgr` nor the `IID`s, so a full binding is not available in this build tree; the
-/// constructor probes `msctf.dll` for `TF_GetThreadMgr` and records whether a real connection could
-/// be made in `tsf_available`. That flag is the authority [`ImeBridge::is_active`] reports from, so a
-/// build without the TSF binding answers **honestly** (`false`) rather than claiming an IME that it
-/// never talks to (rules #26/#53). The composition state machine keeps working for hosts that drive
-/// it directly.
+/// The **OS connection** half — whether an input method is reachable for this process — is answered
+/// by `native_ime_available`, a real `ImmGetContext` query against the foreground window. That is
+/// the authority [`ImeBridge::is_active`] reports from, so a host with no input context answers
+/// **honestly** (`false`) rather than claiming an IME it never talks to (rules #26/#53).
+///
+/// # What is deliberately *not* claimed
+///
+/// Draining the system IME's composition string and positioning its candidate window needs the TSF
+/// COM interfaces (`ITfThreadMgr` etc.), and `winapi` 0.3 ships neither `CLSID_TF_ThreadMgr` nor
+/// their `IID`s. This module used to paper over that by treating a `msctf.dll` symbol lookup as a
+/// successful connection — see `native_ime_available` for why that was a fabricated claim. The
+/// composition state machine keeps working for hosts that drive it directly from `WM_IME_*`.
 pub struct WindowsImeBridge {
     /// The widget that currently has IME focus.
     focused_widget: Mutex<Option<ObjectId>>,
@@ -143,20 +119,16 @@ pub struct WindowsImeBridge {
     candidate_position: Mutex<ImeCandidatePosition>,
 
     // ── Native TSF handle ──
-    /// Whether the TSF subsystem was successfully initialised.
+    /// Whether the process can reach the OS input-method layer.
     ///
     /// This is the authority [`ImeBridge::is_active`] answers from. It is not merely informational:
-    /// the bridge can track focus and composition in memory on any target, but only a real TSF
+    /// the bridge can track focus and composition in memory on any target, but only a real OS
     /// connection can drive the OS candidate window and receive the OS composition string. Reporting
     /// "active" without one would be exactly the log-placeholder claim rule #26 forbids.
-    tsf_available: Mutex<bool>,
-    /// Opaque TSF thread manager handle (kept alive for the bridge lifetime).
     ///
-    /// Held so the `msctf.dll` handle stays loaded for as long as the bridge may make TSF calls.
-    /// The *value* is deliberately not read in production — its existence is the point (an RAII
-    /// keep-alive for the module handle) — so [`WindowsImeBridge::has_tsf_manager`] exists for the
-    /// tests that assert it mirrors `tsf_available`.
-    tsf_manager: Mutex<Option<TsfThreadMgr>>,
+    /// It is filled from [`native_ime_available`], a real `ImmGetContext` query — not, as it used
+    /// to be, from whether a DLL exported a symbol.
+    native_ime_available: Mutex<bool>,
 }
 
 crate::impl_default_via_new!(WindowsImeBridge);
@@ -168,10 +140,15 @@ impl WindowsImeBridge {
     /// thread manager.  On other targets (or when TSF is unavailable) it
     /// falls back to pure state tracking.
     pub fn new() -> Self {
-        let (tsf_avail, mgr) = match TsfThreadMgr::try_create() {
-            Some(m) => (true, Some(m)),
-            None => (false, None),
-        };
+        let native = native_ime_available();
+        if native {
+            log::info!("[Windows IME] an OS input context is reachable; composition can be lifted");
+        } else {
+            log::debug!(
+                "[Windows IME] no OS input context reachable — tracking focus and composition in \
+                 memory only"
+            );
+        }
 
         Self {
             focused_widget: Mutex::new(None),
@@ -180,19 +157,29 @@ impl WindowsImeBridge {
             cursor_pos: Mutex::new(0),
             cursor_rect: Mutex::new((0, 0, 0, 0)),
             candidate_position: Mutex::new(ImeCandidatePosition { x: 0, y: 0 }),
-            tsf_available: Mutex::new(tsf_avail),
-            tsf_manager: Mutex::new(mgr),
+            native_ime_available: Mutex::new(native),
         }
     }
 
-    /// Returns whether a TSF thread manager was created and is being kept alive.
+    /// Re-probes the OS for an input context.
     ///
-    /// The manager's *value* is never read in production: holding it keeps the `msctf.dll` module
-    /// handle loaded for the bridge's lifetime (an RAII keep-alive). This accessor makes that fact
-    /// observable — the tests assert it mirrors [`WindowsImeBridge::is_active`]'s authority — rather
-    /// than leaving the field to trip a dead-code warning.
-    pub fn has_tsf_manager(&self) -> bool {
-        lock(&self.tsf_manager).is_some()
+    /// [`Self::new`] probes once, and on Windows the probe is about the **foreground window** —
+    /// which does not exist until the host has created one. A bridge constructed before the first
+    /// window would therefore latch `false` forever. A host calls this after its window is shown so
+    /// [`ImeBridge::is_active`] reflects the real state.
+    /// Returns the flag it recorded.
+    pub fn refresh_native_availability(&self) -> bool {
+        let native = native_ime_available();
+        *lock(&self.native_ime_available) = native;
+        native
+    }
+
+    /// Whether an OS input context was reachable when this bridge last probed.
+    ///
+    /// The observable half of [`Self::refresh_native_availability`]; it is what
+    /// [`ImeBridge::is_active`] reports from.
+    pub fn has_native_ime(&self) -> bool {
+        *lock(&self.native_ime_available)
     }
 
     // ── Native IME interface (exposed for platform event dispatch) ──
@@ -369,11 +356,11 @@ impl ImeBridge for WindowsImeBridge {
     }
 
     fn is_active(&self) -> bool {
-        // Honest activity: a real TSF connection **and** a focused widget. The previous body
-        // returned only the focus flag, so on every non-Windows target (and on Windows without the
-        // TSF binding) the bridge reported an active IME while it never talked to the OS — the
-        // "reported success for something that did not happen" failure rules #26/#53 forbid.
-        *lock(&self.tsf_available) && lock(&self.focused_widget).is_some()
+        // Honest activity: a real OS input context **and** a focused widget. The previous body
+        // returned only the focus flag, and the flag it later gained was itself fabricated from a
+        // DLL symbol lookup, so the bridge reported an active IME while it never talked to the OS —
+        // the "reported success for something that did not happen" failure rules #26/#53 forbid.
+        self.has_native_ime() && lock(&self.focused_widget).is_some()
     }
 }
 
@@ -394,13 +381,14 @@ mod tests {
 
         bridge.focus_in(42);
         assert_eq!(*lock(&bridge.focused_widget), Some(42));
-        // `is_active` reports the TSF *connection*, not focus: on a host without the TSF binding
-        // (every non-Windows target, and Windows builds without it) it must stay `false` even with a
-        // focused widget — claiming otherwise was the log-placeholder defect rules #26/#53 forbid.
+        // `is_active` reports a **real OS input context**, not focus: on a host with no such context
+        // (every non-Windows target, and a Windows host with no input context for the foreground
+        // window) it must stay `false` even with a focused widget — claiming otherwise was the
+        // log-placeholder defect rules #26/#53 forbid.
         assert_eq!(
             bridge.is_active(),
-            *lock(&bridge.tsf_available),
-            "activity must mirror whether a real TSF connection exists"
+            bridge.has_native_ime(),
+            "activity must mirror whether a real OS input context exists"
         );
 
         bridge.focus_out(42);
@@ -479,9 +467,9 @@ mod tests {
         let bridge = WindowsImeBridge::new();
         assert!(!bridge.is_active());
         bridge.focus_in(1);
-        // Focus is not activity: `is_active` is honest about the TSF connection (see
-        // `is_active`'s own comment). On a host with TSF it becomes true; without it, false.
-        assert_eq!(bridge.is_active(), *lock(&bridge.tsf_available));
+        // Focus is not activity: `is_active` is honest about the OS input context (see
+        // `is_active`'s own comment). On a host that can reach one it becomes true; without it, false.
+        assert_eq!(bridge.is_active(), bridge.has_native_ime());
         bridge.focus_out(1);
         assert!(!bridge.is_active());
     }
@@ -548,23 +536,29 @@ mod tests {
     }
 
     #[test]
-    fn test_tsf_flag_matches_the_created_manager() {
-        // TSF availability is a property of the *host*, not of the test build: a
-        // machine with the Text Services Framework installed reports `true`, one
-        // without it reports `false`. Asserting a fixed value would encode one
-        // machine's configuration. What must hold everywhere is that the recorded
-        // flag agrees with the manager the constructor kept, and that the bridge
-        // starts with no composition in flight.
+    fn test_native_availability_is_a_real_os_probe_and_agrees_with_is_active() {
+        // Native IME availability is a property of the *host*, not of the test build: a
+        // machine that can give the foreground window an input context reports `true`, one
+        // that cannot reports `false`. Asserting a fixed value would encode one machine's
+        // configuration.
+        //
+        // # What must hold everywhere, and what used to
+        //
+        // The flag used to be set from "does `msctf.dll` export `TF_GetThreadMgr`?", which is
+        // true on essentially every Windows install and did not call anything — so the bridge
+        // reported a live IME *connection* that did not exist. The probe is now the real
+        // `ImmGetContext` query, and this asserts the two things that make it honest: the flag
+        // is exactly what a fresh probe returns, and `is_active` agrees with it when no widget
+        // holds focus (there is none here).
         let bridge = WindowsImeBridge::new();
-        let available = *lock(&bridge.tsf_available);
-        let has_manager = bridge.has_tsf_manager();
         assert_eq!(
-            available, has_manager,
-            "the TSF availability flag must mirror whether a thread manager was created"
+            bridge.has_native_ime(),
+            native_ime_available(),
+            "the recorded flag must be what the probe answers, not a symbol lookup"
         );
-        // `is_active` reports the connection's authority, so it agrees with the flag when no widget
-        // holds focus (there is none in this test), i.e. it is false here regardless of the host.
-        assert!(!bridge.is_active());
+        // Re-probing must be idempotent on a host whose state has not changed.
+        assert_eq!(bridge.refresh_native_availability(), bridge.has_native_ime());
+        assert!(!bridge.is_active(), "no widget holds focus, so nothing is active");
         assert!(!bridge.has_marked_text());
     }
 }
