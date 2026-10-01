@@ -22,7 +22,7 @@ pub enum ControlBackendKind {
 ///
 /// Kept as an enum rather than deleted: [`crate::control_backend::routing`] returns
 /// a single value today, but a backend that gains a real primitive must be able to
-/// say so **deliberately** rather than through an implicit fallback (BLUE15 §七).
+/// say so **deliberately** rather than through an implicit fallback (BLUE15 §7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlRoutePreference {
     /// Prefer a platform-provided primitive where one exists.

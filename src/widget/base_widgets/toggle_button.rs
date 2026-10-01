@@ -840,7 +840,7 @@ mod tests {
         assert!(!tb.is_checked());
     }
 
-    /// BLUE23 附录 A.2 / M1: the two *momentary* states are now reachable.
+    /// BLUE23 Appendix A.2 / M1: the two *momentary* states are now reachable.
     ///
     /// # The defect this pins
     ///
@@ -895,10 +895,10 @@ mod tests {
         assert_eq!(read(&tb), "pressed");
     }
 
-    /// BLUE23 附录 A.2 / M3 + §9 判据 10: three frames of the interaction are **geometrically
+    /// BLUE23 Appendix A.2 / M3 + §9 Criterion 10: three frames of the interaction are **geometrically
     /// distinct**, and the fill arrives at the resting colour when the transition is at rest.
     ///
-    /// The plan asks for "三帧几何互异" on a button. A toggle button's shape does not move, so the
+    /// The plan asks for "three geometrically distinct frames" on a button. A toggle button's shape does not move, so the
     /// observable is the **fill**: at `t=0` it is the resting colour, mid-transition it is between
     /// the resting and interactive colours, and at the end it has settled on the interactive one.
     ///

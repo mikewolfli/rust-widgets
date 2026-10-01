@@ -7,7 +7,7 @@
 //!
 //! The *model* it produces ([`FilterExpr`]) is not new: it is the same type
 //! `DataGrid` evaluates, so a filter set in code and one a user builds are
-//! evaluated by one code path (principle #54, and the plan's §四 B5). What is new
+//! evaluated by one code path (principle #54, and the plan's §4 B5). What is new
 //! is the **rendering shell**: rows that can be added, removed, reordered,
 //! conjoined with AND/OR and negated.
 //!

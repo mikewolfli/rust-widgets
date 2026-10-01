@@ -41,7 +41,7 @@ mod tests {
     /// `DropZone` were added to `kind.rs` the array and the constant both stayed
     /// at 175 and the assertion still passed: a check that cannot fail is not a
     /// check. The same drift had already happened once before, from 167 to 171
-    /// (see BLUE16 §十二 E-2), and the `check_kind_reachability.sh` gate that
+    /// (see BLUE16 §12 E-2), and the `check_kind_reachability.sh` gate that
     /// change promised was never written.
     ///
     /// A `match` over `WidgetKind` with every variant spelled out is checked for
@@ -268,7 +268,7 @@ mod tests {
     #[cfg(not(alloc_frugal))]
     #[test]
     fn route_preference_is_single_valued_for_every_kind() {
-        // `ControlRoutePreference` keeps both variants (BLUE15 §七 registers its
+        // `ControlRoutePreference` keeps both variants (BLUE15 §7 registers its
         // removal as a BLUE16 candidate), but the policy must only ever produce one
         // of them. A `NativePreferred` answer here would mean a second,
         // platform-held mechanism came back.

@@ -848,7 +848,7 @@ pub(crate) fn toast_stack_capability() -> WidgetCapability {
 
 // Found by the registration-fidelity gate rather than by hand: `GridTableWidget`
 // is a complete virtualised table that was exported but never registered, so it
-// joins the six above as a seventh接线-only fix. It reports `WidgetKind::GridTable`,
+// joins the six above as a seventh wiring-only fix. It reports `WidgetKind::GridTable`,
 // which no other capability claims.
 #[cfg(not(alloc_frugal))]
 pub(crate) fn otp_input_capability() -> WidgetCapability {
@@ -1436,7 +1436,7 @@ pub(crate) fn heatmap_capability() -> WidgetCapability {
 /// `Mention` — completes `@`-mentions from a candidate list.
 ///
 /// Registered separately from `auto_complete_edit`: the completion model differs
-/// (token before the caret, many mentions per field), which is the plan's §三 A2
+/// (token before the caret, many mentions per field), which is the plan's §3 A2
 /// judgment.
 #[cfg(not(alloc_frugal))]
 pub(crate) fn mention_capability() -> WidgetCapability {
@@ -1470,7 +1470,7 @@ pub(crate) fn emoji_picker_capability() -> WidgetCapability {
 ///
 /// Registered separately from `data_grid`: the model is shared (both produce a
 /// `FilterExpr`) but the rendering is not, which is exactly the case the plan's
-/// §四 B5 describes.
+/// §4 B5 describes.
 #[cfg(not(alloc_frugal))]
 pub(crate) fn query_builder_capability() -> WidgetCapability {
     WidgetCapability {

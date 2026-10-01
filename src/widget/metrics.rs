@@ -510,7 +510,7 @@ impl FocusRing {
 /// # Why this is not the control's border colour
 ///
 /// A ring must announce itself. Reading the same token a border reads is what made a
-/// focused control indistinguishable from a merely bordered one (BLUE21 §七 B). This
+/// focused control indistinguishable from a merely bordered one (BLUE21 §7 B). This
 /// function therefore takes the control's own colours and returns the contrast colour of
 /// `fallback`'s surface, which is legible by construction on both appearances.
 ///
@@ -1138,8 +1138,8 @@ pub mod dimensions {
     /// which is the convention every breakpoint table uses and the one the tests pin, so a
     /// boundary case has exactly one answer.
     ///
-    /// Named here rather than at the classification site (原则 #44 / 计划 §5.1 "阈值来自
-    /// `dimensions` 表，不得是字面量") so a theme or a device profile can move the boundary in
+    /// Named here rather than at the classification site (principle #44 / plan §5.1 "thresholds
+    /// from dimensions table, not literals") so a theme or a device profile can move the boundary in
     /// one place instead of at each reader.
     pub const BREAKPOINT_COMPACT_MAX: u32 = 599;
 

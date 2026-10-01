@@ -264,7 +264,7 @@ pub struct Colors {
     /// A divider and a focus ring are both "a thin line", but they are not the same
     /// line: a divider should recede while a focus ring must announce itself. Deriving
     /// both from `foreground` meant a focused control looked identical to a bordered
-    /// one, which is the BLUE21 §七 B defect. Material 3 names the pair `outline` and
+    /// one, which is the BLUE21 §7 B defect. Material 3 names the pair `outline` and
     /// `outlineVariant`; this is the stronger of the two.
     #[cfg_attr(not(alloc_frugal), serde(default = "default_outline_color"))]
     pub outline: Color,

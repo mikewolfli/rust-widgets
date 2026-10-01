@@ -621,8 +621,12 @@ impl Draw for ImageGallery {
             if let Some(image) = self.images.get(img_idx) {
                 if let Some(ref label) = image.label {
                     let font = Font::default();
-                    let label_text =
-                        if label.len() > 10 { format!("{}..", &label[..8]) } else { label.clone() };
+                    let label_text = if label.len() > 10 {
+                        let boundary = crate::widget::text_utils::floor_char_boundary(label, 8);
+                        format!("{}..", &label[..boundary])
+                    } else {
+                        label.clone()
+                    };
                     let label_metrics = context.measure_text(&label_text, &font);
                     let label_x =
                         thumb_x + (self.thumbnail_size as i32 - label_metrics.width as i32) / 2;
@@ -987,5 +991,15 @@ mod tests {
             "every navigation path restarts the arrival: {}",
             g.reveal_progress()
         );
+    }
+
+    #[test]
+    fn image_gallery_handles_multibyte_utf8_label() {
+        use crate::widget::svg::render_to_svg;
+        let mut g = ImageGallery::new(Rect::new(0, 0, 400, 300));
+        // A label with multibyte UTF-8 characters where byte index 8 falls inside a character
+        g.add_image_with_size("/img/test.jpg", Some("Café ☕ Gallery Preview"), 800, 600);
+        let svg = render_to_svg(&mut g);
+        assert!(!svg.is_empty(), "rendering with multibyte label must not panic");
     }
 }

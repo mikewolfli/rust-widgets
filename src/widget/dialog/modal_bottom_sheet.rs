@@ -712,7 +712,7 @@ mod tests {
     /// The assertion that catches that is **composited** luminance, not `scrim != window` and not
     /// the blend fallback on its own: the veil *did* differ from the page, and its fallback was
     /// fine — the comparison that matters is the one the user sees. Off the plan's own wording,
-    /// "暗态遮罩的亮度 < 它覆盖的面".
+    /// "scrim luminance in dark mode < surface it covers".
     #[test]
     #[cfg(device_profile)]
     fn the_scrim_composites_darker_than_the_backdrop() {

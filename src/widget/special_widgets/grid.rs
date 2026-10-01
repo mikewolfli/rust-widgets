@@ -178,7 +178,8 @@ impl GridWidget {
             return None;
         }
         let local_y = (y - rect.y) as u32;
-        let row = local_y / (self.cell_height + self.spacing);
+        let step = (self.cell_height + self.spacing).max(1);
+        let row = local_y / step;
         if row < self.rows {
             Some(row)
         } else {
@@ -196,7 +197,8 @@ impl GridWidget {
             return None;
         }
         let local_x = (x - rect.x) as u32;
-        let col = local_x / (self.cell_width + self.spacing);
+        let step = (self.cell_width + self.spacing).max(1);
+        let col = local_x / step;
         if col < self.columns {
             Some(col)
         } else {
@@ -225,10 +227,12 @@ impl GridWidget {
     // ── Recalculate cell dimensions ────────────────────────
     fn update_cell_dimensions(&mut self) {
         let rect = self.base.geometry();
-        let total_spacing_w = self.spacing.saturating_mul(self.columns.saturating_sub(1));
-        let total_spacing_h = self.spacing.saturating_mul(self.rows.saturating_sub(1));
-        self.cell_width = (rect.width.saturating_sub(total_spacing_w)) / self.columns;
-        self.cell_height = (rect.height.saturating_sub(total_spacing_h)) / self.rows;
+        let cols = self.columns.max(1);
+        let rows = self.rows.max(1);
+        let total_spacing_w = self.spacing.saturating_mul(cols.saturating_sub(1));
+        let total_spacing_h = self.spacing.saturating_mul(rows.saturating_sub(1));
+        self.cell_width = (rect.width.saturating_sub(total_spacing_w)) / cols;
+        self.cell_height = (rect.height.saturating_sub(total_spacing_h)) / rows;
     }
 }
 
@@ -243,6 +247,10 @@ impl Widget for GridWidget {
     }
     fn base_mut(&mut self) -> &mut BaseWidget {
         &mut self.base
+    }
+    fn set_geometry(&mut self, geometry: Rect) {
+        self.base.set_geometry(geometry);
+        self.update_cell_dimensions();
     }
 
     /// Returns a size hint proportional to rows x columns.
@@ -696,5 +704,16 @@ mod tests {
             V::Null,
             "and it reads back as null"
         );
+    }
+
+    #[test]
+    fn set_geometry_updates_cell_dimensions() {
+        let mut grid = GridWidget::with_dimensions(Rect::new(0, 0, 100, 100), 2, 2);
+        assert_eq!(grid.cell_width(), 50);
+        assert_eq!(grid.cell_height(), 50);
+
+        grid.set_geometry(Rect::new(0, 0, 200, 300));
+        assert_eq!(grid.cell_width(), 100);
+        assert_eq!(grid.cell_height(), 150);
     }
 }

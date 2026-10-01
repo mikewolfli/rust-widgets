@@ -966,11 +966,9 @@ impl Draw for GridTableWidget {
         }
 
         // ── Draw data cells ──
-        let data_source = self.data_source.as_ref();
-        if data_source.is_none() {
+        let Some(source) = self.data_source.as_ref() else {
             return;
-        }
-        let source = data_source.unwrap();
+        };
 
         let mut cy = data_top;
         for ri in 0..self.visible_rows.min(rows.saturating_sub(self.scroll_row)) {

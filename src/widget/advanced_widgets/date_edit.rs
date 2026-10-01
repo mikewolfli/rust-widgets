@@ -333,7 +333,9 @@ pub(crate) fn format_with_pattern(pattern: &str, components: DateTimeComponents)
         // No token matched, so this character is literal text (a separator, a word, a stray letter).
         // Advancing by one **char**, not one byte: a multi-byte character in a label would otherwise
         // be split and produce invalid text.
-        let ch = rest.chars().next().expect("rest is non-empty, so there is a next char");
+        let Some(ch) = rest.chars().next() else {
+            break;
+        };
         out.push(ch);
         rest = &rest[ch.len_utf8()..];
         at_token_start = !ch.is_alphabetic();

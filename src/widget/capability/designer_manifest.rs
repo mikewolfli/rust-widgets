@@ -1166,8 +1166,8 @@ mod tests {
                 CapabilityValue::String(String::from("a \"quoted\" \\ value\nwith a newline")),
             ),
             (
-                CapabilityValue::String(String::from("标签值")),
-                CapabilityValue::String(String::from("标签值")),
+                CapabilityValue::String(String::from("Café ☕ Value")),
+                CapabilityValue::String(String::from("Café ☕ Value")),
             ),
             (
                 CapabilityValue::Color(Color::rgba(1, 2, 3, 4)),

@@ -5,7 +5,7 @@
 //!
 //! # The decision this module implements
 //!
-//! `blue19.md` §5.1.6 left D7-b-3 open — "生成物是否入库（committed）？". It is now decided:
+//! `blue19.md` §5.1.6 left D7-b-3 open — "Are artifacts committed to version control?". It is now decided:
 //! **generated sources are committed, and the designer writes them through the API below.**
 //! The reasoning, in the two directions the plan weighed:
 //!

@@ -84,31 +84,38 @@ impl MasonryLayout {
 
     /// Calculate positions for all items (waterfall layout).
     fn layout_items(&self) -> Vec<(MasonryItem, Rect)> {
-        if self.items.is_empty() || self.columns == 0 {
+        if self.items.is_empty() {
             return Vec::new();
         }
 
+        let columns = self.columns.max(1);
         let rect = self.base.geometry();
-        let col_w = rect.width / self.columns;
+        let col_w = rect.width / columns;
         let spacing: u32 = ITEM_SPACING;
 
         // Track the current y-offset for each column.
-        let mut col_heights = vec![0u32; self.columns as usize];
+        let mut col_heights = vec![0u32; columns as usize];
         let mut result = Vec::with_capacity(self.items.len());
 
         for item in &self.items {
             // Find the column with the smallest current height.
-            let (min_col, _) = col_heights.iter().enumerate().min_by_key(|&(_, h)| *h).unwrap();
+            let min_col = col_heights
+                .iter()
+                .enumerate()
+                .min_by_key(|&(_, h)| *h)
+                .map(|(i, _)| i)
+                .unwrap_or(0);
 
             let x = rect.x + (min_col as u32 * col_w) as i32;
-            let y = rect.y + col_heights[min_col] as i32;
+            let current_h = col_heights[min_col];
+            let y = rect.y + current_h as i32;
 
             let item_height = item.height.max(20);
             let item_rect = Rect::new(x, y, col_w, item_height);
 
             result.push((item.clone(), item_rect));
 
-            col_heights[min_col] += item_height + spacing;
+            col_heights[min_col] = current_h.saturating_add(item_height + spacing);
         }
 
         result

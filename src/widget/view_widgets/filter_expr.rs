@@ -240,10 +240,10 @@ impl FilterExpr {
     /// The conversion from the legacy flat model: `DataGrid::set_filters` combined
     /// its `Vec<ColumnFilter>` with an implicit AND, so this is that same rule
     /// written down.
-    pub fn from_conditions(conditions: Vec<FilterCondition>) -> Self {
+    pub fn from_conditions(mut conditions: Vec<FilterCondition>) -> Self {
         match conditions.len() {
             0 => FilterExpr::MatchAll,
-            1 => FilterExpr::Predicate(conditions.into_iter().next().expect("length checked")),
+            1 => conditions.pop().map(FilterExpr::Predicate).unwrap_or(FilterExpr::MatchAll),
             _ => FilterExpr::And(conditions.into_iter().map(FilterExpr::Predicate).collect()),
         }
     }
@@ -264,7 +264,7 @@ impl FilterExpr {
         }
         match flattened.len() {
             0 => FilterExpr::MatchAll,
-            1 => flattened.into_iter().next().expect("length checked"),
+            1 => flattened.pop().unwrap_or(FilterExpr::MatchAll),
             _ => FilterExpr::And(flattened),
         }
     }
@@ -280,7 +280,7 @@ impl FilterExpr {
         }
         match flattened.len() {
             0 => FilterExpr::MatchNothing,
-            1 => flattened.into_iter().next().expect("length checked"),
+            1 => flattened.pop().unwrap_or(FilterExpr::MatchNothing),
             _ => FilterExpr::Or(flattened),
         }
     }

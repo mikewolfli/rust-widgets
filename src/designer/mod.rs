@@ -25,7 +25,7 @@
 //!
 //! That is the honest division and it matches how the feature is used: a designer runs on a desktop
 //! host, and `mini`/`embedded` receive the generated file. BLUE19 §5.3.4 says the same thing in
-//! one line — "`mini`/`embedded` are 生成**目标**，不是运行**环境**".
+//! one line — "`mini`/`embedded` are generation **targets**, not runtime **environments**".
 //!
 //! What is *not* assumed is the ability to construct a target's controls:
 //! [`generator::availability`] **asks the factory** instead of consulting a list, and reports a

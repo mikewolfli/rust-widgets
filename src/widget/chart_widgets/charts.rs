@@ -1011,16 +1011,43 @@ impl Chart for AreaChart {
             visible_series.len(),
         );
         draw_cartesian_axes(context, &layout);
+        let max_len = visible_series.iter().map(|s| s.data.len()).max().unwrap_or(0);
         let mut min_x = f64::MAX;
         let mut max_x = f64::MIN;
         let mut min_y = f64::MAX;
         let mut max_y = f64::MIN;
-        for series in &visible_series {
-            for point in &series.data {
-                min_x = min_x.min(point.x);
-                max_x = max_x.max(point.x);
-                min_y = min_y.min(point.y);
-                max_y = max_y.max(point.y);
+
+        if self.stacked {
+            let mut stacked_y_totals = vec![0.0f64; max_len];
+            for series in &visible_series {
+                for (i, point) in series.data.iter().enumerate() {
+                    if !point.x.is_finite() || !point.y.is_finite() {
+                        continue;
+                    }
+                    min_x = min_x.min(point.x);
+                    max_x = max_x.max(point.x);
+                    stacked_y_totals[i] += point.y;
+                }
+            }
+            min_y = 0.0;
+            for &sy in &stacked_y_totals {
+                min_y = min_y.min(sy);
+                max_y = max_y.max(sy);
+            }
+            if max_y <= min_y {
+                max_y = min_y + 1.0;
+            }
+        } else {
+            for series in &visible_series {
+                for point in &series.data {
+                    if !point.x.is_finite() || !point.y.is_finite() {
+                        continue;
+                    }
+                    min_x = min_x.min(point.x);
+                    max_x = max_x.max(point.x);
+                    min_y = min_y.min(point.y);
+                    max_y = max_y.max(point.y);
+                }
             }
         }
         if min_x == f64::MAX || min_y == f64::MAX {
@@ -1051,25 +1078,20 @@ impl Chart for AreaChart {
         }
         let baseline = layout.plot_y + layout.plot_h;
         // Track accumulated y-values for stacking mode
-        let mut accum: Option<Vec<f64>> = None;
+        let mut accum = vec![0.0_f64; max_len];
         for series in &visible_series {
             if series.data.len() < 2 {
                 continue;
             }
             // Determine effective y-values for this series (stacked or raw)
             let effective_y: Vec<f64> = if self.stacked {
-                // Ensure accumulator is sized to match this series
-                if accum.as_ref().map(|a| a.len() != series.data.len()).unwrap_or(true) {
-                    accum = Some(vec![0.0_f64; series.data.len()]);
-                }
-                let acc = accum.as_mut().unwrap();
                 series
                     .data
                     .iter()
                     .enumerate()
                     .map(|(i, p)| {
-                        let stacked_y = acc[i] + p.y;
-                        acc[i] = stacked_y;
+                        let stacked_y = accum[i] + p.y;
+                        accum[i] = stacked_y;
                         stacked_y
                     })
                     .collect()

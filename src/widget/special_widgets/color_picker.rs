@@ -85,6 +85,13 @@ impl ColorPicker {
     pub fn set_color(&mut self, color: Color) {
         self.color = color;
         self.alpha = color.a;
+        let (h, s, v) = color_to_hsv(color);
+        // Only update hue if the color is chromatic; grayscale colors have undefined hue
+        if color.r != color.g || color.g != color.b {
+            self.hue = h;
+        }
+        self.saturation = s;
+        self.value = v;
         self.color_changed.emit(self.color);
         self.hex_changed.emit(self.color.to_hex_rgba());
         self.base.request_redraw();
@@ -542,6 +549,39 @@ const READOUT_LINE: u32 = 14;
 const PRESET_ROW: u32 = 18;
 const MARGIN: u32 = 4;
 
+/// Converts RGB color to HSV components: `(hue, saturation, value)`.
+///
+/// Hue is scaled to `0..=255` (corresponding to 0..360 degrees).
+fn color_to_hsv(color: Color) -> (u8, u8, u8) {
+    let rf = color.r as f32 / 255.0;
+    let gf = color.g as f32 / 255.0;
+    let bf = color.b as f32 / 255.0;
+
+    let c_max = rf.max(gf).max(bf);
+    let c_min = rf.min(gf).min(bf);
+    let delta = c_max - c_min;
+
+    let hue = if delta == 0.0 {
+        0.0
+    } else if (c_max - rf).abs() < f32::EPSILON {
+        60.0 * (((gf - bf) / delta) % 6.0)
+    } else if (c_max - gf).abs() < f32::EPSILON {
+        60.0 * (((bf - rf) / delta) + 2.0)
+    } else {
+        60.0 * (((rf - gf) / delta) + 4.0)
+    };
+
+    let normalized_hue = if hue < 0.0 { hue + 360.0 } else { hue };
+    let h = ((normalized_hue / 360.0) * 255.0).round().clamp(0.0, 255.0) as u8;
+
+    let s =
+        if c_max == 0.0 { 0 } else { ((delta / c_max) * 255.0).round().clamp(0.0, 255.0) as u8 };
+
+    let v = (c_max * 255.0).round().clamp(0.0, 255.0) as u8;
+
+    (h, s, v)
+}
+
 fn hsv_to_color(h: u8, s: u8, v: u8, a: u8) -> Color {
     let hf = (h as f32 / 255.0) * 360.0;
     let sf = s as f32 / 255.0;
@@ -610,5 +650,17 @@ mod tests {
         assert!(picker.apply_preset(1));
         let got = emitted.lock().ok().map(|guard| guard.clone()).unwrap_or_default();
         assert!(!got.is_empty());
+    }
+
+    #[test]
+    fn set_color_synchronizes_hsva() {
+        let mut picker = ColorPicker::new(Rect::new(0, 0, 260, 220));
+        picker.set_color(Color::rgb(0, 255, 0));
+        let (h, s, v, a) = picker.hsva();
+        assert_eq!(a, 255);
+        assert!(s >= 250);
+        assert!(v >= 250);
+        // Hue for green is around 120 deg -> (120/360)*255 = 85
+        assert!((h as i32 - 85).abs() <= 2);
     }
 }

@@ -101,3 +101,48 @@ fn chart_widgets_remain_the_control_layer() {
     assert_eq!(pie.geometry().width, 200);
     assert_eq!(spark.data().len(), 3);
 }
+
+/// `AreaChart` renders correctly both unstacked and stacked through the engine's SVG context.
+#[test]
+fn area_chart_engine_renders_unstacked_and_stacked() {
+    use rust_widgets::widget::chart_widgets::charts::AreaChart;
+    use rust_widgets::widget::chart_widgets::types::{Chart, DataPoint};
+
+    let rect = Rect::new(0, 0, 320, 200);
+    let mut chart = AreaChart::new();
+    chart.set_title("Area Test".to_string());
+    chart.add_series(ChartSeries {
+        name: "Series A".to_string(),
+        data: vec![
+            DataPoint { x: 0.0, y: 10.0, label: None },
+            DataPoint { x: 1.0, y: 30.0, label: None },
+        ],
+        color: Color::RED,
+        visible: true,
+    });
+    chart.add_series(ChartSeries {
+        name: "Series B".to_string(),
+        data: vec![
+            DataPoint { x: 0.0, y: 20.0, label: None },
+            DataPoint { x: 1.0, y: 40.0, label: None },
+        ],
+        color: Color::BLUE,
+        visible: true,
+    });
+
+    // Unstacked render
+    let mut context = SvgChartContext::new(320, 200);
+    chart.draw(rect, &mut context);
+    let svg = context.to_svg_string();
+    assert!(svg.starts_with("<svg"));
+    assert!(svg.contains("Area Test"));
+
+    // Stacked render
+    chart.set_stacked(true);
+    let mut context_stacked = SvgChartContext::new(320, 200);
+    chart.draw(rect, &mut context_stacked);
+    let svg_stacked = context_stacked.to_svg_string();
+    assert!(svg_stacked.starts_with("<svg"));
+    assert!(svg_stacked.contains("Series A"));
+    assert!(svg_stacked.contains("Series B"));
+}

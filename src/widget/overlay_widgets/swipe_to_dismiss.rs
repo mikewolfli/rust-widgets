@@ -570,7 +570,7 @@ mod tests {
         assert!(fired.load(std::sync::atomic::Ordering::SeqCst));
     }
 
-    /// BLUE23 附录 A.2 / M3: a dismiss **slides out** instead of vanishing in one frame.
+    /// BLUE23 Appendix A.2 / M3: a dismiss **slides out** instead of vanishing in one frame.
     ///
     /// # The defect this pins
     ///

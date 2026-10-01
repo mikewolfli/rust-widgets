@@ -504,6 +504,12 @@ impl WebViewCore {
 macro_rules! delegate_widget {
     ($wrapper:ty) => {
         impl Widget for $wrapper {
+            fn base(&self) -> &crate::widget::BaseWidget {
+                &self.core.base
+            }
+            fn base_mut(&mut self) -> &mut crate::widget::BaseWidget {
+                &mut self.core.base
+            }
             fn id(&self) -> ObjectId {
                 self.core.base.id()
             }

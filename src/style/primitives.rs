@@ -761,7 +761,7 @@ mod tests {
 
     #[test]
     fn writing_a_side_does_not_disturb_the_other_three() {
-        // BLUE22 §3 判据: "单测：写 `left_padding` 只改左".
+        // BLUE22 §3 Criterion: "Unit test: writing `left_padding` only modifies left".
         let before = PaddingSpec::new().padding(6).resolve();
         let after = PaddingSpec::new().padding(6).left(15).resolve();
         assert_eq!(after.left, 15);

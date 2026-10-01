@@ -297,7 +297,9 @@ impl Draw for WebViewEnhanced {
             // Content snippet preview (first line of HTML content)
             if !self.core.content.is_empty() {
                 let snippet = if self.core.content.len() > 200 {
-                    format!("{}...", &self.core.content[..200])
+                    let boundary =
+                        crate::widget::text_utils::floor_char_boundary(&self.core.content, 197);
+                    format!("{}...", &self.core.content[..boundary])
                 } else {
                     self.core.content.clone()
                 };
@@ -417,6 +419,19 @@ mod tests {
         assert_eq!(view.url(), "data:text/html");
         assert_eq!(view.title(), "HTML Content");
         assert_eq!(view.html(), "<p>Hello</p>");
+    }
+
+    #[test]
+    fn test_web_view_draw_multibyte_content() {
+        use crate::widget::svg::render_to_svg;
+        let mut view = WebViewEnhanced::new(Rect::new(0, 0, 800, 600));
+        let long_multibyte_html = format!(
+            "<p>{}</p>",
+            "Café crème brûlée with € and £ symbols for testing multi-byte snippet boundaries in web preview. ".repeat(5)
+        );
+        view.load_html(&long_multibyte_html, None);
+        let svg = render_to_svg(&mut view);
+        assert!(!svg.is_empty(), "drawing web view with multibyte HTML content must not panic");
     }
 
     #[test]

@@ -835,7 +835,7 @@ impl Draw for Slider {
             .or_else(|| theme.as_ref().and_then(|t| t.border_color))
             .filter(|resolved| *resolved != handle_color)
             .unwrap_or_else(|| handle_color.blend(&accent, 0.40));
-        // ── The interaction halo (BLUE23 附录 A.4 / M1) ──
+        // ── The interaction halo (BLUE23 Appendix A.4 / M1) ──
         //
         // # The defect this removes
         //
@@ -1779,7 +1779,7 @@ mod tests {
         assert_eq!(s2.value(), 1);
     }
 
-    /// BLUE23 附录 A.4 / M1: hovering or dragging a slider is **visible**, and a drag is the
+    /// BLUE23 Appendix A.4 / M1: hovering or dragging a slider is **visible**, and a drag is the
     /// firmer of the two gestures.
     ///
     /// # The defect this pins

@@ -97,6 +97,9 @@ impl MapView {
 
     /// Sets map center.
     pub fn set_center(&mut self, x: f32, y: f32) {
+        if !x.is_finite() || !y.is_finite() {
+            return;
+        }
         if (self.center_x - x).abs() < f32::EPSILON && (self.center_y - y).abs() < f32::EPSILON {
             return;
         }
@@ -108,6 +111,9 @@ impl MapView {
 
     /// Pans map center by world delta.
     pub fn pan_by(&mut self, dx: f32, dy: f32) {
+        if !dx.is_finite() || !dy.is_finite() {
+            return;
+        }
         self.set_center(self.center_x + dx, self.center_y + dy);
     }
 
@@ -118,6 +124,9 @@ impl MapView {
 
     /// Sets zoom level.
     pub fn set_zoom(&mut self, zoom: f32) {
+        if !zoom.is_finite() {
+            return;
+        }
         let next = zoom.clamp(0.25, 8.0);
         if (self.zoom - next).abs() < f32::EPSILON {
             return;
@@ -142,7 +151,7 @@ impl MapView {
 
     /// Zooms around current center.
     pub fn zoom_by(&mut self, factor: f32) {
-        if factor <= 0.0 {
+        if !factor.is_finite() || factor <= 0.0 {
             return;
         }
         self.set_zoom(self.zoom * factor);
@@ -760,5 +769,24 @@ mod tests {
             map.hit_marker_index(Point::new(sx as i32, sy as i32)).is_none(),
             "a marker outside the pane must not be selectable"
         );
+    }
+
+    #[test]
+    fn non_finite_inputs_rejected() {
+        let mut map = MapView::new(Rect::new(0, 0, 400, 240));
+        map.set_center(f32::NAN, 10.0);
+        assert_eq!(map.center(), (0.0, 0.0));
+        map.set_center(10.0, f32::INFINITY);
+        assert_eq!(map.center(), (0.0, 0.0));
+
+        map.set_zoom(f32::NAN);
+        assert_eq!(map.zoom(), 1.0);
+        map.set_zoom(f32::INFINITY);
+        assert_eq!(map.zoom(), 1.0);
+
+        map.zoom_by(f32::NAN);
+        assert_eq!(map.zoom(), 1.0);
+        map.pan_by(f32::NAN, 0.0);
+        assert_eq!(map.center(), (0.0, 0.0));
     }
 }

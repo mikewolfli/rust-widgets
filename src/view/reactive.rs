@@ -44,7 +44,7 @@
 //!   only for the cross-thread case, and on one thread it is pure overhead.
 //! - High-frequency state (an animation curve): every `set` queues an item. Either
 //!   coalesce at the producer or drive the property directly; re-running a whole
-//!   `build` per frame is not what this layer is for (BLUE18 §六: animation is
+//!   `build` per frame is not what this layer is for (BLUE18 §6: animation is
 //!   `PropertyAnimation`'s job).
 
 use crate::core::ObjectId;

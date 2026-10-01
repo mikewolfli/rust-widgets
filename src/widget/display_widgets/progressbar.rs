@@ -1039,11 +1039,11 @@ mod tests {
         assert_eq!((x, w), (0, 120), "inverted and RTL cancel, anchoring to the near edge");
     }
 
-    // ── Indeterminate sweep (BLUE23 §3.3 F 档) ────────────────────────────────
+    // ── Indeterminate sweep (BLUE23 §3.3 Tier F) ────────────────────────────────
 
     /// The sweep band starts off the near end and **moves** across frames.
     ///
-    /// This is the three-frame criterion for the F 档 control: the band's extent must be
+    /// This is the three-frame criterion for the Tier F control: the band's extent must be
     /// somewhere different on each frame, and it must progress along the bar rather than
     /// appear in place.
     ///

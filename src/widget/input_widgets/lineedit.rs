@@ -72,7 +72,7 @@ pub struct LineEdit {
     /// underline, and that is the right thing to draw — but on its own it is an *overlay*: the string
     /// it shows never reaches any text model, so committing it had nowhere to go and the "preedit"
     /// could not be edited, cancelled or committed. That is BLUE24 §12 U-5's gap exactly
-    /// ("组合串如何进入文本模型").
+    /// ("how composition strings enter the text model").
     ///
     /// The three methods a real IME needs are [`LineEdit::set_composition`],
     /// [`LineEdit::commit_composition`] and [`LineEdit::cancel_composition`], and they are correct

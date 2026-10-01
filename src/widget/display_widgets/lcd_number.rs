@@ -134,7 +134,7 @@ impl LCDNumber {
     /// suppressing it while disabled would hide exactly the condition a host most needs to
     /// see. This control handles no input of its own.
     pub fn set_value(&mut self, value: f64) {
-        let out_of_range = value < self.min_value || value > self.max_value;
+        let out_of_range = value.is_nan() || value < self.min_value || value > self.max_value;
         let clamped = ordered_clamp_f64(value, self.min_value, self.max_value);
         if out_of_range {
             self.overflowed = true;
@@ -148,21 +148,37 @@ impl LCDNumber {
         }
         self.base.request_redraw();
     }
-    /// Sets the lower bound and re-applies it to the current value through
-    /// [`LCDNumber::set_value`], so the value is clamped into the new range.
-    ///
-    /// Setting `min` above `max` produces an inverted range; `f64::clamp`
-    /// panics in that case, so keep the bounds ordered (use
-    /// [`LCDNumber::set_max_value`] first when raising both).
+    /// Sets the lower bound, adjusting the upper bound if necessary to keep `min <= max`,
+    /// and re-applies it to the current value through [`LCDNumber::set_value`].
     pub fn set_min_value(&mut self, min: f64) {
+        if min.is_nan() {
+            return;
+        }
         self.min_value = min;
+        if self.max_value < self.min_value {
+            self.max_value = self.min_value;
+        }
         self.set_value(self.value);
     }
-    /// Sets the upper bound and re-applies it to the current value through
-    /// [`LCDNumber::set_value`]. See [`LCDNumber::set_min_value`] for the
-    /// inverted-range caveat.
+    /// Sets the upper bound, adjusting the lower bound if necessary to keep `min <= max`,
+    /// and re-applies it to the current value through [`LCDNumber::set_value`].
     pub fn set_max_value(&mut self, max: f64) {
+        if max.is_nan() {
+            return;
+        }
         self.max_value = max;
+        if self.min_value > self.max_value {
+            self.min_value = self.max_value;
+        }
+        self.set_value(self.value);
+    }
+    /// Sets both bounds in one call, ensuring `min_value <= max_value`.
+    pub fn set_range(&mut self, min: f64, max: f64) {
+        if min.is_nan() || max.is_nan() {
+            return;
+        }
+        self.min_value = min.min(max);
+        self.max_value = min.max(max);
         self.set_value(self.value);
     }
     /// Sets the digit count, floored at `1` so the display is never zero-width.

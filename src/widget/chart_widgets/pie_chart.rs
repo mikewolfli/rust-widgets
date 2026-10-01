@@ -156,9 +156,9 @@ impl PieChart {
         self.donut_ratio
     }
 
-    /// Returns the total sum of all slice values.
+    /// Returns the total sum of all positive finite slice values.
     fn total_value(&self) -> f64 {
-        self.slices.iter().map(|s| s.value).sum()
+        self.slices.iter().map(|s| s.value).filter(|v| v.is_finite() && *v > 0.0).sum()
     }
 
     /// Returns the center point of the chart.
@@ -439,7 +439,7 @@ impl Draw for PieChart {
 
         let is_enabled = self.base.is_enabled();
         let total = self.total_value();
-        if total.abs() < f64::EPSILON {
+        if total <= 0.0 || !total.is_finite() {
             return;
         }
 
@@ -463,6 +463,9 @@ impl Draw for PieChart {
         // Draw sectors
         let mut start_angle = -std::f32::consts::FRAC_PI_2; // Start at 12 o'clock
         for slice in &self.slices {
+            if slice.value <= 0.0 || !slice.value.is_finite() {
+                continue;
+            }
             let sweep = (slice.value / total * 2.0 * std::f32::consts::PI as f64) as f32;
             let end_angle = start_angle + sweep;
 
@@ -752,5 +755,15 @@ mod tests {
         let svg = render_to_svg(&mut pc);
         let scanlines = svg.matches("<rect").count();
         assert!(scanlines > 50, "donut ring should still rasterize, got {scanlines}");
+    }
+
+    #[test]
+    fn pie_chart_non_positive_and_nan_values_safe() {
+        let mut pc = PieChart::new(Rect::new(0, 0, 200, 200));
+        pc.add_slice(PieSlice::new("Zero", 0.0, Color::RED));
+        pc.add_slice(PieSlice::new("Neg", -10.0, Color::BLUE));
+        pc.add_slice(PieSlice::new("NaN", f64::NAN, Color::GREEN));
+        let svg = render_to_svg(&mut pc);
+        assert!(svg.starts_with("<svg"));
     }
 }

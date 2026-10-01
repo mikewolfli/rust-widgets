@@ -1508,7 +1508,7 @@ mod tests {
 
     /// The base records hover from the pair the runtime synthesises.
     ///
-    /// This is the供述 side of the state channel: before it existed, a control that
+    /// This is the reporting side of the state channel: before it existed, a control that
     /// did not track hover itself reported `Normal` no matter what the theme said.
     #[test]
     fn base_records_hover_from_enter_and_leave() {

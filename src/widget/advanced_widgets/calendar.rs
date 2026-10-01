@@ -384,8 +384,10 @@ impl Calendar {
 
     /// Compute the number of leading blank cells before day 1 of the displayed month.
     fn leading_blank_count(&self) -> u32 {
-        // SAFETY: day 1 exists in every month.
-        let first = self.display_month.with_day(1).expect("day 1 exists in every Gregorian month");
+        let first = match self.display_month.with_day(1) {
+            Some(d) => d,
+            None => return 0,
+        };
         let wd = first.weekday();
         let from_mon = wd.num_days_from_monday();
         match self.first_day_of_week {
@@ -450,8 +452,7 @@ impl Calendar {
         let col = ((pos.x - grid.x) / cell_w).clamp(0, 6);
         let row = ((pos.y - grid.y) / cell_h).clamp(0, 5);
         let day_num = row * 7 + col - self.leading_blank_count() as i32;
-        // SAFETY: day 1 exists in every month.
-        let first = self.display_month.with_day(1).expect("day 1 exists in every Gregorian month");
+        let first = self.display_month.with_day(1)?;
         first
             .checked_add_signed(chrono::TimeDelta::days(day_num as i64))
             .filter(|d| d.month() == self.display_month.month())
@@ -1013,11 +1014,9 @@ impl Draw for Calendar {
                         continue;
                     }
 
-                    // SAFETY: day_num is within the valid range for this month.
-                    let date = self
-                        .display_month
-                        .with_day(day_num as u32)
-                        .expect("day_num was clamped to 1..=days_in_month for this month, so it is always a valid day");
+                    let Some(date) = self.display_month.with_day(day_num as u32) else {
+                        continue;
+                    };
 
                     // Cell background
                     let in_range = date >= self.minimum_date && date <= self.maximum_date;

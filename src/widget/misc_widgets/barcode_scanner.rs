@@ -485,7 +485,8 @@ impl Draw for BarcodeScanner {
             );
 
             let display_data = if result.data.len() > 30 {
-                format!("{}...", &result.data[..30])
+                let boundary = crate::widget::text_utils::floor_char_boundary(&result.data, 27);
+                format!("{}...", &result.data[..boundary])
             } else {
                 result.data.clone()
             };
@@ -651,5 +652,18 @@ mod tests {
             1,
             "the same interval is not a change"
         );
+    }
+
+    #[test]
+    fn barcode_scanner_renders_multibyte_result_safely() {
+        use crate::widget::svg::render_to_svg;
+        let mut scanner = BarcodeScanner::new(Rect::new(0, 0, 300, 200));
+        // Byte index 27 falls inside the multi-byte '€' symbol (U+20AC, 3 bytes at 25..28)
+        scanner.detect_barcode(
+            "https://example.com/item/€9999_special_edition".to_string(),
+            BarcodeFormat::QRCode,
+        );
+        let svg = render_to_svg(&mut scanner);
+        assert!(!svg.is_empty(), "rendering barcode scanner with multibyte data must not panic");
     }
 }
