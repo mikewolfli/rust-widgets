@@ -6,7 +6,7 @@ Thank you for your interest in contributing.
 
 1. Install Rust stable toolchain.
 2. Clone the repository.
-3. Run checks (same as CI):
+3. Run the applicable local gates:
 
 ```bash
 # The device profiles are mutually exclusive, so name one explicitly.
@@ -16,12 +16,31 @@ cargo check --all-targets --no-default-features --features desktop
 cargo fmt --all -- --check
 cargo clippy --all-targets --no-default-features --features desktop -- -D warnings
 cargo test --no-default-features --features desktop -q
+cargo test --no-default-features --features "desktop,icons" -q
 
-# Every profile must still build:
+# Remaining CI test profiles:
+for profile in full embedded mini tablet mobile; do
+  cargo test --no-default-features --features "$profile" -q
+done
+
+# Build-only profile checks, including the stripped profiles:
 for profile in desktop tablet mobile mini embedded; do
   cargo check --no-default-features --features "$profile"
 done
+
+# Source/API/platform contract gates; this is separate from the Rust test matrix.
+bash tools/run_all_gates.sh
 ```
+
+`cargo test --no-default-features --features desktop` is the main desktop test
+suite, not a test of every possible feature combination. CI additionally tests
+the opt-in icon data, `tablet` and `mobile`, plus `full`, `embedded`, and `mini`
+in the feature matrix. The desktop/default test configuration is run once.
+Native GTK, Apple, and Android tests run in their platform-specific CI jobs.
+Code coverage is collected separately by CI's `cargo llvm-cov` job. Do not
+replace these configurations with `--all-features`: the device profiles are
+mutually exclusive. `run_all_gates.sh` runs the source and contract gates; it
+does not replace the Cargo test matrix, and host-limited gates may report a skip.
 
 ## Branch and commit
 
@@ -34,8 +53,11 @@ done
 - [ ] Code compiles with `cargo check --all-targets --no-default-features --features desktop`.
 - [ ] Passes `cargo clippy --all-targets --no-default-features --features desktop -- -D warnings`.
 - [ ] Tests pass with `cargo test --no-default-features --features desktop -q`.
+- [ ] Icon-data tests pass with `cargo test --no-default-features --features "desktop,icons" -q`.
+- [ ] Tests pass for the applicable `tablet`, `mobile`, and `embedded` profiles.
 - [ ] All five device profiles still build (`desktop`, `tablet`, `mobile`, `mini`, `embedded`).
 - [ ] Formatting passes `cargo fmt --all -- --check`.
+- [ ] Applicable source and contract gates pass with `bash tools/run_all_gates.sh`.
 - [ ] Documentation is updated when behavior changes.
 - [ ] No unrelated refactoring.
 - [ ] New/changed logic includes English comments following `docs/COMMENTING_GUIDELINES.md`.

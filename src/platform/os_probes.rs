@@ -85,25 +85,53 @@ pub fn process_memory_utilization() -> Option<f32> {
     Some((vmrss_kb as f32 / vmsize_kb as f32).clamp(0.0, 1.0))
 }
 
-/// Estimates CPU load as thread count over twice the available cores.
+/// CPU utilization is **not** reliably measurable from a one-shot `/proc/self/status` read, so this
+/// reports `None`.
 ///
-/// # Why not `/proc/stat`
+/// # Why the thread count is not a CPU measurement
 ///
-/// A real load average needs two samples separated in time, which a one-shot
-/// probe cannot take without blocking. Comparing the live thread count against
-/// the core budget answers the question a caller actually has — "is this process
-/// spreading out over the machine?" — from one read.
+/// The previous body returned `Threads / (available_cores * 2)`, which is a **thread budget ratio**,
+/// not CPU utilization: it read no CPU time and took no time delta, so a process with many blocked
+/// threads scored identically to one with the same number of busy threads. The platform trait and
+/// its consumers nonetheless interpret a `Some` value as CPU utilization, so that number was fed
+/// into the adaptive quality monitor as if it measured load — reporting pressure for idle threads
+/// and missing real load from a single busy one. It also defaulted the core count to `4.0` when it
+/// could not be read, turning an unknown into a concrete figure (rules #37/#38).
+///
+/// A trustworthy utilization needs two CPU-time samples separated in time; a single probe cannot
+/// take them without blocking, so the honest answer here is `None`. The thread budget remains
+/// available under its own name — see [`thread_budget_ratio`] — for a caller that actually wants
+/// that fact.
 pub fn process_cpu_utilization() -> Option<f32> {
-    let status = std::fs::read_to_string("/proc/self/status").ok()?;
-    for line in status.lines() {
-        let Some(rest) = line.strip_prefix("Threads:") else {
-            continue;
-        };
-        let threads = rest.trim().parse::<f32>().ok()?;
-        let cores = std::thread::available_parallelism().map(|n| n.get() as f32).unwrap_or(4.0);
-        return Some((threads / (cores * 2.0)).clamp(0.0, 1.0));
-    }
     None
+}
+
+/// The process's live thread count over twice the available cores, clamped to `[0.0, 1.0]`.
+///
+/// # This is a thread budget, not CPU utilization
+///
+/// Kept under an unambiguous name so the two facts cannot be confused again: this says "how much of
+/// the thread budget is in use", which is useful for diagnosis, but it does **not** say how busy
+/// those threads are and must never be handed to [`crate::Platform::process_cpu_utilization`] or to
+/// any pressure threshold that expects CPU load (rule #37).
+///
+/// Returns `None` when `/proc/self/status` is unreadable or has no `Threads:` line. Unlike the old
+/// body it does **not** substitute `4.0` for an unreadable core count: if the count cannot be read,
+/// the answer is unknown, so this reports `None` rather than a fabricated ratio over an invented
+/// core budget.
+pub fn thread_budget_ratio() -> Option<f32> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let threads = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Threads:"))?
+        .trim()
+        .parse::<f32>()
+        .ok()?;
+    let cores = std::thread::available_parallelism().ok()?.get() as f32;
+    if cores <= 0.0 {
+        return None;
+    }
+    Some((threads / (cores * 2.0)).clamp(0.0, 1.0))
 }
 
 /// Submits `job_file` to the CUPS/`lpr` print spooler on a unix desktop.
@@ -268,7 +296,15 @@ mod tests {
         if let Some(ratio) = process_memory_utilization() {
             assert!((0.0..=1.0).contains(&ratio), "RSS/VmSize must be a fraction, got {ratio}");
         }
-        if let Some(ratio) = process_cpu_utilization() {
+        // CPU utilization is deliberately unmeasurable from a one-shot probe, so this reports
+        // `None` on every host and there is no range invariant to assert. The thread-budget probe
+        // is the one with a range, and it must still clamp.
+        assert_eq!(
+            process_cpu_utilization(),
+            None,
+            "a one-shot probe must not fabricate CPU utilization"
+        );
+        if let Some(ratio) = thread_budget_ratio() {
             assert!((0.0..=1.0).contains(&ratio), "thread ratio must be clamped, got {ratio}");
         }
         // `is_on_battery` has no invariant to assert beyond not panicking.

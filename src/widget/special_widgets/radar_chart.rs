@@ -394,12 +394,12 @@ impl Widget for RadarChart {
         match name {
             "series_clicked" => {
                 Some(EventSignalRef::mapped("series_clicked", &self.series_clicked, |v| {
-                    CapabilityValue::Int(*v as i64)
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             "axis_hovered" => {
                 Some(EventSignalRef::mapped("axis_hovered", &self.axis_hovered, |v| {
-                    CapabilityValue::Int(*v as i64)
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             _ => None,

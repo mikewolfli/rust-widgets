@@ -1308,14 +1308,23 @@ pub fn hide_widget(widget_id: crate::core::ObjectId) {
 }
 
 /// Announce that a widget was **closed**, by emitting its
-/// [`BaseWidget::closed`](crate::widget::BaseWidget::closed) signal.
+/// [`BaseWidget::closed`](crate::widget::BaseWidget::closed) signal **and** its published `closed`
+/// signal when the control declares one.
 ///
 /// # Why this is the join
 ///
 /// A closeable control's own `close`/`dismiss` path and the handle layer's `close` are two entry
 /// points to one lifecycle fact. Both must reach the same signal, or a handler registered through
-/// one route misses a close produced by the other. This emits the base signal, so every
-/// `on_close`/`closed` binding fires regardless of which path closed the control.
+/// one route misses a close produced by the other.
+///
+/// # Why both signals are emitted
+///
+/// A control may publish `closed` through a signal of its own (`Window::closed`) in addition to the
+/// base one. The JSON/designer route binds `events:{"closed":…}` to the control's **published**
+/// signal via `event_signal_dyn`, while the handle layer's `on_close` connects to `base.closed`. If
+/// this generic close path emitted only one of them, whichever route used the other would stay
+/// silent — which is exactly how a `closed` handler came to fire for one route and not the other.
+/// Emitting both means either listener fires from whichever path closed the control.
 ///
 /// Returns `true` when a mounted widget received it. A `false` means the id addresses no live
 /// widget — the same honest answer [`hide_widget`] gives by doing nothing observable.
@@ -1323,6 +1332,16 @@ pub fn hide_widget(widget_id: crate::core::ObjectId) {
 pub fn close_widget(widget_id: crate::core::ObjectId) -> bool {
     crate::widget::runtime::with_widget_mut(widget_id, |widget| {
         widget.base().closed.emit();
+        // The published `closed`, when it is a signal of the control's own rather than the base one
+        // already emitted above. `unit` refs over `base.closed` are the same signal, so re-emitting
+        // would just run the base slots twice; comparing identities is not possible through the
+        // erased ref, so this relies on each control publishing a *distinct* field (as `Window`
+        // does). A control whose published `closed` is already `base.closed` is unaffected by the
+        // extra emit because `Signal::emit` on the same signal during its own emit pass skips the
+        // slots already on the stack (see `Signal::emit`'s re-entrancy rule).
+        if let Some(reference) = widget.event_signal_dyn("closed") {
+            reference.emit_unit();
+        }
     })
     .is_some()
 }

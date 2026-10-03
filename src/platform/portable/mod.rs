@@ -85,7 +85,14 @@ pub fn copy_rows(src: &[u8], dst: &mut [u8], geometry: SurfaceGeometry) -> bool 
         // request, not a failure of the caller's data.
         return true;
     }
-    let row_bytes = width * 4;
+    // `width * 4` on 32-bit `usize` overflows for a width at or above `1 << 30`. That overflow
+    // happens *before* `required_end`'s checked arithmetic, so the later check cannot repair it: in
+    // debug the multiply panics, in release it wraps to a small (or zero) `row_bytes`, and a stride
+    // that is actually far too narrow passes the `stride < row_bytes` test. Computing the row length
+    // with `checked_mul` and refusing on overflow turns an illegal size into an explicit failure.
+    let Some(row_bytes) = width.checked_mul(4) else {
+        return false;
+    };
     if stride < row_bytes {
         return false;
     }

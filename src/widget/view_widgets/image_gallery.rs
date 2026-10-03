@@ -286,7 +286,7 @@ impl Widget for ImageGallery {
         match name {
             "image_changed" => {
                 Some(EventSignalRef::mapped("image_changed", &self.image_changed, |v| {
-                    CapabilityValue::Int(*v as i64)
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             _ => None,

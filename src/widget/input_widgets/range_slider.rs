@@ -106,13 +106,55 @@ impl RangeSlider {
         self.lower_value
     }
 
+    /// The largest `min_range` the current `[min, max]` span can honour.
+    ///
+    /// A minimum spacing wider than the selectable span has no solution: no pair of handles can be
+    /// both inside `[min, max]` and `min_range` apart. The nearest satisfiable requirement is the
+    /// **full width of the span**, so that is the value this returns. Computing it in one place is
+    /// what stops `set_min_range` and every setter from each deciding the cap differently.
+    fn max_min_range(&self) -> f64 {
+        (self.max_value - self.min_value).max(0.0)
+    }
+
+    /// Forces `min_value <= max_value` and `0 <= min_range <= max - min`.
+    ///
+    /// # Why the three constraints cannot be clamped one field at a time
+    ///
+    /// `min_range` is not independent of the bounds: it is bounded by the *width* of `[min, max]`.
+    /// The earlier code clamped `min_range` with `.max(0.0)` only, so `set_min_range(200)` on the
+    /// default `[0, 100]` was accepted verbatim; every later setter then computed
+    /// `upper - min_range = -100`, and the invariant `min <= lower <= upper <= max` collapsed — the
+    /// lower handle could be driven *below* `min`. Reconciling the whole set here, before any handle
+    /// is placed, is what makes the invariant hold rather than being re-derived (and mis-derived) at
+    /// each call site.
+    fn reconcile_bounds(&mut self) {
+        if self.max_value < self.min_value {
+            self.max_value = self.min_value;
+        }
+        self.min_range = self.min_range.clamp(0.0, self.max_min_range());
+    }
+
+    /// Rounds `value` to the nearest step multiple that lies within `[lo, hi]`.
+    ///
+    /// A `NaN` input has no nearest value; it is treated as `lo`, the low end of the asked-for
+    /// interval, matching `ordered_clamp_f64`'s rule that `NaN` never escapes as a coord.
+    fn snap_into(&self, value: f64, lo: f64, hi: f64) -> f64 {
+        if hi < lo {
+            return lo;
+        }
+        let base = if value.is_finite() { value } else { lo };
+        let stepped = (base / self.step).round() * self.step;
+        ordered_clamp_f64(stepped, lo, hi)
+    }
+
     /// Sets the lower value, clamping it to be within bounds and respecting min_range.
     /// Emits `range_changed` if the value changes.
     pub fn set_lower_value(&mut self, value: f64) {
-        let clamped = ordered_clamp_f64(value, self.min_value, self.upper_value - self.min_range);
-        let stepped = (clamped / self.step).round() * self.step;
-        let stepped = stepped.max(self.min_value);
-        let new_value = stepped.min(self.upper_value - self.min_range);
+        self.reconcile_bounds();
+        // The upper handle is fixed while the lower moves, so the allowed ceiling is
+        // `upper - min_range`. `reconcile_bounds` guarantees that ceiling is at least `min_value`.
+        let ceiling = self.upper_value - self.min_range;
+        let new_value = self.snap_into(value, self.min_value, ceiling.max(self.min_value));
         if (new_value - self.lower_value).abs() > f64::EPSILON {
             self.lower_value = new_value;
             self.emit_range_changed();
@@ -140,10 +182,11 @@ impl RangeSlider {
     /// Sets the upper value, clamping it to be within bounds and respecting min_range.
     /// Emits `range_changed` if the value changes.
     pub fn set_upper_value(&mut self, value: f64) {
-        let clamped = ordered_clamp_f64(value, self.lower_value + self.min_range, self.max_value);
-        let stepped = (clamped / self.step).round() * self.step;
-        let stepped = stepped.min(self.max_value);
-        let new_value = stepped.max(self.lower_value + self.min_range);
+        self.reconcile_bounds();
+        // The lower handle is fixed while the upper moves, so the allowed floor is
+        // `lower + min_range`. `reconcile_bounds` guarantees that floor is at most `max_value`.
+        let floor = self.lower_value + self.min_range;
+        let new_value = self.snap_into(value, floor.min(self.max_value), self.max_value);
         if (new_value - self.upper_value).abs() > f64::EPSILON {
             self.upper_value = new_value;
             self.emit_range_changed();
@@ -152,14 +195,16 @@ impl RangeSlider {
     }
 
     /// Sets both lower and upper values simultaneously, respecting all constraints.
+    ///
+    /// Both handles are placed against the **same** reconciled bounds, so the pair always satisfies
+    /// `min <= lower <= upper <= max` and `upper - lower >= min_range`. The order is: snap the upper
+    /// first (it only has a floor), then snap the lower against that upper, which is the same rule the
+    /// two single-handle setters use and therefore cannot disagree with them.
     pub fn set_range(&mut self, lower: f64, upper: f64) {
-        let lower = ordered_clamp_f64(lower, self.min_value, self.max_value - self.min_range);
-        let upper = ordered_clamp_f64(upper, lower + self.min_range, self.max_value);
-        let lower_stepped = (lower / self.step).round() * self.step;
-        let upper_stepped = (upper / self.step).round() * self.step;
-        let lower_stepped = lower_stepped.max(self.min_value);
-        let upper_stepped = upper_stepped.max(lower_stepped + self.min_range).min(self.max_value);
-        let lower_stepped = lower_stepped.min(upper_stepped - self.min_range);
+        self.reconcile_bounds();
+        let upper_stepped = self.snap_into(upper, self.min_value, self.max_value);
+        let lower_ceiling = (upper_stepped - self.min_range).max(self.min_value);
+        let lower_stepped = self.snap_into(lower, self.min_value, lower_ceiling);
 
         if (lower_stepped - self.lower_value).abs() > f64::EPSILON
             || (upper_stepped - self.upper_value).abs() > f64::EPSILON
@@ -194,8 +239,16 @@ impl RangeSlider {
         if self.max_value < self.min_value {
             self.max_value = self.min_value;
         }
+        // The bounds just narrowed, so a previously legal `min_range` may no longer fit. Reconciling
+        // here — rather than leaving the stale value for the next setter to trip over — is what keeps
+        // the invariant true immediately after the bounds change, not merely after a handle moves.
+        self.reconcile_bounds();
         self.lower_value = ordered_clamp_f64(self.lower_value, self.min_value, self.max_value);
-        self.upper_value = ordered_clamp_f64(self.upper_value, self.lower_value, self.max_value);
+        self.upper_value = ordered_clamp_f64(
+            self.upper_value,
+            (self.lower_value + self.min_range).min(self.max_value),
+            self.max_value,
+        );
         self.emit_range_changed();
         self.base.request_redraw();
     }
@@ -213,8 +266,14 @@ impl RangeSlider {
         if self.min_value > self.max_value {
             self.min_value = self.max_value;
         }
+        // Same reasoning as `set_min_value`: the span may have shrunk below `min_range`.
+        self.reconcile_bounds();
         self.lower_value = ordered_clamp_f64(self.lower_value, self.min_value, self.max_value);
-        self.upper_value = ordered_clamp_f64(self.upper_value, self.lower_value, self.max_value);
+        self.upper_value = ordered_clamp_f64(
+            self.upper_value,
+            (self.lower_value + self.min_range).min(self.max_value),
+            self.max_value,
+        );
         self.emit_range_changed();
         self.base.request_redraw();
     }
@@ -271,12 +330,31 @@ impl RangeSlider {
     }
 
     /// Sets the minimum allowed range between handles.
+    ///
+    /// # The invariant this restores
+    ///
+    /// `min_range` is capped at the width of `[min, max]` (see [`Self::reconcile_bounds`]). Without
+    /// that cap a request wider than the span was stored verbatim, and because every setter derives
+    /// its allowed interval from `upper ± min_range`, the handles were then driven outside `[min, max]`
+    /// — `set_min_range(200)` on a 100-wide selector followed by `set_lower_value(_)` produced a
+    /// negative lower bound. The handles are re-placed against the capped value immediately, so the
+    /// spacing the caller asked for (bounded by what is physically possible) holds at once rather
+    /// than only after the next move.
     pub fn set_min_range(&mut self, min_range: f64) {
+        if !min_range.is_finite() {
+            return;
+        }
         self.min_range = min_range.max(0.0);
-        // Clamp current values to respect new min_range
+        self.reconcile_bounds();
+        // Widen the range from the lower handle when the current spacing is too narrow. The lower
+        // handle is the one held still (the user's other handle is the reference), matching
+        // `set_upper_value`'s rule that closing the gap never moves the lower end down.
         if self.upper_value - self.lower_value < self.min_range {
-            self.upper_value = (self.lower_value + self.min_range).min(self.max_value);
-            self.emit_range_changed();
+            let floor = (self.lower_value + self.min_range).min(self.max_value);
+            if floor > self.upper_value {
+                self.upper_value = floor;
+                self.emit_range_changed();
+            }
         }
         self.base.request_redraw();
     }
@@ -896,6 +974,80 @@ mod tests {
         // Enforce min_range
         rs.set_lower_value(80.0);
         assert!((rs.lower_value() - 55.0).abs() < f64::EPSILON); // 75 - 20 = 55
+    }
+
+    /// `min_range` can never invert the hard bounds, however the callers combine.
+    ///
+    /// # What this pins
+    ///
+    /// `set_min_range` used to be clamped only at zero. Setting it wider than the `[min, max]` span
+    /// then made every setter compute `upper - min_range`, which was negative — so a later
+    /// `set_lower_value` drove the lower handle **below** `min`. The invariant is restored by
+    /// capping `min_range` at the span width and reconciling the handles against it.
+    #[test]
+    fn a_min_range_wider_than_the_span_cannot_break_the_bounds() {
+        let mut rs = RangeSlider::new(Rect::new(0, 0, 300, 40));
+        // Default span is [0, 100]; ask for a 200-wide minimum spacing.
+        rs.set_min_range(200.0);
+        assert!(
+            rs.min_range() <= rs.max_value() - rs.min_value(),
+            "min_range must be capped at the selectable width, got {}",
+            rs.min_range()
+        );
+
+        rs.set_lower_value(50.0);
+        assert!(
+            rs.lower_value() >= rs.min_value(),
+            "the lower handle must never fall below min_value, got {}",
+            rs.lower_value()
+        );
+        assert!(rs.lower_value() <= rs.upper_value());
+        assert!(rs.upper_value() <= rs.max_value());
+    }
+
+    /// Shrinking the span below the current `min_range` reconciles instead of leaving a stale value.
+    #[test]
+    fn shrinking_the_span_reconciles_a_now_too_wide_min_range() {
+        let mut rs = RangeSlider::new(Rect::new(0, 0, 300, 40));
+        rs.set_min_range(60.0);
+        // Collapse the span to 20 wide; the 60-wide minimum spacing no longer fits.
+        rs.set_max_value(20.0);
+        assert!(rs.min_range() <= rs.max_value() - rs.min_value());
+        assert!(rs.lower_value() >= rs.min_value());
+        assert!(rs.lower_value() <= rs.upper_value());
+        assert!(rs.upper_value() <= rs.max_value());
+        // A subsequent move must keep the invariant too.
+        rs.set_lower_value(-100.0);
+        rs.set_upper_value(999.0);
+        assert!(rs.lower_value() >= rs.min_value());
+        assert!(rs.lower_value() <= rs.upper_value());
+        assert!(rs.upper_value() <= rs.max_value());
+    }
+
+    /// The full invariant holds from an arbitrary state under adversarial setter orders.
+    #[test]
+    fn the_range_invariant_holds_across_arbitrary_setter_orders() {
+        let mut rs = RangeSlider::new(Rect::new(0, 0, 300, 40));
+        for min in [0.0, -50.0, 30.0, 100.0] {
+            rs.set_min_value(min);
+            for max in [200.0, 10.0, -5.0, 100.0] {
+                rs.set_max_value(max);
+                for min_range in [0.0, 500.0, -3.0, 40.0] {
+                    rs.set_min_range(min_range);
+                    for value in [f64::NAN, -1e9, 0.0, 1e9, 42.0] {
+                        rs.set_lower_value(value);
+                        rs.set_upper_value(value);
+                        rs.set_range(value, value);
+                        assert!(rs.min_value() <= rs.max_value());
+                        assert!(rs.min_value() <= rs.lower_value());
+                        assert!(rs.lower_value() <= rs.upper_value());
+                        assert!(rs.upper_value() <= rs.max_value());
+                        assert!(rs.lower_value().is_finite());
+                        assert!(rs.upper_value().is_finite());
+                    }
+                }
+            }
+        }
     }
 
     #[test]

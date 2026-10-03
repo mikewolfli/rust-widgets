@@ -490,12 +490,12 @@ impl Widget for ToolButton {
         #[allow(unused_imports)]
         use crate::widget::capability::CapabilityValue;
         match name {
-            "clicked" => {
-                Some(EventSignalRef::mapped("clicked", &self.clicked, |_| CapabilityValue::Null))
-            }
-            "toggled" => {
-                Some(EventSignalRef::mapped("toggled", &self.toggled, |_| CapabilityValue::Null))
-            }
+            "clicked" => Some(EventSignalRef::mapped("clicked", &self.clicked, |v| {
+                CapabilityValue::Bool(*v)
+            })),
+            "toggled" => Some(EventSignalRef::mapped("toggled", &self.toggled, |v| {
+                CapabilityValue::Bool(*v)
+            })),
             "triggered" => Some(EventSignalRef::unit("triggered", &self.triggered)),
             _ => None,
         }

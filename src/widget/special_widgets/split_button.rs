@@ -460,13 +460,13 @@ impl Widget for SplitButton {
                 CapabilityValue::String(v.clone())
             })),
             "action_selected" => {
-                Some(EventSignalRef::mapped("action_selected", &self.action_selected, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("action_selected", &self.action_selected, |v| {
+                    CapabilityValue::String(v.clone())
                 }))
             }
             "menu_toggled" => {
-                Some(EventSignalRef::mapped("menu_toggled", &self.menu_toggled, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("menu_toggled", &self.menu_toggled, |v| {
+                    CapabilityValue::Bool(*v)
                 }))
             }
             _ => None,

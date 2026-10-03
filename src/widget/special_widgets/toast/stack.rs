@@ -216,13 +216,13 @@ impl Widget for ToastStack {
         use crate::widget::capability::CapabilityValue;
         match name {
             "toast_activated" => {
-                Some(EventSignalRef::mapped("toast_activated", &self.toast_activated, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("toast_activated", &self.toast_activated, |v| {
+                    CapabilityValue::String(v.clone())
                 }))
             }
             "toast_dismissed" => {
-                Some(EventSignalRef::mapped("toast_dismissed", &self.toast_dismissed, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("toast_dismissed", &self.toast_dismissed, |v| {
+                    CapabilityValue::String(v.clone())
                 }))
             }
             _ => None,

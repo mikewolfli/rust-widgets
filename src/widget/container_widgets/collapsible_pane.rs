@@ -259,9 +259,9 @@ impl Widget for CollapsiblePane {
         #[allow(unused_imports)]
         use crate::widget::capability::CapabilityValue;
         match name {
-            "toggled" => {
-                Some(EventSignalRef::mapped("toggled", &self.toggled, |_| CapabilityValue::Null))
-            }
+            "toggled" => Some(EventSignalRef::mapped("toggled", &self.toggled, |v| {
+                CapabilityValue::Bool(*v)
+            })),
             _ => None,
         }
     }

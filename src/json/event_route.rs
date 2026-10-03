@@ -399,6 +399,21 @@ pub fn context_for(
     EventHandlerContext::new(WidgetTriggerEvent { widget_id, kind: marker.trigger_kind() })
 }
 
+/// Builds the [`EventHandlerContext`] for a declared handler **with the event's payload**.
+///
+/// The payload-carrying counterpart of [`context_for`], used by the published-name route where the
+/// control's dynamic signal delivered a [`CapabilityValue`](crate::widget::capability::CapabilityValue).
+/// Keeping one constructor per shape (with and without a value) is what stops the two routes from
+/// disagreeing about the trigger, because both still go through [`JsonTriggerMarker::trigger_kind`].
+pub fn context_for_with_payload(
+    widget_id: crate::core::ObjectId,
+    marker: JsonTriggerMarker,
+    payload: crate::widget::capability::CapabilityValue,
+) -> EventHandlerContext {
+    EventHandlerContext::new(WidgetTriggerEvent { widget_id, kind: marker.trigger_kind() })
+        .with_payload(payload)
+}
+
 /// Wires one **published** event (`events: { <name>: <handler> }`) to a live control.
 ///
 /// # Why this is public rather than loader-private

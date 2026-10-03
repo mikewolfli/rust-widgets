@@ -131,10 +131,20 @@ pub struct PerformanceSample {
     pub gpu_time: Option<Duration>,
     /// CPU time
     pub cpu_time: Duration,
-    /// Memory utilization (0.0 - 1.0)
-    pub memory_utilization: f32,
-    /// CPU utilization (0.0 - 1.0)
-    pub cpu_utilization: f32,
+    /// Memory utilization (0.0 - 1.0), or `None` when no reliable measurement exists.
+    ///
+    /// # Why this is optional
+    ///
+    /// A backend that cannot measure memory used to be recorded as `0.0`, which made "no
+    /// measurement" indistinguishable from "idle". A consumer then read `0.0` as "plenty free",
+    /// so an unmeasured platform was silently treated as unloaded. `None` carries the missing
+    /// measurement as its own fact, so a quality decision can decline to judge rather than judge on
+    /// a fabricated zero.
+    pub memory_utilization: Option<f32>,
+    /// CPU utilization (0.0 - 1.0), or `None` when no reliable measurement exists.
+    ///
+    /// See [`Self::memory_utilization`] for why the absence of a measurement is its own value.
+    pub cpu_utilization: Option<f32>,
     /// Timestamp
     pub timestamp: Instant,
 }
@@ -226,49 +236,55 @@ impl AdaptivePerformanceMonitor {
     /// Priority:
     /// 1. `RUST_WIDGETS_MEM_UTIL` env var override
     /// 2. Active platform backend (`Platform::process_memory_utilization`)
-    /// 3. Fallback: `0.0` with diagnostic log
+    /// 3. `None` (no reliable measurement available)
     ///
     /// The OS-specific probes (`/proc/self/status`, `ps`) live inside the
     /// platform backends, not here — see principle #36.
-    fn measure_memory_utilization(&self) -> f32 {
+    ///
+    /// Returns `None` rather than `0.0` when no backend can measure: a missing measurement must not
+    /// be recorded as "no pressure", or an unmeasured platform would sail past every pressure
+    /// threshold (rule #37 — the absence of a capability is reported, never fabricated).
+    fn measure_memory_utilization(&self) -> Option<f32> {
         // 1. Env-var override
         if let Ok(val) = std::env::var("RUST_WIDGETS_MEM_UTIL") {
             if let Ok(v) = val.trim().parse::<f32>() {
-                return v.clamp(0.0, 1.0);
+                return Some(v.clamp(0.0, 1.0));
             }
             log::warn!("[performance] RUST_WIDGETS_MEM_UTIL value '{val}' is not a valid f32");
         }
         // 2. Platform backend owns the OS probe
         if let Some(ratio) = crate::platform::platform_facts().process_memory_utilization() {
             log::debug!("[performance] memory utilization from platform backend: {ratio:.3}");
-            return ratio.clamp(0.0, 1.0);
+            return Some(ratio.clamp(0.0, 1.0));
         }
+        // 3. No reliable source: report the absence rather than a fabricated `0.0`.
         log::debug!("[performance] measure_memory_utilization: no backend available");
-        0.0
+        None
     }
     /// Measures CPU utilization as a fraction `[0.0, 1.0]`.
     ///
     /// Priority:
     /// 1. `RUST_WIDGETS_CPU_UTIL` env var override
     /// 2. Active platform backend (`Platform::process_cpu_utilization`)
-    /// 3. Fallback: `0.0` with diagnostic log
+    /// 3. `None` (no reliable measurement available)
     ///
-    /// As with memory, the OS-specific sampling lives in the backend.
-    fn measure_cpu_utilization(&self) -> f32 {
+    /// As with memory, the OS-specific sampling lives in the backend, and a missing measurement is
+    /// `None` rather than a fabricated `0.0`.
+    fn measure_cpu_utilization(&self) -> Option<f32> {
         // 1. Env-var override
         if let Ok(val) = std::env::var("RUST_WIDGETS_CPU_UTIL") {
             if let Ok(v) = val.trim().parse::<f32>() {
-                return v.clamp(0.0, 1.0);
+                return Some(v.clamp(0.0, 1.0));
             }
             log::warn!("[performance] RUST_WIDGETS_CPU_UTIL value '{val}' is not a valid f32");
         }
         // 2. Platform backend owns the OS probe
         if let Some(ratio) = crate::platform::platform_facts().process_cpu_utilization() {
             log::debug!("[performance] CPU utilization from platform backend: {ratio:.3}");
-            return ratio.clamp(0.0, 1.0);
+            return Some(ratio.clamp(0.0, 1.0));
         }
         log::debug!("[performance] measure_cpu_utilization: no backend available");
-        0.0
+        None
     }
     /// Records a performance sample
     fn record_sample(&mut self, sample: PerformanceSample) {
@@ -351,18 +367,30 @@ impl AdaptivePerformanceMonitor {
         let stability = 1.0 - (std_dev / avg.as_secs_f32()).min(1.0);
         stability.max(0.0)
     }
-    /// Returns true if under memory pressure
+    /// Returns true if under memory pressure.
+    ///
+    /// A sample with **no** memory measurement (`None`) reports no pressure: an unmeasured platform
+    /// must not be judged as either loaded or idle, and the caller asking "is there pressure?" is
+    /// answered `false` only because nothing said there was — never because a missing value was read
+    /// as zero.
     pub fn is_memory_pressure(&self) -> bool {
         if let Some(sample) = self.samples.back() {
-            sample.memory_utilization > self.thresholds.memory_pressure_threshold
+            sample
+                .memory_utilization
+                .is_some_and(|util| util > self.thresholds.memory_pressure_threshold)
         } else {
             false
         }
     }
-    /// Returns true if CPU is overloaded (for CPU rendering)
+    /// Returns true if CPU is overloaded (for CPU rendering).
+    ///
+    /// As with [`Self::is_memory_pressure`], a `None` CPU measurement is not a `0.0` and does not
+    /// count as overloaded.
     pub fn is_cpu_overloaded(&self) -> bool {
         if let Some(sample) = self.samples.back() {
-            sample.cpu_utilization > self.thresholds.cpu_utilization_threshold
+            sample
+                .cpu_utilization
+                .is_some_and(|util| util > self.thresholds.cpu_utilization_threshold)
         } else {
             false
         }

@@ -324,6 +324,25 @@ impl ImeBridge for WindowsImeBridge {
         log::info!("[Windows IME] commit_text: '{}'", text);
         self.clear_composition();
 
+        // Deliver the committed string to the focused widget as `Event::ImeCommit`.
+        //
+        // Without this the bridge only logged and cleared its own composition state, so a control
+        // that matched `Event::ImeCommit` never received the text — the join the bridge exists to
+        // make was missing (the native TSF calls below are the OS-side half of the same action).
+        #[cfg(not(alloc_frugal))]
+        {
+            if let Some(widget_id) = *lock(&self.focused_widget) {
+                if !crate::platform::ime::deliver_commit(widget_id, text) {
+                    log::debug!(
+                        "[Windows IME] commit_text: widget {widget_id} is no longer mounted; the \
+                         commit was not delivered"
+                    );
+                }
+            } else {
+                log::debug!("[Windows IME] commit_text with no focused widget; nothing to deliver");
+            }
+        }
+
         // Native TSF: ITfComposition::EndComposition
         //             ITfInsertAtSelection::InsertTextAtSelection
     }

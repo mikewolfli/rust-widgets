@@ -213,7 +213,7 @@ impl Widget for CupertinoSegmentedControl {
         match name {
             "value_changed" => {
                 Some(EventSignalRef::mapped("value_changed", &self.value_changed, |v| {
-                    CapabilityValue::Int(*v as i64)
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             _ => None,

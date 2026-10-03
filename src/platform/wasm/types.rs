@@ -47,7 +47,14 @@ impl WasmRuntime {
 /// conditionally interacts with the browser DOM via `web-sys` when compiled
 /// for `target_arch = "wasm32"`.
 pub struct WasmPlatform {
-    pub(crate) state: BackendState<WasmHandleKind>,
+    /// The shared widget state.
+    ///
+    /// `Arc` rather than a plain field so the `ResizeObserver` closure can hold its own handle: the
+    /// closure is handed to JS (`into_js_value`) and must be `'static`, so it cannot borrow `self`,
+    /// yet it must record the new size in this same state (see `observe_canvas_resize`). The state's
+    /// methods all take `&self`, so an `Arc` changes no call site — `self.state.foo()` still works
+    /// through `Deref`.
+    pub(crate) state: alloc::sync::Arc<BackendState<WasmHandleKind>>,
     pub(crate) runtime: WasmRuntime,
     pub(crate) canvas_id: String,
     /// The `ResizeObserver` attached by [`WasmPlatform::observe_canvas_resize`], if any.
@@ -66,7 +73,7 @@ impl WasmPlatform {
     /// Create a new WASM platform backend with a default canvas id.
     pub fn new() -> Self {
         Self {
-            state: BackendState::new(),
+            state: alloc::sync::Arc::new(BackendState::new()),
             runtime: WasmRuntime::new(),
             canvas_id: "wgpu-canvas".to_string(),
             #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
@@ -77,7 +84,7 @@ impl WasmPlatform {
     /// Create a new WASM platform backend with a specific canvas element id.
     pub fn with_canvas(canvas_id: &str) -> Self {
         Self {
-            state: BackendState::new(),
+            state: alloc::sync::Arc::new(BackendState::new()),
             runtime: WasmRuntime::new(),
             canvas_id: canvas_id.to_string(),
             #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
@@ -133,11 +140,17 @@ impl WasmPlatform {
             return false;
         };
 
-        // The callback is handed to JS with `into_js_value`, which transfers ownership to
+        // The closure is handed to JS with `into_js_value`, which transfers ownership to
         // the JS heap. That matters for two reasons: the DOM requires the callback to
         // outlive the `ResizeObserver::new` call, and a Rust-side `Closure` handle is
         // `!Send`, which `Platform` cannot hold. The JS side keeps it alive for as long as
         // the observer is attached; `web_sys`'s own implementation does the same.
+        //
+        // The shared `state` handle is captured so the observer records the new size in the
+        // **same** store this backend's `queue_resize_trigger`/`window_client_size` read, rather
+        // than queuing a trigger against the control backend — which owns a different window store
+        // and never heard of a window this backend created (the defect the old body had).
+        let state = alloc::sync::Arc::clone(&self.state);
         let callback = wasm_bindgen::closure::Closure::<dyn FnMut(js_sys::Array)>::new(
             move |entries: js_sys::Array| {
                 for entry in entries.iter() {
@@ -155,7 +168,20 @@ impl WasmPlatform {
                         // answer.
                         continue;
                     }
-                    crate::queue_resize_trigger(window_id, width, height);
+                    // Update this backend's own size record first, so the readback the host makes
+                    // answers with the new size; then enqueue the trigger on the shared crate queue
+                    // the host loop polls. The enqueue result is reported rather than discarded:
+                    // `false` means the id is not one the crate queue tracks, which is the honest
+                    // "recorded here, not queued there" fact.
+                    if let Some((x, y, _, _)) = state.widget_geometry(window_id) {
+                        state.set_geometry(window_id, x, y, width, height);
+                    }
+                    if !crate::queue_resize_trigger(window_id, width, height) {
+                        log::debug!(
+                            "[wasm] resize for window {window_id} recorded in the wasm backend, \
+                             but the crate-level resize queue did not accept the id"
+                        );
+                    }
                 }
             },
         );

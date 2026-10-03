@@ -287,9 +287,33 @@ impl Platform for WasmPlatform {
             if let Some(navigator) = web_sys::window().map(|w| w.navigator()) {
                 // `clipboard()` returns `Clipboard` directly in this web-sys version.
                 let clipboard = navigator.clipboard();
+                // Update the synchronous mirror **now**, so a `get_clipboard_text()` immediately
+                // after this call returns what was just written: the system write is asynchronous, but
+                // the mirror is the memory the synchronous readback reads, and leaving it stale made a
+                // successful write read back as the previous text (the defect the old body had, where
+                // the promise was dropped and the mirror untouched).
+                self.state.set_clipboard_text(text);
                 let promise = clipboard.write_text(text);
-                // Fire-and-forget: the promise runs asynchronously.
-                let _ = promise;
+                // The write can still be **rejected** (no permission, lost user activation). We cannot
+                // block for the result here, so attach a rejection handler that reports it rather than
+                // dropping the promise silently: a permission refusal then appears in the console
+                // instead of being indistinguishable from success. The returned `true` means "the write
+                // was initiated and mirrored", which is the strongest synchronous claim available —
+                // and it is stated as such rather than pretending the system write already succeeded.
+                let on_rejected =
+                    wasm_bindgen::closure::Closure::<dyn FnMut(wasm_bindgen::JsValue)>::new(
+                        move |err: wasm_bindgen::JsValue| {
+                            log::warn!(
+                            "[wasm] clipboard.writeText was rejected ({err:?}); the synchronous \
+                             mirror already holds the text, but the system clipboard was not updated"
+                        );
+                        },
+                    );
+                let _ = promise.catch(&on_rejected);
+                // The rejection handler must outlive this call (the promise may settle later), so it is
+                // handed to the JS heap. It fires at most once, so the retained allocation is bounded
+                // by the number of clipboard writes, which is small and one-shot in practice.
+                on_rejected.forget();
                 return true;
             }
         }
@@ -300,10 +324,12 @@ impl Platform for WasmPlatform {
     fn get_clipboard_text(&self) -> String {
         #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
         {
-            // web-sys clipboard.read_text() returns a Promise<String>.
-            // For synchronous access we fall back to the in-memory store,
-            // which is always populated when set_clipboard_text was called
-            // successfully. A full async bridge is out of scope for MVP.
+            // A **synchronous** read cannot await `clipboard.read_text()`'s promise, so this answers
+            // from the mirror `set_clipboard_text` maintains. That mirror is updated at write time
+            // (see `set_clipboard_text`), so a read after a successful local write returns the written
+            // text rather than a stale value. A read of content written by *another* app is not
+            // possible synchronously in a browser; the mirror is the honest boundary of what this API
+            // can answer here.
         }
         self.state.clipboard_text()
     }

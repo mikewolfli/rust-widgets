@@ -123,9 +123,9 @@ impl Widget for CommandLink {
         use crate::widget::capability::CapabilityValue;
         match name {
             "clicked" => Some(EventSignalRef::unit("clicked", &self.clicked)),
-            "hovered" => {
-                Some(EventSignalRef::mapped("hovered", &self.hovered, |_| CapabilityValue::Null))
-            }
+            "hovered" => Some(EventSignalRef::mapped("hovered", &self.hovered, |v| {
+                CapabilityValue::Bool(*v)
+            })),
             _ => None,
         }
     }

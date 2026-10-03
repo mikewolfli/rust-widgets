@@ -1334,3 +1334,50 @@ fn default_capability_for_tests() -> WidgetCapability {
         .expect("the core table publishes label")
         .clone()
 }
+
+/// `connect_event` binds every spelling of a published name to the one signal the control emits.
+///
+/// # What this pins
+///
+/// Validation normalised the caller's spelling to find a match, but the hub connection used the raw
+/// argument, so `connect_event("slider", "value-changed", …)` registered under `"value-changed"`
+/// while the control emitted under `"value_changed"`. The subscription was accepted and then never
+/// fired — the silent "valid but inert" failure rule #97 rules out. Binding through the canonical
+/// name fixes it, and this test proves a hyphenated, upper-cased and space-separated spelling all
+/// reach the same emitted signal.
+#[test]
+fn connect_event_binds_every_spelling_to_the_canonical_signal() {
+    use crate::signal::CustomSignalHub;
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    let factory = WidgetFactory::new_with_defaults();
+    // The canonical spelling the capability publishes.
+    let canonical = factory
+        .capability("slider")
+        .expect("slider is registered")
+        .events
+        .iter()
+        .find(|schema| normalize_key(schema.name) == normalize_key("value_changed"))
+        .expect("slider publishes value_changed")
+        .name;
+
+    for spelling in ["value_changed", "value-changed", "VALUE CHANGED", " Value_Changed "] {
+        let hub = CustomSignalHub::new();
+        let fired = Arc::new(AtomicUsize::new(0));
+        let fired_slot = Arc::clone(&fired);
+        factory
+            .connect_event("slider", spelling, &hub, move || {
+                fired_slot.fetch_add(1, Ordering::SeqCst);
+            })
+            .unwrap_or_else(|error| panic!("`{spelling}` must be a published event: {error:?}"));
+
+        // The control emits under the canonical name; the subscription must hear it.
+        hub.emit(canonical);
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            1,
+            "a subscription made with `{spelling}` must reach the `{canonical}` signal"
+        );
+    }
+}

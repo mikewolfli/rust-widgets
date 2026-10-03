@@ -205,6 +205,92 @@ fn both_routes_can_be_declared_on_one_node() {
     });
 }
 
+/// Distinct published names reach distinct signals, not one generic callback.
+///
+/// # The defect this pins (BLUE-issue E-05)
+///
+/// The published route used to flatten every payload-free name to the click callback. A `Button`
+/// publishes `clicked`, `pressed`, `released` and `canceled` as **four different signals**, so a
+/// document declaring two of them got them both bound to `base.clicked`: a real click ran both
+/// handlers, and a real cancel ran neither. The route now resolves each published name through
+/// `event_signal_dyn`, so a `canceled` handler fires on a cancel and not on a click.
+#[test]
+fn distinct_published_names_reach_distinct_signals() {
+    with_clean_handlers(|| {
+        let clicked = counting_handler("on_clicked");
+        let canceled = counting_handler("on_canceled");
+        let json = r#"{"window":{"id":"w","title":"T","width":400,"height":300,"layout":{
+            "type":"vbox","children":[{"button":{"id":"b","text":"Go",
+                "events":{"clicked":"on_clicked","canceled":"on_canceled"}}}]}}}"#;
+
+        let bound = JsonLoader::load(json).expect("two published names must load");
+        let id = mounted_id(&bound, "b");
+
+        // Raise the control's own `canceled` signal — a gesture abandoned, not a click.
+        rust_widgets::widget::runtime::with_widget_mut(id, |widget| {
+            rust_widgets::widget::Widget::event_signal_dyn(widget, "canceled")
+                .expect("`button` publishes `canceled`")
+                .emit_unit();
+        });
+        assert_eq!(
+            clicked.load(Ordering::SeqCst),
+            0,
+            "a cancel must not run the `clicked` handler"
+        );
+        assert_eq!(canceled.load(Ordering::SeqCst), 1, "a cancel must run the `canceled` handler");
+
+        // And the reverse: a click must not run the `canceled` handler.
+        emit_click(&bound, "b");
+        assert_eq!(clicked.load(Ordering::SeqCst), 1, "a click must run the `clicked` handler");
+        assert_eq!(
+            canceled.load(Ordering::SeqCst),
+            1,
+            "a click must not run the `canceled` handler"
+        );
+    });
+}
+
+/// A handler receives the event's **payload**, not a default.
+///
+/// # The defect this pins (BLUE-issue E-06)
+///
+/// `EventHandlerContext` had only a trigger and user data, so a typed event's value was discarded —
+/// the bridge documentation claimed a consumer could read it, but no such field existed. A handler
+/// now receives the value the control actually emitted, in the schema's own representation.
+#[test]
+fn a_handler_receives_the_event_payload() {
+    use std::sync::Mutex;
+    clear_global_handlers();
+    let seen: Arc<Mutex<Vec<i64>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    register_global_handler("on_value", move |ctx: &EventHandlerContext| {
+        if let rust_widgets::widget::capability::CapabilityValue::Int(value) = ctx.payload {
+            sink.lock().unwrap().push(value);
+        }
+    });
+
+    let json = r#"{"window":{"id":"w","title":"T","width":400,"height":300,"layout":{
+        "type":"vbox","children":[{"slider":{"id":"s","min":0,"max":100,
+            "events":{"value_changed":"on_value"}}}]}}}"#;
+
+    let bound = JsonLoader::load(json).expect("a payload binding must load");
+    let id = mounted_id(&bound, "s");
+    rust_widgets::widget::capability::write_widget_property_by_id(
+        id,
+        "value",
+        rust_widgets::widget::capability::CapabilityValue::Int(42),
+    )
+    .expect("the slider accepts a value write");
+
+    let captured = seen.lock().unwrap().clone();
+    assert_eq!(
+        captured,
+        vec![42],
+        "the handler must receive the value the control emitted, not a default"
+    );
+    clear_global_handlers();
+}
+
 /// Two bindings declared under one node **both** fire.
 ///
 /// # The defect this pins
@@ -247,9 +333,11 @@ fn two_bindings_on_one_node_both_fire() {
 /// `bind_declared_events` passed [`JsonTriggerMarker::Clicked`] for every published name, so
 /// `"events": {"value_changed": "h"}` was bound through `on_click`: the handler ran when the
 /// control was *pressed* and never when its value changed, and the name it declared was validated
-/// the whole time. The route now reads the event's declared payload — a payload-free name travels
-/// the click callback, a payload-carrying one the value callback — and this drives both channels
-/// to prove the choice landed on the right one.
+/// the whole time.
+///
+/// The route now subscribes to the control's **own dynamic signal** for the published name (the one
+/// `Widget::event_signal_dyn` resolves), so this drives the real control API — `set_value` — and
+/// asserts the handler ran, and that a *different* signal (`clicked`) did not reach it.
 #[test]
 fn a_value_event_is_not_wired_to_the_click_callback() {
     with_clean_handlers(|| {
@@ -261,19 +349,28 @@ fn a_value_event_is_not_wired_to_the_click_callback() {
         let bound = JsonLoader::load(json).expect("a payload-carrying published name must load");
         let id = mounted_id(&bound, "s");
 
-        // The click channel must not reach it: that is the bug, stated as an assertion.
+        // A different signal (the base click) must not reach the `value_changed` handler.
         rust_widgets::widget::runtime::with_widget_mut(id, |widget| {
             widget.base().clicked.emit();
         });
         assert_eq!(
             calls.load(Ordering::SeqCst),
             0,
-            "`value_changed` must not be wired to the click callback"
+            "`value_changed` must not be wired to the click signal"
         );
 
-        // The value channel must.
-        assert!(dispatch_trigger(id, WidgetTriggerKind::ValueChanged));
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        // The control's own value change must reach it — the real signal, not the legacy table.
+        rust_widgets::widget::capability::write_widget_property_by_id(
+            id,
+            "value",
+            rust_widgets::widget::capability::CapabilityValue::Int(50),
+        )
+        .expect("a slider accepts a `value` write");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "a real value change must reach the `value_changed` handler"
+        );
     });
 }
 

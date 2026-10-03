@@ -225,7 +225,7 @@ impl Widget for AdaptiveScaffold {
         match name {
             "nav_selected" => {
                 Some(EventSignalRef::mapped("nav_selected", &self.nav_selected, |v| {
-                    CapabilityValue::Int(*v as i64)
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             _ => None,

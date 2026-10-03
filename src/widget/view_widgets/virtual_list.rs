@@ -346,7 +346,7 @@ impl Widget for VirtualList {
             "selection_changed" => {
                 Some(EventSignalRef::mapped("selection_changed", &self.selection_changed, |v| {
                     match v {
-                        Some(value) => CapabilityValue::Int(*value as i64),
+                        Some(value) => CapabilityValue::UInt(*value as u64),
                         None => CapabilityValue::Null,
                     }
                 }))

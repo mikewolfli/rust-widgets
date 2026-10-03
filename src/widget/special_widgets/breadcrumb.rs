@@ -236,8 +236,8 @@ impl Widget for Breadcrumb {
         use crate::widget::capability::CapabilityValue;
         match name {
             "segment_activated" => {
-                Some(EventSignalRef::mapped("segment_activated", &self.segment_activated, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("segment_activated", &self.segment_activated, |v| {
+                    CapabilityValue::String(v.clone())
                 }))
             }
             _ => None,

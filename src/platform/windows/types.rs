@@ -445,7 +445,19 @@ pub(crate) unsafe extern "system" fn wnd_proc(
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_DESTROY => {
-            PostQuitMessage(0);
+            // A top-level window this backend created has closed. Posting `WM_QUIT` here
+            // unconditionally means the **first** window closed ends the whole message loop, so
+            // any other open window stops receiving input and paint messages even though it is
+            // still on screen. The quit is therefore tied to the *last* window leaving: the count
+            // is decremented here, and `WM_QUIT` is posted only when it reaches zero, which is the
+            // convention Win32 itself uses for a multi-window application.
+            //
+            // A window created by the host's own class, or a canvas child, never increments the
+            // count and so is not part of this decision — those are not windows whose lifetime
+            // this backend owns.
+            if super::types::release_library_window() == 0 {
+                PostQuitMessage(0);
+            }
             0
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
@@ -547,6 +559,45 @@ unsafe fn paint_window_tree(hwnd: HWND) {
 #[cfg(target_os = "windows")]
 unsafe fn window_widget_for(hwnd: HWND) -> Option<u64> {
     crate::widget::runtime::widget_id_for_host_window(widget_id_by_native_handle(hwnd)?)
+}
+
+/// Number of top-level windows this backend has created and that are still alive.
+///
+/// # Why a process-wide counter and not a field
+///
+/// `wnd_proc` is a bare `extern "system"` callback with no `self`; the only way it can learn how
+/// many windows remain is process-wide state. It is incremented by
+/// [`WindowsPlatform::create_window`](super::platform_impl::WindowsPlatform) exactly once per
+/// library window, and decremented by the `WM_DESTROY` arm as each one closes.
+///
+/// The count is what turns "a window was destroyed" into "the *last* window was destroyed":
+/// posting `WM_QUIT` on every `WM_DESTROY` ended the message loop while other windows were still
+/// open, so the survivors stopped processing input and paint messages. Only the transition to zero
+/// is a quit.
+#[cfg(target_os = "windows")]
+static LIVE_LIBRARY_WINDOWS: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+/// Records that this backend created one more top-level window.
+#[cfg(target_os = "windows")]
+pub(crate) fn register_library_window() {
+    LIVE_LIBRARY_WINDOWS.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+}
+
+/// Records that one top-level window closed, returning how many remain.
+#[cfg(target_os = "windows")]
+pub(crate) fn release_library_window() -> usize {
+    use core::sync::atomic::Ordering;
+    // `fetch_update` with a floor at zero keeps a redundant `WM_DESTROY` (Win32 may deliver the
+    // message more than once for one window in some teardown paths) from underflowing the counter,
+    // which would otherwise wrap to `usize::MAX` and make the loop believe windows were still open.
+    // On success the *previous* value is returned, so the remaining count is one less than that.
+    match LIVE_LIBRARY_WINDOWS
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| Some(n.saturating_sub(1)))
+    {
+        Ok(previous) => previous.saturating_sub(1),
+        Err(_) => 0,
+    }
 }
 
 /// The widget a key message for `hwnd` should be delivered to.

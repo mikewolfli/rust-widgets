@@ -1083,8 +1083,8 @@ impl Widget for CupertinoSlider {
         use crate::widget::capability::CapabilityValue;
         match name {
             "value_changed" => {
-                Some(EventSignalRef::mapped("value_changed", &self.value_changed, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("value_changed", &self.value_changed, |v| {
+                    CapabilityValue::Float(*v as f64)
                 }))
             }
             _ => None,
@@ -1398,7 +1398,7 @@ impl Widget for MaterialNavigationRail {
         match name {
             "selected_changed" => {
                 Some(EventSignalRef::mapped("selected_changed", &self.selected_changed, |v| {
-                    CapabilityValue::Int(*v as i64)
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             _ => None,

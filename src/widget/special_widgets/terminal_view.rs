@@ -188,8 +188,8 @@ impl Widget for TerminalView {
         use crate::widget::capability::CapabilityValue;
         match name {
             "command_submitted" => {
-                Some(EventSignalRef::mapped("command_submitted", &self.command_submitted, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("command_submitted", &self.command_submitted, |v| {
+                    CapabilityValue::String(v.clone())
                 }))
             }
             _ => None,

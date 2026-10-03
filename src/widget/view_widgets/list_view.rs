@@ -788,7 +788,7 @@ impl Widget for ListView {
         match name {
             "selection_changed" => {
                 Some(EventSignalRef::mapped("selection_changed", &self.selection_changed, |v| {
-                    CapabilityValue::Int(*v as i64)
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             "focused_row_changed" => Some(EventSignalRef::mapped(

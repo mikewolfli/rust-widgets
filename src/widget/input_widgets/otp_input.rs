@@ -347,8 +347,8 @@ impl Widget for OtpInput {
         use crate::widget::capability::CapabilityValue;
         match name {
             "value_changed" => {
-                Some(EventSignalRef::mapped("value_changed", &self.value_changed, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("value_changed", &self.value_changed, |v| {
+                    CapabilityValue::String(v.clone())
                 }))
             }
             "completed" => Some(EventSignalRef::mapped("completed", &self.completed, |v| {

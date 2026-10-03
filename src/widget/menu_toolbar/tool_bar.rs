@@ -535,8 +535,8 @@ impl Widget for ToolBar {
         use crate::widget::capability::CapabilityValue;
         match name {
             "action_triggered" => {
-                Some(EventSignalRef::mapped("action_triggered", &self.action_triggered, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("action_triggered", &self.action_triggered, |v| {
+                    CapabilityValue::String(v.clone())
                 }))
             }
             "orientation_changed" => Some(EventSignalRef::mapped(
@@ -545,13 +545,13 @@ impl Widget for ToolBar {
                 |v| CapabilityValue::Bool(*v),
             )),
             "top_level_changed" => {
-                Some(EventSignalRef::mapped("top_level_changed", &self.top_level_changed, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("top_level_changed", &self.top_level_changed, |v| {
+                    CapabilityValue::Bool(*v)
                 }))
             }
             "visibility_changed" => {
-                Some(EventSignalRef::mapped("visibility_changed", &self.visibility_changed, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("visibility_changed", &self.visibility_changed, |v| {
+                    CapabilityValue::Bool(*v)
                 }))
             }
             _ => None,

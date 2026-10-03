@@ -563,18 +563,18 @@ impl Widget for Mention {
         use crate::widget::capability::CapabilityValue;
         match name {
             "mention_inserted" => {
-                Some(EventSignalRef::mapped("mention_inserted", &self.mention_inserted, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("mention_inserted", &self.mention_inserted, |v| {
+                    CapabilityValue::String(v.clone())
                 }))
             }
             "popup_toggled" => {
-                Some(EventSignalRef::mapped("popup_toggled", &self.popup_toggled, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("popup_toggled", &self.popup_toggled, |v| {
+                    CapabilityValue::Bool(*v)
                 }))
             }
             "text_changed" => {
-                Some(EventSignalRef::mapped("text_changed", &self.text_changed, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("text_changed", &self.text_changed, |v| {
+                    CapabilityValue::String(v.clone())
                 }))
             }
             _ => None,

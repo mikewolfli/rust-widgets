@@ -74,8 +74,13 @@ pub mod macos {
                         let success: BOOL = msg_send![item, setString: ns_string forType: nsstring("public.utf8-plain-text")];
                         if success == YES {
                             let arr: id = msg_send![class!(NSArray), arrayWithObject: item];
-                            let _: BOOL = msg_send![pb, writeObjects: arr];
-                            true
+                            // The **writeObjects** result is the actual system write. A successful
+                            // `setString:forType:` only built the item; it says nothing about whether
+                            // the pasteboard accepted it. Returning the write result is what makes a
+                            // failed system write report false rather than a success that never
+                            // reached the clipboard.
+                            let written: BOOL = msg_send![pb, writeObjects: arr];
+                            written == YES
                         } else {
                             false
                         }
@@ -93,8 +98,9 @@ pub mod macos {
 
                         if html_ok == YES || plain_ok == YES {
                             let arr: id = msg_send![class!(NSArray), arrayWithObject: item];
-                            let _: BOOL = msg_send![pb, writeObjects: arr];
-                            true
+                            // See the `Text` arm: the system write is the source of truth for success.
+                            let written: BOOL = msg_send![pb, writeObjects: arr];
+                            written == YES
                         } else {
                             false
                         }
@@ -497,10 +503,14 @@ pub mod objc2_macos {
                         let success: bool =
                             msg_send![item, setString: &*ns_string, forType: &*ns_type];
                         if success {
+                            // The item must be written, not the bare string: `writeObjects:` takes an
+                            // array of `NSPasteboardItem`s, and passing a string wrote nothing. The
+                            // return value is the actual system write, which is henceforth the success
+                            // answer — a built item is not a delivered one.
                             let arr: *mut AnyObject =
-                                msg_send![class!(NSArray), arrayWithObject: &*ns_string];
-                            let _: bool = msg_send![pb, writeObjects: arr];
-                            true
+                                msg_send![class!(NSArray), arrayWithObject: item];
+                            let written: bool = msg_send![pb, writeObjects: arr];
+                            written
                         } else {
                             false
                         }
@@ -520,10 +530,12 @@ pub mod objc2_macos {
                             msg_send![item, setString: &*ns_plain, forType: &*ns_plain_type];
 
                         if html_ok || plain_ok {
+                            // See the `Text` arm: write the prepared `item` (not the raw strings) and
+                            // report the system write's own result.
                             let arr: *mut AnyObject =
-                                msg_send![class!(NSArray), arrayWithObject: &*ns_html];
-                            let _: bool = msg_send![pb, writeObjects: arr];
-                            true
+                                msg_send![class!(NSArray), arrayWithObject: item];
+                            let written: bool = msg_send![pb, writeObjects: arr];
+                            written
                         } else {
                             false
                         }

@@ -173,34 +173,26 @@ pub mod mouse_button {
 
 /// `OH_NativeXComponent_TouchPoint`.
 ///
-/// # The header has one more field than this struct, and why that is safe
+/// # The per-point `type`, and why it is declared
 ///
 /// The SDK 20 declaration is *id, screenX, screenY, x, y, **type**, size, force,
-/// timeStamp, isPressed*. `type` is not carried here — this is the per-*point* record,
-/// and the type of the gesture is read from the enclosing [`TouchEvent`], which is the
-/// field the dispatcher actually switches on.
+/// timeStamp, isPressed*. An earlier revision of this struct deliberately **omitted** `type`,
+/// reasoning that the type is read from the enclosing [`TouchEvent`] and that offset 20..24 is
+/// padding anyway because `size: f64` must start at a multiple of 8.
 ///
-/// Leaving it out is safe **because of alignment, not by luck of ordering**: `type` is a
-/// 4-byte enum at offset 20, and `size: f64` must start at a multiple of 8 — so offset
-/// 20..24 is padding whether or not the field is declared. Measured against the SDK:
+/// The layout argument was correct — the offsets below `type` are unchanged whether or not the field
+/// is declared — but the **semantic** conclusion was wrong: the header gives each point its own
+/// `type`, and a multi-touch record can carry contacts of different types in one callback (a second
+/// finger pressing while the first moves). Reading the enclosing event's type for every point
+/// collapsed that into one kind, so a mixed record was delivered as several identical events. The
+/// field is therefore declared (into what was padding) and the dispatcher prefers the point's own
+/// type, falling back to the event type only when the point's is `None` — which is what the header
+/// uses for "no type here".
 ///
 /// ```text
 /// C  : sizeof=56  id=0 screenX=4 screenY=8 x=12 y=16 type=20 size=24 force=32 ts=40 pressed=48
-/// Rust: sizeof=56 id=0 screenX=4 screenY=8 x=12 y=16  ---    size=24 force=32 ts=40 pressed=48
+/// Rust: sizeof=56 id=0 screenX=4 screenY=8 x=12 y=16 type=20 size=24 force=32 ts=40 pressed=48
 /// ```
-///
-/// Every field after `type` therefore lands on the same offset, and the two layouts are
-/// interchangeable for a `#[repr(C)]` reader. It is written down because it is the one
-/// place in this module where a field is deliberately dropped, and a reader comparing the
-/// two declarations would otherwise have to redo that measurement to know it is fine.
-///
-/// # If the SDK ever moves `type`
-///
-/// The safety argument depends on `type` being the field immediately before a
-/// `double`-aligned one. A future header that appended a field after `isPressed`, or moved
-/// `size`, would break it silently — the struct would still compile and the reads would be
-/// wrong. Re-measuring the two layouts is the check; there is no way to make the compiler
-/// perform it without binding the header itself.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct TouchPoint {
@@ -214,6 +206,12 @@ pub struct TouchPoint {
     pub x: f32,
     /// Y relative to the component.
     pub y: f32,
+    /// This contact's own event type (`OH_NativeXComponent_TouchEventType`).
+    ///
+    /// Prefer this over the enclosing [`TouchEvent::event_type`] so a mixed multi-touch record
+    /// delivers each contact as the kind it actually is. `0` (`None`) means the header left it
+    /// unset, and the dispatcher then uses the enclosing event's type.
+    pub point_type: i32,
     /// Contact area.
     pub size: f64,
     /// Contact pressure.
@@ -503,6 +501,17 @@ fn current_thread_id() -> usize {
 /// alternative — registering what succeeds and reporting success — is the silent half-broken
 /// state this bridge exists to remove.
 ///
+/// # Bind is idempotent per component and refuses a second, different one
+///
+/// The SDK 20 callback block has no unregister, so a second `bind` cannot detach the first
+/// component's callbacks: they keep calling into this module's shared `SurfaceState`, and the
+/// surface-lifecycle callbacks have no component identity to filter on. Binding a second component
+/// would therefore let the first one's touch and destroy callbacks mutate the second one's mounted
+/// widget and `alive` flag — the two surfaces would be indistinguishable to the callbacks. Rather
+/// than accept that corruption, a second bind to a **different** component is refused with an
+/// explicit error. Re-binding the **same** component is idempotent and succeeds, so a host that
+/// re-runs its setup for one component is not broken.
+///
 /// # Safety
 ///
 /// `component` must be the pointer ArkUI passed to the ArkTS `XComponent`'s native `onLoad`,
@@ -511,6 +520,18 @@ fn current_thread_id() -> usize {
 pub unsafe fn bind(component: *mut NativeXComponent) -> bool {
     if component.is_null() {
         log::error!("[harmony] xcomponent: bind called with a null OH_NativeXComponent");
+        return false;
+    }
+    // Refuse a second, different component: see the "idempotent / refuses a second" note above.
+    // The same component may bind again (idempotent), which keeps a host's repeated setup working.
+    let already = BOUND_COMPONENT.load(Ordering::Acquire);
+    if already != 0 && already != component as usize {
+        log::error!(
+            "[harmony] xcomponent: bind refused — the bridge is already bound to a different \
+             component. SDK 20 exposes no callback unregister, so the previous component's \
+             callbacks cannot be detached and would corrupt this one's state; unbind/finish the \
+             first component before binding another"
+        );
         return false;
     }
     // Only an OpenHarmony build has the SDK the registrations below call. On any other target
@@ -907,7 +928,11 @@ extern "C" fn dispatch_touch_event(
             return;
         }
         for point in touch.touch_points.iter().take(points) {
-            dispatch_one_touch(widget_id, point.id as u64, point.x, point.y, event_type);
+            // Prefer the contact's own type; fall back to the enclosing event only when the header
+            // left the point's unset (`None`). This is what lets a mixed record — one finger pressing
+            // while another moves — deliver each contact as its real kind instead of one kind for all.
+            let point_type = TouchEventType::from_raw(point.point_type).unwrap_or(event_type);
+            dispatch_one_touch(widget_id, point.id as u64, point.x, point.y, point_type);
         }
     }
 }

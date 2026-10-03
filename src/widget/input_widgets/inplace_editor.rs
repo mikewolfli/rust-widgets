@@ -351,8 +351,8 @@ impl Widget for InplaceEditor {
         use crate::widget::capability::CapabilityValue;
         match name {
             "edit_accepted" => {
-                Some(EventSignalRef::mapped("edit_accepted", &self.edit_accepted, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("edit_accepted", &self.edit_accepted, |v| {
+                    CapabilityValue::String(v.clone())
                 }))
             }
             "edit_cancelled" => Some(EventSignalRef::unit("edit_cancelled", &self.edit_cancelled)),

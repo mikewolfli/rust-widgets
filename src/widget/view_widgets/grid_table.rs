@@ -630,7 +630,7 @@ impl Widget for GridTableWidget {
             }
             "header_clicked" => {
                 Some(EventSignalRef::mapped("header_clicked", &self.header_clicked, |v| {
-                    CapabilityValue::Int(*v as i64)
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             _ => None,

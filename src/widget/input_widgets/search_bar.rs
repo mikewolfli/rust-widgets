@@ -241,13 +241,13 @@ impl Widget for SearchBar {
         use crate::widget::capability::CapabilityValue;
         match name {
             "text_changed" => {
-                Some(EventSignalRef::mapped("text_changed", &self.text_changed, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("text_changed", &self.text_changed, |v| {
+                    CapabilityValue::String(v.clone())
                 }))
             }
             "search_submitted" => {
-                Some(EventSignalRef::mapped("search_submitted", &self.search_submitted, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("search_submitted", &self.search_submitted, |v| {
+                    CapabilityValue::String(v.clone())
                 }))
             }
             "canceled" => Some(EventSignalRef::unit("canceled", &self.canceled)),

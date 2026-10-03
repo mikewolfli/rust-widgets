@@ -278,13 +278,13 @@ impl Widget for CommandPalette {
         use crate::widget::capability::CapabilityValue;
         match name {
             "command_activated" => {
-                Some(EventSignalRef::mapped("command_activated", &self.command_activated, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("command_activated", &self.command_activated, |v| {
+                    CapabilityValue::String(v.clone())
                 }))
             }
             "query_changed" => {
-                Some(EventSignalRef::mapped("query_changed", &self.query_changed, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("query_changed", &self.query_changed, |v| {
+                    CapabilityValue::String(v.clone())
                 }))
             }
             _ => None,

@@ -841,7 +841,7 @@ fn mini_main() {
 // $ cargo fmt --all
 
 // 使用 clippy 检查
-// $ cargo clippy --all-features --all-targets
+// $ cargo clippy --all-targets --no-default-features --features desktop -- -D warnings
 ```
 
 ### 项目规则
@@ -880,9 +880,13 @@ mod tests {
 
 ### Pull Request 流程
 
-1. 运行 `cargo test --all-features` 并验证所有测试通过
-2. 运行 `cargo clippy --all-features --all-targets` 并修复警告
-3. 运行 `cargo fmt --all --check`
+1. 运行 `cargo test --no-default-features --features desktop -q`，验证主要桌面测试套件。
+2. 运行 `cargo clippy --all-targets --no-default-features --features desktop -- -D warnings`。
+3. 运行 `cargo fmt --all -- --check`。
+4. 按改动范围补跑 `desktop,icons`、`tablet`、`mobile` 和 `embedded` 测试组合。
+
+不要对测试或 lint 使用 `--all-features`：`desktop` 与 `mini` 互斥，且 `mini` 会切换到
+`no_std`。测试 profile 矩阵与源码门禁命令见仓库的 `CONTRIBUTING.md`。
 4. 更新 `cookbook/` 目录中的相关文档
 5. 为视觉变更添加快照测试
 

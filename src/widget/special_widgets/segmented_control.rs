@@ -284,8 +284,8 @@ impl Widget for SegmentedControl {
         use crate::widget::capability::CapabilityValue;
         match name {
             "selection_changed" => {
-                Some(EventSignalRef::mapped("selection_changed", &self.selection_changed, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("selection_changed", &self.selection_changed, |v| {
+                    CapabilityValue::String(v.clone())
                 }))
             }
             _ => None,

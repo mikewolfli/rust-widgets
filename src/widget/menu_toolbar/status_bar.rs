@@ -295,8 +295,8 @@ impl Widget for StatusBar {
         use crate::widget::capability::CapabilityValue;
         match name {
             "message_changed" => {
-                Some(EventSignalRef::mapped("message_changed", &self.message_changed, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("message_changed", &self.message_changed, |v| {
+                    CapabilityValue::String(v.clone())
                 }))
             }
             _ => None,

@@ -387,7 +387,7 @@ impl Widget for EditableComboBox {
             }
             "item_selected" => {
                 Some(EventSignalRef::mapped("item_selected", &self.item_selected, |v| {
-                    CapabilityValue::Int(*v as i64)
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             _ => None,

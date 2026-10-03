@@ -1144,13 +1144,22 @@ impl WidgetFactory {
         // Normalised, so `"value-changed"` and `"value_changed"` reach the same event
         // — the same tolerance `invoke_command` and `read_property` provide.
         let normalized = normalize_key(event_name);
-        let published =
-            capability.events.iter().any(|schema| normalize_key(schema.name) == normalized);
-        if !published {
-            return Err(CapabilityAccessError::UnknownCommand);
-        }
+        let canonical = capability
+            .events
+            .iter()
+            .find(|schema| normalize_key(schema.name) == normalized)
+            .map(|schema| schema.name)
+            .ok_or(CapabilityAccessError::UnknownCommand)?;
 
-        Ok(hub.connect(event_name, slot))
+        // Subscribe under the event's **canonical** published spelling, not the caller's
+        // raw argument. The validation above already normalised the argument to find a
+        // match, but the hub is a plain string→signal map with no normalisation of its
+        // own: connecting `"value-changed"` while the control emits under `"value_changed"`
+        // (which is what `event_signal_dyn` / the dynamic wiring resolves to) created two
+        // different hub entries, so the slot was accepted and then never fired. Using the
+        // canonical name here is what makes a hyphenated, differently-cased or
+        // space-separated spelling bind to the one signal the control actually emits.
+        Ok(hub.connect(canonical, slot))
     }
 
     /// Reports whether `control_name` publishes `event_name`, without subscribing.

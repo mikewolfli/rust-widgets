@@ -846,7 +846,7 @@ impl Widget for TabWidget {
         match name {
             "current_changed" => {
                 Some(EventSignalRef::mapped("current_changed", &self.current_changed, |v| {
-                    CapabilityValue::Int(*v as i64)
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             "tab_close_requested" => Some(EventSignalRef::mapped(

@@ -164,27 +164,105 @@ impl Platform for MacOSObjc2Platform {
     ///
     /// Every `WidgetKind` is painted by `src/widget/`, so no native view is created
     /// per control and the host owes exactly two things a widget cannot provide: a
-    /// window and a drawing surface. This method records the surface; the AppKit view
-    /// that blits frames is created by `macos/canvas.rs` through the sibling cocoa
-    /// backend's identical contract.
+    /// window and a drawing surface.
+    ///
+    /// # The presentation path
+    ///
+    /// This used to record bookkeeping only and hand the actual AppKit view to the
+    /// sibling cocoa backend — which the objc2 backend never links, so a successfully
+    /// "mounted" widget produced no pixels. It now creates its own surface: a
+    /// [`RustWidgetsObjc2CanvasView`](super::native::RustWidgetsObjc2CanvasView) whose
+    /// `drawRect:` pulls one RGBA frame from `widget::runtime` and blits it, mirroring
+    /// `macos/canvas.rs::draw_rect`. The AppKit work stays in `native`; the shared
+    /// `BackendState` record is kept so a later repaint request resolves the surface.
     ///
     /// Without it this backend inherited the trait's `false` default, so the preview
     /// backend reported "I cannot display a UI here" while the cocoa backend on the
     /// same machine reported `true`. Which answer a host got depended on a feature
     /// flag the host does not control, and a host that checks `supports_surfaces()`
     /// before building a UI would refuse to start for no stated reason.
-    fn mount_surface(&self, _parent: ObjectId, id: ObjectId, rect: crate::core::Rect) -> bool {
-        self.state.mount_surface_record(id, rect)
+    ///
+    /// # Off the main thread
+    ///
+    /// AppKit may only be messaged from the process main thread, so off it this
+    /// falls back to the same state-only record the cocoa backend uses for
+    /// `create_window` (see `is_main_thread`'s contract): the surface is remembered
+    /// and answered for, and the caller — a host that owns the AppKit loop — mounts
+    /// the real view when it reaches the main thread. On the main thread there is no
+    /// such fallback: the real view is created or the call reports `false`.
+    fn mount_surface(&self, parent: ObjectId, id: ObjectId, rect: crate::core::Rect) -> bool {
+        let recorded = self.state.mount_surface_record(id, rect);
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            if super::native::on_main_thread() {
+                return recorded
+                    && super::native::mount_surface_native(
+                        parent,
+                        id,
+                        rect.x,
+                        rect.y,
+                        rect.width,
+                        rect.height,
+                    );
+            }
+            log::debug!(
+                "[macos-objc2] mount_surface: id={id} recorded off the main thread \
+                 (state-only until AppKit is reachable)"
+            );
+        }
+        // On a build without the objc2 feature there is no AppKit path to hand `parent` to; the
+        // state-only record is the whole surface, and binding `parent` here keeps the signature the
+        // same in both configurations without an unused-variable warning.
+        #[cfg(not(all(target_os = "macos", feature = "macos")))]
+        {
+            let _ = parent;
+        }
+        recorded
     }
 
-    /// Updates the rect of a mounted surface. `false` when `id` is not mounted.
+    /// Resizes the mounted surface `id` and asks AppKit to redraw it.
+    ///
+    /// `false` when `id` is not mounted. Off the main thread the state record is
+    /// still updated (see [`Self::mount_surface`]) so a caller that mounts, resizes
+    /// and invalidates before reaching the main thread keeps a consistent model.
     fn resize_surface(&self, id: ObjectId, rect: crate::core::Rect) -> bool {
-        self.state.resize_surface_record(id, rect)
+        let recorded = self.state.resize_surface_record(id, rect);
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            if super::native::on_main_thread() {
+                return recorded
+                    && super::native::resize_surface_native(
+                        id,
+                        rect.x,
+                        rect.y,
+                        rect.width,
+                        rect.height,
+                    );
+            }
+        }
+        recorded
     }
 
     /// Releases a mounted surface.
+    ///
+    /// The shared `BackendState` record is the source of truth for "was this
+    /// mounted?", so a second unmount reports absence rather than claiming another
+    /// release. The native view is detached as well when AppKit is reachable.
     fn unmount_surface(&self, id: ObjectId) -> bool {
-        self.state.unmount_surface_record(id)
+        let recorded = self.state.unmount_surface_record(id);
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        {
+            if super::native::on_main_thread()
+                && !super::native::unmount_surface_native(id)
+                && recorded
+            {
+                // The state said it was mounted but there was no native view to
+                // detach — a state-only mount from before the main thread. The state
+                // release above is already the honest answer, so only note it.
+                log::debug!("[macos-objc2] unmount_surface: id={id} had no native view to detach");
+            }
+        }
+        recorded
     }
 
     /// Queues a repaint for the host to pick up. `false` when `id` is unknown.
@@ -196,8 +274,38 @@ impl Platform for MacOSObjc2Platform {
     /// because a window is what draws those children. A surface-only record
     /// answered `false` for such a request, so an event could be handled and the
     /// screen still never change — silently.
+    ///
+    /// # What it now does
+    ///
+    /// On macOS the request is driven into AppKit as well as recorded: a mounted
+    /// surface's view is marked `setNeedsDisplay:YES`, and a window id marks its
+    /// content view, so the repaint the library asked for actually reaches the
+    /// screen instead of only updating backend bookkeeping.
     fn invalidate_surface(&self, id: ObjectId) -> bool {
-        self.state.record_repaint_request(id)
+        let recorded = self.state.record_repaint_request(id);
+        #[cfg(all(target_os = "macos", feature = "macos"))]
+        if super::native::on_main_thread() {
+            // A mounted surface and a window are different native objects: try the
+            // surface side table first, then fall back to the window registry.
+            let invalidated = super::native::invalidate_surface_native(id)
+                || super::native::invalidate_window_native(id);
+            if !invalidated {
+                log::debug!(
+                    "[macos-objc2] invalidate_surface: id={id} recorded but has no native object"
+                );
+            }
+        }
+        recorded
+    }
+
+    /// Removes and returns the next widget awaiting a repaint.
+    ///
+    /// The drain half of [`Self::invalidate_surface`]: without it the queue would
+    /// grow without bound and a host that pulls frames would never be told what to
+    /// draw. Answers from the shared [`crate::platform::state::BackendState`] queue
+    /// the record half fills.
+    fn take_pending_repaint(&self) -> Option<ObjectId> {
+        self.state.take_pending_repaint()
     }
 
     /// This backend displays library-painted widgets by handing the host their frames.
@@ -281,11 +389,15 @@ impl Platform for MacOSObjc2Platform {
     fn destroy_widget(&self, widget_id: ObjectId) -> bool {
         let existed = self.state.destroy_widget(widget_id);
 
-        // Release the retained AppKit objects. `remove_native_view` releases the
-        // object stored under the widget id and drops its parent-map entry.
+        // Release the retained AppKit objects. A window must be closed (and taken
+        // off screen) rather than merely detached: `removeFromSuperview` on an
+        // `NSWindow` does nothing useful, so a logically destroyed window could
+        // stay visible. `destroy_native_handle` distinguishes the two by the
+        // object's own runtime class, so it does not need the pre-destroy kind, and
+        // runs only on the main thread — off it, it logs and skips.
         #[cfg(all(target_os = "macos", feature = "macos"))]
         {
-            super::native::remove_native_view(widget_id);
+            super::native::destroy_native_handle(widget_id);
         }
 
         // Drop every bookkeeping entry that names this widget, including any queued
@@ -312,7 +424,7 @@ impl Platform for MacOSObjc2Platform {
 
         #[cfg(all(target_os = "macos", feature = "macos"))]
         if let Some(mtm) = objc2::MainThreadMarker::new() {
-            let window = super::native::create_ns_window(mtm, title, x, y, width, height);
+            let window = super::native::create_ns_window(mtm, id, title, x, y, width, height);
             super::native::store_native_view(id, &*window as *const _ as *mut std::ffi::c_void);
         }
 

@@ -76,7 +76,8 @@ impl Platform for AndroidPlatform {
         crate::platform::os_probes::process_memory_utilization()
     }
 
-    /// Estimates CPU load as thread count over twice the available cores.
+    /// CPU utilization has no reliable one-shot source here, so this reports `None` (see
+    /// `os_probes::process_cpu_utilization`); the thread budget is a separate fact.
     fn process_cpu_utilization(&self) -> Option<f32> {
         crate::platform::os_probes::process_cpu_utilization()
     }

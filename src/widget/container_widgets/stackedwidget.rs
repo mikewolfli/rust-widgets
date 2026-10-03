@@ -189,7 +189,7 @@ impl Widget for StackedWidget {
         match name {
             "current_changed" => {
                 Some(EventSignalRef::mapped("current_changed", &self.current_changed, |v| {
-                    CapabilityValue::Int(*v as i64)
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             _ => None,

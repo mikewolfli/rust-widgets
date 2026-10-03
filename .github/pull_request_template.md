@@ -11,8 +11,12 @@ Describe what this PR changes.
 
 ## Validation
 
-- [ ] `cargo check`
-- [ ] `cargo check --examples`
+- [ ] `cargo check --all-targets --no-default-features --features desktop`
+- [ ] `cargo fmt --all -- --check`
+- [ ] `cargo clippy --all-targets --no-default-features --features desktop -- -D warnings`
+- [ ] `cargo test --no-default-features --features desktop -q`
+- [ ] `cargo test --no-default-features --features "desktop,icons" -q` (when icon data/rendering is affected)
+- [ ] Profile tests/build checks and `bash tools/run_all_gates.sh` as applicable
 
 ## Checklist
 

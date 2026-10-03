@@ -841,7 +841,7 @@ fn mini_main() {
 // $ cargo fmt --all
 
 // 使用 clippy 進行檢查
-// $ cargo clippy --all-features --all-targets
+// $ cargo clippy --all-targets --no-default-features --features desktop -- -D warnings
 ```
 
 ### 專案規則
@@ -880,9 +880,13 @@ mod tests {
 
 ### 拉取請求流程
 
-1. 執行 `cargo test --all-features` 並確認所有測試通過
-2. 執行 `cargo clippy --all-features --all-targets` 並修正警告
-3. 執行 `cargo fmt --all --check`
+1. 執行 `cargo test --no-default-features --features desktop -q`，驗證主要桌面測試套件。
+2. 執行 `cargo clippy --all-targets --no-default-features --features desktop -- -D warnings`。
+3. 執行 `cargo fmt --all -- --check`。
+4. 依變更範圍補跑 `desktop,icons`、`tablet`、`mobile` 與 `embedded` 測試組合。
+
+測試或 lint 不要使用 `--all-features`：`desktop` 與 `mini` 互斥，而且 `mini` 會切換到
+`no_std`。測試 profile 矩陣與原始碼門禁指令請參閱專案的 `CONTRIBUTING.md`。
 4. 更新 `cookbook/` 目錄中的相關文件
 5. 為視覺變更新增快照測試
 

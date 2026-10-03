@@ -293,10 +293,13 @@ impl MacOsImeBridge {
     }
 
     /// Commit a piece of text (called by the native IME callback).
-    /// Clears any active composition.
+    ///
+    /// Delegates to the [`ImeBridge::commit_text`](ImeBridge::commit_text) trait method so the native
+    /// callback path and the trait path cannot diverge: both clear the composition **and** deliver
+    /// the text to the focused widget as `Event::ImeCommit`. Keeping the delivery in one place is
+    /// what stops a native commit from being the one path that silently dropped it.
     pub fn commit_text(&self, text: &str) {
-        log::info!("[macOS IME] commit_text: '{}'", text);
-        self.clear_composition();
+        <Self as ImeBridge>::commit_text(self, text);
     }
 
     /// Set marked (preedit) text with selection range.
@@ -441,6 +444,21 @@ impl ImeBridge for MacOsImeBridge {
     fn commit_text(&self, text: &str) {
         log::info!("[macOS IME] commit_text: '{}'", text);
         self.clear_composition();
+        // Deliver the committed string to the focused widget as `Event::ImeCommit` (see the Windows
+        // bridge for why this join belongs on the bridge's commit path).
+        #[cfg(not(alloc_frugal))]
+        {
+            if let Some(widget_id) = *lock(&self.focused_widget) {
+                if !crate::platform::ime::deliver_commit(widget_id, text) {
+                    log::debug!(
+                        "[macOS IME] commit_text: widget {widget_id} is no longer mounted; the \
+                         commit was not delivered"
+                    );
+                }
+            } else {
+                log::debug!("[macOS IME] commit_text with no focused widget; nothing to deliver");
+            }
+        }
     }
 
     fn set_composition(&self, composition: &ImeComposition) {

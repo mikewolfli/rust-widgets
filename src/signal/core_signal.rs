@@ -62,6 +62,17 @@ struct SlotEntry<T: Clone + Send + 'static> {
     once: bool,
     blocked: bool,
     priority: Priority,
+    /// Monotonic connection order, used only to break ties between equal-priority slots.
+    ///
+    /// # Why the handle alone cannot order slots
+    ///
+    /// Slots live in a `HashMap`, whose iteration order is unspecified and can differ between runs
+    /// and between map layouts. Sorting by priority alone therefore left equal-priority slots in
+    /// whatever order the map happened to yield them, so "same priority fires in connection order" —
+    /// the module's documented contract — was not actually provided. The sequence is assigned from
+    /// the same monotonic counter as the handle, so it is unique and strictly increasing in
+    /// connection order.
+    sequence: u64,
 }
 
 struct SignalInner<T: Clone + Send + 'static> {
@@ -170,10 +181,17 @@ impl<T: Clone + Send + 'static> Signal<T> {
     where
         F: FnMut(Arc<T>) + Send + Sync + 'static,
     {
-        let handle = ConnectionHandle(NEXT_HANDLE.fetch_add(1, Ordering::Relaxed));
+        let sequence = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
+        let handle = ConnectionHandle(sequence);
         write_lock(&self.inner.slots).insert(
             handle,
-            SlotEntry { callback: Some(Box::new(slot)), once: false, blocked: false, priority },
+            SlotEntry {
+                callback: Some(Box::new(slot)),
+                once: false,
+                blocked: false,
+                priority,
+                sequence,
+            },
         );
         handle
     }
@@ -183,7 +201,8 @@ impl<T: Clone + Send + 'static> Signal<T> {
     where
         F: FnMut(Arc<T>) + Send + Sync + 'static,
     {
-        let handle = ConnectionHandle(NEXT_HANDLE.fetch_add(1, Ordering::Relaxed));
+        let sequence = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
+        let handle = ConnectionHandle(sequence);
         write_lock(&self.inner.slots).insert(
             handle,
             SlotEntry {
@@ -191,6 +210,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
                 once: true,
                 blocked: false,
                 priority: Priority::Normal,
+                sequence,
             },
         );
         handle
@@ -283,15 +303,20 @@ impl<T: Clone + Send + 'static> Signal<T> {
     pub fn emit(&self, value: T) {
         let arc_value = Arc::new(value);
 
-        // 1. Snapshot handles and priorities under a read lock.
-        let snapshot: Vec<(ConnectionHandle, Priority)> = {
+        // 1. Snapshot handles, priorities and connection order under a read lock.
+        let snapshot: Vec<(ConnectionHandle, Priority, u64)> = {
             let slots = read_lock(&self.inner.slots);
-            slots.iter().map(|(h, e)| (*h, e.priority)).collect()
+            slots.iter().map(|(h, e)| (*h, e.priority, e.sequence)).collect()
         };
 
-        // 2. Sort by priority (High first).
+        // 2. Sort by priority (High first), then by connection order within a priority.
+        //
+        // The sequence is the tie-breaker that makes "same priority fires in connection order",
+        // the module's documented contract, actually hold: the snapshot comes from a `HashMap`,
+        // whose iteration order is unspecified, so without it the within-priority order was the
+        // map's and could change between runs.
         let mut snapshot = snapshot;
-        snapshot.sort_by_key(|a| a.1.rank());
+        snapshot.sort_by_key(|a| (a.1.rank(), a.2));
 
         // 3. Process each slot individually against the real HashMap.
         //    The callback is temporarily taken (via Option::take) under a write
@@ -300,7 +325,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
         //    handle. After invocation, if the handle still exists in the map
         //    (i.e., was not self-disconnected), the callback is restored.
         //    Once-slots are removed unconditionally after invocation.
-        for (handle, _priority) in snapshot {
+        for (handle, _priority, _sequence) in snapshot {
             // Temporarily take the callback under a write lock, leaving None.
             // The handle stays in the HashMap so disconnect() can find it.
             let taken = {
@@ -317,23 +342,51 @@ impl<T: Clone + Send + 'static> Signal<T> {
                 }
             };
 
-            if let Some(mut callback) = taken {
-                callback(arc_value.clone());
-
-                // After callback: if it was a once-slot, remove the entry.
-                // Otherwise, re-install the callback only if the handle still
-                // exists (i.e., the callback did not call disconnect on itself).
-                let mut slots = write_lock(&self.inner.slots);
-                if let Some(entry) = slots.get_mut(&handle) {
-                    if entry.once {
-                        // Once-slot: remove the entry entirely.
-                        slots.remove(&handle);
-                    } else {
-                        // Non-once, still connected: restore the callback.
-                        entry.callback = Some(callback);
+            if let Some(callback) = taken {
+                // Restore-or-remove runs through this guard, so it happens on **both** the normal
+                // return and an unwind out of the callback.
+                //
+                // # The defect this closes
+                //
+                // The restore used to be plain code after `callback(...)`. If a slot panicked and
+                // the host caught the unwind (`catch_unwind`, a signal handler, a test harness),
+                // that code never ran: the entry was left in the map with `callback == None`, so a
+                // later emit silently skipped it and `slot_count` still counted it. The signal then
+                // reported a live wire (rule #97) that could never fire again. A `Drop` guard makes
+                // the cleanup unconditional, which is the only shape that survives an unwind.
+                struct RestoreGuard<'a, T: Clone + Send + 'static> {
+                    inner: &'a SignalInner<T>,
+                    handle: ConnectionHandle,
+                    callback: Option<SlotFn<T>>,
+                }
+                impl<T: Clone + Send + 'static> Drop for RestoreGuard<'_, T> {
+                    fn drop(&mut self) {
+                        let callback = match self.callback.take() {
+                            Some(callback) => callback,
+                            None => return,
+                        };
+                        let mut slots = write_lock(&self.inner.slots);
+                        if let Some(entry) = slots.get_mut(&self.handle) {
+                            if entry.once {
+                                // Once-slot: the entry is removed whether or not the callback
+                                // panicked, because a once-slot has fired either way.
+                                slots.remove(&self.handle);
+                            } else {
+                                // Non-once and still connected: restore the callback. If the
+                                // callback disconnected itself, the entry is already gone and the
+                                // callback is dropped here.
+                                entry.callback = Some(callback);
+                            }
+                        }
                     }
                 }
-                // If handle was removed by self-disconnect, callback is dropped.
+
+                let mut guard =
+                    RestoreGuard { inner: &self.inner, handle, callback: Some(callback) };
+                if let Some(callback) = guard.callback.as_mut() {
+                    callback(arc_value.clone());
+                }
+                // `guard` runs its restore/remove on drop, here or on unwind.
             }
         }
     }
@@ -746,6 +799,93 @@ mod emit_behaviour_tests {
             calls.load(Ordering::SeqCst),
             1,
             "the scoped slot must be gone once its scope drops"
+        );
+    }
+
+    /// Equal-priority slots fire in **connection order**, not in the map's arbitrary order.
+    ///
+    /// # What this pins
+    ///
+    /// The module documents "inside each bucket, slots fire in insertion order". The snapshot is
+    /// taken from a `HashMap`, whose iteration order is unspecified, so before the `sequence`
+    /// tie-breaker the within-priority order was the map's and could differ between runs or map
+    /// layouts. This connects several slots at one priority and asserts the run order is exactly the
+    /// connection order; it also re-connects after removals to exercise a rearranged map.
+    #[test]
+    fn equal_priority_slots_fire_in_connection_order() {
+        let signal = Signal::<u32>::new();
+        let trace = Arc::new(Trace::default());
+
+        let mut handles = alloc::vec::Vec::new();
+        for label in ["first", "second", "third", "fourth"] {
+            let trace = Arc::clone(&trace);
+            handles.push(signal.connect(move |_| trace.push(label)));
+        }
+
+        signal.emit(1);
+        assert_eq!(
+            trace.snapshot(),
+            alloc::vec!["first", "second", "third", "fourth"],
+            "same-priority slots must run in connection order"
+        );
+
+        // Disconnect the first two, then connect a fresh slot. The map is now sparse, so its
+        // iteration order is very unlikely to coincide with the surviving connection order; the new
+        // slot is the one that records into a second trace.
+        signal.disconnect(handles[0]);
+        signal.disconnect(handles[1]);
+        let trace2 = Arc::new(Trace::default());
+        {
+            let trace2 = Arc::clone(&trace2);
+            signal.connect(move |_| trace2.push("fifth"));
+        }
+        signal.emit(2);
+        // `third` and `fourth` still run, but they append to `trace`; the surviving order there is
+        // what pins the tie-break after the map has been rearranged.
+        assert_eq!(
+            trace.snapshot(),
+            alloc::vec!["first", "second", "third", "fourth", "third", "fourth"],
+            "the two surviving original slots must run in connection order"
+        );
+        assert_eq!(trace2.snapshot(), alloc::vec!["fifth"], "the new slot must run once");
+    }
+
+    /// A slot that unwinds must not leave the signal with "a slot that counts but never runs".
+    ///
+    /// # What this pins
+    ///
+    /// `emit` takes the callback out of the map while it runs and restores it afterwards. If the
+    /// restore is plain code after the call, a panicking callback leaves the entry in the map with
+    /// `callback == None` — `slot_count` still counts it, a later emit silently skips it, and the
+    /// "is this wired?" query (rule #97) reports a live wire that can never fire again. The restore
+    /// is therefore a `Drop` guard, and this test proves it runs on the unwind path too.
+    #[test]
+    fn a_panicking_slot_is_restored_so_later_emits_still_reach_it() {
+        let signal = Signal::<u32>::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let should_panic = Arc::new(core::sync::atomic::AtomicBool::new(true));
+
+        let calls_slot = Arc::clone(&calls);
+        let panic_flag = Arc::clone(&should_panic);
+        signal.connect(move |_| {
+            calls_slot.fetch_add(1, Ordering::SeqCst);
+            if panic_flag.load(Ordering::SeqCst) {
+                panic!("deliberate unwind from a slot callback");
+            }
+        });
+
+        // The first emit unwinds; the host catches it, exactly as a GUI host would.
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| signal.emit(1)));
+        assert!(caught.is_err(), "the callback must have unwound");
+
+        // The slot is still present — the guard restored it — and a later emit reaches it.
+        assert_eq!(signal.slot_count(), 1, "the slot must still be counted after an unwind");
+        should_panic.store(false, Ordering::SeqCst);
+        signal.emit(2);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "the restored slot must run on the next emit, not be left as a dead entry"
         );
     }
 }

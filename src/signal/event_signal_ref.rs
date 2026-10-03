@@ -62,6 +62,20 @@ pub struct EventSignalRef {
     /// the signal itself already knows, and a separate record of what was wired could disagree with
     /// it.
     slot_count: Box<dyn Fn() -> usize + Send + Sync>,
+    /// Whether a specific subscription handle is still connected to this signal.
+    ///
+    /// This is what distinguishes "the signal has *some* observer" from "the subscription *this*
+    /// binder made is still live" — the difference [`crate::signal::EventSignalBinder::event_is_wired`]
+    /// needs, because a direct observer attached elsewhere drives `slot_count` above zero without
+    /// making this binder's own hub subscription reachable.
+    is_connected: Box<dyn Fn(ConnectionHandle) -> bool + Send + Sync>,
+    /// Emits a **payload-free** signal, for the unit case; `None` for a payload-carrying signal,
+    /// which cannot be emitted without a value to deliver.
+    ///
+    /// This exists so a generic lifecycle path that has no payload to supply (a host's `close_widget`)
+    /// can raise the control's own published unit signal — the signal a `events:{"closed":…}`
+    /// binding subscribes to — rather than only the base one.
+    emit_unit: Option<Box<dyn Fn() + Send + Sync>>,
 }
 
 impl EventSignalRef {
@@ -73,6 +87,8 @@ impl EventSignalRef {
         let for_subscribe = signal.clone();
         let for_count = signal.clone();
         let for_disconnect = signal.clone();
+        let for_is_connected = signal.clone();
+        let for_emit = signal.clone();
         Self {
             name,
             // The inner signal delivers `()`, so the conversion is the only place the payload
@@ -82,6 +98,8 @@ impl EventSignalRef {
             }),
             disconnect: Box::new(move |handle| for_disconnect.disconnect(handle)),
             slot_count: Box::new(move || for_count.slot_count()),
+            is_connected: Box::new(move |handle| for_is_connected.is_connected(handle)),
+            emit_unit: Some(Box::new(move || for_emit.emit())),
         }
     }
 
@@ -99,6 +117,7 @@ impl EventSignalRef {
         let source = signal.clone();
         let for_count = signal.clone();
         let for_disconnect = signal.clone();
+        let for_is_connected = signal.clone();
         Self {
             name,
             subscribe: Box::new(move |mut slot| {
@@ -110,6 +129,8 @@ impl EventSignalRef {
             }),
             disconnect: Box::new(move |handle| for_disconnect.disconnect(handle)),
             slot_count: Box::new(move || for_count.slot_count()),
+            is_connected: Box::new(move |handle| for_is_connected.is_connected(handle)),
+            emit_unit: None,
         }
     }
 
@@ -145,6 +166,35 @@ impl EventSignalRef {
     /// same answer the concrete signals give.
     pub fn disconnect(&self, handle: ConnectionHandle) -> bool {
         (self.disconnect)(handle)
+    }
+
+    /// Reports whether `handle` still refers to a live subscription on this signal.
+    ///
+    /// # Why this is separate from [`Self::slot_count`]
+    ///
+    /// `slot_count() > 0` answers "does *anyone* observe this signal?", which is not the question a
+    /// caller who subscribed through [`crate::signal::EventSignalBinder`] needs: a direct observer
+    /// attached elsewhere, or a subscription pointing at a *different* hub, drives the count above
+    /// zero while the caller's own wire is not the one being counted. Checking the specific handle
+    /// answers the question that actually matters — is *this* subscription still connected? — which
+    /// is what turns `event_is_wired` into a destination-reachability query rather than a
+    /// "somebody listens" count (rule #97).
+    pub fn is_connected(&self, handle: ConnectionHandle) -> bool {
+        (self.is_connected)(handle)
+    }
+
+    /// Raises this signal if it carries no payload, reporting whether it was raised.
+    ///
+    /// `false` for a payload-carrying signal, which cannot be emitted without a value; the caller
+    /// (a generic lifecycle path) has none to supply and must not fabricate one.
+    pub fn emit_unit(&self) -> bool {
+        match &self.emit_unit {
+            Some(emit) => {
+                emit();
+                true
+            }
+            None => false,
+        }
     }
 }
 

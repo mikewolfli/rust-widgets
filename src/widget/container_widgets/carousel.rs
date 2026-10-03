@@ -667,7 +667,7 @@ impl Widget for Carousel {
         match name {
             "page_changed" => {
                 Some(EventSignalRef::mapped("page_changed", &self.page_changed, |v| {
-                    CapabilityValue::Int(*v as i64)
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             _ => None,

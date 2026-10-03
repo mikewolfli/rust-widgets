@@ -138,8 +138,14 @@ impl VideoPlayer {
 
     /// Seeks the simulated playback clock to the given time in seconds
     /// (clamped to 0..duration). Does not read any media data.
+    ///
+    /// A non-finite request (`NaN`, `±inf`) has no position on the timeline; it is ignored so it
+    /// cannot poison `current_time`, which every later `progress` / `tick` / `time_updated` reads.
     pub fn seek(&mut self, time: f64) {
-        self.current_time = time.clamp(0.0, self.duration);
+        if !time.is_finite() {
+            return;
+        }
+        self.current_time = time.clamp(0.0, self.duration.max(0.0));
         self.time_updated.emit(self.current_time);
         self.base.request_redraw();
     }
@@ -208,13 +214,21 @@ impl VideoPlayer {
     /// (scaled by playback rate).
     /// This simulates video frame advancement; no media is decoded.
     /// Returns true if playback reached the end.
+    ///
+    /// A non-finite or negative `delta_secs` is rejected: a clock that runs on `NaN` never satisfies
+    /// `current_time >= duration` (all comparisons with `NaN` are false), so the control would keep
+    /// emitting `time_updated` with a `NaN` payload forever, and a negative delta would run the
+    /// clock backwards past zero. Both are input errors with no timeline position, so the tick is a
+    /// no-op that reports "not finished" rather than corrupting the state.
     pub fn tick(&mut self, delta_secs: f64) -> bool {
-        if !self.is_playing || self.duration <= 0.0 {
+        if !self.is_playing || self.duration <= 0.0 || !delta_secs.is_finite() || delta_secs < 0.0 {
             return false;
         }
 
         let effective_delta = delta_secs * self.playback_rate as f64;
-        self.current_time += effective_delta;
+        // `playback_rate` is a finite `f32` clamped positive, so `effective_delta` stays finite; the
+        // clamp below is the belt-and-braces that keeps `current_time` in `[0, duration]` regardless.
+        self.current_time = (self.current_time + effective_delta).clamp(0.0, self.duration);
 
         if self.current_time >= self.duration {
             self.current_time = self.duration;
@@ -295,8 +309,8 @@ impl Widget for VideoPlayer {
             }
             "playback_ended" => Some(EventSignalRef::unit("playback_ended", &self.playback_ended)),
             "time_updated" => {
-                Some(EventSignalRef::mapped("time_updated", &self.time_updated, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("time_updated", &self.time_updated, |v| {
+                    CapabilityValue::Float(*v as f64)
                 }))
             }
             _ => None,
@@ -803,6 +817,49 @@ mod tests {
         assert!(*ended.lock().unwrap());
         assert!(!vp.is_playing());
         assert_eq!(vp.current_time(), 10.0);
+    }
+
+    /// A negative or non-finite `tick` delta must not move the clock or emit a bad value.
+    ///
+    /// # What this pins
+    ///
+    /// `tick` used to add the delta unchecked, so `tick(-10)` on a clock at 5 s gave −5 s and a
+    /// `NaN` delta made the clock `NaN` forever — every `current_time >= duration` comparison then
+    /// being false, so the control emitted `time_updated` with a `NaN` payload on every tick and
+    /// never reported the end. Both are rejected now, leaving the clock exactly where it was.
+    #[test]
+    fn an_invalid_tick_delta_does_not_corrupt_the_clock() {
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.load("test.mp4");
+        vp.set_duration(60.0);
+        vp.play();
+        vp.seek(5.0);
+
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -10.0] {
+            let finished = vp.tick(bad);
+            assert!(!finished, "an invalid delta must not report playback finished");
+            assert!(vp.current_time().is_finite(), "the clock must stay finite after tick({bad})");
+            assert_eq!(vp.current_time(), 5.0, "the clock must not move for tick({bad})");
+            assert!(vp.is_playing(), "an invalid delta must not stop playback");
+        }
+
+        // A valid delta still advances and stays within `[0, duration]`.
+        vp.tick(10.0);
+        assert!((vp.current_time() - 15.0).abs() < 1e-9);
+    }
+
+    /// A non-finite `seek` is ignored rather than poisoning the clock.
+    #[test]
+    fn a_non_finite_seek_is_ignored() {
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.set_duration(60.0);
+        vp.seek(20.0);
+        let before = vp.current_time();
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            vp.seek(bad);
+            assert_eq!(vp.current_time(), before, "seek({bad}) must be a no-op");
+        }
+        assert!(vp.progress().is_finite(), "progress must stay finite");
     }
 
     #[test]

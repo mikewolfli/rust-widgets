@@ -134,8 +134,8 @@ impl Widget for MobileDatePicker {
         use crate::widget::capability::CapabilityValue;
         match name {
             "date_changed" => {
-                Some(EventSignalRef::mapped("date_changed", &self.date_changed, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("date_changed", &self.date_changed, |v| {
+                    CapabilityValue::String(v.clone())
                 }))
             }
             _ => None,

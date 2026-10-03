@@ -254,8 +254,8 @@ impl Widget for MenuBar {
                 CapabilityValue::String(v.clone())
             })),
             "hovered_entry" => {
-                Some(EventSignalRef::mapped("hovered_entry", &self.hovered_entry, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("hovered_entry", &self.hovered_entry, |v| {
+                    CapabilityValue::String(v.clone())
                 }))
             }
             _ => None,

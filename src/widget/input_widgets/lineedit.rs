@@ -1041,8 +1041,8 @@ impl Widget for LineEdit {
         use crate::widget::capability::CapabilityValue;
         match name {
             "text_changed" => {
-                Some(EventSignalRef::mapped("text_changed", &self.text_changed, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("text_changed", &self.text_changed, |v| {
+                    CapabilityValue::String(v.clone())
                 }))
             }
             "editing_finished" => {

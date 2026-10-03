@@ -197,11 +197,35 @@ surface's contrast colour that clears `min_ratio`.
 ## Verifying a change
 
 ```bash
-cargo test --no-default-features --features desktop            # full suite
-cargo clippy --no-default-features --features desktop --all-targets -- -D warnings
-cargo run  --no-default-features --features desktop --example export_control_svgs
-bash tools/run_all_gates.sh                                    # every gate, PASS/FAIL table
+cargo fmt --all -- --check
+cargo check --all-targets --no-default-features --features desktop
+cargo clippy --all-targets --no-default-features --features desktop -- -D warnings
+cargo test --no-default-features --features desktop -q
+cargo test --no-default-features --features "desktop,icons" -q
+
+# Remaining CI test profiles
+for profile in full embedded mini tablet mobile; do
+  cargo test --no-default-features --features "$profile" -q
+done
+
+# Build-only checks for every device profile
+for profile in desktop tablet mobile mini embedded; do
+  cargo check --no-default-features --features "$profile"
+done
+
+bash tools/run_all_gates.sh # source and contract gates, PASS/FAIL table
 ```
+
+The desktop command runs the main desktop test suite; the separate `desktop,icons`
+command covers the opt-in icon data. CI also tests `tablet` and `mobile`, and
+tests `full`, `embedded`, and `mini` in its feature matrix. The desktop/default
+configuration is tested once. CI build-checks all five device profiles. Do not use
+`--all-features` as a substitute: `desktop` and `mini` are mutually exclusive,
+and `mini` switches the crate to `no_std`. The gate runner checks source/API and
+platform contracts; it is not a replacement for the Rust test matrix. It can
+report host-limited checks as skipped. Native GTK, Apple, and Android tests are
+run in platform-specific CI jobs; code coverage is collected separately by CI's
+`cargo llvm-cov` job.
 
 The SVGs under [`snapshots/svg/`](snapshots/svg/) are one file per control per appearance (dark and
 light). They are **committed and regenerated**, and `tools/check_svg_snapshots.sh` fails byte-for-byte

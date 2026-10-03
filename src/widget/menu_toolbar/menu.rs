@@ -766,7 +766,7 @@ impl Widget for Menu {
             })),
             "triggered_index" => {
                 Some(EventSignalRef::mapped("triggered_index", &self.triggered_index, |v| {
-                    CapabilityValue::Int(*v as i64)
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             "about_to_show" => Some(EventSignalRef::unit("about_to_show", &self.about_to_show)),

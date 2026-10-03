@@ -289,7 +289,7 @@ impl Widget for MenuButton {
         match name {
             "item_triggered" => {
                 Some(EventSignalRef::mapped("item_triggered", &self.item_triggered, |v| {
-                    CapabilityValue::Int(*v as i64)
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             _ => None,

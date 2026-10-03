@@ -340,8 +340,8 @@ impl Widget for RadioButton {
         match name {
             "selected" => Some(EventSignalRef::unit("selected", &self.selected)),
             "checked_changed" => {
-                Some(EventSignalRef::mapped("checked_changed", &self.checked_changed, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("checked_changed", &self.checked_changed, |v| {
+                    CapabilityValue::Bool(*v)
                 }))
             }
             _ => None,

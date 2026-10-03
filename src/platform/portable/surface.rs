@@ -36,7 +36,14 @@ impl FrameBuffer {
     /// tightly packed row cannot describe a frame, so it is refused and the
     /// previous geometry is kept.
     pub fn resize(&mut self, geometry: SurfaceGeometry) -> bool {
-        if geometry.stride < geometry.width as usize * 4 {
+        // The row length is computed with checked arithmetic: a width that makes `width * 4` overflow
+        // `usize` (possible on a 32-bit target) must be refused, not wrapped into a small value that
+        // makes an oversized frame look valid. The `required_bytes` check below is then meaningful
+        // because its input is already known to be representable.
+        let Some(row_bytes) = (geometry.width as usize).checked_mul(4) else {
+            return false;
+        };
+        if geometry.stride < row_bytes {
             return false;
         }
         let Some(needed) = required_bytes(geometry) else {

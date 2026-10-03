@@ -91,8 +91,38 @@ fn one_call_wires_a_payload_carrying_event() {
     }
 
     // Drive the control through its own API: `set_value` emits `value_changed`.
+    //
+    // The counters are asserted **after** the drive, which is what makes this a delivery test rather
+    // than a wiring test. The earlier revision only checked `slider.value() == 42`: a forwarding
+    // closure that never called its subscriber still satisfied that, so the green result proved
+    // nothing about whether the event reached the hub (BLUE-issue E-12).
+    let fired = Arc::new(AtomicUsize::new(0));
+    let fired_slot = Arc::clone(&fired);
+    factory
+        .connect_event("slider", "value_changed", &hub, move || {
+            fired_slot.fetch_add(1, Ordering::SeqCst);
+        })
+        .expect("`slider` publishes `value_changed`");
+
     slider.set_value(42);
     assert!(slider.value() == 42, "the control must have taken the value");
+    assert_eq!(
+        fired.load(Ordering::SeqCst),
+        1,
+        "a real `set_value` must deliver `value_changed` to the subscriber exactly once"
+    );
+
+    // And an event the control did **not** fire must not have been delivered: this is the negative
+    // half that catches a binder wiring every name to one signal.
+    let moved = Arc::new(AtomicUsize::new(0));
+    let moved_slot = Arc::clone(&moved);
+    factory
+        .connect_event("slider", "slider_moved", &hub, move || {
+            moved_slot.fetch_add(1, Ordering::SeqCst);
+        })
+        .expect("`slider` publishes `slider_moved`");
+    slider.set_value(50);
+    assert_eq!(moved.load(Ordering::SeqCst), 0, "`set_value` must not fire `slider_moved`");
 }
 
 /// Every published event of a converted control must be reachable after one call.

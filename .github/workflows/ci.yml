@@ -503,7 +503,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: [default, full, embedded, mini]
+        # `default` is exactly `desktop` and is already tested in quality-gates.
+        # Keep distinct feature graphs here to avoid compiling and running that
+        # same suite twice.
+        profile: [full, embedded, mini]
     steps:
       - name: Checkout
         uses: actions/checkout@v4

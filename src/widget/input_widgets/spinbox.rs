@@ -785,8 +785,8 @@ impl Widget for SpinBox {
         use crate::widget::capability::CapabilityValue;
         match name {
             "value_changed" => {
-                Some(EventSignalRef::mapped("value_changed", &self.value_changed, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("value_changed", &self.value_changed, |v| {
+                    CapabilityValue::Int(*v as i64)
                 }))
             }
             "editing_finished" => {

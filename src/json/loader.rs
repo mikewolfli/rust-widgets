@@ -182,6 +182,26 @@ impl JsonLoader {
         let marker = binding.marker();
         let handle: ButtonHandle = ButtonHandle::from_raw(widget_id);
 
+        // ── Published route: reach the control's OWN dynamic signal ──
+        //
+        // # The defect this closes
+        //
+        // A published name under `events` used to travel the same three generic callbacks as the
+        // `on_*` compatibility keys (`base.clicked`, the value callback, `base.closed`). That
+        // discarded the *specific* signal the name identifies: `pressed`, `released` and `canceled`
+        // are three different signals on a Button, yet each flattened to `base.clicked`, so a real
+        // click ran all three handlers and a real cancel ran none of them. `Widget::event_signal_dyn`
+        // already joins a published name to the exact signal the control emits (it is what
+        // `EventSignalBinder` wires), so the JSON route now uses that same join instead of a
+        // parallel guess. This is rule #101: one concept, one implementation path.
+        //
+        // The compatibility `on_*` keys keep the generic callbacks — they name a *trigger intent*
+        // (`on_click` means "a click"), not a specific published signal, so they have no name to
+        // resolve.
+        if let Some(name) = binding.published_name() {
+            return Self::bind_published_dynamic(widget_id, name, marker, handler_name);
+        }
+
         // A marker whose *real* trigger has no callback on this handle is refused rather
         // than bound to a nearby one.
         //
@@ -240,6 +260,52 @@ impl JsonLoader {
                 crate::json::invoke_global_handler(&handler_name, &ctx);
             });
         }
+        true
+    }
+
+    /// Wires a **published** event name to the control's own dynamic signal.
+    ///
+    /// # Why this rather than the generic callback tables
+    ///
+    /// `Widget::event_signal_dyn` is the single join from a published name to the signal the control
+    /// actually emits (see [`crate::signal::EventSignalBinder`], which wires `forward_all` through the
+    /// same call). Binding a published name through `base.clicked` instead was a second, weaker join
+    /// that ignored the name: every payload-free event resolved to the click signal, so `canceled`
+    /// fired for a click and never for a cancel. Routing through `event_signal_dyn` also delivers the
+    /// event's **payload** to the handler ([`EventHandlerContext::payload`]), which the generic
+    /// callbacks discarded.
+    ///
+    /// # Returns
+    ///
+    /// `false`, with a warning, when the control does not resolve the name. That case means the name
+    /// is published but has no live signal — the exact "subscribed successfully but will never fire"
+    /// state rule #97 rules out — so it is reported rather than silently falling back to a callback
+    /// that would run on the wrong event.
+    fn bind_published_dynamic(
+        widget_id: ObjectId,
+        name: &'static str,
+        marker: crate::json::JsonTriggerMarker,
+        handler_name: String,
+    ) -> bool {
+        let reference =
+            crate::widget::runtime::with_widget(widget_id, |widget| widget.event_signal_dyn(name));
+        let Some(reference) = reference.flatten() else {
+            log::warn!(
+                "`events.{name}` for handler '{handler_name}' on id={widget_id} was NOT bound: the \
+                 control does not resolve this published name to a signal, so the handler would \
+                 never run"
+            );
+            crate::app::record_unwired_binding(widget_id);
+            return false;
+        };
+        // The slot forwards the trigger **and its payload**. The reference's own name is used (not
+        // the caller's spelling) so the name a subscriber reads is the one the control answers to.
+        reference.subscribe(Box::new(
+            move |payload: &crate::widget::capability::CapabilityValue| {
+                let ctx = crate::json::context_for_with_payload(widget_id, marker, payload.clone());
+                crate::json::invoke_global_handler(&handler_name, &ctx);
+            },
+        ));
         true
     }
 

@@ -17,6 +17,21 @@ use crate::WidgetTriggerEvent;
 pub struct EventHandlerContext {
     /// The raw trigger event that fired this handler.
     pub trigger: WidgetTriggerEvent,
+    /// The event's **payload**, delivered alongside the trigger.
+    ///
+    /// # Why this exists
+    ///
+    /// A typed event (a slider's `value_changed`, an editor's `text_changed`) carries a value, and
+    /// a handler that receives only a trigger cannot act on it — the earlier shape discarded the
+    /// value, so the only way a handler could learn it was to re-read some *other* property (for a
+    /// slider, its caption, which is not the value at all). That is the defect this field closes: a
+    /// handler registered through `events: { "value_changed": … }` now receives exactly the value
+    /// the control emitted, in the same [`CapabilityValue`] representation the capability/schema
+    /// layer declares (rule #95). A payload-free event carries [`CapabilityValue::Null`], which is
+    /// the honest "this event reported nothing" value rather than a fabricated zero.
+    ///
+    /// [`CapabilityValue`]: crate::widget::capability::CapabilityValue
+    pub payload: crate::widget::capability::CapabilityValue,
     /// Opaque user data pointer (e.g. a `BoundJsonLayout` reference cast to `*mut c_void`).
     pub user_data: Option<*mut std::ffi::c_void>,
 }
@@ -39,9 +54,23 @@ pub struct EventHandlerContext {
 unsafe impl Send for EventHandlerContext {}
 
 impl EventHandlerContext {
-    /// Create a new event handler context.
+    /// Create a new event handler context with a payload-free trigger.
+    ///
+    /// The payload is [`CapabilityValue::Null`], matching a `unit` event: the trigger happened and
+    /// carried nothing. Call [`Self::with_payload`] to attach a typed value.
     pub fn new(trigger: WidgetTriggerEvent) -> Self {
-        Self { trigger, user_data: None }
+        Self { trigger, payload: crate::widget::capability::CapabilityValue::Null, user_data: None }
+    }
+
+    /// Attach the event's payload.
+    ///
+    /// Used by the wiring path that receives a [`CapabilityValue`] from the control's dynamic
+    /// signal, so the handler sees the value the control actually emitted rather than a default.
+    ///
+    /// [`CapabilityValue`]: crate::widget::capability::CapabilityValue
+    pub fn with_payload(mut self, payload: crate::widget::capability::CapabilityValue) -> Self {
+        self.payload = payload;
+        self
     }
 
     /// Attach opaque user data.

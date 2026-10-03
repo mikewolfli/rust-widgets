@@ -756,7 +756,7 @@ impl Widget for CandlestickChart {
             })),
             "bar_unhovered" => {
                 Some(EventSignalRef::mapped("bar_unhovered", &self.bar_unhovered, |v| {
-                    CapabilityValue::Int(*v as i64)
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             _ => None,

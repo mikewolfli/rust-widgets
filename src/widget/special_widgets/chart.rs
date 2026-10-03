@@ -401,12 +401,12 @@ impl Widget for ChartWidget {
         match name {
             "data_point_clicked" => {
                 Some(EventSignalRef::mapped("data_point_clicked", &self.data_point_clicked, |v| {
-                    CapabilityValue::Int(*v as i64)
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             "data_point_hovered" => {
                 Some(EventSignalRef::mapped("data_point_hovered", &self.data_point_hovered, |v| {
-                    CapabilityValue::Int(*v as i64)
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             "data_point_unhovered" => Some(EventSignalRef::mapped(

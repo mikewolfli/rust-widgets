@@ -295,8 +295,8 @@ impl Widget for GanttWidget {
         use crate::widget::capability::CapabilityValue;
         match name {
             "task_selected" => {
-                Some(EventSignalRef::mapped("task_selected", &self.task_selected, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("task_selected", &self.task_selected, |v| {
+                    CapabilityValue::String(v.clone())
                 }))
             }
             _ => None,

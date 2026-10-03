@@ -569,13 +569,13 @@ impl Widget for ScrollBar {
         use crate::widget::capability::CapabilityValue;
         match name {
             "value_changed" => {
-                Some(EventSignalRef::mapped("value_changed", &self.value_changed, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("value_changed", &self.value_changed, |v| {
+                    CapabilityValue::Int(*v as i64)
                 }))
             }
             "slider_moved" => {
-                Some(EventSignalRef::mapped("slider_moved", &self.slider_moved, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("slider_moved", &self.slider_moved, |v| {
+                    CapabilityValue::Int(*v as i64)
                 }))
             }
             "slider_pressed" => Some(EventSignalRef::unit("slider_pressed", &self.slider_pressed)),

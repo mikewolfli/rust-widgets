@@ -224,8 +224,8 @@ impl Widget for TimelineWidget {
         use crate::widget::capability::CapabilityValue;
         match name {
             "item_selected" => {
-                Some(EventSignalRef::mapped("item_selected", &self.item_selected, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("item_selected", &self.item_selected, |v| {
+                    CapabilityValue::String(v.clone())
                 }))
             }
             _ => None,

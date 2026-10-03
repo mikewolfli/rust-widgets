@@ -158,7 +158,7 @@ def delivery_failures(inject: str | None = None) -> list[str]:
         if region is None:
             continue
         for match in re.finditer(
-            r'"([a-z0-9_]+)"\s*=>\s*Some\(EventSignalRef::(unit|mapped)\(', region
+            r'"([a-z0-9_]+)"\s*=>\s*\{?\s*Some\(EventSignalRef::(unit|mapped)\(', region
         ):
             name, constructor = match.group(1), match.group(2)
             row = next(

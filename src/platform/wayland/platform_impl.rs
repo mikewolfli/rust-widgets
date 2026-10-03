@@ -110,7 +110,8 @@ impl Platform for WaylandPlatform {
         crate::platform::os_probes::process_memory_utilization()
     }
 
-    /// Estimates CPU load as thread count over twice the available cores.
+    /// CPU utilization has no reliable one-shot source here, so this reports `None` (see
+    /// `os_probes::process_cpu_utilization`); the thread budget is a separate fact.
     fn process_cpu_utilization(&self) -> Option<f32> {
         crate::platform::os_probes::process_cpu_utilization()
     }
@@ -1111,7 +1112,32 @@ impl wl_client::Dispatch<wl_protocols::xdg::shell::client::xdg_toplevel::XdgTopl
                 }
             }
             Event::Close => {
-                log::info!("[wayland] xdg_toplevel close requested");
+                // The compositor asked this window to close (the user clicked the title-bar close
+                // button, or the compositor is shutting down). This must be **honoured**, not merely
+                // logged: without a consumer, clicking close left the window on screen and the
+                // library running, so the close was a dead end from the user's point of view.
+                //
+                // The library's one close path is `crate::close_widget`, which emits the widget's
+                // `closed` signal so every `on_close`/`events:{"closed":…}` handler fires, exactly
+                // as the Win32 `WM_CLOSE` arm does. The id is resolved from *this* toplevel's proxy
+                // rather than from a single remembered window, so a multi-window app closes the
+                // window the compositor named.
+                if let Some(window_id) = super::platform_impl::configured_window_id(proxy) {
+                    if !crate::close_widget(window_id) {
+                        log::error!(
+                            "[wayland] close requested for window widget {window_id}, which is not \
+                             a live widget; no close callback was run"
+                        );
+                    }
+                } else {
+                    // An unregistered toplevel: the compositor named a window this backend does not
+                    // track. Reported rather than ignored, because a close that runs nothing is the
+                    // silent failure this arm exists to remove.
+                    log::warn!(
+                        "[wayland] close requested for an unregistered xdg_toplevel; no window \
+                         callback was run"
+                    );
+                }
             }
             Event::ConfigureBounds { .. } | Event::WmCapabilities { .. } => {
                 log::trace!("[wayland] xdg_toplevel event: {:?}", event);

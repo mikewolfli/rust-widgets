@@ -456,6 +456,29 @@ impl ImeBridge for LinuxImeBridge {
     fn commit_text(&self, text: &str) {
         log::info!("[Linux IME] commit_text: '{text}'");
         self.clear_composition();
+        // Hand the committed string to the focused widget as `Event::ImeCommit`.
+        //
+        // # The defect this closes
+        //
+        // This used to only log and clear the local composition state, so a control that matched
+        // `Event::ImeCommit` (the code editor, `tag_input`, `search_bar`) never received the text —
+        // the join the bridge's `commit_text` exists to make was missing, and the whole bridge-to-
+        // widget path was a no-op the host could not observe. With no focused widget there is no
+        // caret to commit into, so the delivery is skipped (the honest answer that
+        // `deliver_commit` documents).
+        #[cfg(not(alloc_frugal))]
+        {
+            if let Some(widget_id) = *lock(&self.focused_widget) {
+                if !crate::platform::ime::deliver_commit(widget_id, text) {
+                    log::debug!(
+                        "[Linux IME] commit_text: widget {widget_id} is no longer mounted; the \
+                         commit was not delivered"
+                    );
+                }
+            } else {
+                log::debug!("[Linux IME] commit_text with no focused widget; nothing to deliver");
+            }
+        }
     }
 
     fn set_composition(&self, composition: &ImeComposition) {
@@ -474,8 +497,30 @@ impl ImeBridge for LinuxImeBridge {
         *lock(&self.candidate_position) = position;
     }
 
+    /// Whether an IME session is **actually connected** to a focused widget.
+    ///
+    /// # Why focus alone is not enough
+    ///
+    /// `focus_in` sets the `active` flag unconditionally so the state machine knows a caret is
+    /// present, but that flag says nothing about whether a system IME connection exists: without the
+    /// `linux-a11y` feature IBus availability is `false`, and with it a failed `try_connect` leaves
+    /// the connection `None`. Reporting `active` alone therefore claimed a connected IME whenever a
+    /// widget merely gained focus, so a host that gates its own IME UI on this would enable it over a
+    /// bridge that can never deliver a composition. This reports the conjunction — focus **and** a
+    /// live IBus connection — which is what `is_active` promises (see
+    /// [`ImeBridge::is_active`](crate::platform::ime::ImeBridge::is_active)).
     fn is_active(&self) -> bool {
-        *lock(&self.active)
+        if !*lock(&self.active) {
+            return false;
+        }
+        #[cfg(feature = "linux-a11y")]
+        {
+            lock(&self.ibus_connection).is_some()
+        }
+        #[cfg(not(feature = "linux-a11y"))]
+        {
+            false
+        }
     }
 }
 
@@ -495,12 +540,40 @@ mod tests {
         assert!(lock(&bridge.focused_widget).is_none());
 
         bridge.focus_in(42);
-        assert!(bridge.is_active());
+        // Focus is tracked unconditionally — the widget that would receive a commit is recorded —
+        // but `is_active` additionally requires a live IBus connection. This build has no
+        // `linux-a11y` feature, so IBus availability is false and `is_active` must stay false even
+        // with focus: focus is not a connection.
         assert_eq!(*lock(&bridge.focused_widget), Some(42));
+        assert!(
+            !bridge.is_active(),
+            "focus alone must not report a live IME connection (no IBus without `linux-a11y`)"
+        );
 
         bridge.focus_out(42);
         assert!(!bridge.is_active());
         assert!(lock(&bridge.focused_widget).is_none());
+    }
+
+    /// `is_active` is exactly "focused **and** connected", not "a widget has focus".
+    ///
+    /// # What this pins (BLUE-issue P-12)
+    ///
+    /// `focus_in` used to make `is_active` true unconditionally, so a bridge with no IBus at all
+    /// advertised a live IME session. The `active` flag still tracks focus, but the public answer
+    /// must also require the connection.
+    #[test]
+    fn is_active_requires_a_live_connection_not_only_focus() {
+        let bridge = LinuxImeBridge::new();
+        bridge.focus_in(7);
+        if !bridge.is_ibus_available() {
+            assert!(
+                !bridge.is_active(),
+                "without IBus, focus must not be reported as an active IME connection"
+            );
+        }
+        // When IBus *is* available the connection exists, so focus + connection is active; the point
+        // of this test is the no-connection half, which every CI host without a session bus exercises.
     }
 
     #[test]

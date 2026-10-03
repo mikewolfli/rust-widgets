@@ -277,12 +277,12 @@ impl Widget for SplashScreen {
         #[allow(unused_imports)]
         use crate::widget::capability::CapabilityValue;
         match name {
-            "finished" => {
-                Some(EventSignalRef::mapped("finished", &self.finished, |_| CapabilityValue::Null))
-            }
-            "skipped" => {
-                Some(EventSignalRef::mapped("skipped", &self.skipped, |_| CapabilityValue::Null))
-            }
+            "finished" => Some(EventSignalRef::mapped("finished", &self.finished, |v| {
+                CapabilityValue::String(v.clone())
+            })),
+            "skipped" => Some(EventSignalRef::mapped("skipped", &self.skipped, |v| {
+                CapabilityValue::String(v.clone())
+            })),
             _ => None,
         }
     }

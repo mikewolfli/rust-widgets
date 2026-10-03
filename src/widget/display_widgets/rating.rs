@@ -266,8 +266,8 @@ impl Widget for Rating {
         use crate::widget::capability::CapabilityValue;
         match name {
             "rating_changed" => {
-                Some(EventSignalRef::mapped("rating_changed", &self.rating_changed, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("rating_changed", &self.rating_changed, |v| {
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             _ => None,

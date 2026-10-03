@@ -4448,12 +4448,12 @@ impl Widget for CodeEditor {
             })),
             "fold_changed" => {
                 Some(EventSignalRef::mapped("fold_changed", &self.fold_changed, |v| {
-                    CapabilityValue::Int(*v as i64)
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             "search_changed" => {
                 Some(EventSignalRef::mapped("search_changed", &self.search_changed, |v| {
-                    CapabilityValue::Int(*v as i64)
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             "completion_changed" => {

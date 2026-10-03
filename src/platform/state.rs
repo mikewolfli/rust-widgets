@@ -454,14 +454,36 @@ where
         lock(&self.widgets).contains_key(&widget_id)
     }
 
-    /// Remove a widget record, returning `true` when it existed.
+    /// Remove a widget record **and every other piece of state keyed by its id**, returning `true`
+    /// when the widget record existed.
     ///
     /// This is the state-side half of widget teardown. Without it a backend's
     /// registry could only ever grow: a long-running app that rebuilds its UI
     /// (create/discard cycles) would leak one record — plus whatever native
     /// object the backend stored — per discarded widget, forever.
+    ///
+    /// # Why the other containers are cleared too
+    ///
+    /// The id-keyed state does not live only in `widgets`. A widget may also have an injected trigger
+    /// waiting in `widget_events`, a mounted surface in `surfaces`, a queued repaint in
+    /// `pending_repaints`, a queued menu trigger, and drop events naming it. Removing only the
+    /// `widgets` entry left all of those behind: the next `poll` could return an event for an id that
+    /// no longer exists, a reused id could inherit a stale surface rect or a queued repaint, and a
+    /// surface never got a matching `unmount`. Clearing every id-keyed container here is what makes
+    /// destroy a single complete operation rather than a partial one a caller must remember to finish
+    /// (rule #13).
     pub fn destroy_widget(&self, widget_id: ObjectId) -> bool {
-        lock(&self.widgets).remove(&widget_id).is_some()
+        let removed = lock(&self.widgets).remove(&widget_id).is_some();
+        // Id-keyed queues and records: drop everything that names this widget, whether or not the
+        // widget record itself was still present, so a partially-cleaned prior destroy still heals.
+        lock(&self.widget_events).retain(|event| event.widget_id != widget_id);
+        lock(&self.menu_events).retain(|queued| *queued != widget_id);
+        lock(&self.surfaces).remove(&widget_id);
+        lock(&self.pending_repaints).retain(|queued| *queued != widget_id);
+        lock(&self.drop_events).retain(|event| {
+            event.source_widget_id != widget_id && event.target_widget_id != widget_id
+        });
+        removed
     }
 
     /// Number of live widget records. Used by tests and diagnostics to prove

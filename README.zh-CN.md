@@ -183,11 +183,31 @@ layout.arrange(rect, &children, &mut |id, child_rect| out.push((id, child_rect))
 ## 验证一次改动
 
 ```bash
-cargo test --no-default-features --features desktop            # 全量测试
-cargo clippy --no-default-features --features desktop --all-targets -- -D warnings
-cargo run  --no-default-features --features desktop --example export_control_svgs
-bash tools/run_all_gates.sh                                    # 全部门禁，输出 PASS/FAIL 表
+cargo fmt --all -- --check
+cargo check --all-targets --no-default-features --features desktop
+cargo clippy --all-targets --no-default-features --features desktop -- -D warnings
+cargo test --no-default-features --features desktop -q
+cargo test --no-default-features --features "desktop,icons" -q
+
+# CI 还会对这些 profile 分别运行测试
+for profile in full embedded mini tablet mobile; do
+  cargo test --no-default-features --features "$profile" -q
+done
+
+# 五种设备 profile 都执行构建检查
+for profile in desktop tablet mobile mini embedded; do
+  cargo check --no-default-features --features "$profile"
+done
+
+bash tools/run_all_gates.sh # 源码与契约门禁，输出 PASS/FAIL 表
 ```
+
+desktop 命令运行主要桌面测试套件；单独的 `desktop,icons` 命令覆盖 opt-in 图标数据。
+CI 还会测试 `tablet`、`mobile`，并在 feature 矩阵中测试 `full`、`embedded`、`mini`；
+desktop/default 组合只运行一次。五种设备 profile 全部执行构建检查。
+不要用 `--all-features` 代替这些组合：`desktop` 与 `mini` 互斥，且 `mini` 会切换到
+`no_std`。门禁运行器检查源码/API/平台契约，不能代替 Rust 测试矩阵；受主机限制的检查会单独报告跳过。
+GTK、Apple、Android 原生测试在各自的平台 CI job 中运行；覆盖率由 CI 的 `cargo llvm-cov` job 单独采集。
 
 [`snapshots/svg/`](snapshots/svg/) 下的 392 个 SVG 是「每个控件 × 明暗两种外观」各一份。它们**被提交
 也被重新生成**，只要控件的绘制变了而快照没更新，`tools/check_svg_snapshots.sh` 就会逐字节失败。

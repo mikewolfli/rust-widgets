@@ -591,12 +591,12 @@ impl Widget for ListBox {
         match name {
             "item_selected" => {
                 Some(EventSignalRef::mapped("item_selected", &self.item_selected, |v| {
-                    CapabilityValue::Int(*v as i64)
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             "item_activated" => {
                 Some(EventSignalRef::mapped("item_activated", &self.item_activated, |v| {
-                    CapabilityValue::Int(*v as i64)
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             "selection_changed" => {

@@ -332,13 +332,13 @@ impl Widget for TreeTable {
         match name {
             "projection_changed" => {
                 Some(EventSignalRef::mapped("projection_changed", &self.projection_changed, |v| {
-                    CapabilityValue::Int(*v as i64)
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             "selection_changed" => {
                 Some(EventSignalRef::mapped("selection_changed", &self.selection_changed, |v| {
                     match v {
-                        Some(value) => CapabilityValue::Int(*value as i64),
+                        Some(value) => CapabilityValue::UInt(*value as u64),
                         None => CapabilityValue::Null,
                     }
                 }))

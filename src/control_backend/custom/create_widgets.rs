@@ -163,10 +163,15 @@ impl ControlBackend for super::CustomPaintControlBackend {
         let released = false;
 
         let mut state = lock(&self.state);
-        let had_host_state = state.ime_enabled.remove(&widget_id).is_some()
-            || state.accessibility_names.remove(&widget_id).is_some()
-            || state.window_client_sizes.remove(&widget_id).is_some();
-        released || had_host_state
+        // Each `remove` must run: `||` short-circuits, so writing this as one expression ran only
+        // the leftmost `remove` whose entry existed and skipped the rest. A widget registered with
+        // both an IME policy and an accessibility name therefore leaked the second map's entry on
+        // destroy, and a later destroy of a reused id could still report residual state. Evaluating
+        // every removal (with `|`, not `||`, or as separate statements) closes that gap.
+        let had_ime = state.ime_enabled.remove(&widget_id).is_some();
+        let had_a11y = state.accessibility_names.remove(&widget_id).is_some();
+        let had_client_size = state.window_client_sizes.remove(&widget_id).is_some();
+        released || had_ime || had_a11y || had_client_size
     }
     impl_helpers!();
 }

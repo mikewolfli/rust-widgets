@@ -190,7 +190,7 @@ impl Widget for BottomNavigationBar {
         match name {
             "selected_changed" => {
                 Some(EventSignalRef::mapped("selected_changed", &self.selected_changed, |v| {
-                    CapabilityValue::Int(*v as i64)
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             _ => None,

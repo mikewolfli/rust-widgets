@@ -451,8 +451,8 @@ impl Widget for EmojiPicker {
         use crate::widget::capability::CapabilityValue;
         match name {
             "glyph_chosen" => {
-                Some(EventSignalRef::mapped("glyph_chosen", &self.glyph_chosen, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("glyph_chosen", &self.glyph_chosen, |v| {
+                    CapabilityValue::String(v.clone())
                 }))
             }
             _ => None,

@@ -850,7 +850,7 @@ fn mini_main() {
 // $ cargo fmt --all
 
 // Check with clippy
-// $ cargo clippy --all-features --all-targets
+// $ cargo clippy --all-targets --no-default-features --features desktop -- -D warnings
 ```
 
 ### Project Rules
@@ -889,9 +889,14 @@ mod tests {
 
 ### Pull Request Process
 
-1. Run `cargo test --all-features` and verify all tests pass
-2. Run `cargo clippy --all-features --all-targets` and fix warnings
-3. Run `cargo fmt --all --check`
+1. Run `cargo test --no-default-features --features desktop -q` for the main desktop suite.
+2. Run `cargo clippy --all-targets --no-default-features --features desktop -- -D warnings`.
+3. Run `cargo fmt --all -- --check`.
+4. Run the `desktop,icons`, `tablet`, `mobile`, and `embedded` test configurations when applicable.
+
+Do not use `--all-features` for tests or linting: `desktop` and `mini` are mutually
+exclusive, and `mini` switches the crate to `no_std`. See the repository's
+`CONTRIBUTING.md` for the test-profile matrix and source-gate command.
 4. Update any relevant documentation in the `cookbook/` directory
 5. Add snapshot tests for visual changes
 

@@ -304,8 +304,8 @@ impl Widget for Chip {
         use crate::widget::capability::CapabilityValue;
         match name {
             "chip_toggled" => {
-                Some(EventSignalRef::mapped("chip_toggled", &self.chip_toggled, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("chip_toggled", &self.chip_toggled, |v| {
+                    CapabilityValue::String(v.clone())
                 }))
             }
             _ => None,

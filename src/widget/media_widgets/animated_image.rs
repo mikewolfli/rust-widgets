@@ -280,8 +280,8 @@ impl Widget for AnimatedImage {
                 Some(EventSignalRef::unit("animation_finished", &self.animation_finished))
             }
             "frame_changed" => {
-                Some(EventSignalRef::mapped("frame_changed", &self.frame_changed, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("frame_changed", &self.frame_changed, |v| {
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             _ => None,

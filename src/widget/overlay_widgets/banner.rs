@@ -398,8 +398,8 @@ impl Widget for Banner {
         use crate::widget::capability::CapabilityValue;
         match name {
             "action_clicked" => {
-                Some(EventSignalRef::mapped("action_clicked", &self.action_clicked, |_| {
-                    CapabilityValue::Null
+                Some(EventSignalRef::mapped("action_clicked", &self.action_clicked, |v| {
+                    CapabilityValue::String(v.clone())
                 }))
             }
             "dismissed" => Some(EventSignalRef::unit("dismissed", &self.dismissed)),

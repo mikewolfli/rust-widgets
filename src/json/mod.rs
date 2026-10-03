@@ -106,9 +106,9 @@ mod properties;
 
 pub use element::BoundJsonLayout;
 pub use event_route::{
-    bind_marker_event, bind_published_event, context_for, is_marker_key, json_event_binding,
-    marker_for_key, marker_key_for, marker_key_names, published_event_name, JsonEventBinding,
-    JsonTriggerMarker, EVENTS_KEY, MARKER_KEYS,
+    bind_marker_event, bind_published_event, context_for, context_for_with_payload, is_marker_key,
+    json_event_binding, marker_for_key, marker_key_for, marker_key_names, published_event_name,
+    JsonEventBinding, JsonTriggerMarker, EVENTS_KEY, MARKER_KEYS,
 };
 pub use events::{
     clear_global_handlers, invoke_global_handler, register_global_handler, EventHandlerContext,

@@ -1000,6 +1000,11 @@ impl Platform for WindowsPlatform {
             }
             let widget_id =
                 self.state.create_widget(WindowsHandleKind::Window, title, x, y, width, height);
+            // This backend now owns one more top-level window. The count is decremented in
+            // `WM_DESTROY`; only when it returns to zero does the message loop quit (see
+            // `types::release_library_window`). Registered after the handle is known-good so a
+            // failed creation does not leave a phantom window in the count.
+            super::types::register_library_window();
             // SAFETY: `hwnd` was just returned by `CreateWindowExW` above and checked
             // non-null, so it is a live window for the life of this backend.
             unsafe { self.bind_native_handle(widget_id, hwnd) };

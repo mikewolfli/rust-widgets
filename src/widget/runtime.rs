@@ -97,6 +97,27 @@ thread_local! {
     #[allow(clippy::missing_const_for_thread_local)]
     static MOUNTED: RefCell<HashMap<ObjectId, Mounted>> = RefCell::new(HashMap::new());
 
+    /// Ids whose entry is temporarily held **outside** the registry during event dispatch.
+    ///
+    /// [`dispatch_event`] takes the widget out of `MOUNTED` before calling `handle_event`, so a
+    /// handler may re-enter the registry (read its own state, update another control, call
+    /// `request_redraw`) without hitting a `RefCell` borrow conflict. While an id is listed here,
+    /// [`unregister`] records the removal rather than looking for an entry that is not in the map,
+    /// so a handler that destroys the very control being dispatched is honoured instead of being
+    /// overwritten by the reinsertion that follows the call.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static DISPATCHING: RefCell<alloc::collections::BTreeSet<ObjectId>> =
+        RefCell::new(alloc::collections::BTreeSet::new());
+
+    /// Ids unregistered while their dispatch was in progress.
+    ///
+    /// A tombstone for [`DISPATCHING`]: [`dispatch_event`] skips reinsertion for an id listed here,
+    /// then clears the entry. Without it, a handler that called `unregister(id)` would have its
+    /// destroy silently undone by the dispatch epilogue putting the widget back.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static DESTROYED_DURING_DISPATCH: RefCell<alloc::collections::BTreeSet<ObjectId>> =
+        RefCell::new(alloc::collections::BTreeSet::new());
+
     /// Monotonic id source for mounted widgets.
     ///
     /// Starts high so a mounted id cannot collide with a platform-allocated
@@ -446,6 +467,18 @@ pub fn unregister(id: ObjectId) -> bool {
     // Accessibility submit point 2 of BLUE24 §6.3: the control is gone, so its node must be too.
     // Posted only when the widget was actually present, so an `unregister` of an id that was never
     // mounted does not tear down a node a live control still owns.
+    //
+    // The dispatching case is separate because the entry is **not** in `MOUNTED`: [`dispatch_event`]
+    // took it out so a handler could re-enter the registry. Recording a tombstone lets the dispatch
+    // epilogue skip reinsertion, which is what makes a handler's `unregister` of the very control it
+    // is handling actually destroy that control instead of being undone a moment later.
+    if DISPATCHING.try_with(|set| set.borrow().contains(&id)).unwrap_or(false) {
+        let _ = DESTROYED_DURING_DISPATCH.try_with(|set| {
+            set.borrow_mut().insert(id);
+        });
+        crate::widget::a11y_submit::submit_unmounted(id);
+        return true;
+    }
     let removed = MOUNTED.try_with(|map| map.borrow_mut().remove(&id).is_some()).unwrap_or(false);
     if removed {
         crate::widget::a11y_submit::submit_unmounted(id);
@@ -1882,7 +1915,57 @@ pub fn dispatch_event(id: ObjectId, event: &Event) -> bool {
     if modal_blocks(id) {
         return false;
     }
-    with_widget_mut(id, |widget| widget.handle_event(event)).is_some()
+    // Detach the widget from the registry for the duration of the call.
+    //
+    // # The re-entrancy defect this closes
+    //
+    // A control's `handle_event` emits its own signal synchronously when it detects the user action
+    // (a `Button` emitting `clicked` on pointer release). A slot on that signal is a user callback,
+    // and a user callback legitimately reads or updates widgets: it may read the button's own state,
+    // set text on a `Label`, or close a window. Every one of those goes through `with_widget` /
+    // `with_widget_mut`, which borrow the very `RefCell` this function used to hold mutably across
+    // `handle_event` — so the callback panicked with `already borrowed`, not only for the control
+    // being dispatched but for any control in the same registry. `request_redraw` (called by nearly
+    // every setter) re-enters too, via `top_level_window_of`, so even a callback that touched nothing
+    // could trip it.
+    //
+    // Taking the entry out before the call and putting it back after means the borrow is held only
+    // for the two map operations, never across user code. A handler that destroys the control (or
+    // remounts under the same id) is respected: see the tombstone check below.
+    let taken = MOUNTED.try_with(|map| map.borrow_mut().remove(&id)).ok().flatten();
+    let Some(mut mounted) = taken else {
+        return false;
+    };
+    // Mark the id in-flight so `unregister` records a tombstone instead of searching the map.
+    let _ = DISPATCHING.try_with(|set| {
+        set.borrow_mut().insert(id);
+    });
+
+    // The handler runs outside the registry borrow. Its return type is `()`, and the contract of
+    // this function answers "was the widget found?" — `true`, because the entry was present when we
+    // detached it.
+    mounted.widget.handle_event(event);
+
+    let _ = DISPATCHING.try_with(|set| {
+        set.borrow_mut().remove(&id);
+    });
+    let destroyed =
+        DESTROYED_DURING_DISPATCH.try_with(|set| set.borrow_mut().remove(&id)).unwrap_or(false);
+
+    if destroyed {
+        // A handler unregistered this control. The authoritative cleanup (focus, hover, capture,
+        // cached frame, own-id map) already ran inside `unregister`; only the owned widget remains,
+        // and dropping it here is what actually frees the control.
+        return true;
+    }
+
+    // Put it back unless a handler remounted something under the same id in the meantime — in which
+    // case the handler's own registration wins and is left untouched.
+    let _ = MOUNTED.try_with(|map| {
+        let mut map = map.borrow_mut();
+        map.entry(id).or_insert(mounted);
+    });
+    true
 }
 
 /// Tells `id` and every mounted descendant that their container became `width` by `height`.
@@ -6129,5 +6212,119 @@ mod tests {
 
         // An id that addresses nothing tells nobody rather than panicking.
         assert_eq!(dispatch_resize(u64::MAX, 10, 10), 0);
+    }
+
+    /// A synchronous event callback may re-enter the registry without panicking.
+    ///
+    /// # What this pins (BLUE-issue E-09)
+    ///
+    /// A control emits its own signal **synchronously** while `handle_event` runs (a `Button`
+    /// emits `base.clicked` on release). A slot on that signal is a user callback, and a normal
+    /// callback updates other widgets — sets a label's text, moves a panel, etc. Every one of those
+    /// goes through `with_widget` / `with_widget_mut`, which borrow the `MOUNTED` `RefCell`.
+    /// `dispatch_event` used to hold that `borrow_mut` across `handle_event`, so the callback hit
+    /// `already borrowed: BorrowMutError` and panicked. The entry is now detached for the duration
+    /// of the call, so the borrow is held only for the two map operations.
+    #[test]
+    fn a_click_callback_may_update_other_widgets_without_panicking() {
+        use crate::core::Point;
+        use crate::event::mouse_button;
+
+        let button_id = register(Box::new(crate::widget::Button::new(
+            "go".to_string(),
+            Rect::new(0, 0, 60, 24),
+        )))
+        .expect("mount the button");
+        let _button_guard = MountGuard(button_id);
+
+        let label_id = register(Box::new(crate::widget::Label::new(
+            "before".to_string(),
+            Rect::new(0, 0, 80, 20),
+        )))
+        .expect("mount the label");
+        let _label_guard = MountGuard(label_id);
+
+        // The handler mutates a *different* control — the exact shape the issue names as risky.
+        let ran = std::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
+        let ran_slot = std::sync::Arc::clone(&ran);
+        with_widget_mut(button_id, |button| {
+            button.base_mut().clicked.connect(move || {
+                // Re-enters the registry through the same borrow that used to be held.
+                assert!(set_geometry(label_id, Rect::new(5, 5, 120, 20)));
+                let _ = with_widget(label_id, |_| ());
+                ran_slot.store(true, core::sync::atomic::Ordering::SeqCst);
+            });
+        });
+
+        // Drive a real press + release through `dispatch_event`, which is where the borrow was held.
+        dispatch_event(
+            button_id,
+            &crate::event::Event::MousePress {
+                pos: Point::new(10, 10),
+                button: mouse_button::PRIMARY,
+                modifiers: 0,
+            },
+        );
+        dispatch_event(
+            button_id,
+            &crate::event::Event::MouseRelease {
+                pos: Point::new(10, 10),
+                button: mouse_button::PRIMARY,
+            },
+        );
+
+        assert!(
+            ran.load(core::sync::atomic::Ordering::SeqCst),
+            "the click callback must have run to completion rather than panicking"
+        );
+        assert_eq!(with_widget(label_id, |label| label.geometry().width), Some(120));
+    }
+
+    /// A callback that destroys the control it is handling must actually destroy it.
+    ///
+    /// # What this pins
+    ///
+    /// `dispatch_event` detaches the entry before the call and reinserts it after. Without a
+    /// tombstone for a handler that called `unregister` on the in-flight id, the reinsertion would
+    /// silently resurrect a widget the handler had just destroyed. The tombstone check is what makes
+    /// the destroy stick.
+    #[test]
+    fn a_callback_may_destroy_the_widget_it_is_handling() {
+        use crate::core::Point;
+        use crate::event::mouse_button;
+
+        let button_id = register(Box::new(crate::widget::Button::new(
+            "self-destruct".to_string(),
+            Rect::new(0, 0, 80, 24),
+        )))
+        .expect("mount the button");
+
+        let self_id = button_id;
+        with_widget_mut(button_id, |button| {
+            button.base_mut().clicked.connect(move || {
+                assert!(unregister(self_id), "the handler's unregister must take effect");
+            });
+        });
+
+        dispatch_event(
+            button_id,
+            &crate::event::Event::MousePress {
+                pos: Point::new(10, 10),
+                button: mouse_button::PRIMARY,
+                modifiers: 0,
+            },
+        );
+        dispatch_event(
+            button_id,
+            &crate::event::Event::MouseRelease {
+                pos: Point::new(10, 10),
+                button: mouse_button::PRIMARY,
+            },
+        );
+
+        assert!(
+            !is_mounted(button_id),
+            "the widget must not be resurrected by the dispatch epilogue"
+        );
     }
 }

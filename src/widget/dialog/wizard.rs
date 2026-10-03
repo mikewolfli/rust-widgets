@@ -297,7 +297,7 @@ impl Widget for WizardDialog {
             "cancelled" => Some(EventSignalRef::unit("cancelled", &self.cancelled)),
             "step_changed" => {
                 Some(EventSignalRef::mapped("step_changed", &self.step_changed, |v| {
-                    CapabilityValue::Int(*v as i64)
+                    CapabilityValue::UInt(*v as u64)
                 }))
             }
             _ => None,
