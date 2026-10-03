@@ -276,6 +276,20 @@ fn push_json_value(out: &mut String, value: &CapabilityValue) {
             // representation rather than two that must be kept in step.
             out.push_str(&format!("\"{},{},{},{}\"", rect.x, rect.y, rect.width, rect.height));
         }
+        CapabilityValue::Tuple(items) => {
+            // A composite payload exports as a JSON **array** of its components, each written by its
+            // own kind. That is the natural JSON shape for an ordered group and keeps the round trip
+            // lossless for the kinds a tuple can carry (a list of scalars), which is why a tuple
+            // payload no longer exports as its debug spelling.
+            out.push('[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                push_json_value(out, item);
+            }
+            out.push(']');
+        }
     }
 }
 

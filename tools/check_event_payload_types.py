@@ -169,11 +169,17 @@ def delivery_failures(inject: str | None = None) -> list[str]:
             kind, shape = row
             if kind == "-":
                 want = "Null"
+                want_alt = "Null"
             else:
                 want = carrier.get(kind, "String")
-                if shape in composite_shapes and want != "String":
-                    # A composite payload may legitimately arrive as its debug spelling.
-                    want_alt = "String"
+                if shape in composite_shapes:
+                    # A composite payload must arrive as a structured carrier, not its debug spelling.
+                    # The old rule accepted `String` here, which let a tuple payload ship as
+                    # `"(25.0, 75.0)"` — a value a subscriber could not read as numbers, which is the
+                    # exact asymmetry BLUE19 #95 forbids. A `Rect`-kind composite may arrive as a
+                    # `Rect`; every other composite arrives as a `Tuple`.
+                    want = "Rect" if kind == "Rect" else "Tuple"
+                    want_alt = want
                 else:
                     want_alt = want
             if constructor == "unit":
@@ -227,7 +233,7 @@ def _closure_carrier(region: str, from_index: int) -> str:
             if depth == 0:
                 break
     body = body[:end]
-    for variant in ("UInt", "Int", "Float", "Bool", "String", "Null"):
+    for variant in ("UInt", "Int", "Float", "Bool", "String", "Null", "Tuple", "Rect"):
         if f"CapabilityValue::{variant}" in body:
             return variant
 

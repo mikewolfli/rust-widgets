@@ -354,7 +354,7 @@ impl Widget for MediaPlayer {
             }
             "position_changed" => {
                 Some(EventSignalRef::mapped("position_changed", &self.position_changed, |v| {
-                    CapabilityValue::UInt(*v as u64)
+                    CapabilityValue::UInt(*v)
                 }))
             }
             "volume_changed" => {

@@ -335,7 +335,11 @@ impl Widget for FileDialog {
             }
             "files_selected" => {
                 Some(EventSignalRef::mapped("files_selected", &self.files_selected, |v| {
-                    CapabilityValue::String(format!("{v:?}"))
+                    let mut items = crate::compat::Vec::with_capacity(v.len());
+                    for path in v.iter() {
+                        items.push(CapabilityValue::String(path.clone()));
+                    }
+                    CapabilityValue::Tuple(items)
                 }))
             }
             "accepted" => Some(EventSignalRef::unit("accepted", &self.accepted)),

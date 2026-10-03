@@ -345,7 +345,10 @@ impl Widget for Keyboard {
         use crate::signal::EventSignalRef;
         match name {
             "key_pressed" => Some(EventSignalRef::mapped("key_pressed", &self.key_pressed, |v| {
-                CapabilityValue::String(format!("{v:?}"))
+                CapabilityValue::Tuple(alloc::vec![
+                    CapabilityValue::UInt(v.0 as u64),
+                    CapabilityValue::UInt(v.1 as u64),
+                ])
             })),
             "enter_pressed" => Some(EventSignalRef::unit("enter_pressed", &self.enter_pressed)),
             "backspace_pressed" => {

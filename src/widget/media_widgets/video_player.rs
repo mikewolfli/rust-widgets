@@ -310,7 +310,7 @@ impl Widget for VideoPlayer {
             "playback_ended" => Some(EventSignalRef::unit("playback_ended", &self.playback_ended)),
             "time_updated" => {
                 Some(EventSignalRef::mapped("time_updated", &self.time_updated, |v| {
-                    CapabilityValue::Float(*v as f64)
+                    CapabilityValue::Float(*v)
                 }))
             }
             _ => None,

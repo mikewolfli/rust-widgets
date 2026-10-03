@@ -697,12 +697,12 @@ impl Widget for WebEngineView {
             )),
             "page_created" => {
                 Some(EventSignalRef::mapped("page_created", &self.page_created, |v| {
-                    crate::widget::capability::CapabilityValue::UInt(*v as u64)
+                    crate::widget::capability::CapabilityValue::UInt(*v)
                 }))
             }
             "page_destroyed" => {
                 Some(EventSignalRef::mapped("page_destroyed", &self.page_destroyed, |v| {
-                    crate::widget::capability::CapabilityValue::UInt(*v as u64)
+                    crate::widget::capability::CapabilityValue::UInt(*v)
                 }))
             }
             "console_message" => {

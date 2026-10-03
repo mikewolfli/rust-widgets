@@ -201,7 +201,11 @@ impl Widget for CupertinoDatePicker {
         match name {
             "date_changed" => {
                 Some(EventSignalRef::mapped("date_changed", &self.date_changed, |v| {
-                    CapabilityValue::String(format!("{v:?}"))
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::Int(v.0 as i64),
+                        CapabilityValue::UInt(v.1 as u64),
+                        CapabilityValue::UInt(v.2 as u64),
+                    ])
                 }))
             }
             _ => None,

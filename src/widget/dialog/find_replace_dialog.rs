@@ -462,7 +462,11 @@ impl Widget for FindReplaceDialog {
             })),
             "replace_all" => {
                 Some(EventSignalRef::mapped("replace_all", &self.replace_all_signal, |v| {
-                    CapabilityValue::String(format!("{v:?}"))
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::String(v.0.clone()),
+                        CapabilityValue::String(v.1.clone()),
+                        CapabilityValue::String(format!("{:?}", v.2)),
+                    ])
                 }))
             }
             "close" => {

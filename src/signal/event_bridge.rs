@@ -104,6 +104,14 @@ pub struct EventSignalBinder {
     /// handle is an `Arc` — the same shape every other signal in this module uses.
     hub: Option<Arc<CustomSignalHub>>,
     forwards: alloc::vec::Vec<Forwarded>,
+    /// Whether this binder has ever wired anything.
+    ///
+    /// `unwired_events_for` answers `None` ("not wired yet") until the first `forward_*` call, and a
+    /// live `Some(count)` afterwards — even across `unbind_all`. That is what keeps "never wired"
+    /// distinct from "wired and then unbound": both have an empty `forwards`, but only the second
+    /// has a history, and the query must report the second as fully unwired rather than as no answer
+    /// (BLUE-issue E-07).
+    wired_once: bool,
 }
 
 impl Default for EventSignalBinder {
@@ -115,7 +123,7 @@ impl Default for EventSignalBinder {
 impl EventSignalBinder {
     /// Creates an empty binder that forwards into `hub`.
     pub fn new(hub: Arc<CustomSignalHub>) -> Self {
-        Self { hub: Some(hub), forwards: alloc::vec::Vec::new() }
+        Self { hub: Some(hub), forwards: alloc::vec::Vec::new(), wired_once: false }
     }
 
     /// Creates a binder with nowhere to forward, so the forwarding calls are no-ops.
@@ -124,7 +132,7 @@ impl EventSignalBinder {
     /// forcing every caller to supply one — would make the hub a mandatory part of every
     /// constructor, which is the global state this design avoids.
     pub fn detached() -> Self {
-        Self { hub: None, forwards: alloc::vec::Vec::new() }
+        Self { hub: None, forwards: alloc::vec::Vec::new(), wired_once: false }
     }
 
     /// Reports whether this binder forwards into a hub.
@@ -252,8 +260,9 @@ impl EventSignalBinder {
     where
         W: crate::widget::Widget,
     {
-        // "Never wired" and "not a control with events" both mean there is nothing to report.
-        if self.forwards.is_empty() {
+        // "Never wired" and "not a control with events" both mean there is no answer. A **detached**
+        // binder has nowhere to wire, so it has nothing live to report either.
+        if !self.wired_once || self.hub.is_none() {
             return None;
         }
         let factory = crate::widget::capability::WidgetFactory::new_with_defaults();
@@ -314,6 +323,8 @@ impl EventSignalBinder {
             // `true` here would claim a wire that no slot backs.
             return false;
         };
+        // From here on this binder has wired, so `unwired_events_for` switches from "no answer" to a
+        // live count that survives a later `unbind_all` (BLUE-issue E-07).
         // The slot owns the name because it outlives this call. It is the reference's own name, so
         // the name a caller subscribes to and the name the slot emits cannot drift apart.
         let name = alloc::string::String::from(reference.name());
@@ -346,6 +357,7 @@ impl EventSignalBinder {
             event_name: alloc::string::String::from(reference.name()),
             is_connected,
         });
+        self.wired_once = true;
         true
     }
 

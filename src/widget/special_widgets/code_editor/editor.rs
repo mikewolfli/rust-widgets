@@ -4432,7 +4432,10 @@ impl Widget for CodeEditor {
             }
             "cursor_moved" => {
                 Some(EventSignalRef::mapped("cursor_moved", &self.cursor_moved, |v| {
-                    CapabilityValue::String(format!("{v:?}"))
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ])
                 }))
             }
             "selection_changed" => {

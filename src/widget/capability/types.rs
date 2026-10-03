@@ -63,6 +63,27 @@ pub enum CapabilityValue {
     /// genuinely rectangles of their own — a plot area, a clipping region, a source
     /// image crop.
     Rect(crate::core::Rect),
+    /// An ordered group of values — the payload of an event whose shape the schema declares as a
+    /// tuple (`(T, T)`, `(T, T, T)`, `(T, T, T, T)`), list (`Vec<T>`), or a mixed record.
+    ///
+    /// # Why this exists
+    ///
+    /// A composite event payload (`RangeSlider::range_changed` is `(f64, f64)`, `Grid::cell_clicked`
+    /// is `(usize, usize)`, `CodeEditor::cursor_moved` is `(usize, usize)`) used to be flattened to
+    /// its `Debug` spelling and delivered as [`Self::String`], so a subscriber that read the schema
+    /// ("a pair of numbers") could not read the value as numbers at all — it got `"(25.0, 75.0)"`.
+    /// That is the "declared shape vs delivered value" asymmetry BLUE19 (#95/#96) rules out. This
+    /// variant carries the components **as their own [`CapabilityValue`]s**, so a tuple payload
+    /// delivers a tuple and each part keeps its declared kind.
+    ///
+    /// # Ordering, and why it is a `Vec` and not a fixed arity
+    ///
+    /// The order is the payload's own order (a pair is `[first, second]`), which is the one thing a
+    /// consumer can rely on. A `Vec` rather than `(a, b, c, d)` because the schema covers arities 2–4
+    /// **and** a variable-length list: one variant with a length serves all of them, and the declared
+    /// [`EventPayloadShape`](crate::widget::capability::EventPayloadShape) is what tells a consumer
+    /// which arrangement to expect.
+    Tuple(crate::compat::Vec<CapabilityValue>),
 }
 
 impl CapabilityValue {
@@ -159,6 +180,10 @@ impl CapabilityValue {
             // per variant rather than hidden behind a wildcard so a variant added later has to make
             // the same decision consciously.
             Self::Color(_) | Self::Rect(_) => alloc::string::String::new(),
+            // A tuple is not a single announcement either. Announcing it would require joining the
+            // parts and inventing a separator and a reading order, which is a presentation choice the
+            // control that owns the value should make (see `RangeSlider::accessible_value`).
+            Self::Tuple(_) => alloc::string::String::new(),
             Self::Null => alloc::string::String::new(),
         }
     }

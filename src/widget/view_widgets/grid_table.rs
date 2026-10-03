@@ -615,17 +615,28 @@ impl Widget for GridTableWidget {
         match name {
             "cell_selected" => {
                 Some(EventSignalRef::mapped("cell_selected", &self.cell_selected, |v| {
-                    CapabilityValue::String(format!("{v:?}"))
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ])
                 }))
             }
             "cell_double_clicked" => Some(EventSignalRef::mapped(
                 "cell_double_clicked",
                 &self.cell_double_clicked,
-                |v| CapabilityValue::String(format!("{v:?}")),
+                |v| {
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ])
+                },
             )),
             "sort_changed" => {
                 Some(EventSignalRef::mapped("sort_changed", &self.sort_changed, |v| {
-                    CapabilityValue::String(format!("{v:?}"))
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::Bool(v.1),
+                    ])
                 }))
             }
             "header_clicked" => {

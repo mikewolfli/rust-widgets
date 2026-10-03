@@ -666,7 +666,10 @@ impl Widget for KanbanBoard {
         use crate::signal::EventSignalRef;
         match name {
             "card_moved" => Some(EventSignalRef::mapped("card_moved", &self.card_moved, |v| {
-                CapabilityValue::String(format!("{v:?}"))
+                CapabilityValue::Tuple(alloc::vec![
+                    CapabilityValue::String(v.0.clone()),
+                    CapabilityValue::String(format!("{:?}", v.1)),
+                ])
             })),
             "card_activated" => {
                 Some(EventSignalRef::mapped("card_activated", &self.card_activated, |v| {

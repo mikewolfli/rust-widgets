@@ -298,7 +298,12 @@ impl Widget for BezierCurveEditor {
         match name {
             "curve_changed" => {
                 Some(EventSignalRef::mapped("curve_changed", &self.curve_changed, |v| {
-                    CapabilityValue::String(format!("{v:?}"))
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::Float(v.0 .0 as f64),
+                        CapabilityValue::Float(v.0 .1 as f64),
+                        CapabilityValue::Float(v.1 .0 as f64),
+                        CapabilityValue::Float(v.1 .1 as f64),
+                    ])
                 }))
             }
             _ => None,

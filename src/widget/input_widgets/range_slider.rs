@@ -526,7 +526,13 @@ impl Widget for RangeSlider {
         match name {
             "range_changed" => {
                 Some(EventSignalRef::mapped("range_changed", &self.range_changed, |v| {
-                    CapabilityValue::String(format!("{v:?}"))
+                    // The declared shape is `Tuple2` of `Float`, so the payload is delivered as a real
+                    // two-float tuple rather than its `Debug` spelling — a subscriber that read the
+                    // schema can read the two ends as numbers.
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::Float(v.0),
+                        CapabilityValue::Float(v.1),
+                    ])
                 }))
             }
             _ => None,

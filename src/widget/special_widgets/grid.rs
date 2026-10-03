@@ -278,12 +278,18 @@ impl Widget for GridWidget {
         match name {
             "cell_clicked" => {
                 Some(EventSignalRef::mapped("cell_clicked", &self.cell_clicked, |v| {
-                    CapabilityValue::String(format!("{v:?}"))
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ])
                 }))
             }
             "cell_hovered" => {
                 Some(EventSignalRef::mapped("cell_hovered", &self.cell_hovered, |v| {
-                    CapabilityValue::String(format!("{v:?}"))
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ])
                 }))
             }
             _ => None,

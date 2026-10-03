@@ -303,7 +303,10 @@ impl Widget for MapView {
         match name {
             "center_changed" => {
                 Some(EventSignalRef::mapped("center_changed", &self.center_changed, |v| {
-                    CapabilityValue::String(format!("{v:?}"))
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::Float(v.0 as f64),
+                        CapabilityValue::Float(v.1 as f64),
+                    ])
                 }))
             }
             "zoom_changed" => {

@@ -389,7 +389,11 @@ impl Widget for MultiSelectComboBox {
         match name {
             "selection_changed" => {
                 Some(EventSignalRef::mapped("selection_changed", &self.selection_changed, |v| {
-                    CapabilityValue::String(format!("{v:?}"))
+                    let mut items = crate::compat::Vec::with_capacity(v.len());
+                    for id in v.iter() {
+                        items.push(CapabilityValue::UInt(*id));
+                    }
+                    CapabilityValue::Tuple(items)
                 }))
             }
             _ => None,

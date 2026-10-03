@@ -928,10 +928,12 @@ extern "C" fn dispatch_touch_event(
             return;
         }
         for point in touch.touch_points.iter().take(points) {
-            // Prefer the contact's own type; fall back to the enclosing event only when the header
-            // left the point's unset (`None`). This is what lets a mixed record — one finger pressing
-            // while another moves — deliver each contact as its real kind instead of one kind for all.
-            let point_type = TouchEventType::from_raw(point.point_type).unwrap_or(event_type);
+            // Use the contact's own type. Each point in the header carries its own
+            // `OH_NativeXComponent_TouchEventType`, so a mixed record — one finger pressing while
+            // another moves — is delivered per contact rather than collapsed to the enclosing
+            // event's single type. `from_raw` maps an unknown discriminant to `Unknown` rather than
+            // transmuting it, so a value this build does not know is reported, not guessed.
+            let point_type = TouchEventType::from_raw(point.point_type);
             dispatch_one_touch(widget_id, point.id as u64, point.x, point.y, point_type);
         }
     }

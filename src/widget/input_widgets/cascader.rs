@@ -659,7 +659,11 @@ impl Widget for Cascader {
         match name {
             "selection_changed" => {
                 Some(EventSignalRef::mapped("selection_changed", &self.selection_changed, |v| {
-                    CapabilityValue::String(format!("{v:?}"))
+                    let mut items = crate::compat::Vec::with_capacity(v.len());
+                    for index in v.iter() {
+                        items.push(CapabilityValue::UInt(*index as u64));
+                    }
+                    CapabilityValue::Tuple(items)
                 }))
             }
             _ => None,

@@ -293,17 +293,26 @@ impl Widget for OrderBookWidget {
         match name {
             "level_clicked" => {
                 Some(EventSignalRef::mapped("level_clicked", &self.level_clicked, |v| {
-                    CapabilityValue::String(format!("{v:?}"))
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::String(format!("{:?}", v.0)),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ])
                 }))
             }
             "level_hovered" => {
                 Some(EventSignalRef::mapped("level_hovered", &self.level_hovered, |v| {
-                    CapabilityValue::String(format!("{v:?}"))
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::String(format!("{:?}", v.0)),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ])
                 }))
             }
             "level_unhovered" => {
                 Some(EventSignalRef::mapped("level_unhovered", &self.level_unhovered, |v| {
-                    CapabilityValue::String(format!("{v:?}"))
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::String(format!("{:?}", v.0)),
+                        CapabilityValue::UInt(v.1 as u64),
+                    ])
                 }))
             }
             _ => None,

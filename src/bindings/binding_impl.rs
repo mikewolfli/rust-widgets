@@ -1402,6 +1402,60 @@ fn encode_capability_value(
             let c_text = CString::new(text).unwrap_or_default();
             (RW_VALUE_RECT, 0, Some(c_text.into_raw()))
         }
+        // A tuple travels as a compact `kind:value;kind:value` string with its own kind, so a C
+        // caller can tell a tuple from free text and can recover each component with its type.
+        // The components keep their own kinds because the whole point of the variant is that a
+        // composite payload is not flattened to one scalar (BLUE19 #95).
+        CapabilityValue::Tuple(items) => {
+            let mut text = alloc::string::String::new();
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    text.push(';');
+                }
+                encode_tuple_component(item, &mut text);
+            }
+            let c_text = CString::new(text).unwrap_or_default();
+            (RW_VALUE_TUPLE, items.len() as i64, Some(c_text.into_raw()))
+        }
+    }
+}
+
+/// Appends one tuple component to `out` as `kind:value`, the wire form
+/// [`decode_capability_value`] reads back for [`RW_VALUE_TUPLE`].
+#[cfg(not(stripped_widgets))]
+fn encode_tuple_component(value: &crate::widget::capability::CapabilityValue, out: &mut String) {
+    use crate::widget::capability::CapabilityValue;
+    use core::fmt::Write as _;
+    match value {
+        CapabilityValue::Null => {
+            let _ = write!(out, "0:");
+        }
+        CapabilityValue::Bool(flag) => {
+            let _ = write!(out, "1:{}", u8::from(*flag));
+        }
+        CapabilityValue::Int(number) => {
+            let _ = write!(out, "2:{number}");
+        }
+        CapabilityValue::UInt(number) => {
+            let _ = write!(out, "3:{number}");
+        }
+        CapabilityValue::Float(number) => {
+            let _ = write!(out, "4:{number}");
+        }
+        CapabilityValue::String(text) => {
+            // The separator characters are escaped so a component containing `;` or `:` round-trips.
+            let _ = write!(
+                out,
+                "5:{}",
+                text.replace('\\', "\\\\").replace(';', "\\;").replace(':', "\\:")
+            );
+        }
+        // A nested colour/rect/tuple is not produced by any event payload today; encoding it as its
+        // announcement-free debug form would be a silent lossy path, so it is written as an empty
+        // string component and the decoder refuses it. This is stated rather than silently emitted.
+        CapabilityValue::Color(_) | CapabilityValue::Rect(_) | CapabilityValue::Tuple(_) => {
+            let _ = write!(out, "9:");
+        }
     }
 }
 
@@ -1439,8 +1493,81 @@ fn decode_capability_value(
         RW_VALUE_RECT => {
             Some(CapabilityValue::Rect(parse_rect_string(&unsafe { read_c_string(str_value) })?))
         }
+        RW_VALUE_TUPLE => {
+            let text = unsafe { read_c_string(str_value) };
+            let components = decode_tuple_components(&text)?;
+            // `num` is the advertised component count; trusting it over the parsed length would let a
+            // truncated string look complete, so a disagreement is refused rather than resolved.
+            if components.len() as i64 != num {
+                return None;
+            }
+            Some(CapabilityValue::Tuple(components))
+        }
         _ => None,
     }
+}
+
+/// Parses the `kind:value;kind:value` wire form written by [`encode_tuple_component`], or `None`
+/// when any component is malformed.
+#[cfg(not(stripped_widgets))]
+fn decode_tuple_components(
+    text: &str,
+) -> Option<crate::compat::Vec<crate::widget::capability::CapabilityValue>> {
+    use crate::widget::capability::CapabilityValue;
+    let mut out = crate::compat::Vec::new();
+    for component in split_unescaped(text) {
+        let (kind, raw) = component.split_once(':')?;
+        let value = match kind {
+            "0" => CapabilityValue::Null,
+            "1" => CapabilityValue::Bool(raw != "0"),
+            "2" => CapabilityValue::Int(raw.parse().ok()?),
+            "3" => CapabilityValue::UInt(raw.parse().ok()?),
+            "4" => CapabilityValue::Float(raw.parse().ok()?),
+            "5" => CapabilityValue::String(unescape_tuple_component(raw)?),
+            // `9` is the encoder's "nested value, not representable here" marker; refusing it keeps
+            // a lossy write from round-tripping as a silent empty value.
+            _ => return None,
+        };
+        out.push(value);
+    }
+    Some(out)
+}
+
+/// Splits a tuple wire string on **unescaped** `;`, leaving `\;` inside a component intact.
+#[cfg(not(stripped_widgets))]
+fn split_unescaped(text: &str) -> crate::compat::Vec<&str> {
+    let mut parts = crate::compat::Vec::new();
+    let mut start = 0usize;
+    let bytes = text.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' => index += 2,
+            b';' => {
+                parts.push(&text[start..index]);
+                start = index + 1;
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    parts.push(&text[start..]);
+    parts
+}
+
+/// Undoes the escaping [`encode_tuple_component`] applies to a string component.
+#[cfg(not(stripped_widgets))]
+fn unescape_tuple_component(raw: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut chars = raw.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            out.push(chars.next()?);
+        } else {
+            out.push(ch);
+        }
+    }
+    Some(out)
 }
 
 /// Reads a NUL-terminated C string, treating null as empty.
@@ -1484,6 +1611,9 @@ const RW_VALUE_STRING: c_int = 5;
 // existing binding already uses; a C caller that knows only 0..=5 is unaffected.
 const RW_VALUE_COLOR: c_int = 6;
 const RW_VALUE_RECT: c_int = 7;
+/// A composite payload (a tuple/list of values). Appended after `RW_VALUE_RECT`; `num` carries the
+/// component count and the string holds `kind:value;…`.
+const RW_VALUE_TUPLE: c_int = 8;
 #[no_mangle]
 /// Appends `text` (null gives an empty string) as a new last item.
 ///

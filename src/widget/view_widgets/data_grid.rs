@@ -576,7 +576,14 @@ impl Widget for DataGrid {
             "visible_window_changed" => Some(EventSignalRef::mapped(
                 "visible_window_changed",
                 &self.visible_window_changed,
-                |v| CapabilityValue::String(format!("{v:?}")),
+                |v| {
+                    CapabilityValue::Tuple(alloc::vec![
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                        CapabilityValue::UInt(v.2 as u64),
+                        CapabilityValue::UInt(v.3 as u64),
+                    ])
+                },
             )),
             _ => None,
         }

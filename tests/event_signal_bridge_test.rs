@@ -159,7 +159,7 @@ fn wiring_a_widget_without_a_clicked_event_reports_zero() {
     );
 }
 
-/// The wiring shortfall is **queryable**, not just countable.
+/// The wiring shortfall is **queryable**, and reflects the binder's **live** wires.
 ///
 /// # Why this test exists
 ///
@@ -169,10 +169,18 @@ fn wiring_a_widget_without_a_clicked_event_reports_zero() {
 ///
 /// `forward_all`'s return value is a numerator with no denominator: a caller that gets `3`
 /// cannot know whether the control published three names or thirty. This test pins the pair of
-/// facts that closes the hole — how many were offered, and how many were wired — and, just as
+/// facts that closes the hole — how many were offered, and how many are live **now** — and, just as
 /// importantly, that "never wired" is distinguishable from "fully wired".
+///
+/// # Why the answer is per-binder and live (BLUE-issue E-07)
+///
+/// The query used to read a process-wide ledger that never decreased on unbind and was keyed by
+/// control *kind*, so it answered "what did some instance of this kind once resolve" rather than
+/// "is this control's wire live". The answer is now derived from the subscriptions the binder
+/// actually holds: a different binder reports `None` (it holds no wire), and after `unbind_all` the
+/// shortfall returns to the full published count.
 #[test]
-fn the_wiring_shortfall_is_queryable_after_the_binder_is_gone() {
+fn the_wiring_shortfall_is_queryable_and_reflects_live_wires() {
     let hub = Arc::new(CustomSignalHub::new());
     let button = Button::new("Go".to_string(), Rect::new(0, 0, 80, 30));
 
@@ -195,15 +203,27 @@ fn the_wiring_shortfall_is_queryable_after_the_binder_is_gone() {
         Some(0),
         "every name `button` publishes resolves, so its shortfall must be zero"
     );
+    let published = {
+        let factory = WidgetFactory::new_with_defaults();
+        factory.capability("button").map(|capability| capability.events.len()).unwrap_or(0)
+    };
 
-    // The answer survives the binder: it is keyed by kind in shared state, so the designer
-    // asking "which of my wires will never fire" does not need the binder that did the wiring.
-    drop(binder);
-    let asker = EventSignalBinder::detached();
+    // A **different** binder holds no wire to this button, so it must not inherit the answer: the
+    // query is about the binder's own live subscriptions, not a shared historical count.
+    let other = EventSignalBinder::new(Arc::clone(&hub));
     assert_eq!(
-        asker.unwired_events_for(&button),
-        Some(0),
-        "the ledger must outlive the binder that populated it"
+        other.unwired_events_for(&button),
+        None,
+        "a binder that wired nothing must report no live answer, not another binder's zero"
+    );
+
+    // Unbinding removes this binder's wires, so the shortfall returns to the whole published set —
+    // the live fact, not the historical one.
+    binder.unbind_all();
+    assert_eq!(
+        binder.unwired_events_for(&button),
+        Some(published),
+        "after unbinding, every published event is unwired again"
     );
 
     // And an unconverted control — one whose `event_signal_dyn` is the trait default — reports
@@ -213,14 +233,14 @@ fn the_wiring_shortfall_is_queryable_after_the_binder_is_gone() {
         rust_widgets::widget::display_widgets::slider::Slider::new(Rect::new(0, 0, 80, 30));
     let mut binder = EventSignalBinder::new(Arc::clone(&hub));
     let wired = binder.forward_all(&slider);
-    let published = {
+    let slider_published = {
         let factory = WidgetFactory::new_with_defaults();
         factory.capability("slider").map(|capability| capability.events.len()).unwrap_or(0)
     };
-    assert!(published > 0, "`slider` publishes events, so this case is meaningful");
+    assert!(slider_published > 0, "`slider` publishes events, so this case is meaningful");
     assert_eq!(
         binder.unwired_events_for(&slider),
-        Some(published - wired),
+        Some(slider_published - wired),
         "an unconverted control's shortfall must equal what it published minus what wired"
     );
 }
