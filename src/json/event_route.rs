@@ -469,6 +469,49 @@ impl core::fmt::Debug for DynamicBinding {
     }
 }
 
+// ── Load-time binding ownership (BLUE-issue E-27) ──────────────────
+
+// `JsonLoader::bind_one` wires a document's `events` and returns only a `bool`. It used to
+// `core::mem::forget` its token so the subscription outlived the call — but the token owns a release
+// closure that captures an `EventSignalRef`, which holds a strong reference to the control's signal.
+// Forgetting it kept the signal (and therefore every slot on it, plus their captures) alive forever,
+// even after the control was destroyed. The token is now **retained** here, keyed by the control it
+// belongs to, and released when that control is torn down — so the subscription lives exactly as long
+// as the control does, and nothing outlives it.
+
+std::thread_local! {
+    static LOADED_BINDINGS: core::cell::RefCell<
+        crate::compat::HashMap<crate::core::ObjectId, alloc::vec::Vec<DynamicBinding>>,
+    > = core::cell::RefCell::new(crate::compat::HashMap::new());
+}
+
+/// Retains a load-time binding token until its control is torn down.
+///
+/// Called by the loader's no-token `bind_one`; a caller that wants to release the wire itself uses
+/// [`crate::json::JsonLoader::bind_one_releasable`] instead and owns the token.
+pub(crate) fn retain_binding(widget_id: crate::core::ObjectId, binding: DynamicBinding) {
+    LOADED_BINDINGS.with(|map| {
+        map.borrow_mut().entry(widget_id).or_default().push(binding);
+    });
+}
+
+/// Releases every load-time binding registered for `widget_id`.
+///
+/// Called when a node is torn down, so a destroyed control's subscriptions (and the signal references
+/// they hold) are dropped with it rather than leaked. Idempotent: releasing an id with no bindings is
+/// a no-op.
+pub fn release_widget_bindings(widget_id: crate::core::ObjectId) {
+    LOADED_BINDINGS.with(|map| {
+        // `remove` drops the `Vec<DynamicBinding>`, and each `Drop` disconnects its subscription.
+        let _ = map.borrow_mut().remove(&widget_id);
+    });
+}
+
+/// How many load-time binding tokens are currently retained for `widget_id`. For tests.
+pub fn retained_binding_count(widget_id: crate::core::ObjectId) -> usize {
+    LOADED_BINDINGS.with(|map| map.borrow().get(&widget_id).map(Vec::len).unwrap_or(0))
+}
+
 /// Wires one **published** event (`events: { <name>: <handler> }`) to a live control.
 ///
 /// # Why this is public rather than loader-private

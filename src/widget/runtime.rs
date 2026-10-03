@@ -2021,21 +2021,45 @@ impl Drop for InFlightGuard {
 
 /// Runs `f` with shared access to a mounted widget.
 ///
-/// Used by read-only queries (a host inspecting a mounted editor's text or
-/// caret) so they do not need mutable access merely to look at state. A widget currently lent out to
-/// a driving callback is resolved through its lent entry, so a callback can read the control it is
-/// handling (BLUE-issue E-18).
+/// # Why the widget is detached before `f` runs (BLUE-issue E-30)
+///
+/// The borrow is scoped to the *map lookup*, never to `f`. A caller may read a widget's state and then
+/// synchronously trigger its signal — a legitimate `&self` operation — and the slot that runs is a user
+/// callback that may update **another** control (set a `Label`, hide a `Panel`). When `f` ran inside
+/// `map.borrow().get(...).map(|entry| f(...))`, that callback's `with_widget_mut` (for a different id)
+/// hit `already borrowed` on the same `RefCell` and panicked. Detaching first means the registry is free
+/// while `f` runs, exactly as [`with_widget_mut`] and [`dispatch_event`] already do for their entries.
+///
+/// While `f` runs the entry is lent out **read-only**, so a nested read of this same id still resolves
+/// (see [`LENT_OUT`]) and a nested **write** to it is refused rather than aliasing the live `&`.
+///
+/// Returns `None` when `id` is not mounted, or when a nested call targets the id this call is reading.
 pub fn with_widget<R>(id: ObjectId, f: impl FnOnce(&dyn Widget) -> R) -> Option<R> {
-    // Resolve under the borrow to a *presence* flag first, so the `FnOnce` is not moved into a
-    // closure that may not run.
-    let present = MOUNTED.try_with(|map| map.borrow().contains_key(&id)).unwrap_or(false);
-    if present {
-        return MOUNTED
-            .try_with(|map| map.borrow().get(&id).map(|entry| f(entry.widget.as_ref())))
-            .ok()
-            .flatten();
+    // A read may nest a read of the same id (a getter that calls a getter), but a read must not be
+    // turned into a write of the same id while this shared borrow is live. `with_widget_mut` already
+    // refuses nested mutation of a lent-out id via `lent_mutating`; a read loan is recorded the same way
+    // so the refusal is symmetric.
+    if lent_present(id) {
+        // Already lent out (an outer read of this same id): resolve through the loan, no re-detach.
+        return lent_out_widget(id, f);
     }
-    lent_out_widget(id, f)
+    let taken = MOUNTED.try_with(|map| map.borrow_mut().remove(&id)).ok().flatten();
+    let mounted = taken?;
+    let _lent = LentGuard::install(id, mounted.widget.as_ref(), /* mutating = */ true);
+    // `mutating = true` marks the id as *unavailable for nested mutation* for the loan's duration.
+    // The pointer itself is shared (`&dyn Widget`), so reads still resolve through `LENT_OUT`.
+    let result = f(mounted.widget.as_ref());
+    drop(_lent);
+    let _ = MOUNTED.try_with(|map| {
+        let mut map = map.borrow_mut();
+        map.entry(id).or_insert(mounted);
+    });
+    Some(result)
+}
+
+/// Whether `id` currently has a lent-out entry (read or mutating).
+fn lent_present(id: ObjectId) -> bool {
+    LENT_OUT.with(|map| map.borrow().contains_key(&id))
 }
 
 /// Runs `f` with a **read-only** view of a widget currently lent out of [`MOUNTED`].
@@ -2076,7 +2100,7 @@ struct LentGuard {
 }
 
 impl LentGuard {
-    fn install(id: ObjectId, widget: &mut dyn Widget, mutating: bool) -> Self {
+    fn install(id: ObjectId, widget: &dyn Widget, mutating: bool) -> Self {
         let ptr: core::ptr::NonNull<dyn Widget> = core::ptr::NonNull::from(widget);
         let _ = LENT_OUT.try_with(|map| {
             map.borrow_mut().insert(id, ptr);
@@ -6785,5 +6809,53 @@ mod tests {
             !unregister(button_id),
             "a popped dispatch must not report the id as present via a leftover in-flight marker"
         );
+    }
+
+    /// A closure reading control A may emit A's signal, whose callback writes control B.
+    ///
+    /// # The defect this pins (BLUE-issue E-30)
+    ///
+    /// `with_widget` ran its closure inside `map.borrow()`, so a closure that read A's state and
+    /// synchronously emitted A's signal \u2014 a legitimate `&self` operation \u2014 ran a callback that
+    /// then wrote B via `with_widget_mut`, which needed `map.borrow_mut()`. That was `already
+    /// borrowed`, not a nested write of A. `with_widget` now detaches A before running the closure, so
+    /// the registry is free for the callback to write another control.
+    #[test]
+    fn a_read_closure_may_emit_a_signal_whose_callback_writes_another_control() {
+        let a_id = register(Box::new(crate::widget::Button::new(
+            "a".to_string(),
+            Rect::new(0, 0, 60, 24),
+        )))
+        .expect("mount A");
+        let _a_guard = MountGuard(a_id);
+        let b_id = register(Box::new(crate::widget::Label::new(
+            "before".to_string(),
+            Rect::new(0, 0, 80, 20),
+        )))
+        .expect("mount B");
+        let _b_guard = MountGuard(b_id);
+
+        let ran = std::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
+        let ran_slot = std::sync::Arc::clone(&ran);
+        with_widget_mut(a_id, |widget| {
+            widget.base_mut().clicked.connect(move || {
+                // Writes a *different* control from inside the slot.
+                assert!(set_geometry(b_id, Rect::new(3, 4, 120, 20)));
+                ran_slot.store(true, core::sync::atomic::Ordering::SeqCst);
+            });
+        });
+
+        // A read closure on A that emits A's own signal synchronously.
+        let result = with_widget(a_id, |widget| {
+            widget.base().clicked.emit();
+            widget.geometry().width
+        });
+
+        assert_eq!(result, Some(60), "the read closure must return normally, not panic");
+        assert!(
+            ran.load(core::sync::atomic::Ordering::SeqCst),
+            "the slot must have run and written the other control without a RefCell panic"
+        );
+        assert_eq!(with_widget(b_id, |label| label.geometry().width), Some(120));
     }
 }

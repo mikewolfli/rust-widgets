@@ -952,9 +952,11 @@ mod tests {
         let render = |gradient: Option<Gradient>| {
             let mut frame = Frame::new(rect);
             frame.set_frame_shape(FrameShape::Panel);
-            let mut style = WidgetStyle::default();
-            style.background_color = Some(Color::rgb(240, 240, 240));
-            style.background_gradient = gradient;
+            let style = WidgetStyle {
+                background_color: Some(Color::rgb(240, 240, 240)),
+                background_gradient: gradient,
+                ..WidgetStyle::default()
+            };
             frame.set_style(style);
             crate::widget::svg::render_widget_to_svg_on(&mut frame, rect, backdrop)
         };

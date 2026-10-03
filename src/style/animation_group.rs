@@ -3,6 +3,16 @@
 
 //! Named animation group that can hold both parallel and sequential
 //! animation sets together (BLUE11 R6.4).
+//!
+//! # Reachability (issue §9 item #5)
+//!
+//! This is a **retained public capability with no in-crate control consumer**. The engine it drives
+//! ([`AnimationDriver`](crate::style::AnimationDriver)) *is* on the production path — controls reach
+//! it through [`PropertyDriver`](crate::style::PropertyDriver) / [`Transition`](crate::style::Transition)
+//! — but a *named timeline group* is a different feature: it composes `AnimationGroup`'s parallel
+//! and sequential sets by name, which no control's property transition needs. Keeping it exported
+//! and tested (rather than deleting it) is the explicit decision the issue asked for: a host that
+//! wants timeline choreography drives it from its own frame loop, as the example below shows.
 
 use super::animation::{AnimationConfig, AnimationDriver, AnimationId};
 use crate::compat::{String, Vec};

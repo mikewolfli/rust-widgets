@@ -689,6 +689,24 @@ impl ActiveAnimation {
 ///
 /// Call `advance()` from your event loop or render loop to tick all animations.
 /// Use `add()` to register a new animation with a progress callback.
+///
+/// # Reachability (issue §9 item #5)
+///
+/// This engine **is** on the production path, not only a standalone capability. Controls do not
+/// call it directly; they own a [`PropertyDriver`](crate::style::PropertyDriver) (or a
+/// [`Transition`](crate::style::Transition)), whose `tick` builds and advances an `AnimationDriver`
+/// internally. `Button::tick`, `PieMenu::tick` and the other animated controls therefore reach this
+/// code every frame, and the interpolation curve (not each control) is the single place that defines
+/// how a styled value moves.
+///
+/// The group composers ([`AnimationGroup`](crate::style::AnimationGroup),
+/// [`ParallelAnimation`](crate::style::ParallelAnimation),
+/// [`SequentialAnimation`](crate::style::SequentialAnimation)) remain a **retained public
+/// capability** with no in-crate control consumer: they compose *named* timeline animations, which
+/// the property-transition path does not need. That is a deliberate scope decision (rule #4: the
+/// library maps a control to the platform's ability; it does not invent a timeline the host never
+/// asked for), not an unfinished wiring. A host that wants timeline choreography drives them
+/// directly from its own frame loop, exactly as their docs show.
 pub struct AnimationDriver {
     animations: HashMap<AnimationId, ActiveAnimation>,
     property_animations: HashMap<AnimationId, PropertyAnimation>,
@@ -2006,6 +2024,63 @@ mod property_driver_tests {
         assert!(!driver.is_moving(), "a jump is not a movement");
         assert!(!driver.tick(16), "and nothing is left to animate");
         assert_eq!(driver.value(), 0.5, "so the value stays where it was placed");
+    }
+
+    /// `PropertyDriver` is the production consumer that puts `AnimationDriver` on the widget path.
+    ///
+    /// # Why this pins issue §9 item #5
+    ///
+    /// The item asked whether the animation engine reaches a real production path. It does: every
+    /// animated control owns a `PropertyDriver`, whose `tick` builds and advances an
+    /// [`AnimationDriver`] internally. This asserts that the two are genuinely joined \u2014 a
+    /// `PropertyDriver` aimed at a new target reports the engine's eased value (strictly between the
+    /// endpoints mid-flight, and the driver's `is_moving` is true only while the engine still has a
+    /// frame to run) rather than a straight linear ramp this type computed itself.
+    #[test]
+    fn the_property_driver_drives_the_animation_engine() {
+        // # Why a single `16 ms` step, and a comparison against the linear share
+        //
+        // The driver applies the crate's easing engine to the frame's share of the duration, so one
+        // short step moves **more** than the raw `delta / duration` fraction would under `EaseOut`
+        // (the default). A driver that recomputed a linear `current += delta/duration` ramp would land
+        // exactly on that fraction. This is the join between `PropertyDriver` and the engine made
+        // observable: the value cannot be a straight line.
+        let tempo = MotionSlot::Normal;
+        let duration = tempo.duration_ms().max(1);
+        let delta = 16u32.min(duration / 4).max(1);
+
+        let mut driver = PropertyDriver::at(0.0, tempo);
+        driver.set_target(1.0);
+        let moving = driver.tick(delta);
+        let stepped = driver.value();
+
+        assert!(moving, "a partial step must leave the driver owing more frames");
+        assert!(
+            stepped > 0.0 && stepped < 1.0,
+            "one short step must land strictly inside the endpoints, got {stepped}"
+        );
+        let linear_share = delta as f32 / duration as f32;
+        let eased_share = crate::style::motion_easing().apply(linear_share);
+        assert!(
+            (stepped - eased_share).abs() < 1e-4,
+            "the driver must read the engine's easing of the frame share: \
+             driver={stepped} eased={eased_share} linear={linear_share}"
+        );
+        // A non-linear easing must not coincide with the linear share; if the curve is Linear this
+        // half is vacuously true, which is correct.
+        if (eased_share - linear_share).abs() > 1e-4 {
+            assert!(
+                (stepped - linear_share).abs() > 1e-4,
+                "a non-linear easing must not reproduce the linear frame share"
+            );
+        }
+
+        // The engine still governs the endpoint: the driver settles exactly, and stops asking.
+        let mut settling = PropertyDriver::at(0.0, tempo);
+        settling.set_target(1.0);
+        while settling.tick(16) {}
+        assert_eq!(settling.value(), 1.0, "the engine's end value is reached exactly");
+        assert!(!settling.is_moving());
     }
 }
 

@@ -287,6 +287,31 @@ pub fn try_lock<T>(mutex: &Mutex<T>) -> Option<MutexGuard<'_, T>> {
     }
 }
 
+/// Non-blocking acquire that distinguishes "busy" from "poisoned".
+///
+/// Returns `Some(guard)` when the lock was free (recovering from poisoning, like [`lock`]), and
+/// `None` when it is genuinely held by another thread. This is the shape a caller needs when the two
+/// cases demand different handling — e.g. a signal slot that runs the callback when free and *defers*
+/// when busy, but must still run after a previous callback panicked and poisoned the mutex.
+///
+/// Under `alloc_frugal` (`spin`) a `try_lock` failure is always "busy": a spin lock has no poison
+/// state.
+pub fn try_lock_recover<T>(mutex: &Mutex<T>) -> Option<MutexGuard<'_, T>> {
+    #[cfg(not(alloc_frugal))]
+    {
+        match mutex.try_lock() {
+            Ok(guard) => Some(guard),
+            // A poisoned lock still holds usable data (see [`lock`]); recover it.
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        }
+    }
+    #[cfg(alloc_frugal)]
+    {
+        mutex.try_lock()
+    }
+}
+
 /// Acquire a [`RwLock`] for reading, recovering from poisoning if there is any.
 ///
 /// The counterpart of [`lock`] for the reader side: same profile split (`std`

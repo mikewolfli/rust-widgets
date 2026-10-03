@@ -868,10 +868,12 @@ mod tests {
 
         let render = |gradient: Option<Gradient>| {
             let mut label = Label::new("Sample".to_string(), rect);
-            let mut style = WidgetStyle::default();
-            style.background_color = Some(Color::rgb(240, 240, 240));
-            style.background_gradient = gradient;
-            style.border_radius = Some(6);
+            let style = WidgetStyle {
+                background_color: Some(Color::rgb(240, 240, 240)),
+                background_gradient: gradient,
+                border_radius: Some(6),
+                ..WidgetStyle::default()
+            };
             label.set_style(style);
             crate::widget::svg::render_widget_to_svg_on(&mut label, rect, backdrop)
         };

@@ -534,6 +534,25 @@ impl WidgetProperties for ToolBox {
 }
 
 impl ToolBox {
+    /// The tint for an item's embedded icon tile, derived from the resolved style.
+    ///
+    /// # Why this is a named function (issue §9 item #7)
+    ///
+    /// The tile colour used to be one of two hardcoded RGB literals, so an embedded icon ignored the
+    /// active theme while every other pixel of the item honoured it. Deriving it from the control's
+    /// own `border_color` / `background_color` gives embedded icons the same colour source as the rest
+    /// of the control, and naming the derivation makes it testable without driving a real `Image`.
+    ///
+    /// The selected tile keeps the full ink colour; an unselected tile is that ink blended halfway
+    /// toward the surface, so it reads as the same colour family at lower emphasis.
+    pub(crate) fn icon_tile_color(ink: Color, surface: Color, is_current: bool) -> Color {
+        if is_current {
+            ink
+        } else {
+            ink.blend(&surface, 0.5)
+        }
+    }
+
     /// Sets the shared widget registry for child forwarding.
     pub fn set_registry(&mut self, registry: Rc<RefCell<SimpleRegistry>>) {
         self.registry = Some(registry);
@@ -716,12 +735,18 @@ impl Draw for ToolBox {
                     let icon_x = item_rect.x + padding;
                     let icon_y = item_rect.y + (item_rect.height as i32 - icon_size as i32) / 2;
                     let icon_rect = Rect::new(icon_x, icon_y, icon_size, icon_size);
-                    // Draw a small rounded square as the icon background
-                    let icon_bg_color = if is_current {
-                        Color::rgb(100, 100, 200)
-                    } else {
-                        Color::rgb(180, 180, 200)
-                    };
+                    // Draw a small rounded square as the icon tile.
+                    //
+                    // The tile colour is **derived from the resolved style**, not a literal: the
+                    // selected tile uses the control's own `border_color` (the same token the
+                    // selected item's frame already uses) and an unselected tile is that colour
+                    // blended toward the surface. Two hardcoded RGB literals here meant the embedded
+                    // icon ignored the theme entirely \u2014 the colour-source gap the icon audit
+                    // (issue \u00a79 item #7) flagged. `text_color` remains the fallback so a build
+                    // with no active theme still paints a visible tile.
+                    let tile_ink = style.border_color.unwrap_or(Color::rgb(100, 100, 200));
+                    let surface = style.background_color.unwrap_or(Color::rgb(240, 240, 240));
+                    let icon_bg_color = Self::icon_tile_color(tile_ink, surface, is_current);
                     context.fill_rounded_rect(icon_rect, 3, icon_bg_color);
                     // Draw a simple shape inside: a small circle (representative)
                     let inner_r = 3;
@@ -1059,6 +1084,39 @@ mod tests {
         assert!(svg.contains("height=\"160\""), "SVG must contain correct height");
         assert!(svg.contains("fill="), "SVG should contain fill attributes");
         assert!(svg.len() > 100, "SVG output should be substantial");
+    }
+
+    /// An embedded icon's tile colour is derived from the style, not a hardcoded literal.
+    ///
+    /// # The defect this pins (issue §9 item #7)
+    ///
+    /// `ToolBox`'s icon tile used two fixed RGB literals, so an embedded icon ignored the active
+    /// theme while every other pixel of the item honoured it. `icon_tile_color` now takes the ink and
+    /// surface from the resolved style; this asserts the two observable properties: the selected tile
+    /// is exactly the ink, and an unselected tile is a *different*, surface-blended colour (so it is
+    /// not the same literal in disguise).
+    #[test]
+    fn an_embedded_icon_tile_is_derived_from_the_style() {
+        let ink = Color::rgb(10, 20, 30);
+        let surface = Color::rgb(250, 250, 250);
+
+        assert_eq!(
+            ToolBox::icon_tile_color(ink, surface, true),
+            ink,
+            "the selected tile must use the style ink directly"
+        );
+        let unselected = ToolBox::icon_tile_color(ink, surface, false);
+        assert_ne!(unselected, ink, "an unselected tile must be a distinct, blended colour");
+        assert_ne!(
+            unselected,
+            Color::rgb(180, 180, 200),
+            "the tile must not be the old hardcoded literal"
+        );
+        // Blending toward a light surface must lighten the ink, not darken it.
+        assert!(
+            unselected.r > ink.r && unselected.g > ink.g && unselected.b > ink.b,
+            "blending toward a light surface must lighten the tile: ink={ink:?} tile={unselected:?}"
+        );
     }
 
     #[test]

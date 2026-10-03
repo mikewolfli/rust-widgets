@@ -69,7 +69,7 @@ use: the library paints every `WidgetKind` and the host supplies pixels.
 | `mount_surface` / `resize` / `unmount` | ✅ Implemented | records the displayed widgets and their rects |
 | `invalidate_surface` + repaint queue | ✅ Implemented | coalesced; the Activity drains it to know what went stale |
 | `supports_surfaces()` | ✅ `true` | backed by the above, pinned by `android_hosts_widget_surfaces_and_queues_repaints` |
-| Input delivery into widgets | ⬜ Not wired | the Activity must forward its touch/key events into `widget::runtime::dispatch_pointer_event` |
+| Input delivery into widgets | 🔶 Library entry ready — host forwarding not wired | The **library side exists**: `widget::runtime::dispatch_pointer_event(root, event, point)` (which also drives focus, hover and pointer capture) and `dispatch_event(id, event)` are implemented and tested on the host. What is **not wired** is the Java host: the Activity's `onTouchEvent`/`onKeyDown` callbacks must translate and forward their events into those entry points. Until a host does that, this backend paints but does not react. The row is *not* `⬜ Not wired` because that wording hid the existing library entry point |
 
 > **No native controls exist — corrected 2026-09-30.** This section used to be an
 > `android.widget.*` inventory with a ✅ per kind. **There is nothing to inventory.** The library

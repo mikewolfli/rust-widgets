@@ -200,6 +200,11 @@ impl BoundJsonLayout {
             self.root = None;
         }
         self.unregister_name(id);
+        // Release the load-time event bindings that belonged to this node. Their tokens own the
+        // subscriptions (and a signal reference), so releasing here is what stops a destroyed
+        // control's wires \u2014 and the resources their slots captured \u2014 from outliving it
+        // (BLUE-issue E-27). A layout that keeps a node live keeps its bindings too.
+        crate::json::release_widget_bindings(id);
     }
 
     /// Move `child` to position `index` within `parent`'s child list, keeping its id.

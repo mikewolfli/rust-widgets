@@ -1128,7 +1128,9 @@ pub struct WindowsPlatform {
     pub menu_state: Win32MenuState,
     // Removed handle_state: Win32HandleState, as Win32HandleState is not defined in state.rs
     /// Platform IME bridge for text input method integration (Windows TSF).
-    /// Uses `ime_windows::WindowsImeBridge` (real state machine, no fake COM vtables).
+    /// Uses `ime_windows::WindowsImeBridge`, which creates and activates a real
+    /// `ITfThreadMgr` (see that module's `tsf` submodule) rather than only running the
+    /// platform-independent state machine.
     pub ime_bridge: crate::platform::ime_windows::WindowsImeBridge,
     /// Platform rich clipboard backend.
     pub clipboard: crate::platform::clipboard_stubs::windows::WindowsClipboard,

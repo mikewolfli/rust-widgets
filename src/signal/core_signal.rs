@@ -57,8 +57,62 @@ static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
 
 type SlotFn<T> = Box<dyn FnMut(Arc<T>) + Send + Sync + 'static>;
 
+/// A slot's callback and its deferred-delivery queue, so concurrent emits neither drop a value nor
+/// hold a lock across a callback that may emit another signal.
+///
+/// # Why a per-slot `Arc` with a pending queue (BLUE-issues E-21 and E-29)
+///
+/// `emit` must invoke a `FnMut`, which needs exclusive access to the closure. Taking the callback
+/// **out** of the slot map for the call (leaving `None`) made a concurrent emit on another thread see
+/// a connected, unblocked slot as absent and silently drop its value (E-21). Holding a lock across the
+/// callback fixed that but deadlocked when two signals forwarded into each other across threads: each
+/// thread held one slot's lock while waiting for the other's (E-29).
+///
+/// The queue breaks the cycle. The callback mutex is taken with `try_lock`:
+/// * **success** \u2014 run the callback, then drain any values another thread deferred while we held it;
+/// * **failure** \u2014 the slot is executing elsewhere. Rather than block (which can cycle) or drop (which
+///   loses the value), the value is appended to `pending` and the running thread delivers it before it
+///   releases. No lock is ever held while acquiring another slot's lock, so no lock-order cycle can
+///   form, and no value is dropped.
+struct SlotSlot<T: Clone + Send + 'static> {
+    callback: Mutex<SlotFn<T>>,
+    /// Values deferred by a concurrent emit whose `try_lock` found the callback busy.
+    ///
+    /// Stored as owned `T` rather than `Arc<T>` so this type is `Send + Sync` from `T: Send` alone,
+    /// matching `Signal<T>`'s public bound. The value is re-wrapped in an `Arc` when it is delivered.
+    pending: Mutex<crate::compat::Vec<T>>,
+}
+
+impl<T: Clone + Send + 'static> SlotSlot<T> {
+    fn new(callback: SlotFn<T>) -> Self {
+        Self { callback: Mutex::new(callback), pending: Mutex::new(crate::compat::Vec::new()) }
+    }
+
+    /// Runs `value` on this slot if the callback is free, otherwise defers it.
+    ///
+    /// Returns `true` if the callback ran here (the caller then owns draining the queue).
+    fn deliver(&self, value: Arc<T>) -> bool {
+        let Some(mut callback) = crate::compat::try_lock_recover(&self.callback) else {
+            // Busy: defer rather than block (which could cycle) or drop (which loses the value).
+            lock(&self.pending).push((*value).clone());
+            return false;
+        };
+        callback(value);
+        // Deliver everything another thread queued while we held the callback, before releasing it.
+        loop {
+            let next = lock(&self.pending).pop();
+            match next {
+                Some(queued) => callback(Arc::new(queued)),
+                None => break,
+            }
+        }
+        true
+    }
+}
+
 struct SlotEntry<T: Clone + Send + 'static> {
-    callback: Option<SlotFn<T>>,
+    /// Present while the entry is connected; absent only after logical removal.
+    slot: Option<Arc<SlotSlot<T>>>,
     once: bool,
     blocked: bool,
     priority: Priority,
@@ -75,83 +129,54 @@ struct SlotEntry<T: Clone + Send + 'static> {
     sequence: u64,
 }
 
-struct SignalInner<T: Clone + Send + 'static> {
-    slots: RwLock<HashMap<ConnectionHandle, SlotEntry<T>>>,
-    /// Serialises **concurrent** emits of one signal across threads.
-    ///
-    /// # The defect this closes
-    ///
-    /// `emit` temporarily takes a slot's callback out of the map while it runs (so the callback
-    /// may call back into the signal). A second emit running **concurrently on another thread**
-    /// therefore found `callback == None` for an entry that was still connected and not blocked, and
-    /// silently skipped it: the value was dropped with no queue, no error and no diagnostic. The
-    /// signal was marketed as safe to emit from several threads, which is true of the *locking* but
-    /// did not disclose that a concurrent emit can lose a delivery (BLUE-issue E-21).
-    ///
-    /// # Why a lock and not a queue
-    ///
-    /// Serialising keeps every emit's delivery whole and in order, which is what a caller who emits
-    /// from a worker thread needs. The lock is only taken when the signal is **not already emitting
-    /// on this thread** (see [`emit_lock_guard`]), so the documented same-thread re-entrancy still
-    /// skips the slot on the stack rather than dead-locking on this mutex.
-    ///
-    /// Not present under `alloc_frugal`: that profile is a single-threaded embedded surface, so
-    /// there is no concurrent emitter to serialise against and the crate does not require its
-    /// malloc-free signal to carry a lock.
-    #[cfg(not(alloc_frugal))]
-    emit_serial: crate::compat::Mutex<()>,
-}
-
-// Marks the signals this thread is currently emitting, so a nested emit on the same thread is
-// recognised as re-entrancy rather than mistaken for a concurrent emit and made to wait.
+// Marks a slot as currently executing **on this thread**, so a same-thread re-entrant emit skips it
+// instead of dead-locking on its own mutex.
 //
-// The set is keyed by signal identity (`Signal::identity`), which is unique among live signals.
+// The set is keyed by `(signal identity, connection handle)`, which together identify one slot.
 // A plain comment rather than `///`: `thread_local!` does not turn leading doc comments into item
-// docs, and the attribute/`cfg` in between would make them dangle anyway.
+// docs, and the `cfg` in between would make them dangle anyway.
 #[cfg(not(alloc_frugal))]
 thread_local! {
     #[allow(clippy::missing_const_for_thread_local)]
-    static EMITTING: core::cell::RefCell<crate::compat::Vec<usize>> =
+    static EXECUTING_SLOTS: core::cell::RefCell<crate::compat::Vec<(usize, ConnectionHandle)>> =
         core::cell::RefCell::new(crate::compat::Vec::new());
 }
 
-/// Whether `identity` is currently emitting on **this** thread.
+/// Whether `(identity, handle)` is currently executing on this thread.
 #[cfg(not(alloc_frugal))]
-fn is_emitting_here(identity: usize) -> bool {
-    EMITTING.with(|set| set.borrow().contains(&identity))
+fn slot_running_here(identity: usize, handle: ConnectionHandle) -> bool {
+    EXECUTING_SLOTS.with(|set| set.borrow().contains(&(identity, handle)))
 }
 
-/// Records `identity` as emitting on this thread for the guard's lifetime.
+/// Records `(identity, handle)` as executing on this thread for the guard's lifetime.
 #[cfg(not(alloc_frugal))]
-struct EmittingHere(usize);
+struct SlotRunning(usize, ConnectionHandle);
 
 #[cfg(not(alloc_frugal))]
-impl EmittingHere {
-    fn new(identity: usize) -> Self {
-        EMITTING.with(|set| set.borrow_mut().push(identity));
-        Self(identity)
+impl SlotRunning {
+    fn new(identity: usize, handle: ConnectionHandle) -> Self {
+        EXECUTING_SLOTS.with(|set| set.borrow_mut().push((identity, handle)));
+        Self(identity, handle)
     }
 }
 
 #[cfg(not(alloc_frugal))]
-impl Drop for EmittingHere {
+impl Drop for SlotRunning {
     fn drop(&mut self) {
-        EMITTING.with(|set| {
+        EXECUTING_SLOTS.with(|set| {
             let mut set = set.borrow_mut();
-            if let Some(pos) = set.iter().position(|id| *id == self.0) {
+            if let Some(pos) = set.iter().position(|entry| *entry == (self.0, self.1)) {
                 set.remove(pos);
             }
         });
     }
 }
 
-impl<T: Clone + Send + 'static> SignalInner<T> {
-    #[cfg(not(alloc_frugal))]
-    fn new() -> Self {
-        Self { slots: RwLock::new(HashMap::new()), emit_serial: crate::compat::Mutex::new(()) }
-    }
+struct SignalInner<T: Clone + Send + 'static> {
+    slots: RwLock<HashMap<ConnectionHandle, SlotEntry<T>>>,
+}
 
-    #[cfg(alloc_frugal)]
+impl<T: Clone + Send + 'static> SignalInner<T> {
     fn new() -> Self {
         Self { slots: RwLock::new(HashMap::new()) }
     }
@@ -261,7 +286,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
         write_lock(&self.inner.slots).insert(
             handle,
             SlotEntry {
-                callback: Some(Box::new(slot)),
+                slot: Some(Arc::new(SlotSlot::new(Box::new(slot)))),
                 once: false,
                 blocked: false,
                 priority,
@@ -281,7 +306,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
         write_lock(&self.inner.slots).insert(
             handle,
             SlotEntry {
-                callback: Some(Box::new(slot)),
+                slot: Some(Arc::new(SlotSlot::new(Box::new(slot)))),
                 once: true,
                 blocked: false,
                 priority: Priority::Normal,
@@ -404,32 +429,14 @@ impl<T: Clone + Send + 'static> Signal<T> {
     ///
     /// Re-entrancy is a *same-thread* fact: the slot is on this thread's stack. An emit on a
     /// **different** thread is not re-entrancy, and the value it carries must not be dropped merely
-    /// because this thread happens to be inside a callback. Emits therefore take a per-signal
-    /// serialisation lock unless this thread is already emitting the same signal; a concurrent emit
-    /// waits its turn and then delivers, so every emit reaches every non-blocked, non-re-entrant
-    /// slot rather than being silently skipped (BLUE-issue E-21).
+    /// because this thread happens to be inside a callback. Each slot's callback lives behind its own
+    /// mutex, so a concurrent emit waits for that one slot and then delivers — it never skips a
+    /// connected slot, and it never holds a signal-global lock (BLUE-issues E-21 and E-29).
     pub fn emit(&self, value: T) {
-        // Serialise against a concurrent emit on another thread. Skipped when this thread is
-        // already inside `emit` for this same signal, which is the documented re-entrant case and
-        // must not block on a lock this frame already holds.
-        #[cfg(not(alloc_frugal))]
-        let already_emitting_here = is_emitting_here(self.identity());
-        #[cfg(not(alloc_frugal))]
-        let _serial =
-            if already_emitting_here { None } else { Some(lock(&self.inner.emit_serial)) };
-        // Record this signal as emitting on this thread, so a nested emit is recognised as
-        // re-entrancy and bypasses the lock rather than dead-locking. Only the outermost frame on
-        // this thread installs the marker; the guard drops on both the normal return and an unwind
-        // out of a callback.
-        #[cfg(not(alloc_frugal))]
-        let _emitting_here =
-            if already_emitting_here { None } else { Some(EmittingHere::new(self.identity())) };
-
         self.emit_inner(Arc::new(value));
     }
 
-    /// The emit pass itself, split out so the serialisation guard in [`Self::emit`] stays on one
-    /// frame and cannot be dropped before the slots finish running.
+    /// The emit pass: snapshot the slot list, then invoke each slot in priority order.
     fn emit_inner(&self, arc_value: Arc<T>) {
         // 1. Snapshot handles, priorities and connection order under a read lock.
         let snapshot: Vec<(ConnectionHandle, Priority, u64)> = {
@@ -446,76 +453,61 @@ impl<T: Clone + Send + 'static> Signal<T> {
         let mut snapshot = snapshot;
         snapshot.sort_by_key(|a| (a.1.rank(), a.2));
 
-        // 3. Process each slot individually against the real HashMap.
-        //    The callback is temporarily taken (via Option::take) under a write
-        //    lock, leaving the handle in the map so that if the callback calls
-        //    `disconnect(own_handle)`, the disconnect can find and remove the
-        //    handle. After invocation, if the handle still exists in the map
-        //    (i.e., was not self-disconnected), the callback is restored.
-        //    Once-slots are removed unconditionally after invocation.
+        let identity = self.identity();
+
+        // 3. Invoke each slot by cloning its `Arc<Mutex<..>>` under a short read lock, then running it
+        //    with **no signal lock held**. Holding no lock across the callback is what removes the
+        //    cross-signal lock cycle (E-29); the per-slot mutex is what keeps a concurrent emit from
+        //    dropping the value (E-21).
         for (handle, _priority, _sequence) in snapshot {
-            // Temporarily take the callback under a write lock, leaving None.
-            // The handle stays in the HashMap so disconnect() can find it.
-            let taken = {
-                let mut slots = write_lock(&self.inner.slots);
-                if let Some(entry) = slots.get_mut(&handle) {
-                    if entry.blocked {
-                        None
-                    } else {
-                        entry.callback.take()
-                    }
-                } else {
-                    // Handle was disconnected by a prior callback in this emit loop.
-                    None
-                }
+            // Clone the slot out of the map (cheap, an `Arc` bump) while holding only a read lock.
+            let slot =
+                {
+                    let slots = read_lock(&self.inner.slots);
+                    slots.get(&handle).and_then(|entry| {
+                        if entry.blocked {
+                            None
+                        } else {
+                            entry.slot.clone()
+                        }
+                    })
+                };
+            let Some(slot) = slot else {
+                // Blocked, or disconnected by a prior callback in this pass.
+                continue;
             };
 
-            if let Some(callback) = taken {
-                // Restore-or-remove runs through this guard, so it happens on **both** the normal
-                // return and an unwind out of the callback.
-                //
-                // # The defect this closes
-                //
-                // The restore used to be plain code after `callback(...)`. If a slot panicked and
-                // the host caught the unwind (`catch_unwind`, a signal handler, a test harness),
-                // that code never ran: the entry was left in the map with `callback == None`, so a
-                // later emit silently skipped it and `slot_count` still counted it. The signal then
-                // reported a live wire (rule #97) that could never fire again. A `Drop` guard makes
-                // the cleanup unconditional, which is the only shape that survives an unwind.
-                struct RestoreGuard<'a, T: Clone + Send + 'static> {
-                    inner: &'a SignalInner<T>,
-                    handle: ConnectionHandle,
-                    callback: Option<SlotFn<T>>,
-                }
-                impl<T: Clone + Send + 'static> Drop for RestoreGuard<'_, T> {
-                    fn drop(&mut self) {
-                        let callback = match self.callback.take() {
-                            Some(callback) => callback,
-                            None => return,
-                        };
-                        let mut slots = write_lock(&self.inner.slots);
-                        if let Some(entry) = slots.get_mut(&self.handle) {
-                            if entry.once {
-                                // Once-slot: the entry is removed whether or not the callback
-                                // panicked, because a once-slot has fired either way.
-                                slots.remove(&self.handle);
-                            } else {
-                                // Non-once and still connected: restore the callback. If the
-                                // callback disconnected itself, the entry is already gone and the
-                                // callback is dropped here.
-                                entry.callback = Some(callback);
-                            }
-                        }
-                    }
-                }
-
-                let mut guard =
-                    RestoreGuard { inner: &self.inner, handle, callback: Some(callback) };
-                if let Some(callback) = guard.callback.as_mut() {
-                    callback(arc_value.clone());
-                }
-                // `guard` runs its restore/remove on drop, here or on unwind.
+            // A same-thread re-entrant emit must skip the slot already on the stack: its callback is
+            // executing on this very thread, so running it again would recurse without bound. The
+            // documented contract is that the slot does not run twice from one stack. Cross-thread
+            // callers are NOT skipped — they defer their value to the running thread (see `deliver`).
+            #[cfg(not(alloc_frugal))]
+            if slot_running_here(identity, handle) {
+                continue;
             }
+
+            // A once-slot is removed from the map before it runs, so its entry cannot be invoked
+            // again even if the callback emits re-entrantly. Removal takes the write lock briefly and
+            // is released before the call.
+            let is_once = {
+                let slots = read_lock(&self.inner.slots);
+                slots.get(&handle).map(|entry| entry.once).unwrap_or(false)
+            };
+            if is_once {
+                let _ = self.inner.disconnect(handle);
+            }
+
+            // Record that this slot is executing on this thread before running it, so a nested emit of
+            // the same signal skips it instead of recursing. The guard clears the marker on normal
+            // return and on an unwind out of the callback.
+            #[cfg(not(alloc_frugal))]
+            let _running = SlotRunning::new(identity, handle);
+
+            // `deliver` takes the per-slot callback with `try_lock`: it runs the callback here when
+            // free, and otherwise **defers** the value to the thread already running it. No lock is
+            // held while another slot's lock is acquired, so a mutual cross-signal forward cannot
+            // dead-lock, and a concurrent emit cannot drop its value (BLUE-issues E-21, E-29).
+            let _ = slot.deliver(arc_value.clone());
         }
     }
 
@@ -1078,5 +1070,74 @@ mod emit_behaviour_tests {
             2,
             "both emits must reach the connected slot; a dropped value is the silent-loss defect"
         );
+    }
+
+    /// Two signals that forward into each other across threads must both finish.
+    ///
+    /// # The defect this pins (BLUE-issue E-29)
+    ///
+    /// The E-21 fix serialised a whole emit on a **signal-level** mutex. When thread T1 ran `A`'s
+    /// callback and, inside it, emitted `B`, while T2 ran `B`'s callback and emitted `A`, T1 held
+    /// `A`'s lock waiting for `B`'s while T2 held `B`'s waiting for `A`'s \u2014 a lock-order cycle that
+    /// never resolves. Locks are now **per slot** and none is held across the callback, so the two
+    /// forwards run in a per-call order that cannot cycle.
+    ///
+    /// The test uses a three-way barrier so both callbacks are provably inside their first delivery
+    /// before either forwards, and bounded channel receives so a regression fails as a timeout rather
+    /// than hanging the suite.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn cross_signal_forwards_across_threads_do_not_deadlock() {
+        use std::sync::mpsc;
+        use std::sync::Barrier;
+        use std::time::Duration;
+
+        let a = Signal::<u32>::new();
+        let b = Signal::<u32>::new();
+        // Both threads announce they are inside their first callback, then proceed together.
+        let both_inside = Arc::new(Barrier::new(2));
+
+        // A's slot forwards payload 1 to B with payload 2 (only for payload 1, so the forward is not
+        // an unbounded recursion: payload 2's delivery does not forward again).
+        let b_for_a = b.clone();
+        let barrier_a = Arc::clone(&both_inside);
+        a.connect(move |value: Arc<u32>| {
+            if *value == 1 {
+                barrier_a.wait();
+                b_for_a.emit(2);
+            }
+        });
+        let a_for_b = a.clone();
+        let barrier_b = Arc::clone(&both_inside);
+        b.connect(move |value: Arc<u32>| {
+            if *value == 1 {
+                barrier_b.wait();
+                a_for_b.emit(2);
+            }
+        });
+
+        let (done_tx_1, done_rx_1) = mpsc::channel();
+        let (done_tx_2, done_rx_2) = mpsc::channel();
+        let a1 = a.clone();
+        let b2 = b.clone();
+        let t1 = std::thread::spawn(move || {
+            a1.emit(1);
+            let _ = done_tx_1.send(());
+        });
+        let t2 = std::thread::spawn(move || {
+            b2.emit(1);
+            let _ = done_tx_2.send(());
+        });
+
+        assert!(
+            done_rx_1.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "thread 1 must complete: a mutual cross-signal forward must not dead-lock"
+        );
+        assert!(
+            done_rx_2.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "thread 2 must complete: a mutual cross-signal forward must not dead-lock"
+        );
+        t1.join().expect("thread 1 must not panic");
+        t2.join().expect("thread 2 must not panic");
     }
 }

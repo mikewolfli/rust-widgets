@@ -200,6 +200,24 @@ crate::impl_default_via_new!(EventHandlerMap);
 
 thread_local! {
     static GLOBAL_EVENT_HANDLERS: RefCell<EventHandlerMap> = RefCell::new(EventHandlerMap::new());
+
+    /// Bumped by [`clear_global_handlers`], so an in-flight [`invoke_global_handler`] can tell that the
+    /// registry was cleared while its handler ran and **not** re-insert the handler afterwards.
+    ///
+    /// # The defect this closes (BLUE-issue E-28)
+    ///
+    /// `invoke_global_handler` moves the running handler out of the map and restores it when the call
+    /// returns. A handler that called `clear_global_handlers` — a layout tearing itself down from inside
+    /// a callback — removed every *other* handler, but the `RestoreGuard` then put the running one back:
+    /// "clear all" was honoured for everything except the handler asking for it, and its captured
+    /// resources stayed alive. Comparing the generation captured at invoke time against the current one
+    /// makes a clear invalidate the pending restore, so the running handler is dropped like the rest.
+    static HANDLER_GENERATION: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
+/// The current global-handler generation, used to detect a clear during a handler.
+fn handler_generation() -> u64 {
+    HANDLER_GENERATION.with(|generation| generation.get())
 }
 
 /// Register a global event handler.
@@ -231,23 +249,35 @@ pub fn invoke_global_handler(name: &str, ctx: &EventHandlerContext) -> bool {
     let Some(handler) = taken else {
         return false;
     };
+    // Capture the generation so a `clear_global_handlers` during the call can invalidate the restore.
+    let generation_at_invoke = handler_generation();
 
-    // Re-insert on both the normal return and an unwind, so a panicking handler does not leave the
-    // name unregistered. `restore` will not clobber a handler the callback re-registered under this
-    // same name while it ran.
+    // Re-insert on both the normal return and an unwind, **unless** the registry was cleared while the
+    // handler ran. A `clear` means "remove every registered handler", and the running handler is one of
+    // them, so restoring it would contradict the call that just asked to clear it (BLUE-issue E-28).
+    // `restore` will not clobber a handler the callback re-registered under this same name.
     struct RestoreGuard<'a> {
         name: &'a str,
         handler: Option<EventHandler>,
+        generation_at_invoke: u64,
     }
     impl Drop for RestoreGuard<'_> {
         fn drop(&mut self) {
-            if let Some(handler) = self.handler.take() {
-                GLOBAL_EVENT_HANDLERS
-                    .with(|handlers| handlers.borrow_mut().restore(self.name, handler));
+            let handler = match self.handler.take() {
+                Some(handler) => handler,
+                None => return,
+            };
+            if handler_generation() != self.generation_at_invoke {
+                // The registry was cleared while this handler ran: the clear's `clear()` removed the
+                // other handlers, and the generation bump invalidates this restore, so the running
+                // handler is dropped too. Do not put it back.
+                return;
             }
+            GLOBAL_EVENT_HANDLERS
+                .with(|handlers| handlers.borrow_mut().restore(self.name, handler));
         }
     }
-    let guard = RestoreGuard { name, handler: Some(handler) };
+    let guard = RestoreGuard { name, handler: Some(handler), generation_at_invoke };
     if let Some(handler) = guard.handler.as_ref() {
         handler(ctx);
     }
@@ -255,7 +285,16 @@ pub fn invoke_global_handler(name: &str, ctx: &EventHandlerContext) -> bool {
 }
 
 /// Clear all registered global handlers.
+///
+/// # A clear during a handler also clears that handler (BLUE-issue E-28)
+///
+/// The clear bumps the handler generation **before** emptying the map. An
+/// [`invoke_global_handler`] running on this same thread captured the previous generation and will not
+/// re-insert its handler, so "clear all registered handlers" holds for the handler asking for the
+/// clear too — the API's plain reading. A handler re-registered by name after the clear is a *new*
+/// registration and survives, because it is inserted after the generation bump.
 pub fn clear_global_handlers() {
+    HANDLER_GENERATION.with(|generation| generation.set(generation.get().wrapping_add(1)));
     GLOBAL_EVENT_HANDLERS.with(|handlers| {
         handlers.borrow_mut().clear();
     });
@@ -308,7 +347,9 @@ pub fn reset_cross_thread_skips() {
 /// A human-readable identifier for the current thread, used in the cross-thread diagnostic.
 ///
 /// Prefers the thread's own name (a host that names its UI thread gets a useful message) and falls
-/// back to the debug form of the id, which is always available and unique per thread.
+/// back to the debug form of the id, which is always available and unique per thread. **Diagnostic
+/// only** — it is not unique (two threads may share a name), so it must never be used to decide
+/// identity (BLUE-issue E-26; use [`current_thread_id`] for that).
 pub fn current_thread_name() -> alloc::string::String {
     // `std::thread` is available wherever this module is compiled: the JSON loader is gated on a
     // device profile, which implies `std`.
@@ -317,6 +358,19 @@ pub fn current_thread_name() -> alloc::string::String {
         Some(name) => alloc::string::String::from(name),
         None => alloc::format!("{:?}", current.id()),
     }
+}
+
+/// The identity of the current thread.
+///
+/// # Why a `ThreadId` and not a name (BLUE-issue E-26)
+///
+/// Rust does not require thread names to be unique. Two different threads both named `same-ui-name`
+/// compared **equal** under a name-based affinity check, so a cross-thread emission from one was
+/// mistaken for a same-thread delivery and the other thread's same-named handler ran. `ThreadId` is
+/// assigned by the runtime and unique for the lifetime of the process, so it is the correct key for
+/// "is this the thread the binding was made on?". The name is still reported in the diagnostic.
+pub fn current_thread_id() -> std::thread::ThreadId {
+    std::thread::current().id()
 }
 
 #[cfg(test)]
@@ -539,7 +593,15 @@ mod tests {
         clear_global_handlers();
     }
 
-    /// A handler may clear the registry while it runs, and the invoked handler is still restored.
+    /// A `clear` inside a handler also removes that handler, so "clear all" means all.
+    ///
+    /// # The contract this pins (BLUE-issue E-28)
+    ///
+    /// The invoked handler is moved out of the map while it runs and restored when the call returns.
+    /// A handler that called `clear_global_handlers` used to have itself restored afterwards, so
+    /// "clear all registered handlers" was true for every handler except the one asking for the clear
+    /// — and its captured resources stayed alive. A clear now invalidates the pending restore, so the
+    /// running handler is dropped with the rest. The second invoke therefore reports `false`.
     #[test]
     fn a_global_handler_may_clear_the_registry_while_running() {
         clear_global_handlers();
@@ -556,8 +618,159 @@ mod tests {
         });
         assert!(invoke_global_handler("clears", &ctx), "the handler must run despite clearing");
         assert!(ran.get());
-        // `clear_global_handlers` ran *during* the handler; the guard restores the entry afterwards.
-        assert!(invoke_global_handler("clears", &ctx), "the handler must have been restored");
+        // The clear ran *during* the handler and removed it too, so it must not be usable again.
+        assert!(
+            !invoke_global_handler("clears", &ctx),
+            "a handler that cleared the registry must not be restored by the clear's own frame"
+        );
+        clear_global_handlers();
+    }
+
+    /// A handler re-registers itself by name after clearing; the new registration must survive.
+    ///
+    /// The clear's generation bump invalidates only the *pending restore* of the old handler, not a
+    /// fresh `register_global_handler` made after the clear. A layout that clears and immediately
+    /// re-installs a handler must end up with the new one.
+    #[test]
+    fn a_handler_reregistered_after_a_clear_survives() {
+        clear_global_handlers();
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let calls_slot = calls.clone();
+        register_global_handler("cycle", move |_ctx| {
+            clear_global_handlers();
+            let inner = calls_slot.clone();
+            register_global_handler("cycle", move |_ctx| {
+                inner.set(inner.get() + 1);
+            });
+            clear_global_handlers();
+            let inner = calls_slot.clone();
+            register_global_handler("cycle", move |_ctx| {
+                inner.set(inner.get() + 1);
+            });
+        });
+
+        let ctx = EventHandlerContext::new(crate::WidgetTriggerEvent {
+            widget_id: 1,
+            kind: crate::platform::WidgetTriggerKind::Clicked,
+        });
+        // First call runs the outer handler, which clears and installs a new `cycle`.
+        assert!(invoke_global_handler("cycle", &ctx));
+        // The new registration is present and callable (it clears/registers again, then increments).
+        assert!(invoke_global_handler("cycle", &ctx), "the re-registered handler must survive");
+        clear_global_handlers();
+    }
+
+    /// A handler that re-registers its **own name without clearing** must not be clobbered by the
+    /// restore of the older handler.
+    ///
+    /// Acceptance case "避免恢复旧 handler 覆盖新注册": the running handler is moved out and restored
+    /// when the call returns, but `restore` uses `entry(..).or_insert(..)`, so a handler installed under
+    /// the same name while it ran wins. Without that rule the stale closure would overwrite the new one.
+    #[test]
+    fn a_same_name_reregistration_without_a_clear_is_not_clobbered() {
+        clear_global_handlers();
+        let which = std::rc::Rc::new(std::cell::Cell::new(0u8));
+        // The first handler, when run, replaces itself with a second that records `2`.
+        let which_first = which.clone();
+        register_global_handler("slot", move |_ctx| {
+            which_first.set(1);
+            let which_second = which_first.clone();
+            register_global_handler("slot", move |_ctx| {
+                which_second.set(2);
+            });
+        });
+
+        let ctx = EventHandlerContext::new(crate::WidgetTriggerEvent {
+            widget_id: 1,
+            kind: crate::platform::WidgetTriggerKind::Clicked,
+        });
+        assert!(invoke_global_handler("slot", &ctx), "the first handler runs");
+        assert_eq!(which.get(), 1, "the first handler recorded itself");
+        // The second invoke must reach the NEW handler, not the restored old one.
+        assert!(invoke_global_handler("slot", &ctx));
+        assert_eq!(
+            which.get(),
+            2,
+            "the same-name re-registration must win over the restored older handler"
+        );
+        clear_global_handlers();
+    }
+
+    /// A handler that panics is restored on the unwind path too, so a later emit still reaches it.
+    ///
+    /// Acceptance case "panic/unwind": `RestoreGuard` is a `Drop` guard, so the restore decision runs
+    /// on both the normal return and an unwind. With no clear the handler must come back; the restore is
+    /// observed by invoking it again after catching the panic.
+    #[test]
+    fn a_panicking_handler_is_restored_on_the_unwind_path() {
+        clear_global_handlers();
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let calls_slot = calls.clone();
+        let should_panic = std::rc::Rc::new(std::cell::Cell::new(true));
+        let panic_slot = should_panic.clone();
+        register_global_handler("boom", move |_ctx| {
+            calls_slot.set(calls_slot.get() + 1);
+            if panic_slot.get() {
+                panic!("deliberate unwind from a global handler");
+            }
+        });
+
+        let ctx = EventHandlerContext::new(crate::WidgetTriggerEvent {
+            widget_id: 1,
+            kind: crate::platform::WidgetTriggerKind::Clicked,
+        });
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            invoke_global_handler("boom", &ctx)
+        }));
+        assert!(caught.is_err(), "the handler must have unwound");
+        assert_eq!(calls.get(), 1, "the handler ran once before unwinding");
+
+        // The guard's Drop restored it on the unwind path; a later invoke must reach it.
+        should_panic.set(false);
+        assert!(
+            invoke_global_handler("boom", &ctx),
+            "a panicking handler must be restored so later emits still reach it"
+        );
+        assert_eq!(calls.get(), 2, "the restored handler ran again");
+        clear_global_handlers();
+    }
+
+    /// A handler may invoke a **different** handler by name while it runs (nested invoke).
+    ///
+    /// Acceptance case "嵌套 invoke": the outer handler is out of the map while it runs, and the inner
+    /// one is taken and restored independently. The inner handler must run and be restored; the outer
+    /// must also be restored when the whole call returns.
+    #[test]
+    fn a_handler_may_invoke_a_nested_handler_while_running() {
+        clear_global_handlers();
+        let inner_calls = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let inner_slot = inner_calls.clone();
+        register_global_handler("inner", move |_ctx| {
+            inner_slot.set(inner_slot.get() + 1);
+        });
+
+        let outer_calls = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let outer_slot = outer_calls.clone();
+        register_global_handler("outer", move |ctx| {
+            outer_slot.set(outer_slot.get() + 1);
+            // Nested invoke of a *different* name, while `outer` is out of the map.
+            assert!(invoke_global_handler("inner", ctx), "the nested handler must run");
+        });
+
+        let ctx = EventHandlerContext::new(crate::WidgetTriggerEvent {
+            widget_id: 1,
+            kind: crate::platform::WidgetTriggerKind::Clicked,
+        });
+        assert!(invoke_global_handler("outer", &ctx));
+        assert_eq!(outer_calls.get(), 1, "the outer handler ran once");
+        assert_eq!(inner_calls.get(), 1, "the nested inner handler ran once");
+        // Both were restored: the inner by its own guard, the outer by its guard on return. The second
+        // outer invoke nests the inner again (inner goes to 2), then an explicit inner invoke makes 3 —
+        // which proves the inner handler was restored rather than lost.
+        assert!(invoke_global_handler("outer", &ctx));
+        assert!(invoke_global_handler("inner", &ctx));
+        assert_eq!(outer_calls.get(), 2);
+        assert_eq!(inner_calls.get(), 3, "inner: 1 nested + 1 nested again + 1 explicit");
         clear_global_handlers();
     }
 }

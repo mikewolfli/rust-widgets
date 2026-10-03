@@ -176,14 +176,15 @@ impl JsonLoader {
     ) -> bool {
         let published = binding.published_name();
         if let Some(name) = published {
-            // A published binding has a releasable token. This convenience form has no way to hand
-            // that token back, and the binding must **outlive this call** (it is the load-time wire),
-            // so the token is deliberately not dropped: dropping it would release the subscription
-            // immediately. This is the documented additive, no-token form; a caller that wants to
-            // release the wire uses `bind_one_releasable`.
+            // The binding must outlive this call (it is the load-time wire), so its releasable token is
+            // **retained** keyed by the control rather than dropped or forgotten. Dropping it here would
+            // release the subscription immediately; forgetting it leaked the token's captured signal
+            // reference past the control's own destruction (BLUE-issue E-27). It is released when the
+            // control is torn down. A caller that wants to release the wire itself uses
+            // `bind_one_releasable` and owns the token.
             match Self::bind_published_dynamic(widget_id, name, binding.marker(), handler_name) {
                 Some(token) => {
-                    core::mem::forget(token);
+                    crate::json::event_route::retain_binding(widget_id, token);
                     true
                 }
                 None => false,
@@ -315,22 +316,26 @@ impl JsonLoader {
         // The slot forwards the trigger **and its payload**. The reference's own name is used (not
         // the caller's spelling) so the name a subscriber reads is the one the control answers to.
         //
-        // # Thread affinity (BLUE-issue E-25)
+        // # Thread affinity (BLUE-issue E-25, identity corrected in E-26)
         //
         // The handler registry is thread-local, so a signal emitted from another thread looked up
-        // that thread's (empty) registry and skipped the handler **silently**. The binding records
-        // the thread it was made on and reports a mismatch instead of pretending the handler ran,
-        // so "fired off the wrong thread" is observable rather than indistinguishable from "no
-        // handler was registered".
-        let bound_thread = crate::json::events::current_thread_name();
+        // that thread's (empty) registry and skipped the handler **silently**. The binding records the
+        // thread it was made on and reports a mismatch instead of pretending the handler ran, so
+        // "fired off the wrong thread" is observable rather than indistinguishable from "no handler
+        // was registered".
+        //
+        // The comparison is on the thread's **`ThreadId`**, not its name: names are not unique, so two
+        // threads sharing a name compared equal and one's emission was mis-taken for a same-thread
+        // delivery (BLUE-issue E-26). The names are still captured for the diagnostic message only.
+        let bound_thread_id = crate::json::events::current_thread_id();
+        let bound_thread_name = crate::json::events::current_thread_name();
         let handle = reference.subscribe(Box::new(
             move |payload: &crate::widget::capability::CapabilityValue| {
-                let fired_thread = crate::json::events::current_thread_name();
-                if fired_thread != bound_thread {
+                if crate::json::events::current_thread_id() != bound_thread_id {
                     crate::json::events::record_cross_thread_skip(
                         &handler_name,
-                        &bound_thread,
-                        &fired_thread,
+                        &bound_thread_name,
+                        &crate::json::events::current_thread_name(),
                     );
                     return;
                 }

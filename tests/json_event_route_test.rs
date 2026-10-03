@@ -526,6 +526,125 @@ fn a_cross_thread_emission_is_reported_rather_than_silently_skipped() {
     });
 }
 
+/// A worker thread that shares the binding thread's *name* is still a different thread.
+///
+/// # The defect this pins (BLUE-issue E-26)
+///
+/// The affinity check compared thread **names**, which Rust does not require to be unique. Two
+/// threads both named `same-ui-name` compared equal, so an emission from the worker was treated as a
+/// same-thread delivery and the worker's own `go` handler ran. The check now compares `ThreadId`, so a
+/// name collision cannot bypass it; the name is used only in the diagnostic.
+#[test]
+fn a_differently_named_thread_cannot_bypass_affinity_by_sharing_a_name() {
+    with_clean_handlers(|| {
+        rust_widgets::json::reset_cross_thread_skips();
+        let bound_calls = counting_handler("go");
+        let json = r#"{"window":{"id":"w","title":"T","width":400,"height":300,"layout":{
+            "type":"vbox","children":[{"button":{"id":"b","text":"Go",
+                "events":{"clicked":"go"}}}]}}}"#;
+
+        let bound = JsonLoader::load(json).expect("the document must load");
+        let id = mounted_id(&bound, "b");
+        let signal =
+            rust_widgets::widget::runtime::with_widget(id, |widget| widget.base().clicked.clone())
+                .expect("the button must be mounted");
+
+        // A worker with the *same name* as this test thread, registering its own thread-local `go`
+        // and emitting the bound control's signal. With name-based affinity its handler ran.
+        let worker_name = std::thread::current()
+            .name()
+            .map(str::to_owned)
+            .unwrap_or_else(|| "test-thread".to_string());
+        let worker_calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let worker_sink = std::sync::Arc::clone(&worker_calls);
+        let worker = std::thread::Builder::new()
+            .name(worker_name)
+            .spawn(move || {
+                rust_widgets::json::register_global_handler("go", move |_ctx| {
+                    worker_sink.fetch_add(1, Ordering::SeqCst);
+                });
+                signal.emit();
+            })
+            .expect("spawn the same-named worker");
+        worker.join().expect("the worker must not panic");
+
+        assert_eq!(
+            worker_calls.load(Ordering::SeqCst),
+            0,
+            "a same-named thread is still a different thread; its handler must not run"
+        );
+        assert_eq!(
+            bound_calls.load(Ordering::SeqCst),
+            0,
+            "and the bound thread's handler runs here"
+        );
+        assert!(
+            rust_widgets::json::cross_thread_skips() >= 1,
+            "the cross-thread emission must be reported even when the name collides"
+        );
+        rust_widgets::json::reset_cross_thread_skips();
+    });
+}
+
+/// A load-time published binding is retained and released with its control, not leaked.
+///
+/// # The defect this pins (BLUE-issue E-27)
+///
+/// `bind_one` used `core::mem::forget` on its releasable token. The token owns a release closure that
+/// captures an `EventSignalRef` \u2014 a strong reference to the control's signal \u2014 so forgetting it kept
+/// the signal (and every slot on it, plus their captured resources) alive even after the control was
+/// destroyed. The token is now retained keyed by the control and released when the node is torn down,
+/// so the subscription lives exactly as long as the control.
+#[test]
+fn a_load_time_binding_is_released_with_its_control() {
+    with_clean_handlers(|| {
+        counting_handler("on_go");
+        let json = r#"{"window":{"id":"w","title":"T","width":400,"height":300,"layout":{
+            "type":"vbox","children":[{"button":{"id":"b","text":"Go",
+                "events":{"clicked":"on_go"}}}]}}}"#;
+
+        let bound = JsonLoader::load(json).expect("the document must load");
+        let id = mounted_id(&bound, "b");
+        assert_eq!(
+            rust_widgets::json::retained_binding_count(id),
+            1,
+            "the published `events` binding must be retained (not leaked via `forget`), keyed by the \
+             control"
+        );
+
+        // Tearing the binding down releases the token, which disconnects the subscription.
+        rust_widgets::json::release_widget_bindings(id);
+        assert_eq!(
+            rust_widgets::json::retained_binding_count(id),
+            0,
+            "releasing the control's bindings must drop its retained tokens"
+        );
+    });
+}
+
+/// The teardown path releases a node's load-time bindings.
+#[test]
+fn detaching_a_node_releases_its_bindings() {
+    with_clean_handlers(|| {
+        counting_handler("on_go");
+        let json = r#"{"window":{"id":"w","title":"T","width":400,"height":300,"layout":{
+            "type":"vbox","children":[{"button":{"id":"b","text":"Go",
+                "events":{"clicked":"on_go"}}}]}}}"#;
+
+        let mut bound = JsonLoader::load(json).expect("the document must load");
+        let id = mounted_id(&bound, "b");
+        assert_eq!(rust_widgets::json::retained_binding_count(id), 1);
+
+        let removed = bound.detach(id);
+        assert!(removed.contains(&id), "the node must be detached");
+        assert_eq!(
+            rust_widgets::json::retained_binding_count(id),
+            0,
+            "`detach` must release the node's retained bindings, or a destroyed control's wires leak"
+        );
+    });
+}
+
 /// The property pass must not confuse a declared binding with an unknown property.
 ///
 /// `events` and the `on_*` keys are consumed by the wiring, so the name-driven property pass has

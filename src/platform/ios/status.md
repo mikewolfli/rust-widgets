@@ -51,7 +51,7 @@ and widgets are then displayed through `Platform::mount_surface` — see below.
 | IME / accessibility **metadata** (the per-widget flags and names) | ✅ Implemented | `BackendState` fields: `set_widget_ime_enabled` and `set_widget_accessibility_name` round-trip a boolean and a string |
 | IME / accessibility **bridges** (an input-method client, an accessibility tree) | ⛔ Not implemented | neither `ime_bridge()` nor `accessibility_bridge()` is overridden, so both inherit `None` — which is why `capabilities()` reports `ime: false` and `accessibility: false`. The row above is **not** a counter-argument: a flag store is not an input-method client |
 | Print facts | ✅ Implemented | honest error: `UIPrintInteractionController` is not bound |
-| **Input delivery into widgets** | ⬜ Not wired | the host must forward its touch/key events; see below |
+| **Input delivery into widgets** | 🔶 Library entry ready — host forwarding not wired | The Rust side provides `widget::runtime::dispatch_pointer_event(root, event, point)` (focus/hover/capture included) and `dispatch_event(id, event)`; both are implemented and host-tested. What is missing is the UIKit host side: the view's `touchesBegan`/`touchesMoved`/`pressesBegan` handlers must translate and forward events into those entry points. This distinction replaces the earlier bare `⬜ Not wired`, which did not say that the library entry point already exists |
 
 ### How a widget reaches the screen
 
@@ -73,11 +73,13 @@ stale rather than repainting everything. Pinned by
 ### Input is not yet delivered into widgets
 
 `mount_surface` makes a widget **visible**; it does not make it **interactive**.
-A UIKit host must translate its touches and keys and forward them, e.g. through
-`crate::widget::runtime::dispatch_pointer_event(root, event, point)` (which also
-drives focus, hover and pointer capture) or `dispatch_event(id, event)` when the
-target is already known. Until that wiring exists in the host layer, this backend
-paints but does not react.
+
+The **library** entry point already exists and is exercised by the host test suite:
+`crate::widget::runtime::dispatch_pointer_event(root, event, point)` translates a pointer into
+focus, hover, pointer capture and the target widget's `handle_event`, and
+`dispatch_event(id, event)` delivers to an already-known target. The gap is on the **host** side,
+not in the library: a UIKit host must translate its touches and keys and forward them into those
+entry points. Until that wiring exists in the host layer, this backend paints but does not react.
 
 ## Capabilities (honest contract)
 
