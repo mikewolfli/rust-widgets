@@ -19,8 +19,9 @@
 //!   which colour, i.e. by the order of two nearly identical code blocks that nothing checked.
 //! * `WidgetStyle::background_gradient` was settable, mergeable and CSS-expressible, but **no
 //!   painter read it**: a caller that set a gradient still got a solid fill. It is now honoured
-//!   through [`RenderContext::fill_background`] / [`SurfaceStyle::paint_with_gradient`], which the
-//!   control's face path calls.
+//!   through [`RenderContext::face_with_gradient`], the shared face path every control draws its
+//!   background through, and through [`SurfaceStyle::paint_with_gradient`] for a control that
+//!   wants the bevel and edge derived too.
 //!
 //! # What this module is, and is not
 //!

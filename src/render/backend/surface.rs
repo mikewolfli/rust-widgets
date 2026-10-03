@@ -577,6 +577,23 @@ impl<'a> RenderContext<'a> {
     /// the face's **outline** (which the control draws itself), exactly as
     /// [`SurfaceStyle::paint_with_gradient`](crate::render::SurfaceStyle::paint_with_gradient) does
     /// for a button. That keeps one gradient story in the crate rather than two.
+    ///
+    /// # Which controls route through here, and which do not
+    ///
+    /// Every control that paints its **own background face** calls this helper — the 100-plus call
+    /// sites that used to call `face` (`label`, `frame`, the dialogs, the view widgets, `lineedit`,
+    /// `textedit`, `listbox`, `combobox`, …). A handful of controls deliberately do **not**, and the
+    /// rule is the same one principle #51 states: share only where the concept is actually shared.
+    ///
+    /// * `checkbox` / `radiobutton` paint only their small checked **indicator**, not a
+    ///   control-sized background, so a `background_gradient` has no face to apply to.
+    /// * `slider` / `progressbar` paint a centred **track band** inside their rectangle, not the
+    ///   rectangle as a face; a widget-level gradient applied to a 4-pixel groove would be the wrong
+    ///   shape rather than the right one.
+    ///
+    /// Those four keep their existing `fill_rect` / `fill_rounded_rect` calls. A future control
+    /// whose background really is a face inherits gradient and radius by calling this helper, which
+    /// is the point of the shared path.
     pub fn face_with_gradient(
         &mut self,
         rect: Rect,

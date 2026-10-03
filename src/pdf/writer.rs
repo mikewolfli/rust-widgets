@@ -7,9 +7,9 @@ use crate::core::{Rect, Size};
 use crate::pdf::annotation::{Annotation, AnnotationFlags, AnnotationType};
 use crate::pdf::hyperlink::Hyperlink as PdfHyperlink;
 use crate::pdf::hyperlink::LinkAction as HyperlinkLinkAction;
-#[cfg(feature = "pdf-encryption")]
-use crate::pdf::security::security_profile_encryption;
 use crate::pdf::security::serialize_security_diagnostics_entries;
+#[cfg(feature = "pdf-encryption")]
+use crate::pdf::security::{security_profile_encryption, PdfEncryption};
 use crate::pdf::types::*;
 use crate::pdf::PdfDocument;
 use crate::pdf::PdfDocumentImpl;
@@ -48,6 +48,45 @@ impl PdfWriter {
 }
 crate::impl_default_via_new!(PdfWriter);
 
+/// Document-level encryption state for the bytes currently being written.
+///
+/// A single concrete type exists in every build so `build_minimal_pdf_bytes` does
+/// not need a feature-gated type annotation; without the `pdf-encryption` feature
+/// the only inhabitant is [`WriterEncryption::Open`].
+#[derive(Debug, Clone)]
+enum WriterEncryption {
+    /// No document-level encryption is applied.
+    Open,
+    /// The standard handler is applied with this key material.
+    #[cfg(feature = "pdf-encryption")]
+    Applied(PdfEncryption),
+}
+
+impl WriterEncryption {
+    /// Encrypt one content stream, or return it unchanged when open.
+    fn encrypt_content(&self, stream: &[u8]) -> Result<String, String> {
+        match self {
+            WriterEncryption::Open => String::from_utf8(stream.to_vec())
+                .map_err(|error| format!("PDF content stream is not valid UTF-8: {error}")),
+            #[cfg(feature = "pdf-encryption")]
+            WriterEncryption::Applied(encryption) => encryption.encrypt_content(stream),
+        }
+    }
+
+    /// Build the standard encryption dictionary when encryption is applied.
+    ///
+    /// Only meaningful with the `pdf-encryption` feature: without it no ciphertext
+    /// exists, so the sole inhabitant is [`WriterEncryption::Open`] and there is no
+    /// dictionary to build.
+    #[cfg(feature = "pdf-encryption")]
+    fn encryption_dictionary(&self) -> Option<String> {
+        match self {
+            WriterEncryption::Open => None,
+            WriterEncryption::Applied(encryption) => Some(encryption.build_encryption_dictionary()),
+        }
+    }
+}
+
 pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, std::io::Error> {
     if doc.pages.is_empty() {
         return Err(Error::new(ErrorKind::InvalidInput, "document must contain at least one page"));
@@ -57,18 +96,15 @@ pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, 
     // encryption of every content stream. Without the feature the profile stays intent
     // only (see the `% RW-NOTE` marker below), so the file is honest either way.
     #[cfg(feature = "pdf-encryption")]
-    let encryption = match security_profile_encryption(&doc.security) {
-        Some(Ok(encryption)) => Some(encryption),
-        None => None,
+    let writer_encryption = match security_profile_encryption(&doc.security) {
+        Some(Ok(encryption)) => WriterEncryption::Applied(encryption),
+        None => WriterEncryption::Open,
         Some(Err(error)) => {
-            return Err(Error::new(
-                ErrorKind::Other,
-                format!("PDF encryption setup failed: {error}"),
-            ))
+            return Err(Error::other(format!("PDF encryption setup failed: {error}")))
         }
     };
     #[cfg(not(feature = "pdf-encryption"))]
-    let encryption: Option<crate::pdf::security::PdfEncryption> = None;
+    let writer_encryption = WriterEncryption::Open;
     let mut objects: Vec<String> = Vec::new();
     // Track all annotation/hyperlink/form-field objects across all pages so we can
     // build a combined /AcroForm later if needed.  We store (object_id, page_index).
@@ -145,25 +181,9 @@ pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, 
                 &doc.pagination,
             );
         }
-        let stream_text = match &encryption {
-            Some(encryption) => encryption.encrypt_content(&stream).map_err(|error| {
-                Error::new(
-                    ErrorKind::Other,
-                    format!("PDF content-stream encryption failed: {error}"),
-                )
-            })?,
-            None => {
-                // PDF content streams are ASCII operators, so this lossless branch is
-                // always taken for unencrypted output and keeps the previous bytes.
-                let text = String::from_utf8(stream).map_err(|error| {
-                    Error::new(
-                        ErrorKind::InvalidData,
-                        format!("PDF content stream is not valid UTF-8: {error}"),
-                    )
-                })?;
-                text
-            }
-        };
+        let stream_text = writer_encryption.encrypt_content(&stream).map_err(|error| {
+            Error::other(format!("PDF content-stream encryption failed: {error}"))
+        })?;
         objects.push(format!(
             "<< /Length {} >>\nstream\n{}\nendstream",
             stream_text.len(),
@@ -231,16 +251,12 @@ pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, 
     // encryption dictionary's `/StmF` / `/StrF` `/StdCF` name. Without this indirection
     // `/StdCF` would resolve to nothing and readers (and honest docs) would reject it.
     #[cfg(feature = "pdf-encryption")]
-    let encrypt_object_id = encryption.as_ref().map(|_| {
+    let encrypt_object_id = writer_encryption.encryption_dictionary().map(|dictionary| {
         let crypt_filter_id = (objects.len() + 1) as u32;
         objects.push(
             "<< /Type /CryptFilter /CFM /AESV3 /AuthEvent /DocOpen /Length 16 >>".to_string(),
         );
         let encryption_id = (objects.len() + 1) as u32;
-        let dictionary = encryption
-            .as_ref()
-            .expect("encrypt_object_id is only built when encryption is present")
-            .build_encryption_dictionary();
         objects.push(format!(
             "<< /Filter /Standard /Length 16 /V 5 /R 6{dictionary} /CF << /StdCF {crypt_filter_id} 0 R >> >>"
         ));

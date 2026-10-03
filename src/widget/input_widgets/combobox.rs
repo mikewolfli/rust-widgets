@@ -1152,7 +1152,16 @@ impl Draw for ComboBox {
         } else {
             bg.blend(&bg.contrast_color(), overlay.fill_blend())
         };
-        context.fill_rect(band, bg);
+        // The field's own face, through the shared helper so a declared `background_gradient` paints
+        // (the solid `bg` stays the fallback, exactly as `background_color` does for a button).
+        context.face_with_gradient(
+            band,
+            bg,
+            style.background_gradient.as_ref(),
+            style.surface.unwrap_or_default(),
+            style.border_radius.unwrap_or(0),
+            Color::BLACK,
+        );
         // Draw border
         if let Some(border_color) = style.border_color {
             context.draw_rect(band, border_color);

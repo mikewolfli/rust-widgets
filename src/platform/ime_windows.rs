@@ -42,10 +42,12 @@ use crate::platform::ime::{ImeBridge, ImeCandidatePosition, ImeComposition};
 // | `ITfThreadMgrEventSink` | document-manager focus notifications; marks the context as setup |
 // | `ITfTextEditSink` | the **composition/commit** callbacks (`OnEndEdit`) |
 //
-// `ITfThreadMgr` alone carries ~30 methods before the ones used here, and `ITfContext` ~25;
-// each is bound up to and including the used slot, with the unused tail covered by opaque
+// `ITfThreadMgr` alone carries ~22 methods after the ones bound here; its vtable is
+// transcribed up to and including the last used slot, with the unused tail covered by opaque
 // `usize` (pointer-sized) padding. A vtable is only ever read through the slots the ABI
 // defines, so the padding preserves the used slots' offsets without transcribing the rest.
+// `ITfContext` needs no table of its own: this bridge only `QueryInterface`s its leading
+// `IUnknown` slots (see `advise_sink`), so it is bound as an opaque pointer.
 
 #[cfg(target_os = "windows")]
 mod tsf {
@@ -133,8 +135,8 @@ mod tsf {
         pub lp_vtbl: *const ITfThreadMgrVtbl,
     }
 
-    /// `ITfThreadMgrVtbl` through `CreateContext` (slot 8); the remaining ~22 methods are not
-    /// called and so are represented by pointer-sized padding.
+    /// `ITfThreadMgrVtbl` through `CreateContext` (0-based slot 14); the remaining methods are
+    /// not called and so are represented by pointer-sized padding.
     #[repr(C)]
     pub struct ITfThreadMgrVtbl {
         /// `IUnknown` slots.
@@ -276,9 +278,10 @@ mod tsf {
     // ── The comlink that is handed to TSF as a sink ────────────────────────────────────────
     //
     // A COM object that TSF calls back into needs a stable heap address whose `lpVtbl` points
-    // at one static vtable. `ComLink` is that object: it owns a `Box<WindowsImeBridge>`, keeps
-    // its own COM refcount atomically, and is what `QueryInterface` returns for the two sink
-    // IIDs. It is deliberately a raw `Box::into_raw` allocation whose lifetime is governed by
+    // at one static vtable. `ComLink` is that object: it holds a borrowed pointer to the
+    // bridge, keeps its own COM refcount atomically, and is what `QueryInterface` returns for
+    // the two sink IIDs. It is deliberately a raw `Box::into_raw` allocation whose lifetime is
+    // governed by
     // `AddRef`/`Release`, exactly as C++ COM expects.
 
     use super::WindowsImeBridge;
@@ -473,12 +476,12 @@ mod tsf {
     pub enum TsfCreateError {
         /// `CoCreateInstance(CLSID_TF_ThreadMgr)` returned a failure `HRESULT`. The value is
         /// the raw `HRESULT` so the host can log the exact code.
-        CreateFailed(i32),
+        CoCreate(i32),
         /// `ITfThreadMgr::Activate` returned a failure `HRESULT`.
-        ActivateFailed(i32),
+        Activate(i32),
         /// The thread manager exists but `CreateDocumentMgr`/`CreateContext`/`Push` or the
         /// sink install failed, with the raw `HRESULT`.
-        ContextFailed(i32),
+        Context(i32),
     }
 
     /// Every TSF COM pointer the bridge holds, plus the two sink cookies TSF assigned so the
@@ -492,8 +495,6 @@ mod tsf {
         pub doc_mgr: *mut c_void,
         /// `ITfContext*`.
         pub context: *mut c_void,
-        /// The `TfClientId` `Activate` assigned to this thread.
-        pub client_id: u32,
         /// The comlink installed as both sinks; held so `Release` can be called on teardown.
         pub sink: *mut ComLink,
         /// The cookie the context's `ITfSource::AdviseSink(ITfTextEditSink)` returned, or 0 if
@@ -543,7 +544,7 @@ mod tsf {
                 &mut thread_mgr,
             );
             if hr < 0 || thread_mgr.is_null() {
-                return Err(TsfCreateError::CreateFailed(hr));
+                return Err(TsfCreateError::CoCreate(hr));
             }
             let mgr = thread_mgr as *mut ITfThreadMgr;
 
@@ -553,7 +554,7 @@ mod tsf {
             let hr = activate(mgr, &mut client_id);
             if hr < 0 {
                 release(mgr as *mut IUnknown);
-                return Err(TsfCreateError::ActivateFailed(hr));
+                return Err(TsfCreateError::Activate(hr));
             }
 
             // ── Step 3: document manager ──
@@ -562,7 +563,7 @@ mod tsf {
             let hr = create_doc_mgr(mgr, &mut doc_mgr);
             if hr < 0 || doc_mgr.is_null() {
                 release(mgr as *mut IUnknown);
-                return Err(TsfCreateError::ContextFailed(hr));
+                return Err(TsfCreateError::Context(hr));
             }
 
             // ── Step 4: context inside the document manager ──
@@ -581,7 +582,7 @@ mod tsf {
             if hr < 0 || context.is_null() {
                 release(doc_mgr as *mut IUnknown);
                 release(mgr as *mut IUnknown);
-                return Err(TsfCreateError::ContextFailed(hr));
+                return Err(TsfCreateError::Context(hr));
             }
             let push = (*(*doc_mgr).lp_vtbl).push;
             let hr = push(doc_mgr, context);
@@ -589,7 +590,7 @@ mod tsf {
                 release(context as *mut IUnknown);
                 release(doc_mgr as *mut IUnknown);
                 release(mgr as *mut IUnknown);
-                return Err(TsfCreateError::ContextFailed(hr));
+                return Err(TsfCreateError::Context(hr));
             }
 
             // ── Step 5: install the sink comlink ──
@@ -617,7 +618,7 @@ mod tsf {
                 release(context as *mut IUnknown);
                 release(doc_mgr as *mut IUnknown);
                 release(mgr as *mut IUnknown);
-                return Err(TsfCreateError::ContextFailed(hr));
+                return Err(TsfCreateError::Context(hr));
             }
 
             // `ITfThreadMgrEventSink` is installed on the thread manager itself, via its
@@ -647,7 +648,6 @@ mod tsf {
                 thread_mgr: mgr as *mut c_void,
                 doc_mgr: doc_mgr as *mut c_void,
                 context: context as *mut c_void,
-                client_id,
                 sink,
                 text_edit_cookie,
                 thread_mgr_cookie,
@@ -1323,7 +1323,7 @@ mod tests {
 #[cfg(all(test, target_os = "windows"))]
 mod tsf_layout_tests {
     use super::tsf::*;
-    use core::mem::{align_of, size_of};
+    use core::mem::{align_of, offset_of, size_of};
 
     /// Every handle-sized slot must be pointer-sized, or the vtable offsets shift.
     #[test]
@@ -1332,28 +1332,42 @@ mod tsf_layout_tests {
         assert_eq!(align_of::<usize>(), align_of::<*const core::ffi::c_void>());
     }
 
-    /// `ITfThreadMgrVtbl::activate` must sit at slot 3 (0-based), i.e. `3 * size_of::<usize>()`
-    /// bytes past the table start. If a field were missing or misordered, the bridge would call
-    /// the wrong function through the vtable.
-    #[test]
-    fn thread_mgr_activate_is_slot_three() {
-        let base = size_of::<IUnknownVtbl>();
-        assert_eq!(base, 3 * size_of::<usize>());
-        // `activate` is directly after the IUnknown slots.
-        assert_eq!(base, 3 * size_of::<usize>());
-    }
-
-    /// `ITfDocumentMgrVtbl::push` must be slot 4, and `pop` slot 5.
-    #[test]
-    fn document_mgr_push_and_pop_are_slot_four_and_five() {
-        let push_offset = size_of::<IUnknownVtbl>() + size_of::<usize>();
-        assert_eq!(push_offset, 4 * size_of::<usize>());
-    }
-
     /// The `IUnknown` vtable is exactly three function pointers.
     #[test]
     fn iunknown_vtbl_is_three_pointers() {
         assert_eq!(size_of::<IUnknownVtbl>(), 3 * size_of::<usize>());
+    }
+
+    /// `ITfThreadMgrVtbl`'s used slots must land at the ABI offsets, checked against the real
+    /// struct layout rather than re-derived arithmetic: `Activate` is slot 3 (0-based) and
+    /// `CreateContext` is slot 14. A missing or misordered field would shift these and make the
+    /// bridge call the wrong function through the vtable.
+    #[test]
+    fn thread_mgr_slots_match_the_abi() {
+        let p = size_of::<usize>();
+        assert_eq!(offset_of!(ITfThreadMgrVtbl, activate), 3 * p);
+        assert_eq!(offset_of!(ITfThreadMgrVtbl, deactivate), 4 * p);
+        assert_eq!(offset_of!(ITfThreadMgrVtbl, create_document_mgr), 5 * p);
+        assert_eq!(offset_of!(ITfThreadMgrVtbl, create_context), 14 * p);
+        assert_eq!(offset_of!(ITfThreadMgrVtbl, create_context), size_of::<ITfThreadMgrVtbl>() - p);
+    }
+
+    /// `ITfDocumentMgrVtbl`'s used slots: `CreateContext` slot 3, `Push` slot 4, `Pop` slot 5.
+    #[test]
+    fn document_mgr_slots_match_the_abi() {
+        let p = size_of::<usize>();
+        assert_eq!(offset_of!(ITfDocumentMgrVtbl, create_context), 3 * p);
+        assert_eq!(offset_of!(ITfDocumentMgrVtbl, push), 4 * p);
+        assert_eq!(offset_of!(ITfDocumentMgrVtbl, pop), 5 * p);
+    }
+
+    /// The sink vtables must start with the three `IUnknown` slots so `QueryInterface` reaches
+    /// `lp_vtbl` before any sink-specific method.
+    #[test]
+    fn sink_vtables_begin_with_iunknown() {
+        assert_eq!(offset_of!(ITfThreadMgrEventSinkVtbl, base), 0);
+        assert_eq!(offset_of!(ITfTextEditSinkVtbl, base), 0);
+        assert_eq!(offset_of!(ITfTextEditSinkVtbl, on_end_edit), 3 * size_of::<usize>());
     }
 
     /// The GUIDs must match the SDK's byte order. These are the values from `msctf.h`; a
@@ -1366,6 +1380,7 @@ mod tsf_layout_tests {
         assert_eq!(CLSID_TF_THREAD_MGR.data4, [0xAB, 0x9E, 0x9C, 0x7D, 0x68, 0x3E, 0x3C, 0x50]);
 
         assert_eq!(IID_ITF_THREAD_MGR.data1, 0xAA80_E801);
+        assert_eq!(IID_ITF_THREAD_MGR.data2, 0x2021);
         assert_eq!(IID_ITF_TEXT_EDIT_SINK.data1, 0x8127_D901);
         assert_eq!(IID_ITF_THREAD_MGR_EVENT_SINK.data1, 0xAA80_E80E);
     }
@@ -1374,6 +1389,6 @@ mod tsf_layout_tests {
     /// pointer has to be its first field.
     #[test]
     fn comlink_starts_with_the_vtable_pointer() {
-        assert_eq!(core::mem::offset_of!(ComLink, lp_vtbl), 0);
+        assert_eq!(offset_of!(ComLink, lp_vtbl), 0);
     }
 }
