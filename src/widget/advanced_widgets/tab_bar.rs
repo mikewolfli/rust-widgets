@@ -860,7 +860,12 @@ impl Widget for TabBar {
                 |v| CapabilityValue::UInt(*v as u64),
             )),
             "tab_moved" => Some(EventSignalRef::mapped("tab_moved", &self.tab_moved, |v| {
-                CapabilityValue::String(format!("{v:?}"))
+                // The declared shape is `Tuple2` of `UInt`, so the payload arrives as the
+                // (old_index, new_index) pair rather than its `Debug` spelling.
+                CapabilityValue::Tuple(crate::compat::Vec::from([
+                    CapabilityValue::UInt(v.0 as u64),
+                    CapabilityValue::UInt(v.1 as u64),
+                ]))
             })),
             _ => None,
         }

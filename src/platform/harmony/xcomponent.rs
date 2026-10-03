@@ -668,6 +668,16 @@ pub unsafe fn bind(component: *mut NativeXComponent) -> bool {
             );
         }
 
+        // Record the component **here**, at bind time, not only in `on_surface_created`.
+        //
+        // The reject-a-different-component guard above reads this value, so it must be set as soon
+        // as the bind succeeds. Leaving it to `on_surface_created` left a window between a
+        // successful `bind(A)` and ArkUI's first surface callback in which the guard saw `0` and
+        // accepted `bind(B)` — precisely the corruption the guard exists to prevent (the first
+        // component's callbacks would then drive the second's state). `on_surface_created` still
+        // re-asserts the pointer, which is harmless because it is the same component ArkUI hands
+        // to the callbacks the bind registered.
+        BOUND_COMPONENT.store(component as usize, Ordering::Release);
         BOUND.store(true, Ordering::Release);
         log::info!(
         "[harmony] xcomponent: bound; surface, touch, mouse, key and focus callbacks registered"

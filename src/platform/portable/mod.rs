@@ -57,8 +57,21 @@ pub struct SurfaceGeometry {
 
 impl SurfaceGeometry {
     /// Creates a tightly packed surface geometry.
+    ///
+    /// The stride is computed with checked arithmetic and **saturates** to `usize::MAX` on
+    /// overflow. A `width` whose `width * 4` cannot be represented (possible on a 32-bit target
+    /// for a width at or above `1 << 30`) would otherwise wrap to a small stride *here*, before
+    /// [`copy_rows`] or [`FrameBuffer::resize`] ever see the value — the very overflow those
+    /// checked paths exist to refuse. Saturating keeps a wrapped, too-small stride from being handed
+    /// on: a saturated stride is >= any real row length, so downstream `required_end` arithmetic
+    /// overflows and the geometry is rejected rather than silently mis-described. This has to stay a
+    /// `const fn` because callers build geometries in `const` contexts.
     pub const fn tight(width: u32, height: u32) -> Self {
-        Self { width, height, stride: width as usize * 4 }
+        let stride = match (width as usize).checked_mul(4) {
+            Some(bytes) => bytes,
+            None => usize::MAX,
+        };
+        Self { width, height, stride }
     }
 }
 

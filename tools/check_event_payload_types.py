@@ -233,11 +233,32 @@ def _closure_carrier(region: str, from_index: int) -> str:
             if depth == 0:
                 break
     body = body[:end]
-    for variant in ("UInt", "Int", "Float", "Bool", "String", "Null", "Tuple", "Rect"):
+    # The carrier is the closure's **returned** value. Two shapes occur:
+    #
+    #   * a single expression — `|v| CapabilityValue::UInt(*v as u64)` — where the first
+    #     `CapabilityValue::` occurrence is the answer;
+    #   * a braced body that builds a composite step by step — `|v| { let mut items = …; for … {
+    #     items.push(CapabilityValue::UInt(…)); } CapabilityValue::Tuple(items) }` — where an
+    #     intermediate scalar is constructed *before* the returned one.
+    #
+    # A positional "first occurrence" search mis-reads the second shape as its element type (a
+    # `ListScalar` selection reported as `UInt`). A priority-ordered search mis-reads the first shape's
+    # tuples the other way (a `Tuple` of `Float` reported as `Float`). The rule that fits both: a
+    # composite constructor in the body is the carrier, because a closure that builds a
+    # `CapabilityValue::Tuple`/`Rect` returns it; nested scalars are its elements, never the top-level
+    # carrier. Only when no composite is built does a scalar variant apply, and then the leftmost one
+    # is the returned value.
+    for variant in ("Tuple", "Rect"):
         if f"CapabilityValue::{variant}" in body:
             return variant
-
-    return "?"
+    best_index: int | None = None
+    best_variant = "?"
+    for variant in ("UInt", "Int", "Float", "Bool", "String", "Null"):
+        index = body.find(f"CapabilityValue::{variant}")
+        if index != -1 and (best_index is None or index < best_index):
+            best_index = index
+            best_variant = variant
+    return best_variant
 
 
 def main() -> int:
@@ -319,9 +340,13 @@ def main() -> int:
     # type-checks as text and arrives empty. That is the shape BLUE19 #95 rules out, and it is
     # exactly what a bulk conversion produces when it maps `Signal1<String>` with `|_| Null`.
     #
-    # The comparison is over the *carrier variant*, not the Rust type: `K::UInt` and `K::Int` both
-    # travel as `CapabilityValue::Int`, and a tuple or list payload travels as the debug spelling
-    # because a hub name has no arity. Only the kind's own carrier is required.
+    # The comparison is over the *carrier variant*. A scalar kind travels as its own
+    # `CapabilityValue` variant (`K::UInt` → `CapabilityValue::UInt`, `K::Int` →
+    # `CapabilityValue::Int`, and they are distinct). A composite shape — a tuple, list, mixed record
+    # or optional tuple — travels as `CapabilityValue::Tuple` (or `CapabilityValue::Rect` for a
+    # `Rect`-kind shape), so it is delivered as structure rather than a `Debug` string, which is what
+    # lets a subscriber read the components instead of re-parsing a debug dump. Only the declared
+    # kind's own carrier is required.
     delivery = delivery_failures(inject=inject_delivery)
     if delivery:
         print()

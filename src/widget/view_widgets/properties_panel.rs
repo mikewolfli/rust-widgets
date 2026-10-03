@@ -8,6 +8,7 @@
 //! Supports filter text for search, editable values (text, number, bool, color,
 //! choice, file), and emits `property_changed` on edits.
 
+use crate::compat::Vec;
 use crate::core::{Color, HorizontalAlignment, Rect};
 use crate::event::{Event, EventHandler};
 use crate::render::RenderContext;
@@ -404,12 +405,37 @@ impl Widget for PropertiesPanel {
         match name {
             "property_changed" => {
                 Some(EventSignalRef::mapped("property_changed", &self.property_changed, |v| {
-                    CapabilityValue::String(format!("{v:?}"))
+                    // The declared shape is `Tuple2` of `String`, so the payload arrives as the
+                    // property name paired with its value rather than its `Debug` spelling — a
+                    // subscriber that read the schema can read the two components by name.
+                    let (name, value) = v;
+                    CapabilityValue::Tuple(Vec::from([
+                        CapabilityValue::String(name.clone()),
+                        property_value_to_capability(value),
+                    ]))
                 }))
             }
             _ => None,
         }
     }
+}
+
+/// The `CapabilityValue` that mirrors a [`PropertyValue`] for the `property_changed` payload.
+///
+/// The event's schema declares the second tuple element as `String`, so the value travels as its
+/// text form: this is the one place that spelling lives, rather than a `Debug` string of the whole
+/// pair that a subscriber could not split back into name and value.
+fn property_value_to_capability(value: &PropertyValue) -> CapabilityValue {
+    let text = match value {
+        PropertyValue::Text(text) | PropertyValue::File(text) => text.clone(),
+        PropertyValue::Number(number) => number.to_string(),
+        PropertyValue::Bool(flag) => flag.to_string(),
+        PropertyValue::Color(color) => format!("{color:?}"),
+        PropertyValue::Choice { options, selected } => {
+            options.get(*selected).cloned().unwrap_or_default()
+        }
+    };
+    CapabilityValue::String(text)
 }
 
 /// `PropertiesPanel`'s property contract.

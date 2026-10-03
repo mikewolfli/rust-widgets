@@ -260,7 +260,14 @@ impl Widget for Splitter {
             "pane_layout_changed" => Some(EventSignalRef::mapped(
                 "pane_layout_changed",
                 &self.pane_layout_changed,
-                |v| CapabilityValue::String(format!("{v:?}")),
+                // The declared shape is `ListScalar` of `Float`, so the payload arrives as the
+                // ratio vector rather than its `Debug` spelling — a subscriber that read the
+                // schema can read each pane's ratio as a number.
+                |v| {
+                    CapabilityValue::Tuple(
+                        v.iter().map(|ratio| CapabilityValue::Float(*ratio as f64)).collect(),
+                    )
+                },
             )),
             "orientation_changed" => Some(EventSignalRef::mapped(
                 "orientation_changed",

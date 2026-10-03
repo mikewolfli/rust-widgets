@@ -1008,7 +1008,14 @@ impl Widget for RibbonBar {
             )),
             "item_triggered" => {
                 Some(EventSignalRef::mapped("item_triggered", &self.item_triggered, |v| {
-                    CapabilityValue::String(format!("{v:?}"))
+                    // The declared shape is `Tuple3` of `UInt`, so the payload arrives as the
+                    // (tab, group, item) indices rather than its `Debug` spelling — a subscriber
+                    // that read the schema can read the three indices as numbers.
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                        CapabilityValue::UInt(v.2 as u64),
+                    ]))
                 }))
             }
             _ => None,

@@ -458,7 +458,12 @@ impl Widget for TagInput {
         match name {
             "tags_changed" => {
                 Some(EventSignalRef::mapped("tags_changed", &self.tags_changed, |v| {
-                    CapabilityValue::String(format!("{v:?}"))
+                    // The declared shape is `ListScalar` of `String`, so the payload arrives as the
+                    // tag list rather than its `Debug` spelling — a subscriber can read each tag
+                    // as its own string.
+                    CapabilityValue::Tuple(
+                        v.iter().map(|tag| CapabilityValue::String(tag.clone())).collect(),
+                    )
                 }))
             }
             _ => None,

@@ -845,7 +845,15 @@ impl Widget for ScrollArea {
             "scroll_position_changed" => Some(EventSignalRef::mapped(
                 "scroll_position_changed",
                 &self.scroll_position_changed,
-                |v| CapabilityValue::String(format!("{v:?}")),
+                // The declared shape is `Tuple2` of `Int`, so the payload is delivered as a real
+                // pair of integers rather than its `Debug` spelling — a subscriber that read the
+                // schema can read the two offsets as numbers.
+                |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::Int(v.0 as i64),
+                        CapabilityValue::Int(v.1 as i64),
+                    ]))
+                },
             )),
             _ => None,
         }

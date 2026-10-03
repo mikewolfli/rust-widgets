@@ -494,8 +494,20 @@ pub(crate) fn mount_surface_native(
         return false;
     };
     // Resolve the parent window through the registry `create_ns_window` populated.
+    //
+    // The registry is typed as an opaque `*mut c_void`, and it also holds non-window views (surfaces
+    // store their canvas there too). The runtime class check keeps a parent id that names a plain
+    // view — rather than a window — from being reinterpreted as an `NSWindow`, which would be a type
+    // confusion the compiler cannot catch on an erased pointer.
     let parent_ptr = match NATIVE_VIEWS.lock().unwrap().get(&parent).copied() {
-        Some(ptr) => ptr.0 as *mut NSWindow,
+        Some(ptr) if unsafe { object_is_window(ptr.0 as *mut AnyObject) } => ptr.0 as *mut NSWindow,
+        Some(_) => {
+            log::error!(
+                "[macos-objc2] mount_surface: parent {parent} is not a window; a surface is mounted on\
+                 a window's content view"
+            );
+            return false;
+        }
         None => {
             log::error!("[macos-objc2] mount_surface: unknown parent window {parent}");
             return false;

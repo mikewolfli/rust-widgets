@@ -324,7 +324,16 @@ impl Widget for VirtualTable {
             "visible_window_changed" => Some(EventSignalRef::mapped(
                 "visible_window_changed",
                 &self.visible_window_changed,
-                |v| CapabilityValue::String(format!("{v:?}")),
+                // The declared shape is `Tuple4` of `UInt`, so the payload arrives as the
+                // (row_start, row_len, col_start, col_len) tuple rather than its `Debug` spelling.
+                |v| {
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::UInt(v.0 as u64),
+                        CapabilityValue::UInt(v.1 as u64),
+                        CapabilityValue::UInt(v.2 as u64),
+                        CapabilityValue::UInt(v.3 as u64),
+                    ]))
+                },
             )),
             _ => None,
         }

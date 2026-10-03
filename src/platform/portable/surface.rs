@@ -102,7 +102,11 @@ fn required_bytes(geometry: SurfaceGeometry) -> Option<usize> {
     if geometry.width == 0 {
         return Some(0);
     }
-    required_end(geometry.stride, geometry.height as usize, geometry.width as usize * 4)
+    // `width * 4` must not overflow before `required_end` sees it (see [`copy_rows`]). Using the
+    // checked form here keeps this helper self-guarding rather than relying on every caller having
+    // pre-validated the width.
+    let row_bytes = (geometry.width as usize).checked_mul(4)?;
+    required_end(geometry.stride, geometry.height as usize, row_bytes)
 }
 
 #[cfg(test)]

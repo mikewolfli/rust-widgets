@@ -453,8 +453,14 @@ impl Widget for RichEdit {
             }
             "selection_changed" => {
                 Some(EventSignalRef::mapped("selection_changed", &self.selection_changed, |v| {
+                    // The declared shape is `OptionalTuple2` of `UInt`, so a present selection is a
+                    // real `(start, end)` pair of offsets and a cleared one is `Null` — not a
+                    // `Debug` string that a subscriber cannot read as numbers.
                     match v {
-                        Some(value) => CapabilityValue::String(format!("{value:?}")),
+                        Some((start, end)) => CapabilityValue::Tuple(crate::compat::Vec::from([
+                            CapabilityValue::UInt(*start as u64),
+                            CapabilityValue::UInt(*end as u64),
+                        ])),
                         None => CapabilityValue::Null,
                     }
                 }))

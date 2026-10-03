@@ -393,7 +393,17 @@ impl Widget for ShortcutEditor {
         match name {
             "shortcut_changed" => {
                 Some(EventSignalRef::mapped("shortcut_changed", &self.shortcut_changed, |v| {
-                    CapabilityValue::String(format!("{v:?}"))
+                    // The declared shape is `Mixed`, so the payload arrives as the (id, keys) pair
+                    // the signal carries rather than its `Debug` spelling: the id is a string and
+                    // the key list is itself a `Tuple` of strings, so a subscriber can read both
+                    // parts instead of parsing a debug dump.
+                    let (id, keys) = v;
+                    CapabilityValue::Tuple(crate::compat::Vec::from([
+                        CapabilityValue::String(id.clone()),
+                        CapabilityValue::Tuple(
+                            keys.iter().map(|key| CapabilityValue::String(key.clone())).collect(),
+                        ),
+                    ]))
                 }))
             }
             _ => None,

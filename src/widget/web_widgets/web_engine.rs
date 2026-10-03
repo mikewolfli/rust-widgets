@@ -693,7 +693,14 @@ impl Widget for WebEngineView {
             "navigation_state_changed" => Some(EventSignalRef::mapped(
                 "navigation_state_changed",
                 &self.navigation_state_changed,
-                |v| crate::widget::capability::CapabilityValue::String(format!("{v:?}")),
+                // The declared shape is `Tuple2` of `Bool`, so the payload arrives as the
+                // (can_go_back, can_go_forward) pair rather than its `Debug` spelling.
+                |v| {
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::Bool(v.0),
+                        crate::widget::capability::CapabilityValue::Bool(v.1),
+                    ]))
+                },
             )),
             "page_created" => {
                 Some(EventSignalRef::mapped("page_created", &self.page_created, |v| {
@@ -707,7 +714,15 @@ impl Widget for WebEngineView {
             }
             "console_message" => {
                 Some(EventSignalRef::mapped("console_message", &self.console_message, |v| {
-                    crate::widget::capability::CapabilityValue::String(format!("{v:?}"))
+                    // The declared shape is `Mixed`, so the payload arrives as the
+                    // (message, line, source) triple: the message and source are strings and the
+                    // line is an unsigned count, rather than a `Debug` dump a subscriber cannot
+                    // split back apart.
+                    crate::widget::capability::CapabilityValue::Tuple(crate::compat::Vec::from([
+                        crate::widget::capability::CapabilityValue::String(v.0.clone()),
+                        crate::widget::capability::CapabilityValue::UInt(v.1 as u64),
+                        crate::widget::capability::CapabilityValue::String(v.2.clone()),
+                    ]))
                 }))
             }
             "download_requested" => {

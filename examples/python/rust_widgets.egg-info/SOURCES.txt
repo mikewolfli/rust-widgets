@@ -1,0 +1,7 @@
+README.md
+pyproject.toml
+rust_widgets.py
+rust_widgets.egg-info/PKG-INFO
+rust_widgets.egg-info/SOURCES.txt
+rust_widgets.egg-info/dependency_links.txt
+rust_widgets.egg-info/top_level.txt
