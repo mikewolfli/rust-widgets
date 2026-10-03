@@ -27,15 +27,22 @@
 //! This type is the reusable half: it owns the subscriptions and removes them together,
 //! so a dropped binder leaves nothing behind.
 //!
-//! # What a control author has to do
+//! # What a host has to do
 //!
-//! One call per published event:
+//! One call per control, whatever names its capability publishes:
 //!
 //! ```ignore
 //! let mut binder = EventSignalBinder::new(hub);
-//! binder.forward_unit("clicked", &self.base.clicked);
-//! binder.forward_mapped("value_changed", &self.value_changed, |_| {});
+//! binder.forward_all(&control); // wires every published name in one call
 //! ```
+//!
+//! [`Self::forward_all`] walks the control's published events and subscribes to each through
+//! [`Widget::event_signal_dyn`](crate::widget::Widget::event_signal_dyn), so a converted control is
+//! covered by a single line and a name the panel offers **is** wired. The older per-name entries
+//! (`forward_unit`, `forward_mapped`) remain for a hand-written wire that wants to observe a value
+//! on the way past, but they are no longer the shape a host should reach for: asking a host to write
+//! one line per event is exactly the work rule #98 rules out, because a designer learns its wires at
+//! run time and cannot pre-generate them.
 //!
 //! # Wiring status (read this before assuming an event fires)
 //!
@@ -54,20 +61,20 @@
 //!   emitting it?" are different questions. Subscribing therefore cannot fail just
 //!   because a host skipped the wiring step — an event that is valid but unwired is
 //!   indistinguishable from an event that never occurs.
-//! * `EventSignalBinder::detached()` exists for a control built without a hub; its
-//!   forward calls are documented no-ops, so a host that uses it has opted out
-//!   explicitly rather than silently.
+//! * [`Self::detached`] exists for a control built without a hub; its forward calls are
+//!   documented no-ops, so a host that uses it has opted out explicitly rather than silently.
 //!
-//! [`crate::signal::EventSignalBinder::forward_widget_events`] is the host-facing
-//! convenience entry point: one call per control, wiring the one name every `Widget` is
-//! guaranteed to have — the base `clicked` signal. It does **not** cover a control's
-//! other published names (`value_changed` is `Signal1<i32>`, `toggled` is `Signal1<bool>`),
-//! which need a per-event payload decision and so are wired with `forward_mapped` at the
-//! control's own construction site. The count it returns is the number of names it wired,
-//! so a caller that receives `0` can see the control contributed nothing instead of
-//! assuming it did — this doc previously said it covered "every name that control's
-//! capability publishes", which the implementation never did and which would have led a
-//! host to believe the remaining events were wired for it.
+//! The single host entry point is [`Self::forward_all`]: one call per control, wiring every name
+//! the control's capability publishes by asking the control for each one's signal through
+//! [`Widget::event_signal_dyn`](crate::widget::Widget::event_signal_dyn). This covers payload-free
+//! names (`clicked`, `dismissed`) and payload-carrying names (`value_changed` is `Signal1<i32>`,
+//! `toggled` is `Signal1<bool>`) alike, because the erasure happens inside the control where the
+//! concrete payload type is still known. The count it returns is the number of names it wired, so a
+//! caller that receives `0` can see the control contributed nothing instead of assuming it did.
+//!
+//! [`Self::forward_widget_events`] is the earlier, narrower helper: it wires the one name every
+//! `Widget` is guaranteed to have — the base `clicked` signal — and nothing else. It remains so an
+//! existing caller keeps working, but a new caller choosing between the two wants `forward_all`.
 //!
 //! Exhaustiveness of the *subscribable* side is stated by
 //! `tests/event_signal_bridge_test.rs`'s `every_published_event_accepts_a_forwarding_call`,
@@ -166,6 +173,7 @@ impl EventSignalBinder {
             source: ForwardSource::Unit(signal.clone()),
             handle,
             event_name: alloc::string::String::from(event_name),
+            signal_identity: signal.identity(),
             is_connected: alloc::boxed::Box::new(move || probe.is_connected(handle)),
         });
     }
@@ -355,6 +363,7 @@ impl EventSignalBinder {
             // `reference.name()` is `&'static str` (the capability table is a `static`), so the
             // stored name is the canonical spelling rather than the caller's.
             event_name: alloc::string::String::from(reference.name()),
+            signal_identity: reference.identity(),
             is_connected,
         });
         self.wired_once = true;
@@ -379,6 +388,18 @@ impl EventSignalBinder {
     /// this widget still live?", which is what this now answers by checking the stored handles.
     /// A name this binder never wired (or whose wire was later removed) reports `false` even when
     /// the signal has other observers.
+    ///
+    /// # Why the signal identity is compared too
+    ///
+    /// A forward is stored together with the identity of the signal it subscribed to
+    /// ([`EventSignalRef::identity`]). This method resolves `widget`'s own signal for `event_name`
+    /// and requires that identity to match before reporting wired. Comparing the published name
+    /// alone made two sibling instances of one kind indistinguishable: wiring `A` left a forward
+    /// named `clicked`, so a never-wired `B` answered `true` because *a* `clicked` forward existed
+    /// (BLUE-issue E-15). The identity makes this a per-instance answer, so a real broadcast can no
+    /// longer make an unrelated instance claim its own wire.
+    ///
+    /// [`EventSignalRef::identity`]: crate::signal::EventSignalRef::identity
     pub fn event_is_wired<W>(&self, widget: &W, event_name: &str) -> bool
     where
         W: crate::widget::Widget,
@@ -391,12 +412,16 @@ impl EventSignalBinder {
         if reference.name() != event_name {
             return false;
         }
-        // Any slot this binder registered on the same named event, still connected, is a live wire.
-        // The stored handle is what makes this "this binder's wire" rather than "some observer";
-        // the name check keeps it about *this* event rather than any wire the binder holds.
-        self.forwards
-            .iter()
-            .any(|forwarded| forwarded.event_name == event_name && (forwarded.is_connected)())
+        // Any slot this binder registered on the *same signal* of *this* control, still connected,
+        // is a live wire. The stored handle is what makes this "this binder's wire" rather than
+        // "some observer"; the identity is what makes it about *this* control's signal rather than
+        // a same-named event on a sibling.
+        let identity = reference.identity();
+        self.forwards.iter().any(|forwarded| {
+            forwarded.event_name == event_name
+                && forwarded.signal_identity == identity
+                && (forwarded.is_connected)()
+        })
     }
 
     /// Wires every published event a mounted widget can actually emit.
@@ -491,6 +516,7 @@ impl EventSignalBinder {
             })),
             handle,
             event_name: alloc::string::String::from(event_name),
+            signal_identity: signal.identity(),
             is_connected: alloc::boxed::Box::new(move || probe.is_connected(handle)),
         });
     }
@@ -554,6 +580,13 @@ struct Forwarded {
     /// a binder that wired only `clicked` would report every other published name as wired too,
     /// because it could only see "some handle of mine is connected".
     event_name: alloc::string::String,
+    /// Identity of the signal this forward was subscribed to.
+    ///
+    /// Kept so a query can require that the wired signal **is** the one the queried control
+    /// resolves, rather than only that a forward exists under the same name. Without it, wiring
+    /// `A` made a never-wired sibling `B` of the same kind report itself wired, because the query
+    /// compared the name alone (BLUE-issue E-15). See [`crate::signal::Signal::identity`].
+    signal_identity: usize,
     /// Whether this specific subscription is still live on the widget's own signal.
     ///
     /// Kept beside the handle so [`EventSignalBinder::event_is_wired`] can ask about **this**

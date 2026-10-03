@@ -503,9 +503,10 @@ impl Draw for Pagination {
             (rect.height as f32 * 0.4).max(8.0).min(rect.height.saturating_sub(8).max(8) as f32);
         let font = Font::simple("Sans", font_size);
 
-        context.face(
+        context.face_with_gradient(
             rect,
             background,
+            self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,

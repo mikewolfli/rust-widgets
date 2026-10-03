@@ -77,9 +77,84 @@ struct SlotEntry<T: Clone + Send + 'static> {
 
 struct SignalInner<T: Clone + Send + 'static> {
     slots: RwLock<HashMap<ConnectionHandle, SlotEntry<T>>>,
+    /// Serialises **concurrent** emits of one signal across threads.
+    ///
+    /// # The defect this closes
+    ///
+    /// `emit` temporarily takes a slot's callback out of the map while it runs (so the callback
+    /// may call back into the signal). A second emit running **concurrently on another thread**
+    /// therefore found `callback == None` for an entry that was still connected and not blocked, and
+    /// silently skipped it: the value was dropped with no queue, no error and no diagnostic. The
+    /// signal was marketed as safe to emit from several threads, which is true of the *locking* but
+    /// did not disclose that a concurrent emit can lose a delivery (BLUE-issue E-21).
+    ///
+    /// # Why a lock and not a queue
+    ///
+    /// Serialising keeps every emit's delivery whole and in order, which is what a caller who emits
+    /// from a worker thread needs. The lock is only taken when the signal is **not already emitting
+    /// on this thread** (see [`emit_lock_guard`]), so the documented same-thread re-entrancy still
+    /// skips the slot on the stack rather than dead-locking on this mutex.
+    ///
+    /// Not present under `alloc_frugal`: that profile is a single-threaded embedded surface, so
+    /// there is no concurrent emitter to serialise against and the crate does not require its
+    /// malloc-free signal to carry a lock.
+    #[cfg(not(alloc_frugal))]
+    emit_serial: crate::compat::Mutex<()>,
+}
+
+// Marks the signals this thread is currently emitting, so a nested emit on the same thread is
+// recognised as re-entrancy rather than mistaken for a concurrent emit and made to wait.
+//
+// The set is keyed by signal identity (`Signal::identity`), which is unique among live signals.
+// A plain comment rather than `///`: `thread_local!` does not turn leading doc comments into item
+// docs, and the attribute/`cfg` in between would make them dangle anyway.
+#[cfg(not(alloc_frugal))]
+thread_local! {
+    #[allow(clippy::missing_const_for_thread_local)]
+    static EMITTING: core::cell::RefCell<crate::compat::Vec<usize>> =
+        core::cell::RefCell::new(crate::compat::Vec::new());
+}
+
+/// Whether `identity` is currently emitting on **this** thread.
+#[cfg(not(alloc_frugal))]
+fn is_emitting_here(identity: usize) -> bool {
+    EMITTING.with(|set| set.borrow().contains(&identity))
+}
+
+/// Records `identity` as emitting on this thread for the guard's lifetime.
+#[cfg(not(alloc_frugal))]
+struct EmittingHere(usize);
+
+#[cfg(not(alloc_frugal))]
+impl EmittingHere {
+    fn new(identity: usize) -> Self {
+        EMITTING.with(|set| set.borrow_mut().push(identity));
+        Self(identity)
+    }
+}
+
+#[cfg(not(alloc_frugal))]
+impl Drop for EmittingHere {
+    fn drop(&mut self) {
+        EMITTING.with(|set| {
+            let mut set = set.borrow_mut();
+            if let Some(pos) = set.iter().position(|id| *id == self.0) {
+                set.remove(pos);
+            }
+        });
+    }
 }
 
 impl<T: Clone + Send + 'static> SignalInner<T> {
+    #[cfg(not(alloc_frugal))]
+    fn new() -> Self {
+        Self { slots: RwLock::new(HashMap::new()), emit_serial: crate::compat::Mutex::new(()) }
+    }
+
+    #[cfg(alloc_frugal)]
+    fn new() -> Self {
+        Self { slots: RwLock::new(HashMap::new()) }
+    }
     fn disconnect(&self, handle: ConnectionHandle) -> bool {
         write_lock(&self.slots).remove(&handle).is_some()
     }
@@ -164,7 +239,7 @@ pub struct Signal<T: Clone + Send + 'static> {
 impl<T: Clone + Send + 'static> Signal<T> {
     /// Create an empty signal.
     pub fn new() -> Self {
-        Self { inner: Arc::new(SignalInner { slots: RwLock::new(HashMap::new()) }) }
+        Self { inner: Arc::new(SignalInner::new()) }
     }
 
     /// Connect a slot and return its connection handle.
@@ -266,6 +341,30 @@ impl<T: Clone + Send + 'static> Signal<T> {
         read_lock(&self.inner.slots).contains_key(&handle)
     }
 
+    /// A process-unique identity for this signal instance.
+    ///
+    /// # Why an identity is needed
+    ///
+    /// Two signals of the same type and name are still different signals, and a query that
+    /// asks "is *this* control's event wired?" must compare the actual signal, not merely its
+    /// name. Without an identity, a subscription made on one instance's signal (an `A` that was
+    /// wired) made every sibling instance (`B`, which was never wired) report itself wired, because
+    /// the binder could only see that a forward existed for that *event name*. This is the address
+    /// of the shared `SignalInner`, so all clones of one signal answer with the same value and a
+    /// distinct signal answers with a different one.
+    ///
+    /// # Why an address rather than a counter
+    ///
+    /// The value is only ever compared for equality against another identity taken from a signal
+    /// that is alive at the same time, so it never needs to be globally unique across the process's
+    /// lifetime — only distinct between two live signals, which distinct `Arc` allocations are.
+    /// It must not outlive the signal it was taken from; callers compare it while both signals are
+    /// reachable (the binder stores it beside the handle it refers to, and only compares it while
+    /// resolving a live control's own signal).
+    pub fn identity(&self) -> usize {
+        Arc::as_ptr(&self.inner) as usize
+    }
+
     /// Change the priority of an existing connection. Returns true if the handle was valid.
     pub fn set_priority(&self, handle: ConnectionHandle, priority: Priority) -> bool {
         self.inner.set_priority(handle, priority)
@@ -300,9 +399,38 @@ impl<T: Clone + Send + 'static> Signal<T> {
     /// not deliver to the slot(s) already on the stack.** It delivers to every other
     /// slot, and to slots connected after the outer pass took its snapshot.
     /// `a_re_entrant_emit_skips_the_slot_still_on_the_stack` pins this.
+    ///
+    /// # Concurrent emission from other threads
+    ///
+    /// Re-entrancy is a *same-thread* fact: the slot is on this thread's stack. An emit on a
+    /// **different** thread is not re-entrancy, and the value it carries must not be dropped merely
+    /// because this thread happens to be inside a callback. Emits therefore take a per-signal
+    /// serialisation lock unless this thread is already emitting the same signal; a concurrent emit
+    /// waits its turn and then delivers, so every emit reaches every non-blocked, non-re-entrant
+    /// slot rather than being silently skipped (BLUE-issue E-21).
     pub fn emit(&self, value: T) {
-        let arc_value = Arc::new(value);
+        // Serialise against a concurrent emit on another thread. Skipped when this thread is
+        // already inside `emit` for this same signal, which is the documented re-entrant case and
+        // must not block on a lock this frame already holds.
+        #[cfg(not(alloc_frugal))]
+        let already_emitting_here = is_emitting_here(self.identity());
+        #[cfg(not(alloc_frugal))]
+        let _serial =
+            if already_emitting_here { None } else { Some(lock(&self.inner.emit_serial)) };
+        // Record this signal as emitting on this thread, so a nested emit is recognised as
+        // re-entrancy and bypasses the lock rather than dead-locking. Only the outermost frame on
+        // this thread installs the marker; the guard drops on both the normal return and an unwind
+        // out of a callback.
+        #[cfg(not(alloc_frugal))]
+        let _emitting_here =
+            if already_emitting_here { None } else { Some(EmittingHere::new(self.identity())) };
 
+        self.emit_inner(Arc::new(value));
+    }
+
+    /// The emit pass itself, split out so the serialisation guard in [`Self::emit`] stays on one
+    /// frame and cannot be dropped before the slots finish running.
+    fn emit_inner(&self, arc_value: Arc<T>) {
         // 1. Snapshot handles, priorities and connection order under a read lock.
         let snapshot: Vec<(ConnectionHandle, Priority, u64)> = {
             let slots = read_lock(&self.inner.slots);
@@ -886,6 +1014,69 @@ mod emit_behaviour_tests {
             calls.load(Ordering::SeqCst),
             2,
             "the restored slot must run on the next emit, not be left as a dead entry"
+        );
+    }
+
+    /// A concurrent emit on another thread must deliver, not be silently dropped.
+    ///
+    /// # The defect this pins (BLUE-issue E-21)
+    ///
+    /// `emit` takes a slot's callback out of the map while it runs. A second emit running
+    /// **concurrently on another thread** therefore found `callback == None` for an entry that was
+    /// still connected and not blocked, and skipped it: the value was lost with no queue, error or
+    /// diagnostic. Emits are now serialised per signal, so the second emit waits and then delivers.
+    ///
+    /// The first callback is held open on a barrier so the second emit is *guaranteed* to overlap it
+    /// rather than merely likely to; the test is deterministic, not timing-dependent.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_concurrent_emit_is_delivered_rather_than_silently_dropped() {
+        use std::sync::Barrier;
+
+        let signal = Signal::<u32>::new();
+        let delivered = Arc::new(AtomicUsize::new(0));
+        // Two barriers: the callback signals it has started, then waits for the main thread to say
+        // its second emit has been issued (or is blocked waiting for the serialisation lock).
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+
+        let delivered_slot = Arc::clone(&delivered);
+        let entered_slot = Arc::clone(&entered);
+        let release_slot = Arc::clone(&release);
+        signal.connect(move |_| {
+            delivered_slot.fetch_add(1, Ordering::SeqCst);
+            // Only the first delivery blocks; the second must pass straight through.
+            if delivered_slot.load(Ordering::SeqCst) == 1 {
+                entered_slot.wait();
+                release_slot.wait();
+            }
+        });
+
+        let worker_signal = signal.clone();
+        let worker = std::thread::spawn(move || {
+            worker_signal.emit(1);
+        });
+
+        // Wait until the worker is inside the callback (holding the serialisation lock).
+        entered.wait();
+
+        // Now emit a second value from this thread. Before the fix this found the callback taken and
+        // dropped the value; with serialisation it blocks until the worker's callback returns, then
+        // delivers.
+        let emitter_signal = signal.clone();
+        let emitter = std::thread::spawn(move || {
+            emitter_signal.emit(2);
+        });
+
+        // Let the first callback finish so the second emit can proceed, then join both threads.
+        release.wait();
+        worker.join().expect("the worker thread must not panic");
+        emitter.join().expect("the emitter thread must not panic");
+
+        assert_eq!(
+            delivered.load(Ordering::SeqCst),
+            2,
+            "both emits must reach the connected slot; a dropped value is the silent-loss defect"
         );
     }
 }

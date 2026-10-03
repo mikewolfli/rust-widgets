@@ -884,9 +884,10 @@ impl Draw for FreeformShapeWidget {
             (false, _) => Some(fill.blend(&background, 0.5)),
         };
 
-        context.face(
+        context.face_with_gradient(
             rect,
             background,
+            self.base.style().background_gradient.as_ref(),
             self.base.style().surface.unwrap_or_default(),
             self.base.style().border_radius.unwrap_or(0),
             crate::core::Color::BLACK,

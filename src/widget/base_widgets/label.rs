@@ -157,9 +157,10 @@ impl Draw for Label {
         let disabled = !self.base.is_enabled();
         // Draw background if specified
         if let Some(bg_color) = self.style().background_color {
-            context.face(
+            context.face_with_gradient(
                 rect,
                 bg_color,
+                self.style().background_gradient.as_ref(),
                 self.style().surface.unwrap_or_default(),
                 self.style().border_radius.unwrap_or(0),
                 Color::BLACK,
@@ -849,5 +850,44 @@ mod tests {
         let g = parts.next().and_then(|v| v.trim().parse().ok()).expect("g");
         let b = parts.next().and_then(|v| v.trim().parse().ok()).expect("b");
         Color::rgb(r, g, b)
+    }
+
+    /// A label that declares a `background_gradient` paints the ramp, not the solid fill.
+    ///
+    /// A label draws a background only when `background_color` is set, so the two renders below
+    /// share that colour and differ only by the gradient. Before the shared face path learned about
+    /// gradients a label was one of the controls that silently dropped a declared one; the
+    /// documents would then have been byte-equal and the `<linearGradient>` assertion would fail.
+    #[test]
+    fn a_label_paints_a_declared_background_gradient() {
+        use crate::core::Point;
+        use crate::style::{Gradient, WidgetStyle};
+
+        let rect = Rect::new(0, 0, 120, 30);
+        let backdrop = Color::WHITE;
+
+        let render = |gradient: Option<Gradient>| {
+            let mut label = Label::new("Sample".to_string(), rect);
+            let mut style = WidgetStyle::default();
+            style.background_color = Some(Color::rgb(240, 240, 240));
+            style.background_gradient = gradient;
+            style.border_radius = Some(6);
+            label.set_style(style);
+            crate::widget::svg::render_widget_to_svg_on(&mut label, rect, backdrop)
+        };
+
+        let solid = render(None);
+        let ramp = render(Some(
+            Gradient::linear(Point::new(0, 0), Point::new(120, 0))
+                .add_stop(0.0, Color::BLACK)
+                .add_stop(1.0, Color::WHITE),
+        ));
+
+        assert!(!solid.contains("linearGradient"), "a solid label needs no paint server");
+        assert!(
+            ramp.contains("<linearGradient") && ramp.contains("url(#"),
+            "a declared gradient must emit a paint server in the label's document"
+        );
+        assert_ne!(solid, ramp, "the gradient label must differ from the solid one");
     }
 }

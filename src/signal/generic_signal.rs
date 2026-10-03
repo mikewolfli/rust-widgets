@@ -93,6 +93,14 @@ impl GenericSignal {
     pub fn slot_count(&self) -> usize {
         self.inner.slot_count()
     }
+    /// A process-unique identity for the underlying signal instance.
+    ///
+    /// See [`Signal::identity`](crate::signal::Signal::identity) for why the query side needs it:
+    /// a value-equal name is not a value-equal signal, so "is this wired?" must compare the signal
+    /// itself. All clones of one `GenericSignal` answer with the same value.
+    pub fn identity(&self) -> usize {
+        self.inner.identity()
+    }
 }
 /// Backward-compatible single-argument signal alias.
 pub type Signal1<T> = Signal<T>;

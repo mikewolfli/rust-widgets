@@ -281,9 +281,10 @@ impl Draw for BottomNavigationBar {
         // Draw background bar. This is painted even with no items: the bar is a persistent
         // chrome surface whose extent the layout reserved, and returning early left a bar
         // with an empty item list completely invisible.
-        context.face(
+        context.face_with_gradient(
             rect,
             bar_color,
+            self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,

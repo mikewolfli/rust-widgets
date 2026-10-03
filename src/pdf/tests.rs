@@ -137,14 +137,35 @@ fn writer_serializes_security_diagnostics_when_security_is_set() {
     });
     let bytes = doc.to_bytes().expect("serialize document");
     let text = String::from_utf8_lossy(&bytes);
-    // Honest security marker: records intent, warns the output is NOT
-    // encrypted, and never echoes plaintext passwords into the file.
-    assert!(text.contains("% RW-NOTE: PDF encryption requested"));
-    assert!(text.contains("NOT encrypted"));
-    assert!(text.contains("print=false"));
-    assert!(text.contains("edit=true"));
-    assert!(text.contains("copy=false"));
-    assert!(text.contains("annot=false"));
+    // Honest security marker: records intent, warns the output is NOT encrypted
+    // (unless the standard handler actually encrypts it), and never echoes
+    // plaintext passwords into the file.
+    #[cfg(not(feature = "pdf-encryption"))]
+    {
+        assert!(text.contains("% RW-NOTE: PDF encryption requested"));
+        assert!(text.contains("NOT encrypted"));
+    }
+    #[cfg(feature = "pdf-encryption")]
+    {
+        assert!(text.contains("% RW-NOTE: PDF encryption applied"));
+        assert!(!text.contains("NOT encrypted"));
+        assert!(text.contains("/Filter /Standard"));
+        assert!(text.contains("/Encrypt "));
+        // Permission flags are encoded in the dictionary's `/P` value (signed), so
+        // locate it directly rather than scanning for the flag substrings.
+        let permissions = parse_applied_permission_value(&text);
+        assert_eq!(permissions & (1 << 2), 0, "print denied -> bit 3 clear");
+        assert_ne!(permissions & (1 << 3), 0, "edit allowed -> bit 4 set");
+        assert_eq!(permissions & (1 << 4), 0, "copy denied -> bit 5 clear");
+        assert_eq!(permissions & (1 << 5), 0, "annotate denied -> bit 6 clear");
+    }
+    #[cfg(not(feature = "pdf-encryption"))]
+    {
+        assert!(text.contains("print=false"));
+        assert!(text.contains("edit=true"));
+        assert!(text.contains("copy=false"));
+        assert!(text.contains("annot=false"));
+    }
     assert!(!text.contains("user-secret"));
     assert!(!text.contains("owner-secret"));
     assert!(!text.contains("/RWUserPassword"));
@@ -165,15 +186,29 @@ fn reader_roundtrip_restores_security_diagnostics() {
     let reader = PdfReader::new();
     let loaded = reader.load_from_bytes(&bytes).expect("load bytes");
     let security = loaded.security();
-    // Passwords cannot round-trip: the writer never embeds them.
-    assert_eq!(security.user_password, None);
-    assert_eq!(security.owner_password, None);
-    // Permissions round-trip from the intent marker.
+    // Passwords cannot round-trip: the writer never embeds them. Under the
+    // encryption feature the reader reports a password *requirement* marker for
+    // an encrypted file, so the recovered permissions come from the applied
+    // dictionary rather than the intent marker.
+    #[cfg(not(feature = "pdf-encryption"))]
+    {
+        assert_eq!(security.user_password, None);
+        assert_eq!(security.owner_password, None);
+    }
+    #[cfg(feature = "pdf-encryption")]
+    {
+        assert!(security.user_password.is_some());
+        assert_eq!(security.owner_password, None);
+    }
+    // Permissions round-trip from the intent marker / applied dictionary.
     assert!(!security.print_permission);
     assert!(!security.edit_permission);
     assert!(security.copy_permission);
     assert!(!security.annotation_permission);
 }
+/// The combined pipeline keeps image/route markers in the plaintext content stream
+/// only when the document is not encrypted; under encryption they live inside the
+/// ciphertext and must not leak into the file.
 #[test]
 fn writer_combined_pipeline_emits_form_security_and_image_markers() {
     let writer = PdfWriter::new();
@@ -203,11 +238,28 @@ fn writer_combined_pipeline_emits_form_security_and_image_markers() {
     assert!(text.contains("/Subtype /Widget"));
     assert!(text.contains("/T (email)"));
     assert!(text.contains("/T (newsletter)"));
-    assert!(text.contains("% RW-NOTE: PDF encryption requested"));
-    assert!(text.contains("NOT encrypted"));
+    #[cfg(not(feature = "pdf-encryption"))]
+    {
+        assert!(text.contains("% RW-NOTE: PDF encryption requested"));
+        assert!(text.contains("NOT encrypted"));
+    }
+    #[cfg(feature = "pdf-encryption")]
+    {
+        assert!(text.contains("% RW-NOTE: PDF encryption applied"));
+        assert!(!text.contains("NOT encrypted"));
+        assert!(text.contains("/Filter /Standard"));
+    }
     assert!(!text.contains("combo-user"));
     assert!(!text.contains("combo-owner"));
-    assert!(text.contains("% rw-image-route:raw-truncate-pad"));
+    #[cfg(not(feature = "pdf-encryption"))]
+    {
+        assert!(text.contains("% rw-image-route:raw-truncate-pad"));
+    }
+    #[cfg(feature = "pdf-encryption")]
+    {
+        // The image operators were encrypted along with the rest of the stream.
+        assert!(!text.contains("% rw-image-route:raw-truncate-pad"));
+    }
 }
 #[test]
 fn reader_roundtrip_preserves_security_and_image_route_markers() {
@@ -230,20 +282,40 @@ fn reader_roundtrip_preserves_security_and_image_route_markers() {
     let reader = PdfReader::new();
     let mut loaded = reader.load_from_bytes(&bytes).expect("load bytes");
     let security = loaded.security();
-    // Intent marker round-trips permissions; passwords stay out of the file.
-    assert_eq!(security.user_password, None);
-    assert_eq!(security.owner_password, None);
+    // Intent marker round-trips permissions; passwords stay out of the file
+    // (the encryption feature reports only a requirement marker, never a secret).
+    #[cfg(not(feature = "pdf-encryption"))]
+    {
+        assert_eq!(security.user_password, None);
+        assert_eq!(security.owner_password, None);
+    }
+    #[cfg(feature = "pdf-encryption")]
+    {
+        assert!(security.user_password.is_some());
+        assert_eq!(security.owner_password, None);
+    }
     assert!(security.print_permission);
     assert!(!security.edit_permission);
     assert!(!security.copy_permission);
     assert!(!security.annotation_permission);
     let page = loaded.get_page(0).expect("loaded page exists");
     let content_bytes = page.content();
-    let content = String::from_utf8_lossy(&content_bytes);
-    assert!(content.contains("% rw-image-route:raw-truncate-pad"));
-    assert!(content.contains("% rw-image-source-len:3"));
-    assert!(content.contains("% rw-image-expected-rgb-len:12"));
-    assert!(content.contains("BT /F1"));
+    // The image route markers and text operators live in the plaintext content
+    // stream only when the document is not encrypted.
+    #[cfg(not(feature = "pdf-encryption"))]
+    {
+        let content = String::from_utf8_lossy(&content_bytes);
+        assert!(content.contains("% rw-image-route:raw-truncate-pad"));
+        assert!(content.contains("% rw-image-source-len:3"));
+        assert!(content.contains("% rw-image-expected-rgb-len:12"));
+        assert!(content.contains("BT /F1"));
+    }
+    #[cfg(feature = "pdf-encryption")]
+    {
+        let content_text = String::from_utf8_lossy(&content_bytes);
+        assert!(content_text.starts_with('<'), "encrypted content is a hex string");
+        assert!(!content_text.contains("BT /F1"));
+    }
 }
 #[test]
 fn writer_image_with_short_payload_uses_truncate_pad_not_tiling() {
@@ -273,4 +345,136 @@ fn writer_image_with_rgba_payload_drops_alpha_deterministically() {
     let text = String::from_utf8_lossy(&bytes);
     assert!(text.contains("% rw-image-route:exact-rgba-drop-alpha"));
     assert!(text.contains("0A141E>"));
+}
+
+// ── Document-level standard encryption (pdf-encryption feature) ──
+
+/// A non-default security profile under `pdf-encryption` must produce a real
+/// `/Encrypt` dictionary object, a `/Crypt` filter, a trailer `/Encrypt N 0 R`
+/// reference, and an honest "applied" marker that never says "NOT encrypted".
+#[cfg(feature = "pdf-encryption")]
+#[test]
+fn writer_emits_encrypt_dictionary_and_trailer_reference() {
+    let writer = PdfWriter::new();
+    let mut doc = writer.create_document(Size { width: 595, height: 842 });
+    doc.set_security(PdfSecurity {
+        user_password: Some("user-secret".to_string()),
+        owner_password: Some("owner-secret".to_string()),
+        print_permission: false,
+        edit_permission: true,
+        copy_permission: false,
+        annotation_permission: false,
+    });
+    let bytes = doc.to_bytes().expect("serialize encrypted document");
+    let text = String::from_utf8_lossy(&bytes);
+
+    // The standard security handler and its crypt filter are present.
+    assert!(text.contains("/Filter /Standard"));
+    assert!(text.contains("/V 5"));
+    assert!(text.contains("/R 6"));
+    assert!(text.contains("/Length 16"));
+    assert!(text.contains("/StmF /StdCF"));
+    assert!(text.contains("/StrF /StdCF"));
+    assert!(text.contains("/CFM /AESV3"));
+    assert!(text.contains("/Type /CryptFilter"));
+
+    // The trailer and catalog both reference the encryption dictionary by number.
+    let encrypt_id = parse_encrypt_object_id(&text).expect("trailer must reference /Encrypt");
+    assert!(text.contains(&format!("{encrypt_id} 0 obj")));
+    let trailer_start = text.find("trailer\n").expect("a trailer exists");
+    assert!(text[trailer_start..].contains(&format!("/Encrypt {encrypt_id} 0 R")));
+    let catalog_start = text.find("1 0 obj").expect("catalog object");
+    let catalog_end = text[catalog_start..].find("endobj").expect("catalog end") + catalog_start;
+    assert!(text[catalog_start..catalog_end].contains(&format!("/Encrypt {encrypt_id} 0 R")));
+
+    // Honest marker: encryption applied, never the "NOT encrypted" claim.
+    assert!(text.contains("% RW-NOTE: PDF encryption applied"));
+    assert!(!text.contains("NOT encrypted"));
+
+    // Passwords are never echoed in plain text.
+    assert!(!text.contains("user-secret"));
+    assert!(!text.contains("owner-secret"));
+}
+
+/// The page content stream is encrypted, so its plaintext operators no longer
+/// appear and the stream body is a `<...>` hex string of whole AES blocks.
+#[cfg(feature = "pdf-encryption")]
+#[test]
+fn writer_encrypts_page_content_stream() {
+    let writer = PdfWriter::new();
+    let mut doc = writer.create_document(Size { width: 300, height: 200 });
+    doc.set_security(PdfSecurity {
+        user_password: Some("pw".to_string()),
+        owner_password: None,
+        print_permission: true,
+        edit_permission: true,
+        copy_permission: true,
+        annotation_permission: true,
+    });
+    {
+        let page = doc.get_page(0).expect("page exists");
+        page.draw_text("secret text", 10.0, 10.0, 12.0, Color { r: 0, g: 0, b: 0, a: 255 });
+    }
+    let bytes = doc.to_bytes().expect("serialize encrypted document");
+    let text = String::from_utf8_lossy(&bytes);
+
+    // The plaintext operator string must not survive into the ciphertext.
+    assert!(!text.contains("secret text"));
+    // The content object's stream body is a single AESV3 hex payload.
+    let stream_start = text.find("stream\n").expect("a content stream exists") + "stream\n".len();
+    let rest = &text[stream_start..];
+    let body = &rest[..rest.find("\nendstream").expect("stream terminator")];
+    assert!(body.starts_with('<') && body.ends_with('>'), "encrypted stream is a hex string");
+    let hex = &body[1..body.len() - 1];
+    assert!(hex.chars().all(|ch| ch.is_ascii_hexdigit()));
+    assert_eq!(hex.len() % 32, 0, "IV + ciphertext must be whole AES blocks");
+}
+
+/// The reader must stop reporting an encrypted document as if it were open: it
+/// detects `/Encrypt`, keeps the `/Encrypt` reference in its marker, and never
+/// claims the file is decrypted.
+#[cfg(feature = "pdf-encryption")]
+#[test]
+fn reader_reports_encrypted_document_without_claiming_decryption() {
+    let writer = PdfWriter::new();
+    let mut doc = writer.create_document(Size { width: 200, height: 120 });
+    doc.set_security(PdfSecurity {
+        user_password: Some("reader-secret".to_string()),
+        owner_password: Some("owner-secret".to_string()),
+        print_permission: false,
+        edit_permission: true,
+        copy_permission: false,
+        annotation_permission: false,
+    });
+    let bytes = doc.to_bytes().expect("serialize encrypted document");
+    let reader = PdfReader::new();
+    let loaded = reader.load_from_bytes(&bytes).expect("load encrypted bytes");
+    let security = loaded.security();
+    // The file is flagged as encrypted, with permissions recovered from the marker.
+    assert!(security.user_password.is_some(), "encrypted docs report a password requirement");
+    assert!(!security.print_permission);
+    assert!(security.edit_permission);
+    assert!(!security.copy_permission);
+    assert!(!security.annotation_permission);
+    // The raw secret never appears anywhere in the file.
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(!text.contains("reader-secret"));
+    assert!(!text.contains("owner-secret"));
+}
+
+/// Extract the object number from the trailer's `/Encrypt N 0 R` entry.
+#[cfg(feature = "pdf-encryption")]
+fn parse_encrypt_object_id(text: &str) -> Option<u32> {
+    let start = text.find("/Encrypt ")? + "/Encrypt ".len();
+    let digits: String = text[start..].chars().take_while(char::is_ascii_digit).collect();
+    digits.parse::<u32>().ok()
+}
+
+/// Extract the signed `/P` value an applied encryption dictionary encoded as bits.
+#[cfg(feature = "pdf-encryption")]
+fn parse_applied_permission_value(text: &str) -> u32 {
+    let start = text.find("/P ").expect("an applied dictionary has a /P entry") + "/P ".len();
+    let rest = &text[start..];
+    let digits: String = rest.chars().take_while(|ch| ch.is_ascii_digit() || *ch == '-').collect();
+    digits.parse::<i64>().expect("the /P entry is an integer") as u32
 }

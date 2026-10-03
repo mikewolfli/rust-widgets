@@ -92,8 +92,13 @@ impl TreeTable {
 
         self.model = Some(model);
         self.expanded_paths.clear();
-        self.selected_row = None;
+        // A new model invalidates the old selection: the visible rows no longer refer to the same
+        // nodes. The clear is captured before it happens so it can be **announced** afterwards
+        // (BLUE-issue E-20): a subscriber must see the selection go from its old value to `None`, not
+        // have it vanish silently.
+        let previous_selection = self.selected_row.take();
         self.rebuild_projection();
+        self.announce_selection_change(previous_selection);
         self.base.request_layout();
         self.base.request_redraw();
     }
@@ -236,11 +241,13 @@ impl TreeTable {
     }
 
     fn rebuild_projection(&mut self) {
+        let previous_selection = self.selected_row;
         let mut next = Vec::new();
         let Some(model) = self.model.as_ref() else {
             self.visible_rows = next;
             self.selected_row = None;
             self.projection_changed.emit(0);
+            self.announce_selection_change(previous_selection);
             return;
         };
 
@@ -252,6 +259,22 @@ impl TreeTable {
         self.visible_rows = next;
         self.selected_row = self.selected_row.filter(|row| *row < self.visible_rows.len());
         self.projection_changed.emit(self.visible_rows.len());
+        self.announce_selection_change(previous_selection);
+    }
+
+    /// Emits `selection_changed` when a projection rebuild cleared or moved the selection.
+    ///
+    /// # The defect this closes (BLUE-issue E-20)
+    ///
+    /// Collapsing a row (or replacing the model) can remove the selected row from the visible
+    /// projection, so `selected_row` silently becomes `None` while only `projection_changed` fires.
+    /// A subscriber saw the selection disappear with no `selection_changed`, which is inconsistent
+    /// with `clear_model`, which *does* announce it. Announcing from the one place the selection can
+    /// change keeps every path \u2014 collapse, model swap, clear \u2014 reporting the same fact.
+    fn announce_selection_change(&self, previous: Option<usize>) {
+        if self.selected_row != previous {
+            self.selection_changed.emit(self.selected_row);
+        }
     }
 
     fn flatten_path(
@@ -511,9 +534,10 @@ impl Draw for TreeTable {
             .unwrap_or(Color::PRIMARY);
         let selected_bg = surface.blend(&accent, 0.30);
 
-        context.face(
+        context.face_with_gradient(
             rect,
             surface,
+            self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
@@ -696,6 +720,85 @@ mod tests {
 
         assert!(tree_table.collapse_row(0));
         assert_eq!(tree_table.row_count(), 2);
+    }
+
+    /// Collapsing the row that holds the selection must announce the cleared selection.
+    ///
+    /// # The defect this pins (BLUE-issue E-20)
+    ///
+    /// Collapsing a row rebuilds the visible projection and drops a now-invisible `selected_row`,
+    /// but only `projection_changed` was emitted. A subscriber saw `selected_row` go from `Some` to
+    /// `None` with **zero** `selection_changed` notifications \u2014 inconsistent with `clear_model`,
+    /// which does announce it. This pins that the clear is reported with the `Null` payload an absent
+    /// optional selection uses.
+    #[test]
+    fn collapsing_the_selected_row_announces_the_cleared_selection() {
+        // A single root with one child, so collapsing the root shrinks the projection to just the
+        // root and the previously-selected child (row 1) is no longer a valid index \u2014 the exact
+        // shape the issue reproduced.
+        struct OneBranch;
+        impl TreeTableModel for OneBranch {
+            fn root_count(&self) -> usize {
+                1
+            }
+            fn child_count(&self, path: &[usize]) -> usize {
+                match path {
+                    [0] => 1,
+                    _ => 0,
+                }
+            }
+            fn column_count(&self) -> usize {
+                1
+            }
+            fn data(&self, path: &[usize], _column: usize) -> Option<String> {
+                Some(format!("{path:?}"))
+            }
+        }
+
+        let mut tree = TreeTable::new(Rect::new(0, 0, 320, 120));
+        tree.set_model(Arc::new(OneBranch));
+
+        // Expand the root and select its child (visible row 1).
+        assert!(tree.expand_row(0));
+        assert!(tree.select_row(1));
+        assert_eq!(tree.selected_row(), Some(1));
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<Option<usize>>::new()));
+        let sink = Arc::clone(&seen);
+        tree.selection_changed.connect(move |value: Arc<Option<usize>>| {
+            sink.lock().expect("lock").push(*value);
+        });
+
+        // Collapsing the root hides the selected child, so the selection must clear **and** be reported.
+        assert!(tree.collapse_row(0));
+        assert_eq!(tree.selected_row(), None, "the hidden selection must be cleared");
+        assert_eq!(
+            *seen.lock().expect("lock"),
+            vec![None],
+            "clearing the selection on collapse must emit exactly one `selection_changed(None)`"
+        );
+    }
+
+    /// Replacing the model must announce the cleared selection, not drop it silently.
+    #[test]
+    fn replacing_the_model_announces_the_cleared_selection() {
+        let mut tree = TreeTable::new(Rect::new(0, 0, 320, 120));
+        tree.set_model(Arc::new(SampleTreeTableModel));
+        assert!(tree.select_row(1));
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<Option<usize>>::new()));
+        let sink = Arc::clone(&seen);
+        tree.selection_changed.connect(move |value: Arc<Option<usize>>| {
+            sink.lock().expect("lock").push(*value);
+        });
+
+        tree.set_model(Arc::new(SampleTreeTableModel));
+        assert_eq!(tree.selected_row(), None);
+        assert_eq!(
+            *seen.lock().expect("lock"),
+            vec![None],
+            "a model swap that clears the selection must announce it"
+        );
     }
 
     #[test]

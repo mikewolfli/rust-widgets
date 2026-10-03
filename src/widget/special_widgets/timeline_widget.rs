@@ -399,9 +399,10 @@ impl Draw for TimelineWidget {
         // slot through the resolved border colour rather than a literal blue.
         let bar = border.blend(&text_color, 0.25);
 
-        context.face(
+        context.face_with_gradient(
             rect,
             background,
+            self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,

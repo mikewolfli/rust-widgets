@@ -136,6 +136,13 @@ impl EventHandlerMap {
     ///
     /// Returns `true` if the handler was found and executed, `false` if
     /// no handler with that name is registered (the event is silently ignored).
+    ///
+    /// # Re-entrancy
+    ///
+    /// This borrows the registry for the duration of the call, so a handler that mutates the map it
+    /// is stored in must use [`Self::take`] (which the global registry does) rather than call this
+    /// through a `RefCell`. The direct `&self` case has no `RefCell` to conflict with, so it stays a
+    /// plain lookup-and-call.
     pub fn invoke(&self, name: &str, ctx: &EventHandlerContext) -> bool {
         if let Some(handler) = self.handlers.get(name) {
             handler(ctx);
@@ -143,6 +150,22 @@ impl EventHandlerMap {
         } else {
             false
         }
+    }
+
+    /// Removes a handler by name and returns it, so a caller can run it **outside** any borrow of
+    /// this map and re-insert it afterwards. Used by the global registry to let a handler register
+    /// or clear other handlers without re-borrowing the same `RefCell`.
+    pub fn take(&mut self, name: &str) -> Option<EventHandler> {
+        self.handlers.remove(name)
+    }
+
+    /// Re-inserts a handler removed by [`Self::take`].
+    ///
+    /// Only overwrites an entry if the name is still absent: a handler that re-registered its own
+    /// name while it was running has installed a newer closure, which must win over the older one
+    /// being restored.
+    pub fn restore(&mut self, name: impl Into<String>, handler: EventHandler) {
+        self.handlers.entry(name.into()).or_insert(handler);
     }
 
     /// Check whether a handler name is registered.
@@ -190,8 +213,45 @@ where
 }
 
 /// Invoke a global event handler by name.
+///
+/// # Why the handler is taken out before it runs
+///
+/// A handler may legitimately re-enter this registry: registering another handler, or clearing the
+/// layout's handlers when it tears a screen down. When the map was borrowed for the whole call —
+/// `handlers.borrow().invoke(...)` — that re-entry hit `RefCell already borrowed` and panicked, so a
+/// handler that registered anything crashed (BLUE-issue E-16). The entry is therefore moved out of
+/// the map under a short mutable borrow, the borrow is dropped, the handler runs, and a guard
+/// re-inserts it on both the normal return and an unwind.
+///
+/// The one case this does not support is a handler that invokes **its own name** while running: the
+/// entry is out of the map, so that call reports `false` rather than recursing (which would recurse
+/// without bound anyway).
 pub fn invoke_global_handler(name: &str, ctx: &EventHandlerContext) -> bool {
-    GLOBAL_EVENT_HANDLERS.with(|handlers| handlers.borrow().invoke(name, ctx))
+    let taken = GLOBAL_EVENT_HANDLERS.with(|handlers| handlers.borrow_mut().take(name));
+    let Some(handler) = taken else {
+        return false;
+    };
+
+    // Re-insert on both the normal return and an unwind, so a panicking handler does not leave the
+    // name unregistered. `restore` will not clobber a handler the callback re-registered under this
+    // same name while it ran.
+    struct RestoreGuard<'a> {
+        name: &'a str,
+        handler: Option<EventHandler>,
+    }
+    impl Drop for RestoreGuard<'_> {
+        fn drop(&mut self) {
+            if let Some(handler) = self.handler.take() {
+                GLOBAL_EVENT_HANDLERS
+                    .with(|handlers| handlers.borrow_mut().restore(self.name, handler));
+            }
+        }
+    }
+    let guard = RestoreGuard { name, handler: Some(handler) };
+    if let Some(handler) = guard.handler.as_ref() {
+        handler(ctx);
+    }
+    true
 }
 
 /// Clear all registered global handlers.
@@ -199,6 +259,64 @@ pub fn clear_global_handlers() {
     GLOBAL_EVENT_HANDLERS.with(|handlers| {
         handlers.borrow_mut().clear();
     });
+}
+
+// ── Handler thread affinity (BLUE-issue E-25) ──────────────────
+
+// The global handler registry is thread-local, which is the right design for a GUI: a handler
+// typically touches controls on the UI thread and must not run on a worker. The problem was not the
+// thread-local itself but that the *dynamic bridge* never said so: a signal emitted from another
+// thread looked up that thread's (empty) registry, found nothing, and the handler was skipped
+// silently — indistinguishable from "no handler was ever registered". A caller could not tell a
+// delivered binding from one that silently does nothing off-thread.
+
+/// Number of handler invocations that were skipped because they fired on a thread other than the
+/// one that bound them.
+///
+/// A process-wide counter rather than per-binding, because the question a host asks is "did anything
+/// get silently dropped off-thread?", and because the binding id is already named in the `warn!`
+/// that accompanies each increment.
+static CROSS_THREAD_SKIPS: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+/// Records that `handler` fired off its binding thread, reporting the fact once per occurrence.
+///
+/// Returns the new total, so a caller that wants to surface it (a diagnostics panel) has the count
+/// without a second call. The `warn!` names the handler and both thread ids so the author can act;
+/// it is emitted every time because a dropped event is not routine and a single summary at shutdown
+/// would hide how often it happened.
+pub fn record_cross_thread_skip(handler: &str, bound_thread: &str, fired_thread: &str) -> usize {
+    log::warn!(
+        "JSON handler `{handler}` was bound on thread {bound_thread} but fired on thread \
+         {fired_thread}; the handler registry is thread-local, so the binding was skipped rather \
+         than run cross-thread. Emit the control's signal on its owning thread, or move the \
+         binding to the emitting thread."
+    );
+    CROSS_THREAD_SKIPS.fetch_add(1, core::sync::atomic::Ordering::SeqCst) + 1
+}
+
+/// How many dynamic JSON bindings have been skipped for firing off their binding thread.
+pub fn cross_thread_skips() -> usize {
+    CROSS_THREAD_SKIPS.load(core::sync::atomic::Ordering::SeqCst)
+}
+
+/// Resets the cross-thread skip counter. For tests and for a host that samples and clears.
+pub fn reset_cross_thread_skips() {
+    CROSS_THREAD_SKIPS.store(0, core::sync::atomic::Ordering::SeqCst);
+}
+
+/// A human-readable identifier for the current thread, used in the cross-thread diagnostic.
+///
+/// Prefers the thread's own name (a host that names its UI thread gets a useful message) and falls
+/// back to the debug form of the id, which is always available and unique per thread.
+pub fn current_thread_name() -> alloc::string::String {
+    // `std::thread` is available wherever this module is compiled: the JSON loader is gated on a
+    // device profile, which implies `std`.
+    let current = std::thread::current();
+    match current.name() {
+        Some(name) => alloc::string::String::from(name),
+        None => alloc::format!("{:?}", current.id()),
+    }
 }
 
 #[cfg(test)]
@@ -385,5 +503,61 @@ mod tests {
         });
         assert!(!invoke_global_handler("g1", &ctx));
         assert!(!invoke_global_handler("g2", &ctx));
+    }
+
+    /// A handler may register another handler while it runs, without a `RefCell` panic.
+    ///
+    /// # The defect this pins (BLUE-issue E-16)
+    ///
+    /// `invoke_global_handler` held `handlers.borrow()` across the user closure, so a handler that
+    /// registered or cleared handlers hit `RefCell already borrowed` and panicked. The registry now
+    /// takes the invoked handler out before running it, so re-entry sees a free `RefCell`.
+    #[test]
+    fn a_global_handler_may_register_another_handler_while_running() {
+        clear_global_handlers();
+        let inner_ran = std::rc::Rc::new(std::cell::Cell::new(false));
+        let inner_flag = inner_ran.clone();
+        register_global_handler("outer", move |_ctx| {
+            // The exact re-entry the previous implementation panicked on. `Rc::clone` is a `&self`
+            // operation, so the outer closure stays `Fn` while handing an owned clone inward.
+            let inner_flag = inner_flag.clone();
+            register_global_handler("inner", move |_ctx| {
+                inner_flag.set(true);
+            });
+        });
+
+        let ctx = EventHandlerContext::new(crate::WidgetTriggerEvent {
+            widget_id: 1,
+            kind: crate::platform::WidgetTriggerKind::Clicked,
+        });
+        assert!(invoke_global_handler("outer", &ctx), "the outer handler must run");
+        assert!(
+            invoke_global_handler("inner", &ctx),
+            "the handler registered by the outer must exist"
+        );
+        assert!(inner_ran.get(), "and must be callable");
+        clear_global_handlers();
+    }
+
+    /// A handler may clear the registry while it runs, and the invoked handler is still restored.
+    #[test]
+    fn a_global_handler_may_clear_the_registry_while_running() {
+        clear_global_handlers();
+        let ran = std::rc::Rc::new(std::cell::Cell::new(false));
+        let ran_flag = ran.clone();
+        register_global_handler("clears", move |_ctx| {
+            clear_global_handlers();
+            ran_flag.set(true);
+        });
+
+        let ctx = EventHandlerContext::new(crate::WidgetTriggerEvent {
+            widget_id: 1,
+            kind: crate::platform::WidgetTriggerKind::Clicked,
+        });
+        assert!(invoke_global_handler("clears", &ctx), "the handler must run despite clearing");
+        assert!(ran.get());
+        // `clear_global_handlers` ran *during* the handler; the guard restores the entry afterwards.
+        assert!(invoke_global_handler("clears", &ctx), "the handler must have been restored");
+        clear_global_handlers();
     }
 }

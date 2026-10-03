@@ -244,9 +244,10 @@ impl Draw for FontPreview {
         // They now resolve from one place: an explicit style first, then the theme's roles, then the
         // literals as a last resort for a build with no theme at all.
         let (panel, ink, muted, separator) = self.panel_colors();
-        context.face(
+        context.face_with_gradient(
             rect,
             panel,
+            self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,

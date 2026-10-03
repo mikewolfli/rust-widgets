@@ -160,47 +160,48 @@ impl JsonLoader {
 
     /// Subscribes one declared handler to `widget_id` through the callback the event needs.
     ///
-    /// # Why the callback is chosen from the *binding*, not from the call site
+    /// # Additive, not idempotent (BLUE-issue E-22)
     ///
-    /// A control's own signal and the loader's callback tables are two different channels, and
-    /// which one a published name travels on is a property of that name: a payload-free event
-    /// (`clicked`, `dismissed`) arrives through the click table, and one that carries a value
-    /// (`value_changed`, `text_edited`) through the value table. The first revision of this
-    /// function hard-coded [`JsonTriggerMarker::Clicked`] for **every** published name, so
-    /// `"events": {"value_changed": "h"}` was bound to the click callback: the handler ran when
-    /// the control was *pressed*, and never when its value changed. The name was validated, the
-    /// binding looked wired, and the signal it named was unreachable.
-    ///
-    /// Reading the decision off the binding is also what makes it checkable:
-    /// [`JsonEventBinding::Published`] carries the payload observation, so a test (and the gate
-    /// in `tools/check_json_event_route.py`) can assert the choice without a live control.
+    /// Calling this twice with the same `(widget_id, binding, handler_name)` subscribes the handler
+    /// **twice**: one control emission runs it twice. That is deliberate \u2014 two legitimate
+    /// bindings that happen to share a handler name are two subscribers \u2014 but it means this
+    /// call is not a safe "ensure wired" operation. A host that must be able to release a single
+    /// dynamic binding it added (a designer replacing one wire without destroying the control)
+    /// should use [`Self::bind_one_releasable`], which returns a token; this convenience form
+    /// discards it and is for the load-time case where the whole layout is torn down together.
     pub fn bind_one(
+        widget_id: ObjectId,
+        binding: crate::json::JsonEventBinding,
+        handler_name: String,
+    ) -> bool {
+        let published = binding.published_name();
+        if let Some(name) = published {
+            // A published binding has a releasable token. This convenience form has no way to hand
+            // that token back, and the binding must **outlive this call** (it is the load-time wire),
+            // so the token is deliberately not dropped: dropping it would release the subscription
+            // immediately. This is the documented additive, no-token form; a caller that wants to
+            // release the wire uses `bind_one_releasable`.
+            match Self::bind_published_dynamic(widget_id, name, binding.marker(), handler_name) {
+                Some(token) => {
+                    core::mem::forget(token);
+                    true
+                }
+                None => false,
+            }
+        } else {
+            Self::bind_marker_callback(widget_id, binding, handler_name)
+        }
+    }
+
+    /// The marker/`on_*` route: reaches a handle-layer callback and always reports `true` once the
+    /// marker has passed the routability check.
+    fn bind_marker_callback(
         widget_id: ObjectId,
         binding: crate::json::JsonEventBinding,
         handler_name: String,
     ) -> bool {
         let marker = binding.marker();
         let handle: ButtonHandle = ButtonHandle::from_raw(widget_id);
-
-        // ── Published route: reach the control's OWN dynamic signal ──
-        //
-        // # The defect this closes
-        //
-        // A published name under `events` used to travel the same three generic callbacks as the
-        // `on_*` compatibility keys (`base.clicked`, the value callback, `base.closed`). That
-        // discarded the *specific* signal the name identifies: `pressed`, `released` and `canceled`
-        // are three different signals on a Button, yet each flattened to `base.clicked`, so a real
-        // click ran all three handlers and a real cancel ran none of them. `Widget::event_signal_dyn`
-        // already joins a published name to the exact signal the control emits (it is what
-        // `EventSignalBinder` wires), so the JSON route now uses that same join instead of a
-        // parallel guess. This is rule #101: one concept, one implementation path.
-        //
-        // The compatibility `on_*` keys keep the generic callbacks — they name a *trigger intent*
-        // (`on_click` means "a click"), not a specific published signal, so they have no name to
-        // resolve.
-        if let Some(name) = binding.published_name() {
-            return Self::bind_published_dynamic(widget_id, name, marker, handler_name);
-        }
 
         // A marker whose *real* trigger has no callback on this handle is refused rather
         // than bound to a nearby one.
@@ -216,25 +217,10 @@ impl JsonLoader {
         // callback): in each case the name was validated, the binding looked wired, and the
         // signal it named was unreachable — precisely the "subscribed successfully but will
         // never fire" failure the crate refuses elsewhere.
-        //
-        // Refusing is the honest answer: a handler that cannot fire is worse than an error,
-        // because the document loads. The warning names the key and the reason, so an author
-        // is not left guessing why their handler is silent.
-        //
-        // A published binding (`events: { "closed": "h" }`) now reaches this same guard,
-        // because the marker is derived from the *name* -- it used to flatten to `Clicked`
-        // and bind the click callback while telling the handler the control had closed.
         if let Some(reason) = marker.unroutable_reason() {
-            match binding.published_name() {
-                Some(name) => log::warn!(
-                    "`events.{name}` for handler '{handler_name}' on id={widget_id} was NOT \
-                     bound: {reason}"
-                ),
-                None => log::warn!(
-                    "on_* key for handler '{handler_name}' on id={widget_id} was NOT bound: \
-                     {reason}"
-                ),
-            }
+            log::warn!(
+                "on_* key for handler '{handler_name}' on id={widget_id} was NOT bound: {reason}"
+            );
             crate::app::record_unwired_binding(widget_id);
             return false;
         }
@@ -263,6 +249,29 @@ impl JsonLoader {
         true
     }
 
+    /// Like [`Self::bind_one`], but returns a token that releases exactly the binding it added.
+    ///
+    /// The published route's subscription is on the control's own dynamic signal, whose handle is
+    /// the only key that can remove it. `bind_one` returned a `bool` and dropped that handle, so a
+    /// host that added a wire at run time had no way to take it back without destroying the control
+    /// \u2014 the token gap E-22 records. Compatibility-key routes (the `on_*` callbacks) connect
+    /// through the handle layer, which exposes no per-callback release, so they bind and return
+    /// `None`; the token is only meaningful where a handle exists.
+    pub fn bind_one_releasable(
+        widget_id: ObjectId,
+        binding: crate::json::JsonEventBinding,
+        handler_name: String,
+    ) -> Option<crate::json::DynamicBinding> {
+        if let Some(name) = binding.published_name() {
+            Self::bind_published_dynamic(widget_id, name, binding.marker(), handler_name)
+        } else {
+            // No per-callback release exists on the handle layer; bind and report no token rather
+            // than a token that would silently do nothing.
+            let _ = Self::bind_marker_callback(widget_id, binding, handler_name);
+            None
+        }
+    }
+
     /// Wires a **published** event name to the control's own dynamic signal.
     ///
     /// # Why this rather than the generic callback tables
@@ -277,16 +286,21 @@ impl JsonLoader {
     ///
     /// # Returns
     ///
-    /// `false`, with a warning, when the control does not resolve the name. That case means the name
+    /// `None`, with a warning, when the control does not resolve the name. That case means the name
     /// is published but has no live signal — the exact "subscribed successfully but will never fire"
     /// state rule #97 rules out — so it is reported rather than silently falling back to a callback
     /// that would run on the wrong event.
+    ///
+    /// Otherwise `Some(token)`, whose `release` disconnects **exactly** this subscription. Two calls
+    /// with the same arguments subscribe twice (additive, BLUE-issue E-22), and each token releases
+    /// its own subscription, so a host that replaces one dynamic wire can do so without disturbing
+    /// the others or destroying the control.
     fn bind_published_dynamic(
         widget_id: ObjectId,
         name: &'static str,
         marker: crate::json::JsonTriggerMarker,
         handler_name: String,
-    ) -> bool {
+    ) -> Option<crate::json::DynamicBinding> {
         let reference =
             crate::widget::runtime::with_widget(widget_id, |widget| widget.event_signal_dyn(name));
         let Some(reference) = reference.flatten() else {
@@ -296,17 +310,45 @@ impl JsonLoader {
                  never run"
             );
             crate::app::record_unwired_binding(widget_id);
-            return false;
+            return None;
         };
         // The slot forwards the trigger **and its payload**. The reference's own name is used (not
         // the caller's spelling) so the name a subscriber reads is the one the control answers to.
-        reference.subscribe(Box::new(
+        //
+        // # Thread affinity (BLUE-issue E-25)
+        //
+        // The handler registry is thread-local, so a signal emitted from another thread looked up
+        // that thread's (empty) registry and skipped the handler **silently**. The binding records
+        // the thread it was made on and reports a mismatch instead of pretending the handler ran,
+        // so "fired off the wrong thread" is observable rather than indistinguishable from "no
+        // handler was registered".
+        let bound_thread = crate::json::events::current_thread_name();
+        let handle = reference.subscribe(Box::new(
             move |payload: &crate::widget::capability::CapabilityValue| {
+                let fired_thread = crate::json::events::current_thread_name();
+                if fired_thread != bound_thread {
+                    crate::json::events::record_cross_thread_skip(
+                        &handler_name,
+                        &bound_thread,
+                        &fired_thread,
+                    );
+                    return;
+                }
                 let ctx = crate::json::context_for_with_payload(widget_id, marker, payload.clone());
                 crate::json::invoke_global_handler(&handler_name, &ctx);
             },
         ));
-        true
+        // Resolve once more for the release closure: `EventSignalRef` is not `Clone`, and its
+        // `disconnect` is per-call, so the token captures a fresh lookup and the handle it removes.
+        let mut release_reference =
+            crate::widget::runtime::with_widget(widget_id, |widget| widget.event_signal_dyn(name))
+                .flatten();
+        let release = alloc::boxed::Box::new(move || {
+            if let Some(reference) = release_reference.as_mut() {
+                reference.disconnect(handle);
+            }
+        });
+        Some(crate::json::DynamicBinding::new(release))
     }
 
     /// Places a child at the cell it declared, when it declared one and the parent can honour it.

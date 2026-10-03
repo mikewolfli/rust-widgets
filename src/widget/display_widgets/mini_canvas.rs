@@ -254,9 +254,10 @@ impl Draw for MiniCanvas {
             Some(resolved) if resolved != window_fill => resolved,
             _ => window_fill.blend(&ink, 0.08),
         };
-        context.face(
+        context.face_with_gradient(
             rect,
             sheet,
+            self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,

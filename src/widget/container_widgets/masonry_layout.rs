@@ -205,9 +205,10 @@ impl Draw for MasonryLayout {
 
         // The panel is drawn first so an empty layout still shows where the control is
         // rather than being indistinguishable from the frame behind it.
-        context.face(
+        context.face_with_gradient(
             rect,
             container_bg,
+            self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,

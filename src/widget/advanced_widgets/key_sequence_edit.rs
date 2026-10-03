@@ -452,9 +452,10 @@ impl Draw for KeySequenceEdit {
         // error colour rather than as a second literal — the same derivation the preset theme's
         // state overlays use, and what keeps the two appearances in step when the palette moves.
         let bg = if self.recording { surface.blend(&error, 0.12) } else { surface };
-        context.face(
+        context.face_with_gradient(
             rect,
             bg,
+            self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,

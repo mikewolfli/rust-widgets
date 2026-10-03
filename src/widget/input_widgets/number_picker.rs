@@ -525,9 +525,10 @@ impl Draw for NumberPicker {
         // even the 3:1 large-text floor, on the one row the control exists to show.
         let selected_text_color = selected_color.contrast_color();
 
-        context.face(
+        context.face_with_gradient(
             rect,
             background,
+            self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,

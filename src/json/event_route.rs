@@ -259,24 +259,31 @@ impl JsonTriggerMarker {
     /// signal (`closed`, `double_clicked`, focus) then travels through
     /// [`Self::unroutable_reason`] and is refused rather than mis-bound.
     pub fn for_published_name(name: &str, has_payload: bool) -> Self {
-        let lower = name.to_ascii_lowercase();
+        // Normalise before classifying, not only before matching the schema. The schema lookup uses
+        // `normalize_key` (which strips `_`/`-`/space and lower-cases), so `selection-changed` and
+        // `selection_changed` resolve to the *same* published name. Classifying the raw spelling
+        // instead made the two disagree about intent: the underscore form matched
+        // `contains("selection_changed")` and reported `SelectionChanged`, while the hyphen form fell
+        // through to the payload question and reported `ValueChanged` — the same event with two
+        // different trigger kinds depending on how the author spelled it (BLUE-issue E-24).
+        let lower = crate::widget::capability::normalize_key(name);
         // Order matters: the most specific intents are checked before the generic suffixes, so
         // `double_clicked` is not swallowed by the `clicked` check.
-        if lower.contains("double_click") || lower == "dblclick" {
+        if lower.contains("doubleclick") {
             return Self::DoubleClicked;
         }
-        if lower == "closed" || lower == "close" || lower.ends_with("_closed") {
+        if lower == "closed" || lower == "close" || lower.ends_with("closed") {
             return Self::Closed;
         }
-        if lower.contains("focus_gained") || lower == "focused" || lower == "focus" {
+        if lower.contains("focusgained") || lower == "focused" || lower == "focus" {
             return Self::FocusGained;
         }
-        if lower.contains("focus_lost") || lower == "blurred" || lower == "blur" {
+        if lower.contains("focuslost") || lower == "blurred" || lower == "blur" {
             return Self::FocusLost;
         }
-        if lower.contains("selection_changed")
-            || lower.contains("select_changed")
-            || lower.contains("selected_changed")
+        if lower.contains("selectionchanged")
+            || lower.contains("selectchanged")
+            || lower.contains("selectedchanged")
         {
             return Self::SelectionChanged;
         }
@@ -412,6 +419,54 @@ pub fn context_for_with_payload(
 ) -> EventHandlerContext {
     EventHandlerContext::new(WidgetTriggerEvent { widget_id, kind: marker.trigger_kind() })
         .with_payload(payload)
+}
+
+/// A handle to one dynamically-added JSON event binding, which can release just that binding.
+///
+/// # Why this exists (BLUE-issue E-22)
+///
+/// `JsonLoader::bind_one` returns a `bool` and drops the connection handle the published route
+/// created, so a host that added a wire at run time had no way to remove it again without destroying
+/// the control. A designer that replaces or deletes a single wire needs exactly that, so the binding
+/// is now represented by a token whose `release` disconnects the one subscription it made.
+///
+/// Binding is **additive**: two tokens over the same declaration are two subscriptions and one
+/// emission runs the handler twice. `release` is idempotent \u2014 a second call does nothing.
+pub struct DynamicBinding {
+    release: Option<alloc::boxed::Box<dyn FnOnce() + Send>>,
+}
+
+impl DynamicBinding {
+    /// Wraps a release closure. Crate-internal: the loader is the only producer.
+    pub(crate) fn new(release: alloc::boxed::Box<dyn FnOnce() + Send>) -> Self {
+        Self { release: Some(release) }
+    }
+
+    /// Disconnects exactly the subscription this token represents. Safe to call more than once.
+    pub fn release(&mut self) {
+        if let Some(release) = self.release.take() {
+            release();
+        }
+    }
+
+    /// Whether this token still owns a live subscription (i.e. `release` has not been called).
+    pub fn is_live(&self) -> bool {
+        self.release.is_some()
+    }
+}
+
+impl Drop for DynamicBinding {
+    fn drop(&mut self) {
+        // Dropping the token releases its binding, matching the `ConnectionScope` contract: a host
+        // that forgets a token does not leak a subscription into a still-living control.
+        self.release();
+    }
+}
+
+impl core::fmt::Debug for DynamicBinding {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DynamicBinding").field("live", &self.is_live()).finish()
+    }
 }
 
 /// Wires one **published** event (`events: { <name>: <handler> }`) to a live control.
@@ -654,5 +709,47 @@ mod tests {
             JsonTriggerMarker::for_published_name("selected_changed", true),
             JsonTriggerMarker::SelectionChanged
         );
+    }
+
+    /// Every accepted spelling of one published name resolves to the **same** marker.
+    ///
+    /// # The defect this pins (BLUE-issue E-24)
+    ///
+    /// `normalize_key` accepts `selection-changed`, `selection changed` and `SELECTIONCHANGED` as the
+    /// same name, but the marker classifier compared the raw spelling, so the hyphen form fell
+    /// through to the payload question and reported `ValueChanged` while the underscore form
+    /// reported `SelectionChanged`. The same event therefore reported different trigger kinds — and
+    /// so reached different callbacks — depending on how the author spelled the name.
+    #[test]
+    fn every_accepted_spelling_of_one_name_resolves_to_the_same_marker() {
+        for spelling in [
+            "selection_changed",
+            "selection-changed",
+            "selection changed",
+            "SelectionChanged",
+            "SELECTION_CHANGED",
+        ] {
+            assert_eq!(
+                JsonTriggerMarker::for_published_name(spelling, false),
+                JsonTriggerMarker::SelectionChanged,
+                "`{spelling}` must classify as a selection change"
+            );
+        }
+
+        for spelling in ["double_clicked", "double-clicked", "DoubleClicked"] {
+            assert_eq!(
+                JsonTriggerMarker::for_published_name(spelling, false),
+                JsonTriggerMarker::DoubleClicked,
+                "`{spelling}` must classify as a double click"
+            );
+        }
+
+        for spelling in ["closed", "close", "_closed", "page_closed"] {
+            assert_eq!(
+                JsonTriggerMarker::for_published_name(spelling, false),
+                JsonTriggerMarker::Closed,
+                "`{spelling}` must classify as a close"
+            );
+        }
     }
 }

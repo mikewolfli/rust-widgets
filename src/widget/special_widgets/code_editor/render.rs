@@ -253,9 +253,10 @@ impl CodeEditor {
                 // would round the surface a document is read on. `0` here was a literal standing in
                 // for "this is not the editor's own face", which is why the resolved radius is the
                 // honest value to pass — a theme that rounds its tabs says so once, in `borders`.
-                context.face(
+                context.face_with_gradient(
                     tab_rect,
                     chrome.surface,
+                    self.style().background_gradient.as_ref(),
                     self.style().surface.unwrap_or_default(),
                     self.style().border_radius.unwrap_or(0),
                     Color::BLACK,
@@ -1163,9 +1164,10 @@ impl CodeEditor {
             return;
         }
         let rect = self.completion_rect();
-        context.face(
+        context.face_with_gradient(
             rect,
             chrome.popup_background,
+            self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
@@ -1199,9 +1201,10 @@ impl CodeEditor {
             return;
         }
         let Some(rect) = self.context_menu_rect() else { return };
-        context.face(
+        context.face_with_gradient(
             rect,
             chrome.popup_background,
+            self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,

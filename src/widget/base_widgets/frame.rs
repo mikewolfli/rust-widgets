@@ -371,9 +371,10 @@ impl Frame {
     fn draw_panel_frame(&self, context: &mut RenderContext, rect: Rect) {
         let style = self.style();
         let bg_color = style.background_color.unwrap_or(Color::rgb(236, 233, 216));
-        context.face(
+        context.face_with_gradient(
             rect,
             bg_color,
+            style.background_gradient.as_ref(),
             style.surface.unwrap_or_default(),
             style.border_radius.unwrap_or(0),
             Color::BLACK,
@@ -385,9 +386,10 @@ impl Frame {
         // More sophisticated panel with gradient
         let style = self.style();
         let bg_color = style.background_color.unwrap_or(Color::rgb(240, 240, 240));
-        context.face(
+        context.face_with_gradient(
             rect,
             bg_color,
+            style.background_gradient.as_ref(),
             style.surface.unwrap_or_default(),
             style.border_radius.unwrap_or(0),
             Color::BLACK,
@@ -424,9 +426,10 @@ impl Frame {
         // still wants its highlight to read as a highlight.
         let style = self.style();
         let bg_color = style.background_color.unwrap_or(Color::rgb(240, 240, 240));
-        context.face(
+        context.face_with_gradient(
             rect,
             bg_color,
+            style.background_gradient.as_ref(),
             style.surface.unwrap_or_default(),
             style.border_radius.unwrap_or(0),
             Color::BLACK,
@@ -923,5 +926,51 @@ mod tests {
                  panel has no edge to see"
             );
         }
+    }
+
+    /// A `Panel` frame that declares a `background_gradient` paints the ramp, not the solid fill.
+    ///
+    /// # Why this is the assertion, and not "the SVG mentions a gradient"
+    ///
+    /// `background_gradient` was settable, mergeable and CSS-expressible but read by **no** painter
+    /// except `Button`: a caller that set one still got a solid `background_color`. Before this
+    /// coverage the panel's `face` call passed no gradient, so the rendered document had no
+    /// `<linearGradient>` at all. The test renders the same frame with and without the gradient and
+    /// asserts the documents **differ** and that the gradient one carries the paint server — so a
+    /// regression that dropped the argument fails on both counts.
+    #[test]
+    #[cfg(device_profile)]
+    fn a_panel_paints_a_declared_background_gradient() {
+        use crate::core::Point;
+        use crate::style::Gradient;
+
+        let _guard = crate::style::theme_test_guard();
+        crate::widget::census::install_preset_appearances();
+        let rect = Rect::new(0, 0, 100, 50);
+        let backdrop = Color::WHITE;
+
+        let render = |gradient: Option<Gradient>| {
+            let mut frame = Frame::new(rect);
+            frame.set_frame_shape(FrameShape::Panel);
+            let mut style = WidgetStyle::default();
+            style.background_color = Some(Color::rgb(240, 240, 240));
+            style.background_gradient = gradient;
+            frame.set_style(style);
+            crate::widget::svg::render_widget_to_svg_on(&mut frame, rect, backdrop)
+        };
+
+        let solid = render(None);
+        let ramp = render(Some(
+            Gradient::linear(Point::new(0, 0), Point::new(100, 0))
+                .add_stop(0.0, Color::BLACK)
+                .add_stop(1.0, Color::WHITE),
+        ));
+
+        assert!(!solid.contains("linearGradient"), "a solid panel needs no paint server");
+        assert!(
+            ramp.contains("<linearGradient") && ramp.contains("url(#"),
+            "a declared gradient must emit a paint server in the panel's document"
+        );
+        assert_ne!(solid, ramp, "the gradient frame must differ from the solid one");
     }
 }

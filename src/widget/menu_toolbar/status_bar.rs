@@ -346,9 +346,10 @@ impl Draw for StatusBar {
         // stayed light in a dark theme — a light band across the bottom of a dark window.
         // The literal survives only as the fallback for a style with no colour set.
         let band = style.background_color.unwrap_or(Color::rgb(240, 240, 240));
-        context.face(
+        context.face_with_gradient(
             rect,
             band,
+            self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,

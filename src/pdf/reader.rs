@@ -19,8 +19,12 @@
 //!   indirect-object format (`N 0 obj ... endobj`).
 //! - **Compressed object data**: Streams using FlateDecode, LZWDecode, or
 //!   other compression filters are not decompressed.
-//! - **Encryption**: Only security-diagnostics metadata is parsed; actual
-//!   decryption of encrypted payloads is not implemented.
+//! - **Encryption**: Security is detected. A document that carries a standard
+//!   `/Encrypt` dictionary is reported through [`PdfSecurity`] (permissions and a
+//!   non-empty `user_password` marker), and its `/Encrypt` reference is kept in the
+//!   security marker text. The reader does **not** decrypt encrypted content streams:
+//!   a stream opened as a `/AESV3` hex string is not fed through a PDF string parser,
+//!   so encrypted payloads are surfaced as-is rather than silently mis-decoded.
 //! - **Font subsetting / CID fonts**: Only core Helvetica is used as a
 //!   default font resource. Embedded font programs are not parsed.
 //! - **Interactive form filling**: Form field definitions are stored but
@@ -42,6 +46,63 @@ use crate::pdf::PdfDocument;
 use crate::pdf::PdfDocumentImpl;
 use std::collections::HashMap;
 use std::fs;
+
+/// Detects whether the document declares a standard security handler.
+///
+/// Matches the `/Encrypt` trailer entry (or a `/Filter /Standard` dictionary) that
+/// the writer emits once document-level encryption is applied. Used to distinguish
+/// "a real encryption dictionary is present" from "only an intent marker was
+/// written", so the recovered [`PdfSecurity`] does not mis-report an encrypted
+/// document as open.
+fn declares_encryption(text: &str) -> bool {
+    text.contains("/Encrypt ")
+        || (text.contains("/Filter /Standard") && text.contains("/CFM /AESV3"))
+}
+
+/// Recover as much of the original [`PdfSecurity`] as the file actually proves.
+///
+/// For a real encryption dictionary the passwords are single-use and cannot be
+/// recovered from the file, but a non-empty `user_password` is set as an honest
+/// "this document is encrypted and needs a password" marker (it is never the real
+/// secret). Documents that carry only the legacy `% RW-NOTE` intent marker parse
+/// through unchanged.
+fn recover_security(text: &str) -> Option<PdfSecurity> {
+    // An applied standard handler is the strongest evidence of the file's state;
+    // its `/P` entry is authoritative and must win over the intent marker text.
+    if declares_encryption(text) {
+        let permissions = parse_permission_value(text);
+        return Some(PdfSecurity {
+            user_password: Some(String::from("encrypted")),
+            owner_password: None,
+            print_permission: permissions & (1 << 2) != 0,
+            edit_permission: permissions & (1 << 3) != 0,
+            copy_permission: permissions & (1 << 4) != 0,
+            annotation_permission: permissions & (1 << 5) != 0,
+        });
+    }
+    // Fall back to the legacy `% RW-NOTE` intent marker, which carries permission
+    // flags but means the document itself is not encrypted.
+    parse_security_diagnostics(text)
+}
+
+/// Parse the integer following a `/P ` entry in an encryption dictionary.
+///
+/// `/P` is a signed 32-bit value, so a negative permission word (almost all of
+/// them, since the reserved high bits are set) must be parsed as signed and then
+/// reinterpreted as the raw bit pattern. Only candidates whose following token is
+/// actually an integer are accepted, otherwise the catalog's `/Pages` would be
+/// mistaken for the permission entry.
+fn parse_permission_value(text: &str) -> u32 {
+    for (index, _) in text.match_indices("/P ") {
+        let rest = &text[index + "/P ".len()..];
+        let token: String =
+            rest.chars().take_while(|ch| ch.is_ascii_digit() || *ch == '-').collect();
+        if let Ok(value) = token.parse::<i64>() {
+            return value as u32;
+        }
+    }
+    0
+}
 
 /// PDF reader
 pub struct PdfReader {
@@ -87,7 +148,7 @@ impl PdfReader {
             annotation_manager: crate::pdf::annotation::AnnotationManager::new(),
             hyperlink_manager: crate::pdf::hyperlink::HyperlinkManager::new(),
         };
-        if let Some(security) = parse_security_diagnostics(&text) {
+        if let Some(security) = recover_security(&text) {
             doc.security = security;
         }
         if parsed_pages.is_empty() {

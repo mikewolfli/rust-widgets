@@ -404,9 +404,10 @@ impl Draw for DateRangePicker {
             .and_then(|_| crate::style::semantic_color(crate::style::SemanticColor::Info))
             .unwrap_or(Color::BLUE);
 
-        context.face(
+        context.face_with_gradient(
             rect,
             bg_color,
+            self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,

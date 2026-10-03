@@ -549,9 +549,10 @@ impl Draw for Banner {
         let text_color = style.text_color.unwrap_or_else(|| self.severity.default_text());
         let border_color = style.border_color.unwrap_or_else(|| self.severity.border());
 
-        context.face(
+        context.face_with_gradient(
             rect,
             background,
+            self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,

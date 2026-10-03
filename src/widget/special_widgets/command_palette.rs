@@ -438,9 +438,10 @@ impl Draw for CommandPalette {
         let header_background = background.blend(&text_color, 0.06);
         let highlight = background.blend(&text_color, 0.18);
 
-        context.face(
+        context.face_with_gradient(
             rect,
             background,
+            self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,

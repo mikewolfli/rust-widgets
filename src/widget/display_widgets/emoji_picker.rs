@@ -545,9 +545,10 @@ impl Draw for EmojiPicker {
         // resolved ink rather than a fixed colour.
         let (panel, ink, border, field, strip) = self.chrome_colors();
         let style = self.base.style();
-        context.face(
+        context.face_with_gradient(
             rect,
             panel,
+            style.background_gradient.as_ref(),
             style.surface.unwrap_or_default(),
             style.border_radius.unwrap_or(0),
             Color::BLACK,
@@ -657,9 +658,10 @@ impl EmojiPicker {
     fn draw_tabs(&self, context: &mut RenderContext, strip_bg: Color, ink: Color, panel: Color) {
         let rect = self.geometry();
         let strip = Rect::new(rect.x, rect.y + SEARCH_HEIGHT as i32, rect.width, TAB_HEIGHT);
-        context.face(
+        context.face_with_gradient(
             strip,
             strip_bg,
+            self.base.style().background_gradient.as_ref(),
             self.base.style().surface.unwrap_or_default(),
             self.base.style().border_radius.unwrap_or(0),
             crate::core::Color::BLACK,

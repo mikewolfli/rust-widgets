@@ -467,9 +467,10 @@ impl Draw for ColorPicker {
         let frame = panel.blend(&ink, 0.22);
         let rail = panel.blend(&ink, 0.10);
 
-        context.face(
+        context.face_with_gradient(
             rect,
             panel,
+            self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,

@@ -353,9 +353,10 @@ impl Draw for ImageGallery {
                 .background_color
                 .or_else(|| theme.as_ref().and_then(|t| t.background_color))
                 .unwrap_or(fallback_bg);
-            context.face(
+            context.face_with_gradient(
                 rect,
                 bg,
+                self.style().background_gradient.as_ref(),
                 self.style().surface.unwrap_or_default(),
                 self.style().border_radius.unwrap_or(0),
                 Color::BLACK,

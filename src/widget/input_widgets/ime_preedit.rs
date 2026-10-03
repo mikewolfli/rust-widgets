@@ -241,9 +241,10 @@ impl Draw for ImePreedit {
             .or_else(|| theme.as_ref().and_then(|t| t.text_color))
             .unwrap_or(foreground);
         let surface = window_fill.blend(&ink, 0.08);
-        context.face(
+        context.face_with_gradient(
             rect,
             surface,
+            self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,

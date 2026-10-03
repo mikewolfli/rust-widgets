@@ -853,9 +853,10 @@ impl Draw for ListBox {
         let hovered_bg = surface.blend(&accent, 0.12);
         let separator = surface.blend(&ink, 0.14);
 
-        context.face(
+        context.face_with_gradient(
             rect,
             surface,
+            style.background_gradient.as_ref(),
             style.surface.unwrap_or_default(),
             style.border_radius.unwrap_or(0),
             Color::BLACK,

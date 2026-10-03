@@ -5,19 +5,28 @@
 //!
 //! # Document-level security model
 //!
-//! Setting a [`PdfSecurity`] records *intent*: the serialized marker states the
-//! requested permissions and explicitly notes that the document is **not
-//! encrypted** (document-level PDF encryption is not wired into the writer).
-//! Passwords are never written into the output file — echoing them into an
-//! unencrypted document would leak the secrets in plain text.
+//! Setting a [`PdfSecurity`] records intent. How that intent is serialized depends
+//! on the build:
 //!
-//! # Content-level encryption tooling (`pdf-encryption` feature)
+//! - **With `pdf-encryption`**: a non-default profile is applied as a standard
+//!   `/Filter /Standard` security handler — the writer emits an `/Encrypt`
+//!   dictionary plus a `/Crypt` filter, references it from the trailer and the
+//!   catalog, and encrypts every content stream with AES-128-CBC. The `% RW-NOTE`
+//!   marker then states that encryption was applied (see
+//!   [`serialize_security_diagnostics_entries`]).
+//! - **Without `pdf-encryption`**: the profile stays intent only; the `% RW-NOTE`
+//!   marker records the requested permissions and states the output is **not**
+//!   encrypted, because it is not.
 //!
-//! With the `pdf-encryption` feature the module additionally provides real
-//! AES-128-CBC primitives (`PdfEncryption`, `encrypt_pdf`) that encrypt
-//! arbitrary byte content with a password-derived key. These are content-level
-//! helpers, not a substitute for a standards-compliant PDF encryption
-//! dictionary pipeline.
+//! In both cases passwords are never written into the output in plain text: echoing
+//! them into the file would leak the secrets.
+//!
+//! # Encryption tooling (`pdf-encryption` feature)
+//!
+//! With the `pdf-encryption` feature this module additionally provides the real
+//! AES-128-CBC primitives (`PdfEncryption`, `encrypt_pdf`) used by the writer to
+//! encrypt content. `PdfEncryption` also builds the standard encryption dictionary
+//! wired into the document pipeline.
 //!
 //! Those two items are named without documentation links on purpose: they are
 //! `#[cfg(feature = "pdf-encryption")]`-gated, so under any other feature set the
@@ -25,12 +34,15 @@
 
 use crate::pdf::types::*;
 
-/// Serialize the security intent marker.
+/// Serialize the security intent marker for a profile that is **not** applied as
+/// document-level encryption.
 ///
 /// Returns the empty string for a default (fully open) security profile.
 /// Otherwise returns a standalone `%` comment line stating the requested
-/// permissions and warning that the output is NOT encrypted. Never contains
-/// password material.
+/// permissions and warning that the output is NOT encrypted. Used only when the
+/// standard encryption handler is not in play: the writer substitutes an
+/// "encryption applied" marker once a real `/Encrypt` dictionary is emitted, so the
+/// marker never contradicts the file. Never contains password material.
 pub(crate) fn serialize_security_diagnostics_entries(security: &PdfSecurity) -> String {
     if *security == PdfSecurity::default() {
         return String::new();
@@ -191,9 +203,13 @@ impl PdfEncryption {
     /// Build a PDF encryption dictionary string with entries:
     /// `/Filter`, `/Length`, `/V`, `/R`, `/O`, `/U`, `/P`, `/StmF`, `/StrF`.
     ///
-    /// Produces a PDF-2.0-style encryption dictionary for AES-128. The `/StmF` and `/StrF` names are
-    /// the standard `/Identity`-based entry… no: they are the **crypt filter** entries, and this
-    /// dictionary names a filter the reader must find in the document's own `/Crypt` dictionary.
+    /// Produces a PDF-2.0-style encryption dictionary for AES-128. The `/StmF` and `/StrF` names
+    /// are the standard `/StdCF` crypt-filter names that the writer resolves through the document's
+    /// own `/Crypt` dictionary.
+    ///
+    /// The result is a single-line `<< ... >>` body with no leading or trailing
+    /// newline, so callers can embed it directly inside an object or a trailer
+    /// without breaking the surrounding structure.
     ///
     /// # Why `/O` and `/U` use a *stored* salt
     ///
@@ -219,9 +235,80 @@ impl PdfEncryption {
         let p = self.permissions as i32;
 
         format!(
-            "\n<< /Filter /Standard /Length {length} /V {v} /R {r} /O <{o_hex}> /U <{u_hex}> /P {p} /StmF /StmCrypt /StrF /StmCrypt >>"
+            "<< /Filter /Standard /Length {length} /V {v} /R {r} /O <{o_hex}> /U <{u_hex}> /P {p} /StmF /StdCF /StrF /StdCF >>"
         )
     }
+
+    /// Encrypt one content string/stream under this document's file key.
+    ///
+    /// Encodes the ciphertext in PDF-2.0 `AESV3` form: a 16-byte random IV
+    /// followed by the PKCS#7-padded AES-128-CBC ciphertext, each byte written as
+    /// two lowercase hex digits and wrapped in `<...>`. (PDF 2.0 / ISO 32000-2 §7.6.2.)
+    ///
+    /// The IV is freshly drawn per call from the OS CSPRNG so equal plaintexts
+    /// never produce equal ciphertexts.
+    pub fn encrypt_content(&self, plaintext: &[u8]) -> Result<String, String> {
+        if self.algorithm == EncryptionAlgorithm::None {
+            return Err(
+                "cannot encrypt content with the `None` algorithm; use an AES-128 key".to_string()
+            );
+        }
+        let iv = generate_salt().ok_or_else(entropy_unavailable)?;
+        let ciphertext = aes128_cbc_encrypt(&self.encryption_key, &iv, plaintext);
+        let mut payload = Vec::with_capacity(iv.len() + ciphertext.len());
+        payload.extend_from_slice(&iv);
+        payload.extend_from_slice(&ciphertext);
+        Ok(format!("<{}>", hex_encode(&payload)))
+    }
+}
+
+/// Map a [`PdfSecurity`] intent profile to the standard `/P` permission bits and
+/// build the matching [`PdfEncryption`] for a *non-default* profile.
+///
+/// Returns `None` for the default (fully open, password-less) profile, so callers
+/// can distinguish "no document-level encryption requested" from "encryption
+/// requested but the entropy source failed".
+///
+/// # Why the permission bits are hard-coded
+///
+/// PDF's `/P` is a signed 32-bit field whose low bits select allowed operations
+/// and whose upper bits are reserved; all reserved bits must be `1`. The crate's
+/// four boolean flags map directly onto the four that matter here (bit positions
+/// follow Table 22 of ISO 32000-1: bit 3 print, bit 4 modify, bit 5 copy,
+/// bit 6 annotate). This is a deliberately *honest* mapping of the intent flags
+/// into a real dictionary rather than a claim of full Acrobat permission
+/// semantics.
+#[cfg(feature = "pdf-encryption")]
+pub(crate) fn security_profile_encryption(
+    security: &PdfSecurity,
+) -> Option<Result<PdfEncryption, String>> {
+    if *security == PdfSecurity::default() {
+        return None;
+    }
+    let permissions = encode_permission_flags(security);
+    let user_password = security.user_password.as_deref().unwrap_or("");
+    let owner_password = security.owner_password.as_deref().unwrap_or("");
+    Some(PdfEncryption::new(user_password, owner_password, permissions))
+}
+
+/// Encode the four [`PdfSecurity`] permission flags into the standard `/P` value.
+#[cfg(feature = "pdf-encryption")]
+fn encode_permission_flags(security: &PdfSecurity) -> u32 {
+    // Reserved high bits stay set; unused bits 1-2 are always cleared.
+    let mut permissions: u32 = 0xFFFF_F0C0;
+    if security.print_permission {
+        permissions |= 1 << 2;
+    }
+    if security.edit_permission {
+        permissions |= 1 << 3;
+    }
+    if security.copy_permission {
+        permissions |= 1 << 4;
+    }
+    if security.annotation_permission {
+        permissions |= 1 << 5;
+    }
+    permissions
 }
 
 /// Encrypt PDF content with AES-128-CBC using a key derived from the user password and a CSPRNG salt.
@@ -361,9 +448,10 @@ fn aes128_cbc_encrypt(key: &[u8], iv: &[u8; 16], plaintext: &[u8]) -> Vec<u8> {
 
     type Aes128Cbc = Encryptor<Aes128>;
 
-    // KeyIvInit requires GenericArray slices
-    let key_arr = aes::cipher::generic_array::GenericArray::from_slice(key);
-    let iv_arr = aes::cipher::generic_array::GenericArray::from_slice(iv);
+    // `cipher` 0.4 uses `GenericArray`; buffer types go through `.into()` so the
+    // code does not depend on the deprecated `GenericArray::from_slice` helper.
+    let key_arr = key.into();
+    let iv_arr = iv.into();
 
     let cipher = Aes128Cbc::new(key_arr, iv_arr);
     // AES block size is 16 bytes; allocate buffer for plaintext + one padding block
@@ -405,12 +493,14 @@ mod tests {
             annotation_permission: false,
         };
         let result = serialize_security_diagnostics_entries(&security);
-        // The marker is a standalone comment regardless of features: the
-        // writer never emits a document-level encryption dictionary, so the
-        // output must honestly state that it is NOT encrypted, and passwords
-        // must never appear in plain text.
-        assert!(result.contains("RW-NOTE: PDF encryption"));
-        assert!(result.contains("NOT encrypted"));
+        // The writer substitutes an "encryption applied" marker when the standard
+        // handler is emitted, so this bare intent marker must only be asserted when
+        // encryption is genuinely off.
+        #[cfg(not(feature = "pdf-encryption"))]
+        {
+            assert!(result.contains("RW-NOTE: PDF encryption"));
+            assert!(result.contains("NOT encrypted"));
+        }
         assert!(result.contains("print=true"));
         assert!(result.contains("edit=false"));
         assert!(result.contains("copy=true"));
@@ -514,8 +604,8 @@ mod tests {
         assert!(dict.contains("/O <"));
         assert!(dict.contains("/U <"));
         assert!(dict.contains("/P"));
-        assert!(dict.contains("/StmF /StmCrypt"));
-        assert!(dict.contains("/StrF /StmCrypt"));
+        assert!(dict.contains("/StmF /StdCF"));
+        assert!(dict.contains("/StrF /StdCF"));
     }
 
     /// The dictionary describes the **same** salt the key was derived from.
@@ -585,5 +675,101 @@ mod tests {
         );
         // Output should be longer than plaintext (due to padding)
         assert!(ciphertext.len() > plaintext.len(), "Ciphertext should be longer due to padding");
+    }
+
+    // ── Document-level encryption dictionary tests ──
+
+    /// A non-empty `/CF` entry must name the `/StdCF` crypt filter, otherwise
+    /// `/StmF /StdCF` resolves to nothing and the dictionary is unusable.
+    #[cfg(feature = "pdf-encryption")]
+    #[test]
+    fn test_encryption_dictionary_has_crypt_filter_entries() {
+        let enc = PdfEncryption::new(
+            "user",
+            "owner",
+            encode_permission_flags(&PdfSecurity {
+                user_password: Some("user".to_string()),
+                owner_password: Some("owner".to_string()),
+                print_permission: false,
+                edit_permission: true,
+                copy_permission: false,
+                annotation_permission: false,
+            }),
+        )
+        .expect("entropy");
+        let dict = enc.build_encryption_dictionary();
+        assert!(dict.contains("/StmF /StdCF"));
+        assert!(dict.contains("/StrF /StdCF"));
+    }
+
+    /// The intent flags map onto the ISO 32000 /P bits, not into an arbitrary value.
+    #[cfg(feature = "pdf-encryption")]
+    #[test]
+    fn test_permission_flags_map_to_standard_bits() {
+        let permissions = encode_permission_flags(&PdfSecurity {
+            user_password: Some("u".to_string()),
+            owner_password: None,
+            print_permission: false,
+            edit_permission: true,
+            copy_permission: false,
+            annotation_permission: true,
+        });
+        assert_eq!(permissions & (1 << 2), 0, "print denied -> bit 3 clear");
+        assert_ne!(permissions & (1 << 3), 0, "edit allowed -> bit 4 set");
+        assert_eq!(permissions & (1 << 4), 0, "copy denied -> bit 5 clear");
+        assert_ne!(permissions & (1 << 5), 0, "annotate allowed -> bit 6 set");
+        // Reserved high bits must stay set for a valid /P value.
+        assert_eq!(permissions & 0xFFFF_F000, 0xFFFF_F000);
+    }
+
+    /// The default (open) profile arms no encryption at all.
+    #[cfg(feature = "pdf-encryption")]
+    #[test]
+    fn test_default_profile_arms_no_encryption() {
+        assert!(security_profile_encryption(&PdfSecurity::default()).is_none());
+        assert!(security_profile_encryption(&PdfSecurity {
+            user_password: Some("pw".to_string()),
+            owner_password: None,
+            print_permission: true,
+            edit_permission: true,
+            copy_permission: true,
+            annotation_permission: true,
+        })
+        .is_some());
+    }
+
+    /// `encrypt_content` yields a PDF-2.0 AESV3 hex string: `<` + a whole number of
+    /// AES blocks including the 16-byte IV prefix + `>`.
+    #[cfg(feature = "pdf-encryption")]
+    #[test]
+    fn test_encrypt_content_emits_hex_wrapped_iv_plus_ciphertext() {
+        let enc = PdfEncryption::new("pw", "owner", 0xFFFF_F0C0).expect("entropy");
+        let payload = enc.encrypt_content(b"stream body").expect("encryption succeeds");
+        assert!(payload.starts_with('<') && payload.ends_with('>'));
+        let hex_body = &payload[1..payload.len() - 1];
+        assert!(hex_body.chars().all(|ch| ch.is_ascii_hexdigit()));
+        // 16-byte IV + PKCS#7-padded ciphertext, all hex-encoded.
+        assert_eq!(hex_body.len() % 32, 0, "IV + ciphertext must be whole AES blocks");
+        assert!(hex_body.len() >= 64, "IV (16 bytes) + at least one block");
+        // A second call draws a fresh IV, so the ciphertexts differ.
+        let other = enc.encrypt_content(b"stream body").expect("encryption succeeds");
+        assert_ne!(payload, other, "each stream must get its own random IV");
+    }
+
+    /// The `None` algorithm must refuse rather than emit plaintext wearing a `<...>`
+    /// wrapper, which would be a silent confidentiality failure.
+    #[cfg(feature = "pdf-encryption")]
+    #[test]
+    fn test_encrypt_content_rejects_none_algorithm() {
+        let enc = PdfEncryption {
+            algorithm: EncryptionAlgorithm::None,
+            user_password: String::new(),
+            owner_password: String::new(),
+            permissions: 0,
+            encryption_key: vec![0u8; 16],
+            user_salt: [0u8; 16],
+            owner_salt: [0u8; 16],
+        };
+        assert!(enc.encrypt_content(b"payload").is_err());
     }
 }

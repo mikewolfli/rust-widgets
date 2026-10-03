@@ -485,6 +485,47 @@ fn a_typo_in_an_event_name_does_not_cost_the_node_its_other_binding() {
     });
 }
 
+/// Emitting a bound control's signal from another thread is reported, not silently dropped.
+///
+/// # The contract this pins (BLUE-issue E-25)
+///
+/// The handler registry is thread-local, so a signal emitted from a worker thread looked up that
+/// thread's (empty) registry and skipped the handler with no trace. The binding now records its
+/// thread and reports the mismatch through a counter, so "fired off the wrong thread" is observable
+/// rather than indistinguishable from "no handler was registered".
+#[test]
+fn a_cross_thread_emission_is_reported_rather_than_silently_skipped() {
+    with_clean_handlers(|| {
+        rust_widgets::json::reset_cross_thread_skips();
+        let calls = counting_handler("on_go");
+        let json = r#"{"window":{"id":"w","title":"T","width":400,"height":300,"layout":{
+            "type":"vbox","children":[{"button":{"id":"b","text":"Go",
+                "events":{"clicked":"on_go"}}}]}}}"#;
+
+        let bound = JsonLoader::load(json).expect("the document must load");
+        let id = mounted_id(&bound, "b");
+
+        // Grab the base `clicked` signal (a `Send + Sync` `GenericSignal`) and emit it on a worker.
+        let signal =
+            rust_widgets::widget::runtime::with_widget(id, |widget| widget.base().clicked.clone())
+                .expect("the button must be mounted");
+        let worker = std::thread::spawn(move || signal.emit());
+        worker.join().expect("the worker must not panic");
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "a GUI handler must not run on a worker thread"
+        );
+        assert_eq!(
+            rust_widgets::json::cross_thread_skips(),
+            1,
+            "the off-thread emission must be recorded, so it is no longer a silent drop"
+        );
+        rust_widgets::json::reset_cross_thread_skips();
+    });
+}
+
 /// The property pass must not confuse a declared binding with an unknown property.
 ///
 /// `events` and the `on_*` keys are consumed by the wiring, so the name-driven property pass has
@@ -499,5 +540,63 @@ fn a_declared_binding_is_not_reported_as_an_unknown_property() {
 
         let layout = JsonLoader::load(json).expect("the document must load");
         assert!(!layout.is_empty(), "the document's identified widgets must be registered");
+    });
+}
+
+/// A dynamically-added published binding can be released by its token, and binding is additive.
+///
+/// # The contract this pins (BLUE-issue E-22)
+///
+/// `bind_one` returns a `bool` and drops the subscription handle, so a host that added a wire at run
+/// time had no way to remove it without destroying the control. `bind_one_releasable` returns a token
+/// whose `release` disconnects exactly that subscription. This asserts all three observable facts:
+/// binding twice runs the handler twice (additive), releasing one token leaves the other live, and
+/// releasing the last token stops delivery.
+#[test]
+fn a_releasable_binding_can_be_taken_back_without_destroying_the_control() {
+    with_clean_handlers(|| {
+        let calls = counting_handler("on_go");
+        let json = r#"{"window":{"id":"w","title":"T","width":400,"height":300,"layout":{
+            "type":"vbox","children":[{"button":{"id":"b","text":"Go"}}]}}}"#;
+
+        let bound = JsonLoader::load(json).expect("the document must load");
+        let id = mounted_id(&bound, "b");
+
+        let mut first = JsonLoader::bind_one_releasable(
+            id,
+            json_event_binding("button", "clicked"),
+            "on_go".to_string(),
+        )
+        .expect("a published route must yield a releasable token");
+        let mut second = JsonLoader::bind_one_releasable(
+            id,
+            json_event_binding("button", "clicked"),
+            "on_go".to_string(),
+        )
+        .expect("a second binding must also yield a token");
+
+        emit_click(&bound, "b");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "binding is additive: two declarations are two subscriptions"
+        );
+
+        first.release();
+        assert!(!first.is_live(), "a released token is no longer live");
+        emit_click(&bound, "b");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "releasing one token must leave the other subscription live"
+        );
+
+        second.release();
+        emit_click(&bound, "b");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "with both tokens released the handler must no longer run"
+        );
     });
 }

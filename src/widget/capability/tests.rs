@@ -1381,3 +1381,31 @@ fn connect_event_binds_every_spelling_to_the_canonical_signal() {
         );
     }
 }
+
+/// The four interactive-looking controls with no published events publish none on purpose.
+///
+/// # Why this is a contract, not a gap (BLUE-issue E-14)
+///
+/// `audio_visualizer`, `camera_preview`, `ime_preedit` and `popover` all change some internal state
+/// when handled input arrives, but none of those state changes is a **semantic event a host wires a
+/// behaviour to**: a peak-hold overlay, a preview toggle, a pre-edit buffer and a popover's internal
+/// dismissal are presentation state. Publishing them would invent an API the host never asked for and
+/// that the library would then have to keep stable (rules #4 and #98: capability differences are not
+/// invented, and a designer's wire set is the host's to decide). The sibling list controls do publish
+/// events, so this is a deliberate line, and pinning it here keeps a later "every control should have
+/// `clicked`" change from silently adding events the contract never promised.
+#[test]
+fn controls_with_no_published_events_keep_none_on_purpose() {
+    let factory = WidgetFactory::new_with_defaults();
+    for name in ["audio_visualizer", "camera_preview", "ime_preedit", "popover"] {
+        let capability = factory
+            .capability(name)
+            .unwrap_or_else(|| panic!("`{name}` must be a registered capability"));
+        assert!(
+            capability.events.is_empty(),
+            "`{name}` is documented as an internal-presentation control with no published events; \
+             publishing {} would change the contract (BLUE-issue E-14)",
+            capability.events.len()
+        );
+    }
+}

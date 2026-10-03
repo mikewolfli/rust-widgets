@@ -76,6 +76,18 @@ pub struct EventSignalRef {
     /// can raise the control's own published unit signal — the signal a `events:{"closed":…}`
     /// binding subscribes to — rather than only the base one.
     emit_unit: Option<Box<dyn Fn() + Send + Sync>>,
+    /// Identity of the underlying signal instance, for per-instance wiring queries.
+    ///
+    /// # Why a name is not enough
+    ///
+    /// [`crate::signal::EventSignalBinder::event_is_wired`] asks whether *this control's* event is
+    /// wired. Comparing only the published name made two sibling instances of one kind \u2014 an `A`
+    /// that was wired and a `B` that was not \u2014 answer identically, because the binder stored a
+    /// forward under the name and the query only checked the name. The identity is the signal's own
+    /// address (see [`crate::signal::Signal::identity`]), so a query can require that the wired
+    /// signal *is* the one this control resolves. It is captured where the concrete signal is
+    /// still known (the `unit` / `mapped` constructors), exactly as the subscribe closure is.
+    identity: usize,
 }
 
 impl EventSignalRef {
@@ -100,6 +112,7 @@ impl EventSignalRef {
             slot_count: Box::new(move || for_count.slot_count()),
             is_connected: Box::new(move |handle| for_is_connected.is_connected(handle)),
             emit_unit: Some(Box::new(move || for_emit.emit())),
+            identity: signal.identity(),
         }
     }
 
@@ -131,12 +144,22 @@ impl EventSignalRef {
             slot_count: Box::new(move || for_count.slot_count()),
             is_connected: Box::new(move |handle| for_is_connected.is_connected(handle)),
             emit_unit: None,
+            identity: signal.identity(),
         }
     }
 
     /// The published name this signal answers to.
     pub fn name(&self) -> &'static str {
         self.name
+    }
+
+    /// Identity of the underlying signal instance.
+    ///
+    /// Two references resolved from two different control instances have different identities even
+    /// when they answer to the same published name. The wiring query uses this so an instance that
+    /// was never wired cannot report itself wired on the strength of a sibling's subscription.
+    pub fn identity(&self) -> usize {
+        self.identity
     }
 
     /// Subscribes `slot`, which receives the event's payload as a [`CapabilityValue`].

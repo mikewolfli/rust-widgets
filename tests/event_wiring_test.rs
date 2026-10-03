@@ -28,7 +28,7 @@ use rust_widgets::core::Rect;
 use rust_widgets::signal::{CustomSignalHub, EventSignalBinder};
 use rust_widgets::widget::capability::WidgetFactory;
 use rust_widgets::widget::widget_trait::Widget;
-use rust_widgets::widget::{Button, CheckBox, Slider};
+use rust_widgets::widget::{Button, CheckBox, LineEdit, RangeSlider, Slider};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -186,6 +186,37 @@ fn an_unwired_event_reports_unwired_rather_than_succeeding() {
     assert!(!binder.event_is_wired(&button, "value_changed"));
 }
 
+/// Wiring one instance must not make a sibling report itself wired.
+///
+/// # The defect this pins (BLUE-issue E-15)
+///
+/// `event_is_wired` used to compare only the published event *name* against the forwards the binder
+/// held. Wiring `A` left a forward named `clicked`, so a never-wired `B` of the same kind answered
+/// `true` and `unwired_events_for(B)` answered `Some(0)` — a false positive that made an inert wire
+/// look live. The query now also requires the wired signal to be the one *this* control resolves.
+#[test]
+fn wiring_one_instance_does_not_report_a_sibling_as_wired() {
+    let hub = Arc::new(CustomSignalHub::new());
+    let a = Button::new("A".to_string(), Rect::new(0, 0, 80, 30));
+    let b = Button::new("B".to_string(), Rect::new(0, 0, 80, 30));
+
+    let mut binder = EventSignalBinder::new(Arc::clone(&hub));
+    let wired = binder.forward_all(&a);
+    assert!(wired >= 4, "`button` publishes four events (got {wired})");
+
+    assert!(binder.event_is_wired(&a, "clicked"), "the wired instance must report wired");
+    assert!(
+        !binder.event_is_wired(&b, "clicked"),
+        "a sibling that was never wired must not inherit `A`'s wire and report itself wired"
+    );
+    assert_eq!(binder.unwired_events_for(&a), Some(0), "`A` was fully wired");
+    assert!(
+        binder.unwired_events_for(&b).is_some_and(|count| count > 0),
+        "`B`'s own wire is entirely absent, so it must report a non-zero shortfall (got {:?})",
+        binder.unwired_events_for(&b)
+    );
+}
+
 /// The query must turn true only after wiring, and back to false when the wire is released.
 #[test]
 fn the_wiring_query_reflects_the_wire_lifecycle() {
@@ -246,4 +277,70 @@ fn a_control_with_no_events_reports_zero() {
     let label = rust_widgets::widget::Label::new("text".to_string(), Rect::new(0, 0, 40, 20));
     let mut binder = EventSignalBinder::new(hub);
     assert_eq!(binder.forward_all(&label), 0, "`label` publishes no events");
+}
+
+/// Real producer setters deliver the right event to the right subscriber, and nothing else.
+///
+/// # Why this exists (BLUE-issue E-13)
+///
+/// The earlier delivery test drove one control (`Slider.set_value`). E-13 records that most published
+/// events were proven only at the *signal* layer (a manual `emit`) rather than by driving the
+/// control's own producer, so "the control can emit this" was unverified for the input class. This
+/// drives real setters on an input control (`LineEdit.set_text`) and a composite-payload control
+/// (`RangeSlider.set_range`), and asserts both that the named event fires and that an unrelated
+/// published event of the same control does **not** \u2014 so a binder that wired every name to one
+/// signal fails here.
+#[test]
+fn real_producers_deliver_the_named_event_and_not_others() {
+    let hub = Arc::new(CustomSignalHub::new());
+    let mut line_edit = LineEdit::new(Rect::new(0, 0, 200, 30));
+    let mut range = RangeSlider::new(Rect::new(0, 0, 200, 30));
+
+    let mut binder = EventSignalBinder::new(Arc::clone(&hub));
+    assert!(binder.forward_all(&line_edit) > 0, "line_edit must publish events");
+    assert!(binder.forward_all(&range) > 0, "range_slider must publish events");
+
+    let factory = WidgetFactory::new_with_defaults();
+    let text_changed = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&text_changed);
+    factory
+        .connect_event("line_edit", "text_changed", &hub, move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        })
+        .expect("line_edit publishes `text_changed`");
+    let editing_finished = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&editing_finished);
+    factory
+        .connect_event("line_edit", "editing_finished", &hub, move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        })
+        .expect("line_edit publishes `editing_finished`");
+
+    // Drive the real producer.
+    line_edit.set_text("hello");
+    assert_eq!(
+        text_changed.load(Ordering::SeqCst),
+        1,
+        "a real `set_text` must deliver `text_changed` exactly once"
+    );
+    assert_eq!(
+        editing_finished.load(Ordering::SeqCst),
+        0,
+        "`set_text` must not fire `editing_finished`"
+    );
+
+    // A composite-payload control: `range_changed` must reach its subscriber from a real `set_range`.
+    let range_changed = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&range_changed);
+    factory
+        .connect_event("range_slider", "range_changed", &hub, move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        })
+        .expect("range_slider publishes `range_changed`");
+    range.set_range(10.0, 80.0);
+    assert_eq!(
+        range_changed.load(Ordering::SeqCst),
+        1,
+        "a real `set_range` must deliver `range_changed` exactly once"
+    );
 }

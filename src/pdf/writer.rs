@@ -7,6 +7,8 @@ use crate::core::{Rect, Size};
 use crate::pdf::annotation::{Annotation, AnnotationFlags, AnnotationType};
 use crate::pdf::hyperlink::Hyperlink as PdfHyperlink;
 use crate::pdf::hyperlink::LinkAction as HyperlinkLinkAction;
+#[cfg(feature = "pdf-encryption")]
+use crate::pdf::security::security_profile_encryption;
 use crate::pdf::security::serialize_security_diagnostics_entries;
 use crate::pdf::types::*;
 use crate::pdf::PdfDocument;
@@ -50,6 +52,23 @@ pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, 
     if doc.pages.is_empty() {
         return Err(Error::new(ErrorKind::InvalidInput, "document must contain at least one page"));
     }
+    // Document-level standard security: a non-default `PdfSecurity` profile under the
+    // `pdf-encryption` feature turns into a real `/Encrypt` dictionary and AES-128-CBC
+    // encryption of every content stream. Without the feature the profile stays intent
+    // only (see the `% RW-NOTE` marker below), so the file is honest either way.
+    #[cfg(feature = "pdf-encryption")]
+    let encryption = match security_profile_encryption(&doc.security) {
+        Some(Ok(encryption)) => Some(encryption),
+        None => None,
+        Some(Err(error)) => {
+            return Err(Error::new(
+                ErrorKind::Other,
+                format!("PDF encryption setup failed: {error}"),
+            ))
+        }
+    };
+    #[cfg(not(feature = "pdf-encryption"))]
+    let encryption: Option<crate::pdf::security::PdfEncryption> = None;
     let mut objects: Vec<String> = Vec::new();
     // Track all annotation/hyperlink/form-field objects across all pages so we can
     // build a combined /AcroForm later if needed.  We store (object_id, page_index).
@@ -126,8 +145,30 @@ pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, 
                 &doc.pagination,
             );
         }
-        let stream_text = String::from_utf8_lossy(&stream);
-        objects.push(format!("<< /Length {} >>\nstream\n{}\nendstream", stream.len(), stream_text));
+        let stream_text = match &encryption {
+            Some(encryption) => encryption.encrypt_content(&stream).map_err(|error| {
+                Error::new(
+                    ErrorKind::Other,
+                    format!("PDF content-stream encryption failed: {error}"),
+                )
+            })?,
+            None => {
+                // PDF content streams are ASCII operators, so this lossless branch is
+                // always taken for unencrypted output and keeps the previous bytes.
+                let text = String::from_utf8(stream).map_err(|error| {
+                    Error::new(
+                        ErrorKind::InvalidData,
+                        format!("PDF content stream is not valid UTF-8: {error}"),
+                    )
+                })?;
+                text
+            }
+        };
+        objects.push(format!(
+            "<< /Length {} >>\nstream\n{}\nendstream",
+            stream_text.len(),
+            stream_text
+        ));
         let page_form_fields = page.form_fields();
         let mut page_form_field_ids = Vec::new();
         for field in page_form_fields {
@@ -185,6 +226,28 @@ pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, 
         pdf_escape_literal(&doc.metadata.producer),
     ));
     let kids = page_object_ids.iter().map(|id| format!("{id} 0 R")).collect::<Vec<_>>().join(" ");
+    // Emit the standard security handler as its own dictionary object, then extend
+    // the catalog with a `/Crypt` cross-reference filter object referenced by the
+    // encryption dictionary's `/StmF` / `/StrF` `/StdCF` name. Without this indirection
+    // `/StdCF` would resolve to nothing and readers (and honest docs) would reject it.
+    #[cfg(feature = "pdf-encryption")]
+    let encrypt_object_id = encryption.as_ref().map(|_| {
+        let crypt_filter_id = (objects.len() + 1) as u32;
+        objects.push(
+            "<< /Type /CryptFilter /CFM /AESV3 /AuthEvent /DocOpen /Length 16 >>".to_string(),
+        );
+        let encryption_id = (objects.len() + 1) as u32;
+        let dictionary = encryption
+            .as_ref()
+            .expect("encrypt_object_id is only built when encryption is present")
+            .build_encryption_dictionary();
+        objects.push(format!(
+            "<< /Filter /Standard /Length 16 /V 5 /R 6{dictionary} /CF << /StdCF {crypt_filter_id} 0 R >> >>"
+        ));
+        encryption_id
+    });
+    #[cfg(not(feature = "pdf-encryption"))]
+    let encrypt_object_id: Option<u32> = None;
     let acroform_obj_id = if all_form_field_object_ids.is_empty() {
         None
     } else {
@@ -197,10 +260,17 @@ pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, 
         objects.push(format!("<< /Fields [{refs}] /NeedAppearances true >>"));
         Some(id)
     };
-    objects[0] = if let Some(acroform_id) = acroform_obj_id {
-        format!("<< /Type /Catalog /Pages 2 0 R /AcroForm {acroform_id} 0 R >>")
-    } else {
-        "<< /Type /Catalog /Pages 2 0 R >>".to_string()
+    objects[0] = match (acroform_obj_id, encrypt_object_id) {
+        (Some(acroform_id), Some(encrypt_id)) => format!(
+            "<< /Type /Catalog /Pages 2 0 R /AcroForm {acroform_id} 0 R /Encrypt {encrypt_id} 0 R >>"
+        ),
+        (None, Some(encrypt_id)) => {
+            format!("<< /Type /Catalog /Pages 2 0 R /Encrypt {encrypt_id} 0 R >>")
+        }
+        (Some(acroform_id), None) => {
+            format!("<< /Type /Catalog /Pages 2 0 R /AcroForm {acroform_id} 0 R >>")
+        }
+        (None, None) => "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
     };
     objects[1] = format!("<< /Type /Pages /Count {} /Kids [{}] >>", page_object_ids.len(), kids);
     let mut out = Vec::new();
@@ -213,7 +283,12 @@ pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, 
     }
     // Security marker as a standalone comment line *outside* any dictionary so
     // it can never corrupt object/trailer structure or leak plaintext secrets.
-    let security_marker = serialize_security_diagnostics_entries(&doc.security);
+    let security_marker = match encrypt_object_id {
+        Some(encryption_id) => format!(
+            "% RW-NOTE: PDF encryption applied (standard /Filter /Standard handler, AES-128-CBC); see /Encrypt {encryption_id} 0 R"
+        ),
+        None => serialize_security_diagnostics_entries(&doc.security),
+    };
     if !security_marker.is_empty() {
         out.extend_from_slice(format!("\n{security_marker}\n").as_bytes());
     }
@@ -225,9 +300,10 @@ pub(crate) fn build_minimal_pdf_bytes(doc: &PdfDocumentImpl) -> Result<Vec<u8>, 
     }
     out.extend_from_slice(
         format!(
-            "trailer\n<< /Size {} /Root 1 0 R /Info {} 0 R >>\nstartxref\n{}\n%%EOF\n",
+            "trailer\n<< /Size {} /Root 1 0 R /Info {} 0 R{} >>\nstartxref\n{}\n%%EOF\n",
             objects.len() + 1,
             info_obj_id,
+            encrypt_object_id.map(|id| format!(" /Encrypt {id} 0 R")).unwrap_or_default(),
             xref_offset
         )
         .as_bytes(),

@@ -197,12 +197,22 @@ impl RangeSlider {
     /// Sets both lower and upper values simultaneously, respecting all constraints.
     ///
     /// Both handles are placed against the **same** reconciled bounds, so the pair always satisfies
-    /// `min <= lower <= upper <= max` and `upper - lower >= min_range`. The order is: snap the upper
-    /// first (it only has a floor), then snap the lower against that upper, which is the same rule the
-    /// two single-handle setters use and therefore cannot disagree with them.
+    /// `min <= lower <= upper <= max` and `upper - lower >= min_range`.
+    ///
+    /// # The order and the floors (BLUE-issue W-03)
+    ///
+    /// The upper handle is snapped first, but with a **floor** of `min_value + min_range`: an upper
+    /// below that cannot be paired with any legal lower, and snapping it only against `[min, max]`
+    /// left `upper - lower` able to fall short of `min_range`. The lower handle is then snapped
+    /// against `upper - min_range`, the same rule the two single-handle setters use, so this method
+    /// cannot disagree with them. The floor is bounded by `max_value`, so a request whose span is
+    /// too narrow to hold `min_range` still produces a well-ordered pair rather than an inversion.
     pub fn set_range(&mut self, lower: f64, upper: f64) {
         self.reconcile_bounds();
-        let upper_stepped = self.snap_into(upper, self.min_value, self.max_value);
+        // `min_range` is already capped at `max - min` by `reconcile_bounds`, so this floor is always
+        // `<= max_value`.
+        let upper_floor = (self.min_value + self.min_range).min(self.max_value);
+        let upper_stepped = self.snap_into(upper, upper_floor, self.max_value);
         let lower_ceiling = (upper_stepped - self.min_range).max(self.min_value);
         let lower_stepped = self.snap_into(lower, self.min_value, lower_ceiling);
 
@@ -1050,10 +1060,51 @@ mod tests {
                         assert!(rs.upper_value() <= rs.max_value());
                         assert!(rs.lower_value().is_finite());
                         assert!(rs.upper_value().is_finite());
+                        // The spacing invariant W-01/W-03 both concern: the handles must be at least
+                        // `min_range` apart whenever the span can hold it. The earlier test asserted
+                        // only ordering, which is how W-03 (a too-small gap) slipped through.
+                        let span = rs.upper_value() - rs.lower_value();
+                        let achievable = rs.min_range().min(rs.max_value() - rs.min_value());
+                        assert!(
+                            span + 1e-9 >= achievable,
+                            "the handles must be at least min_range apart: span={span} min_range={} \
+                             bounds=[{}, {}]",
+                            rs.min_range(),
+                            rs.min_value(),
+                            rs.max_value()
+                        );
                     }
                 }
             }
         }
+    }
+
+    /// `set_range` must not produce a pair closer together than `min_range`.
+    ///
+    /// # The defect this pins (BLUE-issue W-03)
+    ///
+    /// `set_range` snapped the upper handle only against `[min, max]`, so an upper below
+    /// `min + min_range` was accepted; the lower handle's ceiling was then pulled back to `min`, and
+    /// the resulting pair had a gap smaller than `min_range` \u2014 which was then emitted to
+    /// `range_changed` subscribers. W-01 fixed the out-of-bounds case but not this one.
+    #[test]
+    fn set_range_cannot_produce_a_gap_smaller_than_min_range() {
+        let mut rs = RangeSlider::new(Rect::new(0, 0, 300, 40));
+        rs.set_min_range(20.0);
+        // The exact reproduction: an upper far below `min + min_range`.
+        rs.set_range(0.0, 5.0);
+        assert!(
+            rs.upper_value() - rs.lower_value() >= 20.0 - 1e-9,
+            "the pair must be at least min_range apart, got lower={} upper={}",
+            rs.lower_value(),
+            rs.upper_value()
+        );
+        assert!(rs.min_value() <= rs.lower_value() && rs.upper_value() <= rs.max_value());
+
+        // A reversed request must also hold the invariant, not invert the handles.
+        rs.set_range(90.0, 10.0);
+        assert!(rs.lower_value() <= rs.upper_value());
+        assert!(rs.upper_value() - rs.lower_value() >= 20.0 - 1e-9);
     }
 
     #[test]

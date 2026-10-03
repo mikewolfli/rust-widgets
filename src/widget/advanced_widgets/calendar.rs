@@ -783,9 +783,10 @@ impl Draw for Calendar {
             .unwrap_or(Color::rgb(180, 60, 60));
 
         // ── Outer background & border ──
-        context.face(
+        context.face_with_gradient(
             rect,
             calendar_bg,
+            self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,

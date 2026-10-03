@@ -364,9 +364,10 @@ impl Draw for Splitter {
 
         // The track is the surface the panes sit on, drawn before the panes so a splitter with no
         // panes yet — or one whose registry is empty — still shows where it is.
-        context.face(
+        context.face_with_gradient(
             rect,
             track,
+            self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,

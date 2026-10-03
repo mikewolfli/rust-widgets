@@ -659,9 +659,10 @@ impl Draw for ToolButton {
         // the "declared but nobody consumes it" shape the census exists to catch. `tool_bar`,
         // `menu_bar` and `status_bar` are the sibling call sites in this module and all read their
         // own surface the same way.
-        context.face(
+        context.face_with_gradient(
             Rect::new(rect.x, rect.y, rect.width, rect.height),
             bg,
+            style.background_gradient.as_ref(),
             style.surface.unwrap_or_default(),
             style.border_radius.unwrap_or(0),
             Color::BLACK,

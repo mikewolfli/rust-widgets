@@ -118,6 +118,31 @@ thread_local! {
     static DESTROYED_DURING_DISPATCH: RefCell<alloc::collections::BTreeSet<ObjectId>> =
         RefCell::new(alloc::collections::BTreeSet::new());
 
+    /// Widgets currently lent out of [`MOUNTED`] while a frame drives them.
+    ///
+    /// [`dispatch_event`] and [`with_widget_mut`] take the widget out of `MOUNTED` before they run a
+    /// user callback (so the callback may re-enter the registry without a `RefCell` conflict), but the
+    /// callback legitimately wants to **read its own state** \u2014 a `geometry_of(own_id)`, an
+    /// `is_mounted(own_id)`. Without this, those reads returned `None` during the callback and only
+    /// worked again once it returned, so "the object is gone" and "the object is fine but you are
+    /// inside its own callback" were indistinguishable (BLUE-issue E-18).
+    ///
+    /// This maps the id to a pointer to the lent widget so the **read-only** accessors can still
+    /// resolve it. It is deliberately not consulted by any mutating accessor: writing through a
+    /// second path while the driving frame holds `&mut` would be an aliasing violation, so a callback
+    /// that tries to *write* the control currently being driven gets an explicit refusal rather than
+    /// silent cooperation. See [`with_widget_mut`] and [`lent_out_widget`].
+    ///
+    /// # Safety
+    ///
+    /// The pointer is valid only for the dynamic extent of the driving call that installed it: the
+    /// owning frame keeps the widget alive on its stack and removes the entry (via [`LentGuard`])
+    /// before it returns or unwinds. Readers hold the pointer only long enough to call `&self`,
+    /// which cannot outlive that extent because nothing yields it to the caller.
+    #[allow(clippy::missing_const_for_thread_local)]
+    static LENT_OUT: RefCell<alloc::collections::BTreeMap<ObjectId, core::ptr::NonNull<dyn Widget>>> =
+        RefCell::new(alloc::collections::BTreeMap::new());
+
     /// Monotonic id source for mounted widgets.
     ///
     /// Starts high so a mounted id cannot collide with a platform-allocated
@@ -1073,9 +1098,35 @@ pub fn widget_id_for_host_window(host: ObjectId) -> Option<ObjectId> {
 /// answer would make the paint path advance a control the frame loop is also advancing — the
 /// double-step this function exists to prevent.
 pub fn is_mounted(id: ObjectId) -> bool {
-    MOUNTED
+    let direct = MOUNTED
         .try_with(|map| map.try_borrow().map(|map| map.contains_key(&id)).unwrap_or(true))
-        .unwrap_or(false)
+        .unwrap_or(false);
+    if direct {
+        return true;
+    }
+    // A widget lent out to its own driving callback is still mounted: answering `false` here would
+    // tell that callback its object had been destroyed, which is exactly the "cannot tell a live
+    // control from a gone one" confusion BLUE-issue E-18 names. The check is by **registry** id,
+    // matching how the loan is keyed.
+    if LENT_OUT.with(|map| map.borrow().contains_key(&id)) {
+        return true;
+    }
+    // The paint path asks with the widget's *own* id (`BaseWidget::id()`), which is a second id
+    // space, not the registry key. Resolve it so the answer is the same whichever id the caller
+    // holds. This also restores the previous behaviour where the enclosing `with_widget_mut` borrow
+    // made the direct check answer `true`; now the answer is derived from the actual loan rather
+    // than from a borrow conflict.
+    if let Some(registry_id) = registry_id_of(id) {
+        let mounted = MOUNTED
+            .try_with(|map| {
+                map.try_borrow().map(|map| map.contains_key(&registry_id)).unwrap_or(true)
+            })
+            .unwrap_or(false);
+        if mounted || LENT_OUT.with(|map| map.borrow().contains_key(&registry_id)) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Returns whether the widget mounted under `id` can carry a tri-state value.
@@ -1828,11 +1879,15 @@ pub fn has_animating_widgets() -> bool {
 }
 
 /// Returns the geometry of a mounted widget, or `None` when it is not mounted.
+///
+/// A widget currently being driven by its own callback **is** mounted; its geometry is read through
+/// the lent-out pointer so a callback can read the control it is handling (BLUE-issue E-18).
 pub fn geometry_of(id: ObjectId) -> Option<Rect> {
-    MOUNTED
+    let mounted = MOUNTED
         .try_with(|map| map.borrow().get(&id).map(|entry| entry.widget.geometry()))
         .ok()
-        .flatten()
+        .flatten();
+    mounted.or_else(|| lent_out_widget(id, |widget| widget.geometry()))
 }
 
 /// The origin a control's own coordinates are relative to.
@@ -1881,24 +1936,178 @@ pub fn set_geometry(id: ObjectId, geometry: Rect) -> bool {
 
 /// Runs `f` with mutable access to a mounted widget.
 ///
-/// The borrow is scoped to the call, so a painter that triggers another paint
-/// cannot re-enter the registry and alias the widget.
+/// # Why the widget is detached before `f` runs
+///
+/// The borrow is scoped to the *map operation*, never to `f`. A property setter runs as `f` and emits
+/// the control's signal synchronously, so a user callback runs while `f` is still on the stack; if the
+/// `RefCell` were borrowed for all of `f`, that callback's read of any control (its own property, or
+/// another control) hit `already borrowed` and panicked. This is the property-write path's version of
+/// the defect `dispatch_event` fixed for input (BLUE-issue E-17).
+///
+/// While `f` runs the entry is lent out, so read-only accessors ([`with_widget`], [`geometry_of`])
+/// can still resolve it, but a **nested write to the same id** is refused rather than aliasing the
+/// live `&mut` \u2014 see [`with_widget_mut`]'s return of `None` in that case.
+///
+/// Returns `None` when `id` is not mounted, or when a nested call targets the id this call is already
+/// mutating.
 pub fn with_widget_mut<R>(id: ObjectId, f: impl FnOnce(&mut dyn Widget) -> R) -> Option<R> {
-    MOUNTED
-        .try_with(|map| map.borrow_mut().get_mut(&id).map(|entry| f(entry.widget.as_mut())))
-        .ok()
-        .flatten()
+    // A nested mutable access to a widget already lent out for mutation would alias the live `&mut`,
+    // so it is refused explicitly. The outer call's marker is a mutable-borrow marker distinct from a
+    // read-only lent entry; see `LENT_MUTATING`.
+    if lent_mutating(id) {
+        return None;
+    }
+    let taken = MOUNTED.try_with(|map| map.borrow_mut().remove(&id)).ok().flatten();
+    let mut mounted = taken?;
+    // Mark the id in-flight for the duration, exactly as `dispatch_event` does, so a callback that
+    // **destroys** this control (a property setter that closes its own window) has its `unregister`
+    // recorded as a tombstone rather than silently undone by the reinsertion below. The guard clears
+    // the marker on both the normal return and an unwind.
+    let mut in_flight = InFlightGuard::install(id);
+    let _lent = LentGuard::install(id, mounted.widget.as_mut(), /* mutating = */ true);
+    let result = f(mounted.widget.as_mut());
+    drop(_lent);
+    let destroyed = in_flight.finish();
+    if !destroyed {
+        // Reinsert unless a callback replaced this id while `f` ran (the callback's own registration
+        // wins); a tombstone means the callback destroyed it, so it must not come back.
+        let _ = MOUNTED.try_with(|map| {
+            let mut map = map.borrow_mut();
+            map.entry(id).or_insert(mounted);
+        });
+    }
+    Some(result)
+}
+
+/// Owns the in-flight marker for one registry drive that is not a dispatch, so a destroy inside the
+/// drive still sticks and the marker is cleared on an unwind.
+///
+/// The input dispatch path has [`DispatchGuard`]; `with_widget_mut` needs the same bookkeeping for
+/// the same reason (a property setter can emit a signal whose callback destroys the control), so the
+/// two share the `DISPATCHING`/`DESTROYED_DURING_DISPATCH` mechanism rather than each inventing one.
+struct InFlightGuard {
+    id: ObjectId,
+    finished: bool,
+}
+
+impl InFlightGuard {
+    fn install(id: ObjectId) -> Self {
+        let _ = DISPATCHING.try_with(|set| {
+            set.borrow_mut().insert(id);
+        });
+        Self { id, finished: false }
+    }
+
+    /// Clears the marker and consumes any destroy tombstone, reporting whether the control was
+    /// destroyed during the drive.
+    fn finish(&mut self) -> bool {
+        self.finished = true;
+        let _ = DISPATCHING.try_with(|set| {
+            set.borrow_mut().remove(&self.id);
+        });
+        DESTROYED_DURING_DISPATCH.try_with(|set| set.borrow_mut().remove(&self.id)).unwrap_or(false)
+    }
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _ = DISPATCHING.try_with(|set| {
+                set.borrow_mut().remove(&self.id);
+            });
+        }
+    }
 }
 
 /// Runs `f` with shared access to a mounted widget.
 ///
 /// Used by read-only queries (a host inspecting a mounted editor's text or
-/// caret) so they do not need mutable access merely to look at state.
+/// caret) so they do not need mutable access merely to look at state. A widget currently lent out to
+/// a driving callback is resolved through its lent entry, so a callback can read the control it is
+/// handling (BLUE-issue E-18).
 pub fn with_widget<R>(id: ObjectId, f: impl FnOnce(&dyn Widget) -> R) -> Option<R> {
-    MOUNTED
-        .try_with(|map| map.borrow().get(&id).map(|entry| f(entry.widget.as_ref())))
-        .ok()
-        .flatten()
+    // Resolve under the borrow to a *presence* flag first, so the `FnOnce` is not moved into a
+    // closure that may not run.
+    let present = MOUNTED.try_with(|map| map.borrow().contains_key(&id)).unwrap_or(false);
+    if present {
+        return MOUNTED
+            .try_with(|map| map.borrow().get(&id).map(|entry| f(entry.widget.as_ref())))
+            .ok()
+            .flatten();
+    }
+    lent_out_widget(id, f)
+}
+
+/// Runs `f` with a **read-only** view of a widget currently lent out of [`MOUNTED`].
+///
+/// Returns `None` when no widget is lent out under `id`. See [`LENT_OUT`] for why this exists and why
+/// no mutating accessor may use it.
+fn lent_out_widget<R>(id: ObjectId, f: impl FnOnce(&dyn Widget) -> R) -> Option<R> {
+    // The pointer is copied out under a short borrow, then dereferenced with no `RefCell` borrow held:
+    // the borrowed-from frame keeps the widget alive for this whole call (it will not return until the
+    // callback does), so the pointer is valid here. `f` runs to completion before any other code can
+    // invalidate it, so the shared reference never escapes this call.
+    let ptr = LENT_OUT.with(|map| map.borrow().get(&id).copied());
+    // SAFETY: the entry exists only while the owning frame is on the stack with the widget alive; the
+    // shared reference produced here is consumed entirely within `f` and cannot outlive this call.
+    ptr.map(|ptr| unsafe { f(ptr.as_ref()) })
+}
+
+/// Whether `id` is currently lent out **for mutation**.
+///
+/// A read-only lent entry may be read re-entrantly; a mutating one may not, because a nested write
+/// would alias the `&mut` the driving frame holds. [`with_widget_mut`] refuses such a nested write by
+/// answering `None` — an explicit "not available for writing right now" rather than an aliasing bug
+/// or a silent no-op.
+fn lent_mutating(id: ObjectId) -> bool {
+    LENT_MUTATING.with(|set| set.borrow().contains(&id))
+}
+
+/// Marks a widget as lent out of [`MOUNTED`] for the guard's lifetime, restoring the read-only path
+/// and (for a mutating loan) clearing the nested-write refusal on drop.
+///
+/// A `Drop` guard rather than code after the call, so the loan is undone on **both** the normal return
+/// and an unwind out of a user callback. A callback that panics during dispatch or a property write no
+/// longer leaves the widget permanently lent out and unreachable — the shape BLUE-issue E-19 records
+/// for dispatch (it applied equally to `with_widget_mut`).
+struct LentGuard {
+    id: ObjectId,
+    mutating: bool,
+}
+
+impl LentGuard {
+    fn install(id: ObjectId, widget: &mut dyn Widget, mutating: bool) -> Self {
+        let ptr: core::ptr::NonNull<dyn Widget> = core::ptr::NonNull::from(widget);
+        let _ = LENT_OUT.try_with(|map| {
+            map.borrow_mut().insert(id, ptr);
+        });
+        if mutating {
+            let _ = LENT_MUTATING.try_with(|set| {
+                set.borrow_mut().insert(id);
+            });
+        }
+        Self { id, mutating }
+    }
+}
+
+impl Drop for LentGuard {
+    fn drop(&mut self) {
+        let _ = LENT_OUT.try_with(|map| {
+            map.borrow_mut().remove(&self.id);
+        });
+        if self.mutating {
+            let _ = LENT_MUTATING.try_with(|set| {
+                set.borrow_mut().remove(&self.id);
+            });
+        }
+    }
+}
+
+// Ids lent out for **mutation**, so a nested write to the same id can be refused.
+thread_local! {
+    #[allow(clippy::missing_const_for_thread_local)]
+    static LENT_MUTATING: RefCell<alloc::collections::BTreeSet<ObjectId>> =
+        RefCell::new(alloc::collections::BTreeSet::new());
 }
 
 /// Forwards a platform event into a mounted widget's `EventHandler`.
@@ -1940,18 +2149,25 @@ pub fn dispatch_event(id: ObjectId, event: &Event) -> bool {
     let _ = DISPATCHING.try_with(|set| {
         set.borrow_mut().insert(id);
     });
+    // Lend the widget out read-only, so a callback can resolve *this* control through the ordinary
+    // read accessors while its own `handle_event` is on the stack (BLUE-issue E-18). The guard also
+    // carries the unwind-safe cleanup below.
+    let mut guard = DispatchGuard::install(id, mounted.widget.as_mut());
 
     // The handler runs outside the registry borrow. Its return type is `()`, and the contract of
     // this function answers "was the widget found?" — `true`, because the entry was present when we
     // detached it.
-    mounted.widget.handle_event(event);
+    //
+    // # Why the cleanup is a guard and not code after the call (BLUE-issue E-19)
+    //
+    // A callback may unwind (the host `catch_unwind`s it). Plain cleanup after `handle_event` would
+    // then be skipped: the id would stay in `DISPATCHING`, a tombstone would never be consumed, and
+    // the widget would never be reinserted — so `is_mounted` answered `false` while `unregister`
+    // still reported the id present. [`DispatchGuard`] runs the same cleanup on the normal return and
+    // on an unwind, so the registry is consistent either way.
+    guard.run(&mut mounted, event);
 
-    let _ = DISPATCHING.try_with(|set| {
-        set.borrow_mut().remove(&id);
-    });
-    let destroyed =
-        DESTROYED_DURING_DISPATCH.try_with(|set| set.borrow_mut().remove(&id)).unwrap_or(false);
-
+    let destroyed = guard.finish();
     if destroyed {
         // A handler unregistered this control. The authoritative cleanup (focus, hover, capture,
         // cached frame, own-id map) already ran inside `unregister`; only the owned widget remains,
@@ -1966,6 +2182,65 @@ pub fn dispatch_event(id: ObjectId, event: &Event) -> bool {
         map.entry(id).or_insert(mounted);
     });
     true
+}
+
+/// Owns the in-flight bookkeeping for one [`dispatch_event`] call, so it is undone even on an unwind.
+///
+/// Installs the read-only loan ([`LENT_OUT`]), marks the id in [`DISPATCHING`], and on completion
+/// clears the marker, consumes any destroy tombstone, and — for a surviving widget — removes the loan
+/// so the entry can be reinserted by the caller. See BLUE-issue E-18 (self-reads) and E-19 (unwind).
+struct DispatchGuard {
+    id: ObjectId,
+    finished: bool,
+}
+
+impl DispatchGuard {
+    fn install(id: ObjectId, widget: &mut dyn Widget) -> Self {
+        let ptr: core::ptr::NonNull<dyn Widget> = core::ptr::NonNull::from(widget);
+        let _ = LENT_OUT.try_with(|map| {
+            map.borrow_mut().insert(id, ptr);
+        });
+        Self { id, finished: false }
+    }
+
+    /// Runs the event handler. Separated from construction so the loan is installed before the call
+    /// and definitely removed after it (or during an unwind).
+    fn run(&mut self, mounted: &mut Mounted, event: &Event) {
+        mounted.widget.handle_event(event);
+    }
+
+    /// Completes the dispatch bookkeeping, returning whether a handler destroyed the control.
+    fn finish(&mut self) -> bool {
+        let _ = DISPATCHING.try_with(|set| {
+            set.borrow_mut().remove(&self.id);
+        });
+        let destroyed = DESTROYED_DURING_DISPATCH
+            .try_with(|set| set.borrow_mut().remove(&self.id))
+            .unwrap_or(false);
+        // The loan is released here on the normal path; the `Drop` below is the unwind path.
+        let _ = LENT_OUT.try_with(|map| {
+            map.borrow_mut().remove(&self.id);
+        });
+        self.finished = true;
+        destroyed
+    }
+}
+
+impl Drop for DispatchGuard {
+    fn drop(&mut self) {
+        // On the normal path `finish` already ran; this branch is the unwind path (a panicking
+        // callback), where we still clear the loan and the in-flight marker so the registry is left
+        // consistent. The tombstone is intentionally left for `unregister` to have recorded, and is
+        // consumed by the next dispatch cleanup or the destroy itself.
+        if !self.finished {
+            let _ = LENT_OUT.try_with(|map| {
+                map.borrow_mut().remove(&self.id);
+            });
+            let _ = DISPATCHING.try_with(|set| {
+                set.borrow_mut().remove(&self.id);
+            });
+        }
+    }
 }
 
 /// Tells `id` and every mounted descendant that their container became `width` by `height`.
@@ -6325,6 +6600,190 @@ mod tests {
         assert!(
             !is_mounted(button_id),
             "the widget must not be resurrected by the dispatch epilogue"
+        );
+    }
+
+    /// A property write that emits a signal must let the callback re-enter the registry.
+    ///
+    /// # The defect this pins (BLUE-issue E-17)
+    ///
+    /// `with_widget_mut` held the registry's `RefCell` mutably across `f`. A property setter runs as
+    /// `f` and emits the control's signal synchronously, so the user callback ran while that borrow was
+    /// live and any `with_widget` / `geometry_of` inside it hit `already borrowed`. The borrow is now
+    /// scoped to the map operations only, so the callback runs with the registry free.
+    #[test]
+    fn a_property_write_callback_may_read_the_registry_without_panicking() {
+        use crate::widget::capability::access::write_widget_property_by_id;
+        use crate::widget::capability::CapabilityValue;
+        use crate::widget::Slider;
+
+        let slider_id = register(Box::new(Slider::new(Rect::new(0, 0, 200, 30)))).expect("mount");
+        let _guard = MountGuard(slider_id);
+        let other_id = register(Box::new(crate::widget::Label::new(
+            "other".to_string(),
+            Rect::new(0, 0, 60, 20),
+        )))
+        .expect("mount the label");
+        let _other_guard = MountGuard(other_id);
+
+        // Subscribing to the slider's dynamic `value_changed` and reading the registry inside the
+        // handler is exactly the shape that panicked.
+        let ran = std::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
+        let ran_slot = std::sync::Arc::clone(&ran);
+        with_widget_mut(slider_id, |widget| {
+            let reference = widget.event_signal_dyn("value_changed").expect("published");
+            reference.subscribe(Box::new(move |_payload| {
+                // Reads *other* controls and this control's own geometry through the registry.
+                let _ = geometry_of(other_id);
+                let _ = geometry_of(slider_id);
+                ran_slot.store(true, core::sync::atomic::Ordering::SeqCst);
+            }));
+        });
+
+        write_widget_property_by_id(slider_id, "value", CapabilityValue::Int(42))
+            .expect("the slider accepts a value write");
+
+        assert!(
+            ran.load(core::sync::atomic::Ordering::SeqCst),
+            "the value-changed callback must have run to completion rather than panicking"
+        );
+    }
+
+    /// A callback that destroys the control during a property write must actually destroy it.
+    ///
+    /// The `with_widget_mut` drive marks its id in-flight for the same reason `dispatch_event` does:
+    /// a setter's callback may destroy the control, and the reinsertion must not resurrect it.
+    #[test]
+    fn a_property_write_callback_may_destroy_the_control() {
+        use crate::widget::capability::access::write_widget_property_by_id;
+        use crate::widget::capability::CapabilityValue;
+        use crate::widget::Slider;
+
+        let slider_id = register(Box::new(Slider::new(Rect::new(0, 0, 200, 30)))).expect("mount");
+
+        let self_id = slider_id;
+        with_widget_mut(slider_id, |widget| {
+            let reference = widget.event_signal_dyn("value_changed").expect("published");
+            reference.subscribe(Box::new(move |_payload| {
+                assert!(unregister(self_id), "the callback's unregister must take effect");
+            }));
+        });
+
+        write_widget_property_by_id(slider_id, "value", CapabilityValue::Int(7))
+            .expect("the slider accepts a value write");
+
+        assert!(
+            !is_mounted(slider_id),
+            "a destroy during a property write must not be undone by the drive's reinsertion"
+        );
+    }
+
+    /// A callback can read the state of the control whose event it is handling.
+    ///
+    /// # The defect this pins (BLUE-issue E-18)
+    ///
+    /// `dispatch_event` detaches the widget from the registry before running `handle_event`, so a
+    /// callback that read its own geometry with `geometry_of(own_id)` got `None` while the callback ran
+    /// \u2014 indistinguishable from "this control was destroyed". The widget is now lent out
+    /// read-only during the call, so an ordinary read accessor resolves it.
+    #[test]
+    fn a_callback_can_read_its_own_state_while_handling_an_event() {
+        use crate::core::Point;
+        use crate::event::mouse_button;
+
+        let button_id = register(Box::new(crate::widget::Button::new(
+            "go".to_string(),
+            Rect::new(0, 0, 80, 24),
+        )))
+        .expect("mount the button");
+        let _guard = MountGuard(button_id);
+
+        let self_read = std::sync::Arc::new(std::sync::Mutex::new(None::<(bool, bool)>));
+        let record = std::sync::Arc::clone(&self_read);
+        with_widget_mut(button_id, |button| {
+            button.base_mut().clicked.connect(move || {
+                // Both the registry-id and the widget's own id must resolve during the callback.
+                let mounted_by_registry_id = is_mounted(button_id);
+                let geometry = geometry_of(button_id);
+                *record.lock().expect("lock") = Some((mounted_by_registry_id, geometry.is_some()));
+            });
+        });
+
+        dispatch_event(
+            button_id,
+            &crate::event::Event::MousePress {
+                pos: Point::new(10, 10),
+                button: mouse_button::PRIMARY,
+                modifiers: 0,
+            },
+        );
+        dispatch_event(
+            button_id,
+            &crate::event::Event::MouseRelease {
+                pos: Point::new(10, 10),
+                button: mouse_button::PRIMARY,
+            },
+        );
+
+        let observed = *self_read.lock().expect("lock");
+        assert_eq!(
+            observed,
+            Some((true, true)),
+            "a callback must see its own control as mounted with readable geometry"
+        );
+    }
+
+    /// A panicking input callback must not leave the registry with a stale in-flight marker.
+    ///
+    /// # The defect this pins (BLUE-issue E-19)
+    ///
+    /// `dispatch_event` removed the widget and marked it in-flight, then ran `handle_event`. If the
+    /// callback unwound (the host `catch_unwind`s), the cleanup after the call was skipped: the id
+    /// stayed in the in-flight set, so `is_mounted` answered `false` but `unregister` still reported
+    /// the id present. Cleanup is now a guard, so both answers agree after an unwind.
+    #[test]
+    fn a_panicking_input_callback_leaves_no_stale_dispatch_state() {
+        use crate::core::Point;
+        use crate::event::mouse_button;
+
+        let button_id = register(Box::new(crate::widget::Button::new(
+            "boom".to_string(),
+            Rect::new(0, 0, 80, 24),
+        )))
+        .expect("mount the button");
+        // No `MountGuard`: the widget is intentionally left unmounted after the unwind path.
+        let _unmount = MountGuard(button_id);
+
+        with_widget_mut(button_id, |button| {
+            button.base_mut().clicked.connect(|| {
+                panic!("deliberate unwind from an input callback");
+            });
+        });
+
+        let press = crate::event::Event::MousePress {
+            pos: Point::new(10, 10),
+            button: mouse_button::PRIMARY,
+            modifiers: 0,
+        };
+        let release = crate::event::Event::MouseRelease {
+            pos: Point::new(10, 10),
+            button: mouse_button::PRIMARY,
+        };
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            dispatch_event(button_id, &press);
+            dispatch_event(button_id, &release);
+        }));
+        assert!(caught.is_err(), "the callback must have unwound");
+
+        // The registry must be consistent: if the widget is gone, `unregister` must say so rather
+        // than reporting a stale in-flight entry as present.
+        assert!(
+            !is_mounted(button_id),
+            "the lookup must not resolve a widget dropped by the unwind"
+        );
+        assert!(
+            !unregister(button_id),
+            "a popped dispatch must not report the id as present via a leftover in-flight marker"
         );
     }
 }

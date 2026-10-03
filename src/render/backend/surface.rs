@@ -541,10 +541,47 @@ impl<'a> RenderContext<'a> {
     /// the fuller form for a control that wants the bevel and the edge derived too.
     ///
     /// `shadow_tint` is the shadow's hue; each elevation level owns its own alpha.
+    ///
+    /// This is [`Self::face_with_gradient`] with no gradient: it is the identity case for a face
+    /// that declares a solid fill, so a control calling it emits exactly what it always did.
     pub fn face(
         &mut self,
         rect: Rect,
         fill: Color,
+        surface: crate::render::SurfaceStyle,
+        radius: u32,
+        shadow_tint: Color,
+    ) {
+        self.face_with_gradient(rect, fill, None, surface, radius, shadow_tint);
+    }
+
+    /// [`Self::face`], but the fill is a `gradient` when the style declares one.
+    ///
+    /// # Why this exists beside `face`
+    ///
+    /// `WidgetStyle::background_gradient` was settable, mergeable and CSS-expressible, but only
+    /// `Button` ever read it: every other control painted a solid `background_color` and silently
+    /// dropped a declared gradient (issue §9 item #2). The gradient is a paint server rather than a
+    /// colour, so it cannot be folded into `fill` (a [`Color`]); passing it as a separate
+    /// `Option` keeps the identity exact — `None` emits precisely the solid face `face` always did,
+    /// so a control that declares no gradient is unchanged.
+    ///
+    /// The shadow, the materialised fill and the radius are identical to `face`; only the fill step
+    /// differs.
+    ///
+    /// # Why a rounded gradient is still a rectangular ramp
+    ///
+    /// A gradient is a paint server with no corner rounding, and the render command set has only a
+    /// rectangular [`RenderContext::push_clip`] — there is no rounded clip to intersect the ramp
+    /// with. So a gradient fill spans the full rectangle and the declared `radius` is honoured by
+    /// the face's **outline** (which the control draws itself), exactly as
+    /// [`SurfaceStyle::paint_with_gradient`](crate::render::SurfaceStyle::paint_with_gradient) does
+    /// for a button. That keeps one gradient story in the crate rather than two.
+    pub fn face_with_gradient(
+        &mut self,
+        rect: Rect,
+        fill: Color,
+        gradient: Option<&crate::style::Gradient>,
         surface: crate::render::SurfaceStyle,
         radius: u32,
         shadow_tint: Color,
@@ -557,12 +594,18 @@ impl<'a> RenderContext<'a> {
                 shadow.color,
             );
         }
-        // 2. The fill, at the surface's own radius and material.
+        // 2. The fill. Without a gradient this is the solid, radius-clipped face `face` always
+        //    drew; with one the ramp spans the full rectangle, matching `paint_with_gradient`.
         let materialised = surface.apply_fill(fill);
-        if radius > 0 {
-            self.fill_rounded_rect(rect, radius, materialised);
-        } else {
-            self.fill_rect(rect, materialised);
+        match gradient {
+            Some(gradient) => self.fill_gradient(rect, gradient),
+            None => {
+                if radius > 0 {
+                    self.fill_rounded_rect(rect, radius, materialised);
+                } else {
+                    self.fill_rect(rect, materialised);
+                }
+            }
         }
     }
     /// Anti-aliased equivalent of [`RenderContext::fill_rounded_rect`].
@@ -1401,6 +1444,113 @@ mod tests {
 
         let rgba = backend.frame_rgba();
         assert!(!rgba.is_empty());
+    }
+
+    // ── The face path: gradient and radius ───────────────────────────────
+
+    /// A declared gradient must change the pixels `face_with_gradient` paints. If the helper still
+    /// routed to a solid fill, a `LEFT` pixel and a `RIGHT` pixel of a left-to-right black→white
+    /// ramp would be identical; a gradient makes them differ.
+    #[test]
+    fn face_with_gradient_paints_a_ramp_not_a_solid() {
+        use crate::core::Point;
+        use crate::render::SurfaceStyle;
+        use crate::style::Gradient;
+
+        let rect = Rect::new(0, 0, 16, 4);
+        let ramp = Gradient::linear(Point::new(0, 0), Point::new(16, 0))
+            .add_stop(0.0, Color::BLACK)
+            .add_stop(1.0, Color::WHITE);
+
+        let mut backend = SoftwarePaintBackend::new(Size::new(16, 4), 1.0);
+        backend.begin_frame(Color::rgb(1, 2, 3));
+        {
+            let mut ctx = RenderContext::new(&mut backend);
+            ctx.face_with_gradient(
+                rect,
+                Color::rgb(200, 0, 0),
+                Some(&ramp),
+                SurfaceStyle::solid(),
+                0,
+                Color::BLACK,
+            );
+        }
+        backend.end_frame();
+
+        let rgba = backend.frame_rgba();
+        let stride = 16 * 4;
+        let left = rgba[2 * 4];
+        let right = rgba[2 * stride + 14 * 4];
+        assert!(
+            (right as i32 - left as i32).abs() > 100,
+            "a left-to-right ramp must differ across the face, got left={left} right={right}"
+        );
+    }
+
+    /// `face` is documented as the identity of `face_with_gradient(None)`: a solid radius-0 face
+    /// must emit exactly the same pixels either way, so teaching controls about gradients cannot
+    /// have changed what a gradient-free control draws.
+    #[test]
+    fn face_is_the_identity_of_face_with_gradient_without_a_gradient() {
+        use crate::render::SurfaceStyle;
+
+        let rect = Rect::new(1, 1, 8, 8);
+        let fill = Color::rgb(40, 90, 160);
+
+        let mut plain = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
+        plain.begin_frame(Color::WHITE);
+        {
+            let mut ctx = RenderContext::new(&mut plain);
+            ctx.face(rect, fill, SurfaceStyle::solid(), 0, Color::BLACK);
+        }
+        plain.end_frame();
+
+        let mut via_gradient = SoftwarePaintBackend::new(Size::new(10, 10), 1.0);
+        via_gradient.begin_frame(Color::WHITE);
+        {
+            let mut ctx = RenderContext::new(&mut via_gradient);
+            ctx.face_with_gradient(rect, fill, None, SurfaceStyle::solid(), 0, Color::BLACK);
+        }
+        via_gradient.end_frame();
+
+        assert_eq!(
+            plain.frame_rgba(),
+            via_gradient.frame_rgba(),
+            "face must be byte-for-byte identical to face_with_gradient(None)"
+        );
+    }
+
+    /// The rounded-corner path: a radius must leave the corner un-painted by the face fill, so the
+    /// backdrop shows through where a square face would have painted. This is the clipping half of
+    /// the issue, exercised on the shared helper the controls call.
+    #[test]
+    fn face_radius_clips_the_corner_of_the_fill() {
+        use crate::render::SurfaceStyle;
+
+        let rect = Rect::new(0, 0, 12, 12);
+        let fill = Color::rgb(10, 120, 220);
+
+        let mut square = SoftwarePaintBackend::new(Size::new(12, 12), 1.0);
+        square.begin_frame(Color::WHITE);
+        {
+            let mut ctx = RenderContext::new(&mut square);
+            ctx.face(rect, fill, SurfaceStyle::solid(), 0, Color::BLACK);
+        }
+        square.end_frame();
+
+        let mut rounded = SoftwarePaintBackend::new(Size::new(12, 12), 1.0);
+        rounded.begin_frame(Color::WHITE);
+        {
+            let mut ctx = RenderContext::new(&mut rounded);
+            ctx.face(rect, fill, SurfaceStyle::solid(), 5, Color::BLACK);
+        }
+        rounded.end_frame();
+
+        // The very top-left pixel is inside a square face and outside a rounded one.
+        let square_corner = &square.frame_rgba()[..4];
+        let rounded_corner = &rounded.frame_rgba()[..4];
+        assert_eq!(&square_corner[..3], &[10, 120, 220], "a square face fills its corner");
+        assert_eq!(&rounded_corner[..3], &[255, 255, 255], "a radius must clip the corner");
     }
 
     #[test]

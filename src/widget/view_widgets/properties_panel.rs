@@ -420,22 +420,9 @@ impl Widget for PropertiesPanel {
     }
 }
 
-/// The `CapabilityValue` that mirrors a [`PropertyValue`] for the `property_changed` payload.
-///
-/// The event's schema declares the second tuple element as `String`, so the value travels as its
-/// text form: this is the one place that spelling lives, rather than a `Debug` string of the whole
-/// pair that a subscriber could not split back into name and value.
+/// Converts a [`PropertyValue`] to the string representation shown by the panel.
 fn property_value_to_capability(value: &PropertyValue) -> CapabilityValue {
-    let text = match value {
-        PropertyValue::Text(text) | PropertyValue::File(text) => text.clone(),
-        PropertyValue::Number(number) => number.to_string(),
-        PropertyValue::Bool(flag) => flag.to_string(),
-        PropertyValue::Color(color) => format!("{color:?}"),
-        PropertyValue::Choice { options, selected } => {
-            options.get(*selected).cloned().unwrap_or_default()
-        }
-    };
-    CapabilityValue::String(text)
+    CapabilityValue::String(PropertiesPanel::value_display_text(value))
 }
 
 /// `PropertiesPanel`'s property contract.
@@ -859,6 +846,21 @@ mod tests {
             selected: 1,
         };
         assert_eq!(PropertiesPanel::value_display_text(&choice_val), "Option B");
+        assert_eq!(
+            property_value_to_capability(&choice_val),
+            CapabilityValue::String("Option B".to_string())
+        );
+        assert_eq!(
+            property_value_to_capability(&PropertyValue::Color(Color::rgb(12, 34, 56))),
+            CapabilityValue::String("#0C2238".to_string())
+        );
+        assert_eq!(
+            property_value_to_capability(&PropertyValue::Choice {
+                options: vec!["Option A".to_string()],
+                selected: 1,
+            }),
+            CapabilityValue::String("Invalid".to_string())
+        );
     }
 
     #[test]

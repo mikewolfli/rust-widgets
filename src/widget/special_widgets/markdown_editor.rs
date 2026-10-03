@@ -393,9 +393,10 @@ impl Draw for MarkdownEditor {
             .map(|active| active.colors.primary.legible_on(surface, 4.5))
             .unwrap_or_else(|| ink.contrast_color());
 
-        context.face(
+        context.face_with_gradient(
             rect,
             surface,
+            self.style().background_gradient.as_ref(),
             self.style().surface.unwrap_or_default(),
             self.style().border_radius.unwrap_or(0),
             Color::BLACK,
