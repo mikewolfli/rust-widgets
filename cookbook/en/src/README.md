@@ -187,7 +187,7 @@ handling, WebChannel communication, and context menu customization.
 
 ## Prerequisites
 
-- **Rust 1.87** or later (MSRV)
+- **Rust 1.88** or later (MSRV)
 - **Platform dependencies**:
   | Platform | Dependencies |
   |----------|-------------|
@@ -206,6 +206,6 @@ handling, WebChannel communication, and context menu customization.
 | **License** | [MIT](https://github.com/mikewolfli/rust-widgets/blob/main/LICENSE) |
 | **Repository** | [github.com/mikewolfli/rust-widgets](https://github.com/mikewolfli/rust-widgets) |
 | **Tests** | 5300+ |
-| **MSRV** | Rust 1.87 |
+| **MSRV** | Rust 1.88 |
 
 Ready to begin? Head to [Getting Started](chapters/getting-started.md).

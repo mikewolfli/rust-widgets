@@ -912,7 +912,9 @@ mod tests {
     /// Counts pixels near `target`.
     fn count_near(rgba: &[u8], target: (u8, u8, u8)) -> usize {
         const TOLERANCE: i32 = 24;
-        rgba.chunks_exact(4)
+        rgba.as_chunks::<4>()
+            .0
+            .iter()
             .filter(|px| {
                 (px[0] as i32 - target.0 as i32).abs() <= TOLERANCE
                     && (px[1] as i32 - target.1 as i32).abs() <= TOLERANCE
@@ -1197,7 +1199,7 @@ mod tests {
         assert_ne!(painted.len(), 0);
         assert_eq!(painted.len(), bare.len(), "both renders cover the same surface");
         let differing =
-            painted.chunks_exact(4).zip(bare.chunks_exact(4)).filter(|(a, b)| a != b).count();
+            painted.as_chunks::<4>().0.iter().zip(bare.as_chunks::<4>().0.iter()).filter(|(a, b)| a != b).count();
         assert!(
             differing > 0,
             "turning the grid off must change the picture; the two renders were identical"

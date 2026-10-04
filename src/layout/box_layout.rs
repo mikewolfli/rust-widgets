@@ -87,13 +87,17 @@ impl BoxLayout {
         if self.items.is_empty() {
             return Vec::new();
         }
-        let total_stretch: u32 = self.items.iter().map(|item| item.stretch).sum::<u32>().max(1);
+        // The stretch total is summed in `u64`: two spacers of weight `u32::MAX` must not overflow
+        // a `u32` (a debug panic, and a wrapped total in release). Computing each share in `u64`
+        // also keeps the weighted distribution exact instead of saturating the product.
+        let total_stretch: u64 =
+            self.items.iter().map(|item| item.stretch as u64).sum::<u64>().max(1);
         let mut assigned = Vec::with_capacity(self.items.len());
         for item in &self.items {
             let mut major = if item.policy == SizePolicy::Fixed {
                 item.constraints.max.unwrap_or(item.constraints.min)
             } else {
-                primary.saturating_mul(item.stretch) / total_stretch
+                (primary as u64 * item.stretch as u64 / total_stretch) as u32
             };
             major = major.max(item.constraints.min);
             if let Some(max) = item.constraints.max {
@@ -309,5 +313,60 @@ impl Layout for BoxLayout {
                 Orientation::Vertical => cursor_y += (major + self.spacing) as i32,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compat::Vec;
+
+    /// Collects the rects a horizontal box layout produces, keyed by widget id.
+    fn placed(layout: &BoxLayout, rect: Rect) -> Vec<(ObjectId, Rect)> {
+        let mut out = Vec::new();
+        layout.update(rect, &mut |id, r| out.push((id, r)));
+        out
+    }
+
+    fn rect_of(out: &[(ObjectId, Rect)], id: ObjectId) -> Rect {
+        out.iter().find(|(i, _)| *i == id).map(|(_, r)| *r).expect("the id was placed")
+    }
+
+    /// Two items of weight `u32::MAX` must not overflow the stretch sum.
+    ///
+    /// The total was a `u32`, so this case panicked in debug and, in release, wrapped the total
+    /// and mis-shared the container. Both items now split the container evenly and stay inside it.
+    #[test]
+    fn max_box_stretches_do_not_overflow_or_overrun_the_container() {
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(1, u32::MAX);
+        layout.add_widget(2, u32::MAX);
+
+        let rect = Rect::new(0, 0, 100, 50);
+        let out = placed(&layout, rect);
+
+        let a = rect_of(&out, 1);
+        let b = rect_of(&out, 2);
+        assert_eq!(a.width, 50, "equal max weights split the container evenly");
+        assert_eq!(b.width, 50, "equal max weights split the container evenly");
+        assert_eq!(a.width + b.width, 100, "the items must not exceed the container");
+        assert!(b.x + b.width as i32 <= rect.x + rect.width as i32, "right item: {b:?}");
+    }
+
+    /// Mixed max and minimal weights must share the container without overrunning it.
+    #[test]
+    fn mixed_box_stretches_share_the_container_without_overrunning() {
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(1, u32::MAX);
+        layout.add_widget(2, 1);
+
+        let rect = Rect::new(0, 0, 100, 50);
+        let out = placed(&layout, rect);
+
+        let a = rect_of(&out, 1);
+        let b = rect_of(&out, 2);
+        assert!(a.width >= b.width, "the max-weight item gets the larger share");
+        assert_eq!(a.width + b.width, 100, "the items must not exceed the container");
+        assert!(b.x + b.width as i32 <= rect.x + rect.width as i32, "right item: {b:?}");
     }
 }

@@ -1,7 +1,12 @@
+# The device profiles are mutually exclusive: `--all-features` turns `desktop`
+# and `mini` on together, and `mini` switches the crate to `no_std`, so that
+# combination cannot compile (principle #47/#48, and the same rule CONTRIBUTING.md
+# and CI enforce). These aliases therefore pin the desktop profile explicitly,
+# matching the contributor workflow and the CI `quality-gates` job.
 [alias]
-check-all = "check --all-features"
-test-all = "test --all-features -q"
-lint = "clippy --all-features --all-targets -- -D warnings"
+check-all = "check --all-targets --no-default-features --features desktop"
+test-all = "test --no-default-features --features desktop -q"
+lint = "clippy --all-targets --no-default-features --features desktop -- -D warnings"
 fmt-check = "fmt --all -- --check"
 
 # System dependencies installation helpers

@@ -186,7 +186,7 @@ impl Snapshot {
         }
         // A buffer whose length is not a whole number of RGBA quads cannot be
         // stepped in fours; report it rather than panicking on the stride.
-        if self.data.len() % 4 != 0 {
+        if !self.data.len().is_multiple_of(4) {
             return SnapshotComparison::Different {
                 reason: format!("Buffer of {} bytes is not whole RGBA pixels", self.data.len()),
                 diff_percentage: 100.0,

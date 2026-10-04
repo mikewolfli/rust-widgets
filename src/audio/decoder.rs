@@ -69,7 +69,9 @@ pub fn decode(data: &[u8]) -> Result<AudioBuffer, String> {
                 ));
             }
             let samples: Vec<f32> = data
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect();
             Ok(AudioBuffer::new(44100, samples, 1))

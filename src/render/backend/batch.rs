@@ -442,7 +442,7 @@ impl BatchState {
                 // RenderCommand::DrawImage has no alpha channel, so a partial
                 // opacity is baked into the image's alpha bytes (RGBA).
                 if combined_opacity < 1.0 && data.len() % 4 == 0 {
-                    for px in data.chunks_exact_mut(4) {
+                    for px in data.as_chunks_mut::<4>().0 {
                         px[3] = (px[3] as f32 * combined_opacity).round().clamp(0.0, 255.0) as u8;
                     }
                 }

@@ -8,7 +8,7 @@
 //
 // Feature-specific system dependencies:
 //   audio-output  → libasound2-dev (Linux), CoreAudio (macOS), WASAPI (Windows)
-//   webkit-engine → libwebkit2gtk-4.1-dev + deps (Linux-only)
+//   linux-gtk     → libgtk-3-dev (Linux, via the `gtk` crate behind `gtk-native`)
 //   video-codecs  → libavcodec-dev, ... (Linux), brew ffmpeg (macOS), vcpkg (Windows)
 
 fn main() {
@@ -204,9 +204,7 @@ fn check_linux() {
     if feature_enabled("audio-output") {
         check_pkg("alsa", "libasound2-dev", "sudo apt-get install -y libasound2-dev");
     }
-    if feature_enabled("webkit-engine") {
-        check_pkg("webkit2gtk-4.1", "libwebkit2gtk-4.1-dev",
-            "sudo apt-get install -y libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev");
+    if feature_enabled("linux-gtk") {
         check_pkg("gtk+-3.0", "libgtk-3-dev", "sudo apt-get install -y libgtk-3-dev");
     }
     if feature_enabled("video-codecs") {

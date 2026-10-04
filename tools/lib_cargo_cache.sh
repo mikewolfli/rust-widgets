@@ -81,18 +81,27 @@ RW_GATE_NO_CACHE="${RW_GATE_NO_CACHE:-0}"
 #
 # `git hash-object` is not used: the tree is often dirty while gates run, and a cache that only
 # worked on a clean checkout would be useless exactly when it is most wanted. A content digest
-# over the tracked source directories is both correct and cheap.
+# over the whole build surface (minus build output and local tooling) is both correct and cheap.
 #
 # `_rw_source_digest` prints one hex string. It is deliberately tolerant of a missing directory
 # (a stripped checkout may have no `benches/`), because a cache key that errors is worse than a
 # cache key that is merely conservative.
 _rw_source_digest() {
   {
-    # `find | sort` so the digest does not depend on directory iteration order.
-    find src examples tests benches -type f \
-      \( -name '*.rs' -o -name '*.toml' \) 2>/dev/null | LC_ALL=C sort
-    # The manifests and the lockfile: a dependency or feature change re-keys the cache.
-    printf '%s\n' Cargo.toml Cargo.lock rust-toolchain.toml 2>/dev/null
+    # Hash the entire build surface: every source file, embedded asset
+    # (`include_bytes!`/`include_str!` .ttf/.json/.svg payloads), manifest, build
+    # script, cargo config, declared `tools/` target, test fixture and committed
+    # snapshot. Anything that can change a `cargo check`/`test`/`clippy` verdict
+    # must invalidate the key. The earlier version hashed only `.rs`/`.toml` under
+    # src/examples/tests/benches plus a few root manifests, so a change to
+    # `build.rs`, `.cargo/config.toml`, a `tools/` target, an embedded `.ttf`, a
+    # `language/*.json`, a theme file or a snapshot replayed a stale verdict.
+    #
+    # `target` (which holds this very cache), `.git` and `.venv` are pruned so the
+    # digest does not chase build output or a developer's local venv. `find | sort`
+    # makes the digest independent of directory iteration order.
+    find . \( -name target -o -name .git -o -name .venv \) -prune -o -type f -print \
+      2>/dev/null | LC_ALL=C sort
   } | while IFS= read -r file; do
     [ -f "$file" ] && printf '%s\0' "$file" && cat "$file"
   done | _rw_digest_stream
@@ -196,6 +205,17 @@ rw_cargo_cached() {
 
   cat "$tmp_out"
   cat "$tmp_err" >&2
+
+  # A timeout (124) is a *transient* verdict, not a stable conclusion: it is often
+  # caused by a held build lock or a contended runner, and the same key on the next
+  # run may legitimately finish. Persisting it would replay "timed out" forever and
+  # stop the gate from ever verifying again (principle #58/#59: report the timeout,
+  # do not launder it into a cached pass or fail). A genuine non-zero exit is a
+  # deterministic compile/test result and is cached as before.
+  if [ "$status" -eq 124 ]; then
+    rm -f "$tmp_out" "$tmp_err"
+    return 124
+  fi
 
   mv "$tmp_out" "$entry.out"
   mv "$tmp_err" "$entry.err"

@@ -947,7 +947,9 @@ mod tests {
         backend.end_frame();
         backend
             .frame_rgba()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|px| (px[0], px[1], px[2]) != (fill.r, fill.g, fill.b))
             .map(|px| (px[0], px[1], px[2]))
             .collect()

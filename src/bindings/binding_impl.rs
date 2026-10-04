@@ -4358,8 +4358,8 @@ mod tests {
 
         let mut source_out: u64 = 0xDEAD_BEEF;
         let mut target_out: u64 = 0xDEAD_BEEF;
-        let mut mime_out: *mut c_char = 0x1usize as *mut c_char;
-        let mut payload_out: *mut u8 = 0x1usize as *mut u8;
+        let mut mime_out: *mut c_char = std::ptr::dangling_mut::<c_char>();
+        let mut payload_out: *mut u8 = std::ptr::dangling_mut::<u8>();
         let mut payload_len_out: c_uint = 0xDEAD_BEEF;
 
         let had = unsafe {

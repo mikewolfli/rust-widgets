@@ -33,6 +33,11 @@ set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR" || exit 1
 
+# `timeout` is coreutils and is absent on a default macOS/BSD userland, so this helper
+# uses the same portable bound as the gates: `rw_run_bounded` (GNU `timeout` when present,
+# a pure-bash watchdog otherwise).
+. "$ROOT_DIR/tools/lib_timeout.sh"
+
 if [ "$#" -lt 3 ]; then
     echo "usage: $0 <gate> <target-file> <edit-command...>" >&2
     exit 2
@@ -70,7 +75,7 @@ echo "[probe] edit: $*"
 }
 
 echo "----- gate output begin -----"
-timeout "${RW_GATE_TIMEOUT:-900}" bash "$GATE" 2>&1
+rw_run_bounded "${RW_GATE_TIMEOUT:-900}" bash "$GATE" 2>&1
 GATE_RC=$?
 echo "----- gate output end (exit=$GATE_RC) -----"
 

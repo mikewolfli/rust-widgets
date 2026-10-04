@@ -42,14 +42,22 @@ pub fn to_grayscale(
         // Already grayscale: converting again must not read three bytes as if they were RGB,
         // so these return the pixels unchanged.
         ImageData::Grayscale8(_) | ImageData::Grayscale16(_) => return Ok((data, width, height)),
-        ImageData::Rgba8(d) => {
-            d.chunks_exact(4).map(|p| luminosity(p[0] as f32, p[1] as f32, p[2] as f32)).collect()
-        }
-        ImageData::Rgb8(d) => {
-            d.chunks_exact(3).map(|p| luminosity(p[0] as f32, p[1] as f32, p[2] as f32)).collect()
-        }
+        ImageData::Rgba8(d) => d
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|p| luminosity(p[0] as f32, p[1] as f32, p[2] as f32))
+            .collect(),
+        ImageData::Rgb8(d) => d
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|p| luminosity(p[0] as f32, p[1] as f32, p[2] as f32))
+            .collect(),
         ImageData::Rgba16(d) => d
-            .chunks_exact(8)
+            .as_chunks::<8>()
+            .0
+            .iter()
             .map(|p| {
                 let r = (u16::from_be_bytes([p[0], p[1]]) >> 8) as u8;
                 let g = (u16::from_be_bytes([p[2], p[3]]) >> 8) as u8;
@@ -58,7 +66,9 @@ pub fn to_grayscale(
             })
             .collect(),
         ImageData::Rgb16(d) => d
-            .chunks_exact(6)
+            .as_chunks::<6>()
+            .0
+            .iter()
             .map(|p| {
                 let r = (u16::from_be_bytes([p[0], p[1]]) >> 8) as u8;
                 let g = (u16::from_be_bytes([p[2], p[3]]) >> 8) as u8;
@@ -82,7 +92,7 @@ pub fn rgba_to_rgb(data: &[u8], width: u32, height: u32) -> Result<ImageData, St
         ));
     }
     let mut rgb = Vec::with_capacity(total * 3);
-    for px in data.chunks_exact(4) {
+    for px in data.as_chunks::<4>().0 {
         rgb.extend_from_slice(&px[..3]);
     }
     Ok(ImageData::Rgb8(rgb))
@@ -90,7 +100,7 @@ pub fn rgba_to_rgb(data: &[u8], width: u32, height: u32) -> Result<ImageData, St
 
 /// Adjust brightness. Delta in range -255..255.
 pub fn adjust_brightness(data: &mut [u8], delta: i32) {
-    for pixel in data.chunks_exact_mut(4) {
+    for pixel in data.as_chunks_mut::<4>().0 {
         for val in pixel.iter_mut().take(3) {
             *val = ((*val as i32 + delta).clamp(0, 255)) as u8;
         }
@@ -100,7 +110,7 @@ pub fn adjust_brightness(data: &mut [u8], delta: i32) {
 /// Adjust contrast. Factor in range 0.0..3.0.
 pub fn adjust_contrast(data: &mut [u8], factor: f32) {
     let factor = factor.max(0.0);
-    for pixel in data.chunks_exact_mut(4) {
+    for pixel in data.as_chunks_mut::<4>().0 {
         for val in pixel.iter_mut().take(3) {
             let new_val =
                 (((*val as f32 - 128.0) * factor + 128.0).round()).clamp(0.0, 255.0) as i32;
@@ -111,7 +121,7 @@ pub fn adjust_contrast(data: &mut [u8], factor: f32) {
 
 /// Invert pixel colors (negative effect).
 pub fn invert(data: &mut [u8]) {
-    for pixel in data.chunks_exact_mut(4) {
+    for pixel in data.as_chunks_mut::<4>().0 {
         pixel[0] = 255 - pixel[0];
         pixel[1] = 255 - pixel[1];
         pixel[2] = 255 - pixel[2];
@@ -223,12 +233,12 @@ pub fn convert_between_color_spaces(
             }
             let to_linear = source == ColorSpace::Srgb;
             let mut out = Vec::with_capacity(expected);
-            for px in rgba.chunks_exact(4) {
-                for channel in 0..3 {
+            for px in rgba.as_chunks::<4>().0 {
+                for &channel in px.iter().take(3) {
                     out.push(if to_linear {
-                        srgb_to_linear(px[channel])
+                        srgb_to_linear(channel)
                     } else {
-                        linear_to_srgb(px[channel])
+                        linear_to_srgb(channel)
                     });
                 }
                 out.push(px[3]); // alpha passthrough
@@ -437,7 +447,7 @@ mod tests {
     #[test]
     fn magenta_round_trips_without_losing_blue() {
         let (h, s, l) = rgb_to_hsl(255, 0, 255);
-        assert!(h >= 0.0 && h < 360.0, "hue must be normalised, got {h}");
+        assert!((0.0..360.0).contains(&h), "hue must be normalised, got {h}");
         let (r, g, b) = hsl_to_rgb(h, s, l);
         assert_eq!((r, g, b), (255, 0, 255), "magenta must round-trip exactly");
     }

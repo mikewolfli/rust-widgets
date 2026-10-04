@@ -1568,7 +1568,9 @@ mod tests {
         // The board background is a light grey, so a frame that painted something
         // must differ from pure white.
         let painted = rgba
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|px| !(px[0] == 255 && px[1] == 255 && px[2] == 255))
             .count();
         assert!(painted > 0, "the board must paint its columns");

@@ -12,7 +12,7 @@ Before you begin, ensure your environment meets these requirements:
 
 | Requirement | Minimum | Notes |
 |---|---|---|
-| **Rust** | 1.87+ (MSRV) | Check with `rustc --version` |
+| **Rust** | 1.88+ (MSRV) | Check with `rustc --version` |
 | **OS** | Linux, macOS, Windows, Android, iOS, WASM, HarmonyOS | |
 | **Platform SDKs** | See table below | Only needed for the target you build for |
 

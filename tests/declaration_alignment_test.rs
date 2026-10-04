@@ -269,7 +269,9 @@ fn q2_every_control_draws_something() {
         backend.end_frame();
         let painted = backend
             .frame_rgba()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .any(|px| (px[0], px[1], px[2]) != (probe.r, probe.g, probe.b));
         if !painted {
             failures.push(name);

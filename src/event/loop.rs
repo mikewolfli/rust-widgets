@@ -65,7 +65,7 @@ fn process_gesture(
     event: &Event,
     now_ms: u64,
 ) -> Option<Event> {
-    engines.entry(target).or_insert_with(GestureEngine::new).process(event, now_ms)
+    engines.entry(target).or_default().process(event, now_ms)
 }
 
 /// Canonical event name for animation frame requests.

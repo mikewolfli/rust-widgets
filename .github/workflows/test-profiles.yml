@@ -10,6 +10,7 @@ jobs:
   test-other-profiles:
     name: Test profiles (${{ matrix.profile }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:

@@ -10,7 +10,7 @@
 
 | 要求 | 最低版本 | 说明 |
 |---|---|---|
-| **Rust** | 1.87+ (MSRV) | 使用 `rustc --version` 检查 |
+| **Rust** | 1.88+ (MSRV) | 使用 `rustc --version` 检查 |
 | **操作系统** | Linux, macOS, Windows, Android, iOS, WASM, HarmonyOS | |
 | **平台 SDK** | 见下表 | 仅在你构建的目标平台上需要 |
 

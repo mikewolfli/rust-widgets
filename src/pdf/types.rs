@@ -178,7 +178,7 @@ pub(crate) fn normalize_image_payload_to_rgb(
     }
     if image.len() == expected_rgba_len {
         let mut rgb = Vec::with_capacity(expected_rgb_len);
-        for chunk in image.chunks_exact(4) {
+        for chunk in image.as_chunks::<4>().0 {
             rgb.extend_from_slice(&chunk[..3]);
         }
         return (rgb, ImageEncodingRoute::ExactRgbaDropAlpha);

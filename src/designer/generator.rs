@@ -1808,4 +1808,51 @@ mod tests {
         );
         assert!(!generated.report.is_clean(), "a refused wire is not a clean run");
     }
+
+    /// A document whose window carries a direct child *and* a layout child must generate both, not
+    /// the direct child twice.
+    ///
+    /// # The defect this pins
+    ///
+    /// The parser enumerated each child source (`children`, then `layout.children`) from 0, so the
+    /// two children shared path `[0]` and key `n_0`. `emit_node` re-resolves a child by its path
+    /// through `project.node`, which returns the first flattened match — the direct child — so the
+    /// layout child was silently replaced by the direct child and the generated source contained
+    /// `"direct"` twice and no `"layout"`.
+    #[test]
+    fn mixed_direct_and_layout_children_both_reach_the_generated_source() {
+        const DOCUMENT: &str = r#"{
+          "window": {
+            "title": "Mixed",
+            "children": [ { "label": { "text": "direct" } } ],
+            "layout": { "type": "vbox", "children": [ { "button": { "text": "layout" } } ] }
+          }
+        }"#;
+
+        for target in [TargetProfile::Default, TargetProfile::Stripped] {
+            let request = GenerationRequest {
+                json: DOCUMENT.to_string(),
+                target,
+                width: 320,
+                height: 240,
+                function_name: String::from("build_mixed"),
+            };
+            let generated = generate(&request).expect("the document must generate");
+            assert!(
+                generated.source.contains("String::from(\"direct\")"),
+                "{target:?}: the direct child's text must reach the generated source"
+            );
+            assert!(
+                generated.source.contains("String::from(\"layout\")"),
+                "{target:?}: the layout child's text must reach the generated source, not be \
+                 replaced by the direct child"
+            );
+            assert_eq!(
+                generated.source.matches("direct").count(),
+                1,
+                "{target:?}: the direct child must be emitted exactly once, not in place of the \
+                 layout child"
+            );
+        }
+    }
 }

@@ -210,10 +210,8 @@ fn apply_known_tag(tag: u16, value: &[u8], little_endian: bool, exif: &mut ExifD
         33437 => exif.aperture = value_rational(value, little_endian),
         34855 => exif.iso = value_u16(value, little_endian).map(|v| v as u32),
         37386 => exif.focal_length = value_rational(value, little_endian),
-        36867 | 36868 => {
-            if exif.date_time.is_none() {
-                exif.date_time = Some(read_ascii(value));
-            }
+        36867 | 36868 if exif.date_time.is_none() => {
+            exif.date_time = Some(read_ascii(value));
         }
         _ => {}
     }

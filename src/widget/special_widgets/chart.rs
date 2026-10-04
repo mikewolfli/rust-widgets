@@ -1159,7 +1159,7 @@ impl ChartWidget {
         let area = PlotArea::of(rect);
         let mut min = f64::INFINITY;
         let mut max = f64::NEG_INFINITY;
-        for bar in data.chunks_exact(VALUES_PER_BAR).take(bar_count) {
+        for bar in data.as_chunks::<VALUES_PER_BAR>().0.iter().take(bar_count) {
             for value in bar {
                 if value.is_finite() {
                     min = min.min(*value);
@@ -1174,7 +1174,7 @@ impl ChartWidget {
         let slot = (area.right - area.left).max(1) / bar_count as i32;
         let body_width = slot.saturating_sub(2).max(3);
         let wick_x_offset = body_width / 2;
-        for (i, bar) in data.chunks_exact(VALUES_PER_BAR).take(bar_count).enumerate() {
+        for (i, bar) in data.as_chunks::<VALUES_PER_BAR>().0.iter().take(bar_count).enumerate() {
             let (open, high, low, close) = (bar[0], bar[1], bar[2], bar[3]);
             let x = area.left + (i as i32) * slot;
             let y_open = area.y_for(open, min, max);
@@ -1237,7 +1237,7 @@ impl ChartWidget {
         let area = PlotArea::of(rect);
         let mut min = f64::INFINITY;
         let mut max = f64::NEG_INFINITY;
-        for group in data.chunks_exact(VALUES_PER_BOX).take(box_count) {
+        for group in data.as_chunks::<VALUES_PER_BOX>().0.iter().take(box_count) {
             for value in group {
                 if value.is_finite() {
                     min = min.min(*value);
@@ -1253,7 +1253,7 @@ impl ChartWidget {
         let box_width = slot.saturating_sub(4).max(4);
         let center_offset = box_width / 2;
         let color = Self::series_color(0);
-        for (i, group) in data.chunks_exact(VALUES_PER_BOX).take(box_count).enumerate() {
+        for (i, group) in data.as_chunks::<VALUES_PER_BOX>().0.iter().take(box_count).enumerate() {
             let (low, q1, median, q3, high) = (group[0], group[1], group[2], group[3], group[4]);
             let x = area.left + (i as i32) * slot + 2;
             let cx = x + center_offset;
@@ -1486,7 +1486,9 @@ mod tests {
     /// A renderer that silently draws nothing leaves the frame at background, so
     /// this is the discriminating measure for "the new variant actually painted".
     fn painted_pixels(rgba: &[u8]) -> usize {
-        rgba.chunks_exact(4)
+        rgba.as_chunks::<4>()
+            .0
+            .iter()
             .filter(|px| {
                 let (r, g, b) = (px[0], px[1], px[2]);
                 // Skip pure white (background) and the grey border family.
@@ -1683,7 +1685,9 @@ mod tests {
     /// of this control that is deliberately data rather than chrome.
     fn series_pixels(rgba: &[u8], series: usize) -> usize {
         let color = ChartWidget::series_color(series);
-        rgba.chunks_exact(4)
+        rgba.as_chunks::<4>()
+            .0
+            .iter()
             .filter(|px| px[0] == color.r && px[1] == color.g && px[2] == color.b)
             .count()
     }

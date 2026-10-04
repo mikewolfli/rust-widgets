@@ -429,22 +429,23 @@ impl Layout for GridLayout {
         let available_width = inner_width.saturating_sub(spacing_x * (self.cols - 1));
         let available_height = inner_height.saturating_sub(spacing_y * (self.rows - 1));
 
-        // Calculate column widths and x-offsets based on per-column stretch factors
-        let total_col_stretch: u32 = self.column_stretches.iter().sum();
-        // Calculate row heights and y-offsets based on per-row stretch factors
-        let total_row_stretch: u32 = self.row_stretches.iter().sum();
+        // Calculate column widths and x-offsets based on per-column stretch factors.
+        // The total is summed in `u64`: two columns of weight `u32::MAX` must not overflow a
+        // `u32` (a debug panic today, and a wrapped total that over-allocated two ~100px columns
+        // into a 100px container in release).
+        let total_col_stretch: u64 = self.column_stretches.iter().map(|&s| s as u64).sum();
+        // Calculate row heights and y-offsets based on per-row stretch factors.
+        let total_row_stretch: u64 = self.row_stretches.iter().map(|&s| s as u64).sum();
 
         // Precompute cumulative column width sums for x-offsets (fraction-aware)
         let mut col_widths: Vec<u32> = Vec::with_capacity(self.cols as usize);
         let mut col_x_offsets: Vec<i32> = Vec::with_capacity(self.cols as usize);
         let mut current_x: i32 = 0;
         for col in 0..self.cols {
-            let cell_width = if total_col_stretch > 0 {
-                (available_width as u64 * self.column_stretches[col as usize] as u64
-                    / total_col_stretch as u64) as u32
-            } else {
-                available_width / self.cols
-            };
+            let cell_width = (available_width as u64 * self.column_stretches[col as usize] as u64)
+                .checked_div(total_col_stretch)
+                .map(|width| width as u32)
+                .unwrap_or_else(|| available_width / self.cols);
             col_widths.push(cell_width);
             col_x_offsets.push(current_x);
             current_x += cell_width as i32 + spacing_x as i32;
@@ -469,14 +470,11 @@ impl Layout for GridLayout {
                     // with two 500px rows put the second row at y=60 with a height of 60).
                     (available_height as i32 - current_y).max(0).min(height as i32) as u32
                 }
-                RowSizing::Fill => {
-                    if total_row_stretch > 0 {
-                        (available_height as u64 * self.row_stretches[row as usize] as u64
-                            / total_row_stretch as u64) as u32
-                    } else {
-                        available_height / self.rows
-                    }
-                }
+                RowSizing::Fill => (available_height as u64
+                    * self.row_stretches[row as usize] as u64)
+                    .checked_div(total_row_stretch)
+                    .map(|height| height as u32)
+                    .unwrap_or_else(|| available_height / self.rows),
             };
             row_heights.push(cell_height);
             row_y_offsets.push(current_y);
@@ -827,5 +825,53 @@ mod tests {
         assert_eq!(grid.rows(), 3, "six children in two columns need three rows");
         assert_eq!(grid.cell_of(5), Some((2, 0)));
         assert_eq!(grid.cell_of(6), Some((2, 1)));
+    }
+
+    /// Two columns of weight `u32::MAX` must not overflow the stretch sum.
+    ///
+    /// The sum was a `u32`, so this case panicked in debug and, in release, wrapped to a total
+    /// just under `2 * u32::MAX` — which over-allocated two ~100px columns into a 100px container.
+    #[test]
+    fn max_column_stretches_do_not_overflow_or_overrun_the_container() {
+        let mut grid = GridLayout::new(1, 2, 0, 0);
+        grid.set_widget(0, 0, 1);
+        grid.set_widget(0, 1, 2);
+        grid.set_column_stretch(u32::MAX);
+
+        let rect = Rect::new(0, 0, 100, 50);
+        let out = placed(&grid, rect);
+
+        let left = rect_of(&out, 1);
+        let right = rect_of(&out, 2);
+        assert_eq!(left.width, 50, "equal max weights split the container evenly");
+        assert_eq!(right.width, 50, "equal max weights split the container evenly");
+        assert_eq!(left.width + right.width, 100, "the columns must not exceed the container");
+        assert!(
+            right.x + right.width as i32 <= rect.x + rect.width as i32,
+            "right column: {right:?}"
+        );
+    }
+
+    /// Mixed max and minimal row weights must share the container without overrunning it.
+    #[test]
+    fn mixed_row_stretches_do_not_overflow_or_overrun_the_container() {
+        let mut grid = GridLayout::new(2, 1, 0, 0);
+        grid.set_widget(0, 0, 1);
+        grid.set_widget(1, 0, 2);
+        grid.set_row_stretch_for_row(0, u32::MAX);
+        grid.set_row_stretch_for_row(1, 1);
+
+        let rect = Rect::new(0, 0, 50, 60);
+        let out = placed(&grid, rect);
+
+        let top = rect_of(&out, 1);
+        let bottom = rect_of(&out, 2);
+        assert!(top.height >= bottom.height, "the max-weight row gets the larger share");
+        assert_eq!(top.height + bottom.height, 60, "the rows must not exceed the container");
+        assert!(top.y + top.height as i32 <= rect.y + rect.height as i32, "top row: {top:?}");
+        assert!(
+            bottom.y + bottom.height as i32 <= rect.y + rect.height as i32,
+            "bottom row: {bottom:?}"
+        );
     }
 }

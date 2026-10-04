@@ -4759,7 +4759,8 @@ mod tests {
         // The panel background is a dark slate, not the clear colour, and the control
         // fills its plot area — so the frame must be substantially painted rather than
         // carrying a blank band as tall as the geometry's y offset.
-        let painted = frame.chunks_exact(4).filter(|pixel| *pixel != [0, 0, 0, 255]).count();
+        let painted =
+            frame.as_chunks::<4>().0.iter().filter(|pixel| **pixel != [0, 0, 0, 255]).count();
         let total = size.width as usize * size.height as usize;
         assert!(
             painted > total / 2,
@@ -4774,8 +4775,10 @@ mod tests {
         for row in 0..size.height as usize {
             let start = row * size.width as usize * 4;
             let blank = frame[start..start + size.width as usize * 4]
-                .chunks_exact(4)
-                .all(|pixel| pixel == [0, 0, 0, 255]);
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == [0, 0, 0, 255]);
             if !blank {
                 break;
             }
@@ -5008,7 +5011,10 @@ mod tests {
         assert_eq!(frame.len(), 64 * 48 * 4);
         // The editor paints a light background, so at least one pixel must be
         // non-transparent; a fully blank frame means the widget never drew.
-        assert!(frame.chunks_exact(4).any(|px| px[3] != 0), "frame must contain drawn pixels");
+        assert!(
+            frame.as_chunks::<4>().0.iter().any(|px| px[3] != 0),
+            "frame must contain drawn pixels"
+        );
         unregister(id);
     }
 
@@ -5067,7 +5073,11 @@ mod tests {
 
             let painted = render_frame(id, Size::new(120, 40), clear)
                 .map(|frame| {
-                    frame.chunks_exact(4).any(|px| px[0] != 255 || px[1] != 0 || px[2] != 255)
+                    frame
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .any(|px| px[0] != 255 || px[1] != 0 || px[2] != 255)
                 })
                 .unwrap_or(false);
             if !painted {
@@ -6483,7 +6493,7 @@ mod tests {
         // Every pixel identical to the clear colour means nothing was drawn over the
         // background — the blank-board symptom, expressed as a fact about the frame.
         let clear_rgba = [clear.r, clear.g, clear.b, 255];
-        let painted = frame.chunks_exact(4).filter(|pixel| *pixel != clear_rgba).count();
+        let painted = frame.as_chunks::<4>().0.iter().filter(|pixel| **pixel != clear_rgba).count();
         assert!(
             painted > 0,
             "the window's own chrome or its child must paint something; \

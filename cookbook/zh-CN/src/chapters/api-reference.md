@@ -3185,4 +3185,4 @@ const char* rw_mobile_backend_name(void);
 
 ## 最低支持的 Rust 版本（MSRV）
 
-**Rust 1.87** — 需要 `edition = "2021"` 和当前的依赖版本。
+**Rust 1.88** — 需要 `edition = "2021"` 和当前的依赖版本。

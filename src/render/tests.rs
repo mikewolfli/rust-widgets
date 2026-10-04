@@ -193,7 +193,7 @@ fn a_colour_emoji_reaches_the_surface_in_colour() {
 
     let frame = surface.frame_rgba();
     let mut colours = std::collections::BTreeSet::new();
-    for pixel in frame.chunks_exact(4) {
+    for pixel in frame.as_chunks::<4>().0 {
         if pixel[3] != 0 {
             colours.insert((pixel[0], pixel[1], pixel[2]));
         }

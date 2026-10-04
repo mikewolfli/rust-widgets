@@ -965,7 +965,9 @@ mod tests {
     /// mistaking a near-colour for it.
     fn count_near(rgba: &[u8], target: (u8, u8, u8)) -> usize {
         const TOLERANCE: i32 = 24;
-        rgba.chunks_exact(4)
+        rgba.as_chunks::<4>()
+            .0
+            .iter()
             .filter(|px| {
                 let dr = (px[0] as i32 - target.0 as i32).abs();
                 let dg = (px[1] as i32 - target.1 as i32).abs();

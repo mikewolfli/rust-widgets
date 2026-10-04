@@ -143,7 +143,7 @@ fn main() {
 
 ## 前置要求
 
-- **Rust 1.87** 或更新版本（MSRV）
+- **Rust 1.88** 或更新版本（MSRV）
 - **平台依赖**：
   | 平台 | 依赖项 |
   |----------|-------------|
@@ -162,6 +162,6 @@ fn main() {
 | **许可证** | [MIT](https://github.com/mikewolfli/rust-widgets/blob/main/LICENSE) |
 | **仓库** | [github.com/mikewolfli/rust-widgets](https://github.com/mikewolfli/rust-widgets) |
 | **测试** | 5300+ |
-| **MSRV** | Rust 1.87 |
+| **MSRV** | Rust 1.88 |
 
 准备好了吗？前往[快速入门](chapters/getting-started.md)开始吧。

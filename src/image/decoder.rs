@@ -1768,7 +1768,7 @@ fn decode_farbfeld(data: &[u8]) -> Result<DecodedImage, String> {
 /// between is scaled back up by `255 / alpha`.
 #[cfg(feature = "svg-rasterizer")]
 fn unpremultiply_rgba8(pixels: &mut [u8]) {
-    for px in pixels.chunks_exact_mut(4) {
+    for px in pixels.as_chunks_mut::<4>().0 {
         let alpha = px[3];
         if alpha == 0 {
             px[0] = 0;

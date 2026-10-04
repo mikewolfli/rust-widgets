@@ -10,7 +10,7 @@ authors = ["Mike Li <mikewolfli@163.com>"]
 readme = "README.md"
 homepage = "https://github.com/mikewolfli/rust-widgets"
 repository = "https://github.com/mikewolfli/rust-widgets"
-rust-version = "1.87"
+rust-version = "1.88"
 include = [
     "build.rs",
     "src/**/*",

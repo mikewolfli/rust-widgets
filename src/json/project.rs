@@ -303,11 +303,18 @@ fn collect_preorder(
         child_arrays.push(layout_children);
     }
 
+    // A single running index across both child sources. `children` and `layout.children` are two
+    // spellings for the *same* relation (a node's children), so each group must not restart at 0:
+    // doing so gave a direct child and a layout child the same `path` (`[0]`) and key (`n_0`), and
+    // `node(path)` then resolved to the first of them — the generator emitted the direct child in
+    // place of the layout child. Enumerating the accepted children in one pass keeps every child's
+    // path globally unique and stable for a given document.
+    let mut child_index = 0usize;
     for child_array in child_arrays {
         let Some(child_values) = child_array.as_array() else {
             continue;
         };
-        for (child_index, child) in child_values.iter().enumerate() {
+        for child in child_values {
             let Some(child_obj) = child.as_object() else {
                 continue;
             };
@@ -320,6 +327,7 @@ fn collect_preorder(
             collect_preorder(&child_widget.to_lowercase(), child_body, path, depth + 1, nodes)?;
             path.pop();
             children.push(before);
+            child_index += 1;
         }
     }
     nodes[own_index].children = children;
@@ -392,6 +400,41 @@ mod tests {
         assert_eq!(root.children.len(), 2);
         assert_eq!(project.nodes[root.children[0]].widget, "button");
         assert_eq!(project.nodes[root.children[1]].widget, "label");
+    }
+
+    /// Direct `children` and `layout.children` are the *same* relation under two spellings, so a
+    /// child from each group must not share a path or a key. The defect gave both groups their own
+    /// zero-based index, so `node([0])` returned the direct child for the layout child too.
+    #[test]
+    fn mixed_direct_and_layout_children_get_distinct_paths_and_keys() {
+        let json = r#"{"window":{
+            "children":[{"label":{"text":"direct"}}],
+            "layout":{"type":"vbox","children":[{"button":{"text":"layout"}}]}
+        }}"#;
+        let project = JsonProject::parse(json).expect("valid document");
+
+        // Both accepted children, in document order: the direct child first, the layout child next.
+        let paths: Vec<(String, Vec<usize>)> = project
+            .walk()
+            .filter(|n| !n.path.is_empty())
+            .map(|n| (n.widget.clone(), n.path.clone()))
+            .collect();
+        assert_eq!(
+            paths,
+            vec![(String::from("label"), vec![0]), (String::from("button"), vec![1])],
+            "each accepted child must have a globally unique, order-stable path"
+        );
+
+        let direct = project.node(&[0]).expect("the direct child must resolve");
+        let layout = project.node(&[1]).expect("the layout child must resolve");
+        assert_eq!(direct.widget, "label");
+        assert_eq!(layout.widget, "button");
+        assert_eq!(direct.key, "n_0");
+        assert_eq!(layout.key, "n_1");
+        assert_ne!(direct.path, layout.path, "the two children must not share a path");
+        assert_ne!(direct.key, layout.key, "the two children must not share a key");
+        assert_eq!(direct.text(), Some(String::from("direct")));
+        assert_eq!(layout.text(), Some(String::from("layout")));
     }
 
     #[test]

@@ -28,21 +28,39 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```
+//! use rust_widgets::core::Point;
+//! use rust_widgets::event::{DragPayload, DragSession, DropEffect, DropTarget};
+//!
+//! /// A concrete target that accepts cards and moves them on drop.
+//! struct CardColumn;
+//!
+//! impl DropTarget for CardColumn {
+//!     fn can_accept(&self, payload: &DragPayload) -> bool {
+//!         payload.is_type("card")
+//!     }
+//!
+//!     fn on_drop(&mut self, _payload: &DragPayload, _pos: Point) -> DropEffect {
+//!         DropEffect::Move
+//!     }
+//! }
+//!
 //! // The source: serialise what is being moved and begin a session.
 //! let payload = DragPayload::new("card", "task-42").with_label("Fix the parser");
-//! let mut session = DragSession::begin(payload, Point::new(x, y));
+//! let mut session = DragSession::begin(payload, Point::new(0, 0));
+//! let mut target = CardColumn;
 //!
-//! // The target: declare what it accepts.
-//! fn can_accept(&self, payload: &DragPayload) -> bool {
-//!     payload.type_id == "card"
-//! }
+//! // A drag becomes active once the pointer travels past the threshold.
+//! session.update(Point::new(20, 20), 5);
 //!
-//! // On release, the engine asks each target in turn and commits the first that
-//! // accepts.
-//! if let Some(effect) = session.drop_on(&mut target, Point::new(x, y)) {
-//!     // `effect` says whether the source should delete its copy.
+//! // `drop_on` returns a `DropEffect`, not an `Option`: `DropEffect::None` is a
+//! // variant, and `is_accepted` answers "did the target take it?".
+//! let effect = session.drop_on(&mut target, Point::new(20, 20));
+//! if effect.is_accepted() {
+//!     // The target took the payload. `effect` also says whether the source
+//!     // should delete its copy (`DropEffect::Move`) or keep it.
 //! }
+//! assert_eq!(effect, DropEffect::Move);
 //! ```
 
 use crate::compat::String;

@@ -356,7 +356,7 @@ Python 与 Java（JNI）绑定都在 CI 中运行；生成的头文件由 `tools
 
 ## 环境要求
 
-Rust **1.87+**。默认构建不需要任何系统 GUI 库；Linux 额外用 Wayland/X11 提供绘制面。图像编解码器是
+Rust **1.88+**。默认构建不需要任何系统 GUI 库；Linux 额外用 Wayland/X11 提供绘制面。图像编解码器是
 纯 Rust 的，因此交叉编译到 Android、iOS 或 wasm 不需要 `pkg-config` sysroot。
 
 ## 许可证

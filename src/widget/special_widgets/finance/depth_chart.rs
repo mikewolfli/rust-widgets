@@ -729,7 +729,7 @@ mod tests {
         backend.end_frame();
         let rgba = backend.frame_rgba();
         let target = [38u8, 166, 91, 255];
-        rgba.chunks_exact(4).any(|pixel| pixel == target)
+        rgba.as_chunks::<4>().0.contains(&target)
     }
 
     /// Whether any pixel of the pane carries the ask curve's colour.
@@ -747,6 +747,6 @@ mod tests {
         backend.end_frame();
         let rgba = backend.frame_rgba();
         let target = [220u8, 68, 70, 255];
-        rgba.chunks_exact(4).any(|pixel| pixel == target)
+        rgba.as_chunks::<4>().0.contains(&target)
     }
 }

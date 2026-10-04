@@ -10,6 +10,7 @@ jobs:
   check:
     name: Rust check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -33,6 +34,7 @@ jobs:
   validation-gates:
     name: Validation gates (profiles + ABI)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -176,6 +178,7 @@ jobs:
   theme-fixtures:
     name: Theme fixtures
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -198,6 +201,7 @@ jobs:
   feature-completeness-matrix:
     name: Feature completeness matrix
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -217,6 +221,7 @@ jobs:
   quality-gates:
     name: Quality gates (test + clippy + fmt)
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -404,12 +409,43 @@ jobs:
           python3 tools/test_check_locking.py
           ./tools/check_locking.sh
 
-      - name: Check MSRV
-        run: cargo check --rust-version
+      # `generator_output_compiles_test.rs` and `generated_artifacts_are_lint_clean_test.rs`
+      # carry `#[ignore]`d cases that compile real throwaway crates (too slow for the
+      # default `cargo test`), so they only run when a gate asks for `--ignored`. Until
+      # these steps existed no tracked workflow invoked either gate, so the five compile
+      # cases never actually compiled in CI. The gates self-bound through `rw_run_bounded`
+      # and `rw_cargo_cached`, and each runs its own reverse-injection check.
+      - name: Generator output compiles (ignored compile tests)
+        shell: bash
+        run: |
+          chmod +x tools/check_generator_output_compiles.sh
+          ./tools/check_generator_output_compiles.sh
+
+      - name: Committed generated sources are lint-clean (ignored compile test)
+        shell: bash
+        run: |
+          chmod +x tools/check_generated_sources.sh
+          ./tools/check_generated_sources.sh
+
+      # The declared `rust-version` (Cargo.toml) is a claim, not a proof. The
+      # previous step ran `cargo check --rust-version`, which is not a cargo flag
+      # (`error: unexpected argument '--rust-version'`), so it failed before
+      # compiling anything and could never demonstrate that 1.87 actually builds
+      # the crate. The real check installs the declared toolchain and compiles the
+      # applicable profile with the same per-profile spelling CI uses elsewhere
+      # (principle #48: `--no-default-features --features <profile>`).
+      # The declared MSRV is 1.88: the locked `image`/`time` dependencies require
+      # 1.88.0 (verified with `rustup run 1.88.0 cargo check`), so 1.87 cannot build.
+      - name: Install Rust 1.88 (declared MSRV)
+        uses: dtolnay/rust-toolchain@1.88.0
+
+      - name: Check MSRV (desktop profile on Rust 1.88)
+        run: cargo check --no-default-features --features desktop
 
   cargo-deny:
     name: License audit (cargo-deny)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -426,6 +462,7 @@ jobs:
   docs-build:
     name: Docs build check
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -453,6 +490,7 @@ jobs:
   linux-gtk:
     name: Linux GTK backend (gtk-native)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -500,6 +538,7 @@ jobs:
   feature-matrix:
     name: Feature matrix (${{ matrix.profile }})
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -530,6 +569,7 @@ jobs:
 
   security-audit:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -541,6 +581,7 @@ jobs:
   code-coverage:
     name: Code coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -558,6 +599,7 @@ jobs:
   wasm-check:
     name: WASM target check
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -595,6 +637,7 @@ jobs:
   harmony-cross-check:
     name: HarmonyOS (OpenHarmony) cross-compile check
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -664,6 +707,7 @@ jobs:
   android-cross-check:
     name: Android NDK cross-compile check
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -721,6 +765,7 @@ jobs:
   windows-cross-check:
     name: Windows backend cross-compile check
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -748,6 +793,7 @@ jobs:
   wayland-compositor:
     name: Wayland backend against a real compositor
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -783,6 +829,7 @@ jobs:
   apple-native:
     name: Apple native (AppKit + iOS Simulator)
     runs-on: macos-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4

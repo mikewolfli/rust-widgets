@@ -97,11 +97,15 @@ impl SampleFormat {
         match self {
             SampleFormat::U8 => data.iter().map(|&b| (b as f32 / 255.0) * 2.0 - 1.0).collect(),
             SampleFormat::I16 => data
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
                 .collect(),
             SampleFormat::I24 => data
-                .chunks_exact(3)
+                .as_chunks::<3>()
+                .0
+                .iter()
                 .map(|c| {
                     // Assemble the 24-bit little-endian value into the low 24
                     // bits of an i32, then sign-extend by shifting the sign bit
@@ -113,12 +117,17 @@ impl SampleFormat {
                 })
                 .collect(),
             SampleFormat::I32 => data
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32 / 2147483648.0)
                 .collect(),
-            SampleFormat::F32 => {
-                data.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
-            }
+            SampleFormat::F32 => data
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect(),
         }
     }
 }

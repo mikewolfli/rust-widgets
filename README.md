@@ -391,7 +391,7 @@ See [`cookbook/en/src/chapters/language-bindings.md`](cookbook/en/src/chapters/l
 
 ## Requirements
 
-Rust **1.87+**. No system GUI libraries are needed for the default build; Linux additionally uses
+Rust **1.88+**. No system GUI libraries are needed for the default build; Linux additionally uses
 Wayland/X11 for the surface, and the image codecs are pure Rust so cross-compiling to Android, iOS or
 wasm needs no `pkg-config` sysroot.
 

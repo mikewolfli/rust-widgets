@@ -185,7 +185,7 @@ fn count_ink(frame: &[u8], background: Color) -> AppearanceCensus {
         crate::compat::HashMap::new();
     let mut non_background = 0u32;
 
-    for px in frame.chunks_exact(4) {
+    for px in frame.as_chunks::<4>().0 {
         let (r, g, b, a) = (px[0], px[1], px[2], px[3]);
         if a == 0 {
             continue;

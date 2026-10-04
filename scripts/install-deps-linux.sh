@@ -17,18 +17,13 @@ echo "🔧 Installing rust_widgets system dependencies (Linux)..."
 echo ""
 
 # Core GUI/rendering dependencies
-echo "📦 [core] GTK3 development headers (required by webkit-engine)..."
+echo "📦 [gtk-native] GTK3 development headers (required by the gtk-native backend)..."
 sudo apt-get install -y libgtk-3-dev
 
 # Audio output (cpal → ALSA)
 echo ""
 echo "📦 [audio-output] ALSA development headers (required by cpal)..."
 sudo apt-get install -y libasound2-dev
-
-# Web engine (webkit2gtk)
-echo ""
-echo "📦 [webkit-engine] WebKitGTK + JavaScriptCore + libsoup..."
-sudo apt-get install -y libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev
 
 # Video codecs (ffmpeg-next → FFmpeg)
 echo ""

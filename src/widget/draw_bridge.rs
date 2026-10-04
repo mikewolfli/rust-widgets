@@ -277,7 +277,7 @@ mod tests {
         }
         surface.end_frame();
         assert!(
-            surface.frame_rgba().chunks_exact(4).any(|px| px[3] != 0),
+            surface.frame_rgba().as_chunks::<4>().0.iter().any(|px| px[3] != 0),
             "a bridged Button must paint at least one pixel"
         );
     }

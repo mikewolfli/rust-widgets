@@ -215,7 +215,7 @@ mod tests {
             rects.insert(id, rect);
         });
 
-        let inner_right = (300 - 10) as i32;
+        let inner_right = 300 - 10;
         let label = rects.get(&1).copied().expect("label placed");
         let field = rects.get(&2).copied().expect("field placed");
         assert_eq!(label.x, 10, "the label starts at the left margin");
@@ -236,7 +236,7 @@ mod tests {
         });
 
         let inner_left = 100 + 5;
-        let inner_right = (100 + 200 - 5) as i32;
+        let inner_right = 100 + 200 - 5;
         let field = rects.get(&2).copied().expect("field placed");
         assert_eq!(field.x + field.width as i32, inner_right, "field reaches the inner right edge");
         let label = rects.get(&1).copied().expect("label placed");

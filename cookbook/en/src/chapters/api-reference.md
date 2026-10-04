@@ -3209,4 +3209,4 @@ to manually compose styles.
 
 ## Minimum Supported Rust Version (MSRV)
 
-**Rust 1.87** — required for `edition = "2021"` and current dependency versions.
+**Rust 1.88** — required for `edition = "2021"` and current dependency versions.

@@ -57,7 +57,7 @@ fn render(win: &WindowHandle, size: Size) -> Vec<[u8; 4]> {
         (size.width * size.height * 4) as usize,
         "the frame must be `width * height * 4` bytes of RGBA"
     );
-    frame.chunks_exact(4).map(|p| [p[0], p[1], p[2], p[3]]).collect()
+    frame.as_chunks::<4>().0.iter().map(|p| [p[0], p[1], p[2], p[3]]).collect()
 }
 
 /// The distinct opaque colours inside `rect` of a `size`-wide frame.
@@ -311,7 +311,7 @@ fn the_per_widget_painter_leaves_out_the_windows_children() {
     let frame =
         rust_widgets::widget::runtime::render_frame(win.raw_id(), size, Color::rgb(240, 240, 240))
             .expect("the window widget itself must produce a frame");
-    let pixels: Vec<[u8; 4]> = frame.chunks_exact(4).map(|p| [p[0], p[1], p[2], p[3]]).collect();
+    let pixels: Vec<[u8; 4]> = frame.as_chunks::<4>().0.iter().map(|p| [p[0], p[1], p[2], p[3]]).collect();
 
     let button_colors = distinct_colors(&pixels, size, BUTTON);
     assert_eq!(
@@ -353,9 +353,9 @@ fn the_window_entry_point_contains_its_children_and_the_per_widget_one_does_not(
         .expect("the window widget itself must produce a frame");
 
     let tree_pixels: Vec<[u8; 4]> =
-        tree.chunks_exact(4).map(|p| [p[0], p[1], p[2], p[3]]).collect();
+        tree.as_chunks::<4>().0.iter().map(|p| [p[0], p[1], p[2], p[3]]).collect();
     let single_pixels: Vec<[u8; 4]> =
-        single.chunks_exact(4).map(|p| [p[0], p[1], p[2], p[3]]).collect();
+        single.as_chunks::<4>().0.iter().map(|p| [p[0], p[1], p[2], p[3]]).collect();
 
     // The child's rectangle is the whole difference: the tree walk paints it, the
     // per-widget painter does not reach it at all.

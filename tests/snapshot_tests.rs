@@ -62,19 +62,30 @@ fn assert_widget_snapshot<W: rust_widgets::widget::Draw + rust_widgets::widget::
         return;
     }
 
-    let Ok(expected) = std::fs::read_to_string(&snapshot_path) else {
-        // No baseline to compare against, so check what can be checked without one. The second
-        // render is taken from the same widget in the same state, so any difference is
-        // non-determinism in the renderer rather than a change in the widget.
-        let again = rust_widgets::widget::svg::render_to_svg(widget);
-        assert_eq!(
-            normalise_line_endings(&svg),
-            normalise_line_endings(&again),
-            "{name} renders differently on two consecutive calls, so no snapshot of it could ever \
-             be trusted; there is no committed baseline (`snapshots/{name}.svg` is absent), which \
-             is why this is not a comparison against one"
-        );
-        return;
+    let expected = match std::fs::read_to_string(&snapshot_path) {
+        Ok(svg) => svg,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // No baseline to compare against, so check what can be checked without one. The
+            // second render is taken from the same widget in the same state, so any difference is
+            // non-determinism in the renderer rather than a change in the widget. Only a *missing*
+            // baseline reaches this branch: a permission or decode error is a real failure and must
+            // not masquerade as "there is no baseline yet".
+            let again = rust_widgets::widget::svg::render_to_svg(widget);
+            assert_eq!(
+                normalise_line_endings(&svg),
+                normalise_line_endings(&again),
+                "{name} renders differently on two consecutive calls, so no snapshot of it could ever \
+                 be trusted; there is no committed baseline (`snapshots/{name}.svg` is absent), which \
+                 is why this is not a comparison against one"
+            );
+            return;
+        }
+        Err(error) => {
+            panic!(
+                "could not read snapshot `{snapshot_path}`: {error}. A baseline that exists but \
+                 cannot be read is not the same as a missing baseline."
+            );
+        }
     };
     assert_eq!(
         normalise_line_endings(&svg),

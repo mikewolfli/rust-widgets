@@ -168,7 +168,7 @@ impl Layout for SplitterLayout {
         // S-49: the spacing is honoured only as far as the budget can pay for it. Reducing it
         // before deriving the pane budget keeps the cursor step and the pane allocation on one
         // number, so a tiny box can no longer step past its own far edge.
-        let effective_spacing = if gaps > 0 { self.spacing.min(budget / gaps) } else { 0 };
+        let effective_spacing = budget.checked_div(gaps).map_or(0, |q| self.spacing.min(q));
         let pane_budget = budget.saturating_sub(gaps * effective_spacing);
 
         // S-48: sum the weights in f64 so finite-but-huge f32 weights cannot overflow to

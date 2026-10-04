@@ -152,7 +152,7 @@ TwoFingerTap、TwoFingerSwipe、LongPressDrag、Pinch 與 Rotate——並支援�
 
 ## 先決條件
 
-- **Rust 1.87** 或更新版本（MSRV）
+- **Rust 1.88** 或更新版本（MSRV）
 - **平台依賴套件**：
   | 平台 | 依賴套件 |
   |----------|-------------|
@@ -171,6 +171,6 @@ TwoFingerTap、TwoFingerSwipe、LongPressDrag、Pinch 與 Rotate——並支援�
 | **授權條款** | [MIT](https://github.com/mikewolfli/rust-widgets/blob/main/LICENSE) |
 | **儲存庫** | [github.com/mikewolfli/rust-widgets](https://github.com/mikewolfli/rust-widgets) |
 | **測試數量** | 5300+ |
-| **MSRV** | Rust 1.87 |
+| **MSRV** | Rust 1.88 |
 
 準備好開始了嗎？請前往[快速入門](chapters/getting-started.md)。

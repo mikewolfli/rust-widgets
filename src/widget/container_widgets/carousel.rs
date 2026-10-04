@@ -2349,7 +2349,7 @@ mod tests {
         // The page background is white and the label paints text, so the frame must
         // contain something that is not the white fill.
         let mut non_white = 0;
-        for chunk in rgba.chunks_exact(4) {
+        for chunk in rgba.as_chunks::<4>().0 {
             if chunk[0] != 255 || chunk[1] != 255 || chunk[2] != 255 {
                 non_white += 1;
             }

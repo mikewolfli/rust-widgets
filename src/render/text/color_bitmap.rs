@@ -535,10 +535,10 @@ mod tests {
         let glyph_id = parsed.glyph_index('\u{1F600}').expect("the grinning face is in the subset");
         face.paint(glyph_id.0, cell, &mut out).expect("the grinning face paints");
 
-        let opaque = out.chunks_exact(4).filter(|px| px[3] != 0).count();
+        let opaque = out.as_chunks::<4>().0.iter().filter(|px| px[3] != 0).count();
         assert!(opaque > 0, "some pixels must be opaque");
         let mut colours = std::collections::BTreeSet::new();
-        for px in out.chunks_exact(4) {
+        for px in out.as_chunks::<4>().0 {
             if px[3] != 0 {
                 colours.insert((px[0], px[1], px[2]));
             }

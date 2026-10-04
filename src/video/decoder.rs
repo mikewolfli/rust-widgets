@@ -215,7 +215,7 @@ impl MjpegDecoder {
         let mut rgba = Vec::with_capacity(width * height * 4);
         match info.pixel_format {
             jpeg_decoder::PixelFormat::RGB24 => {
-                for chunk in pixels.chunks_exact(3) {
+                for chunk in pixels.as_chunks::<3>().0 {
                     rgba.push(chunk[0]);
                     rgba.push(chunk[1]);
                     rgba.push(chunk[2]);
@@ -232,7 +232,7 @@ impl MjpegDecoder {
             }
             jpeg_decoder::PixelFormat::CMYK32 => {
                 // CMYK → RGB via naive inverse: R = C*K, G = M*K, B = Y*K (0..255).
-                for chunk in pixels.chunks_exact(4) {
+                for chunk in pixels.as_chunks::<4>().0 {
                     let c = chunk[0] as u32;
                     let m = chunk[1] as u32;
                     let y = chunk[2] as u32;
