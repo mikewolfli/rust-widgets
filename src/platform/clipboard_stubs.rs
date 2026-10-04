@@ -4,6 +4,119 @@
 //! Platform-specific rich clipboard stubs.
 //! These will be replaced with real platform clipboard bindings.
 
+/// The CF_HTML wire format used by the Windows clipboard's `HTML Format`.
+///
+/// Kept as a platform-independent module (gated to compile on Windows and under
+/// `cfg(test)`) so the byte-offset codec can be unit-tested on a macOS host, where
+/// the `windows` backend below never compiles. The codec itself touches no Win32 API.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) mod cf_html {
+    use crate::compat::{format, String, ToString, Vec};
+
+    /// The literal HTML envelope CF_HTML wraps a fragment in.
+    const PREFIX: &str = "<html><body>";
+    const START_MARKER: &str = "<!--StartFragment-->";
+    const END_MARKER: &str = "<!--EndFragment-->";
+    const SUFFIX: &str = "</body></html>";
+
+    /// Formats an HTML fragment into the Windows CF_HTML clipboard document.
+    ///
+    /// `StartFragment`/`EndFragment` are **byte** offsets from the start of the whole
+    /// document into the fragment. They must therefore include the `<html><body>` prefix
+    /// plus the start marker, not just the marker — counting only the marker made both
+    /// offsets 12 bytes early, so a paste carried the marker's tail and truncated the
+    /// body.
+    pub(crate) fn format_cf_html(html: &str) -> Vec<u8> {
+        let full_html = format!("{PREFIX}{START_MARKER}{html}{END_MARKER}{SUFFIX}");
+
+        let start_fragment_offset = PREFIX.len() + START_MARKER.len();
+        let end_fragment_offset = start_fragment_offset + html.len();
+
+        // Build the header with a fixed-width placeholder, then substitute the real
+        // offsets. Every offset is zero-padded to the same width, so the header length
+        // is identical in both passes and the byte arithmetic stays exact.
+        let placeholder = "0000000000";
+        let header_template = format!(
+            "Version:0.9\r\nStartHTML:{placeholder}\r\nEndHTML:{placeholder}\r\nStartFragment:{placeholder}\r\nEndFragment:{placeholder}\r\n"
+        );
+
+        let start_html = header_template.len();
+        let end_html = start_html + full_html.len();
+        let start_fragment = start_html + start_fragment_offset;
+        let end_fragment = start_html + end_fragment_offset;
+
+        format!(
+            "Version:0.9\r\nStartHTML:{start_html:010}\r\nEndHTML:{end_html:010}\r\nStartFragment:{start_fragment:010}\r\nEndFragment:{end_fragment:010}\r\n{full_html}"
+        )
+        .into_bytes()
+    }
+
+    /// Extracts the HTML fragment from a CF_HTML document.
+    ///
+    /// Prefers the header's `StartFragment`/`EndFragment` offsets; when they are absent or
+    /// invalid, falls back to scanning for the markers, and finally to the whole document.
+    pub(crate) fn parse_cf_html(cf_html: &str) -> String {
+        let mut start_fragment = 0usize;
+        let mut end_fragment = 0usize;
+
+        for line in cf_html.lines() {
+            if let Some(val) = line.strip_prefix("StartFragment:") {
+                start_fragment = val.trim().parse().unwrap_or(0);
+            } else if let Some(val) = line.strip_prefix("EndFragment:") {
+                end_fragment = val.trim().parse().unwrap_or(0);
+            }
+        }
+
+        if start_fragment > 0 && end_fragment > start_fragment && end_fragment <= cf_html.len() {
+            cf_html[start_fragment..end_fragment].to_string()
+        } else {
+            let start_tag = "<!--StartFragment-->";
+            let end_tag = "<!--EndFragment-->";
+
+            if let Some(start) = cf_html.find(start_tag) {
+                let content_start = start + start_tag.len();
+                if let Some(end) = cf_html[content_start..].find(end_tag) {
+                    return cf_html[content_start..content_start + end].to_string();
+                }
+            }
+            cf_html.to_string()
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn ascii_fragment_round_trips_without_marker_or_truncation() {
+            let encoded = format_cf_html("<b>bold</b>");
+            let doc = String::from_utf8(encoded).unwrap();
+            assert_eq!(parse_cf_html(&doc), "<b>bold</b>");
+            // The header's offsets must point exactly at the fragment, not 12 bytes early.
+            let start = doc.find("<b>bold</b>").unwrap();
+            for line in doc.lines() {
+                if let Some(val) = line.strip_prefix("StartFragment:") {
+                    assert_eq!(val.trim().parse::<usize>().unwrap(), start);
+                }
+            }
+        }
+
+        #[test]
+        fn chinese_fragment_round_trips_with_byte_offsets() {
+            let encoded = format_cf_html("中文内容");
+            let doc = String::from_utf8(encoded).unwrap();
+            assert_eq!(parse_cf_html(&doc), "中文内容");
+        }
+
+        #[test]
+        fn empty_fragment_round_trips_as_empty() {
+            let encoded = format_cf_html("");
+            let doc = String::from_utf8(encoded).unwrap();
+            assert_eq!(parse_cf_html(&doc), "");
+        }
+    }
+}
+
 #[cfg(all(target_os = "macos", feature = "cocoa-legacy"))]
 pub mod macos {
     //! Real macOS clipboard using NSPasteboard rich content APIs.
@@ -161,10 +274,10 @@ pub mod windows {
 
     use super::super::clipboard::{ClipboardContent, RichClipboardBackend};
     // Alloc types come from the compat bridge: `mini` is `no_std`, so the std
-    // prelude that normally supplies `String`/`Vec`/`format!`/`to_string` is
-    // suppressed and this module failed to compile with 8 errors under
+    // prelude that normally supplies `String`/`Vec`/`to_string` is suppressed
+    // and this module failed to compile with 8 errors under
     // `--target x86_64-pc-windows-msvc --features mini`.
-    use crate::compat::{format, String, ToString, Vec};
+    use crate::compat::{String, ToString, Vec};
     use winapi::shared::minwindef::{FALSE, UINT};
     use winapi::um::winbase::GlobalAlloc;
     use winapi::um::winbase::{GlobalLock, GlobalSize, GlobalUnlock, GHND};
@@ -201,64 +314,16 @@ pub mod windows {
         }
 
         /// Format HTML content into the Windows CF_HTML clipboard format.
+        ///
+        /// Delegates to the platform-independent [`super::cf_html`] codec so the byte
+        /// offsets stay testable on a non-Windows host.
         fn format_cf_html(html: &str) -> Vec<u8> {
-            let fragment = html;
-            let full_html = format!(
-                "<html><body><!--StartFragment-->{fragment}<!--EndFragment--></body></html>"
-            );
-
-            // The fragment starts right after <!--StartFragment-->
-            let start_fragment_offset = "<!--StartFragment-->".len();
-            let end_fragment_offset = start_fragment_offset + fragment.len();
-
-            // Build header with placeholder offsets to calculate the final header length
-            let placeholder = "0000000000";
-            let header_template = format!(
-                "Version:0.9\r\nStartHTML:{placeholder}\r\nEndHTML:{placeholder}\r\nStartFragment:{placeholder}\r\nEndFragment:{placeholder}\r\n"
-            );
-
-            let start_html = header_template.len();
-            let end_html = start_html + full_html.len();
-            let start_fragment = start_html + start_fragment_offset;
-            let end_fragment = start_html + end_fragment_offset;
-
-            let result = format!(
-                "Version:0.9\r\nStartHTML:{start_html:010}\r\nEndHTML:{end_html:010}\r\nStartFragment:{start_fragment:010}\r\nEndFragment:{end_fragment:010}\r\n{full_html}"
-            );
-
-            result.into_bytes()
+            super::cf_html::format_cf_html(html)
         }
 
         /// Parse a CF_HTML formatted string and extract the HTML fragment.
         fn parse_cf_html(cf_html: &str) -> String {
-            // Parse StartFragment and EndFragment from the header
-            let mut start_fragment = 0usize;
-            let mut end_fragment = 0usize;
-
-            for line in cf_html.lines() {
-                if let Some(val) = line.strip_prefix("StartFragment:") {
-                    start_fragment = val.trim().parse().unwrap_or(0);
-                } else if let Some(val) = line.strip_prefix("EndFragment:") {
-                    end_fragment = val.trim().parse().unwrap_or(0);
-                }
-            }
-
-            if start_fragment > 0 && end_fragment > start_fragment && end_fragment <= cf_html.len()
-            {
-                cf_html[start_fragment..end_fragment].to_string()
-            } else {
-                // Fallback: try to find the fragment markers
-                let start_tag = "<!--StartFragment-->";
-                let end_tag = "<!--EndFragment-->";
-
-                if let Some(start) = cf_html.find(start_tag) {
-                    let content_start = start + start_tag.len();
-                    if let Some(end) = cf_html[content_start..].find(end_tag) {
-                        return cf_html[content_start..content_start + end].to_string();
-                    }
-                }
-                cf_html.to_string()
-            }
+            super::cf_html::parse_cf_html(cf_html)
         }
 
         /// Get the registered clipboard format ID for "HTML Format".

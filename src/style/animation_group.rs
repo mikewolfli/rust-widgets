@@ -82,10 +82,7 @@ impl AnimationGroup {
     /// Returns `true` when all parallel animations have completed **and**
     /// all sequential animations have been consumed.
     pub fn is_completed(&self, driver: &AnimationDriver) -> bool {
-        let parallel_done = self
-            .parallel
-            .iter()
-            .all(|id| driver.get_progress(*id).map(|p| p >= 1.0).unwrap_or(true));
+        let parallel_done = self.parallel.iter().all(|id| driver.is_finished(*id));
         parallel_done && self.current_seq_index >= self.sequential.len()
     }
 
@@ -122,10 +119,7 @@ impl AnimationGroup {
             return;
         }
         // Only advance sequential animations after parallel animations complete
-        let parallel_done = self
-            .parallel
-            .iter()
-            .all(|id| driver.get_progress(*id).map(|p| p >= 1.0).unwrap_or(true));
+        let parallel_done = self.parallel.iter().all(|id| driver.is_finished(*id));
         if !parallel_done {
             return;
         }
@@ -139,11 +133,7 @@ impl AnimationGroup {
         }
 
         // Check if the current sequential animation has completed
-        let done = self
-            .current_seq_id
-            .and_then(|id| driver.get_progress(id))
-            .map(|p| p >= 1.0)
-            .unwrap_or(true);
+        let done = self.current_seq_id.map(|id| driver.is_finished(id)).unwrap_or(true);
 
         if done {
             self.current_seq_id = None;
@@ -156,5 +146,58 @@ impl AnimationGroup {
                 self.current_seq_id = Some(id);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::style::animation::AnimationDirection;
+    use core::time::Duration;
+
+    /// The named group's parallel half must use lifecycle completion, not `progress >= 1.0`,
+    /// so a reverse child is not treated as complete at its start.
+    #[test]
+    fn a_reverse_parallel_child_does_not_complete_the_group() {
+        let mut driver = AnimationDriver::new();
+        let mut group = AnimationGroup::new("reverse");
+        let id = driver.add(
+            AnimationConfig::new(Duration::from_millis(100))
+                .with_direction(AnimationDirection::Reverse),
+            |_| {},
+        );
+        group.add_parallel(id);
+
+        assert!(!group.is_completed(&driver), "a reverse child starts at 1.0 but has not finished");
+
+        driver.advance_by(Duration::from_millis(10_000));
+        assert!(group.is_completed(&driver), "once the child finishes the group completes");
+    }
+
+    /// The sequential half waits for a multi-iteration child instead of advancing early.
+    #[test]
+    fn the_group_waits_for_a_multi_iteration_sequential_child() {
+        let mut driver = AnimationDriver::new();
+        let mut group = AnimationGroup::new("multi");
+        group.add_sequential(AnimationConfig::new(Duration::from_millis(100)).with_iterations(3));
+        group.add_sequential(AnimationConfig::new(Duration::from_millis(100)));
+
+        // Start the first sequential child.
+        group.advance(&mut driver);
+        assert_eq!(group.current_seq_index(), 0);
+
+        // Advance past one iteration but not all three: the child is not finished.
+        driver.advance_by(Duration::from_millis(150));
+        group.advance(&mut driver);
+        assert_eq!(
+            group.current_seq_index(),
+            0,
+            "a 3-iteration child at 1.5 iterations must not advance the sequence"
+        );
+
+        // Finish the child, then the sequence moves on.
+        driver.advance_by(Duration::from_millis(10_000));
+        group.advance(&mut driver);
+        assert_eq!(group.current_seq_index(), 1, "the finished child advances the sequence");
     }
 }

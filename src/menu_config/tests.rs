@@ -3,7 +3,6 @@
 
 use super::*;
 use crate::gpu::GpuType;
-use std::fs;
 #[test]
 fn test_menu_config_default() {
     let config = MenuConfig::new();
@@ -117,10 +116,8 @@ fn test_config_manager() {
 }
 #[test]
 fn test_config_persistence_roundtrip() {
-    use std::env;
-    let temp_dir = env::temp_dir().join("rust-widgets-test");
-    let persistence = ConfigPersistence::with_dir(temp_dir.clone());
-    let _ = persistence.clear();
+    let temp_dir = tempfile::TempDir::new().expect("temp dir must be created");
+    let persistence = ConfigPersistence::with_dir(temp_dir.path().to_path_buf());
     let mut config = MenuConfig::new();
     config.set_animations_enabled(false);
     config.set_transparency_enabled(true);
@@ -131,8 +128,7 @@ fn test_config_persistence_roundtrip() {
     assert_eq!(overrides.animations, Some(false));
     assert_eq!(overrides.transparency, Some(true));
     assert_eq!(overrides.animation_speed, Some(1.5));
-    let _ = persistence.clear();
-    let _ = fs::remove_dir_all(temp_dir);
+    // `TempDir` removes its directory on drop; no manual recursive cleanup is needed.
 }
 #[test]
 fn test_config_dialog() {
@@ -241,13 +237,12 @@ fn test_gpu_memory_override_is_used_when_present_and_absent_means_unknown() {
 /// restart". The setter/clamping tests above never touch persistence, so this is the
 /// only place the write→read contract is asserted.
 ///
-/// Uses `std::env::temp_dir()` rather than a hardcoded path (principle #44) and
-/// removes the directory afterwards so repeated runs start clean.
+/// Uses `tempfile::TempDir` (as the `i18n` tests do) so each test owns an exclusive,
+/// RAII-cleaned directory and parallel test processes cannot interfere with each other.
 #[test]
 fn persistence_round_trips_every_user_override() {
-    let dir = std::env::temp_dir().join(format!("rw-menu-config-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    let persistence = ConfigPersistence::with_dir(dir.clone());
+    let temp_dir = tempfile::TempDir::new().expect("temp dir must be created");
+    let persistence = ConfigPersistence::with_dir(temp_dir.path().to_path_buf());
 
     let mut config = MenuConfig::new();
     config.set_animation_speed(1.25);
@@ -266,5 +261,127 @@ fn persistence_round_trips_every_user_override() {
     // by the next launch.
     persistence.clear().expect("clear must succeed on a saved config");
     assert!(!persistence.exists(), "clear must remove the config file");
-    let _ = fs::remove_dir_all(&dir);
+    // `TempDir` RAII-cleans the directory on drop.
+}
+
+/// `set_animation_speed` must not let a NaN poison the live value or the stored
+/// override; the getter contract is always `0.1..=3.0`.
+#[test]
+fn animation_speed_rejects_nan_and_saturates_non_finite() {
+    let mut config = MenuConfig::new();
+    config.set_animation_speed(1.5);
+    assert_eq!(config.animation_speed(), 1.5);
+
+    // NaN is rejected: neither the live value nor the override changes.
+    config.set_animation_speed(f32::NAN);
+    assert_eq!(config.animation_speed(), 1.5);
+    assert_eq!(config.user_overrides().animation_speed, Some(1.5));
+
+    // ±Inf saturate to the nearest bound, matching finite out-of-range input.
+    config.set_animation_speed(f32::INFINITY);
+    assert_eq!(config.animation_speed(), 3.0);
+    config.set_animation_speed(f32::NEG_INFINITY);
+    assert_eq!(config.animation_speed(), 0.1);
+
+    // Finite out-of-range still clamps as before.
+    config.set_animation_speed(99.0);
+    assert_eq!(config.animation_speed(), 3.0);
+}
+
+/// A known field that fails to parse must produce an explicit error naming the field
+/// and its line, not silently become `None`.
+#[test]
+fn load_reports_known_field_parse_errors() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir must be created");
+    let persistence = ConfigPersistence::with_dir(temp_dir.path().to_path_buf());
+
+    std::fs::write(
+        temp_dir.path().join("menu_config.json"),
+        "animations_enabled=not-a-bool\nunknown_key=whatever\n",
+    )
+    .unwrap();
+
+    match persistence.load() {
+        Err(ConfigLoadError::Parse { line, field, value }) => {
+            assert_eq!(line, 1, "the error must name the line");
+            assert_eq!(field, "animations_enabled", "the error must name the field");
+            assert_eq!(value, "not-a-bool", "the error must name the value");
+        }
+        other => panic!("expected a known-field parse error, got {other:?}"),
+    }
+}
+
+/// A rejected load must not corrupt the configuration the dialog already holds.
+#[test]
+fn rejected_load_keeps_previous_config() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir must be created");
+    let persistence = ConfigPersistence::with_dir(temp_dir.path().to_path_buf());
+
+    let mut config = MenuConfig::new();
+    config.set_animation_speed(2.0);
+    let mut dialog = MenuConfigDialog::with_persistence(config, persistence);
+
+    std::fs::write(temp_dir.path().join("menu_config.json"), "max_visible_items=bad\n").unwrap();
+
+    assert!(dialog.load().is_err(), "a known-field parse error must reject the load");
+    assert_eq!(
+        dialog.config().animation_speed(),
+        2.0,
+        "previous config must survive a rejected load"
+    );
+}
+
+/// After a reload, a field removed from the file must fall back to its hardware
+/// default rather than keeping a stale reversed preference.
+#[test]
+fn reload_restores_baseline_for_deleted_fields() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir must be created");
+    let persistence = ConfigPersistence::with_dir(temp_dir.path().to_path_buf());
+
+    let mut config = MenuConfig::new();
+    let baseline_animations = config.animations_enabled();
+    config.set_animations_enabled(!baseline_animations);
+
+    // The file drops the animations field, keeping only transparency.
+    std::fs::write(temp_dir.path().join("menu_config.json"), "transparency_enabled=true\n")
+        .unwrap();
+
+    let mut dialog = MenuConfigDialog::with_persistence(config, persistence);
+    dialog.load().expect("load must succeed");
+
+    assert_eq!(dialog.config().animations_enabled(), baseline_animations);
+    assert_eq!(dialog.config().user_overrides().animations, None);
+    assert!(dialog.config().transparency_enabled());
+    assert_eq!(dialog.config().user_overrides().transparency, Some(true));
+}
+
+/// Loading a missing file must clear overrides and return to the hardware baseline.
+#[test]
+fn load_missing_file_restores_baseline_and_clears_overrides() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir must be created");
+    let persistence = ConfigPersistence::with_dir(temp_dir.path().to_path_buf());
+
+    let mut config = MenuConfig::new();
+    let baseline_animations = config.animations_enabled();
+    config.set_animations_enabled(!baseline_animations);
+    assert!(config.has_user_overrides());
+
+    let mut dialog = MenuConfigDialog::with_persistence(config, persistence);
+    dialog.load().expect("load of a missing file yields defaults");
+
+    assert!(!dialog.has_overrides());
+    assert_eq!(dialog.config().animations_enabled(), baseline_animations);
+}
+
+/// `increase_max_items` must not overflow when the current value is already at the
+/// type's maximum; it saturates instead of wrapping to a small value.
+#[test]
+fn increase_max_items_saturates_at_maximum() {
+    let mut config = MenuConfig::new();
+    config.set_max_visible_items(u32::MAX);
+    assert_eq!(config.max_visible_items(), u32::MAX);
+
+    let mut dialog = MenuConfigDialog::new(config);
+    dialog.increase_max_items();
+    assert_eq!(dialog.config().max_visible_items(), u32::MAX);
 }

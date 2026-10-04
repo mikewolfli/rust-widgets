@@ -114,6 +114,9 @@ impl WrapLayout {
         spacing: i32,
         padding: i32,
     ) -> Self {
+        // S-47: negative padding is undefined, so reject it at construction. Without this
+        // `content_rect` reached `2 * padding as u32`, which overflowed in debug builds.
+        let padding = padding.max(0);
         Self { direction, alignment, spacing, padding, children: Vec::new() }
     }
 
@@ -155,10 +158,10 @@ impl WrapLayout {
     }
 
     fn content_rect(&self, outer: Rect) -> Rect {
-        let pad = self.padding;
+        let pad = self.padding.max(0);
         Rect::new(
-            outer.x + pad,
-            outer.y + pad,
+            outer.x.saturating_add(pad),
+            outer.y.saturating_add(pad),
             outer.width.saturating_sub(2 * pad as u32),
             outer.height.saturating_sub(2 * pad as u32),
         )
@@ -419,7 +422,7 @@ impl Layout for WrapLayout {
         // The field had no reader at all before this, so a 2x text preference grew the glyphs (via
         // the theme's font token) and left every gap at its nominal size.
         let scale = context.layout_scale.max(context.font_scale);
-        let scaled_padding = (self.padding as f32 * scale) as i32;
+        let scaled_padding = (self.padding.max(0) as f32 * scale).max(0.0) as i32;
 
         // Use scaled spacing inside the content rect by temporarily wrapping.
         let scaled = WrapLayout {
@@ -431,8 +434,8 @@ impl Layout for WrapLayout {
         };
 
         let content = Rect::new(
-            rect.x + scaled_padding,
-            rect.y + scaled_padding,
+            rect.x.saturating_add(scaled_padding),
+            rect.y.saturating_add(scaled_padding),
             rect.width.saturating_sub(2 * scaled_padding as u32),
             rect.height.saturating_sub(2 * scaled_padding as u32),
         );
@@ -610,6 +613,23 @@ mod tests {
         });
 
         assert_eq!(rects.get(&1), Some(&Rect::new(10, 10, 40, 20)));
+    }
+
+    /// S-47: a negative padding is rejected at construction, so `content_rect` never reaches
+    /// `2 * padding as u32` with a negative value (which overflowed in debug builds).
+    #[test]
+    fn wrap_layout_rejects_negative_padding() {
+        let mut layout = WrapLayout::new(WrapDirection::Horizontal, WrapAlignment::Start, 0, -1);
+        layout.add_widget(1, 0);
+        layout.set_child_size(1, Size::new(40, 20));
+
+        let mut rects = HashMap::new();
+        layout.update(Rect::new(0, 0, 100, 50), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+
+        // Padding clamped to 0: the child starts at the content origin.
+        assert_eq!(rects.get(&1), Some(&Rect::new(0, 0, 40, 20)));
     }
 
     #[test]

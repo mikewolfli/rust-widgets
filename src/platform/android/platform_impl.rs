@@ -294,6 +294,15 @@ impl Platform for AndroidPlatform {
         self.state.invalidate_surface_record(id)
     }
 
+    /// Removes and returns the next widget awaiting a repaint.
+    ///
+    /// The drain half of [`Self::invalidate_surface`]: without it the queue the host
+    /// fills through `rw_take_pending_repaint` would always answer `None`/`0`, so a
+    /// mounted widget that changed could never be asked to redraw.
+    fn take_pending_repaint(&self) -> Option<u64> {
+        self.state.take_pending_repaint()
+    }
+
     /// The backend displays library-painted widgets by handing the host their frames.
     fn supports_surfaces(&self) -> bool {
         true
@@ -458,25 +467,32 @@ mod tests {
 
     /// The backend must host library-painted widgets, and each step must work:
     /// a bare `true` from `supports_surfaces()` would be a claim, not a capability.
+    ///
+    /// The enqueue→coalesce→consume chain is exercised through the **public**
+    /// [`Platform`] trait (as `&dyn Platform`), not the private `state` field: that
+    /// is the path a host draining `rw_take_pending_repaint` actually uses, and the
+    /// one that used to answer `None` because this backend never overrode the trait's
+    /// default.
     #[test]
     fn android_hosts_widget_surfaces_and_queues_repaints() {
         let platform = AndroidPlatform::new();
-        assert!(platform.supports_surfaces());
+        let dyn_platform: &dyn Platform = &platform;
+        assert!(dyn_platform.supports_surfaces());
 
-        let window = platform.create_window("Window", 0, 0, 412, 915);
+        let window = dyn_platform.create_window("Window", 0, 0, 412, 915);
         let rect = crate::core::Rect::new(0, 0, 120, 44);
-        assert!(platform.mount_surface(window, window, rect));
+        assert!(dyn_platform.mount_surface(window, window, rect));
         assert_eq!(platform.state.surface_rect(window), Some(rect));
 
-        assert!(platform.invalidate_surface(window));
-        assert_eq!(platform.state.take_pending_repaint(), Some(window));
-        assert_eq!(platform.state.pending_repaint_count(), 0);
+        assert!(dyn_platform.invalidate_surface(window));
+        assert_eq!(dyn_platform.take_pending_repaint(), Some(window));
+        assert_eq!(dyn_platform.take_pending_repaint(), None, "draining empties the queue");
 
         let moved = crate::core::Rect::new(8, 8, 200, 80);
-        assert!(platform.resize_surface(window, moved));
+        assert!(dyn_platform.resize_surface(window, moved));
         assert_eq!(platform.state.surface_rect(window), Some(moved));
 
-        assert!(platform.unmount_surface(window));
+        assert!(dyn_platform.unmount_surface(window));
         assert_eq!(platform.state.surface_rect(window), None);
     }
 

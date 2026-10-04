@@ -196,11 +196,7 @@ impl App {
         self.lifecycle.transition(crate::app::lifecycle::AppLifecycleState::Foreground);
 
         // Fire the startup callback after everything is initialised.
-        with_startup(|slot| {
-            if let Some(cb) = slot.take() {
-                cb();
-            }
-        });
+        fire_startup();
     }
 
     /// Run the platform main event loop (blocks).
@@ -216,11 +212,7 @@ impl App {
         // We also drain any remaining events after the loop ends.
         crate::run();
 
-        with_shutdown(|slot| {
-            if let Some(cb) = slot.take() {
-                cb();
-            }
-        });
+        fire_shutdown();
     }
 
     /// Request the event loop to shut down.
@@ -241,11 +233,7 @@ impl App {
         trace_runtime_route("app::run_async");
         std::thread::spawn(|| {
             crate::run();
-            with_shutdown(|slot| {
-                if let Some(cb) = slot.take() {
-                    cb();
-                }
-            });
+            fire_shutdown();
         })
     }
 
@@ -306,6 +294,30 @@ where
     f(&mut guard)
 }
 
+/// Run a registered startup callback, releasing the lock before invoking it.
+///
+/// The callback is taken out of the slot and invoked **after** the guard is dropped. A startup
+/// callback that re-registers a startup callback must not re-lock the same non-reentrant `Mutex`
+/// while it is already held on this thread — that was a same-thread deadlock. A callback
+/// re-registered here takes effect on the next [`fire_startup`] (i.e. the next `init`).
+fn fire_startup() {
+    let cb = with_startup(|slot| slot.take());
+    if let Some(cb) = cb {
+        cb();
+    }
+}
+
+/// Run a registered shutdown callback, releasing the lock before invoking it.
+///
+/// Mirrors [`fire_startup`]: a shutdown callback that re-registers a shutdown callback takes
+/// effect on the next [`fire_shutdown`] (i.e. the next `run`/`run_async`), and never deadlocks.
+fn fire_shutdown() {
+    let cb = with_shutdown(|slot| slot.take());
+    if let Some(cb) = cb {
+        cb();
+    }
+}
+
 /// Records an `App` lifecycle stage in the runtime trace.
 ///
 /// Forwards to the crate-root trace so both report the same fields: the local copy
@@ -314,4 +326,63 @@ where
 /// (principle #54 — one definition per meaning).
 fn trace_runtime_route(stage: &str) {
     crate::trace_runtime_route(stage);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    /// A startup callback that re-registers a startup callback must not deadlock.
+    ///
+    /// The old `init` invoked the callback while holding the global `STARTUP` mutex, so the
+    /// re-registering `on_startup` re-locked the same non-reentrant mutex on the same thread and
+    /// hung. `fire_startup` takes the slot and releases the lock before invoking, so the
+    /// re-registered callback simply takes effect on the next startup.
+    #[test]
+    fn a_startup_callback_can_reenter_registration() {
+        let calls = Arc::new(AtomicU32::new(0));
+
+        let c1 = Arc::clone(&calls);
+        let c2 = Arc::clone(&calls);
+        let _app = App::new().on_startup(move || {
+            c1.fetch_add(1, Ordering::SeqCst);
+            // Re-register from within the callback; this used to deadlock.
+            let c3 = Arc::clone(&c2);
+            let _ = App::new().on_startup(move || {
+                c3.fetch_add(10, Ordering::SeqCst);
+            });
+        });
+
+        fire_startup();
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "the outer startup callback runs");
+
+        // The re-registered callback takes effect on the *next* startup.
+        fire_startup();
+        assert_eq!(calls.load(Ordering::SeqCst), 11, "the re-registered callback runs later");
+    }
+
+    /// A shutdown callback that re-registers a shutdown callback must not deadlock.
+    #[test]
+    fn a_shutdown_callback_can_reenter_registration() {
+        let calls = Arc::new(AtomicU32::new(0));
+
+        let c1 = Arc::clone(&calls);
+        let c2 = Arc::clone(&calls);
+        let _app = App::new().on_shutdown(move || {
+            c1.fetch_add(1, Ordering::SeqCst);
+            // Re-register from within the callback; this used to deadlock.
+            let c3 = Arc::clone(&c2);
+            let _ = App::new().on_shutdown(move || {
+                c3.fetch_add(10, Ordering::SeqCst);
+            });
+        });
+
+        fire_shutdown();
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "the outer shutdown callback runs");
+
+        fire_shutdown();
+        assert_eq!(calls.load(Ordering::SeqCst), 11, "the re-registered callback runs later");
+    }
 }

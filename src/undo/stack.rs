@@ -7,10 +7,31 @@ use crate::compat::{format, Box, String, Vec};
 
 /// Undo/Redo stack with configurable capacity.
 pub struct UndoStack {
-    undo_stack: Vec<Box<dyn UndoCommand>>,
-    redo_stack: Vec<Box<dyn UndoCommand>>,
+    undo_stack: Vec<Entry>,
+    redo_stack: Vec<Entry>,
     max_capacity: usize,
-    clean_index: Option<usize>, // Index of "saved" state within the undo stack.
+    /// Revision of the saved state, or `None` before any save.
+    ///
+    /// Revisions identify **content**, not stack depth. Depth was wrong twice over: a branch
+    /// replacement (`push` → `mark_clean` → `undo` → `push`) and a merge both change the
+    /// document without changing the depth, so a depth index reported "clean" for state that
+    /// never matched the save. Each [`Entry`] records the revision of the document after it is
+    /// applied; the current revision moves with undo/redo and is compared to this value.
+    saved_revision: Option<u64>,
+    /// Revision of the empty/base state. Advances as entries are evicted from the bottom.
+    base_revision: u64,
+    /// Monotonic source of the next revision number.
+    next_revision: u64,
+}
+
+/// A command on the stack, paired with the document revision it produces.
+///
+/// The revision is what lets [`UndoStack::is_clean`] recognise "returned to the saved state"
+/// after an undo/redo rather than merely "same number of commands": a merge or a branch
+/// replacement changes content at the same depth, which a positional index cannot see.
+struct Entry {
+    command: Box<dyn UndoCommand>,
+    after_revision: u64,
 }
 
 impl UndoStack {
@@ -25,7 +46,9 @@ impl UndoStack {
             undo_stack: Vec::with_capacity(max.min(128)),
             redo_stack: Vec::new(),
             max_capacity: max,
-            clean_index: None,
+            saved_revision: None,
+            base_revision: 0,
+            next_revision: 1,
         }
     }
 
@@ -38,9 +61,14 @@ impl UndoStack {
         // Try merging with the last command.
         if self.merge_policy_allows(&*command) {
             if let Some(last) = self.undo_stack.last_mut() {
-                if last.try_merge(command.as_ref()) {
-                    // Merge succeeded — no new entry needed.
+                if last.command.try_merge(command.as_ref()) {
+                    // Merge succeeded: no new entry, but the content changed, so the merged
+                    // command gets a fresh revision — it is no longer the saved content even
+                    // though the stack depth did not change.
                     self.redo_stack.clear();
+                    let revision = self.next_revision;
+                    self.next_revision += 1;
+                    last.after_revision = revision;
                     return;
                 }
             }
@@ -48,37 +76,29 @@ impl UndoStack {
 
         self.redo_stack.clear();
 
-        // Capacity enforcement and the clean-index fixup are shared with `redo`:
-        // both append to the undo stack and both must honour the bound.
-        self.push_undo_entry(command);
+        let revision = self.next_revision;
+        self.next_revision += 1;
+        self.push_undo_entry(Entry { command, after_revision: revision });
     }
 
-    /// Append to the undo stack, enforcing `max_capacity` and moving `clean_index`.
+    /// Append to the undo stack, enforcing `max_capacity` and advancing the base revision.
     ///
     /// Shared by [`push`](Self::push) and [`redo`](Self::redo). `redo` used to append with a
     /// bare `Vec::push`, so it bypassed both: with `set_max_capacity` lowered while commands sat
     /// on the redo stack, redoing grew the stack past its own bound (unbounded memory in a
-    /// long-lived editor session that re-tunes capacity) and left `clean_index` pointing at the
-    /// wrong entry, so `is_clean()` could no longer identify the saved state.
-    fn push_undo_entry(&mut self, command: Box<dyn UndoCommand>) {
+    /// long-lived editor session that re-tunes capacity) and left the saved-state marker pointing
+    /// at the wrong entry. Returns `false` when nothing was retained (zero-capacity stacks).
+    fn push_undo_entry(&mut self, entry: Entry) -> bool {
         if self.max_capacity == 0 {
             // Zero-capacity stacks retain nothing; drop the command silently.
-            return;
+            return false;
         }
         if self.undo_stack.len() >= self.max_capacity {
-            self.undo_stack.remove(0);
-            // Adjust clean_index if it was shifted.
-            if let Some(ref mut idx) = self.clean_index {
-                if *idx > 0 {
-                    *idx -= 1;
-                } else {
-                    // The clean state was removed.
-                    self.clean_index = None;
-                }
-            }
+            let evicted = self.undo_stack.remove(0);
+            self.advance_base_past(evicted.after_revision);
         }
-
-        self.undo_stack.push(command);
+        self.undo_stack.push(entry);
+        true
     }
 
     /// Undo the most recent command, moving it to the redo stack.
@@ -91,20 +111,20 @@ impl UndoStack {
     /// must not corrupt the history, so the command is put back on the undo stack before the error
     /// is returned — the caller sees the failure and the stack is exactly as it was.
     pub fn undo(&mut self) -> Result<(), String> {
-        let mut command = self.undo_stack.pop().ok_or_else(|| {
+        let mut entry = self.undo_stack.pop().ok_or_else(|| {
             format!(
                 "nothing to undo: the undo stack is empty ({} redoable command(s) pending)",
                 self.redo_stack.len()
             )
         })?;
-        match command.undo() {
+        match entry.command.undo() {
             Ok(()) => {
-                self.redo_stack.push(command);
+                self.redo_stack.push(entry);
                 Ok(())
             }
             Err(err) => {
                 // Restore the command to the top of the undo stack so the history is unchanged.
-                self.undo_stack.push(command);
+                self.undo_stack.push(entry);
                 Err(err)
             }
         }
@@ -112,19 +132,29 @@ impl UndoStack {
 
     /// Redo the most recently undone command, moving it back to the undo stack.
     pub fn redo(&mut self) -> Result<(), String> {
-        let mut command = self.redo_stack.pop().ok_or_else(|| {
+        let mut entry = self.redo_stack.pop().ok_or_else(|| {
             format!(
                 "nothing to redo: the redo stack is empty ({} undoable command(s) pending)",
                 self.undo_stack.len()
             )
         })?;
-        command.redo()?;
-        // Through `push_undo_entry`, not a bare push: redoing must not be able to grow the
-        // stack past `max_capacity` or desynchronise `clean_index`. `push` already enforced
-        // both; this path did not, so a capacity lowered while the redo stack was populated
-        // was silently violated on the way back.
-        self.push_undo_entry(command);
-        Ok(())
+        match entry.command.redo() {
+            Ok(()) => {
+                // Through `push_undo_entry`, not a bare push: redoing must not be able to grow the
+                // stack past `max_capacity` or desynchronise the saved-state marker. `push`
+                // already enforced both; this path did not, so a capacity lowered while the redo
+                // stack was populated was silently violated on the way back.
+                self.push_undo_entry(entry);
+                Ok(())
+            }
+            Err(err) => {
+                // A failed `redo` used to pop the command and drop it on error, losing it from
+                // both stacks so it could never be retried. Put it back so the history is
+                // unchanged and the command remains retryable — the mirror of `undo`'s recovery.
+                self.redo_stack.push(entry);
+                Err(err)
+            }
+        }
     }
 
     /// Returns `true` if there are commands available to undo.
@@ -149,27 +179,28 @@ impl UndoStack {
 
     /// Returns the human-readable text of the next command to undo.
     pub fn undo_text(&self) -> Option<String> {
-        self.undo_stack.last().map(|c| c.description().text)
+        self.undo_stack.last().map(|e| e.command.description().text)
     }
 
     /// Returns the human-readable text of the next command to redo.
     pub fn redo_text(&self) -> Option<String> {
-        self.redo_stack.last().map(|c| c.description().text)
+        self.redo_stack.last().map(|e| e.command.description().text)
     }
 
     /// Mark the current state as "clean" (e.g., saved).
     pub fn mark_clean(&mut self) {
-        self.clean_index = Some(self.undo_stack.len());
+        self.saved_revision = Some(self.current_revision());
     }
 
     /// Returns `true` if the current state is the "clean" (saved) state.
     ///
-    /// A stack with no saved marker is clean only when empty.
-    /// Once `mark_clean()` has been called, the stack is clean only
-    /// when the undo position matches the recorded clean index.
+    /// A stack with no saved marker is clean only when empty. Once `mark_clean()` has been
+    /// called, the stack is clean only when the current **content revision** matches the saved
+    /// one — not merely when the stack depth happens to line up, which is what made a branch
+    /// replacement and a post-save merge both misreport clean.
     pub fn is_clean(&self) -> bool {
-        match self.clean_index {
-            Some(idx) => idx == self.undo_stack.len(),
+        match self.saved_revision {
+            Some(saved) => self.current_revision() == saved,
             None => self.undo_stack.is_empty(),
         }
     }
@@ -178,7 +209,9 @@ impl UndoStack {
     pub fn clear(&mut self) {
         self.undo_stack.clear();
         self.redo_stack.clear();
-        self.clean_index = None;
+        self.saved_revision = None;
+        self.base_revision = 0;
+        self.next_revision = 1;
     }
 
     /// Set the maximum capacity, dropping oldest commands if the new limit
@@ -186,13 +219,24 @@ impl UndoStack {
     pub fn set_max_capacity(&mut self, max: usize) {
         self.max_capacity = max;
         while self.undo_stack.len() > self.max_capacity {
-            self.undo_stack.remove(0);
-            if let Some(ref mut idx) = self.clean_index {
-                if *idx > 0 {
-                    *idx -= 1;
-                } else {
-                    self.clean_index = None;
-                }
+            let evicted = self.undo_stack.remove(0);
+            self.advance_base_past(evicted.after_revision);
+        }
+    }
+
+    /// The revision of the document's current state: after the top entry, or the base state
+    /// when the stack is empty.
+    fn current_revision(&self) -> u64 {
+        self.undo_stack.last().map(|e| e.after_revision).unwrap_or(self.base_revision)
+    }
+
+    /// Record that the base state has advanced to `revision` because the entry that produced it
+    /// was evicted. A saved state below that revision is no longer reachable by undo.
+    fn advance_base_past(&mut self, revision: u64) {
+        self.base_revision = revision;
+        if let Some(saved) = self.saved_revision {
+            if saved < self.base_revision {
+                self.saved_revision = None;
             }
         }
     }
@@ -342,6 +386,74 @@ mod tests {
             self.text.push_str(&prev_action);
             self.applied.push_str(&prev_action);
             true
+        }
+    }
+
+    /// A command whose `redo` fails once, then succeeds, for testing redo-failure recovery.
+    struct FlakyRedoCommand {
+        id: CommandId,
+        text: String,
+        applied: String,
+        attempts: std::cell::Cell<u32>,
+    }
+
+    impl FlakyRedoCommand {
+        fn new(text: &str, initial: &str) -> Self {
+            FlakyRedoCommand {
+                id: next_command_id(),
+                text: text.to_string(),
+                applied: initial.to_string(),
+                attempts: std::cell::Cell::new(0),
+            }
+        }
+    }
+
+    impl UndoCommand for FlakyRedoCommand {
+        fn id(&self) -> CommandId {
+            self.id
+        }
+
+        fn description(&self) -> CommandDescription {
+            CommandDescription {
+                text: format!("Edit: {}", self.text),
+                timestamp_ms: SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64,
+                command_type: "FlakyRedoCommand",
+            }
+        }
+
+        fn execute(&mut self) -> Result<(), String> {
+            self.applied.push_str(&self.text);
+            Ok(())
+        }
+
+        fn undo(&mut self) -> Result<(), String> {
+            let len = self.applied.len();
+            let remove_len = self.text.len();
+            if remove_len > len {
+                return Err(format!(
+                    "cannot undo appending {} byte(s): only {} byte(s) are applied",
+                    remove_len, len
+                ));
+            }
+            self.applied.truncate(len - remove_len);
+            Ok(())
+        }
+
+        fn redo(&mut self) -> Result<(), String> {
+            let n = self.attempts.get();
+            self.attempts.set(n + 1);
+            if n == 0 {
+                return Err("first redo fails".to_string());
+            }
+            self.applied.push_str(&self.text);
+            Ok(())
+        }
+
+        fn merge_policy(&self) -> MergePolicy {
+            MergePolicy::Never
         }
     }
 
@@ -623,8 +735,8 @@ mod tests {
     ///
     /// It used a bare `Vec::push`, so lowering the capacity while commands sat on the redo
     /// stack and then redoing grew the undo stack past its own bound. The bound is what caps
-    /// memory in a long-lived editor session, and `is_clean()` keys off `clean_index`, which the
-    /// same code path moved.
+    /// memory in a long-lived editor session, and `is_clean()` keys off the saved-state
+    /// revision, which the same code path advances.
     #[test]
     fn test_redo_respects_max_capacity() {
         let mut stack = UndoStack::with_capacity(10);
@@ -658,8 +770,8 @@ mod tests {
 
     /// Redoing all the way back to the saved state must report `is_clean`.
     ///
-    /// The clean index is moved by capacity eviction; a redo that appended without the fixup
-    /// left `is_clean()` unable to identify the state the document was saved at.
+    /// The saved-state revision is advanced by capacity eviction; a redo that appended without
+    /// the fixup left `is_clean()` unable to identify the state the document was saved at.
     #[test]
     fn test_redo_keeps_clean_index_in_step() {
         let mut stack = UndoStack::with_capacity(8);
@@ -684,5 +796,93 @@ mod tests {
 
         stack.undo().unwrap();
         assert!(stack.is_clean(), "undo must return to the saved state again");
+    }
+
+    /// A failed `redo` must leave the history unchanged and the command retryable.
+    ///
+    /// `redo` used to pop the command first and only push it onto the undo stack on success,
+    /// so a command whose `redo()` returned `Err` landed on **neither** stack — it could never
+    /// be retried. The mirror of `a_failed_undo_keeps_the_command_on_the_stack`.
+    #[test]
+    fn a_failed_redo_keeps_the_command_retryable() {
+        let mut stack = UndoStack::new();
+
+        let mut cmd = FlakyRedoCommand::new("x", "");
+        cmd.execute().unwrap();
+        stack.push(Box::new(cmd));
+
+        assert_eq!(stack.undo_count(), 1);
+        assert_eq!(stack.redo_count(), 0);
+
+        stack.undo().unwrap();
+        assert_eq!(stack.undo_count(), 0);
+        assert_eq!(stack.redo_count(), 1);
+
+        // The first redo fails: the command must stay on the redo stack, untouched.
+        let err = stack.redo().expect_err("the first redo must fail");
+        assert!(err.contains("first redo fails"), "the error is the command's own: {err}");
+        assert_eq!(stack.undo_count(), 0, "a failed redo must not move the command to undo");
+        assert_eq!(stack.redo_count(), 1, "a failed redo must keep the command on redo");
+        assert_eq!(
+            stack.redo_text().map(|s| s.contains("x")),
+            Some(true),
+            "the redo order must be unchanged by the failure"
+        );
+
+        // The command is still there and can complete on the next attempt.
+        stack.redo().expect("the command must be retryable");
+        assert_eq!(stack.undo_count(), 1);
+        assert_eq!(stack.redo_count(), 0);
+    }
+
+    /// Pushing a new command after undoing past the saved state is dirty, not clean.
+    ///
+    /// Depth used to be the only record of the saved state: `push` → `mark_clean` → `undo` →
+    /// `push` reproduced the same depth, so `is_clean()` reported the document clean even though
+    /// the new content diverged from the save. The saved state now tracks the content revision,
+    /// so a branch replacement is dirty.
+    #[test]
+    fn a_branch_replacement_after_undo_is_dirty() {
+        let mut stack = UndoStack::new();
+
+        let mut a = TextCommand::new("A", "");
+        a.execute().unwrap();
+        stack.push(Box::new(a));
+        stack.mark_clean();
+        assert!(stack.is_clean());
+
+        stack.undo().unwrap();
+        assert!(!stack.is_clean(), "undoing away from the saved state must be dirty");
+
+        let mut b = TextCommand::new("B", "");
+        b.execute().unwrap();
+        stack.push(Box::new(b));
+
+        // Same depth as the saved state, but different content: the saved state sat on the redo
+        // stack and was cleared by this push.
+        assert!(!stack.is_clean(), "a new branch after undo must be dirty");
+    }
+
+    /// A merge that changes content without changing depth is dirty.
+    ///
+    /// `push A` → `mark_clean` → `push B` where B merges into A leaves one entry at the same
+    /// depth, but the content is no longer what was saved. Depth reported clean; the content
+    /// revision reports dirty.
+    #[test]
+    fn a_merge_after_save_is_dirty() {
+        let mut stack = UndoStack::new();
+
+        let mut a = MergeableTextCommand::new("A", "");
+        a.execute().unwrap();
+        stack.push(Box::new(a));
+        stack.mark_clean();
+        assert!(stack.is_clean());
+
+        let mut b = MergeableTextCommand::new("B", "");
+        b.execute().unwrap();
+        stack.push(Box::new(b));
+
+        assert_eq!(stack.undo_count(), 1, "the commands merged into a single entry");
+        assert!(!stack.is_clean(), "a merge after save must be dirty");
     }
 }

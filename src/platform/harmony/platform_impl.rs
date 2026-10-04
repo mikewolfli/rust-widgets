@@ -371,6 +371,15 @@ impl Platform for HarmonyPlatform {
         self.state.record_repaint_request(id)
     }
 
+    /// Removes and returns the next widget awaiting a repaint.
+    ///
+    /// The drain half of [`Self::invalidate_surface`]: without it the queue the host
+    /// fills through `rw_take_pending_repaint` would always answer `None`/`0`, so a
+    /// stale widget could never be asked to redraw.
+    fn take_pending_repaint(&self) -> Option<ObjectId> {
+        self.state.take_pending_repaint()
+    }
+
     /// The backend displays library-painted widgets by handing the host their frames.
     ///
     /// # What this promises, and what it does not

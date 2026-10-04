@@ -37,34 +37,65 @@ pub fn init_with_options(options: InitOptions) -> InitReport {
     let mut manager = I18nManager::new();
     manager.set_language(&options.language);
     let diagnostics = options.diagnostics;
+
+    // Embedded English is the compile-time fallback that `init` also loads. It
+    // must be available through this entry point too, so a locale that only
+    // partially translates still falls back to the source language. Files loaded
+    // below override it when they declare the same language, so file-provided
+    // translations keep their priority.
+    match serde_json::from_str::<TranslationFile>(EMBEDDED_EN_JSON) {
+        Ok(translation_file) => {
+            let language = translation_file.language.clone();
+            manager.inject_translations(language, translation_file);
+        }
+        Err(e) => {
+            report.errors.push(format!("Failed to parse embedded en.json: {e}"));
+        }
+    }
+
     // Load translations from directory if specified
     if let Some(dir) = options.preload_dir {
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().is_some_and(|ext| ext == "json") {
-                    let path_str = match path.to_str() {
-                        Some(p) => p,
-                        None => {
-                            report.errors.push(format!("Non-UTF-8 path: {path:?}"));
+        match std::fs::read_dir(&dir) {
+            Ok(entries) => {
+                for entry in entries {
+                    let entry = match entry {
+                        Ok(entry) => entry,
+                        Err(e) => {
+                            report.errors.push(format!(
+                                "Failed to read an entry in translation directory '{dir}': {e}"
+                            ));
                             continue;
                         }
                     };
-                    match manager.load_translations(path_str) {
-                        Ok(()) => {
-                            report.files_loaded += 1;
-                            if diagnostics {
-                                log::info!("[i18n] Loaded translations from: {path:?}");
+                    let path = entry.path();
+                    if path.extension().is_some_and(|ext| ext == "json") {
+                        let path_str = match path.to_str() {
+                            Some(p) => p,
+                            None => {
+                                report.errors.push(format!("Non-UTF-8 path: {path:?}"));
+                                continue;
                             }
-                        }
-                        Err(e) => {
-                            report.errors.push(format!("Failed to load {path:?}: {e}"));
+                        };
+                        match manager.load_translations(path_str) {
+                            Ok(()) => {
+                                report.files_loaded += 1;
+                                if diagnostics {
+                                    log::info!("[i18n] Loaded translations from: {path:?}");
+                                }
+                            }
+                            Err(e) => {
+                                report.errors.push(format!("Failed to load {path:?}: {e}"));
+                            }
                         }
                     }
                 }
             }
+            Err(e) => {
+                report.errors.push(format!("Translation directory '{dir}' could not be read: {e}"));
+            }
         }
     }
+
     report.translations_count = manager.translation_count();
     let mut guard = crate::compat::lock(&GLOBAL_I18N);
     *guard = Some(manager);

@@ -11,17 +11,16 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 /// Fingerprint of a translation file used to detect changes.
 ///
-/// `mtime` alone is not sufficient: filesystems with coarse timestamp
-/// granularity (e.g. 1 s on some Linux/network mounts) report the *same* mtime
-/// for two writes within one tick, so a strict `modified > last_modified`
-/// comparison silently misses the update and the reload never fires. Pairing the
-/// timestamp with the byte length makes same-tick edits observable, and a
-/// content hash catches same-tick edits that happen to keep the same length.
+/// The modification time is deliberately not part of the fingerprint: a
+/// filesystem clock can stay put (coarse granularity), move forward, or move
+/// backward (backup restore, sync tooling that preserves an old mtime), and
+/// none of those is proof of a content change. Byte length plus a content hash
+/// is the actual proof — equal length + equal hash means "unchanged", anything
+/// else means "reload".
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FileFingerprint {
-    modified: Option<SystemTime>,
     len: u64,
-    /// Stable content digest; `0` means "not computed".
+    /// Stable content digest; `0` means "not computed" (unreadable file).
     hash: u64,
 }
 
@@ -29,25 +28,17 @@ impl FileFingerprint {
     /// Reads the fingerprint of `path`, computing a content hash.
     fn read(path: &std::path::Path) -> Option<Self> {
         let metadata = std::fs::metadata(path).ok()?;
-        let modified = metadata.modified().ok();
         let len = metadata.len();
-        // Hashing is only needed to disambiguate equal (mtime, len) pairs; doing
-        // it unconditionally keeps the logic simple and the files are tiny.
         let hash = std::fs::read(path).map(|bytes| fnv1a(&bytes)).unwrap_or(0);
-        Some(Self { modified, len, hash })
+        Some(Self { len, hash })
     }
 
-    /// True when `self` is newer than `previous`.
+    /// True when `self` differs from `previous` in length or content.
     ///
-    /// Ordered by mtime first, then length, then content hash, so a change is
-    /// detected even when the filesystem clock did not advance.
+    /// Forward, equal, and backward mtimes are handled identically: the mtime is
+    /// never consulted, so an older timestamp cannot hide a genuine edit and an
+    /// unchanged file (same length and hash) never triggers a reload.
     fn is_newer_than(&self, previous: &Self) -> bool {
-        if let (Some(now), Some(before)) = (self.modified, previous.modified) {
-            if now != before {
-                return now > before;
-            }
-        }
-        // Same (or unavailable) timestamp: fall back to size, then content.
         if self.len != previous.len {
             return true;
         }
@@ -233,6 +224,32 @@ impl I18nManager {
         file.read_to_string(&mut content)?;
         let translation_file: TranslationFile = serde_json::from_str(&content)?;
         let language = translation_file.language.clone();
+
+        // The hot-reload watcher derives a language from the file *name* (its
+        // stem), so a file whose name disagrees with the `language` it declares
+        // would be loaded under one key and re-requested under another on every
+        // change — the catalogue would never reload. Reject that mismatch up
+        // front rather than let it silently break hot reload.
+        let stem = path_buf.file_stem().and_then(|s| s.to_str()).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "translation file '{path}' has no usable file name; name it \
+                         '<language>.json'"
+                ),
+            )
+        })?;
+        if stem != language {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "translation file '{path}' is named '{stem}.json' but declares language \
+                     \"{language}\"; rename it to '{language}.json' (the hot-reload watcher \
+                     identifies a language by file name)"
+                ),
+            ));
+        }
+
         self.translations.insert(language.clone(), translation_file);
         self.translation_paths.insert(language.clone(), path_buf.clone());
         if let Some(fingerprint) = FileFingerprint::read(&path_buf) {

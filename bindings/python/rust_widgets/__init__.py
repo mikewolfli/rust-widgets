@@ -42,6 +42,7 @@ __all__ = [
     "RW_VALUE_STRING",
     "RW_VALUE_COLOR",
     "RW_VALUE_RECT",
+    "RW_VALUE_TUPLE",
 ]
 
 # ---------------------------------------------------------------------------
@@ -60,6 +61,9 @@ RW_VALUE_STRING = 5
 # the payload, or a colour read returns "no property" *and* leaks the buffer.
 RW_VALUE_COLOR = 6
 RW_VALUE_RECT = 7
+# A composite payload (a tuple/list of values); `num` carries the component count
+# and the string holds `kind:value;…`.
+RW_VALUE_TUPLE = 8
 
 
 # ---------------------------------------------------------------------------
@@ -802,6 +806,15 @@ class RustWidgets:
         L.rw_dispatch_pointer_event.restype = c_bool
         L.rw_dispatch_event_to_widget.argtypes = [c_uint64, c_uint, c_int, c_int, c_uint]
         L.rw_dispatch_event_to_widget.restype = c_bool
+        # The direct input carriers: a key code + modifier mask, a committed text
+        # string, and a wheel delta. A pointer's `(x, y, button)` cannot express these,
+        # so each has its own entry point.
+        L.rw_dispatch_key_event.argtypes = [c_uint64, c_uint, c_uint, c_bool]
+        L.rw_dispatch_key_event.restype = c_bool
+        L.rw_dispatch_text_event.argtypes = [c_uint64, c_char_p]
+        L.rw_dispatch_text_event.restype = c_bool
+        L.rw_dispatch_wheel_event.argtypes = [c_uint64, c_int, c_int, c_uint]
+        L.rw_dispatch_wheel_event.restype = c_bool
         # `out_pixels` is `c_void_p`, not `c_char_p`: the callee allocates the buffer
         # and the caller releases it with `rw_free_bytes(ptr, len)`, so the raw address
         # must survive the trip without ctypes turning it into a Python bytes object.
@@ -1185,10 +1198,12 @@ class RustWidgets:
             return int(num.value)
         if kind.value == RW_VALUE_FLOAT:
             return _f64_from_bits(num.value & 0xFFFFFFFFFFFFFFFF)
-        if kind.value in (RW_VALUE_STRING, RW_VALUE_COLOR, RW_VALUE_RECT):
-            # All three carry their payload in the string slot. Freeing it on every
+        if kind.value in (RW_VALUE_STRING, RW_VALUE_COLOR, RW_VALUE_RECT, RW_VALUE_TUPLE):
+            # All four carry their payload in the string slot. Freeing it on every
             # one of them is the point: `rw_get_widget_property` allocates for each,
             # so a branch that returned without freeing leaked one buffer per call.
+            # A tuple's string is the `kind:value;…` wire form, returned verbatim so
+            # a caller can decode it with the component kinds.
             return self._decode_and_free(self.lib, text.value)
         # An unknown kind is a newer ABI than this binding knows about. Free the
         # payload if there is one, so an unrecognised kind cannot leak either.

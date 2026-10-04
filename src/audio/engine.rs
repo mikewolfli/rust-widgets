@@ -14,6 +14,11 @@ pub struct AudioEngine {
     position: usize,
     is_playing: bool,
     volume: f32,
+    /// The active device output, held for the full duration of device playback
+    /// so the underlying cpal stream is not dropped the moment `play_to_device`
+    /// returns.
+    #[cfg(feature = "audio-output")]
+    output: Option<AudioOutput>,
     /// Emitted when playback state changes.
     pub on_state_change: Signal<bool>,
 }
@@ -26,6 +31,8 @@ impl AudioEngine {
             position: 0,
             is_playing: false,
             volume: 1.0,
+            #[cfg(feature = "audio-output")]
+            output: None,
             on_state_change: Signal::new(),
         }
     }
@@ -42,12 +49,20 @@ impl AudioEngine {
     /// Start or resume playback.
     pub fn play(&mut self) {
         self.is_playing = true;
+        #[cfg(feature = "audio-output")]
+        if let Some(output) = &mut self.output {
+            output.resume();
+        }
         self.on_state_change.emit(true);
     }
 
     /// Pause playback.
     pub fn pause(&mut self) {
         self.is_playing = false;
+        #[cfg(feature = "audio-output")]
+        if let Some(output) = &mut self.output {
+            output.pause();
+        }
         self.on_state_change.emit(false);
     }
 
@@ -55,6 +70,13 @@ impl AudioEngine {
     pub fn stop(&mut self) {
         self.is_playing = false;
         self.position = 0;
+        #[cfg(feature = "audio-output")]
+        {
+            if let Some(output) = &mut self.output {
+                output.stop();
+            }
+            self.output = None;
+        }
         self.on_state_change.emit(false);
     }
 
@@ -66,6 +88,10 @@ impl AudioEngine {
     /// Set volume (0.0 to 1.0).
     pub fn set_volume(&mut self, volume: f32) {
         self.volume = volume.clamp(0.0, 1.0);
+        #[cfg(feature = "audio-output")]
+        if let Some(output) = &mut self.output {
+            output.set_volume(self.volume);
+        }
     }
 
     /// Get current volume.
@@ -108,12 +134,37 @@ impl AudioEngine {
     /// Play the loaded audio through the system's default audio output device.
     #[cfg(feature = "audio-output")]
     pub fn play_to_device(&mut self) -> Result<(), String> {
+        let output = AudioOutput::new()?;
+        self.play_to_device_with(output)
+    }
+
+    /// Start device playback using an already-constructed output and hold it
+    /// for the duration of playback.
+    #[cfg(feature = "audio-output")]
+    fn play_to_device_with(&mut self, mut output: AudioOutput) -> Result<(), String> {
         let buffer = self.buffer.as_ref().ok_or("No audio loaded")?;
-        let mut output = AudioOutput::new()?;
+        output.set_volume(self.volume);
         output.play(buffer)?;
+        self.output = Some(output);
         self.is_playing = true;
         self.on_state_change.emit(true);
         Ok(())
+    }
+
+    /// Reconcile engine state with the device output's end-of-buffer flag.
+    ///
+    /// The cpal audio callback runs on a separate thread and cannot hold a
+    /// handle back to this engine, so it reports exhaustion through a shared
+    /// atomic flag. Call this periodically to observe that notification and
+    /// flip the engine's playing state when playback finishes.
+    #[cfg(feature = "audio-output")]
+    pub fn update(&mut self) {
+        let Some(output) = &self.output else { return };
+        if output.is_finished() {
+            self.output = None;
+            self.is_playing = false;
+            self.on_state_change.emit(false);
+        }
     }
 
     /// Get interleaved samples for the current playback window, scaled by volume.
@@ -178,5 +229,70 @@ mod tests {
         let mut engine = AudioEngine::new();
         engine.play();
         assert_eq!(engine.tick(100), 0);
+    }
+
+    #[cfg(feature = "audio-output")]
+    fn engine_with_output() -> AudioEngine {
+        let mut engine = AudioEngine::new();
+        engine.output = Some(AudioOutput::new_without_device());
+        engine
+    }
+
+    #[test]
+    #[cfg(feature = "audio-output")]
+    fn play_to_device_without_loaded_buffer_fails() {
+        let mut engine = AudioEngine::new();
+        let err = engine.play_to_device().unwrap_err();
+        assert!(err.contains("No audio loaded"), "got: {err}");
+    }
+
+    #[test]
+    #[cfg(feature = "audio-output")]
+    fn play_to_device_without_device_fails_and_holds_no_output() {
+        let mut engine = AudioEngine::new();
+        engine.buffer = Some(AudioBuffer::new(44100, vec![0.0; 4], 1));
+        let err = engine.play_to_device_with(AudioOutput::new_without_device()).unwrap_err();
+        assert!(err.contains("No audio device"), "got: {err}");
+        assert!(engine.output.is_none());
+        assert!(!engine.is_playing());
+    }
+
+    #[test]
+    #[cfg(feature = "audio-output")]
+    fn pause_forwards_to_device_output() {
+        let mut engine = engine_with_output();
+        engine.play();
+        engine.pause();
+        assert!(!engine.is_playing());
+        assert!(engine.output.as_ref().unwrap().is_paused());
+    }
+
+    #[test]
+    #[cfg(feature = "audio-output")]
+    fn stop_drops_device_output() {
+        let mut engine = engine_with_output();
+        engine.play();
+        engine.stop();
+        assert!(engine.output.is_none());
+        assert!(!engine.is_playing());
+    }
+
+    #[test]
+    #[cfg(feature = "audio-output")]
+    fn set_volume_forwards_to_device_output() {
+        let mut engine = engine_with_output();
+        engine.set_volume(0.25);
+        assert!((engine.output.as_ref().unwrap().volume() - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    #[cfg(feature = "audio-output")]
+    fn update_notifies_when_output_finished() {
+        let mut engine = engine_with_output();
+        engine.play();
+        engine.output.as_ref().unwrap().mark_finished_for_test();
+        engine.update();
+        assert!(!engine.is_playing());
+        assert!(engine.output.is_none());
     }
 }

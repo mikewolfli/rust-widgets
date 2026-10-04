@@ -34,6 +34,10 @@ pub struct KeyboardAwareLayout {
     /// Offset actually applied to the children, interpolated toward
     /// [`Self::keyboard_offset`] by [`Self::tick`].
     current_offset: i32,
+    /// The offset the current in-flight transition started from. Saving this fixes the curve
+    /// against frame slicing: every tick evaluates the *same* transition from its fixed start,
+    /// so equal total time always produces an equal value (S-54).
+    transition_start: i32,
     /// Milliseconds of the in-flight transition, or `None` when settled.
     elapsed_ms: Option<u64>,
 }
@@ -43,6 +47,7 @@ impl fmt::Debug for KeyboardAwareLayout {
         f.debug_struct("KeyboardAwareLayout")
             .field("keyboard_offset", &self.keyboard_offset)
             .field("current_offset", &self.current_offset)
+            .field("transition_start", &self.transition_start)
             .field("animation_duration", &self.animation_duration)
             .field("inner", &"<dyn Layout>")
             .finish()
@@ -56,7 +61,14 @@ impl KeyboardAwareLayout {
     /// * `animation_duration` – Animation duration in milliseconds. `0` applies the offset
     ///   immediately, which is the behaviour a host with no frame loop wants.
     pub fn new(inner: Box<dyn Layout>, animation_duration: u64) -> Self {
-        Self { inner, keyboard_offset: 0, animation_duration, current_offset: 0, elapsed_ms: None }
+        Self {
+            inner,
+            keyboard_offset: 0,
+            animation_duration,
+            current_offset: 0,
+            transition_start: 0,
+            elapsed_ms: None,
+        }
     }
 
     /// Set the target keyboard offset (height of the visible keyboard) and begin the
@@ -75,7 +87,9 @@ impl KeyboardAwareLayout {
             self.elapsed_ms = None;
         } else {
             // Restart from *wherever we are now*, not from the previous target: a keyboard
-            // that is dismissed mid-slide must reverse smoothly rather than jump back.
+            // that is dismissed mid-slide must reverse smoothly rather than jump back. The fixed
+            // start is captured here so the eased progress always interpolates this one segment.
+            self.transition_start = self.current_offset;
             self.elapsed_ms = Some(0);
         }
     }
@@ -110,7 +124,10 @@ impl KeyboardAwareLayout {
         let elapsed = elapsed.saturating_add(u64::from(delta_ms));
         let progress = (elapsed as f32 / self.animation_duration as f32).min(1.0);
         let eased = EasingFunction::EaseInOut.apply(progress);
-        let from = self.current_offset as f32;
+        // The `from` is the fixed per-transition start, not `current_offset`. Using the current
+        // offset re-eased the whole transition from a moving origin, so the value depended on how
+        // the host sliced the same total time into frames (S-54).
+        let from = self.transition_start as f32;
         let to = self.keyboard_offset as f32;
         self.current_offset = (from + (to - from) * eased).round() as i32;
         if progress >= 1.0 {
@@ -322,6 +339,27 @@ mod tests {
         assert_eq!(layout.current_offset(), 25, "it walks back from where it was");
         layout.tick(50);
         assert_eq!(layout.current_offset(), 0);
+    }
+
+    /// S-54: the curve must not depend on how the same total time is sliced into frames.
+    ///
+    /// The old body used `current_offset` as the `from` of each tick while `eased` ran over
+    /// the whole transition, so two slices re-eased a moving origin and landed somewhere else.
+    #[test]
+    fn equal_total_time_produces_an_equal_offset_regardless_of_slicing() {
+        let mut one = KeyboardAwareLayout::new(Box::new(StackLayout::new()), 1000);
+        let mut two = KeyboardAwareLayout::new(Box::new(StackLayout::new()), 1000);
+        one.set_keyboard_offset(100);
+        two.set_keyboard_offset(100);
+
+        one.tick(500);
+        let single = one.current_offset();
+
+        two.tick(250);
+        two.tick(250);
+        let sliced = two.current_offset();
+
+        assert_eq!(single, sliced, "the same total time must yield the same value");
     }
 
     /// Turning animation off snaps an in-flight transition, so a host that disables motion

@@ -372,7 +372,7 @@ payload the caller did not ask for is wrong there. A profile build that wants ic
 
 ## Language bindings
 
-The `C ABI` lives in `src/bindings/` and exposes every control through **142 `rw_*` functions** with a
+The `C ABI` lives in `src/bindings/` and exposes every control through **145 `rw_*` functions** with a
 capability-based property and event model. C, C++, Python and Java (JNI) bindings are exercised in CI;
 the generated header is checked for drift by `tools/check_abi.sh`.
 

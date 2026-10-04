@@ -5,7 +5,7 @@
 use super::event_queue::EventSender;
 #[cfg(not(alloc_frugal))]
 use super::types::Event;
-use crate::compat::{lock, Box, HashMap, Instant, MiniToString, Mutex, String, Vec};
+use crate::compat::{format, lock, Box, HashMap, Instant, MiniToString, Mutex, String, Vec};
 use crate::core::ObjectId;
 use alloc::sync::Arc;
 use core::time::Duration;
@@ -15,6 +15,33 @@ struct TimerEntry {
     interval: Duration,
     repeating: bool,
     next_fire: Instant,
+}
+
+/// Computes `Instant::now() + interval`, returning `Err` instead of panicking when the
+/// deadline is not representable on the platform clock.
+///
+/// `compat::Instant` is `std::time::Instant` on desktop (which has `checked_add`) and a thin
+/// wrapper on the frugal profile (which does not), so the two arms meet here rather than
+/// branching at the call site.
+#[cfg(not(alloc_frugal))]
+fn next_fire_deadline(interval: Duration) -> Result<Instant, String> {
+    Instant::now()
+        .checked_add(interval)
+        .ok_or_else(|| format!("timer interval {interval:?} overflows the platform clock"))
+}
+
+/// The frugal spelling of [`next_fire_deadline`].
+#[cfg(alloc_frugal)]
+fn next_fire_deadline(interval: Duration) -> Result<Instant, String> {
+    // The frugal `Instant` wrapper has no `checked_add` and its `Add` impl panics on overflow.
+    // A monotonic clock on every supported target can represent far more than this ceiling, so
+    // rejecting the `Duration::MAX`-scale tail here keeps the `Add` below panic-free without
+    // naming a platform-specific limit.
+    const CEILING: Duration = Duration::from_secs(10 * 365 * 24 * 3600);
+    if interval > CEILING {
+        return Err(format!("timer interval {interval:?} overflows the platform clock"));
+    }
+    Ok(Instant::now() + interval)
 }
 
 #[derive(Default)]
@@ -123,7 +150,7 @@ impl TimerManager {
             return Err("timer interval must be > 0".to_string());
         }
 
-        let entry = TimerEntry { interval, repeating, next_fire: Instant::now() + interval };
+        let entry = TimerEntry { interval, repeating, next_fire: next_fire_deadline(interval)? };
         self.lock_timers().timers.insert((target, id), entry);
         Ok(())
     }
@@ -321,6 +348,19 @@ mod tests {
         }
 
         assert_eq!(post_stop_hits, 0);
+    }
+
+    /// An interval that overflows the platform clock is rejected as an `Err`, and the existing
+    /// timer for the same key is not replaced.
+    #[test]
+    fn an_unrepresentable_interval_is_rejected_without_replacing() {
+        let queue = EventQueue::new();
+        let manager = TimerManager::new(queue.sender());
+        manager.start_timer(5, 1, Duration::from_millis(10), false).expect("a valid timer starts");
+
+        let result = manager.start_timer(5, 1, Duration::MAX, false);
+        assert!(result.is_err(), "an unrepresentable time must be an Err, not a panic");
+        assert!(manager.stop_timer(5, 1), "the previous timer must still be present");
     }
 }
 

@@ -337,19 +337,41 @@ crate::impl_default_via_new!(Constraint);
 /// constraints (min/max size, aspect ratio).  No automatic arrangement
 /// or reflow is performed.
 pub struct AbsoluteLayout {
-    children: Vec<(Option<Box<dyn Widget>>, AbsolutePosition, Option<Constraint>)>,
-    widget_ids: Vec<ObjectId>,
+    children: Vec<AbsoluteEntry>,
 }
+
+/// A single child of an absolute layout: its id, optional owned widget, position, and
+/// size constraint.
+///
+/// # Why one entry instead of parallel `widget_ids`/`children` lists
+///
+/// The two lists had no identity link, so a remove that only touched the ids left a stale
+/// `None` slot, and a later `update` sent a surviving widget the geometry of a deleted
+/// sibling (S-56). Holding id, widget, position, and constraint in one place means
+/// `add`/`remove`/`clear` can never drift apart.
+struct AbsoluteEntry {
+    widget_id: ObjectId,
+    widget: Option<Box<dyn Widget>>,
+    position: AbsolutePosition,
+    constraint: Option<Constraint>,
+}
+
 impl AbsoluteLayout {
     /// Creates a layout with no children.
     pub fn new() -> Self {
-        Self { children: Vec::new(), widget_ids: Vec::new() }
+        Self { children: Vec::new() }
     }
     /// Adds a child at an absolute position, with no size constraint.
     ///
     /// Children are laid out in insertion order; the new child is appended last.
     pub fn add_child(&mut self, child: Box<dyn Widget>, position: AbsolutePosition) {
-        self.children.push((Some(child), position, None));
+        let widget_id = child.id();
+        self.children.push(AbsoluteEntry {
+            widget_id,
+            widget: Some(child),
+            position,
+            constraint: None,
+        });
     }
     /// Adds a child at an absolute position, clamping its size to `constraint`
     /// before the rect is computed.
@@ -359,21 +381,22 @@ impl AbsoluteLayout {
         position: AbsolutePosition,
         constraint: Constraint,
     ) {
-        self.children.push((Some(child), position, Some(constraint)));
+        let widget_id = child.id();
+        self.children.push(AbsoluteEntry {
+            widget_id,
+            widget: Some(child),
+            position,
+            constraint: Some(constraint),
+        });
     }
     /// Removes the child at insertion index `index` and returns it so the caller
     /// can drop it or reuse it.
     ///
     /// Returns `None` if `index` is out of range; nothing is removed in that case.
-    /// Removing a child also drops its recorded widget id. Indices of children
-    /// after `index` shift down by one.
+    /// Indices of children after `index` shift down by one.
     pub fn remove_child(&mut self, index: usize) -> Option<Box<dyn Widget>> {
         if index < self.children.len() {
-            let (widget, _, _) = self.children.remove(index);
-            if let Some(ref w) = widget {
-                self.widget_ids.retain(|id| *id != w.id());
-            }
-            widget
+            self.children.remove(index).widget
         } else {
             None
         }
@@ -384,7 +407,6 @@ impl AbsoluteLayout {
     /// if freshly constructed.
     pub fn clear_children(&mut self) {
         self.children.clear();
-        self.widget_ids.clear();
     }
     /// Number of children currently registered, including children added by widget
     /// id via [`Layout::add_widget`] that have no `Box<dyn Widget>` handle.
@@ -401,17 +423,15 @@ impl AbsoluteLayout {
     pub fn layout(&self, parent_rect: Rect) -> Vec<Rect> {
         let parent_size = parent_rect.size();
         let mut positions = Vec::new();
-        for (child, position, constraint) in &self.children {
-            let child_size = match child {
-                Some(w) => w.size_hint(),
-                None => Size::new(0, 0),
-            };
-            let constrained_size = if let Some(constraint) = constraint {
-                constraint.apply(child_size)
-            } else {
-                child_size
-            };
-            let rect = position.to_rect(parent_size, constrained_size);
+        for entry in &self.children {
+            let child_size =
+                entry.widget.as_ref().map(|w| w.size_hint()).unwrap_or(Size::new(0, 0));
+            let constrained_size = entry
+                .constraint
+                .as_ref()
+                .map(|constraint| constraint.apply(child_size))
+                .unwrap_or(child_size);
+            let rect = entry.position.to_rect(parent_size, constrained_size);
             positions.push(rect);
         }
         positions
@@ -441,8 +461,8 @@ impl AbsoluteLayout {
     /// Returns `true` if a child was updated and `false` if `index` is out of
     /// range; any existing size constraint is preserved.
     pub fn set_position(&mut self, index: usize, position: AbsolutePosition) -> bool {
-        if let Some((_, pos, _)) = self.children.get_mut(index) {
-            *pos = position;
+        if let Some(entry) = self.children.get_mut(index) {
+            entry.position = position;
             true
         } else {
             false
@@ -455,8 +475,8 @@ impl AbsoluteLayout {
     /// range. The child's position is left untouched. There is no way to remove a
     /// constraint once set short of replacing the child.
     pub fn set_constraint(&mut self, index: usize, constraint: Constraint) -> bool {
-        if let Some((_, _, cons)) = self.children.get_mut(index) {
-            *cons = Some(constraint);
+        if let Some(entry) = self.children.get_mut(index) {
+            entry.constraint = Some(constraint);
             true
         } else {
             false
@@ -465,7 +485,7 @@ impl AbsoluteLayout {
     /// Borrows the position of the child at insertion index `index`, or `None` if
     /// `index` is out of range.
     pub fn get_position(&self, index: usize) -> Option<&AbsolutePosition> {
-        self.children.get(index).map(|(_, pos, _)| pos)
+        self.children.get(index).map(|entry| &entry.position)
     }
     /// Borrows the constraint of the child at insertion index `index`.
     ///
@@ -473,20 +493,10 @@ impl AbsoluteLayout {
     /// constraint, so callers cannot distinguish the two cases from the return
     /// value alone.
     pub fn get_constraint(&self, index: usize) -> Option<&Constraint> {
-        self.children.get(index).and_then(|(_, _, cons)| cons.as_ref())
+        self.children.get(index).and_then(|entry| entry.constraint.as_ref())
     }
 }
 crate::impl_default_via_new!(AbsoluteLayout);
-
-impl AbsoluteLayout {
-    fn widget_id_for_index(&self, index: usize) -> Option<ObjectId> {
-        // Prefer stored widget_ids (from add_widget), fall back to children's own ID.
-        self.widget_ids
-            .get(index)
-            .copied()
-            .or_else(|| self.children.get(index).and_then(|(w, _, _)| w.as_ref().map(|w| w.id())))
-    }
-}
 
 impl Layout for AbsoluteLayout {
     fn as_any(&self) -> &dyn Any {
@@ -498,49 +508,148 @@ impl Layout for AbsoluteLayout {
     }
 
     fn add_widget(&mut self, widget_id: ObjectId, _stretch: u32) {
-        if !self.widget_ids.contains(&widget_id) {
-            self.widget_ids.push(widget_id);
-        }
-        // Also add to children so layout() and update() find this widget.
-        if !self.children.iter().any(|(w, _, _)| w.as_ref().is_some_and(|w| w.id() == widget_id)) {
-            self.children.push((None, AbsolutePosition::new(0, 0), None));
+        // Dedupe against the unified entry list, not a parallel id list (S-56).
+        if !self.children.iter().any(|entry| entry.widget_id == widget_id) {
+            self.children.push(AbsoluteEntry {
+                widget_id,
+                widget: None,
+                position: AbsolutePosition::new(0, 0),
+                constraint: None,
+            });
         }
     }
 
     fn remove_widget(&mut self, widget_id: ObjectId) {
-        self.widget_ids.retain(|id| *id != widget_id);
-        self.children.retain(|(w, _, _)| w.as_ref().is_none_or(|w| w.id() != widget_id));
+        self.children.retain(|entry| entry.widget_id != widget_id);
     }
 
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
         let positions = self.layout(rect);
         for (i, child_rect) in positions.iter().enumerate() {
-            if let Some(id) = self.widget_id_for_index(i) {
-                widgets(id, *child_rect);
+            if let Some(entry) = self.children.get(i) {
+                widgets(entry.widget_id, *child_rect);
             }
         }
     }
 
     fn child_ids(&self) -> Vec<ObjectId> {
-        let mut ids: Vec<ObjectId> = self.widget_ids.clone();
-        for (w, _, _) in &self.children {
-            if let Some(widget) = w {
-                if !ids.contains(&widget.id()) {
-                    ids.push(widget.id());
-                }
+        let mut ids: Vec<ObjectId> = Vec::new();
+        for entry in &self.children {
+            if !ids.contains(&entry.widget_id) {
+                ids.push(entry.widget_id);
             }
         }
         ids
     }
 
     fn has_child(&self, id: ObjectId) -> bool {
-        self.widget_ids.contains(&id)
-            || self.children.iter().any(|(w, _, _)| w.as_ref().is_some_and(|w| w.id() == id))
+        self.children.iter().any(|entry| entry.widget_id == id)
+    }
+
+    fn clear(&mut self) {
+        self.clear_children();
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::HashMap;
+
+    /// Minimal owned widget used to exercise the layout's `add_child` path.
+    struct TestWidget {
+        id: ObjectId,
+        size: Size,
+    }
+    impl TestWidget {
+        fn new(id: ObjectId, width: u32, height: u32) -> Self {
+            Self { id, size: Size::new(width, height) }
+        }
+    }
+    impl crate::event::EventHandler for TestWidget {
+        fn handle_event(&mut self, _event: &crate::event::Event) {}
+    }
+    impl Widget for TestWidget {
+        fn id(&self) -> ObjectId {
+            self.id
+        }
+        fn size_hint(&self) -> Size {
+            self.size
+        }
+    }
+
+    // ── S-56: identity and geometry stay aligned across add/remove ──────────────────
+
+    #[test]
+    fn remove_keeps_identity_and_geometry_aligned() {
+        let mut layout = AbsoluteLayout::new();
+        layout.add_widget(1, 0);
+        layout.set_position(0, AbsolutePosition::new(10, 10));
+        layout.add_child(Box::new(TestWidget::new(2, 20, 20)), AbsolutePosition::new(50, 50));
+
+        assert_eq!(layout.child_count(), 2);
+        layout.remove_widget(1);
+        assert_eq!(layout.child_count(), 1, "removing an id-only child must drop its slot");
+
+        let mut rects = HashMap::new();
+        layout.update(Rect::new(0, 0, 100, 100), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+
+        assert_eq!(rects.len(), 1, "the deleted sibling is gone from the update");
+        assert_eq!(
+            rects.get(&2),
+            Some(&Rect::new(50, 50, 20, 20)),
+            "the survivor keeps its own geometry, not the deleted sibling's"
+        );
+    }
+
+    #[test]
+    fn removing_any_position_keeps_survivors_aligned() {
+        let mut layout = AbsoluteLayout::new();
+        for (id, x) in [(1u64, 10i32), (2, 20), (3, 30)] {
+            layout.add_widget(id, 0);
+            let index = layout.child_count() - 1;
+            layout.set_position(index, AbsolutePosition::new(x, 0));
+        }
+        layout.remove_widget(2); // middle
+
+        assert_eq!(layout.child_ids(), vec![1, 3]);
+        let mut rects = HashMap::new();
+        layout.update(Rect::new(0, 0, 100, 100), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+        assert_eq!(rects.get(&1).map(|r| r.x), Some(10));
+        assert_eq!(rects.get(&3).map(|r| r.x), Some(30));
+    }
+
+    #[test]
+    fn duplicate_register_does_not_add_a_second_entry() {
+        let mut layout = AbsoluteLayout::new();
+        layout.add_widget(1, 0);
+        layout.add_widget(1, 0);
+        assert_eq!(layout.child_count(), 1);
+        assert_eq!(layout.child_ids(), vec![1]);
+    }
+
+    // ── S-55: `dyn Layout::clear` must reach the concrete clear_children ─────────────
+
+    #[test]
+    fn dyn_clear_removes_absolute_children() {
+        let mut layout: Box<dyn Layout> = Box::new(AbsoluteLayout::new());
+        layout.add_widget(1, 0);
+        layout.add_widget(2, 0);
+        assert!(layout.has_child(1));
+
+        layout.clear();
+        assert!(!layout.has_child(1));
+        assert!(!layout.has_child(2));
+        assert!(layout.child_ids().is_empty());
+
+        // A repeat clear is a no-op, not a panic or a re-emission.
+        layout.clear();
+        assert!(layout.child_ids().is_empty());
+    }
+
     #[test]
     fn test_absolute_position() {
         let pos =

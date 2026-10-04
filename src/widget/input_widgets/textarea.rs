@@ -593,6 +593,11 @@ impl TextArea {
             self.text.truncate(boundary);
             // The caret must stay on a boundary inside what is left.
             self.cursor_pos = floor_char_boundary(&self.text, self.cursor_pos.min(self.text.len()));
+            // A shrinking limit makes every longer value unreachable, so the
+            // history that could restore one is cleared and the shared target is
+            // re-synced to the truncated value.
+            *self.history_target.borrow_mut() = self.text.clone();
+            self.undo_stack.clear();
             self.changed.emit();
             self.base.request_redraw();
         } else if previous != max {
@@ -1538,6 +1543,22 @@ mod tests {
         ta.set_text("Hello".to_string());
         assert_eq!(ta.text(), "Hel");
         assert_eq!(ta.cursor_pos(), 3);
+    }
+
+    /// Reducing the limit truncates the value *and* invalidates the history that
+    /// could restore the over-limit string.
+    #[test]
+    fn max_length_change_keeps_undo_within_the_limit() {
+        let mut ta = TextArea::new(String::new(), Rect::new(0, 0, 300, 200));
+        ta.set_text("abcdef");
+        ta.set_max_length(3);
+        assert_eq!(ta.text(), "abc", "the value is truncated to the limit");
+
+        assert!(!ta.can_undo(), "an over-limit value must not be undoable");
+        assert!(!ta.undo());
+        assert_eq!(ta.text(), "abc");
+        assert!(!ta.redo());
+        assert_eq!(ta.text(), "abc");
     }
 
     #[test]

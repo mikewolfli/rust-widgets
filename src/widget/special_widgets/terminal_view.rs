@@ -262,15 +262,30 @@ impl EventHandler for TerminalView {
             self.cursor.start();
         }
 
-        if let Event::KeyPress { key, modifiers: _ } = event {
-            match *key {
+        match event {
+            Event::TextInput { text } => {
+                self.input_line.push_str(text);
+                // Typing starts a fresh line, so a later Up/Down recalls from the
+                // newest history entry rather than resuming the recalled one.
+                self.history_index = None;
+                self.base.request_redraw();
+            }
+            Event::KeyPress { key, modifiers: _ } => match *key {
                 13 => {
                     let _ = self.submit();
+                }
+                8 => {
+                    // Backspace deletes one Unicode scalar, not one byte, so a
+                    // multi-byte glyph is removed whole.
+                    self.input_line.pop();
+                    self.history_index = None;
+                    self.base.request_redraw();
                 }
                 38 => self.recall_history(true),
                 40 => self.recall_history(false),
                 _ => { /* Other keys are not relevant */ }
-            }
+            },
+            _ => { /* Other events are not relevant */ }
         }
     }
 }
@@ -554,6 +569,63 @@ mod tests {
         // Down again clears
         terminal.handle_event(&Event::key_press(40, 0));
         assert_eq!(terminal.input_line(), "");
+    }
+
+    #[test]
+    fn text_input_appends_unicode_to_the_line() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal.handle_event(&Event::text_input("你好"));
+        terminal.handle_event(&Event::text_input(" ls"));
+        assert_eq!(terminal.input_line(), "你好 ls");
+    }
+
+    #[test]
+    fn backspace_deletes_one_character_not_one_byte() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal.set_input_line("ab");
+        terminal.handle_event(&Event::key_press(8, 0));
+        assert_eq!(terminal.input_line(), "a");
+
+        // A multi-byte glyph is removed whole.
+        terminal.set_input_line("你");
+        terminal.handle_event(&Event::key_press(8, 0));
+        assert_eq!(terminal.input_line(), "");
+    }
+
+    #[test]
+    fn enter_submits_text_entered_via_text_input() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal.handle_event(&Event::text_input("ls -la"));
+        terminal.handle_event(&Event::key_press(13, 0));
+        assert_eq!(terminal.input_line(), "");
+        assert_eq!(terminal.lines().last().map(|s| s.as_str()), Some("> ls -la"));
+    }
+
+    #[test]
+    fn history_recall_then_editing_starts_a_fresh_line() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal.set_input_line("cmd1");
+        assert!(terminal.submit());
+        terminal.set_input_line("cmd2");
+        assert!(terminal.submit());
+
+        terminal.handle_event(&Event::key_press(38, 0));
+        assert_eq!(terminal.input_line(), "cmd2");
+        terminal.handle_event(&Event::text_input(" extra"));
+        assert_eq!(terminal.input_line(), "cmd2 extra");
+        // Editing reset the history cursor, so Up recalls from the newest again.
+        terminal.handle_event(&Event::key_press(38, 0));
+        assert_eq!(terminal.input_line(), "cmd2");
+    }
+
+    #[test]
+    fn a_disabled_terminal_ignores_text_input_and_backspace() {
+        let mut terminal = TerminalView::new(Rect::new(0, 0, 500, 260));
+        terminal.set_input_line("ab");
+        terminal.set_enabled(false);
+        terminal.handle_event(&Event::text_input("x"));
+        terminal.handle_event(&Event::key_press(8, 0));
+        assert_eq!(terminal.input_line(), "ab", "a disabled terminal must not edit the line");
     }
     /// The caret blinks on the ticks it is given, and stops when the terminal is disabled.
     ///

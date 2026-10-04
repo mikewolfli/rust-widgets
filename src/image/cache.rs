@@ -150,15 +150,15 @@ struct SourceStamp {
 enum Victim {
     Image(u64),
     Pixels(u64),
-    Source(alloc::vec::Vec<u8>),
+    Source(std::path::PathBuf),
 }
 
 /// The cache itself. Held behind a mutex in a process-wide `OnceLock`.
 struct DecodeCache {
     entries: BTreeMap<u64, Entry>,
     pixels: BTreeMap<u64, PixelEntry>,
-    /// File bytes, keyed by the path's bytes rather than by a content hash — see [`SourceEntry`].
-    sources: BTreeMap<alloc::vec::Vec<u8>, SourceEntry>,
+    /// File bytes, keyed by the path itself rather than by a content hash — see [`SourceEntry`].
+    sources: BTreeMap<std::path::PathBuf, SourceEntry>,
     /// Total decoded bytes across both maps, maintained rather than summed on demand so the eviction
     /// loop does not walk the maps to answer "how full am I".
     used_bytes: usize,
@@ -205,7 +205,11 @@ impl DecodeCache {
     ///
     /// Returns `None` for a stale entry **and drops it**, so a file that changed does not leave its
     /// old bytes occupying budget until something else happens to evict them.
-    fn get_source(&mut self, path_key: &[u8], stamp: SourceStamp) -> Option<Arc<Vec<u8>>> {
+    fn get_source(
+        &mut self,
+        path_key: &std::path::Path,
+        stamp: SourceStamp,
+    ) -> Option<Arc<Vec<u8>>> {
         self.tick += 1;
         let tick = self.tick;
         let entry = self.sources.get_mut(path_key)?;
@@ -224,7 +228,7 @@ impl DecodeCache {
     /// Stores `bytes` for `path_key`, with the same budgeting rules as [`Self::insert`].
     fn insert_source(
         &mut self,
-        path_key: alloc::vec::Vec<u8>,
+        path_key: std::path::PathBuf,
         bytes: Arc<Vec<u8>>,
         stamp: SourceStamp,
     ) {
@@ -348,6 +352,17 @@ static MISSES: AtomicU64 = AtomicU64::new(0);
 static EVICTIONS: AtomicU64 = AtomicU64::new(0);
 static STORED_BYTES: AtomicUsize = AtomicUsize::new(0);
 
+/// The byte budget currently in effect, as [`stats`] reports it.
+///
+/// Kept in an atomic rather than read through the cache mutex so a profile can read it without
+/// contending with a decode, and so it has a value in every build: `0` where the cache is compiled
+/// out (no `image` feature, or `alloc_frugal`), because a profile that cannot store anything has
+/// a truthful budget of nothing, not the default it never allocated.
+#[cfg(all(feature = "image", not(alloc_frugal)))]
+static BUDGET_BYTES: AtomicUsize = AtomicUsize::new(DEFAULT_BUDGET_BYTES);
+#[cfg(not(all(feature = "image", not(alloc_frugal))))]
+static BUDGET_BYTES: AtomicUsize = AtomicUsize::new(0);
+
 /// The file layer's own counters, kept separate from the decode layer's.
 ///
 /// Two layers, two questions. "How many decodes did we avoid" and "how many *reads* did we avoid"
@@ -437,7 +452,7 @@ pub fn stats() -> DecodeCacheStats {
         misses: MISSES.load(Ordering::Relaxed),
         evictions: EVICTIONS.load(Ordering::Relaxed),
         bytes: STORED_BYTES.load(Ordering::Relaxed),
-        budget_bytes: DEFAULT_BUDGET_BYTES,
+        budget_bytes: BUDGET_BYTES.load(Ordering::Relaxed),
         file_requests: FILE_REQUESTS.load(Ordering::Relaxed),
         file_hits: FILE_HITS.load(Ordering::Relaxed),
         file_misses: FILE_MISSES.load(Ordering::Relaxed),
@@ -487,6 +502,9 @@ pub fn clear() {
 pub fn set_budget_bytes(budget_bytes: usize) {
     #[cfg(all(feature = "image", not(alloc_frugal)))]
     {
+        // Publish the new budget before touching the cache so a caller that reads `stats` in the
+        // same instant already sees the value it just configured, not the previous one.
+        BUDGET_BYTES.store(budget_bytes, Ordering::Relaxed);
         let (used, evictions) = with_cache(|cache| {
             cache.budget_bytes = budget_bytes;
             // Evict down to the new budget now, so the accounting a caller reads immediately after
@@ -655,30 +673,24 @@ pub fn cached_from_path(path: impl AsRef<std::path::Path>) -> Result<Arc<Vec<u8>
     Ok(bytes)
 }
 
-/// The cache key for a path: its bytes, with separator spelling normalised.
+/// The cache key for a path: the path itself, as a [`std::path::PathBuf`].
 ///
-/// `\` and `/` name the same file on Windows, so a caller that spelled the path the other way
-/// would otherwise get a second entry and a second read.
+/// # Why the key is the path, not normalised bytes
 ///
-/// # Why this is not `cfg(windows)`
+/// A path is what the filesystem answers with, and [`std::path::Path`] already models that
+/// identity losslessly and per-platform: it preserves non-UTF-8 names (an `OsStr` is not a
+/// lossy string) and it compares components the way the OS does. On Windows that means `a\b`
+/// and `a/b` are the **same** key (both separators name the same file); on macOS and Unix a
+/// backslash is an ordinary filename byte, so `a\b` and `a/b` stay **distinct**.
 ///
-/// The action — "normalise a path separator" — is platform-independent; only the *reason* to do it
-/// is platform-specific, and on Unix the normalisation happens to be the identity. Choosing the codepath
-/// by `cfg` therefore put OS knowledge in `src/image/`, outside `src/platform/` (principle #35/#36),
-/// and gave the same function **two bodies** — one of which was never compiled on the host that
-/// runs the tests. A separator is a byte, so the rule is expressed as bytes: replace every `\` with
-/// `/`. On Unix a backslash is a legal filename character, so a path that contains one is renamed
-/// by this — which is the honest trade: such a path is a single file on Unix and would be two on
-/// Windows, and the cache is keyed by *bytes read*, so both spellings must still decode the same
-/// file, which they do because the bytes on disk are what a miss re-reads.
+/// The previous implementation normalised every `\` into `/` on every platform and then ran
+/// the result through `to_string_lossy`, which did two things wrong at once: it merged two
+/// legal distinct files on macOS, and it folded distinct non-UTF-8 names onto one replacement
+/// character. Keying by `PathBuf` removes both losses without any OS branch in this file —
+/// the platform knowledge lives in `std::path` itself (principle #35/#36).
 #[cfg(all(feature = "image", not(alloc_frugal)))]
-fn path_key(path: &std::path::Path) -> alloc::vec::Vec<u8> {
-    path.as_os_str()
-        .to_string_lossy()
-        .as_bytes()
-        .iter()
-        .map(|byte| if *byte == b'\\' { b'/' } else { *byte })
-        .collect()
+fn path_key(path: &std::path::Path) -> std::path::PathBuf {
+    path.to_path_buf()
 }
 
 /// Reads and decodes a file as RGBA8, reusing a previously decoded result for the same bytes.
@@ -1064,15 +1076,83 @@ mod tests {
     fn the_file_layer_is_inside_the_same_budget() {
         let mut cache = DecodeCache::new(100);
         let stamp = SourceStamp { len: 80, modified_nanos: 1 };
-        cache.insert_source(b"a".to_vec(), Arc::new(vec![0u8; 80]), stamp);
+        cache.insert_source(std::path::PathBuf::from("a"), Arc::new(vec![0u8; 80]), stamp);
         assert_eq!(cache.used_bytes, 80, "the file bytes are on the budget's books");
 
         // A second file that does not fit evicts the first rather than overrunning.
         let stamp2 = SourceStamp { len: 80, modified_nanos: 2 };
-        cache.insert_source(b"b".to_vec(), Arc::new(vec![1u8; 80]), stamp2);
+        cache.insert_source(std::path::PathBuf::from("b"), Arc::new(vec![1u8; 80]), stamp2);
         assert!(cache.used_bytes <= 100, "the budget is a ceiling across all three maps");
         assert_eq!(cache.evictions, 1);
-        assert!(cache.get_source(b"a", stamp).is_none(), "the older file was the victim");
-        assert!(cache.get_source(b"b", stamp2).is_some());
+        assert!(
+            cache.get_source(std::path::Path::new("a"), stamp).is_none(),
+            "the older file was the victim"
+        );
+        assert!(cache.get_source(std::path::Path::new("b"), stamp2).is_some());
+    }
+
+    /// The configured budget must be the number [`stats`] reports, immediately.
+    ///
+    /// Pins the defect: `set_budget_bytes` mutated the cache's internal budget, but `stats` read a
+    /// hardcoded `DEFAULT_BUDGET_BYTES`, so a host that set its own budget could never observe it.
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
+    #[test]
+    fn the_configured_budget_is_immediately_queryable() {
+        let _guard = stats_test_guard();
+        set_budget_bytes(123_456);
+        assert_eq!(
+            stats().budget_bytes,
+            123_456,
+            "the budget a caller configured must be the one stats reports"
+        );
+        set_budget_bytes(7);
+        assert_eq!(stats().budget_bytes, 7, "a later adjustment must win over the earlier one");
+        set_budget_bytes(0);
+        assert_eq!(
+            stats().budget_bytes,
+            0,
+            "a zero budget (storage disabled) is a real, reportable configuration"
+        );
+        // Restore the default so this test does not leak a budget into the process-wide cache
+        // that later tests in the binary read.
+        set_budget_bytes(DEFAULT_BUDGET_BYTES);
+        assert_eq!(stats().budget_bytes, DEFAULT_BUDGET_BYTES);
+    }
+
+    /// The file cache must key on the path, not on lossy, separator-rewritten bytes.
+    ///
+    /// Pins the defect: `path_key` rewrote every `\` into `/` and ran the result through
+    /// `to_string_lossy`, so two legal distinct files on macOS (`a\b` and `a/b`) landed on one key.
+    /// The key is now the `PathBuf` itself; the OS's own `Path` equality is the oracle for whether
+    /// two spellings name one file, so the test stays correct on every platform without a `cfg`.
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
+    #[test]
+    fn distinct_path_spellings_key_the_way_the_os_says() {
+        let slash = std::path::PathBuf::from("a/b");
+        let backslash = std::path::PathBuf::from("a\\b");
+        let same_file = slash == backslash;
+
+        let mut cache = DecodeCache::new(1000);
+        let stamp = SourceStamp { len: 1, modified_nanos: 1 };
+        cache.insert_source(slash.clone(), Arc::new(vec![0xAA]), stamp);
+        cache.insert_source(backslash.clone(), Arc::new(vec![0xBB]), stamp);
+
+        if same_file {
+            // On Windows the two spellings name one file, so the second write replaced the first.
+            assert_eq!(&*cache.get_source(&slash, stamp).unwrap(), &[0xBB]);
+        } else {
+            // On Unix/macOS a backslash is an ordinary filename byte, so the two are distinct files
+            // and each keeps its own bytes — the behaviour the old byte key destroyed.
+            assert_eq!(&*cache.get_source(&slash, stamp).unwrap(), &[0xAA]);
+            assert_eq!(&*cache.get_source(&backslash, stamp).unwrap(), &[0xBB]);
+        }
+    }
+
+    /// `path_key` must be the lossless path, not a rewritten byte string.
+    #[cfg(all(feature = "image", not(alloc_frugal)))]
+    #[test]
+    fn the_path_key_is_the_lossless_path() {
+        assert_eq!(path_key(std::path::Path::new("a\\b")), std::path::PathBuf::from("a\\b"));
+        assert_eq!(path_key(std::path::Path::new("a/b")), std::path::PathBuf::from("a/b"));
     }
 }

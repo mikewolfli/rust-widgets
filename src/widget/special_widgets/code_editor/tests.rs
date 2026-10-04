@@ -529,6 +529,108 @@ fn buffers_open_switch_and_close() {
     assert_eq!(editor.buffers().len(), 1);
 }
 
+// ── S-58..S-61 tab/history/read-only regression tests ────────────────────
+
+#[test]
+fn closing_the_active_tab_keeps_the_survivor_content() {
+    let mut editor = editor();
+    editor.set_text("original A");
+    let b = editor.open_buffer("B", "original B");
+    assert_eq!(editor.active_buffer(), b);
+    assert_eq!(editor.text(), "original B");
+
+    assert!(editor.close_buffer(b));
+    assert_eq!(editor.buffers().len(), 1);
+    assert_eq!(editor.text(), "original A", "the surviving tab keeps its own text");
+    assert_eq!(editor.buffers()[0].text, "original A");
+    assert!(editor.is_modified(), "and its modified state is preserved");
+}
+
+#[test]
+fn closing_first_middle_and_last_active_tabs_keeps_every_survivor() {
+    let mut editor = editor();
+    editor.set_text("A");
+    editor.open_buffer("B", "B");
+    editor.open_buffer("C", "C");
+
+    // Active is C (last). Close it -> B survives and becomes active.
+    assert!(editor.close_buffer(editor.active_buffer()));
+    assert_eq!(editor.text(), "B");
+    // Active is B (middle, index 1 of [A, B]). Close it -> A survives.
+    assert!(editor.close_buffer(editor.active_buffer()));
+    assert_eq!(editor.text(), "A");
+    // Active is A (first). Closing the last buffer empties it instead.
+    assert!(editor.close_buffer(editor.active_buffer()));
+    assert_eq!(editor.text(), "");
+}
+
+#[test]
+fn closing_an_inactive_tab_preserves_the_active_content() {
+    let mut editor = editor();
+    editor.set_text("active text");
+    let inactive = editor.open_buffer("inactive", "inactive text");
+    assert!(editor.activate_buffer(0));
+    assert_eq!(editor.text(), "active text");
+
+    assert!(editor.close_buffer(inactive));
+    assert_eq!(editor.buffers().len(), 1);
+    assert_eq!(editor.text(), "active text");
+}
+
+#[test]
+fn untracked_switch_invalidates_cross_document_history() {
+    let mut editor = editor();
+    let a = editor.active_buffer();
+    editor.set_text("xAAAA");
+    let b = editor.open_buffer("B", "BBBB");
+
+    assert!(editor.activate_buffer_untracked(a));
+    editor.clear_history();
+    editor.insert("y");
+    assert_eq!(editor.text(), "yxAAAA");
+
+    assert!(editor.activate_buffer_untracked(b));
+    // The range command recorded against A was invalidated on the untracked
+    // switch, so undo must not splice into B.
+    assert!(!editor.can_undo(), "the history must be cleared on the switch");
+    assert!(!editor.undo());
+    assert_eq!(editor.text(), "BBBB");
+}
+
+#[test]
+fn read_only_spans_do_not_leak_across_buffers() {
+    let mut editor = editor();
+    editor.set_text("locked A");
+    editor.add_read_only_span(ReadOnlySpan::lines(0, 0));
+    assert!(!editor.is_position_editable(TextPosition::new(0, 0)), "A's line 0 is locked");
+
+    editor.open_buffer("B", "editable B");
+    assert!(editor.is_position_editable(TextPosition::new(0, 0)), "B's line 0 is not locked");
+    editor.insert("x");
+    assert_eq!(editor.text(), "xeditable B");
+}
+
+#[test]
+fn a_no_change_outdent_does_not_mark_dirty_or_emit() {
+    use std::sync::{Arc, Mutex};
+
+    let mut editor = editor();
+    editor.set_text("plain");
+    editor.mark_saved();
+    assert!(!editor.is_modified());
+
+    let emitted = Arc::new(Mutex::new(0usize));
+    let sink = Arc::clone(&emitted);
+    editor.text_changed.connect(move |_| *sink.lock().unwrap() += 1);
+
+    editor.set_cursor(0, 0, false);
+    editor.outdent_selection();
+
+    assert_eq!(editor.text(), "plain");
+    assert!(!editor.is_modified(), "a no-change transform must not mark the document dirty");
+    assert_eq!(*emitted.lock().unwrap(), 0, "and must not fire text_changed");
+}
+
 // ── 10. Rendering ───────────────────────────────────────────────────────────
 
 #[test]

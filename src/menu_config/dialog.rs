@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use super::{ConfigPersistence, MenuConfig, PerformanceLevel};
+use super::{ConfigLoadError, ConfigPersistence, MenuConfig, PerformanceLevel};
 use std::io;
 /// Menu configuration dialog for user preferences.
 pub struct MenuConfigDialog {
@@ -57,10 +57,11 @@ impl MenuConfigDialog {
         let new_speed = (current - 0.1).max(0.1);
         self.config.set_animation_speed(new_speed);
     }
-    /// Increases max visible items.
+    /// Increases max visible items, saturating at the type's maximum rather than
+    /// wrapping back to a small value.
     pub fn increase_max_items(&mut self) {
         let current = self.config.max_visible_items();
-        self.config.set_max_visible_items(current + 5);
+        self.config.set_max_visible_items(current.saturating_add(5));
     }
     /// Decreases max visible items.
     pub fn decrease_max_items(&mut self) {
@@ -77,11 +78,15 @@ impl MenuConfigDialog {
     pub fn save(&self) -> io::Result<()> {
         self.persistence.save(&self.config)
     }
-    /// Loads configuration from disk.
-    pub fn load(&mut self) -> io::Result<()> {
+    /// Loads configuration from disk, restoring the hardware baseline first so a
+    /// field removed from the file falls back to its default rather than keeping a
+    /// stale reversed preference.
+    ///
+    /// A rejected load leaves `self.config` untouched, so a parse failure cannot
+    /// corrupt the previous configuration.
+    pub fn load(&mut self) -> Result<(), ConfigLoadError> {
         let overrides = self.persistence.load()?;
-        self.config.user_overrides = overrides;
-        self.config.apply_user_overrides();
+        self.config.reload_overrides(overrides);
         Ok(())
     }
     /// Returns a summary of current settings for display.

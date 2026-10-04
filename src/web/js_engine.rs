@@ -46,16 +46,17 @@ impl JsValue {
     /// Whether this value counts as `true` in a JavaScript boolean context.
     ///
     /// Follows ECMAScript `ToBoolean`: `undefined`/`null` are false, `NaN` and
-    /// both zeros are false, empty strings, arrays and objects are false, while
-    /// functions are always true.
+    /// both zeros are false, empty strings are false, and every object —
+    /// including an empty array and an empty object — is true, as are functions.
     pub fn is_truthy(&self) -> bool {
         match self {
             JsValue::Undefined | JsValue::Null => false,
             JsValue::Boolean(b) => *b,
             JsValue::Number(n) => *n != 0.0 && !n.is_nan(),
             JsValue::String(s) => !s.is_empty(),
-            JsValue::Array(a) => !a.is_empty(),
-            JsValue::Object(o) => !o.is_empty(),
+            // Arrays and objects are always truthy regardless of how many
+            // elements they hold: an empty collection is a non-null reference.
+            JsValue::Array(_) | JsValue::Object(_) => true,
             JsValue::Ident(s) => !s.is_empty(),
             JsValue::Function(_) | JsValue::FunctionDef { .. } => true,
         }
@@ -1259,7 +1260,8 @@ fn js_value_to_ours(v: &boa_engine::JsValue, context: &mut boa_engine::Context) 
 #[cfg(feature = "js-engine")]
 fn our_value_to_boa(v: &JsValue) -> boa_engine::JsValue {
     match v {
-        JsValue::Null | JsValue::Undefined => boa_engine::JsValue::undefined(),
+        JsValue::Null => boa_engine::JsValue::null(),
+        JsValue::Undefined => boa_engine::JsValue::undefined(),
         JsValue::Number(n) => boa_engine::JsValue::from(*n),
         JsValue::String(s) => boa_engine::JsValue::from(boa_engine::JsString::from(s.as_str())),
         JsValue::Boolean(b) => boa_engine::JsValue::from(*b),
@@ -1268,6 +1270,40 @@ fn our_value_to_boa(v: &JsValue) -> boa_engine::JsValue {
         _ => boa_engine::JsValue::undefined(),
     }
 }
+
+/// Why writing a global into a [`BoaJsEngine`] failed.
+///
+/// The engine's `set` operation can fail in two distinct ways: the property may
+/// exist but be read-only, or a setter on the property may have thrown. Keeping
+/// them apart lets a caller react differently to "the value was rejected" versus
+/// "user code ran and failed".
+#[cfg(feature = "js-engine")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SetGlobalError {
+    /// The property exists but is not writable, so the engine rejected the write
+    /// without running any setter. Carries the property (global) name.
+    PropertyRejected(String),
+    /// A setter on the property threw while the write was being applied. Carries
+    /// the engine's description of the thrown error.
+    SetterThrew(String),
+}
+
+#[cfg(feature = "js-engine")]
+impl std::fmt::Display for SetGlobalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SetGlobalError::PropertyRejected(name) => {
+                write!(f, "global '{name}' is read-only and rejected the write")
+            }
+            SetGlobalError::SetterThrew(message) => {
+                write!(f, "global setter threw: {message}")
+            }
+        }
+    }
+}
+
+#[cfg(feature = "js-engine")]
+impl std::error::Error for SetGlobalError {}
 
 /// Real JavaScript engine powered by `boa_engine`.
 /// Gated behind `#[cfg(feature = "js-engine")]`.
@@ -1333,11 +1369,27 @@ impl BoaJsEngine {
     }
 
     /// Set a global variable.
+    ///
+    /// Failures are silently ignored; use [`Self::try_set_global`] when the
+    /// caller must learn whether the write actually happened.
     pub fn set_global(&mut self, name: &str, value: JsValue) {
+        let _ = self.try_set_global(name, value);
+    }
+
+    /// Set a global variable, reporting why the write failed.
+    ///
+    /// Returns `Ok(())` when the write succeeded. A read-only property yields
+    /// [`SetGlobalError::PropertyRejected`], while a setter that throws yields
+    /// [`SetGlobalError::SetterThrew`].
+    pub fn try_set_global(&mut self, name: &str, value: JsValue) -> Result<(), SetGlobalError> {
         let global = self.context.global_object();
         let key = boa_engine::JsString::from(name);
         let val = our_value_to_boa(&value);
-        global.set(key, val, false, &mut self.context).ok();
+        match global.set(key, val, false, &mut self.context) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(SetGlobalError::PropertyRejected(name.to_string())),
+            Err(error) => Err(SetGlobalError::SetterThrew(error.to_string())),
+        }
     }
 }
 
@@ -1354,6 +1406,54 @@ mod tests {
         assert_eq!(JsValue::Boolean(true).to_string(), "true");
         assert_eq!(JsValue::Number(42.0).to_string(), "42");
         assert_eq!(JsValue::String("hello".to_string()).to_string(), "hello");
+    }
+
+    /// ECMAScript `ToBoolean` treats every object — including empty arrays and
+    /// empty objects — as truthy, unlike empty strings and zero-valued primitives.
+    #[test]
+    fn empty_collections_are_truthy_like_ecmascript_objects() {
+        assert!(JsValue::Array(Vec::new()).is_truthy());
+        assert!(JsValue::Array(vec![JsValue::Null]).is_truthy());
+        assert!(JsValue::Object(crate::compat::HashMap::new()).is_truthy());
+        assert!(JsValue::Array(Vec::new()).to_boolean());
+        assert!(JsValue::Object(crate::compat::HashMap::new()).to_boolean());
+        // The falsey cases stay falsey.
+        assert!(!JsValue::String(String::new()).is_truthy());
+        assert!(!JsValue::Number(0.0).is_truthy());
+        assert!(!JsValue::Number(f64::NAN).is_truthy());
+        assert!(!JsValue::Null.is_truthy());
+        assert!(!JsValue::Undefined.is_truthy());
+    }
+
+    #[test]
+    fn boolean_builtin_coerces_an_empty_array_to_true() {
+        let mut engine = SimpleJsEngine::new();
+        let mut context = JsContext::new();
+        assert_eq!(engine.evaluate("Boolean([])", &mut context).unwrap(), JsValue::Boolean(true));
+        assert_eq!(engine.evaluate("Boolean('')", &mut context).unwrap(), JsValue::Boolean(false));
+    }
+
+    #[test]
+    fn an_empty_array_enters_the_if_branch() {
+        let mut engine = SimpleJsEngine::new();
+        let mut context = JsContext::new();
+        assert_eq!(
+            engine.evaluate("if ([]) { 1 } else { 2 }", &mut context).unwrap(),
+            JsValue::Number(1.0)
+        );
+        assert_eq!(
+            engine.evaluate("if ('') { 1 } else { 2 }", &mut context).unwrap(),
+            JsValue::Number(2.0)
+        );
+    }
+
+    #[test]
+    fn an_empty_array_drives_logical_operators_as_truthy() {
+        let mut engine = SimpleJsEngine::new();
+        let mut context = JsContext::new();
+        assert_eq!(engine.evaluate("[] && 5", &mut context).unwrap(), JsValue::Number(5.0));
+        assert_eq!(engine.evaluate("[] || 7", &mut context).unwrap(), JsValue::Array(Vec::new()));
+        assert_eq!(engine.evaluate("![]", &mut context).unwrap(), JsValue::Boolean(false));
     }
     #[test]
     fn test_simple_engine_evaluate() {
@@ -1564,6 +1664,36 @@ mod boa_tests {
         engine.set_global("x", JsValue::Number(99.0));
         let result = engine.evaluate("x * 2").unwrap();
         assert_eq!(result, JsValue::Number(198.0));
+    }
+
+    #[test]
+    fn test_boa_null_round_trips_distinctly_from_undefined() {
+        let mut engine = BoaJsEngine::new();
+        engine.set_global("probe_null", JsValue::Null);
+        engine.set_global("probe_undef", JsValue::Undefined);
+        // The two keep their identities through the bridge.
+        assert_eq!(engine.get_global("probe_null"), Some(JsValue::Null));
+        assert_eq!(engine.get_global("probe_undef"), Some(JsValue::Undefined));
+        // Strict equality must not confuse them.
+        assert_eq!(engine.evaluate("probe_null === null").unwrap(), JsValue::Boolean(true));
+        assert_eq!(engine.evaluate("probe_undef === null").unwrap(), JsValue::Boolean(false));
+        assert_eq!(engine.evaluate("probe_undef === undefined").unwrap(), JsValue::Boolean(true));
+    }
+
+    #[test]
+    fn test_boa_set_global_reports_read_only_rejection() {
+        let mut engine = BoaJsEngine::new();
+        engine
+            .evaluate("Object.defineProperty(globalThis, 'ro', { value: 1, writable: false });")
+            .unwrap();
+        // Writing 2 over the read-only property fails with a property rejection.
+        let result = engine.try_set_global("ro", JsValue::Number(2.0));
+        assert!(matches!(result, Err(SetGlobalError::PropertyRejected(name)) if name == "ro"));
+        // The property keeps its original value.
+        assert_eq!(engine.get_global("ro"), Some(JsValue::Number(1.0)));
+        // The legacy infallible API stays callable and silently no-ops on rejection.
+        engine.set_global("ro", JsValue::Number(3.0));
+        assert_eq!(engine.get_global("ro"), Some(JsValue::Number(1.0)));
     }
 
     /// A byte offset must be reported as a real line and column.

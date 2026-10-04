@@ -103,8 +103,13 @@ impl SampleFormat {
             SampleFormat::I24 => data
                 .chunks_exact(3)
                 .map(|c| {
-                    let val = i32::from_le_bytes([c[0], c[1], c[2], 0]);
-                    (val >> 8) as f32 / 8388608.0
+                    // Assemble the 24-bit little-endian value into the low 24
+                    // bits of an i32, then sign-extend by shifting the sign bit
+                    // up to bit 31 and shifting back. Full scale (±0x7FFFFF /
+                    // 0x800000) now maps to ~±1.0 instead of ~±0.0039, and the
+                    // low 8 bits are preserved.
+                    let val = (c[0] as i32) | ((c[1] as i32) << 8) | ((c[2] as i32) << 16);
+                    ((val << 8) >> 8) as f32 / 8388608.0
                 })
                 .collect(),
             SampleFormat::I32 => data
@@ -152,5 +157,33 @@ mod tests {
         let samples = SampleFormat::I16.to_f32(&data);
         assert!((samples[0] - 0.0).abs() < 0.01);
         assert!((samples[2] - 0.999).abs() < 0.02);
+    }
+
+    #[test]
+    fn test_sample_format_i24_full_scale() {
+        // Little-endian 0x800000 = -8388608 must map to -1.0.
+        let neg = [0x00u8, 0x00, 0x80];
+        let samples = SampleFormat::I24.to_f32(&neg);
+        assert!((samples[0] + 1.0).abs() < 1e-6, "got {}", samples[0]);
+        // Little-endian 0x7FFFFF = +8388607 must map to ~+1.0.
+        let pos = [0xFFu8, 0xFF, 0x7F];
+        let samples = SampleFormat::I24.to_f32(&pos);
+        assert!((samples[0] - 1.0).abs() < 1e-6, "got {}", samples[0]);
+    }
+
+    #[test]
+    fn test_sample_format_i24_lsb_and_zero() {
+        // 0x000001 must map to exactly 1 / 2^23.
+        let one = [0x01u8, 0x00, 0x00];
+        let samples = SampleFormat::I24.to_f32(&one);
+        assert!((samples[0] - 1.0 / 8388608.0).abs() < 1e-9, "got {}", samples[0]);
+        // 0xFFFFFF is -1 LSB after sign extension, so -1 / 2^23.
+        let neg_one = [0xFFu8, 0xFF, 0xFF];
+        let samples = SampleFormat::I24.to_f32(&neg_one);
+        assert!((samples[0] + 1.0 / 8388608.0).abs() < 1e-9, "got {}", samples[0]);
+        // Zero must stay exactly zero.
+        let zero = [0u8, 0, 0];
+        let samples = SampleFormat::I24.to_f32(&zero);
+        assert_eq!(samples[0], 0.0);
     }
 }

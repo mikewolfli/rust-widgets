@@ -85,23 +85,23 @@ impl TextureAtlas {
         if width > self.max_size.width || height > self.max_size.height {
             return None;
         }
-        // Simple row-based packing. `checked_add` so a value near `u32::MAX` cannot wrap the cursor
-        // (which would silently place the entry at a bogus origin) or panic in debug builds.
-        if self.cursor_x.checked_add(width)? > self.max_size.width {
-            // Start new row
-            self.cursor_x = 0;
-            self.cursor_y = self.cursor_y.checked_add(self.row_height)?;
-            self.row_height = 0;
-        }
-        if self.cursor_y.checked_add(height)? > self.max_size.height {
+        // Compute the prospective origin *without* mutating the packer, so a failed
+        // allocation leaves `cursor_x`/`cursor_y`/`row_height` exactly where they were.
+        let wrap = self.cursor_x.checked_add(width).map(|next| next > self.max_size.width)?;
+        let x = if wrap { 0 } else { self.cursor_x };
+        let y = if wrap { self.cursor_y.checked_add(self.row_height)? } else { self.cursor_y };
+        // Validate the prospective row before committing any state: the entry must
+        // fit vertically on the row it lands on, including after a wrap.
+        if y.checked_add(height)? > self.max_size.height {
             return None; // Atlas full or the new row overflows
         }
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
-        let rect = AtlasRect { x: self.cursor_x, y: self.cursor_y, width, height };
+        let rect = AtlasRect { x, y, width, height };
         self.entries.insert(id, AtlasEntry { rect, texture_id: id });
-        self.cursor_x = self.cursor_x.checked_add(width)?;
-        self.row_height = self.row_height.max(height);
+        self.cursor_x = x.checked_add(width)?;
+        self.cursor_y = y;
+        self.row_height = if wrap { height } else { self.row_height.max(height) };
         Some((id, rect))
     }
 
@@ -200,6 +200,20 @@ mod tests {
         assert!(atlas.allocate(u32::MAX, u32::MAX).is_none());
         // The atlas is still usable afterwards.
         assert!(atlas.allocate(8, 8).is_some());
+    }
+
+    /// A failed allocation must not consume space or move the cursor — including
+    /// when the failure is a too-tall entry on a wrapped row.
+    #[test]
+    fn a_failed_allocation_does_not_corrupt_packer_state() {
+        let mut atlas = TextureAtlas::new(Size::new(10, 10));
+        assert!(atlas.allocate(6, 6).is_some());
+        // 5x5 would wrap to a second row but is too tall for the remaining
+        // height: it must fail without moving the cursor or committing a new row.
+        assert!(atlas.allocate(5, 5).is_none());
+        // The 4x6 that fits beside the first entry is still allocatable.
+        let (_, rect) = atlas.allocate(4, 6).expect("packer state must remain intact");
+        assert_eq!((rect.x, rect.y), (6, 0));
     }
 
     #[test]

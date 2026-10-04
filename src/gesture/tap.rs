@@ -160,17 +160,19 @@ const TWO_FINGER_COUNT: usize = 2;
 /// - [`Event::TwoFingerTap { pos }`] — centroid of both touches
 #[derive(Debug)]
 pub struct TwoFingerTapGesture {
-    /// (touchdown_pos, current_pos, touch_id, time)
+    /// (touchdown_pos, current_pos, touch_id, start_time)
     touches: Vec<(Point, Point, TouchId, u64)>,
-    /// End positions of touches that have lifted, used for centroid calculation.
-    touch_ends: Vec<Point>,
+    /// Completed (lifted) touches: `(start_time, end_time, end_pos)`. Kept
+    /// around until the second finger lifts so every start/end time can be
+    /// checked and the release centroid can be computed from where the fingers
+    /// actually lifted.
+    completed: Vec<(u64, u64, Point)>,
 }
 
 impl TwoFingerTapGesture {
-    /// Creates a recognizer tracking no touches and with no recorded lift
-    /// positions.
+    /// Creates a recognizer tracking no touches and with no recorded lifts.
     pub fn new() -> Self {
-        Self { touches: Vec::new(), touch_ends: Vec::new() }
+        Self { touches: Vec::new(), completed: Vec::new() }
     }
 }
 
@@ -200,41 +202,50 @@ impl GestureRecognizer for TwoFingerTapGesture {
                 }
                 None
             }
-            Event::TouchEnd { pos: _, touch_id } => {
+            Event::TouchEnd { pos, touch_id } => {
                 if let Some(idx) = self.touches.iter().position(|(_, _, id, _)| *id == *touch_id) {
                     // Read the start time by identity, *before* the removal below: indexing
                     // `touches[0]` afterwards is only valid while another finger remains,
                     // so the single-finger case would have panicked on an empty list.
-                    let first_time = self.touches[idx].3;
-                    let elapsed = now_ms.saturating_sub(first_time);
-                    // Store the end position for centroid calculation
-                    let end_pos = self.touches[idx].1;
+                    let start_time = self.touches[idx].3;
                     self.touches.remove(idx);
-                    self.touch_ends.push(end_pos);
+                    // Record the release position (not the last move or the landing
+                    // point) so the centroid reflects where the finger actually lifted.
+                    self.completed.push((start_time, now_ms, *pos));
                     // A *two-finger* tap requires that two fingers were actually seen.
                     // Testing only `touches.is_empty()` accepted a single finger, because
                     // one finger lifting also empties the list — so every ordinary tap was
-                    // also reported as `TwoFingerTap`. Counting the recorded lift
-                    // positions is what distinguishes "both fingers came and went" from
-                    // "one finger came and went".
-                    if self.touches.is_empty()
-                        && self.touch_ends.len() == TWO_FINGER_COUNT
-                        && elapsed <= TWO_FINGER_TAP_DURATION_MS
-                    {
-                        // Compute centroid from all stored end positions
-                        let centroid = Point::from_f32(
-                            self.touch_ends.iter().map(|p| p.x).sum::<i32>() as f32
-                                / self.touch_ends.len() as f32,
-                            self.touch_ends.iter().map(|p| p.y).sum::<i32>() as f32
-                                / self.touch_ends.len() as f32,
-                        );
+                    // also reported as `TwoFingerTap`. Counting the completed lifts is
+                    // what distinguishes "both fingers came and went" from "one finger
+                    // came and went".
+                    if self.touches.is_empty() && self.completed.len() == TWO_FINGER_COUNT {
+                        let (s0, e0, p0) = self.completed[0];
+                        let (s1, e1, p1) = self.completed[1];
+                        // Both fingers must land within the timeout of each other, and
+                        // each finger's own hold must be within the duration bound.
+                        // Checking the touch sequence itself — not a Timer — covers
+                        // reversed release order and an over-long first finger.
+                        let landing_gap = s0.abs_diff(s1);
+                        let dur0 = e0.saturating_sub(s0);
+                        let dur1 = e1.saturating_sub(s1);
+                        if landing_gap <= TWO_FINGER_TAP_TIMEOUT_MS
+                            && dur0 <= TWO_FINGER_TAP_DURATION_MS
+                            && dur1 <= TWO_FINGER_TAP_DURATION_MS
+                        {
+                            // Centroid of the two release positions (i64 sums avoid
+                            // overflow for large coordinates).
+                            let centroid = Point::new(
+                                ((p0.x as i64 + p1.x as i64) / 2) as i32,
+                                ((p0.y as i64 + p1.y as i64) / 2) as i32,
+                            );
+                            self.reset();
+                            return Some(Event::TwoFingerTap { pos: centroid });
+                        }
                         self.reset();
-                        return Some(Event::TwoFingerTap { pos: centroid });
-                    }
-                    // Fewer than two fingers: this is not a two-finger gesture at all.
-                    // Clear the partial record so a later single tap cannot combine with
-                    // this one to reach the count.
-                    if self.touches.is_empty() {
+                    } else if self.touches.is_empty() {
+                        // Fewer than two fingers: this is not a two-finger gesture at all.
+                        // Clear the partial record so a later single tap cannot combine
+                        // with this one to reach the count.
                         self.reset();
                     }
                 }
@@ -254,8 +265,126 @@ impl GestureRecognizer for TwoFingerTapGesture {
 
     fn reset(&mut self) {
         self.touches.clear();
-        self.touch_ends.clear();
+        self.completed.clear();
     }
 }
 
 crate::impl_default_via_new!(TwoFingerTapGesture);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// S-85: two fingers landing 500ms apart must not be accepted as a
+    /// simultaneous two-finger tap, even when both lifts are individually quick.
+    #[test]
+    fn two_finger_tap_rejects_slow_inter_landing() {
+        let mut gesture = TwoFingerTapGesture::new();
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(10, 10), touch_id: 1 }, 0)
+            .is_none());
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(30, 10), touch_id: 2 }, 500)
+            .is_none());
+        assert!(gesture
+            .process(&Event::TouchEnd { pos: Point::new(10, 10), touch_id: 1 }, 520)
+            .is_none());
+        let produced =
+            gesture.process(&Event::TouchEnd { pos: Point::new(30, 10), touch_id: 2 }, 530);
+        assert!(
+            produced.is_none(),
+            "a 500ms inter-landing gap must not be a TwoFingerTap, got {produced:?}"
+        );
+    }
+
+    /// S-85: the first-released finger's over-long hold must invalidate the
+    /// whole sequence, not just the last finger's duration.
+    #[test]
+    fn two_finger_tap_rejects_long_first_finger() {
+        let mut gesture = TwoFingerTapGesture::new();
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(10, 10), touch_id: 1 }, 0)
+            .is_none());
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(30, 10), touch_id: 2 }, 10)
+            .is_none());
+        // Finger 1 holds 400ms (> 300ms) before lifting.
+        assert!(gesture
+            .process(&Event::TouchEnd { pos: Point::new(10, 10), touch_id: 1 }, 400)
+            .is_none());
+        let produced =
+            gesture.process(&Event::TouchEnd { pos: Point::new(30, 10), touch_id: 2 }, 60);
+        assert!(
+            produced.is_none(),
+            "an over-long first finger must invalidate the tap, got {produced:?}"
+        );
+    }
+
+    /// S-86: the centroid must use the release positions, not the landing
+    /// positions, when there are no moves in between.
+    #[test]
+    fn two_finger_tap_uses_release_positions_for_centroid() {
+        let mut gesture = TwoFingerTapGesture::new();
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(10, 10), touch_id: 1 }, 0)
+            .is_none());
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(30, 10), touch_id: 2 }, 10)
+            .is_none());
+        // Lift at a different location than the landing point.
+        assert!(gesture
+            .process(&Event::TouchEnd { pos: Point::new(10, 20), touch_id: 1 }, 20)
+            .is_none());
+        let produced =
+            gesture.process(&Event::TouchEnd { pos: Point::new(30, 20), touch_id: 2 }, 30);
+        match produced {
+            Some(Event::TwoFingerTap { pos }) => assert_eq!(pos, Point::new(20, 20)),
+            other => panic!("expected TwoFingerTap, got {other:?}"),
+        }
+    }
+
+    /// S-85/S-86: reversed release order still yields the correct tap and
+    /// centroid, and the landing/duration bounds are enforced by the sequence.
+    #[test]
+    fn two_finger_tap_reversed_release_order() {
+        let mut gesture = TwoFingerTapGesture::new();
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(10, 10), touch_id: 1 }, 0)
+            .is_none());
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(30, 10), touch_id: 2 }, 10)
+            .is_none());
+        assert!(gesture
+            .process(&Event::TouchEnd { pos: Point::new(30, 20), touch_id: 2 }, 20)
+            .is_none());
+        let produced =
+            gesture.process(&Event::TouchEnd { pos: Point::new(10, 20), touch_id: 1 }, 30);
+        match produced {
+            Some(Event::TwoFingerTap { pos }) => assert_eq!(pos, Point::new(20, 20)),
+            other => panic!("reversed release order must still be a tap, got {other:?}"),
+        }
+    }
+
+    /// S-85: the 150ms landing and 300ms duration bounds are inclusive.
+    #[test]
+    fn two_finger_tap_accepts_boundaries() {
+        let mut gesture = TwoFingerTapGesture::new();
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(10, 10), touch_id: 1 }, 0)
+            .is_none());
+        // Exactly 150ms after the first finger lands.
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(30, 10), touch_id: 2 }, 150)
+            .is_none());
+        // Each finger holds exactly 300ms.
+        assert!(gesture
+            .process(&Event::TouchEnd { pos: Point::new(10, 10), touch_id: 1 }, 300)
+            .is_none());
+        let produced =
+            gesture.process(&Event::TouchEnd { pos: Point::new(30, 10), touch_id: 2 }, 450);
+        match produced {
+            Some(Event::TwoFingerTap { pos }) => assert_eq!(pos, Point::new(20, 10)),
+            other => panic!("boundary timings must still be a tap, got {other:?}"),
+        }
+    }
+}

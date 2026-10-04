@@ -448,7 +448,12 @@ impl ImeBridge for MacOsImeBridge {
         // bridge for why this join belongs on the bridge's commit path).
         #[cfg(not(alloc_frugal))]
         {
-            if let Some(widget_id) = *lock(&self.focused_widget) {
+            // Copy the focused widget out of the lock and release the guard before
+            // delivering: `deliver_commit` dispatches to the widget, whose handler may
+            // change focus, cancel or re-submit — any of which re-enters this bridge's
+            // own `focused_widget` mutex. Holding the guard across that call deadlocks.
+            let focused = *lock(&self.focused_widget);
+            if let Some(widget_id) = focused {
                 if !crate::platform::ime::deliver_commit(widget_id, text) {
                     log::debug!(
                         "[macOS IME] commit_text: widget {widget_id} is no longer mounted; the \
@@ -773,5 +778,72 @@ mod tests {
         let null_ptr = std::ptr::null_mut();
         // Should not panic (no-op without objc2-macos feature).
         bridge.attach_to_view(null_ptr);
+    }
+
+    /// A commit callback that re-enters the bridge (focus_out) must not deadlock.
+    ///
+    /// `commit_text` used to hold the `focused_widget` lock for the whole synchronous
+    /// `deliver_commit`, so a widget whose `ImeCommit` handler changed focus re-locked
+    /// the same mutex and hung. The lock must be released before delivery.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn commit_text_releases_the_focus_lock_before_delivery() {
+        use crate::event::{Event, EventHandler};
+        use std::rc::Rc;
+
+        let bridge = Rc::new(MacOsImeBridge::new());
+        let reentered = Rc::new(core::cell::Cell::new(false));
+        let id_cell = Rc::new(core::cell::Cell::new(0u64));
+
+        struct Reentrant {
+            bridge: Rc<MacOsImeBridge>,
+            id: Rc<core::cell::Cell<u64>>,
+            reentered: Rc<core::cell::Cell<bool>>,
+            base: crate::widget::BaseWidget,
+        }
+        impl crate::widget::Widget for Reentrant {
+            fn base(&self) -> &crate::widget::BaseWidget {
+                &self.base
+            }
+            fn base_mut(&mut self) -> &mut crate::widget::BaseWidget {
+                &mut self.base
+            }
+        }
+        impl EventHandler for Reentrant {
+            fn handle_event(&mut self, event: &Event) {
+                if matches!(event, Event::ImeCommit { .. }) {
+                    assert!(
+                        crate::compat::try_lock(&self.bridge.focused_widget).is_some(),
+                        "commit delivery must not hold the focused_widget lock"
+                    );
+                    self.bridge.focus_out(self.id.get());
+                    self.reentered.set(true);
+                }
+            }
+        }
+
+        let id = crate::widget::runtime::register(Box::new(Reentrant {
+            bridge: Rc::clone(&bridge),
+            id: Rc::clone(&id_cell),
+            reentered: Rc::clone(&reentered),
+            base: crate::widget::BaseWidget::new(
+                crate::widget::WidgetKind::LineEdit,
+                crate::core::Rect::new(0, 0, 10, 10),
+                "reentrant",
+            ),
+        }))
+        .expect("mount the reentrant widget");
+        id_cell.set(id);
+
+        bridge.focus_in(id);
+        bridge.commit_text("hi");
+
+        assert!(reentered.get(), "the commit handler must have run");
+        assert!(
+            lock(&bridge.focused_widget).is_none(),
+            "focus_out must have re-entered and cleared"
+        );
+
+        crate::widget::runtime::unregister(id);
     }
 }

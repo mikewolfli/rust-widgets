@@ -11,6 +11,7 @@
 use crate::action::ActionManager;
 use crate::compat::String;
 use crate::shortcut::Key;
+use crate::shortcut::PlatformShortcutStyle;
 use crate::shortcut::Shortcut;
 
 /// Routes keyboard shortcuts to registered actions, bridging `shortcut` and `action` modules.
@@ -87,15 +88,34 @@ impl<'a> ActionRouter<'a> {
             .unwrap_or(false)
     }
 
-    /// Registers standard Ctrl+Z and Ctrl+Y undo/redo actions.
+    /// Registers standard undo/redo actions using the platform's primary modifier.
+    ///
+    /// Undo is always `Primary+Z` (`⌘Z` on macOS, `Ctrl+Z` elsewhere). Redo follows
+    /// the host convention explicitly: `Primary+Shift+Z` on macOS (the standard
+    /// `⇧⌘Z`) and `Primary+Y` on Windows/Linux (`Ctrl+Y`). The physical-Control
+    /// spellings remain available through [`Shortcut::ctrl`] for code that needs the
+    /// Control key on every platform.
     pub fn connect_undo_redo<U, R>(&mut self, undo: U, redo: R) -> bool
     where
         U: FnMut() + Send + Sync + 'static,
         R: FnMut() + Send + Sync + 'static,
     {
-        let undo_ok = self.connect_callback("undo", Shortcut::ctrl(Key::Z), "Undo", undo);
-        let redo_ok = self.connect_callback("redo", Shortcut::ctrl(Key::Y), "Redo", redo);
+        let undo_ok = self.connect_callback("undo", Shortcut::primary(Key::Z), "Undo", undo);
+        let redo_ok = self.connect_callback("redo", Self::redo_shortcut(), "Redo", redo);
         undo_ok && redo_ok
+    }
+
+    /// The platform's conventional redo accelerator.
+    ///
+    /// Kept as its own helper (and documented here rather than hidden in
+    /// [`connect_undo_redo`](Self::connect_undo_redo)) so the convention is an
+    /// explicit, testable contract instead of an implicit `Ctrl+Y` that would be
+    /// wrong on macOS.
+    fn redo_shortcut() -> Shortcut {
+        match crate::platform::platform_facts().shortcut_style() {
+            PlatformShortcutStyle::Mac => Shortcut::primary_shift(Key::Z),
+            PlatformShortcutStyle::Desktop => Shortcut::primary(Key::Y),
+        }
     }
 
     /// Registers a shortcut binding to an existing action.

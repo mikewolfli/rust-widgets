@@ -152,21 +152,61 @@ pub struct ActionBinding {
 /// `Ctrl` spelling a hand-written layout uses. Folding the aliases here is what makes both the
 /// string API and the type API agree, wherever they are reached.
 pub(crate) fn normalize_shortcut(shortcut: &str) -> String {
-    shortcut
-        .split('+')
-        .map(|token| token.trim().to_lowercase())
-        // Fold every spelling of the primary modifier onto `"primary"`, matching
-        // `Shortcut::from_string`. Any other token is kept verbatim.
-        //
-        // `String::from` rather than `"primary".to_string()`: an allocation-frugal profile does
-        // not pull in the `ToString` prelude, so the `to_string()` spelling failed to compile
-        // under `--features mini` (E0599) — a defect the `mini` profile gate caught. The branch
-        // must stay owned because the other arm holds the owned result of `to_lowercase()`.
-        .map(|token| match token.as_str() {
-            "cmd" | "command" | "cmdorctrl" | "ctrl" | "control" => String::from("primary"),
-            _ => token,
-        })
-        .filter(|token| !token.is_empty())
-        .collect::<Vec<_>>()
-        .join("+")
+    let mut primary = false;
+    let mut alt = false;
+    let mut shift = false;
+    let mut meta = false;
+    let mut key: String = String::new();
+
+    for token in shortcut.split('+').map(|t| t.trim()).filter(|t| !t.is_empty()) {
+        let lower = token.to_lowercase();
+        match lower.as_str() {
+            // The string API folds every spelling of the primary modifier onto
+            // `primary`, exactly as `Shortcut::from_string` does. `Ctrl` *is*
+            // `Primary` for a hand-written layout: on macOS that is Command, on
+            // Windows/Linux it is Control.
+            "cmd" | "command" | "cmdorctrl" | "ctrl" | "control" | "primary" => primary = true,
+            // `Option` is the macOS spelling of the Alt key; both must agree.
+            "alt" | "option" => alt = true,
+            "shift" => shift = true,
+            // Meta/Win/Super are one physical modifier, so fold them together.
+            "meta" | "win" | "super" => meta = true,
+            // The last non-modifier token is the key, matching `Shortcut::from_string`.
+            _ => key = lower,
+        }
+    }
+
+    // Emit modifiers in the same canonical order `Shortcut::format_shortcut` uses,
+    // so `"Ctrl+Shift+S"` and `"Shift+Ctrl+S"` both normalize to `primary+shift+s`.
+    let mut parts: Vec<String> = Vec::new();
+    if primary {
+        parts.push(String::from("primary"));
+    }
+    if alt {
+        parts.push(String::from("alt"));
+    }
+    if shift {
+        parts.push(String::from("shift"));
+    }
+    if meta {
+        parts.push(String::from("meta"));
+    }
+    if !key.is_empty() {
+        parts.push(key);
+    }
+    parts.join("+")
+}
+
+/// Canonicalizes a typed [`Shortcut`](crate::shortcut::Shortcut) for the action
+/// registry's reverse-lookup map.
+///
+/// Unlike [`normalize_shortcut`], this keeps
+/// [`Modifiers::CTRL`](crate::shortcut::Modifiers::CTRL) distinct from
+/// [`Modifiers::PRIMARY`](crate::shortcut::Modifiers::PRIMARY), because
+/// `Shortcut::ctrl(S)` and `Shortcut::primary(S)` are different chords
+/// (`ShortcutManager` registers both). The string API ([`normalize_shortcut`])
+/// keeps folding `Ctrl` onto `primary`; that convention is deliberately isolated
+/// from this typed bridge.
+pub(crate) fn canonicalize_shortcut_type(shortcut: &crate::shortcut::Shortcut) -> String {
+    shortcut.format_shortcut().to_lowercase()
 }

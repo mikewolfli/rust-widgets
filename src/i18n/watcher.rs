@@ -18,6 +18,18 @@ use crossbeam_channel::{unbounded, Receiver, Sender};
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use std::path::Path;
 use std::time::SystemTime;
+
+/// The language a translation file name implies: the file stem (name without the
+/// `.json` extension).
+///
+/// `I18nManager::load_translations` rejects files whose stem disagrees with the
+/// `language` field they declare, so this mapping is always consistent with the
+/// key a file was registered under — the watcher and the loader cannot drift
+/// apart and request a language key that does not exist.
+fn language_from_path(path: &Path) -> Option<String> {
+    path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string())
+}
+
 /// File watcher for hot reload
 pub struct I18nFileWatcher {
     watcher: Option<notify::RecommendedWatcher>,
@@ -38,9 +50,9 @@ impl I18nFileWatcher {
                 if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
                     if let Some(path) = event.paths.first() {
                         if path.extension().is_some_and(|ext| ext == "json") {
-                            if let Some(lang) = path.file_stem().and_then(|s| s.to_str()) {
+                            if let Some(lang) = language_from_path(path) {
                                 if let Err(e) = sender.send(ReloadEvent::TranslationReloaded {
-                                    language: lang.to_string(),
+                                    language: lang,
                                     timestamp: SystemTime::now(),
                                 }) {
                                     log::error!("[i18n] Watcher send failed: {e:?}");
@@ -272,5 +284,22 @@ pub fn pump_hot_reload() -> usize {
     match receiver {
         Some(receiver) => process_reload_events(&receiver).len(),
         None => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// S-91: the watcher identifies a language by the file stem. Because
+    /// `load_translations` rejects a file whose stem disagrees with its declared
+    /// `language`, this conversion can never request a language key that does not
+    /// exist in the catalogue.
+    #[test]
+    fn language_from_path_uses_the_file_stem() {
+        assert_eq!(language_from_path(Path::new("en.json")).as_deref(), Some("en"));
+        assert_eq!(language_from_path(Path::new("/some/dir/de.json")).as_deref(), Some("de"));
+        assert_eq!(language_from_path(Path::new("no-extension")).as_deref(), Some("no-extension"));
+        assert_eq!(language_from_path(Path::new("")), None);
     }
 }

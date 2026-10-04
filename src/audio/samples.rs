@@ -83,22 +83,45 @@ impl AudioBuffer {
         mono
     }
 
-    /// Apply fade-in to the first `duration` samples.
-    pub fn fade_in(&mut self, duration_samples: usize) {
-        let len = duration_samples.min(self.samples.len());
-        for i in 0..len {
-            let gain = i as f32 / duration_samples as f32;
-            self.samples[i] *= gain;
+    /// Apply fade-in over the first `duration_frames` frames.
+    ///
+    /// Every channel of a frame receives the same envelope value, so a stereo
+    /// or multichannel signal fades uniformly in time instead of having a
+    /// different gain per interleaved sample.
+    pub fn fade_in(&mut self, duration_frames: usize) {
+        let channels = self.channels as usize;
+        let total_frames = self.samples.len() / channels;
+        let frames = duration_frames.min(total_frames);
+        if frames == 0 {
+            return;
+        }
+        for frame in 0..frames {
+            let gain = frame as f32 / duration_frames as f32;
+            let base = frame * channels;
+            for ch in 0..channels {
+                self.samples[base + ch] *= gain;
+            }
         }
     }
 
-    /// Apply fade-out to the last `duration` samples.
-    pub fn fade_out(&mut self, duration_samples: usize) {
-        let len = duration_samples.min(self.samples.len());
-        let start = self.samples.len() - len;
-        for i in 0..len {
-            let gain = (len - i) as f32 / len as f32;
-            self.samples[start + i] *= gain;
+    /// Apply fade-out over the last `duration_frames` frames.
+    ///
+    /// Every channel of a frame receives the same envelope value (see
+    /// [`AudioBuffer::fade_in`]).
+    pub fn fade_out(&mut self, duration_frames: usize) {
+        let channels = self.channels as usize;
+        let total_frames = self.samples.len() / channels;
+        let frames = duration_frames.min(total_frames);
+        if frames == 0 {
+            return;
+        }
+        let start = total_frames - frames;
+        for i in 0..frames {
+            let gain = (frames - i) as f32 / frames as f32;
+            let base = (start + i) * channels;
+            for ch in 0..channels {
+                self.samples[base + ch] *= gain;
+            }
         }
     }
 }
@@ -153,6 +176,35 @@ mod tests {
     fn test_audio_buffer_frames() {
         let buf = AudioBuffer::new(44100, vec![0.0; 8], 2);
         assert_eq!(buf.frames(), 4);
+    }
+
+    #[test]
+    fn fade_in_applies_the_same_gain_to_all_channels_of_a_frame() {
+        // Stereo with two frames, fading in over four frames: frame gains are
+        // [0.0, 0.25], applied equally to the left and right channel.
+        let mut buf = AudioBuffer::new(44100, vec![1.0, 1.0, 1.0, 1.0], 2);
+        buf.fade_in(4);
+        assert_eq!(buf.samples, vec![0.0, 0.0, 0.25, 0.25]);
+    }
+
+    #[test]
+    fn fade_out_applies_the_same_gain_to_all_channels_of_a_frame() {
+        // Stereo with three frames, fading out over two frames: the last two
+        // frames get gains [1.0, 0.5], equal across channels.
+        let mut buf = AudioBuffer::new(44100, vec![1.0; 6], 2);
+        buf.fade_out(2);
+        assert_eq!(buf.samples, vec![1.0, 1.0, 1.0, 1.0, 0.5, 0.5]);
+    }
+
+    #[test]
+    fn fade_handles_multichannel_and_ignores_incomplete_trailing_frame() {
+        // Four channels, two complete frames plus one orphan trailing sample.
+        let mut buf = AudioBuffer::new(44100, vec![1.0; 9], 4);
+        buf.fade_in(2);
+        // Frame 0 -> gain 0.0, frame 1 -> gain 0.5; the orphan sample is untouched.
+        assert_eq!(&buf.samples[0..4], &[0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(&buf.samples[4..8], &[0.5, 0.5, 0.5, 0.5]);
+        assert_eq!(buf.samples[8], 1.0);
     }
 
     #[test]

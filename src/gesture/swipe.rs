@@ -116,22 +116,35 @@ pub struct TwoFingerSwipeGesture {
     /// `elapsed == 0 → max(1)` and an absurd velocity had it ever been taken. Pairing them
     /// makes "both or neither" a type fact rather than an invariant to remember.
     baseline: Option<(u64, Point)>,
-    last_centroid: Option<Point>,
+    /// Final (release) positions of lifted touches, in lift order.
+    ///
+    /// These — not the last move or the landing point — define the end centroid
+    /// once both fingers are up, so a release with no `TouchMove` still measures
+    /// the travel the fingers actually made.
+    touch_ends: Vec<Point>,
 }
 
 impl TwoFingerSwipeGesture {
     /// Creates a recognizer tracking no fingers and no centroid baseline.
     pub fn new() -> Self {
-        Self { touches: Vec::new(), baseline: None, last_centroid: None }
+        Self { touches: Vec::new(), baseline: None, touch_ends: Vec::new() }
     }
 
     fn compute_centroid(touches: &[(Point, TouchId)]) -> Option<Point> {
-        if touches.is_empty() {
+        let points: Vec<Point> = touches.iter().map(|(p, _)| *p).collect();
+        Self::centroid_of_points(&points)
+    }
+
+    /// Average of `points`, computed in `i64` so large coordinates cannot
+    /// overflow the intermediate sum before the division.
+    fn centroid_of_points(points: &[Point]) -> Option<Point> {
+        if points.is_empty() {
             return None;
         }
-        let sum_x: i32 = touches.iter().map(|(p, _)| p.x).sum();
-        let sum_y: i32 = touches.iter().map(|(p, _)| p.y).sum();
-        Some(Point::new(sum_x / touches.len() as i32, sum_y / touches.len() as i32))
+        let n = points.len() as i64;
+        let sum_x: i64 = points.iter().map(|p| p.x as i64).sum();
+        let sum_y: i64 = points.iter().map(|p| p.y as i64).sum();
+        Some(Point::new((sum_x / n) as i32, (sum_y / n) as i32))
     }
 }
 
@@ -148,7 +161,6 @@ impl GestureRecognizer for TwoFingerSwipeGesture {
                     // One write, so the baseline point and its timestamp cannot drift apart.
                     if let Some(centroid) = Self::compute_centroid(&self.touches) {
                         self.baseline = Some((now_ms, centroid));
-                        self.last_centroid = Some(centroid);
                     }
                 }
                 None
@@ -157,24 +169,29 @@ impl GestureRecognizer for TwoFingerSwipeGesture {
                 if let Some(t) = self.touches.iter_mut().find(|(_, id)| *id == *touch_id) {
                     t.0 = *pos;
                 }
-                // Update last_centroid when both fingers are active
-                if self.touches.len() == 2 {
-                    self.last_centroid = Self::compute_centroid(&self.touches);
-                }
                 None
             }
-            Event::TouchEnd { pos: _, touch_id } => {
+            Event::TouchEnd { pos, touch_id } => {
+                // The release position is part of the gesture: a finger that lifts
+                // without a final move still ends at `pos`, and the end centroid must
+                // reflect that rather than the last move or the landing point.
+                if let Some(t) = self.touches.iter_mut().find(|(_, id)| *id == *touch_id) {
+                    t.0 = *pos;
+                    self.touch_ends.push(*pos);
+                }
                 self.touches.retain(|(_, id)| *id != *touch_id);
                 if self.touches.is_empty() {
-                    // Both fingers lifted — evaluate swipe
+                    // Both fingers lifted — evaluate the swipe using the recorded
+                    // release positions as the end centroid.
                     let result = if let (Some((started_at, start)), Some(end)) =
-                        (self.baseline, self.last_centroid)
+                        (self.baseline, Self::centroid_of_points(&self.touch_ends))
                     {
-                        let dx = (end.x - start.x).abs();
-                        let dy = (end.y - start.y).abs();
-                        let dist = ((dx * dx + dy * dy) as f32).sqrt();
-                        // No fallback: the baseline's timestamp is part of the same `Option` as
-                        // the start point, so reaching this arm guarantees it is present.
+                        let dx = end.x as f64 - start.x as f64;
+                        let dy = end.y as f64 - start.y as f64;
+                        let dist = (dx * dx + dy * dy).sqrt() as f32;
+                        // No fallback: the baseline's timestamp is part of the same
+                        // `Option` as the start point, so reaching this arm guarantees
+                        // it is present.
                         let elapsed = now_ms.saturating_sub(started_at).max(1) as f32;
                         // Logical pixels per second, matching `Event::TwoFingerSwipe`'s
                         // documented unit and the other swipe recognisers.
@@ -205,7 +222,7 @@ impl GestureRecognizer for TwoFingerSwipeGesture {
     fn reset(&mut self) {
         self.touches.clear();
         self.baseline = None;
-        self.last_centroid = None;
+        self.touch_ends.clear();
     }
 }
 
@@ -229,9 +246,10 @@ const VELOCITY_WINDOW_MS: u64 = 100;
 /// Velocity-based fling/flick recognizer.
 ///
 /// Detects a short, fast finger flick intended to trigger inertial
-/// scrolling. Unlike [`SwipeGesture`] which requires a minimum
-/// distance of 30px, `FlingGesture` can detect shorter motions
-/// if they are fast enough (velocity > `FLING_MIN_VELOCITY`, in px/s).
+/// scrolling. A fling requires **both** a minimum travel ([`FLING_MIN_DISTANCE`])
+/// and a valid trailing velocity ([`FLING_MIN_VELOCITY`], in px/s), so a slow
+/// long drag — even one that covers plenty of distance — is not reported as a
+/// flick, and a release after a stationary hold has no velocity to report.
 ///
 /// Uses a sliding-window velocity estimate (last ~100ms of movement)
 /// to distinguish flicks from slow pans.
@@ -293,20 +311,29 @@ impl GestureRecognizer for FlingGesture {
             Event::TouchEnd { pos, touch_id } if self.touch_id == Some(*touch_id) => {
                 self.samples.push((*pos, now_ms));
                 let velocity = self.compute_velocity();
+                // Compute magnitudes in `f64` so that ordinary-but-fast gestures
+                // (e.g. 50 px in 1 ms -> 50000 px/s) cannot overflow `i32` when the
+                // velocity component is squared, and large legal coordinates cannot
+                // overflow the distance subtraction.
                 let total_distance = if let Some(start) = self.start_pos {
-                    let dx = (pos.x - start.x).abs();
-                    let dy = (pos.y - start.y).abs();
-                    ((dx * dx + dy * dy) as f32).sqrt()
+                    let dx = pos.x as f64 - start.x as f64;
+                    let dy = pos.y as f64 - start.y as f64;
+                    (dx * dx + dy * dy).sqrt() as f32
                 } else {
                     0.0
                 };
                 let speed = if let Some(v) = velocity {
-                    ((v.x * v.x + v.y * v.y) as f32).sqrt()
+                    let vx = v.x as f64;
+                    let vy = v.y as f64;
+                    (vx * vx + vy * vy).sqrt() as f32
                 } else {
                     0.0
                 };
                 self.reset();
-                if total_distance >= FLING_MIN_DISTANCE || speed >= FLING_MIN_VELOCITY {
+                // A fling needs *both* enough travel and a valid trailing velocity:
+                // a slow long drag (or a hold-then-release) must not masquerade as a
+                // high-speed flick just because it covered the distance.
+                if total_distance >= FLING_MIN_DISTANCE && speed >= FLING_MIN_VELOCITY {
                     Some(Event::Fling {
                         pos: *pos,
                         velocity: velocity.unwrap_or(Point::new(0, 0)),
@@ -391,5 +418,183 @@ mod tests {
         assert!(gesture
             .process(&Event::TouchEnd { pos: Point::new(500, 0), touch_id: 1 }, 100)
             .is_none());
+    }
+
+    // ── S-83: a fling needs both minimum distance AND a valid velocity ──
+
+    /// A slow long drag covers the distance but has no trailing velocity, so it
+    /// must not be reported as a `Fling` (the old OR contract emitted one with a
+    /// zero velocity vector).
+    #[test]
+    fn slow_long_drag_is_not_a_fling() {
+        let mut gesture = FlingGesture::new();
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(0, 0), touch_id: 1 }, 0)
+            .is_none());
+        let produced =
+            gesture.process(&Event::TouchEnd { pos: Point::new(20, 0), touch_id: 1 }, 1000);
+        assert!(
+            produced.is_none(),
+            "a slow long drag must not be reported as a Fling, got {produced:?}"
+        );
+    }
+
+    /// A fast move followed by a stationary hold then release has no velocity in
+    /// the trailing sample window and must not be a fling.
+    #[test]
+    fn hold_then_release_is_not_a_fling() {
+        let mut gesture = FlingGesture::new();
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(0, 0), touch_id: 1 }, 0)
+            .is_none());
+        assert!(gesture
+            .process(&Event::TouchMove { pos: Point::new(30, 0), touch_id: 1 }, 50)
+            .is_none());
+        assert!(gesture
+            .process(&Event::TouchMove { pos: Point::new(30, 0), touch_id: 1 }, 400)
+            .is_none());
+        let produced =
+            gesture.process(&Event::TouchEnd { pos: Point::new(30, 0), touch_id: 1 }, 450);
+        assert!(produced.is_none(), "a hold-then-release must not be a Fling, got {produced:?}");
+    }
+
+    /// A short, fast flick has both enough travel and a valid velocity.
+    #[test]
+    fn short_fast_flick_is_a_fling() {
+        let mut gesture = FlingGesture::new();
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(0, 0), touch_id: 1 }, 0)
+            .is_none());
+        let produced =
+            gesture.process(&Event::TouchEnd { pos: Point::new(20, 0), touch_id: 1 }, 50);
+        match produced {
+            Some(Event::Fling { velocity, .. }) => assert_eq!(velocity, Point::new(400, 0)),
+            other => panic!("a short fast flick must be a Fling, got {other:?}"),
+        }
+    }
+
+    // ── S-84: widen before squaring so magnitudes cannot overflow i32 ──
+
+    /// 50 px in 1 ms is 50000 px/s; squaring that as `i32` overflows. The
+    /// magnitude must be computed after widening to `f64`.
+    #[test]
+    fn fling_velocity_magnitude_does_not_overflow_i32() {
+        let mut gesture = FlingGesture::new();
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(0, 0), touch_id: 1 }, 0)
+            .is_none());
+        let produced = gesture.process(&Event::TouchEnd { pos: Point::new(50, 0), touch_id: 1 }, 1);
+        match produced {
+            Some(Event::Fling { velocity, .. }) => {
+                assert_eq!(velocity.x, 50000);
+                assert_eq!(velocity.y, 0);
+            }
+            other => panic!("a fast flick must still be a Fling, got {other:?}"),
+        }
+    }
+
+    /// 50000 px of two-finger travel squared as `i32` overflows; the distance
+    /// magnitude must be computed after widening to `f64`.
+    #[test]
+    fn two_finger_swipe_distance_does_not_overflow_i32() {
+        let mut gesture = TwoFingerSwipeGesture::new();
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(0, 0), touch_id: 1 }, 0)
+            .is_none());
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(0, 100), touch_id: 2 }, 0)
+            .is_none());
+        assert!(gesture
+            .process(&Event::TouchEnd { pos: Point::new(50000, 0), touch_id: 1 }, 100)
+            .is_none());
+        let produced =
+            gesture.process(&Event::TouchEnd { pos: Point::new(50000, 100), touch_id: 2 }, 100);
+        assert!(
+            matches!(produced, Some(Event::TwoFingerSwipe { .. })),
+            "large-coordinate travel must produce a swipe, got {produced:?}"
+        );
+    }
+
+    // ── S-86: the release position defines the end centroid ──
+
+    /// With no `TouchMove` at all, the release positions must still define the
+    /// travel and the end centroid.
+    #[test]
+    fn two_finger_swipe_uses_release_positions_without_moves() {
+        let mut gesture = TwoFingerSwipeGesture::new();
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(0, 0), touch_id: 1 }, 0)
+            .is_none());
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(0, 100), touch_id: 2 }, 0)
+            .is_none());
+        assert!(gesture
+            .process(&Event::TouchEnd { pos: Point::new(200, 0), touch_id: 1 }, 100)
+            .is_none());
+        let produced =
+            gesture.process(&Event::TouchEnd { pos: Point::new(200, 100), touch_id: 2 }, 100);
+        match produced {
+            Some(Event::TwoFingerSwipe { centroid_start, centroid_end, .. }) => {
+                assert_eq!(centroid_start, Point::new(0, 50));
+                assert_eq!(centroid_end, Point::new(200, 50));
+            }
+            other => panic!("a release without moves must still produce a swipe, got {other:?}"),
+        }
+    }
+
+    /// When the release position differs from the last move, the release wins.
+    #[test]
+    fn two_finger_swipe_release_positions_override_last_move() {
+        let mut gesture = TwoFingerSwipeGesture::new();
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(0, 0), touch_id: 1 }, 0)
+            .is_none());
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(0, 100), touch_id: 2 }, 0)
+            .is_none());
+        assert!(gesture
+            .process(&Event::TouchMove { pos: Point::new(100, 0), touch_id: 1 }, 50)
+            .is_none());
+        assert!(gesture
+            .process(&Event::TouchMove { pos: Point::new(100, 100), touch_id: 2 }, 50)
+            .is_none());
+        assert!(gesture
+            .process(&Event::TouchEnd { pos: Point::new(200, 0), touch_id: 1 }, 100)
+            .is_none());
+        let produced =
+            gesture.process(&Event::TouchEnd { pos: Point::new(200, 100), touch_id: 2 }, 100);
+        match produced {
+            Some(Event::TwoFingerSwipe { centroid_end, .. }) => {
+                assert_eq!(
+                    centroid_end,
+                    Point::new(200, 50),
+                    "release must override the last move"
+                );
+            }
+            other => panic!("expected TwoFingerSwipe, got {other:?}"),
+        }
+    }
+
+    /// The end centroid is order-independent of which finger lifts first.
+    #[test]
+    fn two_finger_swipe_release_order_is_consistent() {
+        let mut gesture = TwoFingerSwipeGesture::new();
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(0, 0), touch_id: 1 }, 0)
+            .is_none());
+        assert!(gesture
+            .process(&Event::TouchBegin { pos: Point::new(0, 100), touch_id: 2 }, 0)
+            .is_none());
+        assert!(gesture
+            .process(&Event::TouchEnd { pos: Point::new(200, 100), touch_id: 2 }, 100)
+            .is_none());
+        let produced =
+            gesture.process(&Event::TouchEnd { pos: Point::new(200, 0), touch_id: 1 }, 100);
+        match produced {
+            Some(Event::TwoFingerSwipe { centroid_end, .. }) => {
+                assert_eq!(centroid_end, Point::new(200, 50));
+            }
+            other => panic!("reversed release order must still produce a swipe, got {other:?}"),
+        }
     }
 }

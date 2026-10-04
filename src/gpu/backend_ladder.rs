@@ -168,6 +168,67 @@ pub fn backends_from_env() -> Option<wgpu::Backends> {
     wgpu::Backends::from_env()
 }
 
+/// Maps an adapter's device type and backend to its ladder tier.
+///
+/// The adapter's reported backend is the primary signal, but a CPU (software)
+/// adapter must always report [`GpuBackendTier::Software`] even when the driver
+/// exposes it through a hardware backend name (lavapipe reports Vulkan,
+/// llvmpipe reports GL). Otherwise the software fallback would be misreported
+/// as `Primary`/`OpenGlEs` and `is_degraded()` would stay silent.
+fn tier_of_adapter(device_type: wgpu::DeviceType, backend: wgpu::Backend) -> GpuBackendTier {
+    if device_type == wgpu::DeviceType::Cpu {
+        GpuBackendTier::Software
+    } else {
+        GpuBackendTier::from_backend(backend)
+    }
+}
+
+/// Ranks a candidate adapter for [`select_adapter_with_gl_fallback`].
+///
+/// Lower is better. The CPU adapter is always last; among hardware adapters a
+/// discrete GPU outranks an integrated one under `HighPerformance` and vice
+/// versa under `LowPower`, keeping the choice consistent with the requested
+/// power preference. The sort is stable, so equal-scoring adapters keep their
+/// enumeration order.
+fn rank_adapter(device_type: wgpu::DeviceType, power_preference: wgpu::PowerPreference) -> u8 {
+    match device_type {
+        wgpu::DeviceType::Cpu => 4,
+        wgpu::DeviceType::DiscreteGpu => match power_preference {
+            wgpu::PowerPreference::LowPower => 1,
+            _ => 0,
+        },
+        wgpu::DeviceType::IntegratedGpu => match power_preference {
+            wgpu::PowerPreference::HighPerformance => 1,
+            _ => 0,
+        },
+        wgpu::DeviceType::VirtualGpu => 2,
+        wgpu::DeviceType::Other => 3,
+    }
+}
+
+/// Picks the best adapter restricted to `backends` that can present to
+/// `compatible_surface`.
+///
+/// `request_adapter` cannot filter by backend set — it returns the default
+/// adapter and silently ignores a pin — so each rung enumerates its own backend
+/// set and filters/ranks the result here.
+async fn best_adapter_for_backends(
+    instance: &wgpu::Instance,
+    backends: wgpu::Backends,
+    power_preference: wgpu::PowerPreference,
+    compatible_surface: Option<&wgpu::Surface<'_>>,
+) -> Option<wgpu::Adapter> {
+    let mut candidates = instance.enumerate_adapters(backends).await;
+    if let Some(surface) = compatible_surface {
+        candidates.retain(|adapter| adapter.is_surface_supported(surface));
+    }
+    candidates.sort_by_key(|adapter| {
+        let info = adapter.get_info();
+        rank_adapter(info.device_type, power_preference)
+    });
+    candidates.into_iter().next()
+}
+
 /// Picks the best available adapter by walking the ladder.
 ///
 /// Tries each rung in order with `power_preference`, returning the first adapter
@@ -201,34 +262,53 @@ pub async fn select_adapter_with_gl_fallback(
     }
 
     let ladder = ladder_for_target();
-    let last = ladder.len().saturating_sub(1);
 
-    for (index, (tier, _backends)) in ladder.iter().enumerate() {
-        // Only the final rung (software) is allowed to accept the CPU adapter.
-        let force_fallback_adapter = index == last;
-        match instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
+    for (tier, backends) in ladder.iter() {
+        // Each rung restricts its search to the rung's own backend set, so a GL
+        // adapter can only win on the OpenGL ES rung and a Vulkan/Metal/DX12
+        // adapter only on the primary rung. The software rung is the exception:
+        // it carries `Backends::empty()` (there is no "software" backend bit)
+        // and instead asks wgpu for the forced CPU fallback adapter.
+        let adapter = if backends.is_empty() {
+            match instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference,
+                    compatible_surface,
+                    force_fallback_adapter: true,
+                    apply_limit_buckets: false,
+                })
+                .await
+            {
+                Ok(adapter) => adapter,
+                Err(error) => {
+                    log::debug!(
+                        "[gpu] fallback adapter request failed for tier {}: {error:?}",
+                        tier.label(),
+                    );
+                    continue;
+                }
+            }
+        } else {
+            match best_adapter_for_backends(
+                instance,
+                *backends,
                 power_preference,
                 compatible_surface,
-                force_fallback_adapter,
-                apply_limit_buckets: false,
-            })
+            )
             .await
-        {
-            Ok(adapter) => {
-                if *tier != GpuBackendTier::Software {
-                    return Some((adapter, *tier));
+            {
+                Some(adapter) => adapter,
+                None => {
+                    log::debug!("[gpu] no adapter on tier {}", tier.label());
+                    continue;
                 }
-                // The terminal rung accepts whatever adapter exists, but the
-                // adapter's own backend decides the reported tier: a hardware GL
-                // adapter found here is still OpenGL ES, not software.
-                let backend = adapter.get_info().backend;
-                return Some((adapter, GpuBackendTier::from_backend(backend)));
             }
-            Err(error) => {
-                log::debug!("[gpu] adapter request failed for tier {}: {error:?}", tier.label());
-            }
-        }
+        };
+
+        // Report the tier from the adapter that actually won, never the label of
+        // the rung that happened to be probed, so `is_degraded()` stays honest.
+        let info = adapter.get_info();
+        return Some((adapter, tier_of_adapter(info.device_type, info.backend)));
     }
 
     log::warn!("[gpu] no adapter available on any tier of the degradation ladder");
@@ -298,6 +378,63 @@ mod tests {
         assert!(gl.is_degraded());
     }
 
+    /// A CPU adapter must report `Software` regardless of the backend name the
+    /// driver advertises, so the software fallback is never misreported as a
+    /// hardware tier and `is_degraded()` stays honest.
+    #[test]
+    fn cpu_adapter_maps_to_software_regardless_of_backend() {
+        assert_eq!(
+            tier_of_adapter(wgpu::DeviceType::Cpu, wgpu::Backend::Vulkan),
+            GpuBackendTier::Software,
+        );
+        assert_eq!(
+            tier_of_adapter(wgpu::DeviceType::Cpu, wgpu::Backend::Gl),
+            GpuBackendTier::Software,
+        );
+        assert_eq!(
+            tier_of_adapter(wgpu::DeviceType::Cpu, wgpu::Backend::Noop),
+            GpuBackendTier::Software,
+        );
+        // A real GPU still maps through its backend name.
+        assert_eq!(
+            tier_of_adapter(wgpu::DeviceType::DiscreteGpu, wgpu::Backend::Metal),
+            GpuBackendTier::Primary,
+        );
+        assert_eq!(
+            tier_of_adapter(wgpu::DeviceType::IntegratedGpu, wgpu::Backend::Gl),
+            GpuBackendTier::OpenGlEs,
+        );
+    }
+
+    /// Candidate ranking must honour the power preference and keep the CPU
+    /// adapter last, so per-rung selection stays consistent with
+    /// `power_preference`.
+    #[test]
+    fn adapter_ranking_honours_power_preference() {
+        // HighPerformance prefers discrete over integrated.
+        assert!(
+            rank_adapter(wgpu::DeviceType::DiscreteGpu, wgpu::PowerPreference::HighPerformance)
+                < rank_adapter(
+                    wgpu::DeviceType::IntegratedGpu,
+                    wgpu::PowerPreference::HighPerformance
+                )
+        );
+        // LowPower prefers integrated over discrete.
+        assert!(
+            rank_adapter(wgpu::DeviceType::IntegratedGpu, wgpu::PowerPreference::LowPower)
+                < rank_adapter(wgpu::DeviceType::DiscreteGpu, wgpu::PowerPreference::LowPower)
+        );
+        // The CPU adapter is always ranked last.
+        assert!(
+            rank_adapter(wgpu::DeviceType::DiscreteGpu, wgpu::PowerPreference::HighPerformance)
+                < rank_adapter(wgpu::DeviceType::Cpu, wgpu::PowerPreference::HighPerformance)
+        );
+        assert!(
+            rank_adapter(wgpu::DeviceType::IntegratedGpu, wgpu::PowerPreference::LowPower)
+                < rank_adapter(wgpu::DeviceType::Cpu, wgpu::PowerPreference::LowPower)
+        );
+    }
+
     /// A real adapter must be found through the ladder on a GPU-capable host,
     /// and the reported tier must match the adapter's actual backend. Skips
     /// silently where `wgpu` finds nothing (headless CI), so it stays honest.
@@ -329,7 +466,7 @@ mod tests {
         let info = adapter.get_info();
         assert_eq!(
             tier,
-            GpuBackendTier::from_backend(info.backend),
+            tier_of_adapter(info.device_type, info.backend),
             "reported tier {:?} disagrees with adapter backend {:?}",
             tier,
             info.backend,

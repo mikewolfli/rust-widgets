@@ -69,12 +69,12 @@ def _check_property_string_kinds(rw: RustWidgets) -> None:
 
     # The kind constants must be declared so a caller can interpret `out_kind`.
     assert RW_VALUE_STRING == 5, "RW_VALUE_STRING must stay 5 (append-only ABI)"
-    for kind in ("RW_VALUE_COLOR", "RW_VALUE_RECT"):
+    for kind in ("RW_VALUE_COLOR", "RW_VALUE_RECT", "RW_VALUE_TUPLE"):
         assert hasattr(sys.modules["rust_widgets"], kind), (
             f"{kind} must be declared: a reader without it returns 'no property' "
-            "for every colour/rectangle and leaks the buffer it did not free"
+            "for every colour/rectangle/tuple and leaks the buffer it did not free"
         )
-    print("  string/colour/rect value kinds: ok")
+    print("  string/colour/rect/tuple value kinds: ok")
 
 
 def _check_empty_drag_payload(rw: RustWidgets) -> None:

@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Mike Li/Mikewolfli/Wei Li(mikewolfli@163.com)
 // SPDX-License-Identifier: MIT
 
-use super::{normalize_shortcut, Action, ActionBinding, ActionHostKind};
-use crate::compat::{HashMap, MiniToString, String, Vec};
+use super::{
+    canonicalize_shortcut_type, normalize_shortcut, Action, ActionBinding, ActionHostKind,
+};
+use crate::compat::{HashMap, String, Vec};
 use crate::core::ObjectId;
 use crate::shortcut::Shortcut;
 use core::fmt;
@@ -95,15 +97,13 @@ impl ActionManager {
             return false;
         }
         self.release_shortcuts_for(&action_id);
-        // `normalize_shortcut`, not a bare `to_lowercase`: the string API
-        // (`bind_shortcut` / `trigger_shortcut`) keys the same map through
-        // `normalize_shortcut`, which splits on `+`, trims, drops empty tokens and
-        // rejoins. Using `to_lowercase` here produced a different spelling for the
-        // same chord (`Shortcut::to_string` renders `Modifiers::PRIMARY` as the
-        // literal `"Primary"`, so `Shortcut::primary(Key::S)` became `"primary+s"`
-        // while `trigger_shortcut("Ctrl+S")` looked up `"ctrl+s"`), so a type-bound
-        // chord could never be triggered by its own string spelling.
-        self.shortcut_to_action.insert(normalize_shortcut(&shortcut.to_string()), action_id);
+        // `canonicalize_shortcut_type`, not `normalize_shortcut`: the typed bridge
+        // keeps [`Modifiers::CTRL`](crate::shortcut::Modifiers::CTRL) distinct from
+        // [`Modifiers::PRIMARY`](crate::shortcut::Modifiers::PRIMARY), so
+        // `Shortcut::ctrl(S)` and `Shortcut::primary(S)` occupy different keys
+        // instead of colliding. The string API (`bind_shortcut`/`trigger_shortcut`)
+        // keeps its own convention of folding `Ctrl` onto `Primary`.
+        self.shortcut_to_action.insert(canonicalize_shortcut_type(shortcut), action_id);
         true
     }
 
@@ -125,6 +125,18 @@ impl ActionManager {
     /// Resolves and triggers an action by shortcut string.
     pub fn trigger_shortcut(&mut self, shortcut: &str) -> bool {
         let Some(action_id) = self.shortcut_to_action.get(&normalize_shortcut(shortcut)) else {
+            return false;
+        };
+        self.actions.get_mut(action_id).map(|action| action.trigger()).unwrap_or(false)
+    }
+    /// Triggers an action bound to a typed [`Shortcut`], preserving the physical
+    /// [`Modifiers::CTRL`](crate::shortcut::Modifiers::CTRL) bit (unlike
+    /// [`trigger_shortcut`], whose string input folds `Ctrl` onto `Primary`). This
+    /// is the typed reverse-lookup counterpart of
+    /// [`bind_shortcut_type`](Self::bind_shortcut_type).
+    pub fn trigger_shortcut_type(&mut self, shortcut: &Shortcut) -> bool {
+        let Some(action_id) = self.shortcut_to_action.get(&canonicalize_shortcut_type(shortcut))
+        else {
             return false;
         };
         self.actions.get_mut(action_id).map(|action| action.trigger()).unwrap_or(false)

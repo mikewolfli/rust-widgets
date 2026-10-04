@@ -105,11 +105,16 @@ impl SplitterLayout {
     /// into fractions. A total of zero — every pane collapsed — is left as it is rather
     /// than divided by zero; `update` falls back to its own `max(0.01)` divisor, so the
     /// panes stay addressable.
+    ///
+    /// The sum is accumulated in `f64`: an `f32` accumulator overflows to infinity for
+    /// finite-but-huge weights such as `[f32::MAX, f32::MAX]`, which then collapsed both
+    /// panes to a zero share (S-48).
     pub fn normalize_ratios(&mut self) {
-        let sum: f32 = self.ratios.iter().filter(|value| value.is_finite()).sum();
+        let sum: f64 =
+            self.ratios.iter().filter(|value| value.is_finite()).map(|r| *r as f64).sum();
         if sum > 0.0 {
             for ratio in &mut self.ratios {
-                *ratio = if ratio.is_finite() { *ratio / sum } else { 0.0 };
+                *ratio = if ratio.is_finite() { (*ratio as f64 / sum) as f32 } else { 0.0 };
             }
         }
     }
@@ -153,20 +158,53 @@ impl Layout for SplitterLayout {
             return;
         }
 
-        let total_ratio = self.ratios.iter().copied().sum::<f32>().max(0.01);
-        let gaps = (self.panes.len().saturating_sub(1)) as u32;
-        let primary = match self.orientation {
-            Orientation::Horizontal => rect.width.saturating_sub(gaps * self.spacing),
-            Orientation::Vertical => rect.height.saturating_sub(gaps * self.spacing),
+        let count = self.panes.len();
+        let gaps = (count.saturating_sub(1)) as u32;
+        let budget = match self.orientation {
+            Orientation::Horizontal => rect.width,
+            Orientation::Vertical => rect.height,
         };
+
+        // S-49: the spacing is honoured only as far as the budget can pay for it. Reducing it
+        // before deriving the pane budget keeps the cursor step and the pane allocation on one
+        // number, so a tiny box can no longer step past its own far edge.
+        let effective_spacing = if gaps > 0 { self.spacing.min(budget / gaps) } else { 0 };
+        let pane_budget = budget.saturating_sub(gaps * effective_spacing);
+
+        // S-48: sum the weights in f64 so finite-but-huge f32 weights cannot overflow to
+        // infinity and collapse every pane to a zero share.
+        let total_ratio = self.ratios.iter().map(|r| *r as f64).sum::<f64>().max(0.01);
+
+        // Distribute `pane_budget` proportionally, sharing the integer rounding remainder to the
+        // largest fractional parts. The panes sum to exactly `pane_budget` — never more — which is
+        // what keeps the run inside the parent without a per-pane `max(1.0)` floor that could
+        // push the last panes past the edge.
+        let mut major: Vec<u32> = Vec::with_capacity(count);
+        let mut assigned: u32 = 0;
+        let mut fractional: Vec<(usize, f64)> = Vec::with_capacity(count);
+        for (index, _pane) in self.panes.iter().enumerate() {
+            let ratio = self.ratios.get(index).copied().unwrap_or(1.0) as f64 / total_ratio;
+            let exact = pane_budget as f64 * ratio;
+            let whole = exact.floor() as u32;
+            major.push(whole);
+            assigned += whole;
+            fractional.push((index, exact - exact.floor()));
+        }
+        fractional.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(core::cmp::Ordering::Equal));
+        let mut remainder = pane_budget.saturating_sub(assigned);
+        for (index, _) in fractional {
+            if remainder == 0 {
+                break;
+            }
+            major[index] += 1;
+            remainder -= 1;
+        }
 
         let mut cursor_x = rect.x;
         let mut cursor_y = rect.y;
 
         for (index, pane) in self.panes.iter().enumerate() {
-            let ratio = self.ratios.get(index).copied().unwrap_or(1.0) / total_ratio;
-            let major = ((primary as f32) * ratio).max(1.0) as u32;
-
+            let major = major[index];
             let pane_rect = match self.orientation {
                 Orientation::Horizontal => Rect::new(cursor_x, rect.y, major, rect.height),
                 Orientation::Vertical => Rect::new(rect.x, cursor_y, rect.width, major),
@@ -175,9 +213,92 @@ impl Layout for SplitterLayout {
             widgets(*pane, pane_rect);
 
             match self.orientation {
-                Orientation::Horizontal => cursor_x += (major + self.spacing) as i32,
-                Orientation::Vertical => cursor_y += (major + self.spacing) as i32,
+                Orientation::Horizontal => cursor_x += (major + effective_spacing) as i32,
+                Orientation::Vertical => cursor_y += (major + effective_spacing) as i32,
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compat::HashMap;
+
+    /// S-48: finite-but-huge weights must normalise to real fractions rather than overflow
+    /// the f32 sum to infinity and collapse every pane to zero.
+    #[test]
+    fn huge_finite_ratios_normalize_stably() {
+        let mut splitter = SplitterLayout::new(Orientation::Horizontal, 0);
+        splitter.add_pane(1, 1);
+        splitter.add_pane(2, 1);
+        assert!(splitter.set_ratios(vec![f32::MAX, f32::MAX]));
+
+        splitter.normalize_ratios();
+        assert!((splitter.ratio(0).unwrap() - 0.5).abs() < 1e-6);
+        assert!((splitter.ratio(1).unwrap() - 0.5).abs() < 1e-6);
+
+        let mut rects = HashMap::new();
+        splitter.update(Rect::new(0, 0, 100, 40), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+        assert_eq!(rects.get(&1).map(|r| r.width), Some(50));
+        assert_eq!(rects.get(&2).map(|r| r.width), Some(50));
+    }
+
+    /// S-48: a zero sum is left as-is rather than divided by zero.
+    #[test]
+    fn zero_sum_ratios_stay_zero_sum_after_normalizing() {
+        let mut splitter = SplitterLayout::new(Orientation::Horizontal, 0);
+        splitter.add_pane(1, 1);
+        splitter.add_pane(2, 1);
+        assert!(splitter.set_ratios(vec![0.0, 0.0]));
+        splitter.normalize_ratios();
+        assert_eq!(splitter.ratio(0).unwrap(), 0.0);
+        assert_eq!(splitter.ratio(1).unwrap(), 0.0);
+    }
+
+    /// S-49: a tiny box reduces the spacing so the panes never step past the parent.
+    #[test]
+    fn tiny_box_keeps_panes_inside_with_spacing() {
+        let mut splitter = SplitterLayout::new(Orientation::Horizontal, 10);
+        splitter.add_pane(1, 1);
+        splitter.add_pane(2, 1);
+        splitter.add_pane(3, 1);
+
+        let mut rects = HashMap::new();
+        splitter.update(Rect::new(0, 0, 5, 40), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+
+        assert_eq!(rects.len(), 3);
+        for (id, rect) in &rects {
+            assert!(
+                rect.x >= 0 && rect.x + rect.width as i32 <= 5,
+                "pane {id} escaped the 5px box: {rect:?}"
+            );
+        }
+    }
+
+    /// S-49 (vertical): the same one-budget policy holds for the vertical orientation.
+    #[test]
+    fn tiny_box_keeps_panes_inside_vertically() {
+        let mut splitter = SplitterLayout::new(Orientation::Vertical, 10);
+        splitter.add_pane(1, 1);
+        splitter.add_pane(2, 1);
+        splitter.add_pane(3, 1);
+
+        let mut rects = HashMap::new();
+        splitter.update(Rect::new(0, 0, 40, 5), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+
+        assert_eq!(rects.len(), 3);
+        for (id, rect) in &rects {
+            assert!(
+                rect.y >= 0 && rect.y + rect.height as i32 <= 5,
+                "pane {id} escaped the 5px box: {rect:?}"
+            );
         }
     }
 }

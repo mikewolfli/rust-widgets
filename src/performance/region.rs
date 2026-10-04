@@ -3,7 +3,7 @@
 
 //! Dirty region tracking for incremental rendering.
 use crate::compat::Vec;
-use crate::core::rect_merge::{bounding_rect, merge_intersecting_rects};
+use crate::core::rect_merge::bounding_rect;
 use crate::core::Rect;
 use core::cmp::Reverse;
 /// Unique identifier for a dirty region.
@@ -178,15 +178,37 @@ impl DirtyRegionTracker {
     ///
     /// # Side effects
     ///
-    /// Existing [`RegionId`]s, priorities, and layers are discarded; every
-    /// surviving region is a fresh [`DirtyRegion::new`] with priority `0` and
-    /// layer `0`.
+    /// Every surviving region gets a fresh [`RegionId`] (merge invalidates ids). Unlike the
+    /// first version, a merged union **keeps** the highest [`DirtyRegion::layer`] and
+    /// [`DirtyRegion::priority`] of its constituents rather than resetting them to `0`; a
+    /// region that merged with nothing keeps its own values. The geometry merge itself is
+    /// performed here on [`DirtyRegion`] rather than by handing a bare `Vec<Rect>` to
+    /// `merge_intersecting_rects`, because that helper cannot carry the metadata the union
+    /// must preserve.
     pub fn merge(&mut self) {
         if self.merged || self.regions.len() <= 1 {
             return;
         }
-        let rects: Vec<Rect> = self.regions.iter().map(|r| r.rect).collect();
-        self.regions = merge_intersecting_rects(&rects).into_iter().map(DirtyRegion::new).collect();
+        let mut merged: Vec<DirtyRegion> = Vec::with_capacity(self.regions.len());
+        for mut current in self.regions.drain(..) {
+            let mut i = 0;
+            while i < merged.len() {
+                if current.rect.intersects(&merged[i].rect) {
+                    current.rect = current.rect.union(&merged[i].rect);
+                    // A union sits on the highest layer and keeps the highest retention
+                    // priority of the regions it absorbed, so `optimize` can still order it.
+                    current.layer = current.layer.max(merged[i].layer);
+                    current.priority = current.priority.max(merged[i].priority);
+                    merged.swap_remove(i);
+                    i = 0;
+                } else {
+                    i += 1;
+                }
+            }
+            current.id = RegionId::new();
+            merged.push(current);
+        }
+        self.regions = merged;
         self.merged = true;
     }
     /// Returns the smallest rectangle enclosing every tracked region, or `None`
@@ -300,5 +322,46 @@ mod tests {
 
         let kept = region_rects(&tracker);
         assert_eq!(kept, vec![(50, 0)], "the higher-priority same-layer region is kept");
+    }
+
+    /// `optimize` must retain priority across `merge`, and in both insertion orders, so a
+    /// high-priority region is never dropped because `merge` reset it to zero.
+    #[test]
+    fn optimize_preserves_priority_in_either_insertion_order() {
+        for reverse in [false, true] {
+            let mut tracker = DirtyRegionTracker::with_max_regions(1);
+            if !reverse {
+                tracker.add_with_priority(Rect::new(0, 0, 10, 10), 200);
+                tracker.add_with_priority(Rect::new(50, 0, 10, 10), 1);
+            } else {
+                tracker.add_with_priority(Rect::new(50, 0, 10, 10), 1);
+                tracker.add_with_priority(Rect::new(0, 0, 10, 10), 200);
+            }
+
+            tracker.optimize();
+
+            assert_eq!(
+                region_rects(&tracker),
+                vec![(0, 0)],
+                "the high-priority region survives regardless of insertion order: {reverse}"
+            );
+        }
+    }
+
+    /// A merged union carries the highest layer and priority of its constituents, so `optimize`
+    /// can still order it after the merge.
+    #[test]
+    fn merge_carries_priority_and_layer_into_the_union() {
+        let mut tracker = DirtyRegionTracker::with_max_regions(1);
+        tracker.add_with_priority(Rect::new(0, 0, 10, 10), 50);
+        tracker.add_with_layer(Rect::new(5, 5, 10, 10), 3);
+
+        tracker.merge();
+
+        assert_eq!(tracker.len(), 1, "the overlapping rects collapse into one region");
+        let region = &tracker.regions[0];
+        assert_eq!(region.rect, Rect::new(0, 0, 15, 15));
+        assert_eq!(region.layer, 3, "the union sits on the top layer");
+        assert_eq!(region.priority, 50, "and keeps the highest priority");
     }
 }

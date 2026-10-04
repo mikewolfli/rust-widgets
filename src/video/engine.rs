@@ -83,7 +83,23 @@ impl VideoEngine {
     }
 
     /// Start or resume playback.
+    ///
+    /// A finished stream is replayed from its first frame: the clock rewinding alone is not
+    /// enough, because the decoder is still parked at end-of-stream and the next tick would
+    /// report `Ended` again immediately.
     pub fn play(&mut self) {
+        if self.state == PlaybackState::Ended {
+            if let Err(e) = self.decoder.seek(0.0) {
+                log::error!("[video-engine] failed to rewind decoder on replay: {e}");
+                return;
+            }
+            self.current_time = 0.0;
+            self.pending = None;
+            // The clock may be `Paused` (end-of-stream reached through `read_frame`) rather than
+            // `Ended` (reached through the duration), and [`MediaClock::play`] only rewinds the
+            // latter. Reset the position explicitly so replay starts at the first frame either way.
+            self.clock.seek(0.0);
+        }
         self.state = PlaybackState::Playing;
         self.clock.play();
         self.on_state_change.emit(self.state);
@@ -102,6 +118,11 @@ impl VideoEngine {
         self.current_time = 0.0;
         self.pending = None;
         self.clock.stop();
+        // The clock rewound but the decoder did not; without this a stop followed by play would
+        // resume from where the decoder left off rather than from the first frame.
+        if let Err(e) = self.decoder.seek(0.0) {
+            log::error!("[video-engine] failed to rewind decoder on stop: {e}");
+        }
         self.on_state_change.emit(self.state);
     }
 
@@ -197,55 +218,72 @@ impl VideoEngine {
             return Ok(None);
         }
 
-        // # Why the decoder is read only when there is no frame in hand
+        // # One frame-in-hand, shared by every read path
+        //
+        // `pending` is the single frame the engine has decoded but not yet shown. `tick_frame`
+        // re-judges it each tick, and `step_frame`/`next_frame` read through the same slot, so no
+        // read path can bypass a frame another path parked there and make the picture jump.
+        //
+        // # Why a tick may consume several frames
         //
         // A first version read one frame per tick and judged it. That is wrong twice over: it burns
-        // the decoder at the loop's rate (a 1 fps stream read at 60 Hz exhausts its whole length
-        // before the first second of playback has passed), and it makes `Wait` meaningless — the frame
-        // it "waited" for had already been consumed and thrown away.
-        //
-        // Holding the frame instead means a tick during which nothing is due costs a comparison and
-        // no decode, which is what makes this affordable to call every frame. The held frame is
-        // re-judged each tick, so it is shown as soon as the clock reaches it.
-        if self.pending.is_none() {
-            match self.decoder.read_frame()? {
-                Some(frame) => self.pending = Some(frame),
-                None => {
-                    // End of stream.
-                    self.state = PlaybackState::Ended;
-                    self.clock.pause();
-                    self.on_state_change.emit(self.state);
+        // the decoder at the loop's rate, and it makes `Wait` meaningless — the frame it "waited" for
+        // had already been consumed and thrown away. Holding the frame fixes the burn, but it also
+        // capped catching up at one drop per tick: after a stall, or whenever the source's frame rate
+        // is no faster than the loop, the decoder falls behind one frame per tick and can never close
+        // the gap. The loop below therefore keeps reading — dropping overdue frames and counting each
+        // one — until a frame is due, a frame is in the future (parked for the next tick), or the
+        // stream ends, all under a bounded read budget so a corrupt clock cannot read unboundedly.
+        const CATCH_UP_BUDGET: usize = 32;
+        let mut reads = 0usize;
+        loop {
+            if self.pending.is_none() {
+                if reads >= CATCH_UP_BUDGET {
+                    // Still not caught up within the budget; resume on the next tick rather than
+                    // spending the whole loop here.
                     return Ok(None);
                 }
+                match self.decoder.read_frame()? {
+                    Some(frame) => {
+                        self.pending = Some(frame);
+                        reads += 1;
+                    }
+                    None => {
+                        // End of stream.
+                        self.state = PlaybackState::Ended;
+                        self.clock.pause();
+                        self.on_state_change.emit(self.state);
+                        return Ok(None);
+                    }
+                }
             }
-        }
 
-        let Some(frame) = self.pending.as_ref() else {
-            return Ok(None);
-        };
+            let Some(frame) = self.pending.as_ref() else {
+                return Ok(None);
+            };
 
-        match self.clock.verdict_for(frame.timestamp, tolerance) {
-            FrameVerdict::Wait => {
-                // Not due yet. The frame stays in hand and is re-judged next tick; the caller keeps
-                // the previous picture up, which is what stops playback running ahead.
-                Ok(None)
-            }
-            FrameVerdict::Drop => {
-                // Overdue. Discard it so the next one can be read, and count the skip: a silent
-                // discard is indistinguishable from having rendered the frame.
-                self.clock.note_dropped();
-                if let Some(frame) = self.pending.take() {
+            match self.clock.verdict_for(frame.timestamp, tolerance) {
+                FrameVerdict::Wait => {
+                    // Not due yet. The frame stays in hand and is re-judged next tick; the caller
+                    // keeps the previous picture up, which is what stops playback running ahead.
+                    return Ok(None);
+                }
+                FrameVerdict::Drop => {
+                    // Overdue. Discard it so the next one can be read, and count the skip: a silent
+                    // discard is indistinguishable from having rendered the frame.
+                    self.clock.note_dropped();
+                    if let Some(frame) = self.pending.take() {
+                        self.current_time = frame.timestamp;
+                    }
+                }
+                FrameVerdict::Show => {
+                    let Some(frame) = self.pending.take() else {
+                        return Ok(None);
+                    };
                     self.current_time = frame.timestamp;
+                    self.on_frame.emit(frame.clone());
+                    return Ok(Some(frame));
                 }
-                Ok(None)
-            }
-            FrameVerdict::Show => {
-                let Some(frame) = self.pending.take() else {
-                    return Ok(None);
-                };
-                self.current_time = frame.timestamp;
-                self.on_frame.emit(frame.clone());
-                Ok(Some(frame))
             }
         }
     }
@@ -257,9 +295,22 @@ impl VideoEngine {
         self.clock.take_dropped()
     }
 
+    /// Returns the next frame to show, honouring the frame already held in `pending`.
+    ///
+    /// Both [`VideoEngine::step_frame`] and [`VideoEngine::next_frame`] read through here so a frame
+    /// parked by [`VideoEngine::tick_frame`] is not bypassed: reading the decoder directly would show
+    /// a later frame while the parked one is still in hand, and the next tick would show it again —
+    /// the picture jumping backwards.
+    fn take_frame(&mut self) -> Result<Option<VideoFrame>, String> {
+        if let Some(frame) = self.pending.take() {
+            return Ok(Some(frame));
+        }
+        self.decoder.read_frame()
+    }
+
     /// Advance one frame (step forward).
     pub fn step_frame(&mut self) -> Result<Option<VideoFrame>, String> {
-        let frame = self.decoder.read_frame()?;
+        let frame = self.take_frame()?;
         if let Some(ref f) = frame {
             self.current_time = f.timestamp;
             self.on_frame.emit(f.clone());
@@ -272,7 +323,7 @@ impl VideoEngine {
         if self.state != PlaybackState::Playing {
             return Ok(None);
         }
-        let frame = self.decoder.read_frame()?;
+        let frame = self.take_frame()?;
         if let Some(ref f) = frame {
             self.current_time = f.timestamp;
             self.on_frame.emit(f.clone());
@@ -303,23 +354,67 @@ mod tests {
 
     #[test]
     fn test_playback_states() {
-        let data = vec![0u8; 100];
-        if let Ok(mut engine) = VideoEngine::open(data) {
-            engine.play();
-            assert_eq!(engine.state(), PlaybackState::Playing);
-            engine.pause();
-            assert_eq!(engine.state(), PlaybackState::Paused);
-            engine.stop();
-            assert_eq!(engine.state(), PlaybackState::Stopped);
-        }
+        let mut engine = engine_with_pattern();
+        engine.play();
+        assert_eq!(engine.state(), PlaybackState::Playing);
+        engine.pause();
+        assert_eq!(engine.state(), PlaybackState::Paused);
+        engine.stop();
+        assert_eq!(engine.state(), PlaybackState::Stopped);
     }
 
     #[test]
     fn test_seek_bounds() {
-        let data = vec![0u8; 100];
-        if let Ok(mut engine) = VideoEngine::open(data) {
-            assert_eq!(engine.current_time(), 0.0);
-            let _ = engine.seek(5.0);
+        let mut engine = engine_with_pattern();
+        assert_eq!(engine.current_time(), 0.0);
+
+        engine.seek(5.0).expect("a valid seek succeeds");
+        assert!((engine.current_time() - 5.0).abs() < 1e-9, "seek moves current time");
+        assert!((engine.clock().position() - 5.0).abs() < 1e-9, "seek moves the clock");
+
+        engine.seek(-3.0).expect("a negative seek clamps rather than errors");
+        assert_eq!(engine.current_time(), 0.0, "the floor clamps to the start");
+
+        let duration = engine.duration();
+        engine.seek(duration + 10.0).expect("a seek past the end clamps rather than errors");
+        assert_eq!(engine.current_time(), duration, "the ceiling clamps to the duration");
+
+        // A decoder that cannot seek must report the failure and leave the clock untouched.
+        let mut failing = VideoEngine::with_decoder(Box::new(FailingSeekDecoder::new()));
+        assert!(failing.seek(1.0).is_err(), "a failing decoder seek is reported, not swallowed");
+        assert_eq!(failing.current_time(), 0.0, "a failed seek does not move current time");
+        assert_eq!(failing.clock().position(), 0.0, "a failed seek does not move the clock");
+    }
+
+    /// A decoder that always fails to seek, used to assert the engine reports seek
+    /// failures instead of leaving its clock and current time inconsistent.
+    struct FailingSeekDecoder {
+        metadata: VideoMetadata,
+    }
+
+    impl FailingSeekDecoder {
+        fn new() -> Self {
+            Self {
+                metadata: VideoMetadata::new_with_format(ContainerFormat::Mjpeg, 320, 240, 10.0),
+            }
+        }
+    }
+
+    impl VideoDecoder for FailingSeekDecoder {
+        fn read_frame(&mut self) -> Result<Option<VideoFrame>, String> {
+            Ok(None)
+        }
+
+        fn seek(&mut self, _time: f64) -> Result<(), String> {
+            Err("seek is not supported by this decoder".to_string())
+        }
+
+        fn close(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn metadata(&self) -> &VideoMetadata {
+            &self.metadata
         }
     }
 
@@ -493,5 +588,103 @@ mod tests {
             }
         }
         assert!(ended, "playback must reach the end rather than run for ever");
+    }
+
+    /// Stopping and playing again must resume from the first frame, not from where the
+    /// decoder happened to be when it was stopped.
+    #[test]
+    fn stop_then_play_restarts_at_the_first_frame() {
+        let mut engine = engine_with_pattern();
+        engine.play();
+
+        // Show the first frame, which advances the decoder past it.
+        let first = engine.tick_frame(0, 0.05).expect("no error");
+        assert!(first.is_some(), "the frame at 0.0 is due");
+        assert_eq!(engine.current_time(), 0.0);
+
+        engine.stop();
+        engine.play();
+
+        // The first frame after a stop/play is 0.0 again, not the decoder's old position.
+        let restarted = engine.tick_frame(0, 0.05).expect("no error");
+        assert!(restarted.is_some(), "playback resumes from the first frame");
+        assert_eq!(engine.current_time(), 0.0, "the decoder restarted, not resumed");
+    }
+
+    /// Replaying a stream that reached its end must rewind the decoder, or the next tick
+    /// reports `Ended` again immediately.
+    #[test]
+    fn replay_after_the_end_starts_from_the_first_frame() {
+        let mut engine = engine_with_pattern();
+        engine.play();
+
+        let mut ended = false;
+        for _ in 0..1_000 {
+            let _ = engine.tick_frame(16, 0.05);
+            if engine.state() == PlaybackState::Ended {
+                ended = true;
+                break;
+            }
+        }
+        assert!(ended, "playback reaches the end");
+
+        engine.play();
+        assert_eq!(engine.state(), PlaybackState::Playing, "play leaves Ended");
+        let restarted = engine.tick_frame(0, 0.05).expect("no error");
+        assert!(restarted.is_some(), "replay starts from the first frame, not EOF");
+        assert_eq!(engine.current_time(), 0.0, "the first frame is at 0.0");
+    }
+
+    /// Seeking to the end, ticking, and playing again must start over rather than re-end.
+    #[test]
+    fn play_after_seeking_to_the_end_does_not_re_end_immediately() {
+        let mut engine = engine_with_pattern();
+        engine.play();
+
+        engine.seek(engine.duration()).expect("seek to the end");
+        let _ = engine.tick_frame(0, 0.05);
+        assert_eq!(engine.state(), PlaybackState::Ended, "a tick after the end reports Ended");
+
+        engine.play();
+        assert_eq!(engine.state(), PlaybackState::Playing, "play leaves Ended");
+        let first = engine.tick_frame(0, 0.05).expect("no error");
+        assert!(first.is_some(), "replay starts from the first frame instead of re-ending");
+    }
+
+    /// A manual step reads the frame `tick_frame` parked, rather than bypassing it and
+    /// reading the decoder directly.
+    #[test]
+    fn step_and_tick_share_one_pending_frame() {
+        let mut engine = engine_with_pattern();
+        engine.play();
+
+        // Show frame 0, then park frame 1 (at 1.0 s) as not-yet-due.
+        assert!(engine.tick_frame(0, 0.05).expect("no error").is_some(), "frame 0 is shown");
+        assert!(engine.tick_frame(0, 0.05).expect("no error").is_none(), "frame 1 is parked");
+
+        // A manual step must hand back the parked frame 1, not read ahead to frame 2.
+        let stepped = engine.step_frame().expect("no error");
+        let stepped = stepped.expect("step_frame returns the parked frame");
+        assert_eq!(stepped.timestamp, 1.0, "and it is the frame tick parked");
+        assert_eq!(engine.current_time(), 1.0, "current time follows the shown frame");
+    }
+
+    /// One tick drops every overdue frame (within the budget) instead of at most one, so a
+    /// source running no faster than the loop can catch up after a stall.
+    #[test]
+    fn a_tick_catches_up_across_multiple_overdue_frames() {
+        let mut engine = engine_with_pattern();
+        engine.play();
+
+        // A stall: the clock runs 3.5 s ahead while nothing is read.
+        engine.clock_mut().tick(3500);
+
+        let result = engine.tick_frame(0, 0.05).expect("no error");
+        assert!(result.is_none(), "the overdue frames are dropped, not shown");
+        let dropped = engine.take_dropped_frames();
+        assert!(
+            dropped >= 3,
+            "several overdue frames are dropped in one tick, not one: got {dropped}"
+        );
     }
 }

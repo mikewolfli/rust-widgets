@@ -627,24 +627,36 @@ impl WaylandPlatform {
                 break;
             }
 
-            let mut guard = self.native_session.lock().unwrap();
-            let Some(session) = guard.as_mut() else {
-                // No native session yet (no window created): stay responsive to
-                // quit without spinning.
-                drop(guard);
-                // The drain still runs: a trigger can be queued before a session exists
-                // (a host reporting a size for a window it manages itself), and leaving it
-                // in the queue until a session appears would delay a layout run for as long
-                // as the window is absent. See `crate::drain_triggers`.
-                //
-                // `crate::drive_frame` rather than the bare drain: the animation step has to
-                // run even in this session-less arm, or a transition that started before the
-                // window appeared would freeze instead of finishing (BLUE24 §0A.1
-                // measurement 1).
-                crate::drive_frame(FRAME_INTERVAL_MS);
-                std::thread::sleep(std::time::Duration::from_millis(FRAME_INTERVAL_MS as u64));
-                continue;
+            // Move the session out of the mutex for this iteration so the dispatch below —
+            // which runs compositor callbacks, including a close handler that may open a new
+            // window — can re-enter `native_session` without deadlocking on this non-recursive
+            // mutex. It is returned at the end of the iteration.
+            let mut session = match self.native_session.lock().unwrap().take() {
+                Some(session) => session,
+                None => {
+                    // No native session yet (no window created): stay responsive to
+                    // quit without spinning.
+                    // The drain still runs: a trigger can be queued before a session exists
+                    // (a host reporting a size for a window it manages itself), and leaving it
+                    // in the queue until a session appears would delay a layout run for as long
+                    // as the window is absent. See `crate::drain_triggers`.
+                    //
+                    // `crate::drive_frame` rather than the bare drain: the animation step has to
+                    // run even in this session-less arm, or a transition that started before the
+                    // window appeared would freeze instead of finishing (BLUE24 §0A.1
+                    // measurement 1).
+                    crate::drive_frame(FRAME_INTERVAL_MS);
+                    std::thread::sleep(std::time::Duration::from_millis(FRAME_INTERVAL_MS as u64));
+                    continue;
+                }
             };
+
+            // Publish the checked-out session so a re-entrant `create_window` reuses this
+            // connection rather than opening a second one. Cleared before the session is
+            // returned to the mutex below.
+            DISPATCHING_SESSION.with(|slot| {
+                *slot.borrow_mut() = Some(&mut session as *mut WaylandSession);
+            });
 
             // Flush any queued requests before waiting for the reply.
             if let Err(e) = session.event_queue.flush() {
@@ -678,12 +690,13 @@ impl WaylandPlatform {
                 }
             }
 
+            // Return the session before running the library frame, so a frame that
+            // re-enters `native_session` (positions a widget, opens a window) never
+            // deadlocks on the mutex the dispatch above has already released.
+            DISPATCHING_SESSION.with(|slot| *slot.borrow_mut() = None);
+            *self.native_session.lock().unwrap() = Some(session);
+
             // One library frame after the protocol dispatch for this iteration.
-            //
-            // Deliberately **outside** the `native_session` lock taken above: the frame can
-            // re-enter library code that positions widgets, and holding this backend's
-            // session lock across that would let a re-entrant call deadlock on the same
-            // mutex. The lock guard is dropped at the end of the `match` above.
             //
             // Without the drain, a `Resized` event queued by a host never reached a window
             // layout — the protocol events were dispatched and the library's own queue was
@@ -702,14 +715,20 @@ impl WaylandPlatform {
     /// without a separate blocking `run()` loop.
     #[cfg(not(alloc_frugal))]
     pub(crate) fn dispatch_native_events(&self) {
-        let mut guard = self.native_session.lock().unwrap();
-        if let Some(ref mut session) = *guard {
-            let _ = session.event_queue.dispatch_pending(&mut session.state);
-        }
-        // Released before the frame, so a trigger that positions a widget cannot
-        // deadlock on this mutex. This is the pump-callback spelling of the same tick
-        // the `run()` loop performs, animation step included.
-        drop(guard);
+        // Move the session out for the dispatch so a compositor callback that opens a
+        // window can re-enter `native_session` without deadlocking (the same rule the
+        // `run()` loop follows). Returned before the frame, which is the pump-callback
+        // spelling of the same tick, animation step included.
+        let Some(mut session) = self.native_session.lock().unwrap().take() else {
+            crate::drive_frame(FRAME_INTERVAL_MS);
+            return;
+        };
+        DISPATCHING_SESSION.with(|slot| {
+            *slot.borrow_mut() = Some(&mut session as *mut WaylandSession);
+        });
+        let _ = session.event_queue.dispatch_pending(&mut session.state);
+        DISPATCHING_SESSION.with(|slot| *slot.borrow_mut() = None);
+        *self.native_session.lock().unwrap() = Some(session);
         crate::drive_frame(FRAME_INTERVAL_MS);
     }
 
@@ -760,13 +779,41 @@ impl WaylandPlatform {
             Some(WaylandSession { conn, event_queue, state })
         }
 
+        // If the event loop has the session checked out for a dispatch pass, a re-entrant
+        // `create_window` (e.g. from a close handler) must reuse it: locking `native_session`
+        // here would deadlock, and opening a second session would create a window whose
+        // events no loop ever reads.
+        let reentrant = DISPATCHING_SESSION.with(|slot| *slot.borrow());
+        if let Some(ptr) = reentrant {
+            // SAFETY: `ptr` names the session owned by `run_native_event_loop` /
+            // `dispatch_native_events` on this same thread, live for the whole dispatch
+            // window (the slot is cleared before the session returns to the mutex).
+            let session = unsafe { &mut *ptr };
+            return self.create_toplevel(session, title, x, y, width, height);
+        }
+
         // Obtain or create the persistent Wayland session.
         let mut guard = self.native_session.lock().unwrap();
         if guard.is_none() {
             *guard = connect_wayland();
         }
         let session = guard.as_mut()?;
+        self.create_toplevel(session, title, x, y, width, height)
+    }
 
+    /// Creates an `xdg_toplevel` on `session` and registers it in the state backend.
+    ///
+    /// Split out of [`Self::try_create_native_window`] so both the lock-holding path and
+    /// the re-entrant (session-checked-out) path share one toplevel construction.
+    fn create_toplevel(
+        &self,
+        session: &mut WaylandSession,
+        title: &str,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> Option<ObjectId> {
         // 5. Create wl_surface, xdg_surface, and xdg_toplevel
         let compositor = session.state.compositor.as_ref()?;
         let xdg_wm_base = session.state.xdg_wm_base.as_ref()?;
@@ -829,6 +876,21 @@ impl WaylandPlatform {
 thread_local! {
     static CONFIGURED_WINDOWS: core::cell::RefCell<crate::compat::HashMap<usize, ObjectId>> =
         core::cell::RefCell::new(crate::compat::HashMap::new());
+}
+
+/// The session checked out by the event loop for a dispatch pass.
+///
+/// While [`run_native_event_loop`](WaylandPlatform::run_native_event_loop) or
+/// [`dispatch_native_events`](WaylandPlatform::dispatch_native_events) is dispatching
+/// compositor events, the session is moved out of `native_session` so a re-entrant
+/// `create_window` (a close handler that opens a new window) can reach it without
+/// deadlocking on the same non-recursive mutex. This thread-local lets that call reuse
+/// the checked-out session instead of opening a second connection whose events nobody
+/// would dispatch.
+#[cfg(all(feature = "wayland-native", target_os = "linux"))]
+thread_local! {
+    static DISPATCHING_SESSION: core::cell::RefCell<Option<*mut WaylandSession>> =
+        core::cell::RefCell::new(None);
 }
 
 /// Records that `proxy`'s configure events describe the widget `id`.

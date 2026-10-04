@@ -212,7 +212,15 @@ impl MenuConfig {
             self.blur_enabled = blur;
         }
         if let Some(speed) = self.user_overrides.animation_speed {
-            self.animation_speed = speed.clamp(0.1, 3.0);
+            match Self::sanitize_animation_speed(speed) {
+                Some(sanitized) => {
+                    self.animation_speed = sanitized;
+                    self.user_overrides.animation_speed = Some(sanitized);
+                }
+                // A persisted NaN is not a usable preference: drop it so it cannot
+                // claim an override or be re-saved as a poison value.
+                None => self.user_overrides.animation_speed = None,
+            }
         }
         if let Some(max_items) = self.user_overrides.max_visible_items {
             self.max_visible_items = max_items.max(5);
@@ -225,6 +233,30 @@ impl MenuConfig {
     pub fn reset_to_defaults(&mut self) {
         self.user_overrides = UserOverrides::default();
         self.apply_hardware_defaults();
+    }
+    /// Replaces the override set and re-applies it over a fresh hardware baseline.
+    ///
+    /// Restoring the baseline first is what makes a field *removed* from the persisted
+    /// override set fall back to its hardware default, instead of keeping the live value
+    /// a previous load had set. [`Self::apply_user_overrides`] alone would only touch
+    /// the fields that still have an override, leaving deleted ones stuck on a stale
+    /// preference (the "deleted field stays reversed" defect).
+    pub(crate) fn reload_overrides(&mut self, overrides: UserOverrides) {
+        self.user_overrides = overrides;
+        self.apply_hardware_defaults();
+        self.apply_user_overrides();
+    }
+    /// Sanitizes an animation speed into `0.1 ..= 3.0`, returning `None` for NaN.
+    ///
+    /// `f32::clamp` saturates finite and infinite input correctly, but returns its NaN
+    /// input unchanged (both bound comparisons are false for NaN). Rejecting NaN here —
+    /// instead of letting it through — is what keeps the getter's `0.1..=3.0` contract
+    /// intact no matter which entry point supplied the number.
+    fn sanitize_animation_speed(speed: f32) -> Option<f32> {
+        if speed.is_nan() {
+            return None;
+        }
+        Some(speed.clamp(0.1, 3.0))
     }
     /// Whether menu animations are enabled. Set by [`MenuConfig::new`] from the
     /// detected performance level, or overridden by the user.
@@ -303,12 +335,16 @@ impl MenuConfig {
     }
     /// Sets the animation speed multiplier, clamped to `0.1 ..= 3.0`.
     ///
-    /// Both the stored override and the live value are clamped identically, so
-    /// out-of-range input is silently saturated rather than rejected. Records
+    /// Non-finite (NaN) input is rejected rather than stored: neither the stored
+    /// override nor the live value changes, so the getter's `0.1..=3.0` contract
+    /// holds. Finite out-of-range input and ±Inf are silently saturated. Records
     /// the choice as a user override.
     pub fn set_animation_speed(&mut self, speed: f32) {
-        self.user_overrides.animation_speed = Some(speed.clamp(0.1, 3.0));
-        self.animation_speed = speed.clamp(0.1, 3.0);
+        let Some(speed) = Self::sanitize_animation_speed(speed) else {
+            return;
+        };
+        self.user_overrides.animation_speed = Some(speed);
+        self.animation_speed = speed;
     }
     /// Sets how many items are shown before scrolling, floored at `5`.
     ///

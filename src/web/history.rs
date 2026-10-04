@@ -16,10 +16,11 @@
 //!   [`BrowserHistory::with_capacity`] changes it.
 //! * [`SessionHistory`] keeps the *navigated* order rather than visit order:
 //!   [`SessionHistory::back_entries`] is oldest-first with the most recently
-//!   left page at the back, while [`SessionHistory::forward_entries`] is
-//!   oldest-first with the page that `go_back` would reach first at the front.
+//!   left page at the back, while [`SessionHistory::forward_entries`] has the
+//!   page [`SessionHistory::go_forward`] would reach first at the front (the
+//!   immediately-following page) and the farthest future page at the back.
 //!   Both stacks are independently capped at the size passed to
-//!   [`SessionHistory::new`], evicting from the front.
+//!   [`SessionHistory::new`], evicting the oldest navigation when full.
 //! * Visiting a URL that is already present does **not** reorder
 //!   [`BrowserHistory`]; it increments the visit count in place.
 //!
@@ -77,7 +78,7 @@ impl HistoryEntry {
 /// Backed by a [`VecDeque`] with a fixed cap; once full, adding a new URL evicts
 /// the oldest entry. Adding a URL that is already present refreshes that entry's
 /// visit count and timestamp instead of reordering or duplicating it.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct BrowserHistory {
     entries: VecDeque<HistoryEntry>,
     max_entries: usize,
@@ -90,8 +91,8 @@ impl BrowserHistory {
     /// Creates an empty history that keeps at most `max_entries` entries.
     ///
     /// The value only pre-allocates; the cap is what matters. Note that a cap
-    /// of `0` makes every [`BrowserHistory::add_entry`] evict itself, leaving
-    /// the history permanently empty.
+    /// of `0` disables history entirely: every [`BrowserHistory::add_entry`]
+    /// stores nothing, leaving the history permanently empty.
     pub fn with_capacity(max_entries: usize) -> Self {
         Self { entries: VecDeque::with_capacity(max_entries), max_entries }
     }
@@ -102,6 +103,10 @@ impl BrowserHistory {
     /// are left alone. Otherwise a new entry is appended at the back, evicting
     /// the oldest entry first if the cap has been reached.
     pub fn add_entry(&mut self, url: String, title: String) {
+        // A zero cap disables history entirely: nothing is ever stored.
+        if self.max_entries == 0 {
+            return;
+        }
         if let Some(existing) = self.entries.iter_mut().find(|e| e.url == url) {
             existing.touch();
             return;
@@ -182,14 +187,24 @@ impl BrowserHistory {
         self.entries.is_empty()
     }
 }
+
+/// Creates a history with the default cap, matching [`BrowserHistory::new`].
+///
+/// The derived `Default` previously zeroed `max_entries`, which would have
+/// disabled history instead of honouring [`MAX_HISTORY_ENTRIES`].
+impl Default for BrowserHistory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Back/forward navigation state for one browsing session.
 ///
 /// Holds the URL currently being viewed plus the two stacks of URLs reachable
 /// by going back and forward. Navigating to a new URL pushes the current one
 /// onto the back stack and discards the forward stack, which is the standard
 /// browser behaviour. Both stacks are capped at the size given to
-/// [`SessionHistory::new`], dropping from the front (the oldest navigation) when
-/// full.
+/// [`SessionHistory::new`], dropping the oldest navigation when full.
 ///
 /// [`SessionHistory::current`] is `Option` because a fresh history has no page
 /// loaded: it is `None` until the first [`SessionHistory::navigate`], and
@@ -230,10 +245,14 @@ impl SessionHistory {
     /// pushes a duplicate onto the back stack rather than being ignored.
     pub fn navigate(&mut self, url: String) {
         if let Some(current) = self.current.take() {
-            if self.back_stack.len() >= self.max_size {
-                self.back_stack.pop_front();
+            // A zero cap forgets the previous page: nothing is pushed onto the
+            // back stack, so there is never anything to go back to.
+            if self.max_size > 0 {
+                if self.back_stack.len() >= self.max_size {
+                    self.back_stack.pop_front();
+                }
+                self.back_stack.push_back(current);
             }
-            self.back_stack.push_back(current);
         }
         self.forward_stack.clear();
         self.current = Some(url);
@@ -258,10 +277,13 @@ impl SessionHistory {
             return None;
         }
         if let Some(current) = self.current.take() {
+            // The page being left becomes the immediate successor, so it goes at
+            // the front of the forward stack; the farthest future page (the back)
+            // is the one evicted when the cap is reached.
             if self.forward_stack.len() >= self.max_size {
-                self.forward_stack.pop_front();
+                self.forward_stack.pop_back();
             }
-            self.forward_stack.push_back(current);
+            self.forward_stack.push_front(current);
         }
         self.current = self.back_stack.pop_back();
         self.current.clone()
@@ -486,6 +508,33 @@ mod tests {
         assert_eq!(history.entries().front().unwrap().url, "https://b.com");
     }
 
+    #[test]
+    fn test_browser_history_zero_capacity_stores_nothing() {
+        let mut history = BrowserHistory::with_capacity(0);
+        history.add_entry("https://a.com".to_string(), "A".to_string());
+        history.add_entry("https://b.com".to_string(), "B".to_string());
+        assert_eq!(history.len(), 0);
+        assert!(history.is_empty());
+        // A disabled history stays disabled through clear and further writes.
+        history.clear();
+        history.add_entry("https://c.com".to_string(), "C".to_string());
+        assert_eq!(history.len(), 0);
+    }
+
+    #[test]
+    fn test_browser_history_default_matches_new() {
+        let defaulted = BrowserHistory::default();
+        assert_eq!(defaulted.len(), 0);
+        assert!(defaulted.is_empty());
+        // The derived Default used to zero the cap, silently disabling history.
+        // It must now carry the same cap as new(): MAX_HISTORY_ENTRIES.
+        let mut history = BrowserHistory::default();
+        for i in 0..(MAX_HISTORY_ENTRIES + 1) {
+            history.add_entry(format!("https://page{i}.com"), format!("P{i}"));
+        }
+        assert_eq!(history.len(), MAX_HISTORY_ENTRIES);
+    }
+
     // ── SessionHistory tests ──
 
     #[test]
@@ -607,5 +656,55 @@ mod tests {
         history.navigate("https://c.com".to_string());
         // Back stack should be capped at 2
         assert_eq!(history.back_entries().len(), 2);
+    }
+
+    #[test]
+    fn test_session_history_forward_resumes_from_immediate_successor() {
+        let mut history = SessionHistory::new(10);
+        for page in ["a", "b", "c", "d"] {
+            history.navigate(format!("https://{page}.com"));
+        }
+        // A -> B -> C -> D, then back twice to B.
+        assert_eq!(history.go_back().as_deref(), Some("https://c.com"));
+        assert_eq!(history.go_back().as_deref(), Some("https://b.com"));
+        // Forward must resume with the immediate successor, then the far page.
+        assert_eq!(history.go_forward().as_deref(), Some("https://c.com"));
+        assert_eq!(history.go_forward().as_deref(), Some("https://d.com"));
+        assert!(!history.can_go_forward());
+        assert_eq!(history.current().unwrap(), "https://d.com");
+    }
+
+    #[test]
+    fn test_session_history_back_forward_round_trip_with_capacity() {
+        let mut history = SessionHistory::new(2);
+        for page in ["a", "b", "c", "d"] {
+            history.navigate(format!("https://{page}.com"));
+        }
+        // Back stack is capped at 2, so only two pages are reachable backwards.
+        assert_eq!(history.back_entries().len(), 2);
+        assert_eq!(history.go_back().as_deref(), Some("https://c.com"));
+        assert_eq!(history.go_back().as_deref(), Some("https://b.com"));
+        assert!(!history.can_go_back());
+        // The forward order is preserved even after eviction.
+        assert_eq!(history.go_forward().as_deref(), Some("https://c.com"));
+        assert_eq!(history.go_forward().as_deref(), Some("https://d.com"));
+        assert!(!history.can_go_forward());
+        assert_eq!(history.current().unwrap(), "https://d.com");
+    }
+
+    #[test]
+    fn test_session_history_zero_capacity_forgets_previous_page() {
+        let mut history = SessionHistory::new(0);
+        history.navigate("https://a.com".to_string());
+        history.navigate("https://b.com".to_string());
+        // The previous page is forgotten: there is nothing to go back or forward to.
+        assert_eq!(history.current().unwrap(), "https://b.com");
+        assert!(!history.can_go_back());
+        assert!(!history.can_go_forward());
+        assert!(history.go_back().is_none());
+        assert!(history.go_forward().is_none());
+        // Clear still returns to the initial empty state.
+        history.clear();
+        assert!(history.current().is_none());
     }
 }

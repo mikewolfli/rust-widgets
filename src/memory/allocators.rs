@@ -147,7 +147,15 @@ impl ArenaAllocator {
     pub fn allocate<T>(&mut self) -> Option<NonNull<T>> {
         let size = core::mem::size_of::<T>();
         let align = core::mem::align_of::<T>();
-        let aligned_offset = self.offset.checked_add(align - 1)? & !(align - 1);
+        // Align the *absolute* address, not just the offset. The backing block is
+        // only 8-byte aligned (see `Self::new`), so masking the offset alone cannot
+        // satisfy a caller that needs, say, 64-byte alignment: the base address's own
+        // misalignment has to be folded into the padding. Compute the offset that
+        // makes `base + offset` a multiple of `align`, using the pointer's address as
+        // the authority rather than assuming the base is aligned.
+        let base = self.buffer.as_ptr() as usize;
+        let aligned_addr = base.checked_add(self.offset)?.checked_add(align - 1)? & !(align - 1);
+        let aligned_offset = aligned_addr.checked_sub(base)?;
         // Checked, not plain: the `?` above guards only the alignment padding, so
         // without this an `aligned_offset` within `size` of `usize::MAX` would wrap
         // `new_offset` to a small value, pass the bounds test below, and hand out a
@@ -161,9 +169,10 @@ impl ArenaAllocator {
         }
         self.offset = new_offset;
         // SAFETY: aligned_offset is verified against self.layout.size() above,
-        // ensuring the pointer stays within the allocated buffer. The alignment
-        // calculation guarantees proper alignment for type T. The buffer is
-        // guaranteed to be live since ArenaAllocator owns it and keeps it until drop.
+        // ensuring the pointer stays within the allocated buffer. The absolute
+        // address base+aligned_offset is a multiple of align, so the returned pointer
+        // is correctly aligned for T. The buffer is guaranteed to be live since
+        // ArenaAllocator owns it and keeps it until drop.
         let ptr = unsafe {
             let base = self.buffer.as_ptr();
             NonNull::new_unchecked(base.add(aligned_offset) as *mut T)
@@ -252,15 +261,23 @@ impl StackAllocator {
         if !align.is_power_of_two() {
             return None;
         }
-        let aligned_offset = self.offset.checked_add(align - 1)? & !(align - 1);
+        // Align the *absolute* address: a `Vec<u8>` guarantees only byte alignment,
+        // so masking the offset alone would leave the base's own misalignment in the
+        // returned pointer. Fold the base address into the padding computation.
+        let base = self.buffer.as_mut_ptr() as usize;
+        let aligned_addr = base.checked_add(self.offset)?.checked_add(align - 1)? & !(align - 1);
+        let aligned_offset = aligned_addr.checked_sub(base)?;
         let new_offset = aligned_offset.checked_add(size)?;
         if new_offset > self.buffer.len() {
             return None;
         }
         self.offset = new_offset;
         // SAFETY: aligned_offset is checked against self.buffer.len() above,
-        // guaranteeing the pointer is within the allocated Vec's storage.
-        // The Vec's buffer is guaranteed to be valid until the Vec is dropped.
+        // guaranteeing the pointer is within the allocated Vec's storage. The
+        // absolute address base+aligned_offset is a multiple of align, so the
+        // returned pointer is correctly aligned. The Vec's buffer is guaranteed to
+        // be valid until the Vec is dropped (or reallocated, which never happens here
+        // because the buffer is fixed at construction).
         Some(unsafe { self.buffer.as_mut_ptr().add(aligned_offset) })
     }
 
@@ -513,6 +530,52 @@ mod tests {
         assert!(ptr1.is_some());
         allocator.pop_to_marker();
         assert_eq!(allocator.used(), 0);
+    }
+
+    /// Every allocation must land on an address that is a multiple of the
+    /// requested alignment, for alignments far larger than the allocator's own
+    /// base alignment. This is the regression test for S-01: masking the offset
+    /// while ignoring the base address's own misalignment produced pointers whose
+    /// remainder modulo the requested alignment was non-zero.
+    #[test]
+    fn high_alignment_requests_land_on_aligned_absolute_addresses() {
+        let mut stack = StackAllocator::new(1 << 16);
+        for align in [1usize, 8, 64, 256, 4096] {
+            // Allocate a few odd-sized blocks first so the base offset moves off
+            // zero and previously-misaligned cases would surface.
+            for size in [1usize, 3, 7, 13] {
+                let ptr = stack.allocate(size, align).expect("room for the request");
+                let addr = ptr as usize;
+                assert_eq!(addr % align, 0, "stack align {align} size {size} gave {addr:#x}");
+            }
+        }
+
+        // A type whose natural alignment exceeds the backing block's alignment.
+        #[repr(align(4096))]
+        #[derive(Default)]
+        struct OverAligned([u8; 1]);
+
+        let mut arena = ArenaAllocator::new(1 << 16);
+        // Move the bump pointer off zero before requesting the over-aligned type.
+        let _ = arena.allocate::<u8>();
+        let _ = arena.allocate::<u64>();
+        let ptr = arena.allocate::<OverAligned>().expect("room for the request");
+        assert_eq!(ptr.as_ptr() as usize % 4096, 0, "arena over-aligned type was misaligned");
+        // Write through the pointer so the payload is observably used, not just the address.
+        unsafe { (*ptr.as_ptr()).0[0] = 7 };
+        assert_eq!(unsafe { (*ptr.as_ptr()).0[0] }, 7);
+    }
+
+    /// A request that cannot fit must be refused without consuming space, and the
+    /// next smaller request must still succeed at the requested alignment.
+    #[test]
+    fn an_impossible_request_leaves_the_allocator_unchanged() {
+        let mut stack = StackAllocator::new(64);
+        let before = stack.used();
+        assert!(stack.allocate(128, 8).is_none());
+        assert_eq!(stack.used(), before, "a rejected request must not move the cursor");
+        let ptr = stack.allocate(16, 64).expect("a fitting request still succeeds");
+        assert_eq!(ptr as usize % 64, 0);
     }
 
     #[test]

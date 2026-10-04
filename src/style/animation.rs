@@ -375,40 +375,63 @@ impl Animation {
     ///
     /// Returns `0.0` while the animation is stopped or still in its delay, and
     /// returns the frozen value while paused. Within an iteration the raw
-    /// progress wraps, so a non-infinite animation that has overrun its last
-    /// iteration reads `1.0` and an infinite one restarts the range.
+    /// progress wraps, so a multi-iteration run reports the fractional part of its
+    /// current iteration, and a completed run holds at the value its direction ends on.
     ///
-    /// # A finished animation holds at the end
+    /// # A finished animation holds at its directional end value
     ///
     /// `update` clears `is_running` when the last iteration elapses, so a *completed*
     /// one-shot used to fall into the "not running" branch and read `0.0` — a progress bar
     /// wired to this snapped back to empty at the moment it filled. The documented contract is
-    /// that it reads `1.0`, so completion is answered before the running check.
+    /// that it reads its final value, so completion is answered before the running check, and
+    /// the value depends on the direction the final iteration ran in (a `Reverse` run ends at
+    /// `0.0`, not `1.0`).
     pub fn progress(&self) -> f32 {
         if self.is_paused {
             // Return the progress frozen at the moment pause() was called.
             return self.frozen_progress.unwrap_or(0.0);
         }
         if self.is_completed() {
-            // A completed forward run holds at its final value. `.max(0.0)` keeps a
-            // reverse direction from reporting -0.0, and the easing is applied so an
-            // overshooting curve's endpoint is the same one `progress_inner` produces.
-            return 1.0_f32.max(0.0);
+            return self.completed_progress();
         }
         self.progress_inner()
     }
+
+    /// The progress value a completed animation holds at, which is the end of its final
+    /// iteration rather than a direction-blind `1.0`.
+    ///
+    /// `Alternate`/`AlternateReverse` flip every iteration, so the end depends on the parity of
+    /// the last iteration (`iteration_count - 1`).
+    fn completed_progress(&self) -> f32 {
+        let last_iteration = self.config.iteration_count.saturating_sub(1);
+        match self.config.direction {
+            AnimationDirection::Normal => 1.0,
+            AnimationDirection::Reverse => 0.0,
+            AnimationDirection::Alternate => {
+                if last_iteration.is_multiple_of(2) {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            AnimationDirection::AlternateReverse => {
+                if last_iteration.is_multiple_of(2) {
+                    0.0
+                } else {
+                    1.0
+                }
+            }
+        }
+    }
     /// The shared body of [`progress`](Self::progress) and the pause-time capture.
     ///
-    /// The two used to be duplicated, which is how they came to carry the same defect: the
-    /// finite arm read `(raw % 1.0).min(1.0)`, and because `min` was applied *after* the
-    /// modulus the clamp could never bind — the only values reachable are `raw % 1.0`, which
-    /// is strictly below `1.0`, and exactly `0.0` when `raw` is a whole number.
-    ///
-    /// That contradicts this module's documented contract in two ways: a finite animation
-    /// that has overrun its last iteration is documented to read `1.0`, and it read `0.0`;
-    /// and the finite arm was indistinguishable from the infinite one, so a progress-driven
-    /// caller snapped back to the start on every iteration boundary instead of holding at the
-    /// end. The finite case therefore takes the un-wrapped `raw` and clamps it.
+    /// Completion is answered *before* this function runs (see [`progress`](Self::progress)), so
+    /// the only case that reaches here is an animation mid-iteration. The within-iteration progress
+    /// is therefore the fractional part of `raw`, for finite and infinite runs alike: a
+    /// three-iteration animation at `1.5` durations is in its second iteration at `0.5`, not
+    /// saturated at `1.0`. The `min(1.0)` this branch once applied was wrong exactly because it
+    /// could only ever return `raw % 1.0` or `0.0` — the clamp never bound — and it made every
+    /// iteration after the first read as a stuck end-point.
     fn progress_inner(&self) -> f32 {
         if !self.is_running {
             return 0.0;
@@ -434,11 +457,6 @@ impl Animation {
         //   is progress `1.0`, and filling backwards must not snap it to `0.0`.
         // * `None`/`Forwards` — nothing is applied before the delay, so progress reads `0.0`
         //   regardless of direction.
-        //
-        // After the animation finishes the finite case already saturates at `1.0` (see below),
-        // which is the `Forwards` answer; `None` would ideally drop the value, but "dropped" is a
-        // decision for whoever owns the animated property, not for a progress function that must
-        // return *some* `f32`. The doc says so.
         if elapsed < self.config.delay {
             return if self.config.fill_mode.fills_backwards() {
                 match self.config.direction {
@@ -453,10 +471,10 @@ impl Animation {
         // Guard against division by zero when duration is ZERO (default).
         let duration_secs = self.config.duration.as_secs_f32().max(f32::EPSILON);
         let raw_progress = animation_elapsed.as_secs_f32() / duration_secs;
-        // A finite animation is a one-shot: its progress runs from 0 to 1 across the whole
-        // sequence and saturates. Only an infinite one wraps per iteration.
-        let progress =
-            if self.config.infinite { raw_progress % 1.0 } else { raw_progress.min(1.0) };
+        // Within-iteration progress: `raw % 1.0` gives the fraction through the current
+        // iteration for both finite and infinite runs. The end-of-sequence value is produced by
+        // `completed_progress`, not by saturating here.
+        let progress = raw_progress % 1.0;
         let eased_progress = self.config.easing.apply(progress);
         match self.config.direction {
             AnimationDirection::Normal => eased_progress,
@@ -1006,6 +1024,18 @@ impl AnimationDriver {
         self.animations.get(&id).map(|entry| entry.anim.progress())
     }
 
+    /// Whether the animation `id` has finished, or is no longer present.
+    ///
+    /// This is the lifecycle question the group composers ([`ParallelAnimation`],
+    /// [`SequentialAnimation`] and `AnimationGroup`) ask. It must not be derived from
+    /// [`AnimationDriver::get_progress`]: a reverse or overshooting child legitimately reads a
+    /// value other than `1.0` while running or finished, so comparing progress to `1.0` makes a
+    /// reverse child look complete at its start and a multi-iteration child never complete. A
+    /// missing id counts as done, matching the composers' documented "removed means complete".
+    pub fn is_finished(&self, id: AnimationId) -> bool {
+        self.animations.get(&id).map(|entry| entry.anim.is_completed()).unwrap_or(true)
+    }
+
     /// Returns the `PropertyAnimation` metadata for a given animation ID, if any.
     ///
     /// Only animations created via [`animate`](AnimationDriver::animate) (or its
@@ -1045,7 +1075,7 @@ impl ParallelAnimation {
 
     /// Returns true if all child animations have completed.
     pub fn is_completed(&self, driver: &AnimationDriver) -> bool {
-        self.ids.iter().all(|id| driver.get_progress(*id).map(|p| p >= 1.0).unwrap_or(true))
+        self.ids.iter().all(|id| driver.is_finished(*id))
     }
 
     /// Returns the number of child animations.
@@ -1109,7 +1139,7 @@ impl SequentialAnimation {
                 true
             }
             Some(id) => {
-                if driver.get_progress(id).map(|p| p >= 1.0).unwrap_or(true) {
+                if driver.is_finished(id) {
                     // Current animation done, move to next
                     self.current_index += 1;
                     self.current_id = None;
@@ -2568,40 +2598,84 @@ mod tests {
         assert!(!seq.advance(&mut driver, |_, _| {}));
         assert!(!seq.advance(&mut driver, |_, _| {}));
     }
-    /// A finite animation's progress saturates at `1.0` instead of wrapping.
+    /// A finite multi-iteration animation reports the within-iteration progress, not `1.0`
+    /// for every iteration after the first.
     ///
-    /// The finite arm was `(raw % 1.0).min(1.0)`. Because the clamp is applied *after* the
-    /// modulus it can never bind — `raw % 1.0` is strictly below `1.0` for every
-    /// non-integral `raw`, and exactly `0.0` at every whole-iteration boundary. So the
-    /// finite arm was indistinguishable from the infinite one, and the module's documented
-    /// contract ("a non-infinite animation that has overrun its last iteration reads `1.0`")
-    /// was false: it read `0.0`.
-    ///
-    /// This pins the arithmetic directly, without a clock: the same expression is what
-    /// `progress()` evaluates.
+    /// This pins the S-21 defect through the public, delta-driven API so the result is
+    /// reproducible without a wall clock.
     #[test]
-    fn finite_progress_saturates_and_infinite_wraps() {
-        let saturation = |raw: f32, infinite: bool| {
-            if infinite {
-                raw % 1.0
-            } else {
-                raw.min(1.0)
-            }
+    fn multi_iteration_progress_is_within_the_current_iteration() {
+        use core::time::Duration;
+        let mut animation =
+            Animation::new(AnimationConfig::new(Duration::from_millis(100)).with_iterations(3));
+        animation.start();
+        animation.advance_by(Duration::from_millis(150));
+        assert!(!animation.is_completed(), "1.5 of 3 iterations is still running");
+        assert_eq!(
+            animation.progress(),
+            0.5,
+            "the second iteration reads 0.5, not the stuck end-point 1.0"
+        );
+    }
+
+    /// A completed animation holds the end value its direction points at, not a direction-blind
+    /// `1.0`.
+    #[test]
+    fn a_completed_animation_reads_its_directional_end_value() {
+        use core::time::Duration;
+        let complete = |direction: AnimationDirection, iterations: u32| -> f32 {
+            let mut animation = Animation::new(
+                AnimationConfig::new(Duration::from_millis(1))
+                    .with_direction(direction)
+                    .with_iterations(iterations),
+            );
+            animation.start();
+            animation.advance_by(Duration::from_millis(10_000));
+            assert!(animation.is_completed(), "the animation has run every iteration");
+            animation.progress()
         };
 
-        // A finite one-shot holds at the end of its sequence.
-        assert_eq!(saturation(0.5, false), 0.5);
-        assert_eq!(saturation(1.0, false), 1.0, "the first iteration's end is 1.0");
-        assert_eq!(
-            saturation(3.0, false),
-            1.0,
-            "an overrun finite animation must hold at 1.0, not reset to 0.0"
-        );
-        assert_eq!(saturation(99.0, false), 1.0);
+        assert_eq!(complete(AnimationDirection::Normal, 1), 1.0);
+        assert_eq!(complete(AnimationDirection::Reverse, 1), 0.0, "Reverse runs 1.0 to 0.0");
+        assert_eq!(complete(AnimationDirection::Alternate, 1), 1.0);
+        assert_eq!(complete(AnimationDirection::Alternate, 2), 0.0, "odd last iteration runs back");
+        assert_eq!(complete(AnimationDirection::Alternate, 3), 1.0);
+        assert_eq!(complete(AnimationDirection::AlternateReverse, 1), 0.0);
+        assert_eq!(complete(AnimationDirection::AlternateReverse, 2), 1.0);
+        assert_eq!(complete(AnimationDirection::AlternateReverse, 3), 0.0);
+    }
 
-        // An infinite one restarts each iteration.
-        assert_eq!(saturation(3.0, true), 0.0);
-        assert_eq!(saturation(3.25, true), 0.25);
+    /// A group composer must use lifecycle completion, not `progress >= 1.0`, so a reverse child
+    /// is not mistaken for done at its start and a multi-iteration child is waited on.
+    #[test]
+    fn a_reverse_child_is_not_completed_by_its_starting_progress() {
+        use core::time::Duration;
+        let mut driver = AnimationDriver::new();
+        let mut group = ParallelAnimation::new();
+        let id = driver.add(
+            AnimationConfig::new(Duration::from_millis(100))
+                .with_direction(AnimationDirection::Reverse),
+            |_| {},
+        );
+        group.add(id);
+        assert!(!group.is_completed(&driver), "a reverse child starts at 1.0 but is not finished");
+    }
+
+    /// A multi-iteration child keeps its group alive until every iteration has run.
+    #[test]
+    fn a_parallel_group_waits_for_multi_iteration_children() {
+        use core::time::Duration;
+        let mut driver = AnimationDriver::new();
+        let mut group = ParallelAnimation::new();
+        let id =
+            driver.add(AnimationConfig::new(Duration::from_millis(100)).with_iterations(3), |_| {});
+        group.add(id);
+
+        driver.advance_by(Duration::from_millis(150));
+        assert!(!group.is_completed(&driver), "a 3-iteration child at 1.5 iterations is not done");
+
+        driver.advance_by(Duration::from_millis(10_000));
+        assert!(group.is_completed(&driver), "after all iterations the child is done");
     }
 
     /// A finite animation that has fully elapsed reports completion and full progress.

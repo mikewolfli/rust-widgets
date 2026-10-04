@@ -3,12 +3,59 @@
 
 use super::{MenuConfig, UserOverrides};
 use crate::compat::HashMap;
+use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 /// Configuration persistence manager for saving/loading user preferences.
 pub struct ConfigPersistence {
     config_dir: PathBuf,
+}
+
+/// Error returned when loading a menu configuration file fails.
+///
+/// A parse failure on a **known** field is reported with the field name and its
+/// line number, so a corrupt or hand-edited file never silently drops a preference.
+/// Unknown keys are deliberately ignored (a separate, extension-friendly policy).
+#[derive(Debug)]
+pub enum ConfigLoadError {
+    /// The file could not be opened or read.
+    Io(io::Error),
+    /// A known field held a value that did not parse.
+    Parse {
+        /// 1-based line number where the bad field appeared.
+        line: usize,
+        /// The field name that failed to parse.
+        field: String,
+        /// The offending value.
+        value: String,
+    },
+}
+
+impl fmt::Display for ConfigLoadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ConfigLoadError::Io(err) => write!(f, "failed to read menu config: {err}"),
+            ConfigLoadError::Parse { line, field, value } => {
+                write!(f, "menu config line {line}: field `{field}` has invalid value `{value}`")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ConfigLoadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ConfigLoadError::Io(err) => Some(err),
+            ConfigLoadError::Parse { .. } => None,
+        }
+    }
+}
+
+impl From<io::Error> for ConfigLoadError {
+    fn from(err: io::Error) -> Self {
+        ConfigLoadError::Io(err)
+    }
 }
 impl ConfigPersistence {
     /// Creates a new persistence manager with default config directory.
@@ -87,7 +134,12 @@ impl ConfigPersistence {
         Ok(())
     }
     /// Loads menu configuration from disk.
-    pub fn load(&self) -> io::Result<UserOverrides> {
+    ///
+    /// A known field that cannot be parsed is an explicit [`ConfigLoadError::Parse`]
+    /// (with the field and line number) rather than a silently dropped `None`; a whole
+    /// file that fails to parse is rejected so the caller can keep its previous
+    /// configuration. Unknown keys are ignored independently of that policy.
+    pub fn load(&self) -> Result<UserOverrides, ConfigLoadError> {
         let path = self.config_file_path();
         if !path.exists() {
             return Ok(UserOverrides::default());
@@ -96,8 +148,9 @@ impl ConfigPersistence {
         let mut content = String::new();
         file.read_to_string(&mut content)?;
         let mut overrides = UserOverrides::default();
-        for line in content.lines() {
-            let line = line.trim();
+        for (index, raw_line) in content.lines().enumerate() {
+            let line_number = index + 1;
+            let line = raw_line.trim();
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
@@ -105,18 +158,49 @@ impl ConfigPersistence {
                 let key = key.trim();
                 let value = value.trim();
                 match key {
-                    "animations_enabled" => overrides.animations = value.parse().ok(),
-                    "transparency_enabled" => overrides.transparency = value.parse().ok(),
-                    "shadows_enabled" => overrides.shadows = value.parse().ok(),
-                    "blur_enabled" => overrides.blur = value.parse().ok(),
-                    "animation_speed" => overrides.animation_speed = value.parse().ok(),
-                    "max_visible_items" => overrides.max_visible_items = value.parse().ok(),
-                    "hardware_acceleration" => overrides.hardware_acceleration = value.parse().ok(),
-                    _ => { /* Unknown value; use widget default */ }
+                    "animations_enabled" => {
+                        overrides.animations = Some(Self::parse_field(key, value, line_number)?)
+                    }
+                    "transparency_enabled" => {
+                        overrides.transparency = Some(Self::parse_field(key, value, line_number)?)
+                    }
+                    "shadows_enabled" => {
+                        overrides.shadows = Some(Self::parse_field(key, value, line_number)?)
+                    }
+                    "blur_enabled" => {
+                        overrides.blur = Some(Self::parse_field(key, value, line_number)?)
+                    }
+                    "animation_speed" => {
+                        overrides.animation_speed =
+                            Some(Self::parse_field(key, value, line_number)?)
+                    }
+                    "max_visible_items" => {
+                        overrides.max_visible_items =
+                            Some(Self::parse_field(key, value, line_number)?)
+                    }
+                    "hardware_acceleration" => {
+                        overrides.hardware_acceleration =
+                            Some(Self::parse_field(key, value, line_number)?)
+                    }
+                    _ => { /* Unknown key: ignored so files can carry forward extensions. */ }
                 }
             }
         }
         Ok(overrides)
+    }
+
+    /// Parses a known field, turning a parse failure into an error that names the
+    /// field and its line.
+    fn parse_field<T: std::str::FromStr>(
+        field: &str,
+        value: &str,
+        line: usize,
+    ) -> Result<T, ConfigLoadError> {
+        value.parse::<T>().map_err(|_| ConfigLoadError::Parse {
+            line,
+            field: field.to_string(),
+            value: value.to_string(),
+        })
     }
     /// Deletes the saved configuration file.
     pub fn clear(&self) -> io::Result<()> {

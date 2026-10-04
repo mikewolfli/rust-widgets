@@ -35,6 +35,116 @@ fn test_shortcut_to_string() {
     let shortcut = Shortcut::primary(Key::Z);
     assert_eq!(shortcut.to_string(), "Primary+Z");
 }
+
+/// Every representable key's canonical spelling must round-trip through
+/// `from_string`. The page keys used to format as `PgUp`/`PgDn`, which the parser
+/// did not accept, so a bound chord's own canonical spelling could not be parsed back.
+#[test]
+fn every_key_canonical_spelling_round_trips() {
+    use Key::*;
+    let keys = [
+        None,
+        A,
+        B,
+        C,
+        D,
+        E,
+        F,
+        G,
+        H,
+        I,
+        J,
+        K,
+        L,
+        M,
+        N,
+        O,
+        P,
+        Q,
+        R,
+        S,
+        T,
+        U,
+        V,
+        W,
+        X,
+        Y,
+        Z,
+        Num0,
+        Num1,
+        Num2,
+        Num3,
+        Num4,
+        Num5,
+        Num6,
+        Num7,
+        Num8,
+        Num9,
+        F1,
+        F2,
+        F3,
+        F4,
+        F5,
+        F6,
+        F7,
+        F8,
+        F9,
+        F10,
+        F11,
+        F12,
+        Escape,
+        Tab,
+        Enter,
+        Space,
+        Backspace,
+        Delete,
+        Insert,
+        Home,
+        End,
+        PageUp,
+        PageDown,
+        Left,
+        Right,
+        Up,
+        Down,
+        Minus,
+        Equals,
+        LeftBracket,
+        RightBracket,
+        Semicolon,
+        Quote,
+        Comma,
+        Period,
+        Slash,
+        Backslash,
+    ];
+    for key in keys {
+        let spelling = key.format_key();
+        assert_eq!(
+            Key::from_string(spelling),
+            Some(key),
+            "canonical spelling {spelling:?} must round-trip",
+        );
+    }
+}
+
+/// Page keys format as `PageUp`/`PageDown` and parse back; the platform display
+/// glyphs are display-only and are not accepted as canonical input.
+#[test]
+fn page_keys_round_trip_without_glyphs() {
+    assert_eq!(Key::PageUp.format_key(), "PageUp");
+    assert_eq!(Key::from_string("PageUp"), Some(Key::PageUp));
+    assert_eq!(Key::PageDown.format_key(), "PageDown");
+    assert_eq!(Key::from_string("PageDown"), Some(Key::PageDown));
+
+    // A shortcut using a page key stringifies and parses back to itself.
+    let shortcut = Shortcut::primary(Key::PageUp);
+    assert_eq!(shortcut.to_string(), "Primary+PageUp");
+    assert_eq!(Shortcut::from_string(&shortcut.to_string()), Some(shortcut));
+
+    assert_eq!(Key::from_string("⇞"), None, "the page-up glyph is not canonical input");
+    assert_eq!(Key::from_string("⇟"), None, "the page-down glyph is not canonical input");
+}
 #[test]
 fn test_shortcut_manager_register() {
     let mut manager = ShortcutManager::new();

@@ -352,6 +352,13 @@ impl Platform for MacOSObjc2Platform {
         // re-ran layout but left every animation inert, because nothing on this backend ran
         // the per-frame step (BLUE24 §0A.1 measurement 1).
         while self.runtime.running.load(Ordering::SeqCst) {
+            // Pump the real AppKit queue so the native window draws, receives mouse/key
+            // input, resizes and closes — without this the loop ran only library frames and
+            // the window was inert. The frame and a short sleep fill the rest of the tick.
+            #[cfg(all(target_os = "macos", feature = "macos"))]
+            {
+                super::native::pump_native_event();
+            }
             crate::drive_frame(FRAME_INTERVAL_MS as u32);
             thread::sleep(Duration::from_millis(FRAME_INTERVAL_MS));
         }

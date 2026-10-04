@@ -103,7 +103,17 @@ impl FlowLayout {
         Self { config: FlowLayoutConfig::default(), children: Vec::new() }
     }
     /// Creates an empty layout with the supplied configuration.
-    pub fn with_config(config: FlowLayoutConfig) -> Self {
+    pub fn with_config(mut config: FlowLayoutConfig) -> Self {
+        // Negative padding has no defined meaning and previously reached `2 * padding as u32`,
+        // which overflowed in debug builds. Reject it here so every entry point (construction,
+        // field, and device-scaled reads) agrees on a non-negative inset.
+        if config.padding < 0 {
+            log::warn!(
+                "FlowLayout: negative padding {} is undefined; treating it as 0",
+                config.padding
+            );
+            config.padding = 0;
+        }
         Self { config, children: Vec::new() }
     }
     /// Appends a widget, taking ownership of it.
@@ -158,11 +168,16 @@ impl FlowLayout {
     /// the remaining space is still placed at the next slot and is allowed to
     /// overflow when `wrap` is off.
     pub fn layout(&self, available_rect: Rect) -> Vec<Rect> {
+        // S-47: clamp a negative padding (which a directly-mutated config could still hold)
+        // before the `* 2 as u32` so the inset arithmetic can never overflow; a huge positive
+        // padding saturates the content rect to zero instead of folding the error into a
+        // bogus geometry.
+        let padding = self.config.padding.max(0);
         let content_rect = Rect::new(
-            available_rect.x + self.config.padding,
-            available_rect.y + self.config.padding,
-            available_rect.width.saturating_sub(2 * self.config.padding as u32),
-            available_rect.height.saturating_sub(2 * self.config.padding as u32),
+            available_rect.x.saturating_add(padding),
+            available_rect.y.saturating_add(padding),
+            available_rect.width.saturating_sub(2 * padding as u32),
+            available_rect.height.saturating_sub(2 * padding as u32),
         );
         match self.config.direction {
             FlowDirection::Horizontal => self.layout_horizontal(&content_rect),
@@ -237,9 +252,10 @@ impl FlowLayout {
     /// (or top) edge entirely. With wrapping off there is exactly one line, so the old
     /// behaviour is preserved exactly.
     ///
-    /// The minor axis handling is deliberately **per item**, not per line: a flow line's
-    /// height is the tallest child's, and matching the old formula (every item offset by
-    /// the remaining height) keeps a single-line layout byte-identical.
+    /// The minor axis handling is per **block**: `Center`/`End` shift every item by the
+    /// remaining minor extent, measured as the sum of each line's tallest member plus the
+    /// gaps between lines (S-45). This is what centres a single line by its max height and a
+    /// wrapped block by its real line footprint.
     fn apply_alignment(&self, positions: &mut [Rect], content_rect: &Rect) {
         if self.config.alignment == FlowAlignment::Start {
             return;
@@ -260,8 +276,8 @@ impl FlowLayout {
         }
         lines.push(line_start..positions.len());
 
-        for line in lines {
-            let items = &mut positions[line];
+        for line in &lines {
+            let items = &mut positions[line.start..line.end];
             if items.is_empty() {
                 continue;
             }
@@ -305,11 +321,10 @@ impl FlowLayout {
                 FlowAlignment::End => slack,
                 FlowAlignment::SpaceBetween => 0,
                 FlowAlignment::SpaceAround => {
-                    if n > 1 {
-                        (slack - (n - 1) * (gap - self.config.spacing)).max(0) / 2
-                    } else {
-                        slack.max(0) / 2
-                    }
+                    // The leading offset is half of what the run did *not* paint. The old form
+                    // subtracted `(n - 1) * (gap - spacing)` a second time, which double-counted
+                    // the very gap increment `painted` had already included (S-44).
+                    slack.max(0) / 2
                 }
                 FlowAlignment::Start => 0,
             };
@@ -326,15 +341,22 @@ impl FlowLayout {
             }
         }
 
-        // The minor axis: `Center`/`End` shift every item by the remaining extent, which
-        // is the same arithmetic a single-line layout always used.
-        let minor_total: i32 = if major_is_x {
-            positions.iter().map(|r| r.height as i32).sum::<i32>()
-                + (positions.len().saturating_sub(1) as i32) * self.config.spacing
-        } else {
-            positions.iter().map(|r| r.width as i32).sum::<i32>()
-                + (positions.len().saturating_sub(1) as i32) * self.config.spacing
-        };
+        // The minor axis: `Center`/`End` shift every item by the remaining extent. The
+        // extent is the **block's** footprint — each line's tallest member plus the gap
+        // between lines — not the sum of every sibling's extent. Summing every sibling
+        // pushed a single-line block off-centre and a wrapped block by a number computed
+        // from the other lines (S-45).
+        let minor_total: i32 = lines
+            .iter()
+            .map(|line| {
+                positions[line.start..line.end]
+                    .iter()
+                    .map(|r| if major_is_x { r.height as i32 } else { r.width as i32 })
+                    .max()
+                    .unwrap_or(0)
+            })
+            .sum::<i32>()
+            + (lines.len().saturating_sub(1) as i32) * self.config.spacing;
         let minor_available =
             if major_is_x { content_rect.height as i32 } else { content_rect.width as i32 };
         let minor_offset = match self.config.alignment {
@@ -360,29 +382,36 @@ impl FlowLayout {
     /// one line rather than the wrapped footprint. Gaps are counted between
     /// children only, never around them.
     pub fn preferred_size(&self) -> Size {
-        let mut width = 0u32;
-        let mut height = 0u32;
+        // S-46: `spacing` is documented to allow negative values, so it must be summed as a
+        // signed quantity. The old body cast it to `u32` first, which overflowed (debug panic)
+        // or wrapped (release) for `spacing = -1`. Accumulate in `i64`, then clamp to zero.
+        let count = self.children.len() as i32;
+        let gap_total: i64 =
+            if count > 1 { (count - 1) as i64 * self.config.spacing as i64 } else { 0 };
+        // S-47: a negative padding is rejected at construction, and clamped here as a second
+        // line of defence so a directly-mutated config cannot overflow the `* 2`.
+        let padding = self.config.padding.max(0) as i64;
+        // Clamp the accumulated extent into the representable range so a huge positive
+        // padding saturates instead of wrapping around to a bogus small size (S-47).
+        let clamp_extent = |v: i64| -> u32 { v.clamp(0, u32::MAX as i64) as u32 };
         match self.config.direction {
             FlowDirection::Horizontal => {
-                for child in &self.children {
-                    let size = child.size_hint();
-                    width += size.width + self.config.spacing as u32;
-                    height = height.max(size.height);
-                }
-                width = width.saturating_sub(self.config.spacing as u32);
+                let width: i64 =
+                    self.children.iter().map(|c| c.size_hint().width as i64).sum::<i64>()
+                        + gap_total;
+                let height: i64 =
+                    self.children.iter().map(|c| c.size_hint().height as i64).max().unwrap_or(0);
+                Size::new(clamp_extent(width + 2 * padding), clamp_extent(height + 2 * padding))
             }
             FlowDirection::Vertical => {
-                for child in &self.children {
-                    let size = child.size_hint();
-                    height += size.height + self.config.spacing as u32;
-                    width = width.max(size.width);
-                }
-                height = height.saturating_sub(self.config.spacing as u32);
+                let height: i64 =
+                    self.children.iter().map(|c| c.size_hint().height as i64).sum::<i64>()
+                        + gap_total;
+                let width: i64 =
+                    self.children.iter().map(|c| c.size_hint().width as i64).max().unwrap_or(0);
+                Size::new(clamp_extent(width + 2 * padding), clamp_extent(height + 2 * padding))
             }
         }
-        width += 2 * self.config.padding as u32;
-        height += 2 * self.config.padding as u32;
-        Size::new(width, height)
     }
 }
 crate::impl_default_via_new!(FlowLayout);
@@ -429,6 +458,10 @@ impl Layout for FlowLayout {
 
     fn has_child(&self, id: ObjectId) -> bool {
         self.children.iter().any(|c| c.widget_id == id)
+    }
+
+    fn clear(&mut self) {
+        self.clear_children();
     }
 }
 #[cfg(test)]
@@ -695,5 +728,176 @@ mod tests {
         let positions = layout.layout(Rect::new(0, 0, 200, 100));
         assert_eq!(positions[0].x, 55);
         assert_eq!(positions[1].x, 105);
+    }
+
+    // ── S-44: SpaceAround must stay symmetric and in-bounds ──────────────────────────
+
+    #[test]
+    fn space_around_is_symmetric_and_in_bounds() {
+        let mut layout = FlowLayout::new();
+        layout.config.direction = FlowDirection::Horizontal;
+        layout.config.alignment = FlowAlignment::SpaceAround;
+        layout.config.spacing = 0;
+        layout.config.padding = 0;
+        layout.add_child(Box::new(TestWidget::new(1, 10, 10)));
+        layout.add_child(Box::new(TestWidget::new(2, 10, 10)));
+
+        let positions = layout.layout(Rect::new(0, 0, 100, 40));
+        // 20 used by items, 80 left: a 40 gap between them, 20 before and 20 after.
+        assert_eq!(positions[0], Rect::new(20, 0, 10, 10));
+        assert_eq!(positions[1], Rect::new(70, 0, 10, 10));
+        assert_eq!(positions[0].x, 100 - (positions[1].x + positions[1].width as i32));
+    }
+
+    #[test]
+    fn space_around_pays_the_base_gap_and_handles_remainders() {
+        let mut layout = FlowLayout::new();
+        layout.config.direction = FlowDirection::Horizontal;
+        layout.config.alignment = FlowAlignment::SpaceAround;
+        layout.config.spacing = 10;
+        layout.config.padding = 0;
+        for id in [1, 2, 3] {
+            layout.add_child(Box::new(TestWidget::new(id, 30, 10)));
+        }
+        let positions = layout.layout(Rect::new(0, 0, 160, 40));
+        assert_eq!(positions.len(), 3);
+        let lead = positions[0].x;
+        let trail = 160 - (positions[2].x + positions[2].width as i32);
+        assert_eq!(lead, trail, "the run is centred, not left-padded");
+        for (i, pos) in positions.iter().enumerate() {
+            assert!(
+                pos.x >= 0 && pos.x + pos.width as i32 <= 160,
+                "item {i} ran off the line: {pos:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn space_around_single_item_and_vertical_are_symmetric() {
+        let mut horizontal = FlowLayout::new();
+        horizontal.config.direction = FlowDirection::Horizontal;
+        horizontal.config.alignment = FlowAlignment::SpaceAround;
+        horizontal.config.spacing = 0;
+        horizontal.config.padding = 0;
+        horizontal.add_child(Box::new(TestWidget::new(1, 10, 10)));
+        let positions = horizontal.layout(Rect::new(0, 0, 100, 40));
+        assert_eq!(positions[0].x, 45, "a lone item is centred");
+
+        let mut vertical = FlowLayout::new();
+        vertical.config.direction = FlowDirection::Vertical;
+        vertical.config.alignment = FlowAlignment::SpaceAround;
+        vertical.config.spacing = 0;
+        vertical.config.padding = 0;
+        vertical.add_child(Box::new(TestWidget::new(1, 10, 10)));
+        vertical.add_child(Box::new(TestWidget::new(2, 10, 10)));
+        let positions = vertical.layout(Rect::new(0, 0, 40, 100));
+        assert_eq!(positions[0], Rect::new(0, 20, 10, 10));
+        assert_eq!(positions[1], Rect::new(0, 70, 10, 10));
+    }
+
+    // ── S-45: minor-axis centring uses the line's max extent ──────────────────────────
+
+    #[test]
+    fn minor_axis_centering_uses_the_lines_max_extent() {
+        let mut layout = FlowLayout::new();
+        layout.config.direction = FlowDirection::Horizontal;
+        layout.config.alignment = FlowAlignment::Center;
+        layout.config.spacing = 0;
+        layout.config.padding = 0;
+        layout.add_child(Box::new(TestWidget::new(1, 10, 10)));
+        layout.add_child(Box::new(TestWidget::new(2, 10, 10)));
+
+        // Two 10x10 children in a 100x100 box: the line's max height is 10, so the
+        // vertical centre is (100 - 10) / 2 = 45, not (100 - 20) / 2 = 40.
+        let positions = layout.layout(Rect::new(0, 0, 100, 100));
+        assert_eq!(positions[0].y, 45);
+        assert_eq!(positions[1].y, 45);
+    }
+
+    #[test]
+    fn wrapped_minor_axis_centering_uses_real_line_heights() {
+        let mut layout = FlowLayout::new();
+        layout.config.direction = FlowDirection::Horizontal;
+        layout.config.alignment = FlowAlignment::Center;
+        layout.config.spacing = 0;
+        layout.config.padding = 0;
+        layout.config.wrap = true;
+        // Two rows in a 100px box: row 1 is 30 tall, row 2 is 20 tall.
+        layout.add_child(Box::new(TestWidget::new(1, 40, 10)));
+        layout.add_child(Box::new(TestWidget::new(2, 40, 30)));
+        layout.add_child(Box::new(TestWidget::new(3, 40, 20)));
+
+        let positions = layout.layout(Rect::new(0, 0, 100, 100));
+        // Block height = 30 + 20 = 50, centre = (100 - 50) / 2 = 25.
+        assert_eq!(positions[0].y, 25);
+        assert_eq!(positions[1].y, 25);
+        assert_eq!(positions[2].y, 55);
+    }
+
+    // ── S-46: negative spacing is legal and must measure/place consistently ───────────
+
+    #[test]
+    fn negative_spacing_measures_and_places_consistently() {
+        let mut layout = FlowLayout::new();
+        layout.config.direction = FlowDirection::Horizontal;
+        layout.config.spacing = -1;
+        layout.config.padding = 0;
+        layout.add_child(Box::new(TestWidget::new(1, 10, 10)));
+        layout.add_child(Box::new(TestWidget::new(2, 10, 10)));
+
+        // Width = 10 + (-1) + 10 = 19; previously this panicked on the u32 cast.
+        assert_eq!(layout.preferred_size(), Size::new(19, 10));
+        let positions = layout.layout(Rect::new(0, 0, 100, 40));
+        assert_eq!(positions[1].x, 9, "the second child overlaps by the negative spacing");
+    }
+
+    // ── S-47: negative padding is rejected, not folded into geometry ──────────────────
+
+    #[test]
+    fn negative_padding_is_clamped_to_zero_at_construction() {
+        let layout = FlowLayout::with_config(FlowLayoutConfig {
+            direction: FlowDirection::Horizontal,
+            alignment: FlowAlignment::Start,
+            spacing: 0,
+            padding: -1,
+            wrap: false,
+        });
+        assert_eq!(layout.preferred_size(), Size::new(0, 0));
+    }
+
+    #[test]
+    fn a_directly_mutated_negative_padding_does_not_panic() {
+        let mut layout = FlowLayout::new();
+        layout.config.padding = -1;
+        layout.config.spacing = 0;
+        layout.add_child(Box::new(TestWidget::new(1, 10, 10)));
+        let positions = layout.layout(Rect::new(0, 0, 100, 50));
+        assert_eq!(positions[0], Rect::new(0, 0, 10, 10));
+    }
+
+    #[test]
+    fn a_huge_padding_saturates_instead_of_wrapping() {
+        let mut layout = FlowLayout::new();
+        layout.config.padding = i32::MAX;
+        layout.config.spacing = 0;
+        layout.add_child(Box::new(TestWidget::new(1, 10, 10)));
+        // No panic, and the reported preferred size saturates rather than wrapping negative.
+        let size = layout.preferred_size();
+        assert!(size.width >= 10 && size.height >= 10);
+    }
+
+    // ── S-55: `dyn Layout::clear` must reach the concrete clear_children ──────────────
+
+    #[test]
+    fn dyn_clear_removes_flow_children() {
+        let mut layout: Box<dyn Layout> = Box::new(FlowLayout::new());
+        layout.add_widget(1, 0);
+        assert!(layout.has_child(1));
+        layout.clear();
+        assert!(!layout.has_child(1));
+        assert!(layout.child_ids().is_empty());
+        // A repeat clear is a no-op, not a panic or a re-emission.
+        layout.clear();
+        assert!(layout.child_ids().is_empty());
     }
 }

@@ -288,17 +288,19 @@ pub fn apply_exif_orientation(
         3 => rotate(data, w, h, 180),
         // 4 = mirrored vertically.
         4 => Ok((flip_vertical(data, w, h)?, w, h)),
-        // 5 = transposed (mirror across the top-left/bottom-right diagonal): flip H then rotate 90 CW.
+        // 5 = transposed (mirror across the top-left/bottom-right diagonal): flip H then rotate
+        // 270 (a transpose maps (x, y) to (y, x); the 90 CW rotation above would map to the
+        // *other* diagonal instead).
         5 => {
             let (flipped, fw, fh) = (flip_horizontal(data, w, h)?, w, h);
-            rotate(flipped, fw, fh, 90)
+            rotate(flipped, fw, fh, 270)
         }
         // 6 = rotated 90 clockwise (the usual "portrait photo stored landscape").
         6 => rotate(data, w, h, 90),
-        // 7 = transverse (mirror across the top-right/bottom-left diagonal): flip H then rotate 270.
+        // 7 = transverse (mirror across the top-right/bottom-left diagonal): flip H then rotate 90.
         7 => {
             let (flipped, fw, fh) = (flip_horizontal(data, w, h)?, w, h);
-            rotate(flipped, fw, fh, 270)
+            rotate(flipped, fw, fh, 90)
         }
         // 8 = rotated 90 counter-clockwise.
         8 => rotate(data, w, h, 270),
@@ -464,5 +466,54 @@ mod tests {
         let (out, w, h) = apply_exif_orientation(src, 2, 1, 9).unwrap();
         assert_eq!((w, h), (2, 1));
         assert_eq!(pixel(&out, 2, 0, 0), (255, 0, 0));
+    }
+
+    /// Reads an RGBA8 image as a grid of its red channel (top-to-bottom rows of left-to-right
+    /// pixels), so an orientation test can compare whole images without index gymnastics.
+    fn red_grid(data: &ImageData, w: u32, h: u32) -> Vec<Vec<u8>> {
+        let ImageData::Rgba8(bytes) = data else { panic!("expected RGBA8") };
+        (0..h)
+            .map(|y| {
+                (0..w).map(|x| bytes[((y * w + x) * 4) as usize]).collect()
+            })
+            .collect()
+    }
+
+    /// All eight EXIF orientation tags, checked on a non-symmetric 3x2 matrix.
+    ///
+    /// Pins the defect: tags 5 (transpose) and 7 (transverse) were implemented with the two
+    /// diagonal transforms swapped, which only a non-symmetric image can expose (a square image
+    /// with symmetric content would pass either way).
+    #[test]
+    fn exif_orientation_maps_all_eight_tags_on_a_non_symmetric_matrix() {
+        // 3 wide x 2 tall, pixels numbered 1..=6 row-major in the red channel.
+        let src = ImageData::Rgba8(vec![
+            1, 0, 0, 255, 2, 0, 0, 255, 3, 0, 0, 255, 4, 0, 0, 255, 5, 0, 0, 255, 6, 0, 0, 255,
+        ]);
+
+        let cases: [(u8, u32, u32, Vec<Vec<u8>>); 8] = [
+            (1, 3, 2, vec![vec![1, 2, 3], vec![4, 5, 6]]),
+            (2, 3, 2, vec![vec![3, 2, 1], vec![6, 5, 4]]),
+            (3, 3, 2, vec![vec![6, 5, 4], vec![3, 2, 1]]),
+            (4, 3, 2, vec![vec![4, 5, 6], vec![1, 2, 3]]),
+            (5, 2, 3, vec![vec![1, 4], vec![2, 5], vec![3, 6]]),
+            (6, 2, 3, vec![vec![4, 1], vec![5, 2], vec![6, 3]]),
+            (7, 2, 3, vec![vec![6, 3], vec![5, 2], vec![4, 1]]),
+            (8, 2, 3, vec![vec![3, 6], vec![2, 5], vec![1, 4]]),
+        ];
+
+        for (tag, w, h, expected) in cases {
+            let (out, ow, oh) = apply_exif_orientation(src.clone(), 3, 2, tag).unwrap();
+            assert_eq!(
+                (ow, oh),
+                (w, h),
+                "orientation {tag} must produce {w}x{h}, got {ow}x{oh}"
+            );
+            assert_eq!(
+                red_grid(&out, w, h),
+                expected,
+                "orientation {tag} produced the wrong pixels"
+            );
+        }
     }
 }

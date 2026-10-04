@@ -401,6 +401,15 @@ impl Platform for AndroidMobilePlatform {
         self.state.record_repaint_request(id)
     }
 
+    /// Removes and returns the next widget awaiting a repaint.
+    ///
+    /// The drain half of [`Self::invalidate_surface`]: without it the queue the host
+    /// fills through `rw_take_pending_repaint` would always answer `None`/`0`, so a
+    /// stale widget could never be asked to redraw.
+    fn take_pending_repaint(&self) -> Option<ObjectId> {
+        self.state.take_pending_repaint()
+    }
+
     /// The backend displays library-painted widgets by handing the host their frames.
     ///
     /// See [`crate::platform::Platform::supports_surfaces`] and
@@ -584,27 +593,32 @@ mod tests {
 
     /// The mobile backend must host library-painted widgets: the attached native view
     /// is the surface, and the host drains repaints from this queue.
+    ///
+    /// The enqueue→coalesce→consume chain is exercised through the **public**
+    /// [`Platform`] trait (as `&dyn Platform`), not the private `state` field: that
+    /// is the path a host draining `rw_take_pending_repaint` actually uses.
     #[test]
     fn mobile_backend_hosts_widget_surfaces() {
         let platform = AndroidMobilePlatform::new();
-        assert!(platform.supports_surfaces());
+        let dyn_platform: &dyn Platform = &platform;
+        assert!(dyn_platform.supports_surfaces());
 
-        let window = platform.create_window("Window", 0, 0, 360, 780);
+        let window = dyn_platform.create_window("Window", 0, 0, 360, 780);
         let rect = crate::core::Rect::new(0, 0, 100, 40);
-        assert!(platform.mount_surface(window, window, rect));
+        assert!(dyn_platform.mount_surface(window, window, rect));
         assert_eq!(platform.state.surface_rect(window), Some(rect));
         assert_eq!(platform.state.mounted_surface_count(), 1);
 
         // Coalesced: two invalidations in one frame produce one repaint.
-        assert!(platform.invalidate_surface(window));
-        assert!(platform.invalidate_surface(window));
+        assert!(dyn_platform.invalidate_surface(window));
+        assert!(dyn_platform.invalidate_surface(window));
         assert_eq!(platform.state.pending_repaint_count(), 1);
-        assert_eq!(platform.state.take_pending_repaint(), Some(window));
-        assert_eq!(platform.state.pending_repaint_count(), 0);
+        assert_eq!(dyn_platform.take_pending_repaint(), Some(window));
+        assert_eq!(dyn_platform.take_pending_repaint(), None, "draining empties the queue");
 
         // A gone widget cannot stay queued for a repaint nobody can produce.
-        assert!(platform.invalidate_surface(window));
-        assert!(platform.unmount_surface(window));
+        assert!(dyn_platform.invalidate_surface(window));
+        assert!(dyn_platform.unmount_surface(window));
         assert_eq!(platform.state.surface_rect(window), None);
         assert_eq!(platform.state.pending_repaint_count(), 0);
     }

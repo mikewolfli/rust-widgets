@@ -11,6 +11,7 @@
 //!
 //! This module integrates with the existing memory pool system in `crate::memory`.
 use crate::compat::Vec;
+use core::fmt;
 /// GPU memory profile based on device type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuMemoryProfile {
@@ -107,6 +108,26 @@ pub enum FenceStrategy {
     /// Spinlock for low-latency
     Spinlock,
 }
+/// Errors produced when configuring a [`GpuStagingBufferPool`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuBufferPoolError {
+    /// `ring_slots` must be at least one; zero would divide by zero when the
+    /// pool is carved into slots.
+    NoRingSlots,
+    /// `alignment` must be a non-zero power of two; any other value would make
+    /// the alignment mask wrap or fail to align real addresses.
+    InvalidAlignment,
+}
+impl fmt::Display for GpuBufferPoolError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoRingSlots => write!(f, "ring_slots must be at least one"),
+            Self::InvalidAlignment => write!(f, "alignment must be a non-zero power of two"),
+        }
+    }
+}
+#[cfg(not(alloc_frugal))]
+impl core::error::Error for GpuBufferPoolError {}
 /// Configuration for the staging buffer pool
 #[derive(Debug, Clone)]
 pub struct StagingBufferPoolConfig {
@@ -167,6 +188,17 @@ impl StagingBufferPoolConfig {
         self.pool_size = self.pool_size.min(max_pool_size);
         self
     }
+    /// Validates the configuration, rejecting values that would otherwise
+    /// divide by zero or overflow inside the pool.
+    pub fn validate(&self) -> Result<(), GpuBufferPoolError> {
+        if self.ring_slots == 0 {
+            return Err(GpuBufferPoolError::NoRingSlots);
+        }
+        if self.alignment == 0 || !self.alignment.is_power_of_two() {
+            return Err(GpuBufferPoolError::InvalidAlignment);
+        }
+        Ok(())
+    }
 }
 crate::impl_default_via_new!(StagingBufferPoolConfig);
 /// A single ring buffer slot
@@ -183,6 +215,13 @@ pub struct GpuRingBufferSlot {
     /// Frame index when this slot was last used
     pub last_used_frame: u64,
 }
+/// Rounds `value` up to the next multiple of `alignment` (a power of two),
+/// returning `None` on overflow so a `usize::MAX` request is rejected instead of
+/// wrapping. `alignment` is validated to be a non-zero power of two before this
+/// helper is reached, so the mask is well-formed.
+fn align_up_checked(value: usize, alignment: usize) -> Option<usize> {
+    value.checked_add(alignment - 1).map(|v| v & !(alignment - 1))
+}
 /// Staging buffer pool with ring buffer design for GPU uploads.
 ///
 /// This is specialized for GPU staging buffers and complements the general
@@ -196,11 +235,22 @@ pub struct GpuStagingBufferPool {
     total_used: usize,
     /// Optional reference to the system buffer pool for fallback
     fallback_pool: Option<crate::memory::BufferPool>,
+    /// Monotonic counter distinguishing simultaneously-live fallback handles.
+    next_fallback_id: u64,
 }
 impl GpuStagingBufferPool {
-    /// Creates a new staging buffer pool with the given configuration
-    pub fn new(config: StagingBufferPoolConfig) -> Self {
-        let slot_size = config.pool_size / config.ring_slots;
+    /// Creates a new staging buffer pool with the given configuration.
+    ///
+    /// Returns an error when the configuration is invalid (`ring_slots == 0` or
+    /// a non-power-of-two `alignment`); a rejected config never leaves a
+    /// half-constructed pool behind.
+    pub fn new(config: StagingBufferPoolConfig) -> Result<Self, GpuBufferPoolError> {
+        config.validate()?;
+        let alignment = config.alignment;
+        // Carve the pool into slots whose base offset is a multiple of
+        // `alignment`, so every allocation handed out starts on a real aligned
+        // address (not merely an aligned offset within an unaligned slot).
+        let slot_size = (config.pool_size / config.ring_slots) & !(alignment - 1);
         let mut slots = Vec::with_capacity(config.ring_slots);
         for i in 0..config.ring_slots {
             slots.push(GpuRingBufferSlot {
@@ -211,7 +261,7 @@ impl GpuStagingBufferPool {
                 last_used_frame: 0,
             });
         }
-        Self {
+        Ok(Self {
             config,
             slots,
             current_slot: 0,
@@ -219,12 +269,18 @@ impl GpuStagingBufferPool {
             total_allocated: 0,
             total_used: 0,
             fallback_pool: None,
-        }
+            next_fallback_id: 0,
+        })
     }
-    /// Creates a pool optimized for the given GPU type
+    /// Creates a pool optimized for the given GPU type.
+    ///
+    /// The profile-derived configuration is always valid (a non-zero slot count
+    /// and a power-of-two alignment), so this never fails; it delegates to
+    /// [`Self::new`] and unwraps the validated result.
     pub fn for_gpu_type(device_type: super::adapter::GpuDeviceType) -> Self {
         let profile = GpuMemoryProfile::from_device_type(device_type);
         Self::new(StagingBufferPoolConfig::for_profile(profile))
+            .expect("profile-derived pool configuration is always valid")
     }
     /// Sets a fallback buffer pool for overflow allocations
     pub fn with_fallback_pool(mut self, pool: crate::memory::BufferPool) -> Self {
@@ -248,7 +304,7 @@ impl GpuStagingBufferPool {
     }
     /// Allocates a buffer from the current slot
     pub fn allocate(&mut self, size: usize) -> Option<GpuBufferAllocation> {
-        let aligned_size = (size + self.config.alignment - 1) & !(self.config.alignment - 1);
+        let aligned_size = align_up_checked(size, self.config.alignment)?;
         // Check if we should merge small uploads
         if self.config.merge_uploads && size < self.config.small_upload_threshold {
             // Try to merge with existing allocation
@@ -262,32 +318,42 @@ impl GpuStagingBufferPool {
             return self.allocate_fallback(size);
         }
         let slot = self.slots.get(self.current_slot)?;
-        if self.total_used + aligned_size > slot.size {
+        let new_used = self.total_used.checked_add(aligned_size)?;
+        if new_used > slot.size {
             // Pool exhausted, try fallback
             return self.allocate_fallback(size);
         }
         let offset = slot.offset + self.total_used;
-        self.total_used += aligned_size;
-        self.total_allocated += aligned_size;
+        self.total_used = new_used;
+        self.total_allocated = self.total_allocated.saturating_add(aligned_size);
         Some(GpuBufferAllocation {
             slot_index: self.current_slot,
             offset,
             size: aligned_size,
             frame_index: self.current_frame,
             is_fallback: false,
+            storage: None,
+            fallback_id: 0,
         })
     }
     /// Allocates from fallback pool
     fn allocate_fallback(&mut self, size: usize) -> Option<GpuBufferAllocation> {
         if let Some(ref mut pool) = self.fallback_pool {
             let buffer = pool.acquire_sized(size);
-            // Return a special allocation indicating fallback
+            let size = buffer.len();
+            let fallback_id = self.next_fallback_id;
+            self.next_fallback_id = self.next_fallback_id.saturating_add(1);
+            // The handle owns the real storage so it stays alive (and can be
+            // released) after this call returns; `fallback_id` distinguishes
+            // several simultaneously-live fallback handles.
             Some(GpuBufferAllocation {
                 slot_index: usize::MAX, // Marker for fallback
                 offset: 0,
-                size: buffer.len(),
+                size,
                 frame_index: self.current_frame,
                 is_fallback: true,
+                storage: Some(buffer),
+                fallback_id,
             })
         } else {
             None
@@ -295,7 +361,7 @@ impl GpuStagingBufferPool {
     }
     /// Tries to merge a small allocation with existing data in the current slot
     fn try_merge_allocate(&mut self, size: usize) -> Option<GpuBufferAllocation> {
-        let aligned_size = (size + self.config.alignment - 1) & !(self.config.alignment - 1);
+        let aligned_size = align_up_checked(size, self.config.alignment)?;
         // Get current slot
         let slot = self.slots.get(self.current_slot)?;
         // Check if we can merge with existing allocation
@@ -304,22 +370,40 @@ impl GpuStagingBufferPool {
             return None;
         }
         // Check if there's enough remaining space in the current slot
-        let remaining_space = slot.size - self.total_used;
-        if remaining_space >= aligned_size {
-            // Merge with existing allocation
-            let offset = self.total_used;
-            self.total_used += aligned_size;
-            self.total_allocated += aligned_size;
-            Some(GpuBufferAllocation {
-                slot_index: slot.index,
-                offset,
-                size: aligned_size,
-                frame_index: self.current_frame,
-                is_fallback: false,
-            })
-        } else {
-            // Not enough space, cannot merge
-            None
+        let remaining_space = slot.size.saturating_sub(self.total_used);
+        if remaining_space < aligned_size {
+            return None;
+        }
+        // Merge with existing allocation. The offset is slot-relative here too,
+        // so it uses the same `slot.offset + used` coordinate space as
+        // [`Self::allocate`] — a merge must not report a different origin.
+        let offset = slot.offset + self.total_used;
+        self.total_used = self.total_used.checked_add(aligned_size)?;
+        self.total_allocated = self.total_allocated.saturating_add(aligned_size);
+        Some(GpuBufferAllocation {
+            slot_index: slot.index,
+            offset,
+            size: aligned_size,
+            frame_index: self.current_frame,
+            is_fallback: false,
+            storage: None,
+            fallback_id: 0,
+        })
+    }
+    /// Returns the storage of a fallback allocation to the pool for reuse.
+    ///
+    /// Ring-slot allocations own no storage (they borrow space inside the pool's
+    /// slots and are recycled with [`Self::wait_for_slot`]), so releasing one is
+    /// a no-op. Releasing an oversized fallback whose capacity no longer matches
+    /// the pool simply drops it, which is the pool's own recycling contract.
+    pub fn release(&mut self, mut allocation: GpuBufferAllocation) {
+        if !allocation.is_fallback {
+            return;
+        }
+        if let (Some(ref mut pool), Some(buffer)) =
+            (&mut self.fallback_pool, allocation.storage.take())
+        {
+            pool.release(buffer);
         }
     }
     /// Returns the current frame index
@@ -356,7 +440,12 @@ impl GpuStagingBufferPool {
     }
 }
 /// GPU buffer allocation info
-#[derive(Debug, Clone, Copy)]
+///
+/// A handle either borrows a region of one of the pool's ring slots (no owned
+/// storage) or — for a fallback allocation — owns a `Vec<u8>` so the bytes
+/// outlive the `allocate` call and can be returned with
+/// [`GpuStagingBufferPool::release`].
+#[derive(Debug)]
 pub struct GpuBufferAllocation {
     /// Slot index (usize::MAX indicates fallback allocation)
     pub slot_index: usize,
@@ -368,6 +457,12 @@ pub struct GpuBufferAllocation {
     pub frame_index: u64,
     /// Whether this is a fallback allocation
     pub is_fallback: bool,
+    /// The owned backing store of a fallback allocation; `None` for ring-slot
+    /// allocations, which borrow space inside the pool's own slots.
+    pub storage: Option<Vec<u8>>,
+    /// Monotonic id assigned to fallback allocations (zero for ring-slot
+    /// allocations) so two simultaneously-live fallbacks are distinguishable.
+    pub fallback_id: u64,
 }
 /// GPU buffer pool statistics
 #[derive(Debug, Clone, Copy)]
@@ -424,15 +519,26 @@ impl GpuUploadBatcher {
     }
     /// Tries to merge with existing pending uploads
     fn try_merge(&mut self, data: &[u8], offset: usize) -> Option<usize> {
-        for upload in &mut self.pending_uploads {
-            let end = upload.destination_offset + upload.data.len();
-            if end == offset {
-                // Adjacent, can merge
-                upload.data.extend_from_slice(data);
-                return Some(data.len());
+        let new_end = offset.saturating_add(data.len());
+        let candidate = self.pending_uploads.iter().position(|upload| {
+            upload.destination_offset.saturating_add(upload.data.len()) == offset
+        })?;
+        // Folding this write into an earlier upload is only valid when no other
+        // pending upload overlaps the range it would occupy. Otherwise applying
+        // the earlier (merged) write would reorder it ahead of a later write
+        // that covers the same bytes.
+        let overlaps = self.pending_uploads.iter().enumerate().any(|(i, other)| {
+            if i == candidate {
+                return false;
             }
+            let other_end = other.destination_offset.saturating_add(other.data.len());
+            other.destination_offset < new_end && offset < other_end
+        });
+        if overlaps {
+            return None;
         }
-        None
+        self.pending_uploads[candidate].data.extend_from_slice(data);
+        Some(data.len())
     }
     /// Returns the current batch size
     pub fn batch_size(&self) -> usize {
@@ -563,7 +669,7 @@ mod tests {
     #[test]
     fn test_buffer_pool_allocation() {
         let config = StagingBufferPoolConfig::discrete();
-        let mut pool = GpuStagingBufferPool::new(config);
+        let mut pool = GpuStagingBufferPool::new(config).unwrap();
         let allocation = pool.allocate(1024).unwrap();
         assert_eq!(allocation.slot_index, 0);
         assert_eq!(allocation.offset, 0);
@@ -573,7 +679,7 @@ mod tests {
     #[test]
     fn test_buffer_pool_ring_rotation() {
         let config = StagingBufferPoolConfig::discrete();
-        let mut pool = GpuStagingBufferPool::new(config);
+        let mut pool = GpuStagingBufferPool::new(config).unwrap();
         pool.next_frame();
         assert_eq!(pool.current_frame(), 1);
         pool.next_frame();
@@ -582,7 +688,7 @@ mod tests {
     #[test]
     fn test_wait_for_slot_recycles_a_busy_slot() {
         let config = StagingBufferPoolConfig::discrete();
-        let mut pool = GpuStagingBufferPool::new(config);
+        let mut pool = GpuStagingBufferPool::new(config).unwrap();
         // Advance one frame: slot 0 is marked in-use, slot 1 becomes current.
         pool.next_frame();
         assert!(pool.slots[0].in_use);
@@ -593,7 +699,7 @@ mod tests {
     #[test]
     fn test_wait_for_slot_is_noop_for_free_or_missing_slots() {
         let config = StagingBufferPoolConfig::discrete();
-        let mut pool = GpuStagingBufferPool::new(config);
+        let mut pool = GpuStagingBufferPool::new(config).unwrap();
         // Freshly constructed, every slot is free.
         pool.wait_for_slot(0);
         assert!(!pool.slots[0].in_use);
@@ -643,5 +749,153 @@ mod tests {
         let config = integration::create_gpu_buffer_pool_config(GpuMemoryProfile::Discrete);
         assert_eq!(config.initial_size, 3);
         assert_eq!(config.max_size, 6);
+    }
+
+    /// S-10: every slot starts on an `alignment` boundary, and merge/normal
+    /// allocations report the same `slot.offset + used` coordinate space.
+    #[test]
+    fn test_slot_offsets_are_aligned_and_merge_matches_normal() {
+        // `pool_size / ring_slots` is *not* a multiple of alignment here, so the
+        // align-down in the constructor is what makes the slot bases land on
+        // `alignment` boundaries (0, 256, 512) instead of 0, 341, 682.
+        let base = || {
+            let mut config = StagingBufferPoolConfig::discrete();
+            config.pool_size = 1024;
+            config.ring_slots = 3;
+            config.alignment = 256;
+            config.max_batch_size = 1024;
+            config.small_upload_threshold = 1024;
+            config.merge_uploads = true;
+            config
+        };
+        let mut pool = GpuStagingBufferPool::new(base()).unwrap();
+        assert_eq!(pool.slots[0].offset, 0);
+        assert_eq!(pool.slots[1].offset, 256);
+        assert_eq!(pool.slots[2].offset, 512);
+        for slot in &pool.slots {
+            assert_eq!(slot.offset % 256, 0);
+        }
+
+        // Small allocations go through the merge path and still report a
+        // slot-relative (aligned) origin.
+        let a = pool.allocate(64).unwrap();
+        assert_eq!((a.slot_index, a.offset), (0, 0));
+        pool.next_frame();
+        let b = pool.allocate(64).unwrap();
+        assert_eq!((b.slot_index, b.offset), (1, 256));
+        assert_eq!(b.offset % 256, 0);
+
+        // With merge off the normal path must report the same origin.
+        let mut config = base();
+        config.merge_uploads = false;
+        let mut pool = GpuStagingBufferPool::new(config).unwrap();
+        let a = pool.allocate(64).unwrap();
+        assert_eq!((a.slot_index, a.offset), (0, 0));
+        pool.next_frame();
+        let b = pool.allocate(64).unwrap();
+        assert_eq!((b.slot_index, b.offset), (1, 256));
+        assert_eq!(b.offset % 256, 0);
+    }
+
+    /// S-11: invalid configuration is rejected explicitly, not by a panic.
+    #[test]
+    fn test_invalid_config_is_rejected() {
+        let mut config = StagingBufferPoolConfig::discrete();
+        config.ring_slots = 0;
+        assert!(matches!(GpuStagingBufferPool::new(config), Err(GpuBufferPoolError::NoRingSlots)));
+
+        let mut config = StagingBufferPoolConfig::discrete();
+        config.alignment = 0;
+        assert!(matches!(
+            GpuStagingBufferPool::new(config),
+            Err(GpuBufferPoolError::InvalidAlignment)
+        ));
+
+        let mut config = StagingBufferPoolConfig::discrete();
+        config.alignment = 3; // not a power of two
+        assert!(matches!(
+            GpuStagingBufferPool::new(config),
+            Err(GpuBufferPoolError::InvalidAlignment)
+        ));
+    }
+
+    /// S-11: a `usize::MAX` request is rejected without corrupting pool state,
+    /// in both debug and release builds.
+    #[test]
+    fn test_huge_request_is_rejected_without_corrupting_state() {
+        let mut pool = GpuStagingBufferPool::new(StagingBufferPoolConfig::discrete()).unwrap();
+        let before = pool.memory_stats();
+        assert!(pool.allocate(usize::MAX).is_none());
+        let after = pool.memory_stats();
+        assert_eq!(after.used_size, before.used_size);
+        assert_eq!(after.allocated_size, before.allocated_size);
+        assert_eq!(after.current_slot, before.current_slot);
+        // The pool is still usable afterwards.
+        assert!(pool.allocate(1024).is_some());
+    }
+
+    /// S-12: a fallback handle owns its storage and releases it back to the
+    /// pool for reuse.
+    #[test]
+    fn test_fallback_owns_storage_and_releases_back() {
+        let mut config = StagingBufferPoolConfig::discrete();
+        config.pool_size = 512;
+        config.ring_slots = 1;
+        config.max_batch_size = 1024;
+        config.merge_uploads = false;
+        config.alignment = 256;
+        let mut pool = GpuStagingBufferPool::new(config)
+            .unwrap()
+            .with_fallback_pool(crate::memory::BufferPool::new(512, 1, 2));
+
+        assert_eq!(pool.memory_stats().fallback_used, 1);
+        let _ = pool.allocate(256).unwrap(); // normal, total_used 256
+        let _ = pool.allocate(256).unwrap(); // normal, total_used 512 (slot full)
+        let a = pool.allocate(256).expect("slot exhausted, must fall back");
+        assert!(a.is_fallback);
+        assert_eq!(a.storage.as_ref().map(|s| s.len()), Some(256));
+        assert_eq!(pool.memory_stats().fallback_used, 0);
+
+        pool.release(a);
+        assert_eq!(pool.memory_stats().fallback_used, 1);
+    }
+
+    /// S-12: two fallback handles alive at once are distinguishable.
+    #[test]
+    fn test_simultaneous_fallbacks_are_distinguishable() {
+        let mut config = StagingBufferPoolConfig::discrete();
+        config.pool_size = 512;
+        config.ring_slots = 1;
+        config.max_batch_size = 1024;
+        config.merge_uploads = false;
+        config.alignment = 256;
+        let mut pool = GpuStagingBufferPool::new(config)
+            .unwrap()
+            .with_fallback_pool(crate::memory::BufferPool::new(512, 1, 4));
+
+        let _ = pool.allocate(256).unwrap();
+        let _ = pool.allocate(256).unwrap();
+        let a = pool.allocate(256).expect("first fallback");
+        let b = pool.allocate(256).expect("second fallback");
+        assert!(a.is_fallback && b.is_fallback);
+        assert_ne!(a.fallback_id, b.fallback_id);
+        assert!(a.storage.is_some() && b.storage.is_some());
+    }
+
+    /// S-13: an overlapping trailing write must not be folded into an earlier
+    /// upload across an intermediate overlap, which would reorder writes.
+    #[test]
+    fn test_upload_batcher_preserves_write_order_on_overlap() {
+        let config = StagingBufferPoolConfig::discrete();
+        let mut batcher = GpuUploadBatcher::new(config);
+        assert!(batcher.add_upload(vec![1, 1, 1], 0));
+        assert!(batcher.add_upload(vec![2, 2], 2));
+        assert!(batcher.add_upload(vec![3], 3));
+        let uploads = batcher.flush();
+        assert_eq!(
+            uploads,
+            vec![(vec![1, 1, 1], 0), (vec![2, 2], 2), (vec![3], 3)],
+            "the trailing write must not be folded into the earlier upload across an overlap",
+        );
     }
 }

@@ -86,8 +86,11 @@ impl Layout for UniformGridLayout {
         self
     }
 
-    fn add_widget(&mut self, widget_id: ObjectId, stretch: u32) {
-        self.inner.add_widget(widget_id, stretch);
+    fn add_widget(&mut self, widget_id: ObjectId, _stretch: u32) {
+        // A uniform grid's dimensions are fixed, so auto-placement must use the
+        // non-growing path. Delegating to `GridLayout::add_widget` would grow the grid
+        // once it is full, silently undoing the row/column counts the caller chose (S-43).
+        self.inner.place_next_free_cell(widget_id);
     }
 
     fn remove_widget(&mut self, widget_id: ObjectId) {
@@ -232,5 +235,25 @@ mod tests {
 
         // All cells must report the same (width, height) — uniform guarantee.
         assert_eq!(sizes.len(), 1, "all cells must be the same size");
+    }
+
+    /// S-43: a full fixed-dimension grid must refuse `add_widget` instead of growing.
+    #[test]
+    fn uniform_grid_add_widget_does_not_grow_a_full_grid() {
+        let mut grid = UniformGridLayout::new(1, 1, 0, 0);
+        grid.add_widget(1, 1);
+        assert_eq!(grid.rows(), 1);
+        assert_eq!(grid.cols(), 1);
+        assert_eq!(grid.total_cells(), 1);
+        assert_eq!(grid.cell_count(), 1);
+
+        // The grid is full: the second widget is refused without changing the dimensions.
+        grid.add_widget(2, 1);
+        assert_eq!(grid.rows(), 1, "a uniform grid never grows past its declared rows");
+        assert_eq!(grid.cols(), 1, "a uniform grid never grows past its declared cols");
+        assert_eq!(grid.total_cells(), 1);
+        assert_eq!(grid.cell_count(), 1, "the second widget was rejected");
+        assert!(grid.has_child(1));
+        assert!(!grid.has_child(2));
     }
 }

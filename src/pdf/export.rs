@@ -132,6 +132,46 @@ impl PdfExportSettings {
         let scale = self.dpi as f32 / 72.0;
         Size { width: (w * scale).round() as u32, height: (h * scale).round() as u32 }
     }
+
+    /// Convert the content area (after margins) to a pixel `Size` using DPI.
+    pub fn content_pixel_size(&self) -> Size {
+        let scale = self.dpi as f32 / 72.0;
+        Size {
+            width: (self.content_width() * scale).round() as u32,
+            height: (self.content_height() * scale).round() as u32,
+        }
+    }
+
+    /// Validates the margins, rejecting non-finite, negative, or oversized
+    /// margins that leave no positive content area.
+    ///
+    /// Margins are in points and must be finite and non-negative. A "huge"
+    /// margin is caught by the content-area check: once the sum of the left and
+    /// right (or top and bottom) margins reaches the page dimension, there is no
+    /// positive area left to render into.
+    pub fn validate(&self) -> Result<(), String> {
+        let names = ["top", "right", "bottom", "left"];
+        for (index, margin) in self.margins.iter().enumerate() {
+            if !margin.is_finite() {
+                return Err(format!("margin ({}) is not finite: {margin}", names[index]));
+            }
+            if *margin < 0.0 {
+                return Err(format!("margin ({}) is negative: {margin}", names[index]));
+            }
+        }
+        let content_width = self.content_width();
+        let content_height = self.content_height();
+        if !content_width.is_finite()
+            || !content_height.is_finite()
+            || content_width <= 0.0
+            || content_height <= 0.0
+        {
+            return Err(format!(
+                "margins leave no positive content area ({content_width} x {content_height})"
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// A single page in a PDF export, storing its SVG content and dimensions.
@@ -216,21 +256,26 @@ impl PdfExporter {
     /// Render each widget into a [`ExportPage`] using the SVG pipeline.
     #[cfg(not(alloc_frugal))]
     pub fn render_pages(&self, widgets: &mut [&mut dyn Draw]) -> Result<Vec<ExportPage>, String> {
-        let pixel_size = self.settings.pixel_size();
+        self.settings.validate()?;
+        // The widget is rendered at the *content* size, not the full page: the
+        // margins clip the available area, and the content stream below shifts
+        // that area by the margin offsets.
+        let content_size = self.settings.content_pixel_size();
         let (page_w_pt, page_h_pt) = self.settings.effective_dimensions();
         let mut pages = Vec::with_capacity(widgets.len());
 
         for (idx, widget) in widgets.iter_mut().enumerate() {
-            // Render the widget to SVG at the target pixel size
-            let svg =
-                render_widget_to_svg(*widget, Rect::new(0, 0, pixel_size.width, pixel_size.height));
+            let svg = render_widget_to_svg(
+                *widget,
+                Rect::new(0, 0, content_size.width, content_size.height),
+            );
             pages.push(ExportPage::new(
                 idx as u32,
                 svg,
                 page_w_pt,
                 page_h_pt,
-                pixel_size.width,
-                pixel_size.height,
+                content_size.width,
+                content_size.height,
             ));
         }
 
@@ -255,6 +300,7 @@ crate::impl_default_via_new!(PdfExporter);
 /// making the output suitable for further processing or viewer consumption.
 #[cfg(not(alloc_frugal))]
 fn build_svg_pdf(pages: &[ExportPage], settings: &PdfExportSettings) -> Result<Vec<u8>, String> {
+    settings.validate()?;
     if pages.is_empty() {
         return Err(format!(
             "PDF export needs at least one page, got {}; pass the widgets to render as pages",
@@ -343,15 +389,21 @@ fn build_svg_pdf(pages: &[ExportPage], settings: &PdfExportSettings) -> Result<V
 /// Build the content stream for a single PDF page, converting SVG content
 /// into real PDF content operators so viewers render the content visually.
 #[cfg(not(alloc_frugal))]
-fn build_content_stream(page: &ExportPage, _settings: &PdfExportSettings) -> String {
+fn build_content_stream(page: &ExportPage, settings: &PdfExportSettings) -> String {
     let mut stream = String::new();
 
     // Save graphics state and apply a scaling transform so the SVG (rendered
-    // at the pixel size) maps linearly onto the page's point dimensions.
+    // at the content pixel size) maps linearly onto the page's content area,
+    // then translate it by the configured margins so the content actually
+    // starts at the margin edge rather than the page corner.
+    let content_w = settings.content_width();
+    let content_h = settings.content_height();
+    let left = settings.margins[3];
+    let top = settings.margins[0];
+    let scale_x = if page.width_px > 0 { content_w / page.width_px as f32 } else { 1.0 };
+    let scale_y = if page.height_px > 0 { content_h / page.height_px as f32 } else { 1.0 };
     stream.push_str(&format!(
-        "q\n{:.4} 0 0 {:.4} 0 0 cm\n",
-        page.width_pt / page.width_px as f32,
-        page.height_pt / page.height_px as f32,
+        "q\n{scale_x:.4} 0 0 {scale_y:.4} 0 0 cm\n1 0 0 1 {left:.4} {top:.4} cm\n",
     ));
 
     // Convert SVG content to real PDF drawing operators
@@ -746,5 +798,66 @@ mod tests {
         let settings = PdfExportSettings::new();
         let result = build_svg_pdf(&pages, &settings);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_rejects_bad_margins() {
+        let mut settings = PdfExportSettings::new();
+        assert!(settings.validate().is_ok(), "default margins are valid");
+
+        settings.margins = [-1.0, 0.0, 0.0, 0.0];
+        assert!(settings.validate().is_err(), "negative margins must be rejected");
+
+        settings.margins = [f32::NAN, 0.0, 0.0, 0.0];
+        assert!(settings.validate().is_err(), "NaN margins must be rejected");
+
+        settings.margins = [f32::INFINITY, 0.0, 0.0, 0.0];
+        assert!(settings.validate().is_err(), "infinite margins must be rejected");
+
+        settings.margins = [1000.0; 4];
+        assert!(settings.validate().is_err(), "margins larger than the page must be rejected");
+    }
+
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn margins_shift_the_content_stream() {
+        let page = ExportPage::new(
+            0,
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><rect width=\"10\" height=\"10\" fill=\"red\"/></svg>".to_string(),
+            595.28,
+            841.89,
+            100,
+            50,
+        );
+        let mut no_margin = PdfExportSettings::new();
+        no_margin.margins = [0.0; 4];
+        let mut big_margin = PdfExportSettings::new();
+        big_margin.margins = [100.0; 4];
+
+        let left = build_content_stream(&page, &no_margin);
+        let right = build_content_stream(&page, &big_margin);
+        assert_ne!(left, right, "changing margins must change the rendered content stream");
+        assert!(
+            right.contains("100.0000"),
+            "the margin offset must be applied to the transform: {right}"
+        );
+    }
+
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn render_pages_uses_the_content_area() {
+        let mut widget = TestWidget::new(100, 50);
+        let mut widgets: [&mut dyn Draw; 1] = [&mut widget];
+        let mut settings = PdfExportSettings::new();
+        settings.margins = [100.0; 4];
+        let exporter = PdfExporter::with_settings(settings);
+        let pages = exporter.render_pages(&mut widgets).expect("render pages");
+        assert_eq!(pages.len(), 1);
+        let full = PdfExportSettings::new().pixel_size();
+        assert!(
+            pages[0].width_px < full.width && pages[0].height_px < full.height,
+            "the rendered page must be clipped to the content area: {:?} vs {full:?}",
+            (pages[0].width_px, pages[0].height_px)
+        );
     }
 }

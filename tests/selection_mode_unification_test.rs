@@ -92,3 +92,26 @@ fn selection_model_honours_none_mode() {
     assert!(model.rows().is_empty(), "select_row must be a no-op in None mode");
     assert_eq!(model.current_row(), None);
 }
+
+/// The `ListView` *producer* must honour `None` too: a non-selectable view
+/// reports no `selection_changed` and no success, but a click still focuses the
+/// row — focus and selection are separate concerns.
+#[test]
+fn list_view_in_none_mode_reports_no_selection_change() {
+    use rust_widgets::core::Rect;
+    use rust_widgets::widget::view_widgets::list_view::{ListView, SelectionMode, VecListModel};
+    use std::sync::{Arc, Mutex};
+
+    let mut view = ListView::new(Rect::new(0, 0, 200, 200));
+    view.set_model(Arc::new(VecListModel::new((0..4).map(|n| n.to_string()).collect())));
+    view.set_selection_mode(SelectionMode::None);
+
+    let emitted = Arc::new(Mutex::new(Vec::<usize>::new()));
+    let sink = Arc::clone(&emitted);
+    view.selection_changed.connect(move |row| sink.lock().unwrap().push(*row));
+
+    assert!(!view.select_row(1), "a non-selectable view must report no selection success");
+    assert!(view.selected_rows().is_empty(), "no rows may be selected under None");
+    assert_eq!(view.focused_row(), Some(1), "but the click still focuses the row");
+    assert!(emitted.lock().unwrap().is_empty(), "no selection_changed may fire under None mode");
+}

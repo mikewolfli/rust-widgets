@@ -415,11 +415,13 @@ fn widget_surfaces_are_advertised_and_round_trip() {
     assert_eq!(backend.state.surface_rect(window), Some(rect));
     assert_eq!(backend.state.mounted_surface_count(), 1);
 
-    // Invalidating queues exactly one repaint, which the host then drains.
+    // Invalidating queues exactly one repaint, which the host then drains through
+    // the public `Platform` trait (the path `rw_take_pending_repaint` uses), not the
+    // private `state` field.
     assert!(backend.invalidate_surface(window));
     assert!(backend.invalidate_surface(window), "a second invalidate still reports the mount");
     assert_eq!(backend.state.pending_repaint_count(), 1, "repaints are coalesced");
-    assert_eq!(backend.state.take_pending_repaint(), Some(window));
+    assert_eq!(Platform::take_pending_repaint(&backend), Some(window));
     assert_eq!(backend.state.pending_repaint_count(), 0);
 
     // Resizing moves the recorded rect.

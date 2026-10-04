@@ -277,9 +277,9 @@ pub enum Key {
     Home,
     /// The End key.
     End,
-    /// The Page Up key; formats as `PgUp`.
+    /// The Page Up key; formats as `PageUp`.
     PageUp,
-    /// The Page Down key; formats as `PgDn`.
+    /// The Page Down key; formats as `PageDown`.
     PageDown,
     /// Arrow keys.
     /// The Left arrow key.
@@ -455,6 +455,7 @@ impl Key {
             "end" => Some(Key::End),
             "pageup" | "page_up" => Some(Key::PageUp),
             "pagedown" | "page_down" => Some(Key::PageDown),
+            "none" => Some(Key::None),
             "left" => Some(Key::Left),
             "right" => Some(Key::Right),
             "up" => Some(Key::Up),
@@ -533,8 +534,8 @@ impl Key {
             Key::Insert => "Ins",
             Key::Home => "Home",
             Key::End => "End",
-            Key::PageUp => "PgUp",
-            Key::PageDown => "PgDn",
+            Key::PageUp => "PageUp",
+            Key::PageDown => "PageDown",
             Key::Left => "Left",
             Key::Right => "Right",
             Key::Up => "Up",

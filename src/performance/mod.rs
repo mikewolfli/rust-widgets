@@ -176,4 +176,31 @@ mod tests {
         assert!(!rects.is_empty());
         assert!(batcher.is_empty());
     }
+
+    /// A single rect added to a fresh batcher must still be delivered once its timeout
+    /// elapses, even though the count threshold is never reached.
+    ///
+    /// The timer used to start only after the first flush, so a fresh batcher receiving one
+    /// rect (and nothing else) had no elapsed baseline and `should_flush` stayed `false`
+    /// forever — a small first batch could wait indefinitely.
+    #[test]
+    fn a_small_first_batch_flushes_within_the_timeout() {
+        let mut batcher = UpdateBatcher::new(100);
+        batcher.add(Rect::new(0, 0, 10, 10));
+
+        // A single rect is under the count threshold, and the budget has not elapsed yet.
+        assert!(!batcher.should_flush(), "a single fresh rect must not flush immediately");
+
+        // Once the budget elapses the same single rect must be delivered.
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        assert!(
+            batcher.should_flush(),
+            "the first small batch must flush within its timeout budget"
+        );
+
+        // Flushing drains the batch and leaves nothing pending.
+        assert!(!batcher.flush().is_empty());
+        assert!(batcher.is_empty());
+        assert!(!batcher.should_flush());
+    }
 }

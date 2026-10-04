@@ -6,6 +6,8 @@ use super::event_queue::{EventQueue, EventSender};
 use super::timer::IdleTask;
 use super::timer::TimerManager;
 use super::types::{Event, EventPriority};
+#[cfg(all(feature = "touch", not(alloc_frugal)))]
+use crate::compat::HashMap;
 use crate::compat::{lock, Box, MiniToString, Mutex, String, Vec};
 use crate::core::ObjectId;
 #[cfg(all(feature = "touch", not(alloc_frugal)))]
@@ -46,6 +48,24 @@ fn now_ms() -> u64 {
 #[cfg(feature = "touch")]
 fn feeds_the_gesture_engine(event: &Event) -> bool {
     event.is_touch() || matches!(event, Event::Timer { .. })
+}
+
+/// Routes an event through the gesture engine owned by its interaction target.
+///
+/// The loop used to share one [`GestureEngine`] across every target. Recognisers that remember
+/// state — the double-tap's "first tap seen" — therefore leaked from one target to the next: a
+/// single tap on target A followed by a single tap at the same coordinates on target B was reported
+/// as a double-tap on B, whose own recogniser had never seen the first tap. Keeping one engine per
+/// [`ObjectId`] scopes that state to the interaction owner. The registry is created on demand and
+/// dropped when the loop thread ends, so stopping the loop clears all gesture state.
+#[cfg(all(feature = "touch", not(alloc_frugal)))]
+fn process_gesture(
+    engines: &mut HashMap<ObjectId, GestureEngine>,
+    target: ObjectId,
+    event: &Event,
+    now_ms: u64,
+) -> Option<Event> {
+    engines.entry(target).or_insert_with(GestureEngine::new).process(event, now_ms)
 }
 
 /// Canonical event name for animation frame requests.
@@ -223,7 +243,7 @@ impl EventLoop {
         let queue = Arc::clone(&self.queue);
         let dispatch_fn = self.dispatch_fn.clone();
         #[cfg(feature = "touch")]
-        let mut gesture_engine = GestureEngine::new();
+        let mut gesture_engines: HashMap<ObjectId, GestureEngine> = HashMap::new();
         let native_pump = self.native_pump.clone();
         // Idle tasks run on the loop thread, so they move with it. `mem::take` leaves the
         // field empty; a restart after `stop()` therefore begins with none, which is the
@@ -258,7 +278,7 @@ impl EventLoop {
 
                     #[cfg(feature = "touch")]
                     let maybe_gesture_event = if feeds_the_gesture_engine(event) {
-                        gesture_engine.process(event, now_ms())
+                        process_gesture(&mut gesture_engines, *target, event, now_ms())
                     } else {
                         None
                     };
@@ -299,7 +319,7 @@ impl EventLoop {
 
                     #[cfg(feature = "touch")]
                     let maybe_gesture_event = if feeds_the_gesture_engine(event) {
-                        gesture_engine.process(event, now_ms())
+                        process_gesture(&mut gesture_engines, *target, event, now_ms())
                     } else {
                         None
                     };
@@ -329,26 +349,31 @@ impl EventLoop {
                     }
                 }
 
-                // Phase 1b: Process buffered idle events with a 5ms time budget.
-                // This prevents idle processing from starving frame-critical work.
+                // Phase 1e: Process buffered idle events with a 5ms time budget.
+                // This prevents idle processing from starving frame-critical work. Whatever
+                // the budget does not allow is re-queued, not dropped: idle means deferred,
+                // not discarded.
                 if !idle_events.is_empty() {
                     #[cfg(not(alloc_frugal))]
                     let idle_budget_start = std::time::Instant::now();
-                    for (target, event) in idle_events {
+                    let mut processed = 0;
+                    while processed < idle_events.len() {
                         #[cfg(not(alloc_frugal))]
                         if idle_budget_start.elapsed().as_millis() >= 5 {
-                            break; // budget exhausted, remaining idle events are dropped
+                            break;
                         }
+                        let (target, event) = &idle_events[processed];
                         // Same cancellation rule the Normal phase applies; an animation frame may
                         // be posted at either priority.
-                        if animation_frame_id(&event)
+                        if animation_frame_id(event)
                             .is_some_and(|id| take_cancelled(&cancelled_anim_frames, id))
                         {
+                            processed += 1;
                             continue;
                         }
                         #[cfg(feature = "touch")]
-                        let maybe_gesture_event = if feeds_the_gesture_engine(&event) {
-                            gesture_engine.process(&event, now_ms())
+                        let maybe_gesture_event = if feeds_the_gesture_engine(event) {
+                            process_gesture(&mut gesture_engines, *target, event, now_ms())
                         } else {
                             None
                         };
@@ -356,10 +381,10 @@ impl EventLoop {
                         if let Some(ref dispatch) = dispatch_fn {
                             let result =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    dispatch(target, &event);
+                                    dispatch(*target, event);
                                     #[cfg(feature = "touch")]
                                     if let Some(ref gesture) = maybe_gesture_event {
-                                        dispatch(target, gesture);
+                                        dispatch(*target, gesture);
                                     }
                                 }));
                             if let Err(e) = result {
@@ -369,6 +394,14 @@ impl EventLoop {
                             log::warn!(
                                 "[event-loop] No dispatch_fn set — dropping idle event {event:?} for target {target:?}"
                             );
+                        }
+                        processed += 1;
+                    }
+                    // Deliver the remainder on a later, quieter iteration, in order.
+                    if processed < idle_events.len() {
+                        let sender = lock(&queue).sender();
+                        for (target, event) in idle_events.drain(processed..) {
+                            let _ = sender.post_idle(target, event);
                         }
                     }
                 }
@@ -908,5 +941,87 @@ mod tests {
         #[cfg(not(alloc_frugal))]
         std::thread::sleep(Duration::from_millis(30));
         el.stop();
+    }
+
+    /// Gesture recogniser state is scoped to the interaction target: a tap on one target must
+    /// not arm a double-tap on another.
+    #[test]
+    #[cfg(all(feature = "touch", not(alloc_frugal)))]
+    fn gesture_state_is_scoped_to_its_interaction_target() {
+        use crate::compat::HashMap as CompatHashMap;
+        use crate::gesture::GestureEngine as Gesture;
+
+        let mut engines: CompatHashMap<ObjectId, Gesture> = CompatHashMap::new();
+
+        // Target 1: a single tap produces a Tap.
+        let _ = process_gesture(&mut engines, 1, &Event::touch_begin(10, 10, 1), 0);
+        let first = process_gesture(&mut engines, 1, &Event::touch_end(10, 10, 1), 100);
+        assert!(matches!(first, Some(Event::Tap { .. })), "a single tap on target 1 is a Tap");
+
+        // Target 2: the same tap must not inherit target 1's first tap into a DoubleTap.
+        let _ = process_gesture(&mut engines, 2, &Event::touch_begin(10, 10, 2), 200);
+        let second = process_gesture(&mut engines, 2, &Event::touch_end(10, 10, 2), 250);
+        assert!(
+            !matches!(second, Some(Event::DoubleTap { .. })),
+            "a first tap on target 2 must not inherit target 1's tap"
+        );
+        assert!(matches!(second, Some(Event::Tap { .. })), "target 2's own tap is still a Tap");
+
+        // A second tap on target 2, within the window, does complete a double-tap.
+        let _ = process_gesture(&mut engines, 2, &Event::touch_begin(10, 10, 3), 300);
+        let third = process_gesture(&mut engines, 2, &Event::touch_end(10, 10, 3), 350);
+        assert!(
+            matches!(third, Some(Event::DoubleTap { .. })),
+            "two taps on the same target still complete a double tap"
+        );
+    }
+
+    /// Idle events that exceed the 5ms budget are re-queued and delivered later, in order,
+    /// instead of being dropped.
+    #[cfg(all(not(alloc_frugal), not(target_arch = "wasm32")))]
+    #[test]
+    fn idle_events_beyond_the_budget_are_delivered_later() {
+        let delivered = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let delivered_clone = Arc::clone(&delivered);
+
+        let mut el = EventLoop::new();
+        el.set_dispatch_fn(Arc::new(move |_target, event| {
+            let Event::Custom { name, payload } = event else { return };
+            if name != "idle" {
+                return;
+            }
+            let index = payload.first().copied().unwrap_or(0);
+            let first = {
+                let mut order = delivered_clone.lock().unwrap();
+                order.push(index);
+                order.len() == 1
+            };
+            // Exceed the 5ms idle budget on the first idle event so the rest must be re-queued.
+            if first {
+                std::thread::sleep(Duration::from_millis(8));
+            }
+        }));
+
+        for index in 0u8..3 {
+            el.post_event(
+                1,
+                Event::Custom { name: "idle".to_string(), payload: vec![index] },
+                EventPriority::Idle,
+            )
+            .unwrap();
+        }
+
+        el.start();
+        let deadline = std::time::Instant::now() + Duration::from_millis(1_500);
+        while delivered.lock().unwrap().len() < 3 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        el.stop();
+
+        assert_eq!(
+            *delivered.lock().unwrap(),
+            vec![0, 1, 2],
+            "idle events beyond the budget are delivered later, in order, not dropped"
+        );
     }
 }

@@ -85,11 +85,20 @@ impl<T: Clone + Send + 'static> Binding<T> {
     /// `set`. The removal set below is what distinguishes them.
     pub fn set(&self, value: T) {
         // ── Phase 1: Lock, update value, take all listeners ──
-        let mut listeners: Vec<(String, BoxedListener)>;
+        let listeners: Vec<(String, BoxedListener)>;
+        let outermost: bool;
         {
             let mut inner = lock(&self.inner);
             inner.value = value;
-            inner.unsubscribed_during_notify.clear();
+            // A re-entrant `set` (a listener calling `set` again before the outer pass has
+            // restored its map) must not clear the outer pass's unsubscribe tombstone: the
+            // tombstone describes the pass still in flight, and only the outermost pass owns
+            // its lifetime. Clearing it here on every call was what let an inner `set` wipe
+            // the outer pass's record and revive a listener that had just unsubscribed.
+            outermost = !inner.notifying;
+            if outermost {
+                inner.unsubscribed_during_notify.clear();
+            }
             listeners = core::mem::take(&mut inner.listeners).into_iter().collect();
         } // Mutex lock released.
 
@@ -99,26 +108,15 @@ impl<T: Clone + Send + 'static> Binding<T> {
         {
             lock(&self.inner).notifying = true;
         }
-        for (key, ref mut listener) in &mut listeners {
+        let mut guard = NotifyGuard { inner: &*self.inner, listeners, outermost };
+        for (key, ref mut listener) in &mut guard.listeners {
             listener.on_value_changed(key, "set");
         }
 
-        // ── Phase 3: Restore only the listeners that are still subscribed ──
-        {
-            let mut inner = lock(&self.inner);
-            for (key, listener) in listeners {
-                if inner.unsubscribed_during_notify.contains(&key) {
-                    // Removed by `unsubscribe` while this pass was notifying; honour it.
-                    continue;
-                }
-                // If no new listener was subscribed under this key during
-                // notification, put the original one back. A *new* listener wins,
-                // which is the pre-existing behaviour and is kept here.
-                inner.listeners.entry(key).or_insert(listener);
-            }
-            inner.unsubscribed_during_notify.clear();
-            inner.notifying = false;
-        }
+        // ── Phase 3: restore runs in `NotifyGuard::drop` ──
+        // A `Drop` implementation runs on the normal return path **and** while unwinding
+        // from a panicking listener, so a panic can no longer skip the restore and leave the
+        // map empty with `notifying` stuck on (which silently disabled all future updates).
     }
 
     /// Subscribe to value changes.
@@ -161,8 +159,18 @@ impl<T: Clone + Send + 'static> Binding<T> {
         let self_weak = Arc::downgrade(&self.inner);
         let other_weak = Arc::downgrade(&other.inner);
 
-        let listener_self_key = format!("__two_way_self_{:p}", Arc::as_ptr(&self.inner));
-        let listener_other_key = format!("__two_way_other_{:p}", Arc::as_ptr(&other.inner));
+        let self_ptr = Arc::as_ptr(&self.inner);
+        let other_ptr = Arc::as_ptr(&other.inner);
+
+        // Each listener key names **both** endpoints, not just the binding it lives
+        // on. A key that held only the local pointer meant `A.bind_to(&B)` then
+        // `A.bind_to(&C)` reused A's key and silently replaced the A→B listener,
+        // turning the first two-way connection into a one-way one (B still pushed to
+        // A, but A no longer pushed to B). Naming the pair keeps every connection
+        // distinct, while a repeated `bind_to(&same)` still lands on the same key and
+        // is replaced idempotently.
+        let listener_self_key = format!("__two_way_{:p}_{:p}", self_ptr, other_ptr);
+        let listener_other_key = format!("__two_way_{:p}_{:p}", other_ptr, self_ptr);
 
         self.subscribe(
             &listener_self_key,
@@ -258,6 +266,39 @@ impl Drop for SyncingGuard<'_> {
     }
 }
 
+/// Restores a `Binding`'s listener map after a notification pass.
+///
+/// Owns the listeners `set` took out and re-inserts those still subscribed when it drops.
+/// Because `Drop` runs whether the notification loop returned or unwound, a panicking
+/// listener can no longer leave the map empty and `notifying` stuck. The `outermost` flag is
+/// `true` only for the pass that began while no notification was in flight: a nested
+/// re-entrant `set` must not clear the unsubscribe tombstone or end `notifying` early,
+/// because the outer pass still needs both when its own restore runs.
+struct NotifyGuard<'a, T: Clone + Send + 'static> {
+    inner: &'a Mutex<BindingInner<T>>,
+    listeners: Vec<(String, BoxedListener)>,
+    outermost: bool,
+}
+
+impl<T: Clone + Send + 'static> Drop for NotifyGuard<'_, T> {
+    fn drop(&mut self) {
+        let mut inner = lock(self.inner);
+        for (key, listener) in self.listeners.drain(..) {
+            if inner.unsubscribed_during_notify.contains(&key) {
+                // Removed by `unsubscribe` while this pass was notifying; honour it.
+                continue;
+            }
+            // If no new listener was subscribed under this key during notification, put the
+            // original one back. A *new* listener wins, which is the pre-existing behaviour.
+            inner.listeners.entry(key).or_insert(listener);
+        }
+        if self.outermost {
+            inner.unsubscribed_during_notify.clear();
+            inner.notifying = false;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,6 +347,57 @@ mod tests {
             let _reset = SyncingGuard { flag: &flag };
         }
         assert!(!flag.load(Ordering::SeqCst), "the guard must clear `syncing` on drop");
+    }
+
+    /// A panicking listener must not destroy the binding's subscriber set.
+    ///
+    /// `set` used to move every listener out of the map, run the callbacks, then restore them
+    /// in a trailing block. A callback panic skipped that block, so the local `Vec` of listeners
+    /// was dropped (unsubscribing everyone) and `notifying` stayed `true` — every later `set`
+    /// notified nothing. `NotifyGuard` restores on the unwind path too, which this pins down by
+    /// unwinding through `set` and then proving a later notification still reaches a survivor.
+    #[test]
+    fn a_panicking_listener_does_not_destroy_the_binding() {
+        let binding: Arc<Binding<i32>> = Arc::new(Binding::new(0));
+        let counter = Arc::new(AtomicI32::new(0));
+
+        let c = Arc::clone(&counter);
+        binding.subscribe(
+            "counter",
+            Box::new(FnListener::new(move |_key: &str, _op: &str| {
+                c.fetch_add(1, Ordering::SeqCst);
+            })),
+        );
+
+        // Panics on its first notification only, so the recovered binding can be notified again.
+        let panicked = Arc::new(AtomicBool::new(false));
+        let p = Arc::clone(&panicked);
+        binding.subscribe(
+            "panner",
+            Box::new(FnListener::new(move |_key: &str, _op: &str| {
+                if !p.swap(true, Ordering::SeqCst) {
+                    panic!("boom from the panner");
+                }
+            })),
+        );
+
+        assert_eq!(binding.listener_count(), 2, "two listeners are subscribed");
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            binding.set(1);
+        }));
+        assert!(result.is_err(), "the panner must panic on its first notification");
+
+        // The unwind must not have dropped the listener map or left `notifying` armed.
+        assert_eq!(binding.listener_count(), 2, "both listeners must be restored after a panic");
+
+        let before = counter.load(Ordering::SeqCst);
+        binding.set(2);
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            before + 1,
+            "the next notification must reach the surviving listener"
+        );
     }
 
     /// A two-way binding still synchronises after its listener ran once.
@@ -468,6 +560,69 @@ mod tests {
         b.set(99);
         assert_eq!(b.get(), 99);
     }
+
+    /// A second two-way connection on the same endpoint must not replace the first.
+    ///
+    /// The listener key used to name only the local endpoint, so `A.bind_to(&B)` then
+    /// `A.bind_to(&C)` overwrote A's B-listener and silently turned the first
+    /// connection one-way. Naming both endpoints keeps every connection distinct.
+    #[test]
+    fn two_way_binding_keeps_distinct_neighbors() {
+        let a = Binding::new(0);
+        let b = Binding::new(0);
+        let c = Binding::new(0);
+
+        a.bind_to(&b);
+        a.bind_to(&c);
+
+        // Both connections live on A: two listeners, not one replacing the other.
+        assert_eq!(a.listener_count(), 2);
+        assert_eq!(b.listener_count(), 1);
+        assert_eq!(c.listener_count(), 1);
+
+        // A change on A reaches both neighbours.
+        a.set(7);
+        assert_eq!(b.get(), 7);
+        assert_eq!(c.get(), 7);
+
+        // A change on B still reaches A (the first connection is intact), without
+        // cascading into C (two-way sync is not transitive).
+        b.set(9);
+        assert_eq!(a.get(), 9);
+        assert_eq!(c.get(), 7);
+    }
+
+    /// Connecting the same pair twice is idempotent: the listener key names the pair,
+    /// so a repeat lands on the same key and replaces instead of accumulating.
+    #[test]
+    fn repeated_bind_to_is_bounded() {
+        let a = Binding::new(0);
+        let b = Binding::new(0);
+        a.bind_to(&b);
+        a.bind_to(&b);
+        assert_eq!(a.listener_count(), 1);
+        assert_eq!(b.listener_count(), 1);
+    }
+
+    /// A three-node cycle stays bounded and does not loop forever.
+    #[test]
+    fn two_way_cycle_is_bounded() {
+        let a = Binding::new(0);
+        let b = Binding::new(0);
+        let c = Binding::new(0);
+        a.bind_to(&b);
+        b.bind_to(&c);
+        c.bind_to(&a);
+
+        // Each node has exactly two connections; a cycle never grows unboundedly.
+        assert_eq!(a.listener_count(), 2);
+        assert_eq!(b.listener_count(), 2);
+        assert_eq!(c.listener_count(), 2);
+
+        a.set(1);
+        assert_eq!(b.get(), 1);
+        assert_eq!(c.get(), 1);
+    }
 }
 
 #[cfg(test)]
@@ -607,5 +762,46 @@ mod unsubscribe_during_notify_tests {
         assert_eq!(binding.listener_count(), 2, "both listeners must survive the pass");
         let inner = lock(&binding.inner);
         assert!(inner.unsubscribed_during_notify.is_empty(), "the set must be cleared");
+    }
+
+    /// A listener that unsubscribes itself and then re-enters `set` stays removed.
+    ///
+    /// The re-entrant inner `set` used to clear the outer pass's unsubscribe tombstone and
+    /// reset `notifying` before the outer restore ran, so the outer pass re-inserted a listener
+    /// that had just asked to be removed. The tombstone is now owned by the outermost pass, so
+    /// the unsubscribe survives the nested `set` and the listener is not revived.
+    #[test]
+    fn a_listener_that_unsubscribes_then_reenters_set_stays_removed() {
+        let binding: Arc<Binding<i32>> = Arc::new(Binding::new(0));
+        let calls = Arc::new(AtomicI32::new(0));
+
+        let counter = Arc::clone(&calls);
+        let weak = Arc::downgrade(&binding);
+        binding.subscribe(
+            "self_reentering",
+            Box::new(FnListener::new(move |_key: &str, _op: &str| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                if let Some(b) = weak.upgrade() {
+                    b.unsubscribe("self_reentering");
+                    // Re-enter `set` while the outer notification pass is still in flight.
+                    b.set(999);
+                }
+            })),
+        );
+
+        binding.set(1);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the listener fired exactly once for the outer set"
+        );
+        assert_eq!(
+            binding.listener_count(),
+            0,
+            "the self-unsubscribed listener must stay removed across the nested set"
+        );
+
+        binding.set(2);
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "the next set must not revive the listener");
     }
 }

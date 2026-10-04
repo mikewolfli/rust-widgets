@@ -157,31 +157,12 @@ void rw_free_rust_string(char* s);
 /* Generic (name-based) creation and property access */
 
 /*
- * Value kinds for the property ABI. A `kind` selects which of `num` / `str` a
- * call reads or writes, so a caller never has to guess which member is live.
- *
- * This enum lives here rather than in the generated header because the generator
- * describes `extern "C" fn` signatures and has no way to see a Rust type that is
- * only ever written as a plain `c_int` on the ABI. The per-function
- * declarations are NOT repeated here: they are all declared by
- * `rw_generated.h`, and a second copy is how this header previously disagreed
- * with the generated one about `rw_destroy_widget`'s return type.
+ * Value kinds for the property ABI come from `rw_generated.h`, which the
+ * generator derives from the Rust constants in `binding_impl.rs`. This header
+ * deliberately does **not** repeat the `rw_value_kind` enum: a second copy here
+ * drifted (it stopped at `RW_VALUE_RECT` while the generated header gained
+ * `RW_VALUE_TUPLE`) and redefined the typedef in the same translation unit.
  */
-typedef enum {
-    RW_VALUE_NULL = 0,
-    RW_VALUE_BOOL = 1,
-    RW_VALUE_INT = 2,
-    RW_VALUE_UINT = 3,
-    RW_VALUE_FLOAT = 4,
-    RW_VALUE_STRING = 5,
-    /* Colour and rectangle properties travel as their CSS-style string form
-     * (`#RRGGBBAA` and `x,y,w,h`) in the string slot, with a distinct kind so a
-     * caller can tell one from free text. A reader that does not accept these
-     * returns "no such property" and leaks the buffer, because it never reaches
-     * its `rw_free_string` call. */
-    RW_VALUE_COLOR = 6,
-    RW_VALUE_RECT = 7,
-} rw_value_kind;
 
 #ifdef __cplusplus
 }  // extern "C"

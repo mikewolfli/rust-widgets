@@ -6,7 +6,7 @@
     "trae.agent.docker.keepDelay": 3000,
     "python-envs.defaultEnvManager": "ms-python.python:pyenv",
     "rust-analyzer.check.command": "clippy",
-    "rust-analyzer.cargo.allFeatures": true,
+    "rust-analyzer.cargo.allFeatures": false,
     "editor.formatOnSave": true,
     "files.exclude": {
         "**/target": true

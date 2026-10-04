@@ -140,9 +140,13 @@ impl Layout for FormLayout {
         let entry_height =
             (available_height.saturating_sub(spacing_total) / total_entries as u32).max(1);
 
-        // Layout rows: each row has a label (1/3 width) and a field (2/3 width).
-        let label_width = rect.width / 3;
-        let field_width = rect.width.saturating_sub(label_width + self.spacing);
+        // Layout rows: each row has a label (1/3 width) and a field (2/3 width), measured
+        // against the same inner box the standalone items use — the parent minus *both*
+        // margins. Allocating the full width and then adding the left margin pushed the field
+        // past the inner right edge (S-57).
+        let inner_width = rect.width.saturating_sub(self.margin * 2);
+        let label_width = inner_width / 3;
+        let field_width = inner_width.saturating_sub(label_width + self.spacing);
         let margin = self.margin as i32;
         let spacing = self.spacing as i32;
         let entry_height_i32 = entry_height as i32;
@@ -163,18 +167,11 @@ impl Layout for FormLayout {
             index += 2;
         }
 
-        // Layout standalone items: each gets full width.
+        // Layout standalone items: each gets the full inner width, sharing the same box
+        // the label/field pairs use.
         for (id, _stretch) in &self.items {
             let y = rect.y + margin + index * (entry_height_i32 + spacing);
-            widgets(
-                *id,
-                Rect::new(
-                    rect.x + margin,
-                    y,
-                    rect.width.saturating_sub(self.margin * 2),
-                    entry_height,
-                ),
-            );
+            widgets(*id, Rect::new(rect.x + margin, y, inner_width, entry_height));
             index += 1;
         }
     }
@@ -183,6 +180,7 @@ impl Layout for FormLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::HashMap;
 
     #[test]
     fn form_layout_preserves_nonzero_height_when_entries_overflow() {
@@ -203,5 +201,45 @@ mod tests {
         let mut count = 0;
         layout.update(Rect::new(0, 0, 200, 100), &mut |_, _| count += 1);
         assert_eq!(count, 0);
+    }
+
+    /// S-57: a label/field pair shares the standalone items' inner box (parent minus both
+    /// margins), so the field never overflows the right edge.
+    #[test]
+    fn form_layout_pair_stays_inside_the_inner_box() {
+        let mut layout = FormLayout::new(10, 10);
+        layout.add_row_pair(1, 2);
+
+        let mut rects = HashMap::new();
+        layout.update(Rect::new(0, 0, 300, 100), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+
+        let inner_right = (300 - 10) as i32;
+        let label = rects.get(&1).copied().expect("label placed");
+        let field = rects.get(&2).copied().expect("field placed");
+        assert_eq!(label.x, 10, "the label starts at the left margin");
+        assert!(label.x + label.width as i32 <= inner_right, "label escapes: {label:?}");
+        assert!(field.x + field.width as i32 <= inner_right, "field escapes: {field:?}");
+        assert_eq!(field.x, label.x + label.width as i32 + 10, "the gap is paid once");
+    }
+
+    /// S-57 (non-zero origin): the same inner-box arithmetic holds away from the origin.
+    #[test]
+    fn form_layout_pair_respects_a_nonzero_parent_origin() {
+        let mut layout = FormLayout::new(0, 5);
+        layout.add_row_pair(1, 2);
+
+        let mut rects = HashMap::new();
+        layout.update(Rect::new(100, 50, 200, 100), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+
+        let inner_left = 100 + 5;
+        let inner_right = (100 + 200 - 5) as i32;
+        let field = rects.get(&2).copied().expect("field placed");
+        assert_eq!(field.x + field.width as i32, inner_right, "field reaches the inner right edge");
+        let label = rects.get(&1).copied().expect("label placed");
+        assert_eq!(label.x, inner_left, "label starts at the origin plus the margin");
     }
 }

@@ -316,6 +316,12 @@ impl LineEdit {
                 let byte = byte_index_of_char(&self.text, max);
                 self.text.truncate(byte);
                 self.clamp_caret();
+                // A shrinking limit makes every longer value unreachable, so the
+                // history that could restore one is cleared and the shared target
+                // is re-synced to the truncated value. Without this, undo/redo
+                // would re-apply an over-limit string.
+                *self.history_target.borrow_mut() = self.text.clone();
+                self.undo_stack.clear();
                 self.text_changed.emit(self.text.clone());
             }
         }
@@ -1836,6 +1842,22 @@ mod tests {
         le.set_text("Hello World".to_string());
         le.set_max_length(Some(5));
         assert_eq!(le.text(), "Hello");
+    }
+
+    /// Reducing the limit truncates the value *and* invalidates the history that
+    /// could restore the over-limit string.
+    #[test]
+    fn max_length_change_keeps_undo_within_the_limit() {
+        let mut le = LineEdit::new(Rect::new(0, 0, 200, 24));
+        le.set_text("abcdef");
+        le.set_max_length(Some(3));
+        assert_eq!(le.text(), "abc", "the value is truncated to the limit");
+
+        assert!(!le.can_undo(), "an over-limit value must not be undoable");
+        assert!(!le.undo());
+        assert_eq!(le.text(), "abc");
+        assert!(!le.redo());
+        assert_eq!(le.text(), "abc");
     }
 
     #[test]

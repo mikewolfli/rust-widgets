@@ -19,5 +19,5 @@ mod types;
 pub use config::MenuConfig;
 pub use dialog::MenuConfigDialog;
 pub use manager::MenuConfigManager;
-pub use persistence::ConfigPersistence;
+pub use persistence::{ConfigLoadError, ConfigPersistence};
 pub use types::{HardwareCapabilities, PerformanceLevel, UserOverrides};

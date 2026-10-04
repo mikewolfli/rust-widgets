@@ -83,6 +83,9 @@ const RW_VALUE_STRING = 5;
 // the payload, or a colour read returns "no property" *and* leaks the buffer.
 const RW_VALUE_COLOR = 6;
 const RW_VALUE_RECT = 7;
+// A composite payload (a tuple/list of values); `num` carries the component count
+// and the string holds `kind:value;…`.
+const RW_VALUE_TUPLE = 8;
 
 /**
  * Read an int64 out-parameter, which ffi-napi may expose as a Buffer.
@@ -370,6 +373,11 @@ function loadFunctions(libName) {
     // type. `button` uses the same constants as the press/release codes.
     rw_dispatch_pointer_event: [cbool, [uint64, uint, int, int, uint]],
     rw_dispatch_event_to_widget: [cbool, [uint64, uint, int, int, uint]],
+    // The direct input carriers: key code + modifiers, a committed text string, and
+    // a wheel delta. A pointer's `(x, y, button)` cannot express these.
+    rw_dispatch_key_event: [cbool, [uint64, uint, uint, cbool]],
+    rw_dispatch_text_event: [cbool, [uint64, charPtr]],
+    rw_dispatch_wheel_event: [cbool, [uint64, int, int, uint]],
     // `out_pixels` is a `uint8**`: the callee allocates the frame and the caller
     // releases it with `rw_free_bytes(ptr, len)`, so the raw address has to come back
     // as a pointer rather than being copied into a Buffer here.
@@ -914,11 +922,14 @@ class RustWidgets {
     if (
       kind === RW_VALUE_STRING ||
       kind === RW_VALUE_COLOR ||
-      kind === RW_VALUE_RECT
+      kind === RW_VALUE_RECT ||
+      kind === RW_VALUE_TUPLE
     ) {
-      // All three carry their payload in the string slot. Freeing on every one of
+      // All four carry their payload in the string slot. Freeing on every one of
       // them is the point: `rw_get_widget_property` allocates for each, so a branch
-      // that returned without freeing leaked one buffer per call.
+      // that returned without freeing leaked one buffer per call. A tuple's string
+      // is the `kind:value;…` wire form, returned verbatim so a caller can decode
+      // it with the component kinds.
       const ptr = strOut.deref();
       if (!ptr || ptr.isNull()) return "";
       const text = ptr.readCString();

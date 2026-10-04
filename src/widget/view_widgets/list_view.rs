@@ -260,7 +260,9 @@ impl SelectionModel {
             self.current_row = Some(row);
             return;
         }
-        if modifiers.contains(crate::shortcut::Modifiers::CTRL) {
+        if modifiers.contains(crate::shortcut::Modifiers::CTRL)
+            || modifiers.contains(crate::shortcut::Modifiers::PRIMARY)
+        {
             if let Some(pos) = self.selected_rows.iter().position(|&i| i == row) {
                 self.selected_rows.remove(pos);
             } else {
@@ -448,6 +450,14 @@ impl ListView {
     /// would only appear once some unrelated event repainted the control.
     pub fn select_row(&mut self, row: usize) -> bool {
         if row < self.row_count() {
+            if !self.selection.is_selectable() {
+                // A click still moves focus even when selection is disabled; the
+                // two are separate, and reporting a selection that did not happen
+                // would be a lie to the host.
+                self.set_focused_row(row);
+                self.base.request_redraw();
+                return false;
+            }
             self.selection.select_row(row);
             self.selection_changed.emit(row);
             self.set_focused_row(row);
@@ -470,6 +480,12 @@ impl ListView {
         modifiers: crate::shortcut::Modifiers,
     ) -> bool {
         if row >= self.row_count() {
+            return false;
+        }
+        if !self.selection.is_selectable() {
+            // Focus only: a non-selectable view never reports a selection change.
+            self.set_focused_row(row);
+            self.base.request_redraw();
             return false;
         }
         self.selection.select_with_modifiers(row, modifiers);
@@ -748,11 +764,19 @@ impl ListView {
     ) {
         let Some(index) = self.row_at_point(point) else { return };
         self.focused_row = Some(index);
+        if !self.selection.is_selectable() {
+            // A press focuses the row under the pointer even when selection is
+            // disabled; it just must not report a selection change.
+            self.focused_row_changed.emit(Some(index));
+            self.base.request_redraw();
+            return;
+        }
         self.selection.select_with_modifiers(index, modifiers);
         if let Some(row) = self.focused_row {
             self.selection_changed.emit(row);
             self.focused_row_changed.emit(Some(row));
         }
+        self.base.request_redraw();
     }
 }
 impl Widget for ListView {
@@ -1433,5 +1457,34 @@ mod tests {
 
         v.select_row_with_modifiers(1, Modifiers::NONE);
         assert_eq!(v.selected_rows(), vec![1], "and a plain click replaces again");
+    }
+
+    /// `PRIMARY` toggles exactly like `CTRL`, as the `Extended` documentation promises.
+    ///
+    /// The old implementation only tested the physical `CTRL` bit, so on a platform
+    /// whose primary accelerator is not Control (macOS) a `Primary`-click replaced the
+    /// selection instead of toggling it.
+    #[test]
+    fn primary_and_ctrl_both_toggle_and_reanchor() {
+        use crate::shortcut::Modifiers;
+        let mut v = ListView::new(Rect::new(0, 0, 200, 200));
+        v.set_model(Arc::new(VecListModel::new((0..8).map(|n| n.to_string()).collect())));
+        v.set_selection_mode(SelectionMode::Extended);
+
+        v.select_row(2);
+        assert_eq!(v.selected_rows(), vec![2]);
+
+        v.select_row_with_modifiers(4, Modifiers::PRIMARY);
+        assert_eq!(v.selected_rows(), vec![2, 4], "Primary toggles row 4 on");
+        assert_eq!(v.selection.anchor(), Some(4), "and re-anchors to it");
+
+        v.select_row_with_modifiers(4, Modifiers::PRIMARY);
+        assert_eq!(v.selected_rows(), vec![2], "Primary toggles row 4 off");
+
+        v.select_row_with_modifiers(3, Modifiers::CTRL);
+        assert_eq!(v.selected_rows(), vec![2, 3], "Ctrl toggles row 3 on");
+        assert_eq!(v.selection.anchor(), Some(3));
+        v.select_row_with_modifiers(3, Modifiers::CTRL);
+        assert_eq!(v.selected_rows(), vec![2], "Ctrl toggles row 3 off");
     }
 }

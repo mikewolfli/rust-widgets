@@ -291,6 +291,17 @@ fn encode_jpeg(image: &DecodedImage) -> Result<Vec<u8>, String> {
         return Err("Cannot encode zero-dimension image to JPEG".to_string());
     }
 
+    // Baseline JPEG's SOF0 stores each dimension as an unsigned 16-bit field; narrowing a larger
+    // image to `u16` would produce a frame header that no longer describes the image, so refuse it
+    // instead.
+    if w > u16::MAX as usize || h > u16::MAX as usize {
+        return Err(format!(
+            "JPEG cannot be encoded at {w}x{h}: baseline JPEG stores each dimension as an \
+             unsigned 16-bit value, so both must be at most {}",
+            u16::MAX
+        ));
+    }
+
     // Pad to multiples of 8 for MCU blocks
     let mcu_w = w.div_ceil(8) * 8;
     let mcu_h = h.div_ceil(8) * 8;
@@ -581,7 +592,10 @@ fn build_gif_palette(rgba: &[u8]) -> Vec<[u8; 3]> {
         }
     }
 
-    if seen.len() <= 256 {
+    // The exact palette is only usable when every unique colour fit. `used` counts **all** unique
+    // colours, so once more than 256 exist the first-256-in-input-order approximation (which
+    // throws away every later colour) is abandoned for a fixed palette that spans the cube.
+    if used.len() <= 256 {
         // Pad to exactly 256 with black
         while seen.len() < 256 {
             seen.push([0, 0, 0]);
@@ -738,6 +752,16 @@ fn encode_gif(image: &DecodedImage) -> Result<Vec<u8>, String> {
     if w == 0 || h == 0 {
         return Err(format!(
             "GIF cannot be encoded at {w}x{h}: both dimensions must be at least 1"
+        ));
+    }
+
+    // GIF stores both the logical-screen and image-descriptor dimensions as unsigned 16-bit
+    // fields; `65536` would narrow to `0` and silently describe a different image, so refuse it.
+    if w > u16::MAX as u32 || h > u16::MAX as u32 {
+        return Err(format!(
+            "GIF cannot be encoded at {w}x{h}: the format stores each dimension as an unsigned \
+             16-bit value, so both must be at most {}",
+            u16::MAX
         ));
     }
 
@@ -1184,10 +1208,13 @@ fn encode_farbfeld(image: &DecodedImage) -> Result<Vec<u8>, String> {
 
     for i in 0..total {
         let off = i * 4;
-        let r_u16 = (pixels.get(off).copied().unwrap_or(0) as u16) << 8;
-        let g_u16 = (pixels.get(off + 1).copied().unwrap_or(0) as u16) << 8;
-        let b_u16 = (pixels.get(off + 2).copied().unwrap_or(0) as u16) << 8;
-        let a_u16 = (pixels.get(off + 3).copied().unwrap_or(255) as u16) << 8;
+        // 8-bit -> 16-bit is a *scale*, not a shift: `v * 257` maps 0 -> 0, 128 -> 32896 and
+        // 255 -> 65535 (full scale, fully opaque). `v << 8` maps 255 to 65280, so white came out
+        // dim and alpha 255 stopped being opaque.
+        let r_u16 = (pixels.get(off).copied().unwrap_or(0) as u16) * 257;
+        let g_u16 = (pixels.get(off + 1).copied().unwrap_or(0) as u16) * 257;
+        let b_u16 = (pixels.get(off + 2).copied().unwrap_or(0) as u16) * 257;
+        let a_u16 = (pixels.get(off + 3).copied().unwrap_or(255) as u16) * 257;
         out.extend_from_slice(&r_u16.to_be_bytes());
         out.extend_from_slice(&g_u16.to_be_bytes());
         out.extend_from_slice(&b_u16.to_be_bytes());
@@ -1451,5 +1478,79 @@ mod tests {
             "svgz must be the gzip of the svg encoding, byte for byte"
         );
         assert!(String::from_utf8_lossy(&svg).starts_with("<svg"));
+    }
+
+    /// GIF stores dimensions in 16 bits: an out-of-range dimension must error, not narrow to 0.
+    #[test]
+    fn encode_gif_rejects_over_16_bit_dimensions() {
+        let img = DecodedImage::new(ImageFormat::Rgba8, ImageData::Rgba8(vec![0; 4]), 65_536, 1);
+        assert!(
+            encode_gif(&img).unwrap_err().contains("16-bit"),
+            "encode_gif must refuse a 17-bit dimension"
+        );
+
+        // The public dispatch applies the same check, given a buffer of the declared size.
+        let big = DecodedImage::new(
+            ImageFormat::Rgba8,
+            ImageData::Rgba8(vec![0u8; 65_536 * 4]),
+            65_536,
+            1,
+        );
+        assert!(
+            encode(&big, ImageFormat::Gif).unwrap_err().contains("16-bit"),
+            "the public encode path must refuse a 17-bit dimension"
+        );
+    }
+
+    /// JPEG's SOF0 also stores dimensions in 16 bits, so the same narrowing defect is caught there.
+    #[test]
+    fn encode_jpeg_rejects_over_16_bit_dimensions() {
+        let img = DecodedImage::new(ImageFormat::Rgba8, ImageData::Rgba8(vec![0; 4]), 65_536, 1);
+        assert!(
+            encode_jpeg(&img).unwrap_err().contains("16-bit"),
+            "encode_jpeg must refuse a 17-bit dimension"
+        );
+    }
+
+    /// Farbfeld 8→16-bit is a scale by 257, not a shift: full scale must be 65535, alpha 255 opaque.
+    #[test]
+    fn encode_farbfeld_scales_8_to_16_bits_to_full_range() {
+        let img =
+            DecodedImage::new(ImageFormat::Rgba8, ImageData::Rgba8(vec![255, 128, 0, 255]), 1, 1);
+        let encoded = encode_farbfeld(&img).unwrap();
+        // 16-byte header, then four u16 big-endian channels.
+        let r = u16::from_be_bytes([encoded[16], encoded[17]]);
+        let g = u16::from_be_bytes([encoded[18], encoded[19]]);
+        let b = u16::from_be_bytes([encoded[20], encoded[21]]);
+        let a = u16::from_be_bytes([encoded[22], encoded[23]]);
+        assert_eq!(r, 0xFFFF, "full red must scale to 65535, not 65280");
+        assert_eq!(g, 128 * 257, "the mid channel must scale by 257");
+        assert_eq!(b, 0, "zero must stay zero");
+        assert_eq!(a, 0xFFFF, "alpha 255 must stay fully opaque (65535)");
+    }
+
+    /// More than 256 unique colours must reach the fallback, which is order-independent.
+    #[test]
+    fn gif_palette_falls_back_and_is_order_independent() {
+        // 256 reds plus one green = 257 unique colours, too many for the exact palette.
+        let mut reds_then_green = Vec::new();
+        for r in 0..=255u8 {
+            reds_then_green.extend_from_slice(&[r, 0, 0, 255]);
+        }
+        reds_then_green.extend_from_slice(&[0, 255, 0, 255]);
+
+        let mut green_then_reds = Vec::new();
+        green_then_reds.extend_from_slice(&[0, 255, 0, 255]);
+        for r in 0..=255u8 {
+            green_then_reds.extend_from_slice(&[r, 0, 0, 255]);
+        }
+
+        let a = build_gif_palette(&reds_then_green);
+        let b = build_gif_palette(&green_then_reds);
+
+        assert_eq!(a.len(), 256);
+        assert!(a.contains(&[0, 255, 0]), "the fallback must be able to represent pure green");
+        assert!(a.contains(&[255, 0, 0]), "the fallback must be able to represent pure red");
+        assert_eq!(a, b, "the fallback palette must not depend on input order");
     }
 }

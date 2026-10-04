@@ -1811,6 +1811,27 @@ pub unsafe extern "C" fn rw_poll_drop_event(
 ) -> CBool {
     c_try!({
         let Some(event) = get_control_backend().poll_drop_event() else {
+            // An empty queue must still clear every output: a caller that reuses an
+            // `out` from a previous success (and frees it unconditionally) would
+            // otherwise see the stale pointer/length and double-free. The getter's
+            // contract is null/zero when there is nothing to report.
+            unsafe {
+                if !source_out.is_null() {
+                    *source_out = 0;
+                }
+                if !target_out.is_null() {
+                    *target_out = 0;
+                }
+                if !mime_out.is_null() {
+                    *mime_out = std::ptr::null_mut();
+                }
+                if !payload_out.is_null() {
+                    *payload_out = std::ptr::null_mut();
+                }
+                if !payload_len_out.is_null() {
+                    *payload_len_out = 0;
+                }
+            }
             return false;
         };
         unsafe {
@@ -2826,15 +2847,19 @@ pub extern "C" fn rw_dispatch_pointer_event(
     })
 }
 
-/// Delivers an event straight to `widget_id`, without hit-testing.
+/// Delivers a pointer event straight to `widget_id`, without hit-testing.
 ///
-/// The counterpart to `rw_dispatch_pointer_event` for a host that already knows the target —
-/// a key event for the focused control, a text-input commit, a scroll it tracks itself. It
+/// The counterpart to `rw_dispatch_pointer_event` for a host that already knows the target. It
 /// shares the same event codes, so a host needs one vocabulary rather than two.
 ///
 /// Routing a pointer event this way **skips the library's hit test**, so a host that uses it
 /// for touches must do its own; the pointer path above is the one the integration documents
 /// name for that reason.
+///
+/// Keyboard, text and wheel input have their own carriers — a key code + modifier mask, a
+/// committed text string, and a wheel delta — which the pointer `(x, y, button)` arguments
+/// cannot express. Those use [`rw_dispatch_key_event`], [`rw_dispatch_text_event`] and
+/// [`rw_dispatch_wheel_event`] below.
 ///
 /// Returns whether the widget accepted it: `false` when the id is not a live widget, when the
 /// control is disabled, when a modal blocks it, or when `event_code` is unknown.
@@ -2851,6 +2876,58 @@ pub extern "C" fn rw_dispatch_event_to_widget(
             Some(event) => crate::dispatch_event(widget_id, &event),
             None => false,
         }
+    })
+}
+
+/// Delivers a key press/release straight to `widget_id`.
+///
+/// `key` and `modifiers` use the library's own conventions (see
+/// [`crate::event::Event::KeyPress`]); `release` selects a `KeyRelease` over a `KeyPress`.
+/// This is the direct-key counterpart to [`rw_dispatch_event_to_widget`], for a host that
+/// already owns the focused control.
+#[no_mangle]
+pub extern "C" fn rw_dispatch_key_event(
+    widget_id: u64,
+    key: c_uint,
+    modifiers: c_uint,
+    release: CBool,
+) -> CBool {
+    c_try!({
+        let event = if release {
+            crate::event::Event::key_release(key, modifiers)
+        } else {
+            crate::event::Event::key_press(key, modifiers)
+        };
+        crate::dispatch_event(widget_id, &event)
+    })
+}
+
+/// Delivers committed text (keyboard layout, IME, virtual keyboard, or paste) to `widget_id`.
+///
+/// The text is already filtered through the active keyboard layout, so it is not derivable from
+/// a raw key code — which is exactly why it needs its own carrier rather than a key event.
+#[no_mangle]
+pub extern "C" fn rw_dispatch_text_event(widget_id: u64, text: *const c_char) -> CBool {
+    c_try!({
+        let event = crate::event::Event::text_input(c_str_or_default(text));
+        crate::dispatch_event(widget_id, &event)
+    })
+}
+
+/// Delivers a wheel/scroll event to `widget_id`.
+///
+/// The delta is in wheel notches (see [`crate::event::Event::Wheel`]); `delta_y` is vertical
+/// (positive = scroll down) and `delta_x` is horizontal (positive = scroll right).
+#[no_mangle]
+pub extern "C" fn rw_dispatch_wheel_event(
+    widget_id: u64,
+    delta_x: c_int,
+    delta_y: c_int,
+    modifiers: c_uint,
+) -> CBool {
+    c_try!({
+        let event = crate::event::Event::wheel(delta_x, delta_y, modifiers);
+        crate::dispatch_event(widget_id, &event)
     })
 }
 
@@ -3203,6 +3280,14 @@ mod tests {
             CapabilityValue::String("hello".to_string()),
             CapabilityValue::Color(crate::core::Color::rgba(0x0A, 0x1B, 0x2C, 0x7D)),
             CapabilityValue::Rect(crate::core::Rect::new(1, 2, 300, 400)),
+            // A tuple's components keep their own kinds and a string component escapes the
+            // `;`/`:` separators, so both must survive the encode/decode round-trip.
+            CapabilityValue::Tuple(vec![
+                CapabilityValue::Int(1),
+                CapabilityValue::String("a;b:c\\d".to_string()),
+                CapabilityValue::Bool(true),
+                CapabilityValue::Float(2.5),
+            ]),
         ];
 
         for original in cases {
@@ -4240,5 +4325,126 @@ mod tests {
                 "and refuse an unknown event code like the routing path does"
             );
         }
+    }
+
+    /// An empty drop queue must clear every output, not just return `false`.
+    ///
+    /// A caller that reuses an `out` from a previous success and frees unconditionally
+    /// would otherwise free a stale pointer a second time. The sentinel values prove the
+    /// getter actually wrote null/zero rather than merely leaving the caller's bytes alone.
+    #[test]
+    fn an_empty_drop_poll_clears_nonzero_outputs() {
+        use core::ffi::c_uint;
+
+        // Drain any ambient event so the next poll is definitely empty (tests share the
+        // process-wide control backend).
+        loop {
+            let mut s = 0u64;
+            let mut t = 0u64;
+            let mut m: *mut c_char = std::ptr::null_mut();
+            let mut p: *mut u8 = std::ptr::null_mut();
+            let mut l: c_uint = 0;
+            let had = unsafe { rw_poll_drop_event(&mut s, &mut t, &mut m, &mut p, &mut l) };
+            if !had {
+                break;
+            }
+            if !m.is_null() {
+                unsafe { rw_free_string(m) };
+            }
+            if !p.is_null() {
+                unsafe { rw_free_bytes(p, l) };
+            }
+        }
+
+        let mut source_out: u64 = 0xDEAD_BEEF;
+        let mut target_out: u64 = 0xDEAD_BEEF;
+        let mut mime_out: *mut c_char = 0x1usize as *mut c_char;
+        let mut payload_out: *mut u8 = 0x1usize as *mut u8;
+        let mut payload_len_out: c_uint = 0xDEAD_BEEF;
+
+        let had = unsafe {
+            rw_poll_drop_event(
+                &mut source_out,
+                &mut target_out,
+                &mut mime_out,
+                &mut payload_out,
+                &mut payload_len_out,
+            )
+        };
+        assert!(!had, "the drained queue must report no event");
+        assert_eq!(source_out, 0, "an empty poll must clear the source sentinel");
+        assert_eq!(target_out, 0, "an empty poll must clear the target sentinel");
+        assert!(mime_out.is_null(), "an empty poll must null the mime pointer");
+        assert!(payload_out.is_null(), "an empty poll must null the payload pointer");
+        assert_eq!(payload_len_out, 0, "an empty poll must zero the payload length");
+    }
+
+    /// Text, key and wheel input must reach a widget through their dedicated C entries.
+    ///
+    /// The pointer entry only carries `(x, y, button)`, so a host could never deliver a
+    /// committed string, a key code + modifier mask, or a wheel delta. These three entries
+    /// close that gap and are observed at the widget's `handle_event`.
+    #[test]
+    fn a_host_can_deliver_text_key_and_wheel_through_the_c_abi() {
+        use crate::event::{Event, EventHandler};
+        use std::ffi::CString;
+        use std::rc::Rc;
+
+        let log = Rc::new(core::cell::RefCell::new(Vec::new()));
+
+        struct Recorder {
+            log: Rc<core::cell::RefCell<Vec<String>>>,
+            base: crate::widget::BaseWidget,
+        }
+        impl crate::widget::Widget for Recorder {
+            fn base(&self) -> &crate::widget::BaseWidget {
+                &self.base
+            }
+            fn base_mut(&mut self) -> &mut crate::widget::BaseWidget {
+                &mut self.base
+            }
+        }
+        impl EventHandler for Recorder {
+            fn handle_event(&mut self, event: &Event) {
+                let entry = match event {
+                    Event::TextInput { text } => format!("text:{text}"),
+                    Event::KeyPress { key, modifiers } => format!("keydown:{key}:{modifiers}"),
+                    Event::KeyRelease { key, modifiers } => format!("keyup:{key}:{modifiers}"),
+                    Event::Wheel { delta, modifiers } => {
+                        format!("wheel:{}:{}:{modifiers}", delta.x, delta.y)
+                    }
+                    _ => return,
+                };
+                self.log.borrow_mut().push(entry);
+            }
+        }
+
+        let id = crate::widget::runtime::register(Box::new(Recorder {
+            log: Rc::clone(&log),
+            base: crate::widget::BaseWidget::new(
+                crate::widget::WidgetKind::LineEdit,
+                crate::core::Rect::new(0, 0, 10, 10),
+                "recorder",
+            ),
+        }))
+        .expect("mount the recorder");
+
+        let text = CString::new("hi").expect("no interior NUL");
+        assert!(rw_dispatch_text_event(id, text.as_ptr()), "text commit must reach the widget");
+        assert!(rw_dispatch_key_event(id, 65, 2, false), "key press must reach the widget");
+        assert!(rw_dispatch_key_event(id, 65, 0, true), "key release must reach the widget");
+        assert!(rw_dispatch_wheel_event(id, 0, -1, 4), "wheel must reach the widget");
+
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                "text:hi".to_string(),
+                "keydown:65:2".to_string(),
+                "keyup:65:0".to_string(),
+                "wheel:0:-1:4".to_string(),
+            ]
+        );
+
+        crate::widget::runtime::unregister(id);
     }
 }

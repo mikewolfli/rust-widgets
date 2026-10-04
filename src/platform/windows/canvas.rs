@@ -102,6 +102,7 @@ fn canvases() -> &'static Mutex<HashMap<usize, ObjectId>> {
 /// the wrong handler.
 fn canvas_origin(hwnd: HWND) -> Option<(i32, i32)> {
     use winapi::shared::windef::POINT;
+    use winapi::um::errhandlingapi::{GetLastError, SetLastError};
     use winapi::um::winuser::{GetParent, MapWindowPoints};
     // SAFETY: `hwnd` is a live child window this module created; `MapWindowPoints` only reads
     // the point we pass and writes the converted value back into the same place.
@@ -115,15 +116,28 @@ fn canvas_origin(hwnd: HWND) -> Option<(i32, i32)> {
         }
         // The canvas's own client origin, in parent-client coordinates.
         let mut origin = POINT { x: 0, y: 0 };
-        if MapWindowPoints(hwnd, parent, &mut origin, 1) == 0 {
-            // `MapWindowPoints` returns 0 only when the point list is empty, which cannot
-            // happen here; a non-zero return is the success case. A zero therefore means the
-            // call declined, and the honest answer is "unknown".
-            log::error!("[windows] canvas_origin: MapWindowPoints declined for hwnd {hwnd:?}");
+        // `MapWindowPoints` returns the pixel offset in the low/high words of its return
+        // value, and `0` on failure. A canvas sitting exactly at its parent's client origin
+        // is therefore a **legitimate** zero: the point did not move. The documented way to
+        // tell that zero apart from a real failure is to clear the thread's last error
+        // before the call and inspect it after (see the MapWindowPoints reference).
+        SetLastError(0);
+        let result = MapWindowPoints(hwnd, parent, &mut origin, 1);
+        if map_failed(result, GetLastError()) {
+            log::error!("[windows] canvas_origin: MapWindowPoints failed for hwnd {hwnd:?}");
             return None;
         }
         Some((origin.x, origin.y))
     }
+}
+
+/// Interprets `MapWindowPoints`'s return value.
+///
+/// A zero return is *not* enough to call failure: a zero horizontal and vertical
+/// displacement (the canvas is at its parent's client origin) is reported the same way a
+/// declined call is. Only "zero **and** a non-zero last error" is a failure.
+fn map_failed(result: i32, last_error: u32) -> bool {
+    result == 0 && last_error != 0
 }
 
 /// Encodes a Rust string as a NUL-terminated UTF-16 buffer for Win32 APIs.
@@ -1011,5 +1025,15 @@ mod tests {
     #[test]
     fn hwnd_for_unknown_widget_is_none() {
         assert!(hwnd_for_widget(0xDEAD_BEEF).is_none());
+    }
+
+    #[test]
+    fn a_zero_displacement_is_not_a_map_failure() {
+        // A canvas at the parent's client origin maps its point by (0, 0), which
+        // MapWindowPoints reports as a zero return with no error set. That is the
+        // success case, not a declined call.
+        assert!(!map_failed(0, 0), "zero with no error is a successful no-move");
+        assert!(map_failed(0, 5), "zero with an error is a real failure");
+        assert!(!map_failed(1, 5), "a non-zero return succeeds regardless of a stale error");
     }
 }

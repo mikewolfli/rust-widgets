@@ -149,7 +149,8 @@ impl FlexLayout {
             justify_content,
             align_items,
             gap,
-            padding,
+            // S-47: negative padding is undefined, so reject it at construction.
+            padding: padding.max(0),
             items: Vec::new(),
             child_sizes: Vec::new(),
         }
@@ -190,78 +191,99 @@ impl FlexLayout {
             return (Vec::new(), 0.0, 0);
         }
 
-        // Sum child intrinsic sizes and flex grow factors.
+        // The main-axis bounds of an item, resolved once so every branch shares them.
+        // `min` is applied before `max`, so an item whose minimum exceeds its maximum keeps
+        // the maximum — the same resolution the grow branch has always used.
+        let main_max = |item: &FlexItem| -> i32 {
+            let max = if self.is_row() { item.max_size.width } else { item.max_size.height };
+            if max > 0 {
+                max as i32
+            } else {
+                i32::MAX
+            }
+        };
+        let main_min = |item: &FlexItem| -> i32 {
+            if self.is_row() {
+                item.min_size.width as i32
+            } else {
+                item.min_size.height as i32
+            }
+        };
+
+        // Sum child intrinsic sizes, floored at the minimum and capped at the maximum. The cap
+        // used to be applied only inside the grow branch, so a non-growing child whose intrinsic
+        // exceeded its max was laid out past its own ceiling (S-50).
         let mut intrinsic_main: Vec<i32> = Vec::with_capacity(count);
         let mut total_flex_grow: f32 = 0.0;
-        let mut total_intrinsic: i32 = 0;
 
         for (i, item) in self.items.iter().enumerate() {
             let sz = self.child_sizes.get(i).copied().unwrap_or(Size::new(0, 0));
             let main = if self.is_row() { sz.width as i32 } else { sz.height as i32 };
-            let main = main.max(if self.is_row() {
-                item.min_size.width as i32
-            } else {
-                item.min_size.height as i32
-            });
-            intrinsic_main.push(main);
+            intrinsic_main.push(main.max(main_min(item)).min(main_max(item)));
             total_flex_grow += item.flex_grow;
-            total_intrinsic += main;
         }
 
         let gaps = (count.saturating_sub(1)) as i32 * gap;
-        let remaining = available_main - total_intrinsic - gaps;
+        let remaining = available_main - intrinsic_main.iter().sum::<i32>() - gaps;
 
         let mut main_sizes: Vec<i32> = Vec::with_capacity(count);
 
         if remaining > 0 && total_flex_grow > 0.0 {
-            // Distribute surplus according to flex-grow.
-            let mut distributed = 0i32;
-            for (i, item) in self.items.iter().enumerate() {
-                let extra = if total_flex_grow > 0.0 {
-                    ((remaining as f32) * (item.flex_grow / total_flex_grow)).round() as i32
-                } else {
-                    0
-                };
-                let size = intrinsic_main[i] + extra;
-                let max_main = if self.is_row() {
-                    if item.max_size.width > 0 {
-                        item.max_size.width as i32
-                    } else {
-                        i32::MAX
+            // Distribute the surplus among growable items, never past an item's max. When an
+            // item's max refuses part of the surplus, that room is offered to the *other*
+            // growable items instead of being dumped onto the last one — which is what let a
+            // 20px-capped item grow to 80px while its sibling also refused the room (S-50).
+            // Any room nobody can absorb is left for `justify_positions` to distribute.
+            main_sizes = intrinsic_main.clone();
+            let mut leftover = remaining;
+            let mut progress = true;
+            while leftover > 0 && progress {
+                progress = false;
+                let room_grow: f32 = self
+                    .items
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, item)| item.flex_grow > 0.0 && main_sizes[*i] < main_max(item))
+                    .map(|(_, item)| item.flex_grow)
+                    .sum();
+                if room_grow <= 0.0 {
+                    break;
+                }
+                // Distribute this pass's leftover against a fixed budget. Decrementing
+                // `leftover` in place made each later item's share smaller than the one
+                // before it, favouring the leading items; a fixed `pass_leftover` keeps the
+                // shares proportional and only the integer remainder is shared out at the end.
+                let pass_leftover = leftover;
+                let mut allocated = 0i32;
+                for (i, item) in self.items.iter().enumerate() {
+                    if item.flex_grow <= 0.0 {
+                        continue;
                     }
-                } else {
-                    if item.max_size.height > 0 {
-                        item.max_size.height as i32
-                    } else {
-                        i32::MAX
+                    let room = main_max(item) - main_sizes[i];
+                    if room <= 0 {
+                        continue;
                     }
-                };
-                let size = size.min(max_main);
-                main_sizes.push(size);
-                distributed += size - intrinsic_main[i];
-            }
-            // # Why the rounding remainder is not dumped on the last child anymore
-            //
-            // The remainder of an integer split used to be added to `main_sizes[count - 1]`
-            // unconditionally. For a row whose children all grow that is harmless — the room
-            // was going to be distributed anyway, and one pixel either way is invisible. But
-            // the same line also runs for a caller that *did* ask for growth and had some of it
-            // refused by a `max_size`, and, more importantly, its sibling branch below (no
-            // growth asked for at all) had the identical line — where it did real damage: the
-            // entire leftover was added to the last child, so `justify_content` could never see
-            // any leftover to distribute.
-            //
-            // Concretely: a `FlexEnd` row of three fixed-width buttons in a 240 px band had
-            // 12 px of leftover, and instead of shifting the row 12 px to the right the layout
-            // made its *last button* 12 px wider. The row was then flush left, the trailing
-            // button was the wrong size, and "right-aligned" was unreachable — which is why the
-            // `dialog_with_actions` template could not be built on `justify_content`. The
-            // remainder is still given to the last child here, because in this branch the caller
-            // asked for the room to be spent on the children; it is the *no-growth* branch that
-            // must leave it for the justification.
-            let remainder = remaining - distributed;
-            if remainder > 0 && !main_sizes.is_empty() {
-                main_sizes[count - 1] += remainder;
+                    let share =
+                        ((pass_leftover as f32) * (item.flex_grow / room_grow)).round() as i32;
+                    let take = share.min(room).min(pass_leftover - allocated);
+                    if take > 0 {
+                        main_sizes[i] += take;
+                        allocated += take;
+                        progress = true;
+                    }
+                }
+                leftover -= allocated;
+                // Integer rounding can leave a remainder smaller than the number of givers; hand
+                // it to the first growable item that still has room so the loop cannot spin.
+                if leftover > 0 && progress {
+                    if let Some(i) = (0..count).find(|&i| {
+                        self.items[i].flex_grow > 0.0 && main_sizes[i] < main_max(&self.items[i])
+                    }) {
+                        let take = leftover.min(main_max(&self.items[i]) - main_sizes[i]);
+                        main_sizes[i] += take;
+                        leftover -= take;
+                    }
+                }
             }
         } else if remaining < 0 {
             // Shrink items proportionally to flex-shrink, then spend whatever room the floors
@@ -429,8 +451,14 @@ impl FlexLayout {
         }
 
         let leftover = available_main - total_used;
+        let sizes_sum: i32 = main_sizes.iter().sum();
         let mut positions = Vec::with_capacity(count);
 
+        // The base gap is already subtracted inside `total_used`, so the space-* alignments
+        // must distribute `leftover` **on top of** the declared gap rather than in place of it.
+        // Replacing `gap` with `leftover / n` discarded the gap entirely: a two-item row with a
+        // 10px gap never reached its trailing edge, and a row whose growth consumed everything
+        // (leftover 0) lost its gap too (S-51).
         let (first_gap, inter_gap) = match self.justify_content {
             JustifyContent::FlexStart | JustifyContent::FlexEnd | JustifyContent::Center => {
                 let offset = match self.justify_content {
@@ -442,16 +470,18 @@ impl FlexLayout {
                 (offset, gap)
             }
             JustifyContent::SpaceBetween => {
-                let gap = if count > 1 { leftover / (count as i32 - 1) } else { 0 };
-                (0, gap)
+                let inter = if count > 1 { gap + leftover / (count as i32 - 1) } else { gap };
+                (0, inter)
             }
             JustifyContent::SpaceAround => {
-                let gap = if count > 0 { leftover / (count as i32) } else { 0 };
-                (gap / 2, gap)
+                let inter = if count > 0 { gap + leftover / count as i32 } else { gap };
+                let painted = sizes_sum + (count as i32 - 1) * inter;
+                let lead = ((available_main - painted) / 2).max(0);
+                (lead, inter)
             }
             JustifyContent::SpaceEvenly => {
-                let gap = if count > 0 { leftover / (count as i32 + 1) } else { 0 };
-                (gap, gap)
+                let edge = if count > 0 { leftover / (count as i32 + 1) } else { 0 };
+                (edge, gap + edge)
             }
         };
 
@@ -484,14 +514,29 @@ impl FlexLayout {
         }
 
         let mut result = Vec::with_capacity(count);
-        for (i, _item) in self.items.iter().enumerate() {
+        for (i, item) in self.items.iter().enumerate() {
             let sz = self.child_sizes.get(i).copied().unwrap_or(Size::new(0, 0));
             let child_cross = if self.is_row() { sz.height as i32 } else { sz.width as i32 };
 
-            let align = self.items[i].align_self.unwrap_or(self.align_items);
+            // S-53: the cross-axis bounds of the `FlexItem` were never applied. Every branch
+            // must honour them: `Stretch` is capped at the maximum, `FlexStart`/`Center`/
+            // `FlexEnd`/`Baseline` floor the child at its minimum and cap it at its maximum.
+            let min_cross = if self.is_row() { item.min_size.height } else { item.min_size.width };
+            let max_cross = if self.is_row() { item.max_size.height } else { item.max_size.width };
+            let clamp_cross = |v: i32| -> i32 {
+                let v = v.max(min_cross as i32);
+                if max_cross > 0 {
+                    v.min(max_cross as i32)
+                } else {
+                    v
+                }
+            };
+            let child_cross = clamp_cross(child_cross);
+
+            let align = item.align_self.unwrap_or(self.align_items);
 
             let (cross_start, cross_len) = match align {
-                AlignItems::Stretch => (0, cross_size),
+                AlignItems::Stretch => (0, clamp_cross(cross_size)),
                 AlignItems::FlexStart => (0, child_cross),
                 AlignItems::FlexEnd => (cross_size - child_cross, child_cross),
                 AlignItems::Center => ((cross_size - child_cross) / 2, child_cross),
@@ -580,13 +625,23 @@ impl FlexLayout {
         };
         let item_cross = |index: usize| {
             let size = self.child_sizes.get(index).copied().unwrap_or(Size::new(0, 0));
-            let intrinsic = if is_row { size.height } else { size.width };
+            let intrinsic = if is_row { size.height } else { size.width } as i32;
             let minimum = if is_row {
                 self.items[index].min_size.height
             } else {
                 self.items[index].min_size.width
-            };
-            intrinsic.max(minimum) as i32
+            } as i32;
+            let maximum = if is_row {
+                self.items[index].max_size.height
+            } else {
+                self.items[index].max_size.width
+            } as i32;
+            // S-53: the wrap path applied only the minimum; the maximum is now honoured too.
+            let mut cross = intrinsic.max(minimum);
+            if maximum > 0 {
+                cross = cross.min(maximum);
+            }
+            cross
         };
 
         let mut lines: Vec<Vec<usize>> = Vec::new();
@@ -659,8 +714,28 @@ impl FlexLayout {
             for (slot, &index) in line.iter().enumerate() {
                 let align = self.items[index].align_self.unwrap_or(self.align_items);
                 let child_cross = item_cross(index);
+                // S-53: `Stretch` must respect the item's cross maximum too; the other branches
+                // already use the clamped `child_cross`.
+                let min_cross = if is_row {
+                    self.items[index].min_size.height
+                } else {
+                    self.items[index].min_size.width
+                } as i32;
+                let max_cross = if is_row {
+                    self.items[index].max_size.height
+                } else {
+                    self.items[index].max_size.width
+                } as i32;
+                let clamp_cross = |v: i32| -> i32 {
+                    let v = v.max(min_cross);
+                    if max_cross > 0 {
+                        v.min(max_cross)
+                    } else {
+                        v
+                    }
+                };
                 let (cross_offset, cross_len) = match align {
-                    AlignItems::Stretch => (0, line_cross),
+                    AlignItems::Stretch => (0, clamp_cross(line_cross)),
                     AlignItems::FlexStart | AlignItems::Baseline => (0, child_cross),
                     AlignItems::FlexEnd => (line_cross - child_cross, child_cross),
                     AlignItems::Center => ((line_cross - child_cross) / 2, child_cross),
@@ -714,7 +789,23 @@ impl Layout for FlexLayout {
     }
 
     fn remove_widget(&mut self, widget_id: ObjectId) {
-        self.items.retain(|item| item.widget_id != Some(widget_id));
+        // S-52: `child_sizes` is index-aligned with `items`, so removing an item must remove its
+        // size too. The old `retain` kept only the items, and the remaining children inherited the
+        // deleted sibling's size hint. Walking both lists together keeps identity and size in lock
+        // step, including when the same id was registered more than once (all matches are removed).
+        let mut new_items = Vec::with_capacity(self.items.len());
+        let mut new_sizes = Vec::with_capacity(self.child_sizes.len());
+        for (index, item) in self.items.iter().enumerate() {
+            if item.widget_id == Some(widget_id) {
+                continue;
+            }
+            new_items.push(item.clone());
+            if index < self.child_sizes.len() {
+                new_sizes.push(self.child_sizes[index]);
+            }
+        }
+        self.items = new_items;
+        self.child_sizes = new_sizes;
     }
 
     fn child_ids(&self) -> Vec<ObjectId> {
@@ -731,11 +822,13 @@ impl Layout for FlexLayout {
     }
 
     fn update(&self, rect: Rect, widgets: &mut dyn FnMut(ObjectId, Rect)) {
+        // S-47: `padding` is `pub`, so clamp a directly-mutated negative value here too.
+        let padding = self.padding.max(0);
         let content_rect = Rect::new(
-            rect.x + self.padding,
-            rect.y + self.padding,
-            rect.width.saturating_sub(2 * self.padding as u32),
-            rect.height.saturating_sub(2 * self.padding as u32),
+            rect.x.saturating_add(padding),
+            rect.y.saturating_add(padding),
+            rect.width.saturating_sub(2 * padding as u32),
+            rect.height.saturating_sub(2 * padding as u32),
         );
 
         let results = self.compute_rects(content_rect, None);
@@ -826,7 +919,9 @@ impl FlexLayout {
         // alternative — re-deriving `compute_rects` with a scaled gap — would be a second solver,
         // which is the `set_child_sizes` shape this method's compatibility contract forbids.
         let scale = context.layout_scale.max(context.font_scale);
-        let scaled_padding = (self.padding as f32 * scale).round() as i32;
+        // S-47: clamp a negative `padding` before the device-scale cast so it can never reach
+        // `2 * padding as u32` below.
+        let scaled_padding = (self.padding.max(0) as f32 * scale).max(0.0).round() as i32;
         // Which entry belongs to which item, resolved once so the two are never indexed by
         // position into two lists that could disagree. An item with no widget id (a spacer) or
         // with no `ChildInfo` gets `None` and keeps whatever size the caller last handed in,
@@ -855,8 +950,8 @@ impl FlexLayout {
         let scaled_gap = (self.gap as f32 * scale).round() as i32;
 
         let content_rect = Rect::new(
-            rect.x + scaled_padding,
-            rect.y + scaled_padding,
+            rect.x.saturating_add(scaled_padding),
+            rect.y.saturating_add(scaled_padding),
             rect.width.saturating_sub(2 * scaled_padding as u32),
             rect.height.saturating_sub(2 * scaled_padding as u32),
         );
@@ -2331,5 +2426,256 @@ mod tests {
 
         assert_eq!(rects.get(&1).map(|r| r.width), Some(30));
         assert_eq!(rects.get(&2).map(|r| r.width), Some(70), "the stored size still applies");
+    }
+
+    // ── S-50: main-axis max must hold in every branch ──────────────────────────────
+
+    #[test]
+    fn main_axis_max_holds_in_the_grow_branch() {
+        let mut layout = FlexLayout::with_params(
+            FlexDirection::Row,
+            FlexWrap::NoWrap,
+            JustifyContent::FlexStart,
+            AlignItems::Stretch,
+            0,
+            0,
+        );
+        layout.add_widget(1, 1);
+        layout.add_widget(2, 1);
+        layout.items_mut()[0].max_size = Size::new(20, 0);
+        layout.items_mut()[1].max_size = Size::new(20, 0);
+        layout.set_child_sizes(vec![Size::new(10, 10), Size::new(10, 10)]);
+
+        let mut rects = HashMap::new();
+        layout.update(Rect::new(0, 0, 100, 50), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+
+        // Both items are capped at 20; the refused room is left for justification, not dumped
+        // onto the last child (which used to make the second item 80 wide).
+        assert_eq!(rects.get(&1).map(|r| r.width), Some(20));
+        assert_eq!(rects.get(&2).map(|r| r.width), Some(20));
+        assert_eq!(rects.get(&2).map(|r| r.x + r.width as i32), Some(40));
+    }
+
+    #[test]
+    fn main_axis_max_holds_in_the_non_grow_branch() {
+        let mut layout = FlexLayout::with_params(
+            FlexDirection::Row,
+            FlexWrap::NoWrap,
+            JustifyContent::FlexStart,
+            AlignItems::Stretch,
+            0,
+            0,
+        );
+        layout.add_widget(1, 0);
+        layout.items_mut()[0].max_size = Size::new(20, 0);
+        layout.set_child_sizes(vec![Size::new(100, 10)]);
+
+        let mut rects = HashMap::new();
+        layout.update(Rect::new(0, 0, 200, 50), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+
+        assert_eq!(rects.get(&1).map(|r| r.width), Some(20), "a non-growing child is still capped");
+    }
+
+    // ── S-51: the declared gap is paid once in space-* alignments ───────────────────
+
+    #[test]
+    fn space_between_pays_the_declared_gap_and_reaches_the_edge() {
+        let mut layout = FlexLayout::with_params(
+            FlexDirection::Row,
+            FlexWrap::NoWrap,
+            JustifyContent::SpaceBetween,
+            AlignItems::Stretch,
+            10,
+            0,
+        );
+        layout.add_widget(1, 0);
+        layout.add_widget(2, 0);
+        layout.set_child_sizes(vec![Size::new(10, 10), Size::new(10, 10)]);
+
+        let mut rects = HashMap::new();
+        layout.update(Rect::new(0, 0, 100, 50), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+
+        assert_eq!(rects.get(&1).map(|r| r.x), Some(0));
+        assert_eq!(
+            rects.get(&2).map(|r| r.x + r.width as i32),
+            Some(100),
+            "the second child reaches the trailing edge"
+        );
+    }
+
+    #[test]
+    fn space_distribution_preserves_the_gap_when_leftover_is_zero() {
+        let mut layout = FlexLayout::with_params(
+            FlexDirection::Row,
+            FlexWrap::NoWrap,
+            JustifyContent::SpaceBetween,
+            AlignItems::Stretch,
+            10,
+            0,
+        );
+        layout.add_widget(1, 1);
+        layout.add_widget(2, 1);
+        layout.set_child_sizes(vec![Size::new(0, 0), Size::new(0, 0)]);
+
+        let mut rects = HashMap::new();
+        layout.update(Rect::new(0, 0, 100, 50), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+
+        let first = rects.get(&1).copied().expect("first child placed");
+        let second = rects.get(&2).copied().expect("second child placed");
+        assert_eq!(
+            first.x + first.width as i32 + 10,
+            second.x,
+            "the declared gap survives a zero leftover"
+        );
+    }
+
+    #[test]
+    fn space_around_pays_the_declared_gap_and_stays_roughly_symmetric() {
+        let mut layout = FlexLayout::with_params(
+            FlexDirection::Row,
+            FlexWrap::NoWrap,
+            JustifyContent::SpaceAround,
+            AlignItems::Stretch,
+            10,
+            0,
+        );
+        layout.add_widget(1, 0);
+        layout.add_widget(2, 0);
+        layout.set_child_sizes(vec![Size::new(10, 10), Size::new(10, 10)]);
+
+        let mut rects = HashMap::new();
+        layout.update(Rect::new(0, 0, 100, 50), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+
+        let first = rects.get(&1).copied().expect("first child placed");
+        let second = rects.get(&2).copied().expect("second child placed");
+        let lead = first.x;
+        let trail = 100 - (second.x + second.width as i32);
+        assert!(
+            (lead - trail).abs() <= 1,
+            "SpaceAround is symmetric up to rounding: {lead} vs {trail}"
+        );
+        assert!(second.x - (first.x + first.width as i32) >= 10, "the declared gap is still paid");
+    }
+
+    // ── S-52: removal keeps identity ↔ size correspondence ──────────────────────────
+
+    #[test]
+    fn removing_a_widget_does_not_reassign_its_size() {
+        let mut layout = FlexLayout::new();
+        layout.add_widget(1, 0);
+        layout.add_widget(2, 0);
+        layout.set_child_sizes(vec![Size::new(10, 10), Size::new(30, 30)]);
+        layout.remove_widget(1);
+
+        let mut rects = HashMap::new();
+        layout.update(Rect::new(0, 0, 100, 100), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+
+        assert_eq!(rects.get(&2).map(|r| r.width), Some(30), "the survivor keeps its own size");
+    }
+
+    #[test]
+    fn removing_from_the_middle_keeps_remaining_sizes_aligned() {
+        let mut layout = FlexLayout::new();
+        layout.add_widget(1, 0);
+        layout.add_widget(2, 0);
+        layout.add_widget(3, 0);
+        layout.set_child_sizes(vec![Size::new(10, 10), Size::new(20, 10), Size::new(30, 10)]);
+        layout.remove_widget(2);
+
+        let mut rects = HashMap::new();
+        layout.update(Rect::new(0, 0, 100, 50), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+
+        assert_eq!(rects.get(&1).map(|r| r.width), Some(10));
+        assert_eq!(rects.get(&3).map(|r| r.width), Some(30));
+    }
+
+    // ── S-53: cross-axis bounds are honoured by every alignment ────────────────────
+
+    #[test]
+    fn cross_axis_max_is_applied_to_stretch() {
+        let mut layout = FlexLayout::with_params(
+            FlexDirection::Row,
+            FlexWrap::NoWrap,
+            JustifyContent::FlexStart,
+            AlignItems::Stretch,
+            0,
+            0,
+        );
+        layout.add_widget(1, 0);
+        layout.items_mut()[0].max_size = Size::new(0, 20);
+        layout.set_child_sizes(vec![Size::new(10, 10)]);
+
+        let mut rects = HashMap::new();
+        layout.update(Rect::new(0, 0, 100, 100), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+
+        assert_eq!(rects.get(&1).map(|r| r.height), Some(20), "Stretch is capped at the cross max");
+    }
+
+    #[test]
+    fn cross_axis_min_is_applied_to_flex_start() {
+        let mut layout = FlexLayout::with_params(
+            FlexDirection::Row,
+            FlexWrap::NoWrap,
+            JustifyContent::FlexStart,
+            AlignItems::FlexStart,
+            0,
+            0,
+        );
+        layout.add_widget(1, 0);
+        layout.items_mut()[0].min_size = Size::new(0, 40);
+        layout.set_child_sizes(vec![Size::new(10, 10)]);
+
+        let mut rects = HashMap::new();
+        layout.update(Rect::new(0, 0, 100, 100), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+
+        assert_eq!(
+            rects.get(&1).map(|r| r.height),
+            Some(40),
+            "FlexStart is floored at the cross min"
+        );
+    }
+
+    // ── S-47: negative padding is rejected, not folded into geometry ───────────────
+
+    #[test]
+    fn negative_padding_is_rejected_at_construction_and_read_sites() {
+        let layout = FlexLayout::with_params(
+            FlexDirection::Row,
+            FlexWrap::NoWrap,
+            JustifyContent::FlexStart,
+            AlignItems::Stretch,
+            0,
+            -1,
+        );
+        assert_eq!(layout.padding, 0, "with_params rejects a negative padding");
+
+        let mut layout = FlexLayout::new();
+        layout.add_widget(1, 0);
+        layout.padding = -1; // `padding` is `pub`, so a caller can mutate it directly.
+        layout.set_child_sizes(vec![Size::new(10, 10)]);
+        let mut rects = HashMap::new();
+        layout.update(Rect::new(0, 0, 100, 50), &mut |id, rect| {
+            rects.insert(id, rect);
+        });
+        assert_eq!(rects.get(&1).map(|r| r.x), Some(0));
+        assert_eq!(rects.get(&1).map(|r| r.y), Some(0));
     }
 }

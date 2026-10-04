@@ -28,10 +28,15 @@ use objc2::runtime::AnyObject;
 use objc2::sel;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSBackingStoreType, NSGraphicsContext, NSView, NSWindow, NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSEvent, NSEventMask,
+    NSGraphicsContext, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_core_graphics::CGContext;
-use objc2_foundation::{NSRect, NSSize, NSString};
+use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSRect, NSSize, NSString};
+
+use crate::core::{ObjectId, Point};
+use crate::event::Event;
+use crate::platform::types::MousePhase;
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -219,6 +224,84 @@ define_class!(
         fn is_flipped(&self) -> bool {
             false
         }
+
+        /// The canvas owns the keyboard while it hosts the focused widget, so it must
+        /// accept first-responder status — otherwise AppKit never delivers `keyDown:`.
+        #[unsafe(method(acceptsFirstResponder))]
+        fn accepts_first_responder(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, event: &NSEvent) {
+            self.forward_mouse(event, MousePhase::Press);
+        }
+
+        #[unsafe(method(mouseUp:))]
+        fn mouse_up(&self, event: &NSEvent) {
+            self.forward_mouse(event, MousePhase::Release);
+        }
+
+        #[unsafe(method(mouseDragged:))]
+        fn mouse_dragged(&self, event: &NSEvent) {
+            self.forward_mouse(event, MousePhase::Drag);
+        }
+
+        #[unsafe(method(rightMouseDown:))]
+        fn right_mouse_down(&self, event: &NSEvent) {
+            self.forward_mouse(event, MousePhase::SecondaryPress);
+        }
+
+        #[unsafe(method(rightMouseUp:))]
+        fn right_mouse_up(&self, event: &NSEvent) {
+            self.forward_mouse(event, MousePhase::SecondaryRelease);
+        }
+
+        #[unsafe(method(scrollWheel:))]
+        fn scroll_wheel(&self, event: &NSEvent) {
+            self.forward_wheel(event);
+        }
+
+        #[unsafe(method(keyDown:))]
+        fn key_down(&self, event: &NSEvent) {
+            self.forward_key(event, false);
+        }
+
+        #[unsafe(method(keyUp:))]
+        fn key_up(&self, event: &NSEvent) {
+            self.forward_key(event, true);
+        }
+
+        /// AppKit calls this on the window's content view when the window is resized.
+        ///
+        /// The superclass call performs the resize; the library is then told the new
+        /// client size so layout re-runs — otherwise a user drag of the window edge
+        /// changed the pixels but never the widget geometry.
+        #[unsafe(method(setFrameSize:))]
+        fn set_frame_size(&self, new_size: NSSize) {
+            // SAFETY: `super` is the documented objc2 spelling for messaging the
+            // superclass implementation; `setFrameSize:` is the NSView setter.
+            let _: () = unsafe { msg_send![super(self), setFrameSize: new_size] };
+            #[cfg(widgets_unstripped)]
+            if let Some(widget_id) = self.widget_target() {
+                crate::queue_resize_trigger(
+                    widget_id,
+                    new_size.width.round().max(1.0) as u32,
+                    new_size.height.round().max(1.0) as u32,
+                );
+            }
+        }
+
+        /// The window delegate hook for the close button: emit the widget's `closed`
+        /// signal (so `on_close` handlers run), then allow AppKit to close the window.
+        #[unsafe(method(windowShouldClose:))]
+        fn window_should_close(&self, _window: &NSWindow) -> bool {
+            #[cfg(widgets_unstripped)]
+            if let Some(widget_id) = self.widget_target() {
+                let _ = crate::close_widget(widget_id);
+            }
+            true
+        }
     }
 );
 
@@ -240,10 +323,22 @@ impl RustWidgetsObjc2CanvasView {
 
         #[cfg(widgets_unstripped)]
         let frame = if self.ivars().is_window.get() {
+            // The window canvas stores the **host** id `create_window` returned (the
+            // `BackendState` counter starts at 1), while `render_frame_tree` looks the
+            // widget up by its **widget-registry** id (allocated from a far higher
+            // base). Translate at this boundary so the frame targets the correct
+            // widget instead of missing it and painting nothing.
+            let Some(widget) = crate::widget::runtime::widget_id_for_host_window(widget_id) else {
+                log::error!(
+                    "[macos-objc2] canvas: drawRect: host id={widget_id} has no owning widget; \
+                     nothing to paint"
+                );
+                return;
+            };
             // A window's content view paints the window's own chrome and every child
             // that implements `Draw`; a plain `render_frame_cached` would show the
             // window over an empty client area.
-            crate::widget::runtime::render_frame_tree(widget_id, size, clear)
+            crate::widget::runtime::render_frame_tree(widget, size, clear)
         } else {
             // A mounted surface is one self-drawn widget in its own box, which is
             // what the cocoa backend's `draw_rect` blits.
@@ -302,6 +397,174 @@ impl RustWidgetsObjc2CanvasView {
         // SAFETY: `this` is an allocated instance with its ivars initialised, and
         // `initWithFrame:` is the designated initializer of `NSView`.
         unsafe { msg_send![super(this), initWithFrame: frame] }
+    }
+
+    /// The widget-registry id this canvas presents.
+    ///
+    /// A window canvas stores the **host** id `create_window` returned; a mounted
+    /// surface stores the widget id directly. The event router and the frame lookup
+    /// both speak the widget-registry id, so the window case translates here.
+    #[cfg(widgets_unstripped)]
+    fn widget_target(&self) -> Option<ObjectId> {
+        let id = self.ivars().widget_id.get();
+        if id == 0 {
+            return None;
+        }
+        if self.ivars().is_window.get() {
+            crate::widget::runtime::widget_id_for_host_window(id)
+        } else {
+            Some(id)
+        }
+    }
+
+    /// Translates an AppKit mouse event into a widget event and routes it.
+    #[cfg(widgets_unstripped)]
+    fn forward_mouse(&self, event: &NSEvent, phase: MousePhase) {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let Some(widget_id) = self.widget_target() else {
+                return;
+            };
+            let local = self.convertPoint_fromView(event.locationInWindow(), None);
+            let origin = self.frame().origin;
+            let position = Point::new(
+                (origin.x + local.x).round() as i32,
+                (origin.y + local.y).round() as i32,
+            );
+            let modifiers =
+                crate::platform::macos::types::map_modifiers(event.modifierFlags().bits() as u64);
+            let translated = match phase {
+                MousePhase::Press => Event::mouse_press_with(
+                    position.x,
+                    position.y,
+                    crate::event::mouse_button::PRIMARY,
+                    modifiers,
+                ),
+                MousePhase::Release => Event::MouseRelease {
+                    pos: position,
+                    button: crate::event::mouse_button::PRIMARY,
+                },
+                MousePhase::Drag => Event::MouseMove { pos: position },
+                MousePhase::SecondaryPress => Event::mouse_press_with(
+                    position.x,
+                    position.y,
+                    crate::event::mouse_button::SECONDARY,
+                    modifiers,
+                ),
+                MousePhase::SecondaryRelease => Event::MouseRelease {
+                    pos: position,
+                    button: crate::event::mouse_button::SECONDARY,
+                },
+                MousePhase::DoubleClick => Event::mouse_double_click(
+                    position.x,
+                    position.y,
+                    crate::event::mouse_button::PRIMARY,
+                ),
+            };
+            let delivered = crate::platform::platform_facts().route_pointer_event(
+                widget_id,
+                &translated,
+                position,
+            );
+            if !delivered {
+                return;
+            }
+            if matches!(
+                phase,
+                MousePhase::Press | MousePhase::SecondaryPress | MousePhase::DoubleClick
+            ) {
+                // A click can move focus to a nested control; take the keyboard so
+                // subsequent keys are delivered to this view.
+                if let Some(window) = self.window() {
+                    window.makeFirstResponder(Some(self));
+                }
+            }
+            self.setNeedsDisplay(true);
+        }));
+        if outcome.is_err() {
+            log::error!("[macos-objc2] canvas: panic while forwarding a mouse event");
+        }
+    }
+
+    /// Translates an AppKit scroll-wheel event into a widget wheel event.
+    #[cfg(widgets_unstripped)]
+    fn forward_wheel(&self, event: &NSEvent) {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let Some(widget_id) = self.widget_target() else {
+                return;
+            };
+            let modifiers =
+                crate::platform::macos::types::map_modifiers(event.modifierFlags().bits() as u64);
+            // AppKit reports a positive `scrollingDeltaY` for scrolling up; the widget
+            // layer's wheel `delta.y` is positive for scrolling down, so the sign is
+            // inverted (matching `macos::canvas` and `windows::canvas`).
+            let translated = Event::wheel(
+                event.scrollingDeltaX().round() as i32,
+                -(event.scrollingDeltaY().round() as i32),
+                modifiers,
+            );
+            if crate::platform::platform_facts().route_pointer_event(
+                widget_id,
+                &translated,
+                Point::new(0, 0),
+            ) {
+                self.setNeedsDisplay(true);
+            }
+        }));
+        if outcome.is_err() {
+            log::error!("[macos-objc2] canvas: panic while forwarding a wheel event");
+        }
+    }
+
+    /// Translates an AppKit key event into a widget key/text event and routes it.
+    #[cfg(widgets_unstripped)]
+    fn forward_key(&self, event: &NSEvent, release: bool) {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let Some(widget_id) = self.widget_target() else {
+                return;
+            };
+            let key = event.keyCode() as u32;
+            let modifiers =
+                crate::platform::macos::types::map_modifiers(event.modifierFlags().bits() as u64);
+            if release {
+                // A release produces no text, so `KeyRelease` is the only event it can be.
+                let target = crate::widget::runtime::focused_widget().unwrap_or(widget_id);
+                if crate::widget::runtime::dispatch_event(
+                    target,
+                    &Event::KeyRelease { key, modifiers },
+                ) {
+                    self.setNeedsDisplay(true);
+                }
+                return;
+            }
+            // Printable characters travel as `TextInput` so the widget's text path runs;
+            // non-printing keys travel as `KeyPress` with their hardware key code.
+            let translated = if let Some(text) = printable_characters(event) {
+                Event::TextInput { text }
+            } else {
+                Event::KeyPress { key, modifiers }
+            };
+            // Keys follow focus; with nothing focused, the surface owner keeps them.
+            let target = crate::widget::runtime::focused_widget().unwrap_or(widget_id);
+            if crate::widget::runtime::dispatch_event(target, &translated) {
+                self.setNeedsDisplay(true);
+            }
+        }));
+        if outcome.is_err() {
+            log::error!("[macos-objc2] canvas: panic while forwarding a key event");
+        }
+    }
+}
+
+/// Reads the printable characters of a key event, or `None` when it has none.
+#[cfg(widgets_unstripped)]
+fn printable_characters(event: &NSEvent) -> Option<crate::compat::String> {
+    let characters = event.characters()?;
+    let text = characters.to_string();
+    let printable: crate::compat::String = text.chars().filter(|ch| !ch.is_control()).collect();
+    if printable.is_empty() {
+        None
+    } else {
+        Some(printable)
     }
 }
 
@@ -461,6 +724,13 @@ pub(crate) fn create_ns_window(
     let canvas =
         RustWidgetsObjc2CanvasView::new(mtm, widget_id, true, make_rect(0, 0, width, height));
     window.setContentView(Some(&canvas));
+    // The canvas doubles as the window's delegate so `windowShouldClose:` forwards the
+    // close to the widget layer. NSWindow holds its delegate as a weak (assign)
+    // reference, but the canvas is retained as the content view for the window's whole
+    // lifetime, so the pointer stays valid. `msg_send!` is used rather than the typed
+    // `setDelegate` because that one needs a `ProtocolObject<dyn NSWindowDelegate>`.
+    let delegate_ptr = Retained::as_ptr(&canvas) as *mut AnyObject;
+    let _: () = unsafe { msg_send![&*window, setDelegate: delegate_ptr] };
     window.makeKeyAndOrderFront(None);
     window
 }
@@ -594,7 +864,15 @@ pub(crate) fn invalidate_window_native(id: u64) -> bool {
         log::error!("[macos-objc2] invalidate_window: refused off the AppKit main thread");
         return false;
     }
-    let window_ptr = match NATIVE_VIEWS.lock().unwrap().get(&id).copied() {
+    // The library asks for a repaint by **widget** id, but `NATIVE_VIEWS` is keyed by
+    // the **host** id `create_window` returned (the two id spaces never coincide).
+    // Translate at the boundary; an id with no host association is tried as-is, the
+    // same fallback `windows::window_hwnd_for_widget_id` uses for its own registry.
+    #[cfg(widgets_unstripped)]
+    let host_id = crate::widget::runtime::host_window_for(id).unwrap_or(id);
+    #[cfg(not(widgets_unstripped))]
+    let host_id = id;
+    let window_ptr = match NATIVE_VIEWS.lock().unwrap().get(&host_id).copied() {
         Some(ptr) => ptr.0 as *mut NSWindow,
         None => return false,
     };
@@ -647,6 +925,37 @@ pub(crate) fn bootstrap_ns_application() -> bool {
         return false;
     };
     let app = NSApplication::sharedApplication(mtm);
+    // A GUI host must be a regular app (Dock icon + activation) so its windows can
+    // become key and receive input; without this the app is a background accessory.
+    app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
     app.finishLaunching();
+    app.activate();
     true
+}
+
+/// Pumps one AppKit event without blocking, and reports whether one was dispatched.
+///
+/// `-[NSApplication nextEventMatchingMask:untilDate:inMode:dequeue:]` with
+/// `NSDate distantPast` returns immediately when the queue is empty, so this is the
+/// non-blocking step the backend's `run` interleaves with library frames. Without it
+/// the native window never drew, received no mouse/key events, and could not close.
+pub(crate) fn pump_native_event() -> bool {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return false;
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    // SAFETY: `NSDefaultRunLoopMode` is a well-known, immutable AppKit mode constant.
+    let mode = unsafe { NSDefaultRunLoopMode };
+    let event = app.nextEventMatchingMask_untilDate_inMode_dequeue(
+        NSEventMask::Any,
+        Some(&NSDate::distantPast()),
+        mode,
+        true,
+    );
+    if let Some(event) = event {
+        app.sendEvent(&event);
+        true
+    } else {
+        false
+    }
 }

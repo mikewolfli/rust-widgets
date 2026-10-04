@@ -44,23 +44,22 @@ pub fn merge_intersecting_rects(rects: &[Rect]) -> Vec<Rect> {
         return rects.to_vec();
     }
 
-    // Work with a mutable set of unconsumed rects, draining them into
-    // merged groups. For each seed rect we scan *all* remaining rects;
-    // whenever a merge happens we restart the scan from the beginning
-    // because the newly grown rect may now intersect rects it previously
-    // did not (the "bridge rect" scenario: B connects A and C, so after
-    // A absorbs B the merged result must be re-checked against C).
-    let mut remaining: Vec<Rect> = rects.to_vec();
+    // Build the output incrementally: for each input rect, merge it against every rect
+    // *already emitted*. The previous loop only re-checked the un-consumed `remaining` tail,
+    // so a union that grew late could overlap an earlier output and break the "until no more
+    // overlaps exist" contract. Merging against the output itself — and restarting the scan
+    // after each merge, because a union can bridge to a rect checked earlier in this pass —
+    // keeps the emitted set non-overlapping.
     let mut merged = Vec::new();
-
-    while let Some(mut current) = remaining.pop() {
+    for &rect in rects {
+        let mut current = rect;
         let mut i = 0;
-        while i < remaining.len() {
-            if current.intersects(&remaining[i]) {
-                current = current.union(&remaining[i]);
-                remaining.swap_remove(i);
-                // Restart from the beginning: the newly expanded `current`
-                // may now intersect rects checked earlier in this pass.
+        while i < merged.len() {
+            if current.intersects(&merged[i]) {
+                current = current.union(&merged[i]);
+                merged.swap_remove(i);
+                // Restart from the beginning: the newly expanded `current` may now
+                // intersect a rect checked earlier in this pass.
                 i = 0;
             } else {
                 i += 1;
@@ -134,5 +133,44 @@ mod tests {
         let rects =
             vec![Rect::new(0, 0, 10, 10), Rect::new(20, 20, 10, 10), Rect::new(100, 100, 50, 50)];
         assert_eq!(bounding_rect(&rects), Some(Rect::new(0, 0, 150, 150)));
+    }
+
+    /// A union that grows late must not overlap a rect emitted earlier: the merge scans the
+    /// already-emitted output, not just the un-consumed tail.
+    #[test]
+    fn a_later_union_never_overlaps_an_earlier_output() {
+        // An L-shaped pair plus an interior rect. Naively, the pair merges first and the interior
+        // rect is then emitted beside the pair even though it sits inside the union.
+        let rects = vec![Rect::new(0, 0, 10, 2), Rect::new(0, 0, 2, 10), Rect::new(4, 4, 1, 1)];
+        let merged = merge_intersecting_rects(&rects);
+        for (i, a) in merged.iter().enumerate() {
+            for b in &merged[i + 1..] {
+                assert!(!a.intersects(b), "output rects must not overlap: {a:?} vs {b:?}");
+            }
+        }
+        assert_eq!(merged, vec![Rect::new(0, 0, 10, 10)], "the L-shape absorbs the interior rect");
+    }
+
+    /// The merge is idempotent and every input rect is covered by some output rect.
+    #[test]
+    fn merging_is_idempotent_and_covers_the_input() {
+        let rects = vec![
+            Rect::new(0, 0, 10, 10),
+            Rect::new(5, 5, 20, 20),
+            Rect::new(100, 100, 10, 10),
+            Rect::new(110, 100, 5, 5),
+        ];
+        let once = merge_intersecting_rects(&rects);
+        let twice = merge_intersecting_rects(&once);
+        assert_eq!(once.len(), twice.len(), "a second pass does not change the count");
+        for out in &twice {
+            assert!(once.contains(out), "the second pass is the same set");
+        }
+        for input in &rects {
+            assert!(
+                once.iter().any(|out| out.contains_rect(input)),
+                "every input rect is covered by an output rect: {input:?} not in {once:?}"
+            );
+        }
     }
 }

@@ -909,6 +909,12 @@ impl CodeEditor {
     /// `splice_range`) or rebuilt the text by hand (line commands); this writes
     /// the result back so both paths agree, then records one undo checkpoint.
     fn commit_edit(&mut self, before: String, after: String, head: TextPosition) {
+        // A line transform that changes nothing must not mark the document dirty
+        // or fire `text_changed`: the text is byte-for-byte what it already was,
+        // so there is no edit to commit or undo.
+        if before == after {
+            return;
+        }
         // A caller that rebuilt the text by hand has no offset to report, so the
         // range is recovered by diffing the two texts. The replaced text comes from
         // `before` directly: the range is in pre-edit coordinates, so slicing the
@@ -2022,8 +2028,18 @@ impl CodeEditor {
 
     /// Undoes the most recent edit. Returns `false` when there is nothing to do.
     pub fn undo(&mut self) -> bool {
-        if !self.is_editable() || self.undo_stack.undo().is_err() {
+        if !self.is_editable() {
             return false;
+        }
+        let before_tab = self.active_buffer();
+        if self.undo_stack.undo().is_err() {
+            return false;
+        }
+        if before_tab != self.active_buffer() {
+            // Undoing a tab switch restored a different document; the locked
+            // ranges belonged to the previous document and must not leak into
+            // this one.
+            self.read_only_spans.clear();
         }
         self.restore_history_text();
         true
@@ -2031,8 +2047,15 @@ impl CodeEditor {
 
     /// Redoes the most recently undone edit.
     pub fn redo(&mut self) -> bool {
-        if !self.is_editable() || self.undo_stack.redo().is_err() {
+        if !self.is_editable() {
             return false;
+        }
+        let before_tab = self.active_buffer();
+        if self.undo_stack.redo().is_err() {
+            return false;
+        }
+        if before_tab != self.active_buffer() {
+            self.read_only_spans.clear();
         }
         self.restore_history_text();
         true
@@ -3294,6 +3317,11 @@ impl CodeEditor {
             return false;
         }
         self.model.borrow_mut().apply_tab_switch(index);
+        // An untracked switch records no `TabSwitchCommand`, so any range or
+        // snapshot commands still on the stack belong to the previous document.
+        // Replaying them against this one would splice by the wrong offsets, so
+        // the history is invalidated on the cross-document boundary.
+        self.undo_stack.clear();
         self.after_buffer_switch(index);
         true
     }
@@ -3314,6 +3342,10 @@ impl CodeEditor {
         // minimap bucket belongs to the buffer being left.
         self.invalidate_line_states();
         self.minimap_line_count = 0;
+        // Locked ranges are document coordinates too, so they are dropped rather
+        // than inherited by the buffer being entered. A host that re-locks the
+        // new buffer re-adds them after the switch.
+        self.read_only_spans.clear();
         self.refresh_derived_state();
         self.text_changed.emit(self.text());
         self.tab_changed.emit(index);
@@ -3332,16 +3364,32 @@ impl CodeEditor {
             self.set_text(String::new());
             return true;
         }
+        // Closing a tab mutates slot indices and removes a document, so any
+        // pending history — which may reference a removed slot or the removed
+        // document's text mirror — is invalidated rather than left to mis-target
+        // a surviving buffer.
+        self.undo_stack.clear();
+
+        // Persist the active buffer's text to its own slot *before* the index
+        // shifts, unless the active buffer itself is the one being closed — its
+        // text must not be written into a surviving slot.
+        let closed_is_active = self.model.borrow().active_tab == index;
+        if !closed_is_active {
+            self.model.borrow_mut().persist_active();
+        }
+
         let next_active = {
             let mut model = self.model.borrow_mut();
             model.all_buffers.remove(index);
-            if model.active_tab > index || model.active_tab >= model.all_buffers.len() {
-                model.active_tab = model.active_tab.saturating_sub(1);
+            if model.active_tab > index {
+                model.active_tab -= 1;
+            } else if model.active_tab >= model.all_buffers.len() {
+                model.active_tab = model.all_buffers.len().saturating_sub(1);
             }
             model.active_tab
         };
-        self.model.borrow_mut().apply_tab_switch(next_active);
-        self.model.borrow_mut().active_tab = next_active;
+
+        self.model.borrow_mut().load_buffer(next_active);
         self.after_buffer_switch(next_active);
         true
     }

@@ -38,6 +38,7 @@
 //! silently interpolated value that looks like real analysis. `INFINITY` is treated the
 //! same way, because an infinite price is a data error, not a level.
 
+use alloc::collections::VecDeque;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -60,24 +61,42 @@ pub fn sma(values: &[f64], period: usize) -> Vec<f64> {
         return out;
     }
     let mut sum = 0.0;
+    // A running sum can overflow even when every input is finite. Once it has,
+    // subtracting the leaving value can no longer undo the overflow precisely — a
+    // huge term may have absorbed the smaller terms that should survive its
+    // departure — so `direct_until` forces a fresh window re-sum until the
+    // overflowing value has left the window entirely.
+    let mut direct_until: Option<usize> = None;
+
     for (index, value) in values.iter().enumerate() {
         if !value.is_finite() {
-            // A non-finite sample poisons every window containing it.
+            // A non-finite sample poisons every window containing it; the `sum`
+            // stays NaN until the sample leaves, which forces a re-derive below.
             sum = f64::NAN;
             continue;
         }
-        if sum.is_nan() {
-            // Re-derive once the bad sample has left the window.
+        let recompute = direct_until.is_some_and(|limit| index < limit) || !sum.is_finite();
+        if recompute {
+            // Re-derive from the window directly instead of trusting the rolling
+            // total, which is already out of step.
             let window_start = index.saturating_sub(period - 1);
             let window = &values[window_start..=index];
             if !window.iter().all(|v| v.is_finite()) {
                 continue;
             }
             sum = window.iter().sum();
+            if !sum.is_finite() {
+                // The window itself overflows; keep re-summing directly until the
+                // huge values have left it.
+                direct_until = Some(index + period + 1);
+            }
         } else {
             sum += value;
             if index >= period {
                 sum -= values[index - period];
+            }
+            if !sum.is_finite() {
+                direct_until = Some(index + period + 1);
             }
         }
         if index + 1 >= period {
@@ -423,6 +442,18 @@ pub fn atr(highs: &[f64], lows: &[f64], closes: &[f64], period: usize) -> Vec<f6
 /// `trailing_extremes_match_a_naive_scan` asserts the two agree, so the optimisation
 /// cannot quietly change an answer.
 pub fn trailing_extremes(highs: &[f64], lows: &[f64], period: usize) -> (Vec<f64>, Vec<f64>) {
+    let mut checks = 0usize;
+    trailing_extremes_impl(highs, lows, period, &mut checks)
+}
+
+/// Backing implementation of [`trailing_extremes`]; the `finite_checks` counter
+/// lets a test assert the finite-check count is linear rather than per-window.
+fn trailing_extremes_impl(
+    highs: &[f64],
+    lows: &[f64],
+    period: usize,
+    finite_checks: &mut usize,
+) -> (Vec<f64>, Vec<f64>) {
     let length = highs.len().min(lows.len());
     let mut out_high = vec![f64::NAN; length];
     let mut out_low = vec![f64::NAN; length];
@@ -430,47 +461,72 @@ pub fn trailing_extremes(highs: &[f64], lows: &[f64], period: usize) -> (Vec<f64
         return (out_high, out_low);
     }
 
-    // Indices with values strictly decreasing front-to-back: front is the maximum.
-    let mut max_deque: Vec<usize> = Vec::with_capacity(period);
-    // Indices with values strictly increasing front-to-back: front is the minimum.
-    let mut min_deque: Vec<usize> = Vec::with_capacity(period);
+    // Monotonic deques of window indices. `VecDeque` pops at both ends in O(1),
+    // unlike a `Vec` whose `remove(0)` shifts the whole buffer — the old form
+    // was O(n * period) on monotonic input.
+    let mut max_deque: VecDeque<usize> = VecDeque::with_capacity(period);
+    let mut min_deque: VecDeque<usize> = VecDeque::with_capacity(period);
+    // Count of non-finite highs/lows currently inside the window. A window is
+    // reported only when this is zero, checked in O(1) instead of re-scanning
+    // the window on every step.
+    let mut non_finite = 0usize;
 
     for index in 0..length {
-        while max_deque.first().is_some_and(|front| *front + period <= index) {
-            max_deque.remove(0);
+        // Expire indices that have left the window.
+        while max_deque.front().is_some_and(|&front| front + period <= index) {
+            max_deque.pop_front();
         }
-        while min_deque.first().is_some_and(|front| *front + period <= index) {
-            min_deque.remove(0);
+        while min_deque.front().is_some_and(|&front| front + period <= index) {
+            min_deque.pop_front();
         }
-        if highs[index].is_finite() {
-            while max_deque.last().is_some_and(|back| highs[*back] <= highs[index]) {
-                max_deque.pop();
+
+        *finite_checks += 2;
+        let high_finite = highs[index].is_finite();
+        let low_finite = lows[index].is_finite();
+        if !high_finite {
+            non_finite += 1;
+        }
+        if !low_finite {
+            non_finite += 1;
+        }
+        // A sample that just fell out of the window stops counting as a gap.
+        if index >= period {
+            let leaving = index - period;
+            *finite_checks += 2;
+            if !highs[leaving].is_finite() {
+                non_finite -= 1;
             }
-            max_deque.push(index);
-        }
-        if lows[index].is_finite() {
-            while min_deque.last().is_some_and(|back| lows[*back] >= lows[index]) {
-                min_deque.pop();
+            if !lows[leaving].is_finite() {
+                non_finite -= 1;
             }
-            min_deque.push(index);
+        }
+
+        if high_finite {
+            while max_deque.back().is_some_and(|&back| highs[back] <= highs[index]) {
+                max_deque.pop_back();
+            }
+            max_deque.push_back(index);
+        }
+        if low_finite {
+            while min_deque.back().is_some_and(|&back| lows[back] >= lows[index]) {
+                min_deque.pop_back();
+            }
+            min_deque.push_back(index);
         }
 
         if index + 1 < period {
             continue;
         }
-        let window_start = index + 1 - period;
-        let clean = highs[window_start..=index].iter().all(|v| v.is_finite())
-            && lows[window_start..=index].iter().all(|v| v.is_finite());
-        if !clean {
+        if non_finite != 0 {
             continue;
         }
-        // Every finite value was pushed and only window indices survive, so a clean
-        // window guarantees a front exists.
-        if let Some(front) = max_deque.first() {
-            out_high[index] = highs[*front];
+        // Every finite value was pushed and only window indices survive, so a
+        // clean window guarantees a front exists.
+        if let Some(&front) = max_deque.front() {
+            out_high[index] = highs[front];
         }
-        if let Some(front) = min_deque.first() {
-            out_low[index] = lows[*front];
+        if let Some(&front) = min_deque.front() {
+            out_low[index] = lows[front];
         }
     }
     (out_high, out_low)
@@ -791,6 +847,22 @@ mod tests {
         let result = sma(&[1.0, f64::INFINITY, 3.0], 2);
         assert!(result[1].is_nan(), "the window containing infinity is undefined");
         assert!(result[2].is_nan(), "and the next window still contains it");
+    }
+
+    /// Finite inputs can overflow the running sum without any non-finite input;
+    /// the average must recover once the huge values have left the window.
+    #[test]
+    fn sma_recovers_after_a_finite_overflow() {
+        let values = [f64::MAX, f64::MAX, 1.0, 1.0, 1.0];
+        let result = sma(&values, 2);
+        assert!(
+            result[1].is_infinite(),
+            "the overflowing window itself may saturate to infinity, got {}",
+            result[1]
+        );
+        assert!(result[2].is_finite(), "the window [MAX, 1] is huge but finite");
+        assert!(close(result[3], 1.0), "the window [1, 1] must recover, got {}", result[3]);
+        assert!(close(result[4], 1.0), "and stay recovered, got {}", result[4]);
     }
 
     /// An EMA is defined from its first sample and holds a flat series exactly.
@@ -1129,6 +1201,35 @@ mod tests {
         let (upper, lower) = trailing_extremes(&[1.0, 2.0], &[1.0, 2.0], 5);
         assert!(upper.iter().all(|value| value.is_nan()));
         assert!(lower.iter().all(|value| value.is_nan()));
+    }
+
+    /// The finite-check count must scale with `n`, not `n * period`.
+    ///
+    /// The old implementation re-scanned `highs[window].all(is_finite)` and
+    /// `lows[window].all(is_finite)` for every window, adding
+    /// `2 * period * (n - period + 1)` checks. The deque now carries an O(1)
+    /// running count of non-finite samples, so the total is `4 * n - 2 * period`.
+    #[test]
+    fn trailing_extremes_checks_finiteness_in_linear_time() {
+        let n = 10_000usize;
+        let period = 200usize;
+        let highs: Vec<f64> = (0..n).map(|index| index as f64).collect();
+        let lows: Vec<f64> = highs.iter().map(|high| high - 1.0).collect();
+
+        let mut checks = 0usize;
+        let (upper, lower) = trailing_extremes_impl(&highs, &lows, period, &mut checks);
+        // Sanity: the result is still correct on monotonic input. The trailing
+        // high is the newest (largest) sample, and the trailing low is the
+        // oldest sample still inside the window.
+        assert!(close(upper[n - 1], (n - 1) as f64));
+        assert!(close(lower[n - 1], (n - period - 1) as f64));
+
+        // O(n) bound, independent of `period`.
+        let linear_bound = 4 * n;
+        assert!(
+            checks <= linear_bound,
+            "finiteness checks must scale with n, not n*period: {checks} > {linear_bound}"
+        );
     }
 
     /// The Donchian middle line is the channel centre.

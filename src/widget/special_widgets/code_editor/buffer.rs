@@ -109,12 +109,29 @@ impl EditorModel {
         if tab >= self.all_buffers.len() {
             return;
         }
+        self.persist_active();
+        self.load_buffer(tab);
+    }
+
+    /// Persists the active buffer's current text and dirty flag into its slot.
+    ///
+    /// Used by [`Self::apply_tab_switch`] and by the editor's close path when
+    /// the buffer being closed is not the active one.
+    pub(crate) fn persist_active(&mut self) {
         let outgoing = self.text.borrow().clone();
         let outgoing_dirty = self.dirty;
         if let Some(active) = self.all_buffers.get_mut(self.active_tab) {
             active.modified = outgoing_dirty;
             active.text = outgoing;
         }
+    }
+
+    /// Loads buffer `tab` into the active state without persisting the outgoing
+    /// one.
+    ///
+    /// Used by [`Self::apply_tab_switch`] and by the editor's close path, where
+    /// the outgoing buffer has already been removed and must not be written back.
+    pub(crate) fn load_buffer(&mut self, tab: usize) {
         let incoming = self.all_buffers[tab].text.clone();
         self.active_tab = tab;
         self.set_text(incoming);

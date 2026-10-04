@@ -571,7 +571,12 @@ impl ViewEngine {
         self.run_unmount_hooks_for_ids(previous, &[], &removed);
     }
 
-    /// Walks `node`'s subtree, running `on_unmount` for each node whose control id is in `removed`.
+    /// Walks `node`'s subtree, running `on_unmount` for each node of a removed/replaced subtree.
+    ///
+    /// When a node's control id is in `removed`, that node is the root of a torn-down subtree, so
+    /// the whole subtree teardown runs (parent-first, exactly as [`Self::run_unmount_hooks`]).
+    /// `removed` only names the roots the diff emitted; their descendants are found by walking
+    /// `node`'s children here, which is what used to leave them mounted forever.
     fn run_unmount_hooks_for_ids(
         &self,
         node: &Node,
@@ -582,9 +587,11 @@ impl ViewEngine {
         // describes `previous` because it is only rewritten by `reindex_paths` — called below this.
         if let Some(id) = self.id_at(path) {
             if removed.contains_key(&id) {
-                if let Some(hook) = &node.on_unmount {
-                    hook(id);
-                }
+                // The root of a removed/replaced subtree: tear down the whole subtree, parent
+                // first, so every mounted descendant gets exactly one `on_unmount`. Returning here
+                // rather than continuing the removed-set walk keeps each hook firing once.
+                self.run_unmount_hooks(node, id, path);
+                return;
             }
         }
         for (index, child) in node.children.iter().enumerate() {
@@ -1510,6 +1517,138 @@ mod tests {
         engine.update(&view, &ids.creator());
         assert_eq!(*unmounts.borrow(), 1, "the removed subtree must fire its unmount hook");
         assert_eq!(*mounts.borrow(), 1, "and nothing remounted");
+    }
+
+    /// A view whose `shown` subtree is a panel wrapping a label, so removal tears down two levels.
+    struct NestedPanel {
+        shown: Rc<RefCell<bool>>,
+        panel_unmounts: Rc<RefCell<u32>>,
+        label_unmounts: Rc<RefCell<u32>>,
+        bad_unmounts: Rc<RefCell<u32>>,
+    }
+
+    impl View for NestedPanel {
+        fn build(&self) -> Node {
+            let root = Node::new("window").key("root");
+            if !*self.shown.borrow() {
+                return root;
+            }
+            let label_unmounts = Rc::clone(&self.label_unmounts);
+            let label = Node::new("label")
+                .key("label")
+                .on_unmount(move |_id| *label_unmounts.borrow_mut() += 1);
+            let bad_unmounts = Rc::clone(&self.bad_unmounts);
+            let bad = Node::new("no_such_widget")
+                .key("bad")
+                .on_unmount(move |_id| *bad_unmounts.borrow_mut() += 1);
+            let panel_unmounts = Rc::clone(&self.panel_unmounts);
+            let panel = Node::new("panel")
+                .key("panel")
+                .child(label)
+                .child(bad)
+                .on_unmount(move |_id| *panel_unmounts.borrow_mut() += 1);
+            root.child(panel)
+        }
+    }
+
+    /// A `Remove` of a multi-level subtree tears down every mounted descendant exactly once.
+    ///
+    /// # The defect this pins
+    ///
+    /// `run_unmount_hooks_for_removals` recorded only the root id of each `Remove`/`Replace` in
+    /// its `removed` set, and the walk fired `on_unmount` only for nodes whose id was in that set.
+    /// Descendants of a removed panel were never in the set, so their `on_unmount` never ran — a
+    /// subscription or timer opened by a nested node leaked on every rebuild. The fix tears down
+    /// the whole subtree once its root is matched.
+    #[test]
+    fn a_removed_subtree_tears_down_every_mounted_descendant() {
+        let shown = Rc::new(RefCell::new(true));
+        let panel_unmounts = Rc::new(RefCell::new(0));
+        let label_unmounts = Rc::new(RefCell::new(0));
+        let bad_unmounts = Rc::new(RefCell::new(0));
+        let view = NestedPanel {
+            shown: Rc::clone(&shown),
+            panel_unmounts: Rc::clone(&panel_unmounts),
+            label_unmounts: Rc::clone(&label_unmounts),
+            bad_unmounts: Rc::clone(&bad_unmounts),
+        };
+        let mut engine = ViewEngine::new();
+        let next = Cell::new(10u64);
+        let create = move |node: &Node| -> Option<ObjectId> {
+            // `no_such_widget` cannot be mounted; it must not fire an unmount hook.
+            if node.widget == "no_such_widget" {
+                return None;
+            }
+            let id = next.get();
+            next.set(id + 1);
+            Some(id)
+        };
+
+        engine.mount(&view, &create);
+        assert_eq!(*panel_unmounts.borrow(), 0);
+        assert_eq!(*label_unmounts.borrow(), 0);
+        assert_eq!(*bad_unmounts.borrow(), 0);
+
+        // Turn it off. The diff emits a single `Remove` for the panel; both the panel and its
+        // mounted label descendant must be torn down, while the unmounted bad node must not be.
+        *shown.borrow_mut() = false;
+        engine.update(&view, &create);
+        assert_eq!(*panel_unmounts.borrow(), 1, "the panel must unmount once");
+        assert_eq!(*label_unmounts.borrow(), 1, "the label descendant must unmount once");
+        assert_eq!(*bad_unmounts.borrow(), 0, "an unmounted node must not fire on_unmount");
+    }
+
+    /// A view whose panel subtree changes widget type in place, forcing a `Replace`.
+    struct ReplacedPanel {
+        as_button: Rc<RefCell<bool>>,
+        panel_unmounts: Rc<RefCell<u32>>,
+        label_unmounts: Rc<RefCell<u32>>,
+    }
+
+    impl View for ReplacedPanel {
+        fn build(&self) -> Node {
+            let root = Node::new("window").key("root");
+            if *self.as_button.borrow() {
+                return root.child(Node::new("button").key("slot"));
+            }
+            let label_unmounts = Rc::clone(&self.label_unmounts);
+            let label = Node::new("label")
+                .key("label")
+                .on_unmount(move |_id| *label_unmounts.borrow_mut() += 1);
+            let panel_unmounts = Rc::clone(&self.panel_unmounts);
+            let panel = Node::new("panel")
+                .key("slot")
+                .child(label)
+                .on_unmount(move |_id| *panel_unmounts.borrow_mut() += 1);
+            root.child(panel)
+        }
+    }
+
+    /// A `Replace` tears down the whole old subtree, not just the replaced root.
+    #[test]
+    fn a_replaced_subtree_tears_down_every_mounted_descendant() {
+        let as_button = Rc::new(RefCell::new(false));
+        let panel_unmounts = Rc::new(RefCell::new(0));
+        let label_unmounts = Rc::new(RefCell::new(0));
+        let view = ReplacedPanel {
+            as_button: Rc::clone(&as_button),
+            panel_unmounts: Rc::clone(&panel_unmounts),
+            label_unmounts: Rc::clone(&label_unmounts),
+        };
+        let mut engine = ViewEngine::new();
+        let ids = Ids::new(10);
+
+        engine.mount(&view, &ids.creator());
+        assert_eq!(*panel_unmounts.borrow(), 0);
+        assert_eq!(*label_unmounts.borrow(), 0);
+
+        // Changing the panel into a button at the same key is a `Replace`, which must unmount
+        // the panel and its label descendant.
+        *as_button.borrow_mut() = true;
+        let report = engine.update(&view, &ids.creator());
+        assert_eq!(report.replaced_subtrees, 1, "the type change must be a Replace: {report:?}");
+        assert_eq!(*panel_unmounts.borrow(), 1, "the replaced panel must unmount once");
+        assert_eq!(*label_unmounts.borrow(), 1, "the label descendant must unmount once");
     }
 
     // ── Context propagation (BLUE23 §5A.4) ──────────────────────────────

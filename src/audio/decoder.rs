@@ -15,29 +15,9 @@ use crate::audio::samples::AudioBuffer;
 
 /// Detect audio format from magic bytes.
 pub fn detect_audio_format(data: &[u8]) -> AudioFormat {
-    if data.len() < 4 {
-        return AudioFormat::Unknown;
-    }
     // WAV: RIFF....WAVE
     if data.len() >= 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"WAVE" {
         return AudioFormat::Wav;
-    }
-    // AAC: ADTS header (0xFFF) — check before raw MP3 sync to avoid false match
-    if data.len() >= 2 && data[0] == 0xFF && (data[1] & 0xF0) == 0xF0 {
-        // Differentiate AAC ADTS from MP3: AAC has full 12-bit syncword 0xFFF
-        // and the MPEG version bit (bit 3 of byte 1) helps distinguish
-        if (data[1] & 0x08) == 0x08 {
-            // MPEG-2 or MPEG-4 AAC (ADTS version)
-            return AudioFormat::Aac;
-        }
-    }
-    // MP3: ID3 tag or sync bits
-    if data.len() >= 3 && &data[0..3] == b"ID3" {
-        return AudioFormat::Mp3;
-    }
-    // MP3: MPEG sync word — must NOT be AAC ADTS (0xFFF0-0xFFFF)
-    if data[0] == 0xFF && (data[1] & 0xE0) == 0xE0 && (data[1] & 0xF0) != 0xF0 {
-        return AudioFormat::Mp3;
     }
     // FLAC: fLaC
     if data.len() >= 4 && &data[0..4] == b"fLaC" {
@@ -47,9 +27,26 @@ pub fn detect_audio_format(data: &[u8]) -> AudioFormat {
     if data.len() >= 4 && &data[0..4] == b"OggS" {
         return AudioFormat::Ogg;
     }
-    // AAC: ADTS header (0xFFF)
-    if data.len() >= 2 && data[0] == 0xFF && (data[1] & 0xF0) == 0xF0 {
-        return AudioFormat::Aac;
+    // MP3: ID3 tag
+    if data.len() >= 3 && &data[0..3] == b"ID3" {
+        return AudioFormat::Mp3;
+    }
+    // MPEG audio (MP3) and AAC (ADTS) both start with 0xFF. They are told apart
+    // by the second byte, never by the sync word alone:
+    //   * ADTS has a 12-bit sync (0xFFF) and zero layer bits;
+    //   * MPEG audio has an 11-bit sync (0xFFE), a non-zero layer, and a
+    //     defined (non-reserved) MPEG version.
+    if data.len() >= 2 && data[0] == 0xFF {
+        // AAC ADTS: top 4 bits are 1111 and layer bits (bits 2-1) are 00.
+        if (data[1] & 0xF6) == 0xF0 {
+            return AudioFormat::Aac;
+        }
+        // MP3: top 3 bits are 111, layer bits are non-zero (Layer I/II/III),
+        // and the MPEG version is not the reserved value (01). This keeps the
+        // whole 0xF high nibble (MPEG-1) reachable instead of excluding it.
+        if (data[1] & 0xE0) == 0xE0 && (data[1] & 0x06) != 0x00 && (data[1] & 0x18) != 0x08 {
+            return AudioFormat::Mp3;
+        }
     }
     AudioFormat::Unknown
 }
@@ -97,6 +94,7 @@ fn decode_wav(data: &[u8]) -> Result<AudioBuffer, String> {
     let mut sample_rate = 0u32;
     let mut channels = 0u8;
     let mut bits_per_sample = 0u16;
+    let mut format_tag = 0u16;
     let mut data_chunk: Option<&[u8]> = None;
 
     while pos + 8 <= data.len() {
@@ -116,11 +114,23 @@ fn decode_wav(data: &[u8]) -> Result<AudioBuffer, String> {
         let chunk_data = &data[chunk_start..chunk_end];
 
         if chunk_id == b"fmt " && chunk_data.len() >= 16 {
-            let _audio_format = u16::from_le_bytes([chunk_data[0], chunk_data[1]]);
+            format_tag = u16::from_le_bytes([chunk_data[0], chunk_data[1]]);
             channels = u16::from_le_bytes([chunk_data[2], chunk_data[3]]) as u8;
             sample_rate =
                 u32::from_le_bytes([chunk_data[4], chunk_data[5], chunk_data[6], chunk_data[7]]);
             bits_per_sample = u16::from_le_bytes([chunk_data[14], chunk_data[15]]);
+            // WAVE_FORMAT_EXTENSIBLE (0xFFFE) stores the real format tag in the
+            // first two bytes of the SubFormat GUID, at offset 24 of a 40-byte
+            // fmt chunk. Resolve it here so the code below can key off the
+            // effective tag instead of guessing from bits_per_sample.
+            if format_tag == 0xFFFE {
+                if chunk_data.len() < 40 {
+                    return Err("WAV fmt chunk uses WAVE_FORMAT_EXTENSIBLE but is too short \
+                         (needs 40 bytes to carry the SubFormat GUID)"
+                        .into());
+                }
+                format_tag = u16::from_le_bytes([chunk_data[24], chunk_data[25]]);
+            }
         } else if chunk_id == b"data" {
             data_chunk = Some(chunk_data);
         }
@@ -136,13 +146,7 @@ fn decode_wav(data: &[u8]) -> Result<AudioBuffer, String> {
         return Err("WAV fmt chunk is missing or invalid".into());
     }
     let raw_samples = data_chunk.ok_or("No data chunk in WAV")?;
-    let fmt = match bits_per_sample {
-        8 => SampleFormat::U8,
-        16 => SampleFormat::I16,
-        24 => SampleFormat::I24,
-        32 => SampleFormat::I32,
-        _ => return Err(format!("Unsupported bits per sample: {bits_per_sample}")),
-    };
+    let fmt = sample_format_for_tag(format_tag, bits_per_sample)?;
     if raw_samples.len() % fmt.bytes_per_sample() != 0 {
         return Err(format!(
             "WAV data chunk is {} bytes, which is not a whole number of {bits_per_sample}-bit \
@@ -155,6 +159,36 @@ fn decode_wav(data: &[u8]) -> Result<AudioBuffer, String> {
     let mut buf = AudioBuffer::new(sample_rate.max(1), samples, channels.max(1));
     buf.original_format = fmt;
     Ok(buf)
+}
+
+/// Map a WAV `wFormatTag` (plus `wBitsPerSample`) to a [`SampleFormat`].
+///
+/// Integer PCM (tag 1) is distinguished from IEEE float (tag 3); unsupported or
+/// compressed tags are rejected with an explicit error instead of being decoded
+/// as if they were integer PCM.
+fn sample_format_for_tag(format_tag: u16, bits_per_sample: u16) -> Result<SampleFormat, String> {
+    match format_tag {
+        // WAVE_FORMAT_PCM
+        0x0001 => match bits_per_sample {
+            8 => Ok(SampleFormat::U8),
+            16 => Ok(SampleFormat::I16),
+            24 => Ok(SampleFormat::I24),
+            32 => Ok(SampleFormat::I32),
+            _ => Err(format!("unsupported PCM bits per sample: {bits_per_sample}")),
+        },
+        // WAVE_FORMAT_IEEE_FLOAT
+        0x0003 => {
+            if bits_per_sample == 32 {
+                Ok(SampleFormat::F32)
+            } else {
+                Err(format!(
+                    "unsupported IEEE float bits per sample: {bits_per_sample} \
+                     (only 32-bit float is supported)"
+                ))
+            }
+        }
+        other => Err(format!("unsupported WAV format tag: {other:#06x}")),
+    }
 }
 
 /// Decode MP3 audio using minimp3_fixed (security-patched fork of minimp3).
@@ -501,6 +535,51 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_mp3_mpeg1_layer3_without_id3() {
+        // A common MPEG-1 Layer III header `FF FB 90 64` must not be misread as
+        // ADTS AAC, even though its second-byte high nibble is 0xF.
+        assert_eq!(detect_audio_format(&[0xFF, 0xFB, 0x90, 0x64]), AudioFormat::Mp3);
+    }
+
+    #[test]
+    fn test_detect_mp3_mpeg1_all_layers() {
+        // MPEG-1 (version 11) Layer III (01), Layer II (10), and Layer I (11).
+        assert_eq!(detect_audio_format(&[0xFF, 0xFB, 0x00, 0x00]), AudioFormat::Mp3);
+        assert_eq!(detect_audio_format(&[0xFF, 0xFD, 0x00, 0x00]), AudioFormat::Mp3);
+        assert_eq!(detect_audio_format(&[0xFF, 0xFF, 0x00, 0x00]), AudioFormat::Mp3);
+    }
+
+    #[test]
+    fn test_detect_mp3_mpeg2_and_mpeg25() {
+        // MPEG-2 Layer III (version 10) and MPEG-2.5 Layer III (version 00).
+        assert_eq!(detect_audio_format(&[0xFF, 0xF3, 0x00, 0x00]), AudioFormat::Mp3);
+        assert_eq!(detect_audio_format(&[0xFF, 0xE3, 0x00, 0x00]), AudioFormat::Mp3);
+    }
+
+    #[test]
+    fn test_detect_aac_adts() {
+        // ADTS: 12-bit sync 0xFFF with zero layer bits.
+        assert_eq!(
+            detect_audio_format(&[0xFF, 0xF1, 0x50, 0x80, 0x00, 0xFF, 0xFC]),
+            AudioFormat::Aac
+        );
+        // MPEG-4 (version 0) and MPEG-2 (version 1) ADTS variants.
+        assert_eq!(detect_audio_format(&[0xFF, 0xF0, 0x00, 0x00]), AudioFormat::Aac);
+        assert_eq!(detect_audio_format(&[0xFF, 0xF8, 0x00, 0x00]), AudioFormat::Aac);
+    }
+
+    #[test]
+    fn test_detect_short_or_reserved_headers_are_not_guessed() {
+        // Sync alone is never enough.
+        assert_eq!(detect_audio_format(&[0xFF]), AudioFormat::Unknown);
+        assert_eq!(detect_audio_format(&[]), AudioFormat::Unknown);
+        // Reserved MPEG layer (00) must not be guessed as MP3.
+        assert_eq!(detect_audio_format(&[0xFF, 0xE1, 0x00, 0x00]), AudioFormat::Unknown);
+        // Reserved MPEG version (01) must not be guessed as MP3.
+        assert_eq!(detect_audio_format(&[0xFF, 0xEF, 0x00, 0x00]), AudioFormat::Unknown);
+    }
+
+    #[test]
     fn test_decode_wav_valid() {
         // Build minimal valid WAV
         let data_size = 100;
@@ -550,6 +629,98 @@ mod tests {
     #[test]
     fn test_decode_wav_invalid() {
         assert!(decode_wav(b"not a wav").is_err());
+    }
+
+    /// Build a minimal WAV file with the given format tag, channels, sample
+    /// rate and bit depth. For WAVE_FORMAT_EXTENSIBLE (0xFFFE) the SubFormat
+    /// GUID is written with PCM (0x0001) as the embedded sub-format tag.
+    fn build_wav(
+        format_tag: u16,
+        channels: u16,
+        sample_rate: u32,
+        bits_per_sample: u16,
+        data: &[u8],
+    ) -> Vec<u8> {
+        let bytes_per_sample = bits_per_sample / 8;
+        let block_align = channels * bytes_per_sample;
+        let byte_rate = sample_rate * block_align as u32;
+        let fmt_chunk_len: u32 = if format_tag == 0xFFFE { 40 } else { 16 };
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        let riff_size = 4 + (8 + fmt_chunk_len) + (8 + data.len() as u32);
+        wav.extend_from_slice(&riff_size.to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(b"fmt ");
+        wav.extend_from_slice(&fmt_chunk_len.to_le_bytes());
+        wav.extend_from_slice(&format_tag.to_le_bytes());
+        wav.extend_from_slice(&channels.to_le_bytes());
+        wav.extend_from_slice(&sample_rate.to_le_bytes());
+        wav.extend_from_slice(&byte_rate.to_le_bytes());
+        wav.extend_from_slice(&block_align.to_le_bytes());
+        wav.extend_from_slice(&bits_per_sample.to_le_bytes());
+        if format_tag == 0xFFFE {
+            wav.extend_from_slice(&22u16.to_le_bytes()); // cbSize
+            wav.extend_from_slice(&bits_per_sample.to_le_bytes()); // wValidBitsPerSample
+            wav.extend_from_slice(&0u32.to_le_bytes()); // dwChannelMask
+                                                        // KSDATAFORMAT_SUBTYPE_PCM GUID: first two bytes = 0x0001 (PCM).
+            wav.extend_from_slice(&[
+                0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38,
+                0x9b, 0x71,
+            ]);
+        }
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        wav.extend_from_slice(data);
+        wav
+    }
+
+    #[test]
+    fn test_decode_wav_ieee_float() {
+        // format tag 3, 32-bit IEEE float. A 1.0 sample must decode to ~1.0,
+        // not to the ~0.496 value produced by reading the float bits as i32.
+        let mut data = Vec::new();
+        for s in [1.0f32, -1.0f32, 0.5f32, 0.0f32] {
+            data.extend_from_slice(&s.to_le_bytes());
+        }
+        let wav = build_wav(0x0003, 1, 44100, 32, &data);
+        let buf = decode_wav(&wav).unwrap();
+        assert_eq!(buf.sample_rate, 44100);
+        assert_eq!(buf.channels(), 1);
+        assert_eq!(buf.original_format, SampleFormat::F32);
+        assert!((buf.samples[0] - 1.0).abs() < 1e-6, "got {}", buf.samples[0]);
+        assert!((buf.samples[1] + 1.0).abs() < 1e-6, "got {}", buf.samples[1]);
+        assert!((buf.samples[2] - 0.5).abs() < 1e-6, "got {}", buf.samples[2]);
+        assert_eq!(buf.samples[3], 0.0);
+    }
+
+    #[test]
+    fn test_decode_wav_rejects_unsupported_format_tag() {
+        // A-law (0x0006) is compressed and must not be decoded as integer PCM.
+        let wav = build_wav(0x0006, 1, 44100, 8, &[0x80]);
+        let err = decode_wav(&wav).unwrap_err();
+        assert!(err.contains("format tag"), "got: {err}");
+    }
+
+    #[test]
+    fn test_decode_wav_rejects_unsupported_float_bit_depth() {
+        let wav = build_wav(0x0003, 1, 44100, 64, &[0u8; 8]);
+        let err = decode_wav(&wav).unwrap_err();
+        assert!(err.contains("IEEE float"), "got: {err}");
+    }
+
+    #[test]
+    fn test_decode_wav_extensible_pcm() {
+        // 16-bit PCM wrapped in WAVE_FORMAT_EXTENSIBLE must decode as I16.
+        let mut data = Vec::new();
+        for s in [0i16, 32767, -32768] {
+            data.extend_from_slice(&s.to_le_bytes());
+        }
+        let wav = build_wav(0xFFFE, 1, 44100, 16, &data);
+        let buf = decode_wav(&wav).unwrap();
+        assert_eq!(buf.original_format, SampleFormat::I16);
+        assert!((buf.samples[0] - 0.0).abs() < 0.01, "got {}", buf.samples[0]);
+        assert!((buf.samples[1] - 32767.0 / 32768.0).abs() < 0.01, "got {}", buf.samples[1]);
+        assert!((buf.samples[2] + 1.0).abs() < 0.01, "got {}", buf.samples[2]);
     }
 
     #[test]

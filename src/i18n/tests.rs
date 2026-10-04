@@ -489,7 +489,8 @@ fn i18n_global_init() {
     };
     let report = global::init_with_options(options);
     assert_eq!(report.files_loaded, 1);
-    assert_eq!(report.translations_count, 1);
+    // The embedded English fallback plus the one file-provided `de` catalogue.
+    assert_eq!(report.translations_count, 2);
     assert!(report.errors.is_empty());
 
     assert_eq!(global::translate("hallo"), "Guten Tag");
@@ -649,11 +650,10 @@ fn test_i18n_manager_unicode() {
 /// advance the file's mtime between writes.
 ///
 /// Coarse-grained timestamps (1 s on some Linux/network mounts) make two writes
-/// share an mtime, so a `modified > last_modified` comparison silently misses the
-/// edit and hot reload never fires. The fingerprint pairs mtime with length and a
-/// content hash, so this test pins that behaviour down deterministically by
-/// rewriting with equal-length, different-content payloads and then
-/// *back-dating* the mtime to the value recorded at load time.
+/// share an mtime. The fingerprint pairs length with a content hash, so this
+/// test pins that behaviour down deterministically by rewriting with
+/// equal-length, different-content payloads and then *back-dating* the mtime to
+/// the value recorded at load time.
 #[test]
 fn test_i18n_reload_detects_change_with_identical_mtime() {
     let temp_dir = TempDir::new().unwrap();
@@ -906,4 +906,120 @@ fn reload_translation_quiet_does_not_announce() {
 #[test]
 fn pump_hot_reload_is_a_noop_when_disabled() {
     assert_eq!(super::watcher::pump_hot_reload(), 0);
+}
+
+// ── S-31: `init_with_options` must provide the embedded English fallback and
+// truthful error reporting ──
+
+/// Default options (no preload directory) must still load the embedded English
+/// catalogue, so the English fallback works from this entry point too.
+#[test]
+fn init_with_options_loads_embedded_english_fallback() {
+    let _lock = crate::i18n::global::global_i18n_test_lock();
+    let report = global::init_with_options(InitOptions::default());
+    assert!(report.translations_count >= 1, "embedded English must be loaded, got {report:?}");
+    assert!(report.errors.is_empty(), "no errors expected, got {:?}", report.errors);
+    assert_eq!(global::translate("common.button.ok"), "OK");
+    global::init();
+}
+
+/// A directory with one good and one malformed file must report the bad file,
+/// and a missing directory must be reported rather than silently ignored.
+#[test]
+fn init_with_options_reports_missing_dir_and_bad_file() {
+    let _lock = crate::i18n::global::global_i18n_test_lock();
+    let temp_dir = TempDir::new().unwrap();
+    fs::write(
+        temp_dir.path().join("en.json"),
+        r#"{"language":"en","translations":{"k":{"message":"v"}}}"#,
+    )
+    .unwrap();
+    fs::write(temp_dir.path().join("fr.json"), "not-json").unwrap();
+
+    let report = global::init_with_options(InitOptions {
+        language: "en".to_string(),
+        preload_dir: Some(temp_dir.path().to_str().unwrap().to_string()),
+        diagnostics: false,
+    });
+    assert_eq!(report.files_loaded, 1, "the good file must load");
+    assert!(
+        !report.errors.is_empty(),
+        "the malformed file must be reported, got {:?}",
+        report.errors
+    );
+    assert_eq!(global::translate("k"), "v");
+
+    let missing = global::init_with_options(InitOptions {
+        language: "en".to_string(),
+        preload_dir: Some("/nonexistent/i18n-dir-xyz".to_string()),
+        diagnostics: false,
+    });
+    assert!(
+        missing.errors.iter().any(|e| e.contains("could not be read")),
+        "a missing directory must be reported, got {:?}",
+        missing.errors
+    );
+    global::init();
+}
+
+// ── S-32: a backward mtime must not hide a content change ──
+
+/// A content change whose mtime moves *backward* (backup restore, clock sync)
+/// must still trigger a reload. The old code returned `false` as soon as the
+/// mtime was older, never reaching the hash comparison.
+#[test]
+fn test_i18n_reload_detects_change_with_backward_mtime() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("en.json");
+
+    let v1 = r#"{"language":"en","translations":{"k":{"message":"aaaa"}}}"#;
+    let v2 = r#"{"language":"en","translations":{"k":{"message":"bbbb"}}}"#;
+    assert_eq!(v1.len(), v2.len(), "the fixture must be equal-length by design");
+
+    fs::write(&file_path, v1).unwrap();
+    let mut manager = I18nManager::new();
+    let (sender, _receiver) = unbounded();
+    manager.enable_hot_reload(sender);
+    manager.load_translations(file_path.to_str().unwrap()).unwrap();
+    assert_eq!(manager.translate("k"), "aaaa");
+
+    // Rewrite with different content and set an *older* mtime than the one the
+    // manager recorded at load.
+    let recorded = fs::metadata(&file_path).unwrap().modified().unwrap();
+    fs::write(&file_path, v2).unwrap();
+    let older = recorded - std::time::Duration::from_secs(60);
+    let f = fs::File::options().write(true).open(&file_path).unwrap();
+    f.set_modified(older).unwrap();
+    drop(f);
+
+    let events = manager.check_and_reload();
+    assert!(
+        !events.is_empty(),
+        "a backward-mtime content change must still reload, got {events:?}"
+    );
+    assert_eq!(manager.translate("k"), "bbbb");
+}
+
+// ── S-91: reject a file whose name disagrees with its declared language ──
+
+/// The watcher derives a language from the file name, so `load_translations`
+/// must reject a file whose name disagrees with its `language` field rather than
+/// load it under a key the watcher will never request.
+#[test]
+fn load_translations_rejects_file_name_language_mismatch() {
+    let temp_dir = TempDir::new().unwrap();
+    let mismatched = temp_dir.path().join("catalogue.json");
+    fs::write(&mismatched, r#"{"language":"en","translations":{"k":{"message":"v"}}}"#).unwrap();
+
+    let mut manager = I18nManager::new();
+    assert!(
+        manager.load_translations(mismatched.to_str().unwrap()).is_err(),
+        "a file whose name disagrees with its declared language must be rejected"
+    );
+
+    // A matching name is accepted and registered under the declared language.
+    let ok = temp_dir.path().join("en.json");
+    fs::write(&ok, r#"{"language":"en","translations":{"k":{"message":"v"}}}"#).unwrap();
+    manager.load_translations(ok.to_str().unwrap()).unwrap();
+    assert_eq!(manager.translate("k"), "v");
 }

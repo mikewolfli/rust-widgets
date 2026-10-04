@@ -33,6 +33,7 @@ typedef enum {
     RW_VALUE_STRING = 5,
     RW_VALUE_COLOR = 6,
     RW_VALUE_RECT = 7,
+    RW_VALUE_TUPLE = 8,
 } rw_value_kind;
 
 #ifdef __cplusplus
@@ -76,7 +77,10 @@ uint64_t rw_create_widget_of_kind(uint64_t parent, const char* kind_name, const 
 uint64_t rw_create_window(const char* title, int x, int y, unsigned int width, unsigned int height);
 bool rw_destroy_widget(uint64_t widget_id);
 bool rw_dispatch_event_to_widget(uint64_t widget_id, unsigned int event_code, int x, int y, unsigned int button);
+bool rw_dispatch_key_event(uint64_t widget_id, unsigned int key, unsigned int modifiers, bool release);
 bool rw_dispatch_pointer_event(uint64_t root, unsigned int event_code, int x, int y, unsigned int button);
+bool rw_dispatch_text_event(uint64_t widget_id, const char* text);
+bool rw_dispatch_wheel_event(uint64_t widget_id, int delta_x, int delta_y, unsigned int modifiers);
 uint64_t rw_embedded_engine_button_count(void);
 uint64_t rw_embedded_engine_frame_count(void);
 bool rw_embedded_engine_is_initialized(void);

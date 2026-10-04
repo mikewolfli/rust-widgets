@@ -235,6 +235,23 @@ impl GridLayout {
         true
     }
 
+    /// Places a widget at the next free cell **without** growing the grid.
+    ///
+    /// Returns `false` when every cell is occupied. This is the fixed-dimension
+    /// auto-placement a uniform grid needs: its row/column counts are the point of
+    /// the type, so a full grid must refuse rather than grow (S-43).
+    pub fn place_next_free_cell(&mut self, widget_id: ObjectId) -> bool {
+        let Some(index) = self.cells.iter().position(|cell| cell.is_none()) else {
+            log::warn!(
+                "GridLayout: no free cell for widget {widget_id}; a fixed-dimension grid does \
+                 not grow"
+            );
+            return false;
+        };
+        self.cells[index] = Some(GridPlacement { widget_id, col_span: 1, row_span: 1 });
+        true
+    }
+
     /// The cell `widget_id` is anchored at, as `(row, col)`, when it was placed.
     ///
     /// A spanning widget occupies several cells; this reports the top-left one — the position

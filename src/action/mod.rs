@@ -11,7 +11,7 @@ mod manager;
 mod types;
 pub use app::ActionRouter;
 pub use manager::ActionManager;
-pub(crate) use types::normalize_shortcut;
+pub(crate) use types::{canonicalize_shortcut_type, normalize_shortcut};
 pub use types::{Action, ActionBinding, ActionHostKind};
 #[cfg(test)]
 mod tests {
@@ -66,8 +66,8 @@ mod tests {
         let mut mgr = ActionManager::new();
         assert!(mgr.register_action("save", "Save"));
 
-        assert!(mgr.bind_shortcut_type(&Shortcut::ctrl(Key::S), "save"));
-        assert!(mgr.bind_shortcut_type(&Shortcut::ctrl_shift(Key::S), "save"));
+        assert!(mgr.bind_shortcut_type(&Shortcut::primary(Key::S), "save"));
+        assert!(mgr.bind_shortcut_type(&Shortcut::primary_shift(Key::S), "save"));
 
         assert!(!mgr.trigger_shortcut("Ctrl+S"), "the old chord must be released by the rebind");
         assert!(mgr.trigger_shortcut("Ctrl+Shift+S"));
@@ -93,6 +93,75 @@ mod tests {
         // `normalize_shortcut`.
         assert!(mgr.trigger_shortcut("Primary+S"), "the canonical spelling must reach it");
         assert!(mgr.trigger_shortcut("Ctrl+S"), "and so must the `Ctrl` spelling");
+    }
+
+    /// Modifier order and Option/Alt aliases must normalize to one chord key.
+    ///
+    /// `Shortcut::from_string` treats `"Ctrl+Shift+S"` and `"Shift+Ctrl+S"` as the
+    /// same value; the action registry must key them identically too, or a binding
+    /// entered with one spelling cannot be triggered with the other. `Option` is the
+    /// macOS name for the Alt key, so the two spellings must agree as well.
+    #[test]
+    fn string_shortcuts_normalize_modifier_order_and_aliases() {
+        let mut mgr = ActionManager::new();
+        assert!(mgr.register_action("save", "Save"));
+        let counter = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&counter);
+        mgr.action("save").expect("action exists").connect_triggered(move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+
+        assert!(mgr.bind_shortcut("Ctrl+Shift+S", "save"));
+        assert!(mgr.trigger_shortcut("Shift+Ctrl+S"), "modifier order must not matter");
+        assert!(mgr.trigger_shortcut("ctrl+shift+s"), "case must not matter");
+        assert_eq!(counter.load(Ordering::SeqCst), 2);
+
+        assert!(mgr.bind_shortcut("Alt+A", "save"));
+        assert!(mgr.trigger_shortcut("Option+A"), "Alt and Option are the same key");
+        assert_eq!(counter.load(Ordering::SeqCst), 3);
+    }
+
+    /// `Shortcut::ctrl(S)` and `Shortcut::primary(S)` are different chords and must
+    /// not overwrite each other in the action registry. The string API keeps folding
+    /// `Ctrl` onto `Primary`, so a physical-Control binding is reachable through the
+    /// typed trigger, not through the `"Ctrl+S"` string spelling.
+    #[test]
+    fn typed_ctrl_and_primary_are_distinct_bindings() {
+        use crate::shortcut::{Key, Shortcut};
+        let mut mgr = ActionManager::new();
+        assert!(mgr.register_action("cut", "Cut"));
+        assert!(mgr.register_action("save", "Save"));
+        let cut = Arc::new(AtomicUsize::new(0));
+        let save = Arc::new(AtomicUsize::new(0));
+        {
+            let cut = Arc::clone(&cut);
+            mgr.action("cut").expect("cut exists").connect_triggered(move || {
+                cut.fetch_add(1, Ordering::SeqCst);
+            });
+            let save = Arc::clone(&save);
+            mgr.action("save").expect("save exists").connect_triggered(move || {
+                save.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        assert!(mgr.bind_shortcut_type(&Shortcut::ctrl(Key::S), "cut"));
+        assert!(mgr.bind_shortcut_type(&Shortcut::primary(Key::S), "save"));
+
+        // Physical Control and PRIMARY are independent: each typed chord triggers only
+        // its own action.
+        assert!(mgr.trigger_shortcut_type(&Shortcut::ctrl(Key::S)));
+        assert_eq!(cut.load(Ordering::SeqCst), 1);
+        assert_eq!(save.load(Ordering::SeqCst), 0);
+
+        assert!(mgr.trigger_shortcut_type(&Shortcut::primary(Key::S)));
+        assert_eq!(cut.load(Ordering::SeqCst), 1);
+        assert_eq!(save.load(Ordering::SeqCst), 1);
+
+        // The string "Ctrl+S" means PRIMARY (the isolated string convention), so it
+        // fires save, not the physical-Control action.
+        assert!(mgr.trigger_shortcut("Ctrl+S"));
+        assert_eq!(cut.load(Ordering::SeqCst), 1);
+        assert_eq!(save.load(Ordering::SeqCst), 2);
     }
 
     /// Two different actions keep their own chords.
@@ -181,9 +250,11 @@ mod tests {
 
     #[test]
     fn action_router_connects_undo_redo_callbacks() {
-        use crate::shortcut::{Key, Modifiers, ShortcutManager};
+        use crate::shortcut::{Key, Modifiers, PlatformShortcutStyle, Shortcut, ShortcutManager};
         use alloc::sync::Arc;
         use core::sync::atomic::{AtomicUsize, Ordering};
+
+        let style = crate::platform::platform_facts().shortcut_style();
 
         let mut shortcut_manager = ShortcutManager::new();
         let mut action_manager = ActionManager::new();
@@ -200,11 +271,43 @@ mod tests {
                 redo_ref.fetch_add(1, Ordering::SeqCst);
             },
         ));
+
+        // Undo is always the platform PRIMARY + Z, never the physical Control key.
+        let undo = shortcut_manager.get_shortcut("undo").expect("undo registered").clone();
+        assert!(undo.modifiers.contains(Modifiers::PRIMARY), "undo must be Primary+Z");
+        assert!(!undo.modifiers.contains(Modifiers::CTRL), "undo must not be physical Control");
+        assert_eq!(undo.key, Key::Z);
+
+        // Redo follows the explicit platform convention: Cmd+Shift+Z on macOS,
+        // Ctrl+Y (Primary+Y) on Windows/Linux.
+        let expected_redo = match style {
+            PlatformShortcutStyle::Mac => Shortcut::primary_shift(Key::Z),
+            PlatformShortcutStyle::Desktop => Shortcut::primary(Key::Y),
+        };
+        assert_eq!(
+            shortcut_manager.get_shortcut("redo").expect("redo registered"),
+            &expected_redo,
+            "redo must follow the platform convention",
+        );
+
+        // The neutral `Ctrl` string spelling parses to PRIMARY, so it reaches undo.
         assert!(action_manager.trigger_shortcut("Ctrl+Z"));
-        assert!(action_manager.trigger_shortcut("Ctrl+Y"));
         assert_eq!(undo_count.load(Ordering::SeqCst), 1);
+
+        let redo_spelling = match style {
+            PlatformShortcutStyle::Mac => "Ctrl+Shift+Z",
+            PlatformShortcutStyle::Desktop => "Ctrl+Y",
+        };
+        assert!(action_manager.trigger_shortcut(redo_spelling));
         assert_eq!(redo_count.load(Ordering::SeqCst), 1);
-        assert!(shortcut_manager.handle_key_event(Key::Z, Modifiers::CTRL));
-        assert!(shortcut_manager.handle_key_event(Key::Y, Modifiers::CTRL));
+
+        // A real key event with the platform PRIMARY modifier routes through the
+        // shortcut manager.
+        assert!(shortcut_manager.handle_key_event(Key::Z, Modifiers::PRIMARY));
+        let (redo_key, redo_mods) = match style {
+            PlatformShortcutStyle::Mac => (Key::Z, Modifiers::PRIMARY | Modifiers::SHIFT),
+            PlatformShortcutStyle::Desktop => (Key::Y, Modifiers::PRIMARY),
+        };
+        assert!(shortcut_manager.handle_key_event(redo_key, redo_mods));
     }
 }

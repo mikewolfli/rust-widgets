@@ -1358,6 +1358,37 @@ fn decode_with_image_codecs(_data: &[u8], format: ImageFormat) -> Result<Decoded
 
 // ── PNM Decoder ──────────────────────────────────────────────────────────────
 
+/// Reads one PNM header token (a decimal integer) from `*pos`, skipping whitespace and `#`
+/// comments. On return `*pos` points at the byte immediately after the token's digits.
+///
+/// Both the ASCII and binary branches share this so a legal header written with comments or on a
+/// single line is tokenised the same way the raster decoders read the dimensions.
+fn next_pnm_token(data: &[u8], pos: &mut usize) -> Result<u32, String> {
+    loop {
+        match data.get(*pos) {
+            Some(b'#') => {
+                while *pos < data.len() && data[*pos] != b'\n' && data[*pos] != b'\r' {
+                    *pos += 1;
+                }
+            }
+            Some(b) if b.is_ascii_whitespace() => *pos += 1,
+            _ => break,
+        }
+    }
+    let start = *pos;
+    while *pos < data.len() && !data[*pos].is_ascii_whitespace() && data[*pos] != b'#' {
+        *pos += 1;
+    }
+    if start == *pos {
+        return Err("PNM header ended before a required token".to_string());
+    }
+    let token = std::str::from_utf8(&data[start..*pos])
+        .map_err(|_| "PNM header token must be ASCII".to_string())?;
+    token
+        .parse::<u32>()
+        .map_err(|_| format!("PNM header token must be a decimal integer, got {token:?}"))
+}
+
 fn decode_pnm(data: &[u8]) -> Result<DecodedImage, String> {
     if data.len() < 3 || data[0] != b'P' || !(b'1'..=b'6').contains(&data[1]) {
         return Err(format!(
@@ -1451,52 +1482,46 @@ fn decode_pnm(data: &[u8]) -> Result<DecodedImage, String> {
         return Ok(img);
     }
 
-    // Parse binary PNM header: scan for newlines to find dimension fields.
-    // Format: P<type>\n<w> <h>\n<maxval>\n<binary data>
-    // Find first newline (after magic)
-    let first_nl = data[2..]
-        .iter()
-        .position(|&b| b == b'\n')
-        .map(|p| p + 2)
-        .ok_or("PNM binary header has no newline after the format digit; expected `P<type>\\n<width> <height>\\n<maxval>\\n`")?;
-    let second_nl = data[first_nl + 1..]
-        .iter()
-        .position(|&b| b == b'\n')
-        .map(|p| p + first_nl + 1)
-        .ok_or("PNM binary header has no newline after the dimensions; expected `P<type>\\n<width> <height>\\n<maxval>\\n`")?;
+    // ── Binary PNM (P4/P5/P6) ──────────────────────────────────────────────
+    //
+    // The header is a sequence of whitespace/comment-separated tokens: width, height, and (for
+    // P5/P6) maxval. The raster follows immediately after the **single** whitespace character that
+    // terminates the last header token, so its first byte may be any value — the boundary is the
+    // token, not a fixed number of newlines.
+    let mut pos = 2usize;
+    let w = next_pnm_token(data, &mut pos)?;
+    let h = next_pnm_token(data, &mut pos)?;
+    if w == 0 || h == 0 {
+        return Err(format!("PNM dimensions must be at least 1x1, got {w}x{h}"));
+    }
+    let maxval = if format_type == b'4' { 1 } else { next_pnm_token(data, &mut pos)? };
+    if maxval == 0 || maxval > 65535 {
+        return Err(format!(
+            "PNM maxval must be in 1..=65535, got {maxval} (it is the peak sample value, so 0 is \
+             invalid and larger values need more than 16 bits per sample)"
+        ));
+    }
+
+    // One whitespace byte separates the header from the raster.
+    let raster_start = pos.checked_add(1).ok_or("PNM raster offset overflow")?;
+    let pixel_count = (w as usize).checked_mul(h as usize).ok_or("PNM dimensions overflow")?;
 
     if format_type == b'4' {
-        let w = std::str::from_utf8(&data[first_nl + 1..second_nl])
-            .map_err(|_| {
-                "PNM dimension line must be ASCII (`<width> <height>`); found a non-UTF-8 byte"
-            })?
-            .split_whitespace()
-            .next()
-            .ok_or("PNM dimension line has no width token; expected `<width> <height>`")?
-            .parse::<u32>()
-            .map_err(|_| "Invalid PNM width")?;
-        let h = std::str::from_utf8(&data[first_nl + 1..second_nl])
-            .map_err(|_| {
-                "PNM dimension line must be ASCII (`<width> <height>`); found a non-UTF-8 byte"
-            })?
-            .split_whitespace()
-            .nth(1)
-            .ok_or("PNM dimension line has no height token; expected `<width> <height>`")?
-            .parse::<u32>()
-            .map_err(|_| "Invalid PNM height")?;
-        if w == 0 || h == 0 {
-            return Err(format!("PNM dimensions must be at least 1x1, got {w}x{h}"));
-        }
+        // PBM: one bit per pixel, rows padded to a whole byte.
         let row_bytes = (w as usize).div_ceil(8);
         let packed_len = row_bytes.checked_mul(h as usize).ok_or("PNM dimensions overflow")?;
-        let data_start = second_nl + 1;
-        let packed = data.get(data_start..data_start + packed_len).ok_or_else(|| {
-            format!(
-                "PNM P4 bitmap truncated: need {packed_len} bytes, got {}",
-                data.len().saturating_sub(data_start)
+        let packed = data
+            .get(
+                raster_start
+                    ..raster_start.checked_add(packed_len).ok_or("PNM dimensions overflow")?,
             )
-        })?;
-        let mut pixels = Vec::with_capacity((w as usize) * (h as usize) * 3);
+            .ok_or_else(|| {
+                format!(
+                    "PNM P4 bitmap truncated: need {packed_len} bytes, got {}",
+                    data.len().saturating_sub(raster_start)
+                )
+            })?;
+        let mut pixels = Vec::with_capacity(pixel_count * 3);
         for y in 0..h as usize {
             for x in 0..w as usize {
                 let bit = (packed[y * row_bytes + x / 8] >> (7 - (x % 8))) & 1;
@@ -1509,83 +1534,51 @@ fn decode_pnm(data: &[u8]) -> Result<DecodedImage, String> {
         return Ok(img);
     }
 
-    let third_nl = data[second_nl + 1..]
-        .iter()
-        .position(|&b| b == b'\n')
-        .map(|p| p + second_nl + 1)
-        .unwrap_or(data.len());
+    // P5 (grayscale) stores one sample per pixel; P6 (RGB) stores three.
+    let channels = if format_type == b'5' { 1usize } else { 3usize };
+    let sample_count = pixel_count.checked_mul(channels).ok_or("PNM sample count overflow")?;
+    // maxval decides the sample width: <= 255 is one byte, larger is two bytes big-endian.
+    let bytes_per_sample = if maxval < 256 { 1usize } else { 2usize };
+    let raster_bytes =
+        sample_count.checked_mul(bytes_per_sample).ok_or("PNM raster size overflow")?;
+    let raster = data
+        .get(
+            raster_start
+                ..raster_start.checked_add(raster_bytes).ok_or("PNM raster size overflow")?,
+        )
+        .ok_or_else(|| {
+            format!(
+                "PNM P{} data truncated: need {raster_bytes} bytes, got {}",
+                format_type as char,
+                data.len().saturating_sub(raster_start)
+            )
+        })?;
 
-    // Parse the first dimension line (line after magic)
-    let dim_line = std::str::from_utf8(&data[first_nl + 1..second_nl]).map_err(|_| {
-        "PNM dimension line must be ASCII (`<width> <height>`); found a non-UTF-8 byte"
-    })?;
-    let dim_parts: Vec<&str> = dim_line.split_whitespace().collect();
-    if dim_parts.len() < 2 {
-        return Err(format!(
-            "PNM dimension line must hold exactly two tokens `<width> <height>`, got {dim_parts:?}"
-        ));
-    }
-    let w = dim_parts[0]
-        .parse::<u32>()
-        .map_err(|t| format!("PNM width must be a decimal integer, got {t:?}"))?;
-    let h = dim_parts[1]
-        .parse::<u32>()
-        .map_err(|t| format!("PNM height must be a decimal integer, got {t:?}"))?;
-
-    // Parse maxval from the line between second and third newline.
-    let maxval_line = std::str::from_utf8(&data[second_nl + 1..third_nl])
-        .map_err(|_| "PNM maxval line must be ASCII (a decimal integer); found a non-UTF-8 byte")?;
-    let maxval = maxval_line
-        .split_whitespace()
-        .next()
-        .ok_or("PNM header ends before its maxval token; expected a decimal integer in 1..=65535")?
-        .parse::<u32>()
-        .map_err(|t| format!("PNM maxval must be a decimal integer in 1..=65535, got {t:?}"))?;
-    if maxval == 0 || maxval > 65535 {
-        return Err(format!("PNM maxval must be in 1..=65535, got {maxval}"));
-    }
-
-    // Binary data starts after the third newline (or after second if no third)
-    let data_start = if third_nl < data.len() { third_nl + 1 } else { data.len() };
-
-    if format_type == b'5' || format_type == b'6' {
-        if w == 0 || h == 0 {
-            return Err(format!(
-                "PNM dimensions must be at least 1x1, got {w}x{h} (the header declared an empty image)"
-            ));
-        }
-        let pixel_count = (w as usize).checked_mul(h as usize).ok_or("PNM dimensions overflow")?;
-        // P5 stores one sample per pixel; P6 stores three (RGB).
-        let sample_count = if format_type == b'5' {
-            pixel_count
+    let mut pixels = Vec::with_capacity(sample_count);
+    for i in 0..sample_count {
+        let off = i * bytes_per_sample;
+        let sample = if bytes_per_sample == 1 {
+            raster[off] as u32
         } else {
-            pixel_count.checked_mul(3).ok_or("PNM sample count overflow")?
+            u16::from_be_bytes([raster[off], raster[off + 1]]) as u32
         };
-        let available = data.len().saturating_sub(data_start);
-        if available < sample_count {
+        if sample > maxval {
             return Err(format!(
-                "PNM P{} data truncated: need {sample_count} bytes, got {available}",
-                format_type as char
+                "PNM sample {sample} exceeds the declared maxval {maxval}; every sample must \
+                 be <= maxval"
             ));
         }
-        let pixel_data = &data[data_start..data_start + sample_count];
-        let mut pixels = Vec::with_capacity(pixel_count * 3);
-        let maxval_f = maxval as f32;
+        // Scale the sample to the full 0..255 range, whatever maxval is.
+        let scaled = (sample * 255 / maxval) as u8;
         if format_type == b'5' {
-            for &v in pixel_data {
-                let scaled =
-                    if maxval != 255 { (v as f32 / maxval_f * 255.0).round() as u8 } else { v };
-                pixels.extend_from_slice(&[scaled, scaled, scaled]);
-            }
+            pixels.extend_from_slice(&[scaled, scaled, scaled]);
         } else {
-            pixels.extend_from_slice(pixel_data);
+            pixels.push(scaled);
         }
-        let mut img = DecodedImage::new(ImageFormat::Pnm, ImageData::Rgb8(pixels), w, h);
-        img.color_space = ColorSpace::Srgb;
-        Ok(img)
-    } else {
-        Err("Unsupported binary PNM format".into())
     }
+    let mut img = DecodedImage::new(ImageFormat::Pnm, ImageData::Rgb8(pixels), w, h);
+    img.color_space = ColorSpace::Srgb;
+    Ok(img)
 }
 
 // ── QOI Decoder ──────────────────────────────────────────────────────────────
@@ -1626,6 +1619,8 @@ fn decode_qoi(data: &[u8]) -> Result<DecodedImage, String> {
     while pixels.len() / 4 < total && pos < data.len() {
         let byte = data[pos];
         pos += 1;
+        // How many pixels this opcode emits (1 for everything except RUN).
+        let mut run = 1usize;
         if byte == 0xFE {
             // QOI_OP_RGB
             let end = pos.checked_add(3).ok_or("QOI RGB opcode overflow")?;
@@ -1671,21 +1666,18 @@ fn decode_qoi(data: &[u8]) -> Result<DecodedImage, String> {
             b = b.wrapping_add(db);
         } else if byte >> 6 == 0b11 {
             // QOI_OP_RUN
-            let run = (byte & 0x3F) as usize + 1;
-            for _ in 0..run {
-                pixels.push(r);
-                pixels.push(g);
-                pixels.push(b);
-                pixels.push(a);
-            }
-            continue;
+            run = (byte & 0x3F) as usize + 1;
         }
-        pixels.push(r);
-        pixels.push(g);
-        pixels.push(b);
-        pixels.push(a);
+        for _ in 0..run {
+            pixels.push(r);
+            pixels.push(g);
+            pixels.push(b);
+            pixels.push(a);
+        }
 
-        // Update index
+        // Update the shared index on **every** pixel-output path, including RUN, so a later
+        // QOI_OP_INDEX reads the colour that was just emitted rather than a stale (transparent)
+        // entry left over from the initial zeroed table.
         let hash = (r as usize * 3 + g as usize * 5 + b as usize * 7 + a as usize * 11) & 63;
         index[hash] = [r, g, b, a];
     }
@@ -1767,9 +1759,32 @@ fn decode_farbfeld(data: &[u8]) -> Result<DecodedImage, String> {
 
 // ── SVG Decoder ──────────────────────────────────────────────────────────────
 
-/// Refuses an SVG raster whose declared size would allocate more than the cap.
+/// Converts premultiplied RGBA8 to straight (un-premultiplied) RGBA8 in place.
 ///
-/// Every other raster decoder in this file bounds the pixel count before
+/// tiny-skia's `Pixmap` stores premultiplied alpha, but this crate's `ImageData::Rgba8` is
+/// straight (the same convention as the PNG decoder and `render/text/png.rs`). Wrapping the pixmap
+/// bytes without converting made every semi-transparent colour get multiplied by its alpha a second
+/// time downstream. Alpha 0 keeps its zeroed RGB, alpha 255 is already straight, and everything in
+/// between is scaled back up by `255 / alpha`.
+#[cfg(feature = "svg-rasterizer")]
+fn unpremultiply_rgba8(pixels: &mut [u8]) {
+    for px in pixels.chunks_exact_mut(4) {
+        let alpha = px[3];
+        if alpha == 0 {
+            px[0] = 0;
+            px[1] = 0;
+            px[2] = 0;
+        } else if alpha < 255 {
+            let a = alpha as u32;
+            px[0] = ((px[0] as u32 * 255) / a).min(255) as u8;
+            px[1] = ((px[1] as u32 * 255) / a).min(255) as u8;
+            px[2] = ((px[2] as u32 * 255) / a).min(255) as u8;
+        }
+        // alpha == 255: the RGB bytes are already straight.
+    }
+}
+
+/// Refuses an SVG raster whose declared size would allocate more than the cap.
 /// allocating (PNG at `1 << 27`, JPEG/BMP/PNM/QOI at `16384x16384`), because the
 /// dimensions come from the file and `Pixmap::new`-style allocation on a hostile
 /// header is an out-of-memory abort rather than an `Err`. The two SVG paths were
@@ -1812,9 +1827,11 @@ fn decode_svg(data: &[u8]) -> Result<DecodedImage, String> {
         let mut pixmap = resvg::tiny_skia::Pixmap::new(size.width(), size.height())
             .ok_or("SVG raster dimensions are invalid")?;
         resvg::render(&tree, resvg::tiny_skia::Transform::identity(), &mut pixmap.as_mut());
+        let mut bytes = pixmap.take();
+        unpremultiply_rgba8(&mut bytes);
         let mut decoded = DecodedImage::new(
             ImageFormat::Svg,
-            ImageData::Rgba8(pixmap.take()),
+            ImageData::Rgba8(bytes),
             size.width(),
             size.height(),
         );
@@ -1871,6 +1888,24 @@ fn gzip_body(data: &[u8]) -> Result<&[u8], String> {
     Ok(&data[HEADER_LEN..data.len() - TRAILER_LEN])
 }
 
+/// Computes the CRC-32 of `data` (the reflected IEEE 802.3 polynomial `0xEDB88320`), which is the
+/// same checksum both PNG chunks and the gzip trailer use.
+#[cfg(any(feature = "svg-rasterizer", feature = "image"))]
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &byte in data {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xEDB8_8320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    crc ^ 0xFFFF_FFFF
+}
+
 /// Decodes a gzip-compressed document, bounded to `limit` bytes of output.
 ///
 /// Shared by both `svgz` branches so the container handling exists once: the
@@ -1880,13 +1915,41 @@ fn gzip_body(data: &[u8]) -> Result<&[u8], String> {
 #[cfg(any(feature = "svg-rasterizer", feature = "image"))]
 fn gunzip_bounded(data: &[u8], limit: usize) -> Result<Vec<u8>, String> {
     let body = gzip_body(data)?;
-    miniz_oxide::inflate::decompress_to_vec_with_limit(body, limit).map_err(|e| {
-        format!(
-            "gzip body did not inflate within the {limit}-byte document cap ({} bytes of input; \
-             {e}): the stream is corrupt, or it expands beyond that cap",
-            data.len()
-        )
-    })
+
+    // The 8-byte trailer carries the CRC-32 of the uncompressed data and its length modulo 2^32.
+    // The encoder writes both, so the decoder must verify them rather than accept a corrupt or
+    // truncated container that still inflates.
+    let trailer = &data[data.len() - 8..];
+    let stored_crc = u32::from_le_bytes([trailer[0], trailer[1], trailer[2], trailer[3]]);
+    let stored_isize = u32::from_le_bytes([trailer[4], trailer[5], trailer[6], trailer[7]]);
+
+    let decompressed =
+        miniz_oxide::inflate::decompress_to_vec_with_limit(body, limit).map_err(|e| {
+            format!(
+                "gzip body did not inflate within the {limit}-byte document cap ({} bytes of input; \
+                 {e}): the stream is corrupt, or it expands beyond that cap",
+                data.len()
+            )
+        })?;
+
+    let actual_crc = crc32(&decompressed);
+    if actual_crc != stored_crc {
+        return Err(format!(
+            "gzip trailer CRC-32 mismatch: stored {stored_crc:08x}, computed {actual_crc:08x}; the \
+             payload is corrupt"
+        ));
+    }
+    // ISIZE is the input length modulo 2^32; the decompressed output is bounded well below 4 GiB,
+    // so the truncating cast is exact here.
+    if (decompressed.len() as u32) != stored_isize {
+        return Err(format!(
+            "gzip trailer ISIZE mismatch: stored {stored_isize}, actual {}; the payload length \
+             does not match the container",
+            decompressed.len() as u32
+        ));
+    }
+
+    Ok(decompressed)
 }
 
 fn decode_svgz(data: &[u8]) -> Result<DecodedImage, String> {
@@ -1913,9 +1976,11 @@ fn decode_svgz(data: &[u8]) -> Result<DecodedImage, String> {
         let mut pixmap = resvg::tiny_skia::Pixmap::new(size.width(), size.height())
             .ok_or("SVGZ raster dimensions are invalid")?;
         resvg::render(&tree, resvg::tiny_skia::Transform::identity(), &mut pixmap.as_mut());
+        let mut bytes = pixmap.take();
+        unpremultiply_rgba8(&mut bytes);
         let mut decoded = DecodedImage::new(
             ImageFormat::Svgz,
-            ImageData::Rgba8(pixmap.take()),
+            ImageData::Rgba8(bytes),
             size.width(),
             size.height(),
         );
@@ -2484,6 +2549,83 @@ mod tests {
         assert!(err.contains("sample 11") && err.contains("maxval 10"), "unexpected error: {err}");
     }
 
+    /// P6 with a non-255 maxval must scale samples to the full range, not return them unchanged.
+    #[test]
+    fn decode_pnm_p6_scales_a_non_255_maxval() {
+        // 1x1, maxval 15, sample [15, 0, 0] = full red.
+        let pnm = b"P6\n1 1\n15\n\x0F\x00\x00";
+        let img = decode_pnm(pnm).unwrap();
+        assert_eq!(img.data.as_bytes(), &[255, 0, 0], "15/15 must scale to 255, not stay 15");
+    }
+
+    /// P5 with maxval 65535 must read two big-endian bytes per sample.
+    #[test]
+    fn decode_pnm_p5_reads_16_bit_samples_big_endian() {
+        // 1x1, maxval 65535, sample FF FF = white.
+        let pnm = b"P5\n1 1\n65535\n\xFF\xFF";
+        let img = decode_pnm(pnm).unwrap();
+        assert_eq!(img.data.as_bytes(), &[255, 255, 255], "0xFFFF must scale to white");
+    }
+
+    /// A binary header written on one line, with a comment, must be accepted.
+    #[test]
+    fn decode_pnm_binary_header_accepts_comments_and_a_single_line() {
+        let single_line = b"P6 1 1 255\n\xFF\x00\x00";
+        let img = decode_pnm(single_line).unwrap();
+        assert_eq!(img.data.as_bytes(), &[255, 0, 0]);
+
+        let commented = b"P6\n# a comment before the dimensions\n1 1\n255\n\xFF\x00\x00";
+        let img = decode_pnm(commented).unwrap();
+        assert_eq!(img.data.as_bytes(), &[255, 0, 0]);
+    }
+
+    /// A binary sample above the declared maxval must be an error, not a silent wrap.
+    #[test]
+    fn decode_pnm_rejects_a_sample_above_maxval() {
+        let pnm = b"P6\n1 1\n15\n\x10\x00\x00";
+        let err = decode_pnm(pnm).unwrap_err();
+        assert!(err.contains("exceeds the declared maxval"), "unexpected error: {err}");
+    }
+
+    /// A QOI RUN must register the emitted colour in the shared index, or a following INDEX
+    /// opcode reads a stale (transparent) entry.
+    #[test]
+    fn decode_qoi_run_updates_the_color_index_for_a_following_index_opcode() {
+        // 2x1 QOI: RUN 1 (emits opaque black) then INDEX 53. The hash of (0,0,0,255) is 53, so
+        // the INDEX must reuse the opaque black that the RUN just emitted.
+        let mut qoi = b"qoif".to_vec();
+        qoi.extend_from_slice(&2u32.to_be_bytes()); // width
+        qoi.extend_from_slice(&1u32.to_be_bytes()); // height
+        qoi.push(4); // channels = RGBA
+        qoi.push(0); // colorspace = sRGB
+        qoi.push(0xC0); // QOI_OP_RUN, run = 1
+        qoi.push(0x35); // QOI_OP_INDEX, index 53
+        qoi.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 1]); // end marker
+
+        let img = decode_qoi(&qoi).unwrap();
+        assert_eq!(
+            img.data.as_bytes(),
+            &[0, 0, 0, 255, 0, 0, 0, 255],
+            "a RUN must register the emitted colour so a later INDEX reuses opaque black"
+        );
+    }
+
+    /// Consecutive RUNs must emit exactly their run counts, updating the index each time.
+    #[test]
+    fn decode_qoi_consecutive_runs_emit_every_pixel() {
+        let mut qoi = b"qoif".to_vec();
+        qoi.extend_from_slice(&2u32.to_be_bytes());
+        qoi.extend_from_slice(&1u32.to_be_bytes());
+        qoi.push(4);
+        qoi.push(0);
+        qoi.push(0xC0); // RUN 1
+        qoi.push(0xC0); // RUN 1
+        qoi.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 1]);
+
+        let img = decode_qoi(&qoi).unwrap();
+        assert_eq!(img.data.as_bytes(), &[0, 0, 0, 255, 0, 0, 0, 255]);
+    }
+
     #[cfg(not(feature = "image-codecs"))]
     #[test]
     fn decode_avif_returns_not_implemented() {
@@ -2679,6 +2821,20 @@ mod tests {
         );
     }
 
+    /// CRC-32 for the test fixtures. The decoder now validates the gzip trailer, so `gzip_wrap`
+    /// must write a correct checksum; this mirrors the reflected IEEE 802.3 polynomial the encoder
+    /// uses, kept local so a non-`image` test build still compiles without the gated module helper.
+    fn test_crc32(data: &[u8]) -> u32 {
+        let mut crc: u32 = 0xFFFF_FFFF;
+        for &byte in data {
+            crc ^= byte as u32;
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+            }
+        }
+        crc ^ 0xFFFF_FFFF
+    }
+
     /// Builds a gzip member around `data`, matching what the encoder emits.
     ///
     /// Test-local rather than reusing `encoder::gzip_compress` so that a change to
@@ -2687,7 +2843,7 @@ mod tests {
     fn gzip_wrap(data: &[u8]) -> Vec<u8> {
         let mut out = vec![0x1F, 0x8B, 0x08, 0x00, 0, 0, 0, 0, 0x00, 0xFF];
         out.extend_from_slice(&miniz_oxide::deflate::compress_to_vec(data, 6));
-        out.extend_from_slice(&[0, 0, 0, 0]); // CRC-32: not validated by this decoder
+        out.extend_from_slice(&test_crc32(data).to_le_bytes());
         out.extend_from_slice(&(data.len() as u32).to_le_bytes());
         out
     }
@@ -2711,6 +2867,59 @@ mod tests {
         // And a body that is not gzip at all must be reported as such.
         let err = decode_svgz(b"not gzip data at all, but long enough").unwrap_err();
         assert!(err.contains("not a gzip member"), "got: {err}");
+    }
+
+    /// The rasterizer must un-premultiply tiny-skia's pixmap so semi-transparent colours are
+    /// straight RGBA, not multiplied by their alpha a second time downstream.
+    #[cfg(feature = "svg-rasterizer")]
+    #[test]
+    fn svg_raster_unpremultiplies_alpha() {
+        let half = decode_svg(
+            br#"<svg width="1" height="1" xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1" fill="red" fill-opacity="0.5"/></svg>"#,
+        )
+        .unwrap();
+        assert_eq!(
+            half.as_rgba8().as_bytes(),
+            &[255, 0, 0, 128],
+            "premultiplied [128,0,0,128] must decode as straight [255,0,0,128]"
+        );
+
+        let opaque = decode_svg(
+            br#"<svg width="1" height="1" xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1" fill="red"/></svg>"#,
+        )
+        .unwrap();
+        assert_eq!(opaque.as_rgba8().as_bytes(), &[255, 0, 0, 255]);
+
+        let clear = decode_svg(
+            br#"<svg width="1" height="1" xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1" fill="red" fill-opacity="0"/></svg>"#,
+        )
+        .unwrap();
+        assert_eq!(clear.as_rgba8().as_bytes()[3], 0, "alpha 0 must stay 0");
+    }
+
+    /// A corrupted gzip trailer (CRC-32 or ISIZE) must be refused, not decoded as success.
+    #[cfg(feature = "svg-rasterizer")]
+    #[test]
+    fn svgz_rejects_a_corrupt_trailer_crc_or_length() {
+        let svg = br#"<svg width="1" height="1" xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1" fill="red"/></svg>"#;
+        let good = gzip_wrap(svg);
+        assert!(decode_svgz(&good).is_ok(), "a well-formed member must decode");
+
+        let mut bad_crc = good.clone();
+        let n = bad_crc.len();
+        bad_crc[n - 8] ^= 0xFF; // flip a byte of the CRC-32
+        assert!(
+            decode_svgz(&bad_crc).unwrap_err().contains("CRC-32"),
+            "a corrupted CRC-32 must be reported by name"
+        );
+
+        let mut bad_len = good.clone();
+        let n = bad_len.len();
+        bad_len[n - 1] ^= 0xFF; // flip a byte of the ISIZE
+        assert!(
+            decode_svgz(&bad_len).unwrap_err().contains("ISIZE"),
+            "a corrupted ISIZE must be reported by name"
+        );
     }
 
     // ── PNG real-decode tests ────────────────────────────────────────────────

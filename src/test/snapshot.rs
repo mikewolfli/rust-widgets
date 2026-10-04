@@ -23,20 +23,53 @@ pub struct Snapshot {
     pub name: String,
     /// Raw pixel bytes, four per pixel in RGBA order.
     pub data: Vec<u8>,
-    /// Width in pixels. Not stored on disk, so it is not recovered by
-    /// [`Snapshot::load`].
+    /// Width in pixels. Persisted by [`Snapshot::save`] and recovered by
+    /// [`Snapshot::load`], so a reloaded snapshot compares its geometry too.
     pub width: u32,
-    /// Height in pixels. Not stored on disk, so it is not recovered by
-    /// [`Snapshot::load`].
+    /// Height in pixels. Persisted by [`Snapshot::save`] and recovered by
+    /// [`Snapshot::load`], so a reloaded snapshot compares its geometry too.
     pub height: u32,
+}
+
+/// On-disk magic for [`Snapshot::save`] / [`Snapshot::load`].
+const SNAPSHOT_MAGIC: &[u8; 8] = b"RWSNAP01";
+/// Byte length of the on-disk header: magic (8) + width/height/data_len (3 x 4).
+const SNAPSHOT_HEADER_LEN: usize = 8 + 12;
+
+/// The number of RGBA bytes a `width x height` snapshot must hold.
+fn expected_bytes(width: u32, height: u32) -> Result<usize, String> {
+    let pixels = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or_else(|| format!("dimensions {width}x{height} overflow"))?;
+    pixels
+        .checked_mul(4)
+        .ok_or_else(|| format!("dimensions {width}x{height} overflow the RGBA buffer"))
 }
 impl Snapshot {
     /// Creates a snapshot from a name, raw pixel bytes, and dimensions.
     ///
-    /// Nothing is validated: the length of `data` is not checked against
+    /// This is the unchecked constructor: it accepts any buffer and dimension
+    /// pair so test fixtures can be written tersely. Prefer
+    /// [`Snapshot::try_new`] when the buffer must be validated against
     /// `width * height * 4`.
     pub fn new(name: &str, data: Vec<u8>, width: u32, height: u32) -> Self {
         Self { name: name.to_string(), data, width, height }
+    }
+
+    /// Creates a snapshot, validating that `data` holds exactly
+    /// `width * height * 4` bytes of RGBA pixels.
+    ///
+    /// Returns an error describing the mismatch rather than building a snapshot
+    /// that would later panic or compare incorrectly.
+    pub fn try_new(name: &str, data: Vec<u8>, width: u32, height: u32) -> Result<Self, String> {
+        let expected = expected_bytes(width, height)?;
+        if data.len() != expected {
+            return Err(format!(
+                "buffer of {} bytes does not match {width}x{height} RGBA (expected {expected})",
+                data.len()
+            ));
+        }
+        Ok(Self { name: name.to_string(), data, width, height })
     }
     /// Hashes the pixel data with the standard library's default hasher.
     ///
@@ -48,28 +81,77 @@ impl Snapshot {
         self.data.hash(&mut hasher);
         hasher.finish()
     }
-    /// Writes the pixel data to `<dir>/<name>.bin`, creating `dir` if needed.
+    /// Writes the snapshot to `<dir>/<name>.bin`, creating `dir` if needed.
     ///
-    /// Only the raw bytes are written: the dimensions are *not* persisted, so a
-    /// snapshot reloaded by [`Snapshot::load`] comes back with `width` and
-    /// `height` set to `0`. Errors are returned as display strings rather than a
-    /// typed error.
+    /// The dimensions are persisted in a small header before the pixel bytes so
+    /// [`Snapshot::load`] can restore them; see [`Snapshot::load`] for the
+    /// format. Saving an invalid buffer (one whose length does not match
+    /// `width * height * 4`) fails rather than writing a snapshot that could
+    /// never be compared.
     pub fn save(&self, dir: &str) -> Result<(), String> {
+        let expected = expected_bytes(self.width, self.height)?;
+        if self.data.len() != expected {
+            return Err(format!(
+                "refusing to save {} bytes for {w}x{h} RGBA (expected {expected})",
+                self.data.len(),
+                w = self.width,
+                h = self.height,
+            ));
+        }
         let path = Path::new(dir).join(format!("{}.bin", self.name));
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        fs::write(&path, &self.data).map_err(|e| e.to_string())?;
+        let mut bytes = Vec::with_capacity(SNAPSHOT_HEADER_LEN + self.data.len());
+        bytes.extend_from_slice(SNAPSHOT_MAGIC);
+        bytes.extend_from_slice(&self.width.to_le_bytes());
+        bytes.extend_from_slice(&self.height.to_le_bytes());
+        bytes.extend_from_slice(&(self.data.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&self.data);
+        fs::write(&path, bytes).map_err(|e| e.to_string())?;
         Ok(())
     }
     /// Reads a previously saved snapshot from `<dir>/<name>.bin`.
     ///
-    /// The returned snapshot has the given `name` but zero dimensions, because
-    /// only pixel bytes are stored; see [`Snapshot::save`]. This is why
-    /// [`Snapshot::compare`] derives the pixel count from the data length
-    /// rather than from the dimensions.
+    /// The on-disk format is an 8-byte magic, then `width`, `height` and
+    /// `data_len` as little-endian `u32`, then the raw RGBA bytes. A file that
+    /// is truncated, carries the wrong magic, or whose recorded dimensions do
+    /// not match its buffer is rejected with an error rather than yielding a
+    /// snapshot that would mis-compare.
     pub fn load(name: &str, dir: &str) -> Result<Self, String> {
         let path = Path::new(dir).join(format!("{name}.bin"));
-        let data = fs::read(&path).map_err(|e| e.to_string())?;
-        Ok(Self { name: name.to_string(), data, width: 0, height: 0 })
+        let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+        if bytes.len() < SNAPSHOT_HEADER_LEN {
+            return Err(format!(
+                "corrupt snapshot '{}': {} bytes is shorter than the {SNAPSHOT_HEADER_LEN}-byte header",
+                path.display(),
+                bytes.len()
+            ));
+        }
+        if &bytes[..SNAPSHOT_MAGIC.len()] != SNAPSHOT_MAGIC {
+            return Err(format!("corrupt snapshot '{}': bad magic", path.display()));
+        }
+        let width = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
+        let height = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
+        let data_len = u32::from_le_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]) as usize;
+        if SNAPSHOT_HEADER_LEN + data_len != bytes.len() {
+            return Err(format!(
+                "corrupt snapshot '{}': header declares {data_len} bytes but {} remain",
+                path.display(),
+                bytes.len() - SNAPSHOT_HEADER_LEN
+            ));
+        }
+        let expected = expected_bytes(width, height)?;
+        if data_len != expected {
+            return Err(format!(
+                "corrupt snapshot '{}': {width}x{height} expects {expected} bytes, found {data_len}",
+                path.display()
+            ));
+        }
+        Ok(Self {
+            name: name.to_string(),
+            data: bytes[SNAPSHOT_HEADER_LEN..].to_vec(),
+            width,
+            height,
+        })
     }
     /// Compares this snapshot (the reference) against `other` (the candidate).
     ///
@@ -79,14 +161,34 @@ impl Snapshot {
     /// times `100.0`. So `tolerance = 0.01` allows 0.01% of pixels to differ,
     /// while `1.0` allows one percent.
     ///
-    /// The dimensions are not consulted; a length mismatch is reported as
-    /// [`SnapshotComparison::Different`] with `100.0` percent rather than being
-    /// compared pixel by pixel. An empty candidate is reported as
-    /// [`SnapshotComparison::Identical`].
+    /// The dimensions are consulted: `1x2` and `2x1` hold the same number of
+    /// bytes but are not the same image, so a geometry difference is reported as
+    /// [`SnapshotComparison::Different`] rather than compared pixel by pixel. A
+    /// buffer whose length is not a whole number of RGBA quads is also reported
+    /// as `Different` instead of panicking on the four-byte stride.
     pub fn compare(&self, other: &Snapshot, tolerance: f32) -> SnapshotComparison {
+        // A geometry difference is a difference: `1x2` and `2x1` hold the same
+        // byte count but are not the same image.
+        if self.width != other.width || self.height != other.height {
+            return SnapshotComparison::Different {
+                reason: format!(
+                    "Geometry mismatch: {0}x{1} vs {2}x{3}",
+                    self.width, self.height, other.width, other.height
+                ),
+                diff_percentage: 100.0,
+            };
+        }
         if self.data.len() != other.data.len() {
             return SnapshotComparison::Different {
                 reason: "Size mismatch".to_string(),
+                diff_percentage: 100.0,
+            };
+        }
+        // A buffer whose length is not a whole number of RGBA quads cannot be
+        // stepped in fours; report it rather than panicking on the stride.
+        if self.data.len() % 4 != 0 {
+            return SnapshotComparison::Different {
+                reason: format!("Buffer of {} bytes is not whole RGBA pixels", self.data.len()),
                 diff_percentage: 100.0,
             };
         }
@@ -267,17 +369,24 @@ impl PerformanceSnapshot {
     /// Returns `true` when `other` has the same metrics within `tolerance`.
     ///
     /// `tolerance` is a **relative fraction**, not a percentage: each pair is
-    /// compared as `|a - b| / max(a, b)` and must be at most `tolerance`, so
-    /// `0.1` allows a ten percent deviation.
+    /// compared as `|a - b| / max(|a|, |b|)` and must be at most `tolerance`, so
+    /// `0.1` allows a ten percent deviation. Using the larger magnitude as the
+    /// denominator keeps the comparison well-defined for negative metrics, where
+    /// `max(a, b)` could be non-positive or miss the actual scale.
     ///
     /// The comparison is order-sensitive and name-sensitive: differing metric
     /// counts, or a name mismatch at any position, returns `false` regardless
-    /// of the values. Pairs where both values are `<= 0.0` are treated as
-    /// matching, and NaN values never compare greater than the tolerance.
+    /// of the values. A non-finite metric (`NaN`/infinite) is a data error and
+    /// never compares as matching; an invalid `tolerance` (non-finite or
+    /// negative) likewise returns `false` rather than silently passing.
     ///
     /// Note that this is a plain predicate, not a [`SnapshotComparison`]: it
     /// does not report which metric differed or by how much.
     pub fn compare(&self, other: &PerformanceSnapshot, tolerance: f64) -> bool {
+        // An invalid tolerance cannot define a comparison, so nothing matches.
+        if !tolerance.is_finite() || tolerance < 0.0 {
+            return false;
+        }
         if self.metrics.len() != other.metrics.len() {
             return false;
         }
@@ -285,13 +394,17 @@ impl PerformanceSnapshot {
             if name1 != name2 {
                 return false;
             }
-            let diff = (value1 - value2).abs();
-            let max_val = value1.max(*value2);
-            if max_val > 0.0 {
-                let diff_percentage = diff / max_val;
-                if diff_percentage > tolerance {
-                    return false;
-                }
+            // A non-finite metric is a data error, not a value to be compared.
+            if !value1.is_finite() || !value2.is_finite() {
+                return false;
+            }
+            if value1 == value2 {
+                continue;
+            }
+            let denom = value1.abs().max(value2.abs());
+            let diff_percentage = (value1 - value2).abs() / denom;
+            if diff_percentage > tolerance {
+                return false;
             }
         }
         true
@@ -339,6 +452,8 @@ impl PerformanceSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::Path;
     #[test]
     fn test_snapshot_comparison() {
         let snapshot1 = Snapshot::new("test", vec![255, 0, 0, 255], 1, 1);
@@ -362,5 +477,144 @@ mod tests {
         snapshot3.add_metric("fps", 30.0);
         snapshot3.add_metric("memory", 1024.0);
         assert!(!snapshot1.compare(&snapshot3, 0.1));
+    }
+
+    // ── S-08: geometry validation, round-trip, and malformed-input handling ──
+
+    #[test]
+    fn try_new_validates_the_buffer_against_the_dimensions() {
+        assert!(Snapshot::try_new("ok", vec![0; 4], 1, 1).is_ok());
+        assert!(Snapshot::try_new("short", vec![0; 3], 1, 1).is_err());
+        assert!(Snapshot::try_new("long", vec![0; 8], 1, 1).is_err());
+        // 2x2 needs 16 bytes; an 8-byte buffer is 1x2's worth, not 2x2's.
+        assert!(Snapshot::try_new("wrong_geometry", vec![0; 8], 2, 2).is_err());
+    }
+
+    #[test]
+    fn compare_distinguishes_geometry_with_the_same_byte_count() {
+        // 1x2 and 2x1 both hold 8 bytes (two pixels) but are not the same image.
+        let one_by_two = Snapshot::new("a", vec![1, 2, 3, 4, 5, 6, 7, 8], 1, 2);
+        let two_by_one = Snapshot::new("b", vec![1, 2, 3, 4, 5, 6, 7, 8], 2, 1);
+        let comparison = one_by_two.compare(&two_by_one, 0.01);
+        assert!(
+            matches!(comparison, SnapshotComparison::Different { .. }),
+            "a geometry difference must not compare as identical: {comparison:?}"
+        );
+        assert!(!comparison.is_match());
+    }
+
+    #[test]
+    fn compare_does_not_panic_on_a_sub_rgba_buffer() {
+        // Same length, but not a whole number of RGBA quads. The old stride-4 loop
+        // indexed past the end and panicked; it must report a difference instead.
+        let left = Snapshot::new("a", vec![0], 1, 1);
+        let right = Snapshot::new("b", vec![0], 1, 1);
+        let comparison = left.compare(&right, 0.01);
+        assert!(matches!(comparison, SnapshotComparison::Different { .. }));
+        assert!(!comparison.is_match());
+    }
+
+    #[test]
+    fn save_and_load_round_trip_the_geometry() {
+        let dir = temp_dir("round_trip");
+        let original = Snapshot::new("shot", vec![1, 2, 3, 4, 5, 6, 7, 8], 1, 2);
+        original.save(&dir).expect("save");
+        let loaded = Snapshot::load("shot", &dir).expect("load");
+        assert_eq!(loaded.width, 1);
+        assert_eq!(loaded.height, 2);
+        assert_eq!(loaded.data, original.data);
+        assert!(matches!(loaded.compare(&original, 0.0), SnapshotComparison::Identical));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_rejects_a_buffer_that_does_not_match_the_dimensions() {
+        let dir = temp_dir("bad_save");
+        let bad = Snapshot::new("bad", vec![1, 2, 3], 1, 1);
+        assert!(bad.save(&dir).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_rejects_corrupt_files_clearly() {
+        let dir = temp_dir("corrupt");
+        fs::create_dir_all(&dir).unwrap();
+
+        // Too short to contain the header.
+        let path = Path::new(&dir).join("short.bin");
+        fs::write(&path, [0u8; 4]).unwrap();
+        assert!(Snapshot::load("short", &dir).is_err());
+
+        // Right length but wrong magic.
+        let path = Path::new(&dir).join("magic.bin");
+        fs::write(&path, [0u8; SNAPSHOT_HEADER_LEN]).unwrap();
+        assert!(Snapshot::load("magic", &dir).is_err());
+
+        // Valid header but a declared buffer length that does not match the file.
+        let path = Path::new(&dir).join("truncated.bin");
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(SNAPSHOT_MAGIC);
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.push(0); // one byte of a four-byte pixel is missing
+        fs::write(&path, bytes).unwrap();
+        assert!(Snapshot::load("truncated", &dir).is_err());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A unique scratch directory under the system temp dir, removed by the caller.
+    fn temp_dir(tag: &str) -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir()
+            .join(format!("rw_snapshot_{}_{}_{}", tag, std::process::id(), unique))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    // ── S-09: NaN / Inf / invalid-tolerance semantics ──
+
+    #[test]
+    fn performance_compare_rejects_non_finite_metrics() {
+        let baseline = perf(&[("frame_ms", 1.0)]);
+        let nan = perf(&[("frame_ms", f64::NAN)]);
+        let inf = perf(&[("frame_ms", f64::INFINITY)]);
+        assert!(!baseline.compare(&nan, 0.01), "a NaN metric must not pass");
+        assert!(!baseline.compare(&inf, 0.01), "an infinite metric must not pass");
+    }
+
+    #[test]
+    fn performance_compare_rejects_invalid_tolerances() {
+        let baseline = perf(&[("frame_ms", 1.0)]);
+        let candidate = perf(&[("frame_ms", 1.0)]);
+        assert!(!baseline.compare(&candidate, f64::NAN));
+        assert!(!baseline.compare(&candidate, f64::INFINITY));
+        assert!(!baseline.compare(&candidate, -0.1));
+        assert!(baseline.compare(&candidate, 0.0), "an exact match passes a zero tolerance");
+    }
+
+    #[test]
+    fn performance_compare_defines_signed_metric_semantics() {
+        // Negative values use the larger magnitude as the denominator, so a small
+        // relative deviation still passes.
+        let a = perf(&[("rate", -100.0)]);
+        let b = perf(&[("rate", -101.0)]);
+        assert!(a.compare(&b, 0.05), "-100 vs -101 is a 1% deviation");
+        assert!(!a.compare(&b, 0.001), "and fails a tighter tolerance");
+        // A sign flip is a large change and must fail, not be skipped as non-positive.
+        let positive = perf(&[("rate", 100.0)]);
+        let negative = perf(&[("rate", -100.0)]);
+        assert!(!positive.compare(&negative, 0.1));
+    }
+
+    fn perf(metrics: &[(&str, f64)]) -> PerformanceSnapshot {
+        let mut snapshot = PerformanceSnapshot::new("perf");
+        for (name, value) in metrics {
+            snapshot.add_metric(name, *value);
+        }
+        snapshot
     }
 }
