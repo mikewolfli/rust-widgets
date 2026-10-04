@@ -3977,6 +3977,7 @@ dependencies = [
  "unicode-bidi",
  "ureq",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wayland-client",
  "wayland-cursor",
  "wayland-protocols",

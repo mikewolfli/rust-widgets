@@ -13,7 +13,9 @@
 //! Signal<T>
 //!   └── Arc<SignalInner<T>>
 //!         └── RwLock<HashMap<ConnectionHandle, SlotEntry<T>>>
-//!               ├── callback: Box<dyn FnMut(Arc<T>) + Send + Sync>
+//!               ├── slot: Arc<SlotSlot<T>>
+//!               │     ├── callback: Mutex<FnMut(Arc<T>)>
+//!               │     └── pending: Mutex<VecDeque<T>>
 //!               ├── once: bool          — auto-disconnect after first emit
 //!               ├── blocked: bool       — skip this slot on emit
 //!               └── priority: Priority  — High > Normal > Low
@@ -23,7 +25,7 @@
 //! High → Normal → Low.  Inside each bucket, slots fire in insertion order.
 
 use crate::compat::{lock, read_lock, write_lock, Box, HashMap, Vec};
-use crate::compat::{Mutex, RwLock};
+use crate::compat::{Mutex, RwLock, VecDeque};
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -79,13 +81,14 @@ struct SlotSlot<T: Clone + Send + 'static> {
     /// Values deferred by a concurrent emit whose `try_lock` found the callback busy.
     ///
     /// Stored as owned `T` rather than `Arc<T>` so this type is `Send + Sync` from `T: Send` alone,
-    /// matching `Signal<T>`'s public bound. The value is re-wrapped in an `Arc` when it is delivered.
-    pending: Mutex<crate::compat::Vec<T>>,
+    /// matching `Signal<T>`'s public bound. FIFO order preserves the order in which concurrent
+    /// emitters acquired this queue; each value is re-wrapped in an `Arc` when delivered.
+    pending: Mutex<VecDeque<T>>,
 }
 
 impl<T: Clone + Send + 'static> SlotSlot<T> {
     fn new(callback: SlotFn<T>) -> Self {
-        Self { callback: Mutex::new(callback), pending: Mutex::new(crate::compat::Vec::new()) }
+        Self { callback: Mutex::new(callback), pending: Mutex::new(VecDeque::new()) }
     }
 
     /// Runs `value` on this slot if the callback is free, otherwise defers it.
@@ -94,13 +97,13 @@ impl<T: Clone + Send + 'static> SlotSlot<T> {
     fn deliver(&self, value: Arc<T>) -> bool {
         let Some(mut callback) = crate::compat::try_lock_recover(&self.callback) else {
             // Busy: defer rather than block (which could cycle) or drop (which loses the value).
-            lock(&self.pending).push((*value).clone());
+            lock(&self.pending).push_back((*value).clone());
             return false;
         };
         callback(value);
         // Deliver everything another thread queued while we held the callback, before releasing it.
         loop {
-            let next = lock(&self.pending).pop();
+            let next = lock(&self.pending).pop_front();
             match next {
                 Some(queued) => callback(Arc::new(queued)),
                 None => break,
@@ -135,7 +138,6 @@ struct SlotEntry<T: Clone + Send + 'static> {
 // The set is keyed by `(signal identity, connection handle)`, which together identify one slot.
 // A plain comment rather than `///`: `thread_local!` does not turn leading doc comments into item
 // docs, and the `cfg` in between would make them dangle anyway.
-#[cfg(not(alloc_frugal))]
 thread_local! {
     #[allow(clippy::missing_const_for_thread_local)]
     static EXECUTING_SLOTS: core::cell::RefCell<crate::compat::Vec<(usize, ConnectionHandle)>> =
@@ -143,16 +145,13 @@ thread_local! {
 }
 
 /// Whether `(identity, handle)` is currently executing on this thread.
-#[cfg(not(alloc_frugal))]
 fn slot_running_here(identity: usize, handle: ConnectionHandle) -> bool {
     EXECUTING_SLOTS.with(|set| set.borrow().contains(&(identity, handle)))
 }
 
 /// Records `(identity, handle)` as executing on this thread for the guard's lifetime.
-#[cfg(not(alloc_frugal))]
 struct SlotRunning(usize, ConnectionHandle);
 
-#[cfg(not(alloc_frugal))]
 impl SlotRunning {
     fn new(identity: usize, handle: ConnectionHandle) -> Self {
         EXECUTING_SLOTS.with(|set| set.borrow_mut().push((identity, handle)));
@@ -160,7 +159,6 @@ impl SlotRunning {
     }
 }
 
-#[cfg(not(alloc_frugal))]
 impl Drop for SlotRunning {
     fn drop(&mut self) {
         EXECUTING_SLOTS.with(|set| {
@@ -397,16 +395,16 @@ impl<T: Clone + Send + 'static> Signal<T> {
 
     /// Emit a cloned value to all connected (non-blocked) slots.
     ///
-    /// This method safely processes slots **one at a time** by temporarily
-    /// taking each slot's callback (via `Option::take`) under a write lock,
-    /// leaving the handle **in** the HashMap so that `disconnect(own_handle)`
-    /// can find and remove it. The callback is invoked **outside** the lock,
-    /// and if the handle still exists afterward (i.e., was not self-disconnected),
-    /// the callback is restored. Once-slots are removed unconditionally after
-    /// invocation. Callbacks may safely call `connect`, `disconnect`,
-    /// `disconnect_all`, `block`, `unblock`, or `emit` on **the same Signal**
-    /// without deadlocking. Self-disconnect from within a callback is honored
-    /// and does not get undone by a stale re-insertion.
+    /// The slot list is snapshotted under a read lock. Each slot is then looked
+    /// up under a short map lock and invoked without holding the signal lock.
+    /// Its callback has a per-slot mutex; a concurrent emit that finds it busy
+    /// defers its value to that slot's pending queue rather than blocking and
+    /// risking a cross-signal deadlock or dropping the value. Once-slots are
+    /// removed under the map lock before their callback is invoked, so only one
+    /// concurrent emit can claim them. Callbacks may safely call `connect`,
+    /// `disconnect`, `disconnect_all`, `block`, `unblock`, or `emit` on **the
+    /// same Signal** without deadlocking. Self-disconnect from within an ordinary
+    /// callback is honored because the callback is never reinserted.
     ///
     /// Slots are invoked in priority order (High → Normal → Low).
     /// Blocked slots are skipped entirely.
@@ -415,8 +413,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
     ///
     /// A slot that emits the **same** signal re-enters this function. The
     /// re-entrant pass deliberately skips any slot whose callback is currently
-    /// executing: the outer pass owns that callback (it was `take`n out of the
-    /// map), so there is nothing to call. This makes recursive emission
+    /// executing. This makes recursive emission
     /// terminate rather than recurse without bound — a slot that emits the signal
     /// it is handling would otherwise loop forever.
     ///
@@ -430,8 +427,8 @@ impl<T: Clone + Send + 'static> Signal<T> {
     /// Re-entrancy is a *same-thread* fact: the slot is on this thread's stack. An emit on a
     /// **different** thread is not re-entrancy, and the value it carries must not be dropped merely
     /// because this thread happens to be inside a callback. Each slot's callback lives behind its own
-    /// mutex, so a concurrent emit waits for that one slot and then delivers — it never skips a
-    /// connected slot, and it never holds a signal-global lock (BLUE-issues E-21 and E-29).
+    /// mutex, so a concurrent emit defers its value to that slot and the running thread delivers it
+    /// after the current callback; it never holds a signal-global lock (BLUE-issues E-21 and E-29).
     pub fn emit(&self, value: T) {
         self.emit_inner(Arc::new(value));
     }
@@ -460,18 +457,24 @@ impl<T: Clone + Send + 'static> Signal<T> {
         //    cross-signal lock cycle (E-29); the per-slot mutex is what keeps a concurrent emit from
         //    dropping the value (E-21).
         for (handle, _priority, _sequence) in snapshot {
-            // Clone the slot out of the map (cheap, an `Arc` bump) while holding only a read lock.
-            let slot =
-                {
-                    let slots = read_lock(&self.inner.slots);
-                    slots.get(&handle).and_then(|entry| {
-                        if entry.blocked {
-                            None
-                        } else {
-                            entry.slot.clone()
-                        }
-                    })
+            // Claim once-slots atomically with the lookup: removing one under the same map lock
+            // prevents another emit that already snapshotted this handle from cloning the slot
+            // while the first callback is still running.
+            let slot = {
+                let mut slots = write_lock(&self.inner.slots);
+                let Some(entry) = slots.get(&handle) else {
+                    continue;
                 };
+                if entry.blocked {
+                    None
+                } else {
+                    let slot = entry.slot.clone();
+                    if entry.once {
+                        slots.remove(&handle);
+                    }
+                    slot
+                }
+            };
             let Some(slot) = slot else {
                 // Blocked, or disconnected by a prior callback in this pass.
                 continue;
@@ -481,26 +484,13 @@ impl<T: Clone + Send + 'static> Signal<T> {
             // executing on this very thread, so running it again would recurse without bound. The
             // documented contract is that the slot does not run twice from one stack. Cross-thread
             // callers are NOT skipped — they defer their value to the running thread (see `deliver`).
-            #[cfg(not(alloc_frugal))]
             if slot_running_here(identity, handle) {
                 continue;
-            }
-
-            // A once-slot is removed from the map before it runs, so its entry cannot be invoked
-            // again even if the callback emits re-entrantly. Removal takes the write lock briefly and
-            // is released before the call.
-            let is_once = {
-                let slots = read_lock(&self.inner.slots);
-                slots.get(&handle).map(|entry| entry.once).unwrap_or(false)
-            };
-            if is_once {
-                let _ = self.inner.disconnect(handle);
             }
 
             // Record that this slot is executing on this thread before running it, so a nested emit of
             // the same signal skips it instead of recursing. The guard clears the marker on normal
             // return and on an unwind out of the callback.
-            #[cfg(not(alloc_frugal))]
             let _running = SlotRunning::new(identity, handle);
 
             // `deliver` takes the per-slot callback with `try_lock`: it runs the callback here when
@@ -784,6 +774,85 @@ mod emit_behaviour_tests {
 
         signal.emit(2);
         assert_eq!(calls.load(Ordering::SeqCst), 1, "a once slot must not run twice");
+    }
+
+    /// Concurrent emitters must not both claim a once-slot from the same snapshot.
+    #[test]
+    fn concurrent_emits_claim_a_once_slot_only_once() {
+        use std::sync::Barrier;
+
+        const ROUNDS: usize = 200;
+        let signal = Signal::<u32>::new();
+        let start = Arc::new(Barrier::new(3));
+        let done = Arc::new(Barrier::new(3));
+        let mut workers = Vec::new();
+
+        for _ in 0..2 {
+            let worker_signal = signal.clone();
+            let worker_start = Arc::clone(&start);
+            let worker_done = Arc::clone(&done);
+            workers.push(std::thread::spawn(move || {
+                for round in 0..ROUNDS {
+                    worker_start.wait();
+                    worker_signal.emit(round as u32);
+                    worker_done.wait();
+                }
+            }));
+        }
+
+        for _ in 0..ROUNDS {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let calls_once = Arc::clone(&calls);
+            let handle = signal.connect_once(move |_| {
+                calls_once.fetch_add(1, Ordering::SeqCst);
+            });
+
+            start.wait();
+            done.wait();
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                1,
+                "simultaneous emitters must invoke a once-slot exactly once"
+            );
+            assert!(!signal.is_connected(handle), "the once-slot must be removed");
+        }
+
+        for worker in workers {
+            worker.join().expect("emit worker must not panic");
+        }
+    }
+
+    /// Values deferred while a callback is busy must retain their arrival order.
+    #[test]
+    fn concurrent_pending_values_are_delivered_fifo() {
+        use std::sync::Barrier;
+
+        let signal = Signal::<u32>::new();
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let slot_entered = Arc::clone(&entered);
+        let slot_release = Arc::clone(&release);
+        let slot_observed = Arc::clone(&observed);
+        signal.connect(move |value| {
+            let value = *value;
+            slot_observed.lock().unwrap().push(value);
+            if value == 1 {
+                slot_entered.wait();
+                slot_release.wait();
+            }
+        });
+
+        let worker_signal = signal.clone();
+        let worker = std::thread::spawn(move || worker_signal.emit(1));
+        entered.wait();
+        signal.emit(2);
+        signal.emit(3);
+        release.wait();
+        worker.join().expect("the in-flight emitter must complete");
+
+        assert_eq!(*observed.lock().unwrap(), vec![1, 2, 3]);
     }
 
     /// Blocked slots are skipped, and unblocking restores them.

@@ -92,9 +92,19 @@ impl VideoPlayer {
 
     /// Sets the simulated video duration in seconds used by the clock, seek bar
     /// and time display. The value comes from the caller; it is not measured
-    /// from any media file.
+    /// from any media file. Non-finite values are ignored. If the duration is
+    /// shortened below the current position, the clock is clamped and emits
+    /// `time_updated` with the new position.
     pub fn set_duration(&mut self, duration: f64) {
+        if !duration.is_finite() {
+            return;
+        }
         self.duration = duration.max(0.0);
+        let clamped_time = self.current_time.clamp(0.0, self.duration);
+        if clamped_time != self.current_time {
+            self.current_time = clamped_time;
+            self.time_updated.emit(self.current_time);
+        }
         self.base.request_redraw();
     }
 
@@ -184,6 +194,9 @@ impl VideoPlayer {
 
     /// Sets the playback rate multiplier.
     pub fn set_playback_rate(&mut self, rate: f32) {
+        if !rate.is_finite() {
+            return;
+        }
         self.playback_rate = rate.max(0.1);
         self.base.request_redraw();
     }
@@ -761,6 +774,8 @@ mod tests {
         assert_eq!(vp.playback_rate(), 2.0);
         vp.set_playback_rate(0.0); // clamped
         assert_eq!(vp.playback_rate(), 0.1);
+        vp.set_playback_rate(f32::INFINITY);
+        assert_eq!(vp.playback_rate(), 0.1, "a non-finite rate must be ignored");
     }
 
     #[test]
@@ -796,6 +811,28 @@ mod tests {
         assert!((vp.current_time() - 10.0).abs() < 0.001);
         vp.tick(20.0);
         assert!((vp.current_time() - 30.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn shrinking_duration_clamps_the_clock_and_emits_the_new_time() {
+        let mut vp = VideoPlayer::new(Rect::new(0, 0, 320, 240));
+        vp.set_duration(60.0);
+        vp.seek(20.0);
+
+        let observed = Arc::new(Mutex::new(None));
+        vp.time_updated.connect({
+            let observed = Arc::clone(&observed);
+            move |time| {
+                *observed.lock().unwrap() = Some(*time);
+            }
+        });
+
+        vp.set_duration(10.0);
+        assert_eq!(vp.current_time(), 10.0);
+        assert_eq!(*observed.lock().unwrap(), Some(10.0));
+
+        vp.set_duration(f64::INFINITY);
+        assert_eq!(vp.duration(), 10.0, "a non-finite duration must be ignored");
     }
 
     #[test]

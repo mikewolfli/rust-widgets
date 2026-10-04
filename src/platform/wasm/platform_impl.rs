@@ -300,20 +300,14 @@ impl Platform for WasmPlatform {
                 // instead of being indistinguishable from success. The returned `true` means "the write
                 // was initiated and mirrored", which is the strongest synchronous claim available —
                 // and it is stated as such rather than pretending the system write already succeeded.
-                let on_rejected =
-                    wasm_bindgen::closure::Closure::<dyn FnMut(wasm_bindgen::JsValue)>::new(
-                        move |err: wasm_bindgen::JsValue| {
-                            log::warn!(
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Err(err) = wasm_bindgen_futures::JsFuture::from(promise).await {
+                        log::warn!(
                             "[wasm] clipboard.writeText was rejected ({err:?}); the synchronous \
                              mirror already holds the text, but the system clipboard was not updated"
                         );
-                        },
-                    );
-                let _ = promise.catch(&on_rejected);
-                // The rejection handler must outlive this call (the promise may settle later), so it is
-                // handed to the JS heap. It fires at most once, so the retained allocation is bounded
-                // by the number of clipboard writes, which is small and one-shot in practice.
-                on_rejected.forget();
+                    }
+                });
                 return true;
             }
         }

@@ -320,7 +320,7 @@ android = ["dep:jni"]
 # `src/bindings/java_jni.rs`) and `cfg(feature = "jni")` work; mirrors the
 # `serde`/`dep:serde` pattern.
 jni = ["dep:jni"]
-wasm = ["dep:wasm-bindgen", "dep:web-sys", "dep:js-sys", "serde"]
+wasm = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys", "dep:js-sys", "serde"]
 harmony = []
 # The ArkUI **XComponent** bridge for the HarmonyOS backend: binds
 # `OH_NativeXComponent` so the library gets a real surface plus touch/mouse/key/focus
@@ -753,6 +753,7 @@ boa_engine = { version = "0.19", optional = true }
 wgpu = { version = "30.0.1", optional = true }
 
 wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
 js-sys = { version = "0.3", optional = true }
 # Cross-platform FFmpeg (system lib). On Linux: apt install libav*-dev,
 # macOS: brew install ffmpeg, Windows: vcpkg install ffmpeg.
@@ -1170,4 +1171,3 @@ required-features = ["desktop"]
 [[example]]
 name = "style_probe7"
 required-features = ["desktop"]
-
