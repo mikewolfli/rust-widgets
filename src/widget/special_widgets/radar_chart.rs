@@ -1198,8 +1198,13 @@ mod tests {
 
         assert_ne!(painted.len(), 0);
         assert_eq!(painted.len(), bare.len(), "both renders cover the same surface");
-        let differing =
-            painted.as_chunks::<4>().0.iter().zip(bare.as_chunks::<4>().0.iter()).filter(|(a, b)| a != b).count();
+        let differing = painted
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(bare.as_chunks::<4>().0.iter())
+            .filter(|(a, b)| a != b)
+            .count();
         assert!(
             differing > 0,
             "turning the grid off must change the picture; the two renders were identical"

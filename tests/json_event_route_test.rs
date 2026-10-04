@@ -56,6 +56,23 @@ fn with_clean_handlers(body: impl FnOnce()) {
     clear_global_handlers();
 }
 
+/// Serialises the tests that read the **process-global** cross-thread counter.
+///
+/// `cross_thread_skips()` is a single process-wide atomic, not a per-test value: the whole point of
+/// the contract it records is that a skip on a worker thread is observable from the thread that
+/// owns the binding, so it cannot be thread-local. `cargo test` runs cases in parallel by default,
+/// so two cases that `reset_cross_thread_skips()` and then assert on the counter race — one can
+/// reset the other's count between its emit and its read, turning an exact `== 1` assertion into a
+/// flake. Holding this lock for the whole reset→emit→read sequence makes each such case atomic with
+/// respect to the others; it does not touch the product contract, only the test's access to it.
+static CROSS_THREAD_COUNTER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Runs `body` while holding [`CROSS_THREAD_COUNTER_LOCK`].
+fn serialised_cross_thread_counter(body: impl FnOnce()) {
+    let _guard = CROSS_THREAD_COUNTER_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    body();
+}
+
 /// A handler registered under `name` that counts its invocations.
 fn counting_handler(name: &str) -> Arc<AtomicUsize> {
     let calls = Arc::new(AtomicUsize::new(0));
@@ -495,34 +512,37 @@ fn a_typo_in_an_event_name_does_not_cost_the_node_its_other_binding() {
 /// rather than indistinguishable from "no handler was registered".
 #[test]
 fn a_cross_thread_emission_is_reported_rather_than_silently_skipped() {
-    with_clean_handlers(|| {
-        rust_widgets::json::reset_cross_thread_skips();
-        let calls = counting_handler("on_go");
-        let json = r#"{"window":{"id":"w","title":"T","width":400,"height":300,"layout":{
-            "type":"vbox","children":[{"button":{"id":"b","text":"Go",
-                "events":{"clicked":"on_go"}}}]}}}"#;
+    serialised_cross_thread_counter(|| {
+        with_clean_handlers(|| {
+            rust_widgets::json::reset_cross_thread_skips();
+            let calls = counting_handler("on_go");
+            let json = r#"{"window":{"id":"w","title":"T","width":400,"height":300,"layout":{
+                "type":"vbox","children":[{"button":{"id":"b","text":"Go",
+                    "events":{"clicked":"on_go"}}}]}}}"#;
 
-        let bound = JsonLoader::load(json).expect("the document must load");
-        let id = mounted_id(&bound, "b");
+            let bound = JsonLoader::load(json).expect("the document must load");
+            let id = mounted_id(&bound, "b");
 
-        // Grab the base `clicked` signal (a `Send + Sync` `GenericSignal`) and emit it on a worker.
-        let signal =
-            rust_widgets::widget::runtime::with_widget(id, |widget| widget.base().clicked.clone())
-                .expect("the button must be mounted");
-        let worker = std::thread::spawn(move || signal.emit());
-        worker.join().expect("the worker must not panic");
+            // Grab the base `clicked` signal (a `Send + Sync` `GenericSignal`) and emit it on a worker.
+            let signal = rust_widgets::widget::runtime::with_widget(id, |widget| {
+                widget.base().clicked.clone()
+            })
+            .expect("the button must be mounted");
+            let worker = std::thread::spawn(move || signal.emit());
+            worker.join().expect("the worker must not panic");
 
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            0,
-            "a GUI handler must not run on a worker thread"
-        );
-        assert_eq!(
-            rust_widgets::json::cross_thread_skips(),
-            1,
-            "the off-thread emission must be recorded, so it is no longer a silent drop"
-        );
-        rust_widgets::json::reset_cross_thread_skips();
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                0,
+                "a GUI handler must not run on a worker thread"
+            );
+            assert_eq!(
+                rust_widgets::json::cross_thread_skips(),
+                1,
+                "the off-thread emission must be recorded, so it is no longer a silent drop"
+            );
+            rust_widgets::json::reset_cross_thread_skips();
+        });
     });
 }
 
@@ -536,53 +556,56 @@ fn a_cross_thread_emission_is_reported_rather_than_silently_skipped() {
 /// name collision cannot bypass it; the name is used only in the diagnostic.
 #[test]
 fn a_differently_named_thread_cannot_bypass_affinity_by_sharing_a_name() {
-    with_clean_handlers(|| {
-        rust_widgets::json::reset_cross_thread_skips();
-        let bound_calls = counting_handler("go");
-        let json = r#"{"window":{"id":"w","title":"T","width":400,"height":300,"layout":{
-            "type":"vbox","children":[{"button":{"id":"b","text":"Go",
-                "events":{"clicked":"go"}}}]}}}"#;
+    serialised_cross_thread_counter(|| {
+        with_clean_handlers(|| {
+            rust_widgets::json::reset_cross_thread_skips();
+            let bound_calls = counting_handler("go");
+            let json = r#"{"window":{"id":"w","title":"T","width":400,"height":300,"layout":{
+                "type":"vbox","children":[{"button":{"id":"b","text":"Go",
+                    "events":{"clicked":"go"}}}]}}}"#;
 
-        let bound = JsonLoader::load(json).expect("the document must load");
-        let id = mounted_id(&bound, "b");
-        let signal =
-            rust_widgets::widget::runtime::with_widget(id, |widget| widget.base().clicked.clone())
-                .expect("the button must be mounted");
-
-        // A worker with the *same name* as this test thread, registering its own thread-local `go`
-        // and emitting the bound control's signal. With name-based affinity its handler ran.
-        let worker_name = std::thread::current()
-            .name()
-            .map(str::to_owned)
-            .unwrap_or_else(|| "test-thread".to_string());
-        let worker_calls = std::sync::Arc::new(AtomicUsize::new(0));
-        let worker_sink = std::sync::Arc::clone(&worker_calls);
-        let worker = std::thread::Builder::new()
-            .name(worker_name)
-            .spawn(move || {
-                rust_widgets::json::register_global_handler("go", move |_ctx| {
-                    worker_sink.fetch_add(1, Ordering::SeqCst);
-                });
-                signal.emit();
+            let bound = JsonLoader::load(json).expect("the document must load");
+            let id = mounted_id(&bound, "b");
+            let signal = rust_widgets::widget::runtime::with_widget(id, |widget| {
+                widget.base().clicked.clone()
             })
-            .expect("spawn the same-named worker");
-        worker.join().expect("the worker must not panic");
+            .expect("the button must be mounted");
 
-        assert_eq!(
-            worker_calls.load(Ordering::SeqCst),
-            0,
-            "a same-named thread is still a different thread; its handler must not run"
-        );
-        assert_eq!(
-            bound_calls.load(Ordering::SeqCst),
-            0,
-            "and the bound thread's handler runs here"
-        );
-        assert!(
-            rust_widgets::json::cross_thread_skips() >= 1,
-            "the cross-thread emission must be reported even when the name collides"
-        );
-        rust_widgets::json::reset_cross_thread_skips();
+            // A worker with the *same name* as this test thread, registering its own thread-local `go`
+            // and emitting the bound control's signal. With name-based affinity its handler ran.
+            let worker_name = std::thread::current()
+                .name()
+                .map(str::to_owned)
+                .unwrap_or_else(|| "test-thread".to_string());
+            let worker_calls = std::sync::Arc::new(AtomicUsize::new(0));
+            let worker_sink = std::sync::Arc::clone(&worker_calls);
+            let worker = std::thread::Builder::new()
+                .name(worker_name)
+                .spawn(move || {
+                    rust_widgets::json::register_global_handler("go", move |_ctx| {
+                        worker_sink.fetch_add(1, Ordering::SeqCst);
+                    });
+                    signal.emit();
+                })
+                .expect("spawn the same-named worker");
+            worker.join().expect("the worker must not panic");
+
+            assert_eq!(
+                worker_calls.load(Ordering::SeqCst),
+                0,
+                "a same-named thread is still a different thread; its handler must not run"
+            );
+            assert_eq!(
+                bound_calls.load(Ordering::SeqCst),
+                0,
+                "and the bound thread's handler runs here"
+            );
+            assert!(
+                rust_widgets::json::cross_thread_skips() >= 1,
+                "the cross-thread emission must be reported even when the name collides"
+            );
+            rust_widgets::json::reset_cross_thread_skips();
+        });
     });
 }
 

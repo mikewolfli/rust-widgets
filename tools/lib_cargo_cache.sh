@@ -24,6 +24,7 @@
 #   * `Cargo.lock` (dependency graph);
 #   * `Cargo.toml` (feature definitions — a `features` edit changes what a flag means);
 #   * the toolchain version (`rustc -Vv`);
+#   * the exported environment, since Cargo, compiler, and test behavior can be configured there;
 #   * a digest of the source tree (`src/`, `examples/`, `tests/`, `benches/`) **without** the build
 #     directory.
 #
@@ -33,10 +34,10 @@
 #
 # # What it is NOT
 #
-# It is not a way to make a gate check less. A cached step stores both the exit status **and** the
-# captured output, so the caller still sees exactly the output it would have seen, and still fails
-# for the same reason. `--no-cache` (or `RW_GATE_NO_CACHE=1`) bypasses it, which is how you debug a
-# step you do not trust.
+# It is not a way to make a gate check less. Only successful results are cached; failures and
+# timeouts are always rerun so a transient failure cannot become a persistent verdict. A cache hit
+# replays the successful output. `--no-cache` (or `RW_GATE_NO_CACHE=1`) bypasses it, which is how
+# you debug a step you do not trust.
 #
 # # `rw_cargo_cached` is for **pure** steps only — a generator must not use it
 #
@@ -124,7 +125,7 @@ _rw_digest_stream() {
   fi
 }
 
-# The full cache key for a cargo argv: toolchain + argv + source digest.
+# The full cache key for a cargo argv: toolchain + argv + environment + source digest.
 #
 # # Why this prints with `printf` rather than relying on the last command's status
 #
@@ -141,16 +142,21 @@ _rw_cache_key() {
   toolchain="$(rustc -Vv 2>/dev/null | tr '\n' ' ')"
   local argv_digest
   argv_digest="$(printf '%s\n%s\n' "$toolchain" "$*" | _rw_digest_stream)"
+  local environment_digest
+  environment_digest="$(
+    while IFS= read -r name; do
+      printf '%s=%q\n' "$name" "${!name}"
+    done < <(compgen -e) | LC_ALL=C sort | _rw_digest_stream
+  )"
   local source_digest
   source_digest="$(_rw_source_digest)"
-  printf '%s\n%s\n' "$argv_digest" "$source_digest"
+  printf '%s\n%s\n%s\n' "$argv_digest" "$environment_digest" "$source_digest"
 }
 
 # rw_cargo_cached <seconds> <cargo args…>
 #
-# Runs cargo under a wall-clock bound, reusing a previous run's status and output when the key
-# matches. Prints the captured output to stdout (and, for a cached failure, the cached stderr to
-# stderr) so the caller sees what it would have seen.
+# Runs cargo under a wall-clock bound, reusing a previous successful result when the key matches.
+# Prints the captured output to stdout and stderr so a cache hit remains auditable.
 rw_cargo_cached() {
   local budget="${1:-900}"
   shift || true
@@ -170,7 +176,7 @@ rw_cargo_cached() {
     rw_run_bounded "$budget" cargo "$@"
     return $?
   fi
-  # A key is two lines (argv digest + source digest); join so it is one filename component.
+  # A key is three lines (argv, environment, and source digests); join it for the filename.
   local slug
   slug="$(printf '%s' "$key" | tr '\n' '-')"
 
@@ -206,15 +212,12 @@ rw_cargo_cached() {
   cat "$tmp_out"
   cat "$tmp_err" >&2
 
-  # A timeout (124) is a *transient* verdict, not a stable conclusion: it is often
-  # caused by a held build lock or a contended runner, and the same key on the next
-  # run may legitimately finish. Persisting it would replay "timed out" forever and
-  # stop the gate from ever verifying again (principle #58/#59: report the timeout,
-  # do not launder it into a cached pass or fail). A genuine non-zero exit is a
-  # deterministic compile/test result and is cached as before.
-  if [ "$status" -eq 124 ]; then
+  # Any failure can be transient (lock contention, resource pressure, flaky tests), so only
+  # persist successful verification results. A timeout must never prevent the next run from
+  # actually checking the inputs again.
+  if [ "$status" -ne 0 ]; then
     rm -f "$tmp_out" "$tmp_err"
-    return 124
+    return "$status"
   fi
 
   mv "$tmp_out" "$entry.out"

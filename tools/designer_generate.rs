@@ -84,6 +84,7 @@ exit status:
   2  the arguments or the project document could not be used";
 
 /// The parsed command line.
+#[derive(Debug)]
 struct Options {
     project: String,
     root: std::path::PathBuf,

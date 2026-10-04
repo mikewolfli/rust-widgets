@@ -6929,4 +6929,63 @@ mod tests {
         assert!(!is_mounted(id), "the read-loan epilogue must not resurrect the widget");
         assert!(!unregister(id), "the id must already be fully unregistered");
     }
+
+    // ── Host-window id translation (the P-05 seam) ──────────────────────────────
+
+    /// A window widget's host id round-trips: `window -> host -> window`.
+    ///
+    /// The `macos_objc2`/`windows`/`wayland` backends allocate host ids in a space that is
+    /// **disjoint** from the widget id space (the platform counts from 1, the runtime reserves
+    /// `0x5345_4C46_…`). An OS callback hands the backend its own host id, and the backend must
+    /// translate it back before any registry lookup: `widget_id_for_host_window(host)` is that
+    /// inverse. This pins the translation the objc2 render/invalidate path (P-05) depends on,
+    /// which no test previously exercised.
+    #[test]
+    fn a_widget_window_id_round_trips_through_its_host_id() {
+        let widget = register(Box::new(crate::widget::Label::new(
+            "win".to_string(),
+            Rect::new(0, 0, 100, 80),
+        )))
+        .expect("mount");
+        let _unmount = MountGuard(widget);
+
+        // The host number is deliberately in the *platform* space, not the widget space.
+        let host: ObjectId = 7;
+        assert!(set_host_window(widget, host), "a mounted window must accept a host association");
+        assert_eq!(host_window_for(widget), Some(host), "window -> host");
+        assert_eq!(widget_id_for_host_window(host), Some(widget), "host -> window");
+        // An id the platform never built a host for resolves to nothing, not to a wrong widget.
+        assert_eq!(host_window_for(host), None, "a host id is not itself a widget");
+        assert_eq!(widget_id_for_host_window(widget), None, "a widget id is not a host id");
+    }
+
+    /// The host association is dropped with the widget, so a recycled id cannot inherit it.
+    #[test]
+    fn unmounting_a_window_clears_its_host_association() {
+        let widget = register(Box::new(crate::widget::Label::new(
+            "win".to_string(),
+            Rect::new(0, 0, 100, 80),
+        )))
+        .expect("mount");
+        let host: ObjectId = 99;
+        assert!(set_host_window(widget, host));
+        assert_eq!(widget_id_for_host_window(host), Some(widget));
+
+        unregister(widget);
+
+        assert_eq!(host_window_for(widget), None, "the mapping must not outlive the widget");
+        assert_eq!(
+            widget_id_for_host_window(host),
+            None,
+            "a later widget reusing this host id must not resolve to the dead one"
+        );
+    }
+
+    /// An unmounted id cannot be given a host window: a mapping to nothing is refused.
+    #[test]
+    fn set_host_window_refuses_an_unmounted_id() {
+        let ghost: ObjectId = 0x5345_4C46_DEAD_BEEF;
+        assert!(!set_host_window(ghost, 1), "only a mounted window may carry a host id");
+        assert_eq!(host_window_for(ghost), None);
+    }
 }

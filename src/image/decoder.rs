@@ -1389,6 +1389,16 @@ fn next_pnm_token(data: &[u8], pos: &mut usize) -> Result<u32, String> {
         .map_err(|_| format!("PNM header token must be a decimal integer, got {token:?}"))
 }
 
+fn pnm_binary_raster_start(data: &[u8], pos: usize) -> Result<usize, String> {
+    let delimiter = data
+        .get(pos)
+        .copied()
+        .filter(u8::is_ascii_whitespace)
+        .ok_or("PNM binary header must end with whitespace")?;
+    let delimiter_len = if delimiter == b'\r' && data.get(pos + 1) == Some(&b'\n') { 2 } else { 1 };
+    pos.checked_add(delimiter_len).ok_or_else(|| "PNM raster offset overflow".to_string())
+}
+
 fn decode_pnm(data: &[u8]) -> Result<DecodedImage, String> {
     if data.len() < 3 || data[0] != b'P' || !(b'1'..=b'6').contains(&data[1]) {
         return Err(format!(
@@ -1502,8 +1512,8 @@ fn decode_pnm(data: &[u8]) -> Result<DecodedImage, String> {
         ));
     }
 
-    // One whitespace byte separates the header from the raster.
-    let raster_start = pos.checked_add(1).ok_or("PNM raster offset overflow")?;
+    // CRLF is one line ending at the header/raster boundary, not a raster byte.
+    let raster_start = pnm_binary_raster_start(data, pos)?;
     let pixel_count = (w as usize).checked_mul(h as usize).ok_or("PNM dimensions overflow")?;
 
     if format_type == b'4' {
@@ -2576,6 +2586,10 @@ mod tests {
 
         let commented = b"P6\n# a comment before the dimensions\n1 1\n255\n\xFF\x00\x00";
         let img = decode_pnm(commented).unwrap();
+        assert_eq!(img.data.as_bytes(), &[255, 0, 0]);
+
+        let crlf = b"P6\r\n1 1\r\n255\r\n\xFF\x00\x00";
+        let img = decode_pnm(crlf).unwrap();
         assert_eq!(img.data.as_bytes(), &[255, 0, 0]);
     }
 

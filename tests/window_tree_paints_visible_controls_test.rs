@@ -311,7 +311,8 @@ fn the_per_widget_painter_leaves_out_the_windows_children() {
     let frame =
         rust_widgets::widget::runtime::render_frame(win.raw_id(), size, Color::rgb(240, 240, 240))
             .expect("the window widget itself must produce a frame");
-    let pixels: Vec<[u8; 4]> = frame.as_chunks::<4>().0.iter().map(|p| [p[0], p[1], p[2], p[3]]).collect();
+    let pixels: Vec<[u8; 4]> =
+        frame.as_chunks::<4>().0.iter().map(|p| [p[0], p[1], p[2], p[3]]).collect();
 
     let button_colors = distinct_colors(&pixels, size, BUTTON);
     assert_eq!(

@@ -32,7 +32,7 @@ use objc2_app_kit::{
     NSGraphicsContext, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_core_graphics::CGContext;
-use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSRect, NSSize, NSString};
+use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSNotification, NSRect, NSSize, NSString};
 
 use crate::core::{ObjectId, Point};
 use crate::event::Event;
@@ -61,6 +61,9 @@ unsafe impl Send for NativePtr {}
 /// Thread-local storage for native widget handles.
 static NATIVE_VIEWS: LazyLock<Mutex<HashMap<u64, NativePtr>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+static PENDING_NATIVE_RELEASES: LazyLock<Mutex<Vec<NativePtr>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
 
 /// Side table from a mounted surface id to its canvas view pointer.
 ///
@@ -159,6 +162,29 @@ pub(crate) fn destroy_native_handle(widget_id: u64) -> bool {
         let _: () = msg_send![object, release];
     }
     true
+}
+
+fn release_closed_window(host_id: u64) {
+    if MainThreadMarker::new().is_none() {
+        log::error!(
+            "[macos-objc2] close_window: refused off the AppKit main thread (id={host_id})"
+        );
+        return;
+    }
+    let removed = NATIVE_VIEWS.lock().unwrap().remove(&host_id);
+    if let Some(ptr) = removed {
+        PENDING_NATIVE_RELEASES.lock().unwrap().push(ptr);
+    }
+}
+
+fn drain_pending_native_releases() {
+    let pending = std::mem::take(&mut *PENDING_NATIVE_RELEASES.lock().unwrap());
+    for ptr in pending {
+        unsafe {
+            let object = ptr.0 as *mut AnyObject;
+            let _: () = msg_send![object, release];
+        }
+    }
 }
 
 fn make_rect(x: i32, y: i32, width: u32, height: u32) -> NSRect {
@@ -301,6 +327,14 @@ define_class!(
                 let _ = crate::close_widget(widget_id);
             }
             true
+        }
+
+        #[unsafe(method(windowWillClose:))]
+        fn window_will_close(&self, _notification: &NSNotification) {
+            let host_id = self.ivars().widget_id.get();
+            if host_id != 0 {
+                release_closed_window(host_id);
+            }
         }
     }
 );
@@ -492,6 +526,12 @@ impl RustWidgetsObjc2CanvasView {
             let Some(widget_id) = self.widget_target() else {
                 return;
             };
+            let local = self.convertPoint_fromView(event.locationInWindow(), None);
+            let origin = self.frame().origin;
+            let position = Point::new(
+                (origin.x + local.x).round() as i32,
+                (origin.y + local.y).round() as i32,
+            );
             let modifiers =
                 crate::platform::macos::types::map_modifiers(event.modifierFlags().bits() as u64);
             // AppKit reports a positive `scrollingDeltaY` for scrolling up; the widget
@@ -505,7 +545,7 @@ impl RustWidgetsObjc2CanvasView {
             if crate::platform::platform_facts().route_pointer_event(
                 widget_id,
                 &translated,
-                Point::new(0, 0),
+                position,
             ) {
                 self.setNeedsDisplay(true);
             }
@@ -952,10 +992,15 @@ pub(crate) fn pump_native_event() -> bool {
         mode,
         true,
     );
-    if let Some(event) = event {
+    let dispatched = if let Some(event) = event {
         app.sendEvent(&event);
         true
     } else {
         false
-    }
+    };
+    // A window-close delegate queues its registry retain for release after AppKit's
+    // close callback has unwound; releasing the last retain inside that callback
+    // could deallocate the NSWindow before `close` returns.
+    drain_pending_native_releases();
+    dispatched
 }

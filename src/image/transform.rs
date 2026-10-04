@@ -472,11 +472,7 @@ mod tests {
     /// pixels), so an orientation test can compare whole images without index gymnastics.
     fn red_grid(data: &ImageData, w: u32, h: u32) -> Vec<Vec<u8>> {
         let ImageData::Rgba8(bytes) = data else { panic!("expected RGBA8") };
-        (0..h)
-            .map(|y| {
-                (0..w).map(|x| bytes[((y * w + x) * 4) as usize]).collect()
-            })
-            .collect()
+        (0..h).map(|y| (0..w).map(|x| bytes[((y * w + x) * 4) as usize]).collect()).collect()
     }
 
     /// All eight EXIF orientation tags, checked on a non-symmetric 3x2 matrix.
@@ -504,11 +500,7 @@ mod tests {
 
         for (tag, w, h, expected) in cases {
             let (out, ow, oh) = apply_exif_orientation(src.clone(), 3, 2, tag).unwrap();
-            assert_eq!(
-                (ow, oh),
-                (w, h),
-                "orientation {tag} must produce {w}x{h}, got {ow}x{oh}"
-            );
+            assert_eq!((ow, oh), (w, h), "orientation {tag} must produce {w}x{h}, got {ow}x{oh}");
             assert_eq!(
                 red_grid(&out, w, h),
                 expected,
