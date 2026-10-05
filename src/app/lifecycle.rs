@@ -62,6 +62,14 @@ pub type LifecycleCallback = Box<dyn FnMut(LifecycleEvent) + Send>;
 
 // ── Serializable snapshot for state save/restore ─────────────
 
+/// Upper bound on a restorable `total_background_secs`.
+///
+/// `Duration::from_secs_f64` panics above `u64::MAX` seconds; this bound is a little
+/// under that so the conversion is always in range, and it is used to reject an
+/// implausible persisted value with a field-tagged error rather than a panic.
+#[cfg(all(feature = "serde_json", feature = "serde", widgets_unstripped))]
+const MAX_BACKGROUND_SECS: f64 = (u64::MAX as f64) / 2.0;
+
 /// Intermediate serializable representation of the lifecycle state.
 #[derive(Debug, Clone)]
 #[cfg_attr(all(feature = "serde", widgets_unstripped), derive(Serialize, Deserialize))]
@@ -119,20 +127,29 @@ impl AppLifecycle {
             return;
         }
 
-        // Track time spent in background.
-        if old_state == AppLifecycleState::Background {
+        // Track time spent in background. `Background` and `Suspended` are both
+        // background intervals: `total_background_duration` and `deserialize_state`
+        // already count `Suspended` as background, so the transition must accumulate
+        // and (re)start the interval consistently for both. The old code only started
+        // an entry on `new_state == Background` and only accumulated on
+        // `old_state == Background`, so `Foreground -> Suspended` never started an
+        // entry, `Background -> Suspended` took the old entry and started none, and
+        // `Suspended -> Foreground` cleared the entry without accumulating it — each
+        // losing the suspended interval. Treating the two states uniformly means an
+        // interval is started when entering either and accumulated exactly once when
+        // leaving either.
+        let was_background =
+            matches!(old_state, AppLifecycleState::Background | AppLifecycleState::Suspended);
+        let is_background =
+            matches!(new_state, AppLifecycleState::Background | AppLifecycleState::Suspended);
+        if was_background {
             if let Some(entry) = self.background_entry.take() {
                 self.total_background_duration += entry.elapsed();
             }
         }
-        if new_state == AppLifecycleState::Background {
-            self.background_entry = Some(Instant::now());
-        }
-
-        // Clear background entry when leaving suspended state.
-        if new_state != AppLifecycleState::Background && new_state != AppLifecycleState::Suspended {
-            self.background_entry = None;
-        }
+        // Start a fresh interval on entering a background state, and clear it when
+        // leaving both, so no stale entry survives into a foreground state.
+        self.background_entry = if is_background { Some(Instant::now()) } else { None };
 
         self.state = new_state;
 
@@ -227,13 +244,34 @@ impl AppLifecycle {
                 data.len()
             )
         })?;
+        // Validate before `Duration::from_secs_f64`, which panics (it does not return an
+        // error) for a negative, NaN, or too-large input. A persisted snapshot is
+        // untrusted data — `{"state":"Foreground","total_background_secs":-1}` used to
+        // abort the process — so a bad value is reported as a field-tagged `Err` instead.
+        let secs = snapshot.total_background_secs;
+        if !secs.is_finite() {
+            return Err(format!(
+                "lifecycle field 'total_background_secs' must be finite, got {secs}; refusing to \
+                 restore the snapshot"
+            ));
+        }
+        if secs < 0.0 {
+            return Err(format!(
+                "lifecycle field 'total_background_secs' must not be negative, got {secs}; \
+                 refusing to restore the snapshot"
+            ));
+        }
+        if secs > MAX_BACKGROUND_SECS {
+            return Err(format!(
+                "lifecycle field 'total_background_secs' is too large ({secs} exceeds the \
+                 supported maximum of {MAX_BACKGROUND_SECS}); refusing to restore the snapshot"
+            ));
+        }
         let mut lc = Self {
             state: snapshot.state,
             started_at: Instant::now(),
             background_entry: None,
-            total_background_duration: std::time::Duration::from_secs_f64(
-                snapshot.total_background_secs,
-            ),
+            total_background_duration: std::time::Duration::from_secs_f64(secs),
             listeners: Vec::new(),
         };
         // If the snapshot was in a background/suspended state, start tracking
@@ -427,5 +465,128 @@ mod tests {
         // Also test that deserialize resets the clock.
         // uptime at deserialized instance should be near zero.
         assert!(d.uptime() < Duration::from_millis(100));
+    }
+
+    // ── 9. N-S-71: deserialize validates the background-seconds field ──
+
+    /// A negative `total_background_secs` must be rejected, not panic.
+    ///
+    /// `Duration::from_secs_f64` panics on a negative input, so
+    /// `{"state":"Foreground","total_background_secs":-1}` aborted the process when a
+    /// persisted snapshot was restored. The field is validated first and reported as a
+    /// Result::Err naming the field.
+    #[test]
+    fn deserialize_rejects_negative_background_secs() {
+        let result =
+            AppLifecycle::deserialize_state(r#"{"state":"Foreground","total_background_secs":-1}"#);
+        let error = result.err().expect("a negative duration must be rejected, not accepted");
+        assert!(
+            error.contains("total_background_secs"),
+            "the error must name the offending field: {error}"
+        );
+    }
+
+    /// A non-finite `total_background_secs` (NaN/infinity) must be rejected, not panic.
+    #[test]
+    fn deserialize_rejects_non_finite_background_secs() {
+        // `serde_json` will not parse `NaN`/`inf` from a bare JSON literal, so build the
+        // out-of-range value via the largest finite spelling that still overflows the
+        // conversion.
+        let result = AppLifecycle::deserialize_state(
+            r#"{"state":"Foreground","total_background_secs":1e308}"#,
+        );
+        let error = result.err().expect("an out-of-range duration must be rejected, not accepted");
+        assert!(
+            error.contains("total_background_secs"),
+            "the error must name the offending field: {error}"
+        );
+    }
+
+    /// Zero and an ordinary value must round-trip without being rejected.
+    #[test]
+    fn deserialize_accepts_zero_and_a_normal_duration() {
+        let zero = AppLifecycle::deserialize_state(
+            r#"{"state":"Foreground","total_background_secs":0.0}"#,
+        )
+        .expect("zero must be accepted");
+        assert_eq!(zero.total_background_duration(), Duration::ZERO);
+
+        let normal = AppLifecycle::deserialize_state(
+            r#"{"state":"Foreground","total_background_secs":12.5}"#,
+        )
+        .expect("a normal duration must be accepted");
+        assert_eq!(normal.total_background_duration(), Duration::from_secs_f64(12.5));
+    }
+
+    // ── 10. N-S-72: Suspended is a background interval like Background ──
+
+    /// The transition sequence Foreground -> Suspended -> Foreground must accumulate the
+    /// suspended interval, so time spent suspended counts as background.
+    #[test]
+    fn suspended_counts_as_background_time() {
+        let mut lc = AppLifecycle::new();
+        lc.transition(AppLifecycleState::Foreground);
+        assert_eq!(lc.total_background_duration(), Duration::ZERO);
+
+        lc.transition(AppLifecycleState::Suspended);
+        std::thread::sleep(Duration::from_millis(10));
+        // While suspended the live interval must be counted.
+        assert!(lc.total_background_duration() >= Duration::from_millis(5));
+
+        lc.transition(AppLifecycleState::Foreground);
+        let after = lc.total_background_duration();
+        assert!(after >= Duration::from_millis(5), "the suspended interval must be accumulated");
+    }
+
+    /// Background -> Suspended must not lose the background interval, and must start a
+    /// fresh interval for the suspended period (which is accumulated on leaving).
+    #[test]
+    fn background_to_suspended_keeps_both_intervals() {
+        let mut lc = AppLifecycle::new();
+        lc.transition(AppLifecycleState::Foreground);
+
+        lc.transition(AppLifecycleState::Background);
+        std::thread::sleep(Duration::from_millis(8));
+        lc.transition(AppLifecycleState::Suspended);
+        std::thread::sleep(Duration::from_millis(8));
+        lc.transition(AppLifecycleState::Foreground);
+
+        let total = lc.total_background_duration();
+        assert!(
+            total >= Duration::from_millis(12),
+            "both the background and the suspended intervals must be counted, got {total:?}"
+        );
+    }
+
+    /// A foreground state must never leave a background interval running.
+    #[test]
+    fn a_foreground_state_has_no_open_interval() {
+        let mut lc = AppLifecycle::new();
+        lc.transition(AppLifecycleState::Foreground);
+        lc.transition(AppLifecycleState::Background);
+        lc.transition(AppLifecycleState::Foreground);
+        // Asleep time in the foreground must not accrue background.
+        let before = lc.total_background_duration();
+        std::thread::sleep(Duration::from_millis(10));
+        assert_eq!(lc.total_background_duration(), before);
+    }
+
+    /// A snapshot taken while Suspended restores with a live interval, so post-restore
+    /// time is counted as background (matching Background's behaviour).
+    #[test]
+    fn deserialize_from_suspended_tracks_background() {
+        let mut lc = AppLifecycle::new();
+        lc.transition(AppLifecycleState::Foreground);
+        lc.transition(AppLifecycleState::Suspended);
+        std::thread::sleep(Duration::from_millis(5));
+        let json = lc.serialize_state().unwrap();
+
+        let restored =
+            AppLifecycle::deserialize_state(&json).expect("a suspended snapshot restores");
+        assert_eq!(restored.state(), AppLifecycleState::Suspended);
+        assert!(
+            restored.total_background_duration() > Duration::ZERO,
+            "a restored suspended state must keep counting background time"
+        );
     }
 }

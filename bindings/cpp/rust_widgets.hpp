@@ -411,6 +411,38 @@ public:
         return Checkbox(
             rw_create_checkbox(parent, text.c_str(), x, y, width, height));
     }
+
+    /// The check box's **checked** state, or `false` when it cannot be read.
+    ///
+    /// # Why this is not `is_enabled()`
+    ///
+    /// `Widget::is_enabled()` reads `rw_is_widget_enabled` — whether the control
+    /// accepts input — which is an unrelated fact from whether it is ticked. The
+    /// checked state has no dedicated `rw_*` entry point; it is published through
+    /// the generic property contract as a `bool` named `checked`, so that is what
+    /// this reads. Calling `is_enabled()` and reporting it as "checked" reported
+    /// the wrong fact under the right label.
+    bool is_checked() const {
+        int kind = RW_VALUE_NULL;
+        int64_t num = 0;
+        char* text = nullptr;
+        if (!rw_get_widget_property(id_, "checked", &kind, &num, &text)) {
+            return false;
+        }
+        // A `bool` property has no string payload, but the ABI may still hand one
+        // back for an unexpected kind; free it rather than leak, per the header's
+        // ownership contract.
+        if (text != nullptr) {
+            rw_free_string(text);
+        }
+        return kind == RW_VALUE_BOOL && num != 0;
+    }
+
+    /// Set the check box's **checked** state through the generic property contract.
+    bool set_checked(bool checked) const {
+        return rw_set_widget_property(
+            id_, "checked", RW_VALUE_BOOL, checked ? 1 : 0, nullptr);
+    }
 };
 
 class LineEdit final : public Widget {

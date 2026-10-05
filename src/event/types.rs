@@ -984,6 +984,97 @@ mod tests {
             _ => panic!("Expected PointerRelease"),
         }
     }
+
+    /// A task that calls `drain_tasks` again must not deadlock, and its nested work
+    /// must be collected by a later drain.
+    ///
+    /// The old `drain_tasks` ran tasks while holding the receiver mutex, so a task
+    /// re-entering it re-locked a non-reentrant mutex and hung forever.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn drain_tasks_is_reentrant_without_deadlock() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
+        let outer_ran = std::sync::Arc::new(AtomicUsize::new(0));
+        let nested_ran = std::sync::Arc::new(AtomicUsize::new(0));
+
+        let nested = std::sync::Arc::clone(&nested_ran);
+        schedule_task(1, move || {
+            // Re-enters `drain_tasks` from inside a task. Before the fix this blocked on
+            // the already-held mutex; now it drains whatever else is queued and returns.
+            nested.fetch_add(1, Ordering::SeqCst);
+            drain_tasks();
+        });
+
+        let outer = std::sync::Arc::clone(&outer_ran);
+        schedule_task(2, move || {
+            outer.fetch_add(1, Ordering::SeqCst);
+        });
+
+        drain_tasks();
+
+        assert_eq!(outer_ran.load(Ordering::SeqCst), 1, "both tasks run in the first drain");
+        assert_eq!(nested_ran.load(Ordering::SeqCst), 1);
+    }
+
+    /// A task scheduled from inside a task is picked up by the next drain.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_task_may_schedule_more_work_for_the_next_drain() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
+        let followup_ran = std::sync::Arc::new(AtomicUsize::new(0));
+        let followup = std::sync::Arc::clone(&followup_ran);
+        schedule_task(10, move || {
+            schedule_task(11, move || {
+                followup.fetch_add(1, Ordering::SeqCst);
+            });
+        });
+
+        drain_tasks();
+        assert_eq!(followup_ran.load(Ordering::SeqCst), 0, "the follow-up is not run inline");
+
+        drain_tasks();
+        assert_eq!(
+            followup_ran.load(Ordering::SeqCst),
+            1,
+            "the follow-up scheduled by a task is delivered on the next drain"
+        );
+    }
+
+    /// One panicking task must not stop the tasks queued behind it.
+    ///
+    /// The old drain ran tasks under the receiver lock, so a panic poisoned it and the
+    /// next drain's `let Ok(rx) = ... else { return }` silently discarded everything.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_panicking_task_does_not_starve_later_tasks() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
+        let later_ran = std::sync::Arc::new(AtomicUsize::new(0));
+
+        schedule_task(20, || panic!("intentional task panic"));
+        let later = std::sync::Arc::clone(&later_ran);
+        schedule_task(21, move || {
+            later.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // The panic is caught and reported; the call itself still returns.
+        drain_tasks();
+        assert_eq!(later_ran.load(Ordering::SeqCst), 1, "the task after the panic still runs");
+
+        // And the receiver is not poisoned: a later task drains normally.
+        let after = std::sync::Arc::clone(&later_ran);
+        schedule_task(22, move || {
+            after.fetch_add(1, Ordering::SeqCst);
+        });
+        drain_tasks();
+        assert_eq!(
+            later_ran.load(Ordering::SeqCst),
+            2,
+            "poisoning must not silently skip every future task"
+        );
+    }
 }
 
 /// Scheduling priority for queued events.
@@ -1051,18 +1142,45 @@ where
 }
 
 /// Drain all pending async tasks (called by event loop each frame).
+///
+/// # Why the receiver lock is released before the tasks run
+///
+/// The tasks are arbitrary user code, and this function is called at the top of
+/// every loop iteration. Running them while holding the receiver's mutex had two
+/// failure modes: a task that itself calls `drain_tasks` (a task scheduling more
+/// work is the normal case) re-entered the non-reentrant `std::sync::Mutex` and
+/// deadlocked; and a task that panicked left the mutex poisoned, after which every
+/// later drain's `lock()` returned `Err` and the `let Ok(..) else { return }`
+/// silently skipped **all** future tasks.
+///
+/// So the queue is drained into a local buffer under the lock, the lock is
+/// released, and only then are the tasks run. Work a task schedules lands in the
+/// channel and is picked up by the next drain. Each task is isolated with
+/// `catch_unwind` so one panic does not stop the tasks queued behind it.
 #[cfg(not(alloc_frugal))]
 pub fn drain_tasks() {
     let (_, rx_mutex) = channel();
-    let Ok(rx) = rx_mutex.lock() else { return };
-    loop {
-        match rx.try_recv() {
-            Ok(task) => (task.task)(),
-            Err(TryRecvError::Empty) => break,
-            Err(TryRecvError::Disconnected) => {
-                // Channel disconnected — no more tasks will arrive.
-                break;
+    let mut tasks: Vec<AsyncTask> = Vec::new();
+    {
+        // Recover a poisoned guard rather than bailing: a poisoned lock still holds a
+        // sound receiver, and dropping the tasks behind the poison is exactly the
+        // silent-skip bug this avoids.
+        let rx = rx_mutex.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            match rx.try_recv() {
+                Ok(task) => tasks.push(task),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => break,
             }
+        }
+    }
+    // The lock is released here: a task may call `drain_tasks` again or schedule more
+    // work without deadlocking, and a panicking task cannot poison the receiver.
+    for task in tasks {
+        let id = task.id;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(task.task));
+        if let Err(e) = result {
+            log::error!("[event] Async task {id} panicked: {e:?}");
         }
     }
 }

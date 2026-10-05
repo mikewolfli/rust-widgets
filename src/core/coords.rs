@@ -55,22 +55,12 @@ pub fn point_to_cartesian_f32(x: f32, y: f32, height: f32) -> (f32, f32) {
 /// Converts a rectangle from Cartesian to screen coordinates.
 #[inline]
 pub fn rect_to_screen(rect: Rect, height: i32) -> Rect {
-    Rect::new(
-        rect.x,
-        height.saturating_sub(rect.y).saturating_sub_unsigned(rect.height),
-        rect.width,
-        rect.height,
-    )
+    Rect::new(rect.x, flip_rect_y(rect, height).y, rect.width, rect.height)
 }
 /// Converts a rectangle from screen to Cartesian coordinates.
 #[inline]
 pub fn rect_to_cartesian(rect: Rect, height: i32) -> Rect {
-    Rect::new(
-        rect.x,
-        height.saturating_sub(rect.y).saturating_sub_unsigned(rect.height),
-        rect.width,
-        rect.height,
-    )
+    Rect::new(rect.x, flip_rect_y(rect, height).y, rect.width, rect.height)
 }
 /// Flips a Y coordinate around the center of a given height.
 #[inline]
@@ -83,14 +73,19 @@ pub fn flip_point_y(point: Point, height: i32) -> Point {
     Point::new(point.x, height.saturating_sub(point.y))
 }
 /// Flips a rectangle's Y coordinates around the center of a given height.
+///
+/// The whole expression is evaluated in `i64` before a single saturation to `i32`, so coordinates
+/// that cancel are not lost to an early clamp. Saturating mid-expression
+/// (`height.saturating_sub(rect.y).saturating_sub_unsigned(rect.height)`) clamped the running value
+/// to `i32::MIN`/`i32::MAX` and then kept subtracting, discarding the cancellation: with
+/// `height = i32::MAX`, `y = i32::MIN` and `rect.height = u32::MAX` the exact result is `0`, but the
+/// saturated form returned `i32::MIN`. Widening first keeps that result exact and only clamps when
+/// the true value genuinely exceeds the `i32` range.
 #[inline]
 pub fn flip_rect_y(rect: Rect, height: i32) -> Rect {
-    Rect::new(
-        rect.x,
-        height.saturating_sub(rect.y).saturating_sub_unsigned(rect.height),
-        rect.width,
-        rect.height,
-    )
+    let flipped = height as i64 - rect.y as i64 - rect.height as i64;
+    let clamped = flipped.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+    Rect::new(rect.x, clamped, rect.width, rect.height)
 }
 /// Converts a rectangle from Cartesian to screen coordinates (f32).
 #[inline]
@@ -345,9 +340,46 @@ mod tests {
     fn i32_coordinate_flips_saturate_at_limits() {
         assert_eq!(to_screen_y_i32(i32::MIN, i32::MAX), i32::MAX);
         assert_eq!(point_to_screen(Point::new(0, i32::MIN), i32::MAX).y, i32::MAX);
+        // The rect flip is computed in i64 and saturated once, so a value that genuinely overflows
+        // the i32 range still clamps, but a value that cancels to something representable does not.
+        let overflow = Rect::new(0, i32::MIN, u32::MAX, 1);
+        assert_eq!(rect_to_screen(overflow, i32::MAX).y, i32::MAX);
+        assert_eq!(flip_rect_y(overflow, i32::MAX).y, i32::MAX);
+    }
+
+    /// The rect flips must evaluate the whole `height - y - rect.height` expression in a wide type
+    /// and saturate only once. Saturating mid-expression used to clamp the running value and then
+    /// keep subtracting, which lost the cancellation: `i32::MAX - i32::MIN - u32::MAX == 0` exactly,
+    /// but the buggy form returned `i32::MIN`.
+    #[test]
+    fn rect_flips_use_a_wide_oracle_and_do_not_lose_cancellation() {
         let rect = Rect::new(i32::MIN, i32::MIN, u32::MAX, u32::MAX);
-        assert_eq!(rect_to_screen(rect, i32::MAX).y, i32::MIN);
-        assert_eq!(flip_rect_y(rect, i32::MAX).y, i32::MIN);
+        // Oracle in i64, independent of the implementation.
+        let exact = i32::MAX as i64 - i32::MIN as i64 - u32::MAX as i64;
+        assert_eq!(exact, 0, "the chosen inputs cancel to zero");
+        assert_eq!(rect_to_screen(rect, i32::MAX).y, 0, "rect_to_screen lost the cancellation");
+        assert_eq!(
+            rect_to_cartesian(rect, i32::MAX).y,
+            0,
+            "rect_to_cartesian lost the cancellation"
+        );
+        assert_eq!(flip_rect_y(rect, i32::MAX).y, 0, "flip_rect_y lost the cancellation");
+
+        // A range of inputs must agree with the i64 oracle after a single saturation.
+        for (height, y, h) in [
+            (i32::MAX, i32::MIN, u32::MAX),
+            (i32::MIN, i32::MAX, 1),
+            (0, i32::MIN, u32::MAX),
+            (12345, -6789, 42),
+            (i32::MAX, i32::MAX, u32::MAX),
+        ] {
+            let expected = (height as i64 - y as i64 - h as i64)
+                .clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+            let rect = Rect::new(0, y, 1, h);
+            assert_eq!(flip_rect_y(rect, height).y, expected, "height={height} y={y} h={h}");
+            assert_eq!(rect_to_screen(rect, height).y, expected);
+            assert_eq!(rect_to_cartesian(rect, height).y, expected);
+        }
     }
 
     #[test]

@@ -142,6 +142,30 @@ impl I18nManager {
                         path.display()
                     )
                 })?;
+            // A reload must apply the same identity check the initial load does: the file
+            // name (which the watcher uses to decide *which* language changed) must agree
+            // with the `language` field the file declares. Without it, an edit that changed
+            // the declared language — or a file swapped under a mismatched name — was
+            // inserted under the caller's key regardless, so the catalogue silently held a
+            // language under the wrong key and the mismatch the loader rejects on first load
+            // went unreported on every reload. Reject and keep the previous translations and
+            // fingerprint untouched.
+            let stem = path.file_stem().and_then(|s| s.to_str()).ok_or_else(|| {
+                format!(
+                    "translation file '{}' for language \"{language}\" has no usable file name; \
+                     it must be named '<language>.json'",
+                    path.display()
+                )
+            })?;
+            if stem != translation_file.language {
+                return Err(format!(
+                    "translation file '{}' is named '{stem}.json' but declares language \"{}\"; \
+                     refusing to reload it under language \"{language}\" (the watcher identifies a \
+                     language by file name)",
+                    path.display(),
+                    translation_file.language
+                ));
+            }
             self.translations.insert(language.to_string(), translation_file);
             if let Some(fingerprint) = FileFingerprint::read(path) {
                 self.file_fingerprints.insert(language.to_string(), fingerprint);

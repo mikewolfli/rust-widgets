@@ -750,4 +750,34 @@ mod tests {
             "surface_policy() returned {tuple:?}, which is not one of the declared rows"
         );
     }
+
+    /// N-S-45: the engine this profile drives its loop with must agree with the derived
+    /// profile facts.
+    ///
+    /// `runtime_engine()` used to pick `NativeRenderEngine` (whose `profile()` is `Full`)
+    /// unless the explicit `embedded_surface` alias was set, so a build with no OS runtime —
+    /// `--no-default-features --features gpu`, or any `SelfHosted` profile — selected the OS
+    /// adapter while `runtime_profile()` reported `Embedded`. The engine's own `profile()`
+    /// must equal `runtime_profile()` on every build.
+    #[test]
+    fn the_engine_profile_matches_the_derived_runtime_profile() {
+        let engine = runtime_engine();
+        assert_eq!(
+            engine.profile(),
+            runtime_profile(),
+            "the selected engine must not disagree with the profile facts this module derives \
+             (engine profile {:?} vs runtime_profile {:?}, has_os_runtime {})",
+            engine.profile(),
+            runtime_profile(),
+            has_os_runtime()
+        );
+        // A build with no OS runtime must never be handed an OS-hosted engine.
+        if !has_os_runtime() {
+            assert_eq!(
+                engine.profile(),
+                crate::core::RuntimeProfile::Embedded,
+                "a surface-only build must drive the library-owned embedded scheduler"
+            );
+        }
+    }
 }

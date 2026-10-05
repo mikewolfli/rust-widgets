@@ -30,6 +30,34 @@ fn language_from_path(path: &Path) -> Option<String> {
     path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string())
 }
 
+/// The languages an event's paths identify, in first-seen order and de-duplicated.
+///
+/// Split out from the watcher callback so the mapping is unit-testable without a real
+/// filesystem event. Every relevant path is mapped, not just the first: `notify`
+/// reports `Modify(Name(Both))` with two paths (old and new) for an atomic save, and a
+/// new locale arrives as `Create`; taking only `paths.first()` ignored an atomic save
+/// whose first path was a non-`json` temp name. Non-`json` and nameless paths are
+/// skipped, and a language named by more than one path is emitted once.
+fn languages_for_event(kind: &EventKind, paths: &[std::path::PathBuf]) -> Vec<String> {
+    if !matches!(kind, EventKind::Modify(_) | EventKind::Create(_)) {
+        return Vec::new();
+    }
+    let mut languages: Vec<String> = Vec::new();
+    for path in paths {
+        if !path.extension().is_some_and(|ext| ext == "json") {
+            continue;
+        }
+        let Some(language) = language_from_path(path) else {
+            continue;
+        };
+        if languages.iter().any(|seen| seen == &language) {
+            continue;
+        }
+        languages.push(language);
+    }
+    languages
+}
+
 /// File watcher for hot reload
 pub struct I18nFileWatcher {
     watcher: Option<notify::RecommendedWatcher>,
@@ -47,18 +75,16 @@ impl I18nFileWatcher {
         let sender = self.reload_sender.clone();
         let mut watcher = notify::recommended_watcher(move |res: Result<Event, _>| match res {
             Ok(event) => {
-                if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
-                    if let Some(path) = event.paths.first() {
-                        if path.extension().is_some_and(|ext| ext == "json") {
-                            if let Some(lang) = language_from_path(path) {
-                                if let Err(e) = sender.send(ReloadEvent::TranslationReloaded {
-                                    language: lang,
-                                    timestamp: SystemTime::now(),
-                                }) {
-                                    log::error!("[i18n] Watcher send failed: {e:?}");
-                                }
-                            }
-                        }
+                // Every path the event carries is mapped to its language identity, not
+                // just the first: `notify` reports `Modify(Name(Both))` with two paths
+                // (old and new) for an atomic save, and a new locale is a `Create`.
+                // `languages_for_event` owns that mapping so it can be unit-tested.
+                for language in languages_for_event(&event.kind, &event.paths) {
+                    if let Err(e) = sender.send(ReloadEvent::TranslationReloaded {
+                        language,
+                        timestamp: SystemTime::now(),
+                    }) {
+                        log::error!("[i18n] Watcher send failed: {e:?}");
                     }
                 }
             }
@@ -301,5 +327,65 @@ mod tests {
         assert_eq!(language_from_path(Path::new("/some/dir/de.json")).as_deref(), Some("de"));
         assert_eq!(language_from_path(Path::new("no-extension")).as_deref(), Some("no-extension"));
         assert_eq!(language_from_path(Path::new("")), None);
+    }
+
+    /// N-S-69: every relevant path in an event is mapped, so an atomic save that puts
+    /// the new `en.json` *second* is still recognised.
+    ///
+    /// `notify` reports an atomic editor save as `Modify(Name(Both))` carrying two
+    /// paths: the temp file first and the real catalogue second. The old callback looked
+    /// only at `paths.first()`, so the temp name (not `*.json`) made the whole event a
+    /// no-op and the reload never fired. This drives the mapping directly.
+    #[test]
+    fn an_atomic_save_maps_the_json_path_even_when_it_is_not_first() {
+        use notify::event::{ModifyKind, RenameMode};
+        let paths = vec![
+            std::path::PathBuf::from("/dir/en.json.tmp-1234"),
+            std::path::PathBuf::from("/dir/en.json"),
+        ];
+        assert_eq!(
+            languages_for_event(&EventKind::Modify(ModifyKind::Name(RenameMode::Both)), &paths),
+            vec!["en".to_string()],
+            "the json path must be mapped even when the temp path is first"
+        );
+    }
+
+    /// A `Create` for a new locale is mapped, so adding `de.json` triggers a reload.
+    #[test]
+    fn a_created_locale_is_mapped() {
+        use notify::event::CreateKind;
+        let paths = vec![std::path::PathBuf::from("/dir/de.json")];
+        assert_eq!(
+            languages_for_event(&EventKind::Create(CreateKind::File), &paths),
+            vec!["de".to_string()]
+        );
+    }
+
+    /// A single event naming one language on two paths is emitted once, so a rename
+    /// within `en.json` does not queue two identical reloads.
+    #[test]
+    fn a_language_named_by_two_paths_is_emitted_once() {
+        use notify::event::{ModifyKind, RenameMode};
+        let paths = vec![
+            std::path::PathBuf::from("/dir/en.json"),
+            std::path::PathBuf::from("/dir/en.json"),
+        ];
+        assert_eq!(
+            languages_for_event(&EventKind::Modify(ModifyKind::Name(RenameMode::Both)), &paths),
+            vec!["en".to_string()]
+        );
+    }
+
+    /// Non-matching kinds and non-`json` paths map to nothing.
+    #[test]
+    fn unrelated_kinds_and_paths_map_to_nothing() {
+        use notify::event::{AccessKind, ModifyKind};
+        let json = vec![std::path::PathBuf::from("/dir/en.json")];
+        assert!(languages_for_event(&EventKind::Access(AccessKind::Any), &json).is_empty());
+        assert!(languages_for_event(
+            &EventKind::Modify(ModifyKind::Any),
+            &[std::path::PathBuf::from("/dir/notes.txt")],
+        )
+        .is_empty());
     }
 }

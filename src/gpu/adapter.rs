@@ -119,7 +119,30 @@ impl PartialOrd for GpuDeviceType {
 }
 impl Ord for GpuDeviceType {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        self.priority().cmp(&other.priority())
+        // A total order consistent with `Eq`: distinct variants must never
+        // compare `Equal`. `priority()` alone gives `VirtualGpu` and `Other` the
+        // same value (2), so it is used as the primary key and the variant's
+        // discriminant as the tie-break. Without the tie-break, `cmp` returned
+        // `Equal` for two variants that `==` reports as different, violating the
+        // `Ord`/`Eq` consistency contract (N-S-58).
+        self.priority().cmp(&other.priority()).then_with(|| self.rank().cmp(&other.rank()))
+    }
+}
+impl GpuDeviceType {
+    /// Stable intra-priority tie-break rank.
+    ///
+    /// Two variants that share a [`Self::priority`] still need a strict order, so
+    /// each variant maps to a distinct rank. The ordering follows the priority
+    /// narrative (discrete best, CPU worst) and is only ever consulted between
+    /// equal priorities, so it never changes the coarse ordering.
+    fn rank(&self) -> u8 {
+        match self {
+            Self::DiscreteGpu => 4,
+            Self::IntegratedGpu => 3,
+            Self::VirtualGpu => 2,
+            Self::Other => 1,
+            Self::Cpu => 0,
+        }
     }
 }
 impl GpuDeviceType {
@@ -572,6 +595,46 @@ mod tests {
         assert_eq!(GpuType::Discrete.description(), "Discrete GPU");
         assert_eq!(GpuType::Integrated.description(), "Integrated GPU");
         assert_eq!(GpuType::Cpu.description(), "CPU Software Rendering");
+    }
+
+    /// N-S-58: `Ord` must be a total order consistent with `Eq` — `cmp` returns
+    /// `Equal` for two variants *iff* they are the same variant. The old impl
+    /// compared only `priority()`, so `VirtualGpu` and `Other` (both priority 2)
+    /// compared `Equal` despite being distinct.
+    #[test]
+    fn gpu_device_type_ord_is_consistent_with_eq() {
+        use core::cmp::Ordering;
+
+        const ALL: [GpuDeviceType; 5] = [
+            GpuDeviceType::DiscreteGpu,
+            GpuDeviceType::IntegratedGpu,
+            GpuDeviceType::VirtualGpu,
+            GpuDeviceType::Other,
+            GpuDeviceType::Cpu,
+        ];
+
+        for &a in &ALL {
+            for &b in &ALL {
+                let eq = a == b;
+                let cmp_equal = a.cmp(&b) == Ordering::Equal;
+                assert_eq!(
+                    cmp_equal, eq,
+                    "cmp({a:?}, {b:?}) == Equal is {cmp_equal} but == is {eq}"
+                );
+                // Antisymmetry: cmp(a,b) == cmp(b,a).reverse().
+                assert_eq!(
+                    a.cmp(&b),
+                    b.cmp(&a).reverse(),
+                    "cmp must be antisymmetric ({a:?},{b:?})"
+                );
+            }
+        }
+
+        // The coarse priority ordering is preserved for the distinct-priority
+        // pairs that matter in selection.
+        assert!(GpuDeviceType::DiscreteGpu > GpuDeviceType::IntegratedGpu);
+        assert!(GpuDeviceType::IntegratedGpu > GpuDeviceType::VirtualGpu);
+        assert!(GpuDeviceType::VirtualGpu > GpuDeviceType::Cpu);
     }
 
     /// `backend_tier` must classify every backend string `from_wgpu` can produce,

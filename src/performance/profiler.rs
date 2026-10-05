@@ -3,6 +3,25 @@
 
 use crate::compat::{format, HashMap, Instant, MiniToString, String, Vec};
 use core::time::Duration;
+
+/// Mean of `total` over `call_count`, computed without truncating the count.
+///
+/// `Duration`'s own `Div<u32>` divides at nanosecond precision, but the only available divisor
+/// width is `u32`, so a `call_count` at or above `2^32` truncates to a wrong divisor (and exactly
+/// `2^32` truncates to `0`, which would panic). Dividing the nanosecond total in `u128` keeps the
+/// divisor exact. Returns `None` when `call_count` is zero.
+fn average_duration(total: Duration, call_count: u64) -> Option<Duration> {
+    if call_count == 0 {
+        return None;
+    }
+    let nanos = total.as_nanos();
+    let average_nanos = nanos / call_count as u128;
+    // Rebuild a `Duration` from the nanoseconds. `u64::try_from` saturates at `u64::MAX` seconds for
+    // an astronomically large average, which is the representable upper bound rather than a wrap.
+    let secs = u64::try_from(average_nanos / 1_000_000_000).unwrap_or(u64::MAX);
+    let subsec_nanos = (average_nanos % 1_000_000_000) as u32;
+    Some(Duration::new(secs, subsec_nanos))
+}
 #[derive(Debug, Clone, Copy)]
 /// Accumulated timing statistics for a single named section.
 pub struct ProfileEntry {
@@ -85,14 +104,12 @@ impl Profiler {
     }
     /// Returns the mean wall-clock duration per completed call of `name`.
     /// `None` if the section is unknown or has never been completed.
+    ///
+    /// The division is done in `u128` nanoseconds and converted back with saturating helpers, so a
+    /// `call_count` above `u32::MAX` does not truncate the divisor to `0` (or to a wrong value). The
+    /// old `duration / call_count as u32` cast turned a count of `2^32` into a divisor of `0`.
     pub fn get_average_duration(&self, name: &str) -> Option<Duration> {
-        self.entries.get(name).and_then(|e| {
-            if e.call_count > 0 {
-                Some(e.duration / e.call_count as u32)
-            } else {
-                None
-            }
-        })
+        self.entries.get(name).and_then(|e| average_duration(e.duration, e.call_count))
     }
     /// Returns the sum of the accumulated durations of every recorded section,
     /// not the elapsed wall-clock time of the process. Zero when nothing was measured.
@@ -131,11 +148,8 @@ impl Profiler {
                 name: name.clone(),
                 total_duration: entry.duration,
                 call_count: entry.call_count,
-                average_duration: if entry.call_count > 0 {
-                    entry.duration / entry.call_count as u32
-                } else {
-                    Duration::ZERO
-                },
+                average_duration: average_duration(entry.duration, entry.call_count)
+                    .unwrap_or(Duration::ZERO),
             })
             .collect();
         entries.sort_by_key(|b| core::cmp::Reverse(b.total_duration));
@@ -212,9 +226,16 @@ impl FrameProfiler {
     }
     /// Closes the current frame and records its duration, evicting the oldest
     /// sample when the window is full. No-op if no frame is open.
+    ///
+    /// With `max_frames == 0` the profiler retains no samples: the duration is
+    /// measured and discarded rather than pushed, so `frame_count()` stays zero and
+    /// no `remove(0)` is attempted on an empty window.
     pub fn end_frame(&mut self) {
         if let Some(start) = self.current_frame_start.take() {
             let duration = start.elapsed();
+            if self.max_frames == 0 {
+                return;
+            }
             if self.frame_times.len() >= self.max_frames {
                 self.frame_times.remove(0);
             }
@@ -446,5 +467,78 @@ mod tests {
         }
         assert_eq!(profiler.frame_count(), 5);
         assert!(profiler.fps() > 0.0);
+    }
+
+    /// A zero-capacity frame profiler documents that it stores no samples, but its first `end_frame`
+    /// used to call `remove(0)` on an empty window and panic. It must instead close the frame and
+    /// discard the sample.
+    #[test]
+    fn a_zero_capacity_frame_profiler_never_panics_on_end_frame() {
+        let mut profiler = FrameProfiler::new(0);
+        // The very first frame is the one that used to panic.
+        profiler.begin_frame();
+        profiler.end_frame();
+        assert_eq!(profiler.frame_count(), 0, "zero capacity retains no samples");
+        assert_eq!(profiler.average_frame_time(), Duration::ZERO);
+        // Repeated frames stay safe and still store nothing.
+        for _ in 0..5 {
+            profiler.begin_frame();
+            profiler.end_frame();
+        }
+        assert_eq!(profiler.frame_count(), 0);
+        assert_eq!(profiler.fps(), 0.0);
+    }
+
+    /// A capacity of one keeps the single most-recent sample, evicting the previous one.
+    #[test]
+    fn a_capacity_of_one_keeps_only_the_latest_frame() {
+        let mut profiler = FrameProfiler::new(1);
+        for _ in 0..3 {
+            profiler.begin_frame();
+            sleep(Duration::from_millis(1));
+            profiler.end_frame();
+        }
+        assert_eq!(profiler.frame_count(), 1);
+    }
+
+    /// `end_frame` with no matching `begin_frame` is a no-op, and a repeat `end_frame` after a
+    /// completed frame must not double-count or panic.
+    #[test]
+    fn end_frame_without_a_begin_is_a_no_op() {
+        let mut profiler = FrameProfiler::new(4);
+        profiler.end_frame();
+        assert_eq!(profiler.frame_count(), 0);
+        profiler.begin_frame();
+        profiler.end_frame();
+        assert_eq!(profiler.frame_count(), 1);
+        // A second end without a new begin must not add a sample.
+        profiler.end_frame();
+        assert_eq!(profiler.frame_count(), 1, "end_frame without begin does not add a sample");
+    }
+
+    /// The average must be computed without truncating the call count to `u32`. A count of exactly
+    /// `2^32` used to truncate to zero and panic; a count above it would divide by the wrong value.
+    /// The counts are injected directly because driving four billion real calls is not viable.
+    #[test]
+    fn large_call_counts_do_not_truncate_the_average_or_the_report() {
+        let mut profiler = Profiler::new();
+        let total = Duration::from_secs(4 * 1024); // 4096 s = 4_096_000_000_000 ns
+        let calls: u64 = 1 << 32; // 2^32: the old `as u32` divisor was 0
+        profiler.entries.insert(
+            "big".to_string(),
+            ProfileEntry { start: Instant::now(), duration: total, call_count: calls },
+        );
+
+        let average = profiler.get_average_duration("big").expect("section is known");
+        // 4_096_000_000_000 ns / 4_294_967_296 = 953 ns (integer division).
+        assert_eq!(average, Duration::from_nanos(953), "average must not truncate the divisor");
+        assert!(average > Duration::ZERO);
+
+        // The report uses the same helper, so it agrees with the accessor.
+        let report = profiler.report();
+        let row = report.entries.iter().find(|e| e.name == "big").expect("row present");
+        assert_eq!(row.call_count, calls);
+        assert_eq!(row.average_duration, average, "report average matches the accessor");
+        assert_eq!(profiler.get_total_duration(), total);
     }
 }

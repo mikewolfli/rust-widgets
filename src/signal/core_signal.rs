@@ -179,7 +179,19 @@ impl<T: Clone + Send + 'static> SignalInner<T> {
         Self { slots: RwLock::new(HashMap::new()) }
     }
     fn disconnect(&self, handle: ConnectionHandle) -> bool {
-        write_lock(&self.slots).remove(&handle).is_some()
+        // Remove under the lock, but drop the removed entry **after** the lock is
+        // released. The entry owns an `Arc<SlotSlot<T>>`, whose callback closure
+        // owns everything the user captured. Dropping that value while still
+        // holding the slot-map write lock lets a captured value's `Drop` re-enter
+        // this signal (for example an `Arc<ConnectionScope>` whose last reference
+        // drops, whose `Scope::drop` calls the registered disconnector, which
+        // calls `disconnect` again) and self-deadlock on the non-reentrant write
+        // lock. `removed` is destructured after the guard's scope ends, so the
+        // user value is destroyed with no lock held.
+        let removed = write_lock(&self.slots).remove(&handle);
+        let present = removed.is_some();
+        drop(removed);
+        present
     }
 
     fn block(&self, handle: ConnectionHandle) -> bool {
@@ -228,8 +240,15 @@ impl ConnectionScope {
 
     /// Manually clear all tracked connections without dropping the scope.
     pub fn clear(&self) {
-        let mut disconnectors = lock(&self.disconnectors);
-        while let Some(disconnector) = disconnectors.pop() {
+        // Take the disconnectors out under the lock and run them **after** releasing
+        // it. Each disconnector is a user-owned value (it closes over the signal and
+        // handle), and running one may drop a slot's captured values — which can
+        // re-enter this scope (a captured `Arc<ConnectionScope>` whose last reference
+        // drops calls `clear`) and self-deadlock on the scope's non-reentrant mutex.
+        // Draining into a local and invoking it with no lock held removes that cycle.
+        let pending: Vec<Box<dyn FnOnce() + Send + 'static>> =
+            core::mem::take(&mut *lock(&self.disconnectors));
+        for disconnector in pending {
             disconnector();
         }
     }
@@ -246,8 +265,12 @@ impl ConnectionScope {
 
 impl Drop for ConnectionScope {
     fn drop(&mut self) {
-        let mut disconnectors = lock(&self.disconnectors);
-        while let Some(disconnector) = disconnectors.pop() {
+        // Same reason as [`ConnectionScope::clear`]: run the disconnectors (and any
+        // user values they free) with the scope's mutex released, so a re-entrant
+        // disconnector cannot deadlock.
+        let pending: Vec<Box<dyn FnOnce() + Send + 'static>> =
+            core::mem::take(&mut *lock(&self.disconnectors));
+        for disconnector in pending {
             disconnector();
         }
     }
@@ -341,7 +364,14 @@ impl<T: Clone + Send + 'static> Signal<T> {
 
     /// Disconnect all slots registered on this signal.
     pub fn disconnect_all(&self) {
-        write_lock(&self.inner.slots).clear();
+        // Take the map under the lock and drop it **after** releasing. The entries
+        // own the user closures' captures, so clearing while holding the write lock
+        // would drop those captures with the lock held — a capture whose `Drop`
+        // re-enters this signal (see [`SignalInner::disconnect`]) would then
+        // self-deadlock. The guard is dropped at the end of the statement that
+        // takes the map, and `drained` is destroyed with no lock held.
+        let drained = core::mem::take(&mut *write_lock(&self.inner.slots));
+        drop(drained);
     }
 
     /// Temporarily block a slot without disconnecting it. Returns true if the handle was valid.
@@ -404,7 +434,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
     /// concurrent emit can claim them. Callbacks may safely call `connect`,
     /// `disconnect`, `disconnect_all`, `block`, `unblock`, or `emit` on **the
     /// same Signal** without deadlocking. Self-disconnect from within an ordinary
-    /// callback is honored because the callback is never reinserted.
+    /// callback is honored because the entry is removed from the map and never put back.
     ///
     /// Slots are invoked in priority order (High → Normal → Low).
     /// Blocked slots are skipped entirely.
@@ -527,22 +557,28 @@ impl<T: Clone + Send + 'static> Default for Signal<T> {
 /// # Why these exist
 ///
 /// `emit` is the hot path every one of the crate's ~184 `emit()` call sites goes
-/// through, and it carries a subtle invariant: a callback is temporarily *taken*
-/// out of the slot map while it runs (so the lock can be released), while its
-/// handle stays in the map (so a callback that disconnects itself can be found).
-/// That two-piece state is what makes re-entrant `connect` / `disconnect` / `emit`
-/// safe.
+/// through, and it carries a subtle re-entrancy contract. The current implementation
+/// does **not** take the callback out of the map and restore it around the call. Each
+/// slot's callback lives behind its own per-slot `Mutex` ([`SlotSlot`]), and `emit`
+/// snapshots the slot list under a short read lock, clones each slot's `Arc`, then runs
+/// the callback with **no signal lock held**:
 ///
-/// It had **no tests**. The module's other tests covered priorities, blocking and
-/// scopes, but nothing pinned what happens when a callback mutates the signal it is
-/// being called from — which is the only reason the take/restore dance exists. An
-/// optimisation of this loop could therefore have silently changed that behaviour
-/// with every existing test still green.
+/// * taking the callback mutex with `try_lock` runs the callback on this thread;
+/// * failing to take it means the slot is executing elsewhere, so the value is appended
+///   to that slot's pending queue (never dropped, never blocked on) and the thread that
+///   holds the callback delivers it before releasing.
+///
+/// Because no signal-global lock is ever held across a callback, re-entrant `connect` /
+/// `disconnect` / `disconnect_all` / `block` / `unblock` / `emit` are all safe, and a
+/// mutual cross-signal forward across threads cannot form a lock-order cycle. A single
+/// **once**-slot is removed from the map in the same write-lock region that clones its
+/// `Arc`, so only one concurrent emit can claim it. A same-thread re-entrant emit skips
+/// the slot already on the stack (tracked in `EXECUTING_SLOTS`) so recursion terminates.
 ///
 /// These tests pin the *current, documented* behaviour. They are deliberately
 /// characterisation tests: if one fails after a change to `emit`, the change altered
-/// observable semantics, and that must be a deliberate decision rather than a
-/// side effect.
+/// observable semantics, and that must be a deliberate decision rather than a side
+/// effect.
 #[cfg(test)]
 mod emit_behaviour_tests {
     use super::*;
@@ -567,12 +603,13 @@ mod emit_behaviour_tests {
     }
 
     /// A callback that disconnects itself must not be invoked again, must not
-    /// panic, and must not be resurrected by the restore step.
+    /// panic, and must not be resurrected.
     ///
-    /// This is the invariant the take/restore design exists for: the handle stays in
-    /// the map during the call precisely so the callback's own `disconnect` finds it.
-    /// A naive "snapshot the callbacks and call them" loop would re-insert the
-    /// callback afterwards and silently undo the disconnect.
+    /// The per-slot design makes this safe: `disconnect` removes the entry from the map
+    /// under the write lock while the callback runs with no signal lock held, and the
+    /// callback is never reinserted, so the self-disconnect sticks. A naive "snapshot the
+    /// callbacks and call them" loop that put each callback back afterwards would silently
+    /// undo the disconnect.
     ///
     /// The handle has to be shared through an atomic, because it does not exist until
     /// `connect` returns — yet the closure passed to `connect` has to be able to name
@@ -603,7 +640,7 @@ mod emit_behaviour_tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1, "the slot must run exactly once");
         assert!(
             !signal.is_connected(handle),
-            "self-disconnect must survive the restore step, not be undone by it"
+            "self-disconnect must stick; the removed entry must not be reinstated"
         );
 
         // A second emit must not reach the disconnected slot.
@@ -694,11 +731,12 @@ mod emit_behaviour_tests {
     ///
     /// # What this pins
     ///
-    /// The outer pass *takes* the running callback out of the slot map (that is what
-    /// lets it call the callback without holding the lock). A nested emit therefore
-    /// finds no callback for that handle and skips it. This is what makes recursion
-    /// terminate: without it, a slot that emits the signal it is handling would loop
-    /// forever.
+    /// A slot that is currently executing on this thread is recorded in `EXECUTING_SLOTS`,
+    /// and a nested emit of the same signal skips any slot recorded there. This is what
+    /// makes recursion terminate: without it, a slot that emits the signal it is handling
+    /// would recurse without bound. (The check is *same-thread*; an emit on another thread
+    /// is not re-entrancy and defers its value to the running thread instead — see
+    /// `SlotSlot::deliver`.)
     ///
     /// The test asserts both halves: the nested pass ran at all (so the skip is not
     /// just "nothing happened"), and it ran a *different* slot while excluding the one
@@ -1043,11 +1081,12 @@ mod emit_behaviour_tests {
     ///
     /// # What this pins
     ///
-    /// `emit` takes the callback out of the map while it runs and restores it afterwards. If the
-    /// restore is plain code after the call, a panicking callback leaves the entry in the map with
-    /// `callback == None` — `slot_count` still counts it, a later emit silently skips it, and the
-    /// "is this wired?" query (rule #97) reports a live wire that can never fire again. The restore
-    /// is therefore a `Drop` guard, and this test proves it runs on the unwind path too.
+    /// The slot's entry stays in the map for the whole call (only `once` slots are removed,
+    /// and they are removed before the callback runs). A callback that panics unwinds
+    /// through `emit`, but the entry is untouched, so `slot_count` is unchanged and a later
+    /// emit still finds it. The per-slot callback mutex is left poisoned by the unwind;
+    /// `deliver` takes it with `try_lock_recover`, which recovers a poisoned lock, so the
+    /// next emit reaches the slot rather than treating it as busy/dead.
     #[test]
     fn a_panicking_slot_is_restored_so_later_emits_still_reach_it() {
         let signal = Signal::<u32>::new();
@@ -1067,14 +1106,14 @@ mod emit_behaviour_tests {
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| signal.emit(1)));
         assert!(caught.is_err(), "the callback must have unwound");
 
-        // The slot is still present — the guard restored it — and a later emit reaches it.
+        // The slot is still present (its entry was never removed) and a later emit reaches it.
         assert_eq!(signal.slot_count(), 1, "the slot must still be counted after an unwind");
         should_panic.store(false, Ordering::SeqCst);
         signal.emit(2);
         assert_eq!(
             calls.load(Ordering::SeqCst),
             2,
-            "the restored slot must run on the next emit, not be left as a dead entry"
+            "the slot must run on the next emit, not be left as a dead entry"
         );
     }
 
@@ -1082,10 +1121,14 @@ mod emit_behaviour_tests {
     ///
     /// # The defect this pins (BLUE-issue E-21)
     ///
-    /// `emit` takes a slot's callback out of the map while it runs. A second emit running
-    /// **concurrently on another thread** therefore found `callback == None` for an entry that was
-    /// still connected and not blocked, and skipped it: the value was lost with no queue, error or
-    /// diagnostic. Emits are now serialised per signal, so the second emit waits and then delivers.
+    /// An earlier revision took a slot's callback out of the map while it ran. A second emit
+    /// running **concurrently on another thread** therefore found `callback == None` for an entry
+    /// that was still connected and not blocked, and skipped it: the value was lost with no queue,
+    /// error or diagnostic. Each slot's callback now lives behind its own mutex with a pending
+    /// queue; a concurrent emit that finds the callback busy appends its value to that queue and the
+    /// running thread delivers it before releasing, so nothing is dropped and no signal-global lock
+    /// is held across a callback (which would re-introduce the cross-signal deadlock, BLUE-issue
+    /// E-29).
     ///
     /// The first callback is held open on a barrier so the second emit is *guaranteed* to overlap it
     /// rather than merely likely to; the test is deterministic, not timing-dependent.
@@ -1118,12 +1161,12 @@ mod emit_behaviour_tests {
             worker_signal.emit(1);
         });
 
-        // Wait until the worker is inside the callback (holding the serialisation lock).
+        // Wait until the worker is inside the callback (holding the per-slot callback mutex).
         entered.wait();
 
         // Now emit a second value from this thread. Before the fix this found the callback taken and
-        // dropped the value; with serialisation it blocks until the worker's callback returns, then
-        // delivers.
+        // dropped the value; now it is queued on the busy slot and delivered by the running thread
+        // once its callback returns.
         let emitter_signal = signal.clone();
         let emitter = std::thread::spawn(move || {
             emitter_signal.emit(2);
@@ -1151,9 +1194,9 @@ mod emit_behaviour_tests {
     /// never resolves. Locks are now **per slot** and none is held across the callback, so the two
     /// forwards run in a per-call order that cannot cycle.
     ///
-    /// The test uses a three-way barrier so both callbacks are provably inside their first delivery
-    /// before either forwards, and bounded channel receives so a regression fails as a timeout rather
-    /// than hanging the suite.
+    /// The test uses a two-thread barrier so both callbacks are provably inside their first
+    /// delivery before either forwards, and bounded channel receives so a regression fails as a
+    /// timeout rather than hanging the suite.
     #[cfg(not(alloc_frugal))]
     #[test]
     fn cross_signal_forwards_across_threads_do_not_deadlock() {
@@ -1208,5 +1251,207 @@ mod emit_behaviour_tests {
         );
         t1.join().expect("thread 1 must not panic");
         t2.join().expect("thread 2 must not panic");
+    }
+}
+
+/// Characterisation tests for the "no user value is dropped under an internal
+/// lock" invariant (BLUE-issue N-S-30).
+///
+/// # The defect these pin
+///
+/// `disconnect` removed a slot's entry inside the same expression that held the
+/// slot-map write lock, and `disconnect_all` cleared the map under the lock. Both
+/// dropped the entry — and with it the slot's `Arc<SlotSlot<T>>`, hence the user
+/// closure and everything it captured — while the lock was held. If a captured
+/// value's `Drop` re-enters the signal (an `Arc<ConnectionScope>` whose last
+/// reference drops calls its registered disconnector, which calls `disconnect`),
+/// the second acquisition deadlocks on the non-reentrant write lock.
+///
+/// Each test drives the re-entrant path on a worker thread and waits on a bounded
+/// channel, so a regression fails as a timeout rather than hanging the suite.
+#[cfg(all(test, not(alloc_frugal)))]
+mod drop_outside_lock_tests {
+    use super::*;
+    use alloc::sync::Arc;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    /// The timeout every bounded join waits on. A deadlocked worker never sends, so
+    /// the assert fails rather than the test process hanging.
+    const BOUND: Duration = Duration::from_secs(5);
+
+    /// Builds the re-entrant trap: a scope that owns a disconnector for `scoped_handle`,
+    /// with its only remaining strong reference held by the closure connected at
+    /// `capture_handle`. Dropping that closure runs `ConnectionScope::drop`, whose
+    /// disconnector re-enters `disconnect` — the cycle the fix must survive.
+    ///
+    /// Returns the capture handle; `scoped_handle` is connected here and needs no
+    /// caller.
+    fn arm_reentrant_scope(signal: &Signal<u32>) -> ConnectionHandle {
+        let scope = Arc::new(ConnectionScope::new());
+        // `connect_scoped` registers a disconnector inside `scope` that disconnects
+        // this handle. That is the closure that re-enters the signal when the scope
+        // drops.
+        let _scoped_handle = signal.connect_scoped(&scope, |_| {});
+        // A second connection whose closure holds the last strong reference to the
+        // scope. Disconnecting it drops that reference.
+        let captured = Arc::clone(&scope);
+        let capture_handle = signal.connect(move |_| {
+            // Keep the scope alive for the slot's lifetime; the point is the capture,
+            // not any action it takes.
+            let _ = &captured;
+        });
+        // Drop the local strong reference so the captured clone in the closure is the
+        // last one. Without this the scope would outlive the closure and the trap
+        // would not arm.
+        drop(scope);
+        capture_handle
+    }
+
+    /// A single `disconnect` that frees a re-entrant capture must complete.
+    #[test]
+    fn disconnecting_a_capture_that_reenters_still_completes() {
+        let signal = Signal::<u32>::new();
+        let handle = arm_reentrant_scope(&signal);
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker_signal = signal.clone();
+        let worker = std::thread::spawn(move || {
+            // With the entry removed under the lock and dropped after release, this
+            // returns; before the fix the scope's drop re-entered the held lock.
+            let removed = worker_signal.disconnect(handle);
+            let _ = done_tx.send(removed);
+        });
+
+        let removed = done_rx
+            .recv_timeout(BOUND)
+            .expect("disconnect must complete without dropping the capture under the slot lock");
+        assert!(removed, "the capture handle was connected, so disconnect must report true");
+        worker.join().expect("the disconnect worker must not panic");
+        assert_eq!(
+            signal.slot_count(),
+            0,
+            "dropping the capture also frees the scope, whose disconnector removes the scoped slot"
+        );
+    }
+
+    /// `disconnect_all` that frees a re-entrant capture must complete.
+    #[test]
+    fn disconnect_all_with_a_reentrant_capture_still_completes() {
+        let signal = Signal::<u32>::new();
+        let _ = arm_reentrant_scope(&signal);
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker_signal = signal.clone();
+        let worker = std::thread::spawn(move || {
+            worker_signal.disconnect_all();
+            let _ = done_tx.send(());
+        });
+
+        assert!(
+            done_rx.recv_timeout(BOUND).is_ok(),
+            "disconnect_all must complete without dropping captures under the slot lock"
+        );
+        worker.join().expect("the disconnect_all worker must not panic");
+        assert_eq!(signal.slot_count(), 0, "every slot must be gone");
+    }
+
+    /// A once-slot that is removed by a normal emit while it holds a re-entrant
+    /// capture must not deadlock: the once path also drops the entry under the map
+    /// lock, after cloning the slot `Arc`, so this pins that the clone keeps the user
+    /// value alive until after the lock — i.e. the capture is not destroyed early.
+    #[test]
+    fn a_once_slot_with_a_reentrant_capture_is_removed_safely() {
+        let signal = Signal::<u32>::new();
+        let scope = Arc::new(ConnectionScope::new());
+        let after = signal.connect_scoped(&scope, |_| {});
+        let scoped_signal = signal.clone();
+        let captured = Arc::clone(&scope);
+        signal.connect_once(move |_| {
+            let _ = &captured;
+            // Reaching this body proves the once entry survived the claim and that
+            // the emit did not run it while holding a lock the capture could re-enter.
+            let _ = scoped_signal.is_connected(after);
+        });
+        drop(scope);
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker_signal = signal.clone();
+        let worker = std::thread::spawn(move || {
+            worker_signal.emit(1);
+            let _ = done_tx.send(());
+        });
+        assert!(
+            done_rx.recv_timeout(BOUND).is_ok(),
+            "a once slot whose capture can re-enter must not deadlock the emit"
+        );
+        worker.join().expect("the emit worker must not panic");
+    }
+
+    /// Clearing a scope must not run its disconnectors while holding the scope lock.
+    ///
+    /// A disconnector removes a slot whose closure owns a value whose `Drop` calls
+    /// `scope.clear()` again. Running the disconnector under the scope's own mutex
+    /// made that nested `clear` re-lock the same non-reentrant mutex and deadlock;
+    /// draining the disconnectors out before invoking them removes the cycle.
+    #[test]
+    fn clearing_a_scope_whose_capture_reenters_clear_still_completes() {
+        use core::time::Duration;
+        use std::sync::mpsc;
+
+        /// A value that asks its scope to clear when dropped — the re-entrant capture.
+        struct ReentrantClear {
+            scope: Arc<ConnectionScope>,
+        }
+        impl Drop for ReentrantClear {
+            fn drop(&mut self) {
+                self.scope.clear();
+            }
+        }
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let signal = Signal::<u32>::new();
+            let scope = Arc::new(ConnectionScope::new());
+            // Two tracked slots. The first is harmless; the second's closure owns a
+            // value that re-enters `clear` when it is dropped — which is exactly what
+            // happens when a disconnector removes that slot.
+            signal.connect_scoped(&scope, |_| {});
+            let for_slot = Arc::clone(&scope);
+            signal.connect_scoped(&scope, move |_| {
+                let _reentrant = ReentrantClear { scope: Arc::clone(&for_slot) };
+                let _ = &_reentrant;
+            });
+            // Clear explicitly while the scope itself is still alive. `drop(scope)`
+            // could never reach zero here because the captured value holds a clone of
+            // the same scope — which is precisely why the explicit `clear` is the path
+            // the re-entrant trap can reach.
+            scope.clear();
+            let _ = done_tx.send(signal.slot_count());
+        });
+
+        let slots = done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a scope clear/auto-clear must not deadlock on a re-entrant disconnector");
+        assert_eq!(slots, 0, "every tracked slot must be disconnected by the scope");
+        worker.join().expect("the scope worker must not panic");
+    }
+
+    /// The ordinary, non-re-entrant paths keep working: disconnect of an unknown
+    /// handle, and clear on an empty signal.
+    #[test]
+    fn plain_disconnect_and_clear_still_behave() {
+        let signal = Signal::<u32>::new();
+        assert!(
+            !signal.disconnect(ConnectionHandle(u64::MAX)),
+            "an unknown handle must report false"
+        );
+        signal.disconnect_all();
+        assert_eq!(signal.slot_count(), 0);
+
+        let handle = signal.connect(|_| {});
+        assert!(signal.is_connected(handle));
+        assert!(signal.disconnect(handle), "a known handle must report true");
+        assert!(!signal.is_connected(handle));
     }
 }

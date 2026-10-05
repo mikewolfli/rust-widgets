@@ -93,7 +93,11 @@ impl QualityManager {
         let initial_quality = gpu_capability
             .recommended_initial_quality()
             .clamp(config.min_quality, config.max_quality);
-        let frame_monitor = FrameTimeMonitor::new(config.target_frame_rate);
+        let frame_monitor = FrameTimeMonitor::with_capacity_for_counts(
+            config.target_frame_rate,
+            config.degrade_frame_count,
+            config.upgrade_frame_count,
+        );
         Self { current_level: initial_quality, config, frame_monitor, gpu_capability }
     }
     /// Records a frame duration and updates quality level if necessary.
@@ -168,9 +172,22 @@ impl QualityManager {
         &self.config
     }
     /// Updates the quality configuration.
+    ///
+    /// The stored configuration is normalized (thresholds, counts and an inverted quality range are
+    /// repaired), and [`Self::current_level`] is re-clamped against the *new* range. Without the
+    /// re-clamp, shrinking the range left the level outside it — the manager would report a level its
+    /// own config forbids until the next change fired a branch, and a level at the old maximum never
+    /// degrades because its arm only reacts to `should_degrade`.
+    ///
+    /// Widening the range deliberately does **not** move the level: a caller that opens up the range
+    /// has not asked for a different quality, so the current choice is preserved.
     pub fn set_config(&mut self, config: QualityConfig) {
         self.config = config.normalized();
         self.frame_monitor.set_target_frame_rate(self.config.target_frame_rate);
+        // Re-clamp against the new bounds. `clamp` moves the value only when it now falls outside the
+        // range, so widening leaves the user's choice untouched.
+        self.current_level =
+            self.current_level.clamp(self.config.min_quality, self.config.max_quality);
     }
     /// Returns the GPU capability.
     pub fn gpu_capability(&self) -> &GpuCapability {
@@ -198,3 +215,85 @@ impl QualityManager {
     }
 }
 crate::impl_default_via_new!(QualityManager);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_with_range(min: QualityLevel, max: QualityLevel) -> QualityConfig {
+        QualityConfig {
+            min_quality: min,
+            max_quality: max,
+            degrade_frame_count: 5,
+            upgrade_frame_count: 10,
+            ..QualityConfig::default()
+        }
+    }
+
+    /// Shrinking the range through `set_config` must bring the level into it immediately, before any
+    /// frame is observed. The defect was that `set_config` swapped the config but never re-clamped, so
+    /// a `High` level survived a `min = max = Low` config.
+    #[test]
+    fn shrinking_the_range_makes_the_level_immediately_compliant() {
+        let mut manager = QualityManager::new();
+        manager.set_quality_level(QualityLevel::High);
+        assert_eq!(manager.quality_level(), QualityLevel::High);
+
+        manager.set_config(config_with_range(QualityLevel::Low, QualityLevel::Low));
+        assert_eq!(
+            manager.quality_level(),
+            QualityLevel::Low,
+            "the level must be reclamped the moment the range shrinks"
+        );
+
+        // And it stays compliant across normal frames rather than being corrected lazily.
+        for _ in 0..100 {
+            manager.finish_frame_secs(0.016);
+        }
+        assert_eq!(manager.quality_level(), QualityLevel::Low);
+    }
+
+    /// Widening the range must preserve the caller's current choice: opening the range is not a
+    /// request to change quality.
+    #[test]
+    fn widening_the_range_preserves_the_current_choice() {
+        let mut manager = QualityManager::with_config(config_with_range(
+            QualityLevel::Medium,
+            QualityLevel::Medium,
+        ));
+        assert_eq!(manager.quality_level(), QualityLevel::Medium);
+
+        manager.set_config(config_with_range(QualityLevel::Low, QualityLevel::High));
+        assert_eq!(
+            manager.quality_level(),
+            QualityLevel::Medium,
+            "a widened range must not reset the user's choice"
+        );
+    }
+
+    /// The history window is sized from the configured counts, so a config asking for a longer window
+    /// than the old fixed 60 samples has an observable effect: enough slow frames eventually degrade.
+    #[test]
+    fn a_config_with_a_long_window_can_actually_degrade() {
+        let config = QualityConfig {
+            degrade_frame_count: 90,
+            upgrade_frame_count: 90,
+            ..QualityConfig::default()
+        };
+        let mut manager = QualityManager::with_config(config);
+        manager.set_quality_level(QualityLevel::High);
+        for _ in 0..89 {
+            manager.finish_frame_secs(0.05);
+        }
+        assert_eq!(
+            manager.quality_level(),
+            QualityLevel::High,
+            "89 of the required 90 slow frames is not yet enough"
+        );
+        manager.finish_frame_secs(0.05);
+        assert!(
+            manager.quality_level() < QualityLevel::High,
+            "the 90th slow frame must complete the window and degrade"
+        );
+    }
+}

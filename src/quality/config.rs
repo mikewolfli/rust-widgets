@@ -57,6 +57,14 @@ impl QualityConfig {
     pub fn upgrade_frame_duration(&self) -> f32 {
         self.target_frame_duration() * self.upgrade_threshold
     }
+    /// The history window a monitor needs to honour this config's consecutive-frame counts.
+    ///
+    /// The monitor can only look back over the samples its ring buffer holds, so a config that asks
+    /// for more consecutive frames than the buffer holds would silently never fire. Deriving the
+    /// buffer size from the counts keeps the two from disagreeing. Always at least one sample.
+    pub fn required_history_capacity(&self) -> usize {
+        self.degrade_frame_count.max(self.upgrade_frame_count).max(1)
+    }
     /// Creates a new config with clamped threshold values.
     ///
     /// # The quality range is repaired too

@@ -303,24 +303,45 @@ impl ChildInfo {
 /// spec draws: `total_preferred` answers "how much content is in here", this answers "how much
 /// room do the children occupy once their gaps are paid for". A composite that wants to size
 /// itself around its children wants the second.
+///
+/// # Bound policy
+///
+/// The sum is accumulated in `u64` and then saturated to `u32` on return. A plain `u32`
+/// sum would overflow — a debug panic, and a wrapped (too small) size in release — once
+/// the children's extents together exceed [`u32::MAX`]. Returning [`u32::MAX`] is the
+/// honest answer for "too large to represent": it is the largest extent a consumer can
+/// use, and it can never under-report the room the children occupy.
 pub fn total_bounds(children: &[ChildInfo], vertical: bool) -> u32 {
     children
         .iter()
-        .map(|child| if vertical { child.bounds().height } else { child.bounds().width })
-        .sum()
+        .map(|child| if vertical { child.bounds().height } else { child.bounds().width } as u64)
+        .sum::<u64>()
+        .min(u32::MAX as u64) as u32
 }
 
 /// The children's collective minimum and preferred extent along an axis.
 ///
 /// Because a list of hints is consulted constantly, the two aggregates a layout asks
 /// for most are computed here rather than at each call site.
+///
+/// The sum is accumulated in `u64` and saturated to `u32` — see [`total_bounds`].
 pub fn total_preferred(children: &[ChildInfo], vertical: bool) -> u32 {
-    children.iter().map(|child| axis(&child.hints, vertical).pref).sum()
+    children
+        .iter()
+        .map(|child| axis(&child.hints, vertical).pref as u64)
+        .sum::<u64>()
+        .min(u32::MAX as u64) as u32
 }
 
 /// The sum of the children's minima along an axis.
+///
+/// The sum is accumulated in `u64` and saturated to `u32` — see [`total_bounds`].
 pub fn total_minimum(children: &[ChildInfo], vertical: bool) -> u32 {
-    children.iter().map(|child| axis(&child.hints, vertical).min).sum()
+    children
+        .iter()
+        .map(|child| axis(&child.hints, vertical).min as u64)
+        .sum::<u64>()
+        .min(u32::MAX as u64) as u32
 }
 
 /// The largest preferred extent among the children, or 0 for an empty list.
@@ -480,6 +501,46 @@ mod tests {
         assert_eq!(total_preferred(&children, true), 10);
         assert_eq!(max_preferred(&children, true), 6);
         assert_eq!(max_preferred(&[], false), 0, "an empty list has no largest child");
+    }
+
+    /// Large-but-legal child extents must not overflow the `u32` sum: a plain `u32`
+    /// accumulation panicked in debug and, in release, wrapped to a too-small total.
+    /// The result saturates to `u32::MAX` rather than under-reporting.
+    #[test]
+    fn large_aggregates_saturate_instead_of_overflowing() {
+        let big = 2_500_000_000u32; // 2 * this > u32::MAX
+        let children = vec![
+            ChildInfo::new(1, Hints::at_least(big, big)),
+            ChildInfo::new(2, Hints::at_least(big, big)),
+        ];
+        // Both axes hit the same widening path.
+        assert_eq!(total_bounds(&children, false), u32::MAX);
+        assert_eq!(total_bounds(&children, true), u32::MAX);
+        assert_eq!(total_preferred(&children, false), u32::MAX);
+        assert_eq!(total_preferred(&children, true), u32::MAX);
+        assert_eq!(total_minimum(&children, false), u32::MAX);
+        assert_eq!(total_minimum(&children, true), u32::MAX);
+    }
+
+    /// The three aggregates over an empty list are zero on both axes, and normal values are
+    /// unaffected by the widening.
+    #[test]
+    fn aggregates_are_zero_when_empty_and_unchanged_for_normal_values() {
+        assert_eq!(total_bounds(&[], false), 0);
+        assert_eq!(total_bounds(&[], true), 0);
+        assert_eq!(total_preferred(&[], false), 0);
+        assert_eq!(total_preferred(&[], true), 0);
+        assert_eq!(total_minimum(&[], false), 0);
+        assert_eq!(total_minimum(&[], true), 0);
+
+        let children = vec![
+            ChildInfo::new(1, Hints { width: AxisHints::fixed(30), height: AxisHints::fixed(10) }),
+            ChildInfo::new(2, Hints { width: AxisHints::fixed(20), height: AxisHints::fixed(40) }),
+        ];
+        assert_eq!(total_bounds(&children, false), 50);
+        assert_eq!(total_bounds(&children, true), 50);
+        assert_eq!(total_preferred(&children, false), 50);
+        assert_eq!(total_minimum(&children, true), 50);
     }
 
     #[test]

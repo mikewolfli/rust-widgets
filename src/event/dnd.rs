@@ -78,7 +78,8 @@ use crate::core::Point;
 /// perform, only written down.
 ///
 /// The derive is `PartialEq` without `Eq` because the payload carries a [`Point`],
-/// and the geometry types are floating-point.
+/// whose fields are `i32`; loosening that to `Eq` would be a silent promise that
+/// the geometry can never carry a float-like sentinel.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DragPayload {
     /// The kind of thing being dragged, e.g. `"card"`, `"tab"`, `"file"`.
@@ -217,10 +218,11 @@ pub trait DropTarget {
 ///
 /// # What this holds, and what it deliberately does not
 ///
-/// It holds the payload, where the pointer is now, where it started, and which
-/// target is currently under it. It does **not** hold the list of targets: a drag
-/// travels across controls that do not know about each other, so resolving the
-/// target is the owner's job (it is the only party that can see them all).
+/// It holds the payload, where the pointer is now, and where it started. It does
+/// **not** hold the list of targets: a drag travels across controls that do not know
+/// about each other, so resolving the target is the owner's job (it is the only party
+/// that can see them all) — which is also why there is no "current target" field to
+/// save.
 ///
 /// That split is what lets a `KanbanBoard` drag a card onto a list that lives in a
 /// different branch of the widget tree without either control importing the other.
@@ -267,8 +269,16 @@ impl DragSession {
     }
 
     /// The offset the pointer has travelled since the gesture began.
+    ///
+    /// Computed in `i64` and saturated to the `i32` range, so a gesture that moves
+    /// between the extremes of a 32-bit axis reports a bounded delta rather than
+    /// wrapping. The two coordinates come from `i32` fields, so a plain `x - start.x`
+    /// was an overflow away from a panic in debug builds and a wrong sign in release.
     pub fn delta(&self) -> Point {
-        Point::new(self.current.x - self.start.x, self.current.y - self.start.y)
+        Point::new(
+            subtract_saturating(self.current.x, self.start.x),
+            subtract_saturating(self.current.y, self.start.y),
+        )
     }
 
     /// Moves the pointer to `pos`, activating the drag once `threshold` is
@@ -281,8 +291,12 @@ impl DragSession {
         if self.active {
             return false;
         }
-        let dx = (pos.x - self.start.x).abs();
-        let dy = (pos.y - self.start.y).abs();
+        // The distance is taken in `i64` before `abs`: `i32::abs` has no representable
+        // result for `i32::MIN`, so `(pos.x - self.start.x).abs()` overflowed on exactly
+        // the extreme coordinate this guards against.
+        let dx = distance(pos.x, self.start.x);
+        let dy = distance(pos.y, self.start.y);
+        let threshold = i64::from(threshold);
         if dx >= threshold || dy >= threshold {
             self.active = true;
             return true;
@@ -313,6 +327,29 @@ impl DragSession {
         }
         target.on_drop(&self.payload, pos)
     }
+}
+
+/// The magnitude of `b - a` as an `i64`, well-defined for every `i32` input.
+///
+/// Subtracting in the wider type and negating there means neither the subtraction
+/// nor the `abs` can overflow, unlike the same expression in `i32`.
+fn distance(a: i32, b: i32) -> i64 {
+    let diff = i64::from(a) - i64::from(b);
+    if diff < 0 {
+        -diff
+    } else {
+        diff
+    }
+}
+
+/// `a - b` computed in `i64` and saturated to the `i32` range.
+///
+/// The result feeds a [`Point`], whose coordinates are `i32`, so the one value the
+/// wide computation cannot represent is clamped to the nearer bound rather than
+/// wrapping.
+fn subtract_saturating(a: i32, b: i32) -> i32 {
+    let diff = i64::from(a) - i64::from(b);
+    diff.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
 #[cfg(test)]
@@ -506,5 +543,48 @@ mod tests {
         // makes column-to-column board dragging work.
         assert!(session.update(Point::new(2, 40), 8));
         assert!(session.is_active());
+    }
+
+    /// A drag spanning the full axis must not overflow, and its delta is saturated.
+    ///
+    /// `delta()` used i32 subtraction and `update()` used `i32::abs`; both overflow at
+    /// the extremes (`i32::MAX - i32::MIN`, and `abs(i32::MIN)`). This pins the wide
+    /// arithmetic that makes every input well-defined.
+    #[test]
+    fn axis_extremes_do_not_overflow() {
+        let mut session = DragSession::begin(card(), Point::new(i32::MIN, i32::MIN));
+        assert!(session.update(Point::new(i32::MAX, i32::MAX), 8), "full-axis travel is a drag");
+        assert!(session.is_active());
+        // The delta cannot be represented in i32, so it saturates to the axis bounds.
+        assert_eq!(session.delta(), Point::new(i32::MAX, i32::MAX));
+    }
+
+    /// A move to `i32::MIN` from the origin must compute a positive distance.
+    #[test]
+    fn move_to_i32_min_activates_without_abs_overflow() {
+        let mut session = DragSession::begin(card(), Point::new(0, 0));
+        assert!(
+            session.update(Point::new(i32::MIN, 0), 8),
+            "moving to i32::MIN is far past the threshold, not a wrapped negative"
+        );
+        assert_eq!(session.delta(), Point::new(i32::MIN, 0));
+    }
+
+    /// Normal drags keep their exact offset after the wide-arithmetic change.
+    #[test]
+    fn normal_drags_keep_their_exact_delta() {
+        let mut session = DragSession::begin(card(), Point::new(-100, 250));
+        session.update(Point::new(150, -50), 8);
+        assert_eq!(session.delta(), Point::new(250, -300));
+    }
+
+    /// A negative-to-positive small drag is not falsely saturated.
+    #[test]
+    fn ordinary_small_offsets_are_not_saturated() {
+        let session = DragSession::begin(card(), Point::new(-1, 1));
+        assert_eq!(session.delta(), Point::new(0, 0));
+        let mut session = session;
+        session.update(Point::new(1, -1), 3);
+        assert_eq!(session.delta(), Point::new(2, -2));
     }
 }

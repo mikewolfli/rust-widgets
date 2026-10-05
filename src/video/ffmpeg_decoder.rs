@@ -276,7 +276,14 @@ impl FfmpegDecoder {
         })?;
 
         // The scaler has now allocated the output frame; read its data.
-        let data = rgb.data(0).to_vec();
+        // `rgb.data(0)` is a raw byte slice whose rows may be padded to an
+        // arbitrary stride (the scaler is free to align each row), so a plain
+        // `to_vec()` would hand the consumer a buffer that is wider than
+        // `width * 4` per row and whose pixels are silently misaligned. Pack it
+        // row by row into the tight `width * height * 4` RGBA layout the rest of
+        // the pipeline (and `VideoFrame`) expects (N-S-54).
+        let data = pack_rgba_rows(rgb.data(0), rgb.stride(0), width as usize, height as usize)
+            .map_err(|e| format!("frame {width}x{height} could not be packed for output: {e}"))?;
 
         // Determine timestamp.
         let pts = frame.pts();
@@ -393,13 +400,17 @@ impl VideoDecoderTrait for FfmpegDecoder {
     }
 
     fn seek(&mut self, time: f64) -> Result<(), String> {
-        // Convert seconds to stream time base.
-        let ts =
-            (time * self.time_base.denominator() as f64 / self.time_base.numerator() as f64) as i64;
+        // `Input::seek` forwards to `avformat_seek_file`, whose timestamp is in
+        // **global AV_TIME_BASE microseconds** (stream_index = -1), not in the
+        // stream's own time base. Converting to stream ticks and passing those as
+        // if they were AV_TIME_BASE units sought to a wildly wrong place — the
+        // old `time * den / num` produced a value roughly `time_base` times too
+        // large (N-S-53).
+        let target = seconds_to_av_time_base(time)?;
 
-        self.input.seek(ts, ..).map_err(|e| {
+        self.input.seek(target, ..).map_err(|e| {
             format!(
-                "seek to {time:.3}s (stream timestamp {ts}) failed: {e}; the container may \
+                "seek to {time:.3}s (AV_TIME_BASE {target}) failed: {e}; the container may \
                  not be seekable"
             )
         })?;
@@ -435,6 +446,80 @@ impl Drop for FfmpegDecoder {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// FFmpeg's global time base: one second is `AV_TIME_BASE` units, the unit
+/// `avformat_seek_file` expects when seeking by timestamp rather than by frame.
+const AV_TIME_BASE: i64 = 1_000_000;
+
+/// Converts a seek target in seconds to `AV_TIME_BASE` microseconds.
+///
+/// Rejects a non-finite or out-of-range time (negative, or so large the product
+/// cannot be represented) instead of casting a saturating/`NaN` `f64` to a
+/// timestamp and seeking to an arbitrary place (N-S-53).
+fn seconds_to_av_time_base(seconds: f64) -> Result<i64, String> {
+    if !seconds.is_finite() {
+        return Err(format!("seek target {seconds} is not a finite number of seconds"));
+    }
+    if seconds < 0.0 {
+        return Err(format!(
+            "seek target {seconds}s is negative; seeks are measured from the start"
+        ));
+    }
+    let micros = seconds * AV_TIME_BASE as f64;
+    if micros > i64::MAX as f64 {
+        return Err(format!(
+            "seek target {seconds}s is too large to represent in AV_TIME_BASE microseconds"
+        ));
+    }
+    Ok(micros as i64)
+}
+
+/// Packs a strided RGBA plane into a tight `width * height * 4` buffer.
+///
+/// `plane` is the raw first-plane data and `stride` the number of bytes between
+/// the start of consecutive rows. A row is copied as exactly `width * 4` bytes
+/// from its start, so any per-row padding is dropped and the result is the tight
+/// layout every consumer expects. Returns an explicit error when the plane is
+/// too short to hold the rows it claims (N-S-54).
+fn pack_rgba_rows(
+    plane: &[u8],
+    stride: usize,
+    width: usize,
+    height: usize,
+) -> Result<Vec<u8>, String> {
+    let row_bytes =
+        width.checked_mul(4).ok_or_else(|| format!("RGBA row width {width} × 4 overflows"))?;
+    let total = row_bytes
+        .checked_mul(height)
+        .ok_or_else(|| format!("RGBA buffer {width}x{height} overflows"))?;
+    if height > 0 && stride < row_bytes {
+        return Err(format!(
+            "RGBA plane stride {stride} is smaller than one row of {row_bytes} bytes"
+        ));
+    }
+    // Only the rows that actually exist need to fit: a zero-height plane has no
+    // rows and is trivially valid even though it carries no bytes.
+    if height > 0 {
+        let last_row_start = stride
+            .checked_mul(height - 1)
+            .ok_or_else(|| "RGBA plane row offset overflows".to_string())?;
+        let last_row_end = last_row_start
+            .checked_add(row_bytes)
+            .ok_or_else(|| "RGBA plane end offset overflows".to_string())?;
+        if last_row_end > plane.len() {
+            return Err(format!(
+                "RGBA plane is {} bytes but {width}x{height} at stride {stride} needs {last_row_end}",
+                plane.len()
+            ));
+        }
+    }
+    let mut out = Vec::with_capacity(total);
+    for row in 0..height {
+        let start = row * stride;
+        out.extend_from_slice(&plane[start..start + row_bytes]);
+    }
+    Ok(out)
+}
 
 /// Build a complete `VideoMetadata` from the demuxer, decoder, and stream.
 fn build_metadata(
@@ -511,21 +596,43 @@ fn frame_rate_and_total(stream: &ffmpeg_next::Stream<'_>, decoder: &VideoDecoder
     // Number of frames from stream metadata (may be 0 / unknown).
     let stream_frames = stream.frames();
     let total = if stream_frames > 0 {
+        // A known frame count is authoritative; the duration-based estimate is
+        // only a fallback for containers that do not report one.
         stream_frames as u64
     } else if fps > 0.0 {
-        let dur = stream.duration();
-        if dur > 0 {
-            (dur as f64 * rational.numerator() as f64
-                / (rational.denominator() as f64 * stream.time_base().denominator() as f64))
-                .round() as u64
-        } else {
-            0
-        }
+        total_frames_from_duration(stream.duration(), stream.time_base(), fps)
     } else {
         0
     };
 
     (fps, total)
+}
+
+/// Estimates the total frame count from a stream duration, its time base, and
+/// the frame rate.
+///
+/// `duration` is in the stream's own time base units, so the elapsed seconds are
+/// `duration × tb.numerator / tb.denominator`; multiplying by `fps` gives frames.
+/// The time base's numerator must be included — for a typical MPEG stream the
+/// time base is `1/90000`, and omitting the numerator under-counts by a factor
+/// of the denominator (N-S-56). A non-positive denominator or duration yields 0
+/// rather than dividing by zero.
+fn total_frames_from_duration(duration: i64, time_base: Rational, fps: f64) -> u64 {
+    if duration <= 0 || !fps.is_finite() || fps <= 0.0 {
+        return 0;
+    }
+    let tb_num = time_base.numerator() as f64;
+    let tb_den = time_base.denominator() as f64;
+    if tb_den == 0.0 {
+        return 0;
+    }
+    let seconds = duration as f64 * tb_num / tb_den;
+    let frames = (seconds * fps).round();
+    if frames <= 0.0 {
+        0
+    } else {
+        frames as u64
+    }
 }
 
 /// Map an FFmpeg codec Id to a human-readable name.
@@ -716,5 +823,76 @@ mod tests {
             !decoder_temp_file_exists(index),
             "a decoder temp file survived construction (index {index})"
         );
+    }
+
+    /// N-S-53: the seek target must be expressed in AV_TIME_BASE microseconds,
+    /// with non-finite/negative/oversized inputs rejected rather than cast.
+    #[test]
+    fn test_seconds_to_av_time_base_conversion() {
+        assert_eq!(seconds_to_av_time_base(0.0).unwrap(), 0);
+        assert_eq!(seconds_to_av_time_base(1.0).unwrap(), 1_000_000);
+        assert_eq!(seconds_to_av_time_base(2.5).unwrap(), 2_500_000);
+        // A stream time base must never be used here: 1/90000 would be 90000×
+        // too large. Sanity: a whole second is exactly AV_TIME_BASE.
+        assert_eq!(seconds_to_av_time_base(1.0).unwrap(), AV_TIME_BASE);
+
+        assert!(seconds_to_av_time_base(-1.0).is_err(), "negative seek is rejected");
+        assert!(seconds_to_av_time_base(f64::NAN).is_err(), "NaN is rejected");
+        assert!(seconds_to_av_time_base(f64::INFINITY).is_err(), "infinity is rejected");
+        assert!(seconds_to_av_time_base(1e300).is_err(), "an unrepresentable time is rejected");
+    }
+
+    /// N-S-54: `pack_rgba_rows` must drop per-row padding and always produce a
+    /// tight `width * height * 4` buffer.
+    #[test]
+    fn test_pack_rgba_rows_drops_padding() {
+        // 2x2 RGBA with a row stride of 12 bytes (4 bytes of padding per row).
+        let stride = 12usize;
+        let mut plane = Vec::new();
+        // Row 0: red, green, then 4 padding bytes.
+        plane.extend_from_slice(&[255, 0, 0, 255, 0, 255, 0, 255, 0xAA, 0xBB, 0xCC, 0xDD]);
+        // Row 1: blue, white, then 4 padding bytes.
+        plane.extend_from_slice(&[0, 0, 255, 255, 255, 255, 255, 255, 0x11, 0x22, 0x33, 0x44]);
+
+        let packed = pack_rgba_rows(&plane, stride, 2, 2).expect("packs");
+        assert_eq!(packed.len(), 2 * 2 * 4, "output must be tight");
+        assert_eq!(&packed[0..8], &[255, 0, 0, 255, 0, 255, 0, 255], "row 0 kept, padding dropped");
+        assert_eq!(
+            &packed[8..16],
+            &[0, 0, 255, 255, 255, 255, 255, 255],
+            "row 1 kept, padding dropped"
+        );
+    }
+
+    /// A stride equal to the row size (already tight) is a copy; a plane that is
+    /// too short for its rows is an explicit error, not a panic.
+    #[test]
+    fn test_pack_rgba_rows_tight_and_error_cases() {
+        let tight = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
+        assert_eq!(pack_rgba_rows(&tight, 8, 2, 1).unwrap(), tight);
+
+        // Height 2, stride 8, row 8 bytes → needs 16 bytes, only 8 given.
+        assert!(pack_rgba_rows(&tight, 8, 2, 2).is_err());
+        // A stride smaller than a row cannot describe the image.
+        assert!(pack_rgba_rows(&tight, 2, 2, 1).is_err());
+        // Zero-height is trivially empty and valid.
+        assert_eq!(pack_rgba_rows(&[], 8, 2, 0).unwrap().len(), 0);
+    }
+
+    /// N-S-56: the duration→frames estimate must include the time base numerator.
+    #[test]
+    fn test_total_frames_from_duration_includes_time_base_numerator() {
+        // 90000 ticks at 1/90000 = exactly 1 second; at 30 fps = 30 frames.
+        assert_eq!(total_frames_from_duration(90000, Rational::new(1, 90000), 30.0), 30);
+        // A rational time base with a numerator other than 1: 2/1000 = 2 ms per
+        // tick, so 1000 ticks = 2 seconds → 60 frames at 30 fps. Omitting the
+        // numerator would give 30.
+        assert_eq!(total_frames_from_duration(1000, Rational::new(2, 1000), 30.0), 60);
+        // 1/1 base: 5 ticks = 5 seconds → 150 frames at 30 fps.
+        assert_eq!(total_frames_from_duration(5, Rational::new(1, 1), 30.0), 150);
+        // Degenerate inputs return 0 rather than dividing by zero or saturating.
+        assert_eq!(total_frames_from_duration(0, Rational::new(1, 30), 30.0), 0);
+        assert_eq!(total_frames_from_duration(10, Rational::new(1, 0), 30.0), 0);
+        assert_eq!(total_frames_from_duration(10, Rational::new(1, 30), 0.0), 0);
     }
 }

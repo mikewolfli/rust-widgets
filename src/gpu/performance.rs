@@ -11,6 +11,67 @@ use super::adapter::GpuDeviceType;
 use crate::compat::{format, Instant, MiniToString, String};
 use alloc::collections::VecDeque;
 use core::time::Duration;
+
+/// The largest number of seconds `Duration::from_secs_f32` accepts without
+/// panicking. `Duration` stores whole seconds in a `u64`, and `u64::MAX as f32`
+/// rounds *up* past `u64::MAX`, so the bound is a comfortably smaller value that
+/// is exactly representable and leaves room for the nanosecond conversion.
+const MAX_DURATION_SECS_F32: f32 = 1.0e18;
+
+/// Converts a caller-supplied frame rate to a *safe* frame duration in seconds.
+///
+/// `fps` is a public field, so it can be `0`, negative, `NaN` or infinite. The
+/// result is clamped into `0.0 < secs <= MAX_DURATION_SECS_F32` so that passing it
+/// to `Duration::from_secs_f32` can never panic; a non-positive or non-finite
+/// rate falls back to 30 fps (N-S-61).
+fn secs_from_fps(fps: f32) -> f32 {
+    if !fps.is_finite() || fps <= 0.0 {
+        // 1/30 is a sane, non-panicking default for a rate the caller did not
+        // give us a usable value for.
+        return 1.0 / 30.0;
+    }
+    let secs = 1.0 / fps;
+    safe_duration_secs(secs)
+}
+
+/// Clamps `secs` into the range `Duration::from_secs_f32` accepts.
+///
+/// A non-finite or negative value becomes `0.0`; an over-large value clamps to
+/// the representable maximum; and a tiny positive value is floored to one
+/// nanosecond so the resulting `Duration` is strictly positive (a duration of
+/// exactly zero would make `1.0 / duration` infinite downstream) (N-S-61).
+fn safe_duration_secs(secs: f32) -> f32 {
+    const MIN_POSITIVE_SECS: f32 = 1e-9;
+    if !secs.is_finite() || secs < 0.0 {
+        0.0
+    } else {
+        secs.clamp(MIN_POSITIVE_SECS, MAX_DURATION_SECS_F32)
+    }
+}
+
+/// How many frames must be recorded between automatic threshold adjustments.
+///
+/// `GpuManager::end_frame` calls `auto_adjust_thresholds` every frame; without a
+/// cadence a burst of unstable frames would push the multipliers to their bounds
+/// almost immediately (N-S-62). 60 frames is roughly one second at 60 fps, which
+/// is long enough to reflect sustained behaviour rather than a stutter.
+const ADJUST_INTERVAL_FRAMES: usize = 60;
+
+/// Classification of a single frame against the adaptivity thresholds.
+///
+/// A frame's duration is compared with both [`AdaptivePerformanceThresholds::upgrade_duration`]
+/// and [`AdaptivePerformanceThresholds::degrade_duration`], which leaves three
+/// outcomes rather than two: clearly good, clearly bad, and the neutral middle
+/// band where the frame meets its target but does not earn an upgrade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameQuality {
+    /// At or below the upgrade threshold.
+    Good,
+    /// Above the degrade threshold.
+    Bad,
+    /// Between the two thresholds — neither evidence for upgrade nor degrade.
+    Neutral,
+}
 /// Performance monitoring strategy based on hardware type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PerformanceMonitorStrategy {
@@ -94,29 +155,68 @@ impl AdaptivePerformanceThresholds {
             _ => Self::cpu(),
         }
     }
-    /// Returns target frame duration
+    /// Returns target frame duration.
+    ///
+    /// `target_fps` is a public, caller-settable `f32`, and `Duration::from_secs_f32`
+    /// panics on `NaN`, infinity, negative values and values too large to
+    /// represent. The value is sanitized to a small positive duration first, so
+    /// this accessor is total rather than a panic waiting on a caller mistake
+    /// (N-S-61).
     pub fn target_frame_duration(&self) -> Duration {
-        Duration::from_secs_f32(1.0 / self.target_fps)
+        Duration::from_secs_f32(secs_from_fps(self.target_fps))
     }
-    /// Returns degrade threshold duration
+    /// Returns degrade threshold duration.
+    ///
+    /// Sanitized like [`Self::target_frame_duration`]: `degrade_threshold` is a
+    /// public multiplier and an unvalidated `0.0`/`NaN`/negative value would make
+    /// `from_secs_f32` panic (N-S-61).
     pub fn degrade_duration(&self) -> Duration {
-        Duration::from_secs_f32(self.target_frame_duration().as_secs_f32() * self.degrade_threshold)
+        Duration::from_secs_f32(safe_duration_secs(
+            self.target_frame_duration().as_secs_f32() * self.degrade_threshold,
+        ))
     }
-    /// Returns upgrade threshold duration
+    /// Returns upgrade threshold duration.
+    ///
+    /// Sanitized like [`Self::degrade_duration`] (N-S-61).
     pub fn upgrade_duration(&self) -> Duration {
-        Duration::from_secs_f32(self.target_frame_duration().as_secs_f32() * self.upgrade_threshold)
+        Duration::from_secs_f32(safe_duration_secs(
+            self.target_frame_duration().as_secs_f32() * self.upgrade_threshold,
+        ))
     }
-    /// Adjusts thresholds based on actual performance history
+    /// Adjusts thresholds based on actual performance history.
+    ///
+    /// Two safety bounds keep repeated calls from running away (N-S-62):
+    ///
+    /// * The degrade/upgrade multipliers are clamped to a sane band. Repeated
+    ///   `degrade *= 0.9` / `upgrade *= 1.1` previously drove them toward `0` and
+    ///   `inf` and *inverted* them (upgrade above degrade), which made the good/bad
+    ///   classification meaningless.
+    /// * `target_fps` is clamped to a sane floor so repeated `*= 0.9` cannot reach
+    ///   `0` (which would make `target_frame_duration` infinite).
+    ///
+    /// The bounds preserve the normal response: an unstable first call still
+    /// widens the degrade window and narrows the upgrade window.
     pub fn adjust_based_on_performance(&mut self, avg_frame_time: Duration, stability: f32) {
-        // If performance is unstable, make thresholds more conservative
+        // Keep the multipliers apart even after many adjustments: the degrade
+        // threshold is the *larger* one (a frame over it is bad) and the upgrade
+        // threshold the smaller (a frame at or under it is good). `degrade` stays
+        // at least `DEGRADE_FLOOR` and `upgrade` at most `UPGRADE_CEILING`, with
+        // `DEGRADE_FLOOR > UPGRADE_CEILING`, so the two thresholds can never
+        // invert (N-S-62).
+        const DEGRADE_FLOOR: f32 = 1.1;
+        const UPGRADE_CEILING: f32 = 0.9;
+        // `target_fps` must stay positive; 10 fps is a low but workable floor.
+        const TARGET_FPS_FLOOR: f32 = 10.0;
+
+        // If performance is unstable, make thresholds more conservative.
         if stability < 0.5 {
-            self.degrade_threshold *= 0.9;
-            self.upgrade_threshold *= 1.1;
+            self.degrade_threshold = (self.degrade_threshold * 0.9).max(DEGRADE_FLOOR);
+            self.upgrade_threshold = (self.upgrade_threshold * 1.1).min(UPGRADE_CEILING);
         }
-        // If consistently missing target, lower expectations
+        // If consistently missing target, lower expectations.
         let avg_fps = 1.0 / avg_frame_time.as_secs_f32();
         if avg_fps < self.target_fps * 0.5 {
-            self.target_fps *= 0.9;
+            self.target_fps = (self.target_fps * 0.9).max(TARGET_FPS_FLOOR);
         }
     }
 }
@@ -159,6 +259,9 @@ pub struct AdaptivePerformanceMonitor {
     consecutive_bad_frames: usize,
     consecutive_good_frames: usize,
     last_quality_change: Instant,
+    /// Frames recorded since the last automatic threshold adjustment, used to
+    /// throttle [`Self::auto_adjust_thresholds`] to a sane cadence.
+    frames_since_adjust: usize,
 }
 impl AdaptivePerformanceMonitor {
     /// Creates a new monitor for a device type
@@ -189,6 +292,7 @@ impl AdaptivePerformanceMonitor {
             // specified to have. Seeding it with `Instant::now()` would instead make
             // `elapsed()` zero and suppress that first adjustment for 2s/5s.
             last_quality_change: Instant::now() - Duration::from_secs(60),
+            frames_since_adjust: 0,
         }
     }
     /// Starts a new frame
@@ -220,10 +324,24 @@ impl AdaptivePerformanceMonitor {
     fn measure_gpu_time(&self) -> Option<Duration> {
         // Env-var override: RUST_WIDGETS_GPU_TIME_MS (milliseconds, f64)
         if let Ok(val) = std::env::var("RUST_WIDGETS_GPU_TIME_MS") {
-            if let Ok(ms) = val.trim().parse::<f64>() {
-                return Some(Duration::from_secs_f64(ms / 1000.0));
+            match val.trim().parse::<f64>() {
+                Ok(ms) => {
+                    // `Duration::from_secs_f64` panics on negative/NaN/infinite
+                    // or unrepresentably large inputs, so a hostile or fat-fingered
+                    // environment value must not crash the renderer (N-S-61).
+                    let secs = ms / 1000.0;
+                    if secs.is_finite() && secs >= 0.0 && secs <= u64::MAX as f64 {
+                        return Some(Duration::from_secs_f64(secs));
+                    }
+                    log::warn!(
+                        "[performance] RUST_WIDGETS_GPU_TIME_MS value '{val}' is out of range for a \
+                         Duration; ignoring it"
+                    );
+                }
+                Err(_) => log::warn!(
+                    "[performance] RUST_WIDGETS_GPU_TIME_MS value '{val}' is not a valid f64"
+                ),
             }
-            log::warn!("[performance] RUST_WIDGETS_GPU_TIME_MS value '{val}' is not a valid f64");
         }
         log::debug!(
             "[performance] measure_gpu_time: no GPU query backend available (strategy={:?})",
@@ -292,16 +410,42 @@ impl AdaptivePerformanceMonitor {
             self.samples.pop_front();
         }
         self.samples.push_back(sample);
-        // Update consecutive frame counters
-        if self.is_frame_bad(&sample) {
-            self.consecutive_bad_frames += 1;
-            self.consecutive_good_frames = 0;
-        } else {
-            self.consecutive_good_frames += 1;
-            self.consecutive_bad_frames = 0;
+        // Update consecutive frame counters. A frame is classified against
+        // *both* thresholds: at or below `upgrade_duration` it is good, above
+        // `degrade_duration` it is bad, and anything in between is neutral. The
+        // old code put every frame at or below `degrade_duration` in the "good"
+        // bucket, so a frame that missed the upgrade target still counted toward
+        // the upgrade streak (N-S-60).
+        match self.classify_frame(&sample) {
+            FrameQuality::Bad => {
+                self.consecutive_bad_frames += 1;
+                self.consecutive_good_frames = 0;
+            }
+            FrameQuality::Good => {
+                self.consecutive_good_frames += 1;
+                self.consecutive_bad_frames = 0;
+            }
+            FrameQuality::Neutral => {
+                // Neither streak continues: a frame that is neither clearly good
+                // nor clearly bad must not count as evidence for either
+                // adjustment.
+                self.consecutive_bad_frames = 0;
+                self.consecutive_good_frames = 0;
+            }
         }
     }
-    /// Checks if a frame is considered "bad"
+    /// Classifies one frame against the degrade/upgrade thresholds.
+    fn classify_frame(&self, sample: &PerformanceSample) -> FrameQuality {
+        if sample.frame_duration > self.thresholds.degrade_duration() {
+            FrameQuality::Bad
+        } else if sample.frame_duration <= self.thresholds.upgrade_duration() {
+            FrameQuality::Good
+        } else {
+            FrameQuality::Neutral
+        }
+    }
+    /// Checks if a frame is considered "bad".
+    #[allow(dead_code)]
     fn is_frame_bad(&self, sample: &PerformanceSample) -> bool {
         sample.frame_duration > self.thresholds.degrade_duration()
     }
@@ -407,11 +551,24 @@ impl AdaptivePerformanceMonitor {
             is_cpu_overloaded: self.is_cpu_overloaded(),
         }
     }
-    /// Auto-adjusts thresholds based on performance history
+    /// Auto-adjusts thresholds based on performance history.
+    ///
+    /// Runs at most once per `ADJUST_INTERVAL_FRAMES` frames, and only once at
+    /// least 60 samples exist. Without a cadence this was called from
+    /// `GpuManager::end_frame` on *every* frame, so a run of unstable frames made
+    /// the thresholds converge to their bounds within a handful of frames instead
+    /// of responding to sustained behaviour (N-S-62).
     pub fn auto_adjust_thresholds(&mut self) {
+        // Only judge on a full history window.
         if self.samples.len() < 60 {
             return; // Need more data
         }
+        // Cadence: adjust at most every `ADJUST_INTERVAL_FRAMES` recorded frames.
+        self.frames_since_adjust = self.frames_since_adjust.saturating_add(1);
+        if self.frames_since_adjust < ADJUST_INTERVAL_FRAMES {
+            return;
+        }
+        self.frames_since_adjust = 0;
         let avg = self.average_frame_time();
         let stability = self.stability();
         self.thresholds.adjust_based_on_performance(avg, stability);
@@ -593,5 +750,196 @@ mod tests {
         let msg = trap.message();
         assert!(msg.contains("15.0"));
         assert!(msg.contains("30.0"));
+    }
+
+    /// Build a sample with an explicit frame duration and no optional metrics.
+    fn sample_of(frame_duration: Duration) -> PerformanceSample {
+        PerformanceSample {
+            frame_index: 0,
+            frame_duration,
+            gpu_time: None,
+            cpu_time: frame_duration,
+            memory_utilization: None,
+            cpu_utilization: None,
+            timestamp: Instant::now(),
+        }
+    }
+
+    fn discrete_monitor() -> AdaptivePerformanceMonitor {
+        AdaptivePerformanceMonitor::for_device_type(GpuDeviceType::DiscreteGpu)
+    }
+
+    /// N-S-60: `record_sample` must classify frames into three buckets using both
+    /// thresholds, not treat everything under `degrade_duration` as good.
+    #[test]
+    fn record_sample_classifies_good_neutral_and_bad() {
+        let monitor = discrete_monitor();
+        let t = monitor.thresholds();
+        let upgrade = t.upgrade_duration();
+        let degrade = t.degrade_duration();
+        assert!(upgrade < degrade, "the two thresholds must be ordered");
+
+        assert_eq!(monitor.classify_frame(&sample_of(upgrade)), FrameQuality::Good);
+        assert_eq!(monitor.classify_frame(&sample_of(upgrade / 2)), FrameQuality::Good);
+        assert_eq!(monitor.classify_frame(&sample_of(degrade)), FrameQuality::Neutral);
+        // Strictly between the two bounds is neutral.
+        let mid = upgrade + (degrade - upgrade) / 2;
+        assert_eq!(monitor.classify_frame(&sample_of(mid)), FrameQuality::Neutral);
+        assert_eq!(
+            monitor.classify_frame(&sample_of(degrade + Duration::from_millis(1))),
+            FrameQuality::Bad
+        );
+    }
+
+    /// A neutral frame must break both streaks, so it cannot silently accrue
+    /// progress toward an upgrade as the old code allowed.
+    #[test]
+    fn neutral_frame_resets_both_streaks() {
+        let mut monitor = discrete_monitor();
+        let t = monitor.thresholds();
+        let good = t.upgrade_duration();
+        let degrade = t.degrade_duration();
+        let neutral = t.upgrade_duration() + (degrade - t.upgrade_duration()) / 2;
+
+        monitor.record_sample(sample_of(good));
+        monitor.record_sample(sample_of(good));
+        assert_eq!(monitor.stats().consecutive_good_frames, 2);
+
+        monitor.record_sample(sample_of(neutral));
+        let stats = monitor.stats();
+        assert_eq!(stats.consecutive_good_frames, 0, "a neutral frame is not good evidence");
+        assert_eq!(stats.consecutive_bad_frames, 0, "a neutral frame is not bad evidence");
+    }
+
+    /// N-S-60: `should_upgrade` must fire only after enough frames at or below
+    /// the *upgrade* threshold, and respect the cooldown.
+    #[test]
+    fn should_upgrade_uses_upgrade_threshold_and_cooldown() {
+        let mut monitor = discrete_monitor();
+        // Force the cooldown to be satisfied.
+        monitor.last_quality_change = Instant::now() - Duration::from_secs(10);
+        let good = monitor.thresholds().upgrade_duration();
+        let needed = monitor.thresholds().upgrade_frame_count;
+
+        for _ in 0..needed {
+            monitor.record_sample(sample_of(good));
+        }
+        assert!(monitor.should_upgrade(), "enough consecutive good frames must allow an upgrade");
+
+        // A single frame just above the upgrade threshold (but below degrade) breaks
+        // the streak and must suppress the upgrade.
+        let neutral = monitor.thresholds().upgrade_duration() + Duration::from_micros(1);
+        monitor.record_sample(sample_of(neutral));
+        assert!(!monitor.should_upgrade(), "a non-good frame must reset the upgrade streak");
+
+        // The cooldown still holds the upgrade back even with a full streak.
+        monitor.notify_quality_changed();
+        for _ in 0..needed {
+            monitor.record_sample(sample_of(good));
+        }
+        assert!(!monitor.should_upgrade(), "the cooldown must still apply after a change");
+    }
+
+    /// N-S-61: pathological `target_fps` and multipliers must not panic; the
+    /// accessors clamp to a representable, positive duration.
+    #[test]
+    fn thresholds_survive_pathological_values() {
+        let mut t = AdaptivePerformanceThresholds::discrete();
+        for fps in [0.0f32, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::MAX] {
+            t.target_fps = fps;
+            // Must not panic.
+            let d = t.target_frame_duration();
+            assert!(d > Duration::ZERO, "fps {fps} must yield a positive duration");
+        }
+        // A negative/NaN multiplier must not turn the duration accessors into a panic.
+        for mult in [-1.0f32, f32::NAN, f32::INFINITY, f32::MAX] {
+            t.target_fps = 60.0;
+            t.degrade_threshold = mult;
+            t.upgrade_threshold = mult;
+            let _ = t.degrade_duration();
+            let _ = t.upgrade_duration();
+        }
+    }
+
+    /// The env-var override for GPU time must ignore out-of-range values rather
+    /// than panicking inside `Duration::from_secs_f64` (N-S-61).
+    #[test]
+    fn gpu_time_env_override_is_range_checked() {
+        let monitor = discrete_monitor();
+        // A negative millisecond value would make `from_secs_f64` panic.
+        std::env::set_var("RUST_WIDGETS_GPU_TIME_MS", "-5");
+        assert_eq!(monitor.measure_gpu_time(), None, "a negative duration is rejected");
+        std::env::set_var("RUST_WIDGETS_GPU_TIME_MS", "nan");
+        assert_eq!(monitor.measure_gpu_time(), None, "NaN is rejected");
+        std::env::set_var("RUST_WIDGETS_GPU_TIME_MS", "12.5");
+        assert_eq!(
+            monitor.measure_gpu_time(),
+            Some(Duration::from_secs_f64(0.0125)),
+            "a normal value is converted"
+        );
+        std::env::remove_var("RUST_WIDGETS_GPU_TIME_MS");
+    }
+
+    /// N-S-62: a long run of unstable frames must keep the thresholds bounded and
+    /// never let the degrade/upgrade multipliers invert.
+    #[test]
+    fn repeated_adjustment_stays_bounded_and_ordered() {
+        let mut t = AdaptivePerformanceThresholds::discrete();
+        // Far more adjustments than any real run of frames.
+        for _ in 0..1000 {
+            t.adjust_based_on_performance(Duration::from_millis(200), 0.0);
+        }
+        assert!(
+            t.degrade_threshold >= 1.1,
+            "degrade must not collapse to the upgrade side: {}",
+            t.degrade_threshold
+        );
+        assert!(t.upgrade_threshold <= 0.9, "upgrade must stay bounded: {}", t.upgrade_threshold);
+        assert!(
+            t.degrade_threshold > t.upgrade_threshold,
+            "the thresholds must never invert (degrade {} vs upgrade {})",
+            t.degrade_threshold,
+            t.upgrade_threshold
+        );
+        assert!(t.target_fps >= 10.0, "target_fps must stay usable: {}", t.target_fps);
+        assert!(t.target_frame_duration() > Duration::ZERO);
+        assert!(t.degrade_duration() > t.upgrade_duration());
+    }
+
+    /// N-S-62: the adjustment cadence must throttle repeated `auto_adjust_thresholds`
+    /// calls so a burst of unstable frames cannot converge the thresholds at once;
+    /// a normal (stable) sequence must still leave them at their defaults.
+    #[test]
+    fn auto_adjust_thresholds_is_rate_limited() {
+        let mut monitor = discrete_monitor();
+        let before = monitor.thresholds().degrade_threshold;
+
+        // Feed 60 samples with a wide spread so `stability()` is well below 0.5.
+        // The threshold is only adjusted once the cadence is crossed, so the first
+        // `ADJUST_INTERVAL_FRAMES - 1` calls must not change anything.
+        for i in 0..60 {
+            let ms = if i % 2 == 0 { 4 } else { 200 };
+            monitor.record_sample(sample_of(Duration::from_millis(ms)));
+        }
+        assert!(monitor.stability() < 0.5, "the fixture must be unstable");
+        for _ in 0..(ADJUST_INTERVAL_FRAMES - 1) {
+            monitor.auto_adjust_thresholds();
+        }
+        assert_eq!(
+            monitor.thresholds().degrade_threshold,
+            before,
+            "an adjustment before the cadence elapses must not change the thresholds"
+        );
+
+        // The next call crosses the cadence and applies the (conservative) change.
+        monitor.auto_adjust_thresholds();
+        assert!(
+            monitor.thresholds().degrade_threshold < before,
+            "once the cadence elapses, an unstable run widens the degrade window"
+        );
+        let wider = monitor.thresholds().degrade_threshold;
+        // Immediate successor calls must not keep adjusting.
+        monitor.auto_adjust_thresholds();
+        assert_eq!(monitor.thresholds().degrade_threshold, wider, "the cadence must hold");
     }
 }

@@ -58,14 +58,25 @@ pub struct GridLayout {
     cells: Vec<Option<GridPlacement>>,
 }
 impl GridLayout {
+    /// The maximum number of cells the grid will allocate storage for.
+    ///
+    /// `rows`/`cols` may come from untrusted input (JSON) and their product can overflow
+    /// `u32`, so the cell `Vec` is capped here. The cap is a property of the *storage*:
+    /// the logical extent (`rows`/`cols`) must never exceed what this array can address,
+    /// or a placement would pass the range check and then have no slot to be written to.
+    const MAX_CELLS: usize = 1_000_000;
+
     /// Create a grid layout with fixed rows/columns.
+    ///
+    /// The logical extent is reduced until it is exactly addressable by the capped cell
+    /// array, so `rows * cols` always equals the number of storage slots. A `rows × cols`
+    /// product above [`Self::MAX_CELLS`] is therefore refused deterministically rather than
+    /// leaving a logical range with no backing storage.
     pub fn new(rows: u32, cols: u32, spacing: u32, margin: u32) -> Self {
         let safe_rows = rows.max(1);
         let safe_cols = cols.max(1);
-        // `rows`/`cols` may come from untrusted input (JSON), and their product can
-        // overflow `u32`. Cap the product so the cell Vec is always sized correctly
-        // and later `row * self.cols + col` indexing stays in bounds.
-        let cell_count = safe_rows.saturating_mul(safe_cols).min(1_000_000) as usize;
+        let (safe_rows, safe_cols) = Self::fit_extent(safe_rows, safe_cols);
+        let cell_count = safe_rows as usize * safe_cols as usize;
         Self {
             rows: safe_rows,
             cols: safe_cols,
@@ -76,6 +87,24 @@ impl GridLayout {
             row_sizing: RowSizing::Fill,
             cells: vec![None; cell_count],
         }
+    }
+
+    /// Reduces `(rows, cols)` until `rows * cols <= MAX_CELLS`, preserving the aspect
+    /// ratio as far as the integer grid allows and never dropping below one row/column.
+    ///
+    /// Returns the reduced pair, guaranteed to satisfy `rows * cols <= MAX_CELLS`.
+    fn fit_extent(rows: u32, cols: u32) -> (u32, u32) {
+        let rows = rows.max(1);
+        let cols = cols.max(1);
+        if rows as u64 * cols as u64 <= Self::MAX_CELLS as u64 {
+            return (rows, cols);
+        }
+        // The grid's dimensions start uniform, so scale both axes by the same factor that
+        // brings the product within the cap, using the integer square root as the target.
+        let allowed = (Self::MAX_CELLS as f64).sqrt() as u32;
+        let scaled_rows = rows.min(allowed.max(1));
+        let scaled_cols = cols.min((Self::MAX_CELLS as u64 / scaled_rows.max(1) as u64) as u32);
+        (scaled_rows.max(1), scaled_cols.max(1))
     }
 
     /// Sets how rows are sized; see [`RowSizing`].
@@ -108,6 +137,10 @@ impl GridLayout {
     /// the same `1` a fresh grid gives it. Shrinking is not offered, because discarding occupied
     /// cells is a decision the caller must make explicitly through `remove_widget`.
     ///
+    /// The logical extent stays exactly addressable: a requested extent whose product would
+    /// exceed [`Self::MAX_CELLS`] is reduced to the cap, so `rows * cols` always equals the
+    /// cell array's length and no logical cell can lack a storage slot.
+    ///
     /// Returns whether the grid grew.
     pub fn grow_to_fit(&mut self, row: u32, col: u32) -> bool {
         let needed_rows = row.saturating_add(1);
@@ -115,9 +148,12 @@ impl GridLayout {
         if needed_rows <= self.rows && needed_cols <= self.cols {
             return false;
         }
-        let new_rows = self.rows.max(needed_rows);
-        let new_cols = self.cols.max(needed_cols);
-        let mut grown = vec![None; new_rows.saturating_mul(new_cols).min(1_000_000) as usize];
+        let (new_rows, new_cols) =
+            Self::fit_extent(self.rows.max(needed_rows), self.cols.max(needed_cols));
+        if new_rows == self.rows && new_cols == self.cols {
+            return false;
+        }
+        let mut grown = vec![None; new_rows as usize * new_cols as usize];
         for r in 0..self.rows {
             for c in 0..self.cols {
                 let from = r.saturating_mul(self.cols).saturating_add(c) as usize;
@@ -176,10 +212,11 @@ impl GridLayout {
         widget_id: ObjectId,
     ) {
         self.grow_to_fit(row, col);
-        if row >= self.rows || col >= self.cols {
-            // `grow_to_fit` only fails to cover the cell in the truncated cell-array case, where
-            // the requested index is past the cap. There is genuinely no cell to write, so the
-            // placement is refused — and the cap is the reason, not the caller's index.
+        if !self.has_storage_slot(row, col) {
+            // `grow_to_fit` failed to cover the cell because the requested extent's product
+            // exceeds the cell cap, so there is no slot to write. The cell is genuinely
+            // unaddressable, not merely out of the current logical range, so the placement
+            // is refused and the caller is told through the log.
             log::warn!(
                 "GridLayout: cell ({row}, {col}) is past the grid's cell cap of 1,000,000; the \
                  placement is dropped"
@@ -191,12 +228,28 @@ impl GridLayout {
         let placement = GridPlacement { widget_id, col_span, row_span };
         for r in row..row + row_span {
             for c in col..col + col_span {
-                let index = r.saturating_mul(self.cols).saturating_add(c) as usize;
-                if index < self.cells.len() {
-                    self.cells[index] = Some(placement);
-                }
+                self.cells[Self::cell_index(self.cols, r, c)] = Some(placement);
             }
         }
+    }
+
+    /// The storage index of cell `(row, col)` under a given column count.
+    ///
+    /// `rows * cols == cells.len()` is an invariant of this type (enforced by
+    /// [`Self::fit_extent`]), so this index is always in bounds for a logical cell.
+    fn cell_index(cols: u32, row: u32, col: u32) -> usize {
+        (row as usize) * (cols as usize) + (col as usize)
+    }
+
+    /// Whether `(row, col)` is inside the logical extent **and** has a storage slot.
+    ///
+    /// The two are one fact here: the logical extent never exceeds the capped array, so a
+    /// cell inside `rows × cols` is always addressable. This predicate makes that explicit
+    /// at every write site so a placement can never claim success without storing anything.
+    fn has_storage_slot(&self, row: u32, col: u32) -> bool {
+        row < self.rows
+            && col < self.cols
+            && Self::cell_index(self.cols, row, col) < self.cells.len()
     }
 
     /// Places a widget at an explicit cell that must already exist.
@@ -209,7 +262,9 @@ impl GridLayout {
     /// would silently undo the sizes the caller chose. This variant refuses an out-of-range cell so
     /// the fixed-dimension case can share the cell array without sharing the growth.
     ///
-    /// Returns whether the placement was made.
+    /// Returns whether the placement was made. A cell with no storage slot — outside the
+    /// logical extent, or (hypothetically) past the capped array — returns `false` rather
+    /// than reporting a success that wrote nothing. A refusal leaves the layout unchanged.
     pub fn place_within_extent(
         &mut self,
         row: u32,
@@ -218,7 +273,7 @@ impl GridLayout {
         row_span: u32,
         widget_id: ObjectId,
     ) -> bool {
-        if row >= self.rows || col >= self.cols {
+        if !self.has_storage_slot(row, col) {
             return false;
         }
         let col_span = col_span.max(1).min(self.cols - col);
@@ -226,10 +281,7 @@ impl GridLayout {
         let placement = GridPlacement { widget_id, col_span, row_span };
         for r in row..row + row_span {
             for c in col..col + col_span {
-                let index = r.saturating_mul(self.cols).saturating_add(c) as usize;
-                if index < self.cells.len() {
-                    self.cells[index] = Some(placement);
-                }
+                self.cells[Self::cell_index(self.cols, r, c)] = Some(placement);
             }
         }
         true
@@ -808,6 +860,70 @@ mod tests {
         assert_eq!(grid.cell_of(99), Some((3, 1)), "the widget lands where it was asked to");
         assert!(grid.has_child(99));
         assert_eq!(grid.child_ids(), vec![99]);
+    }
+
+    /// The defect this pins: `cells` was capped at 1,000,000 while `rows`/`cols` kept the
+    /// larger logical range, so a placement inside the logical range could have no storage
+    /// slot — `place_within_extent` returned `true` having written nothing. The logical
+    /// extent is now reduced to exactly what the capped array addresses, and a cell with no
+    /// slot is refused.
+    #[test]
+    fn an_oversized_extent_is_reduced_to_exactly_addressable_storage() {
+        // 1 × 1,000,001 would need more slots than the cap allows.
+        let grid = GridLayout::new(1, 1_000_001, 0, 0);
+        assert_eq!(grid.total_cells(), grid.rows() as usize * grid.cols() as usize);
+        assert!(grid.total_cells() <= 1_000_000, "the extent must fit the cap");
+
+        // An oversized square is reduced on both axes while staying addressable.
+        let grid = GridLayout::new(2000, 2000, 0, 0);
+        assert_eq!(grid.total_cells(), grid.rows() as usize * grid.cols() as usize);
+        assert!(grid.total_cells() <= 1_000_000);
+    }
+
+    /// A `place_within_extent` at a cell that has no storage slot must report `false` and
+    /// leave the layout unchanged — the success it used to report wrote nothing.
+    #[test]
+    fn place_within_extent_refuses_a_cell_with_no_storage_slot() {
+        let mut grid = GridLayout::new(2, 2, 0, 0);
+        // Out of the logical extent: refused, and no cell is touched.
+        assert!(!grid.place_within_extent(5, 5, 1, 1, 99));
+        assert_eq!(grid.cell_count(), 0, "a refusal must not mutate the layout");
+        assert!(!grid.has_child(99));
+
+        // In extent: accepted, and the storage slot is written.
+        assert!(grid.place_within_extent(1, 1, 1, 1, 7));
+        assert_eq!(grid.cell_count(), 1);
+        assert!(grid.has_child(7));
+    }
+
+    /// The far side of the cap: a grid just under the cap keeps its full extent and stores
+    /// a placement at its last addressable cell.
+    #[test]
+    fn the_cell_cap_boundary_is_consistent() {
+        // Exactly under the cap: 1000 × 1000 = 1,000,000 slots.
+        let mut grid = GridLayout::new(1000, 1000, 0, 0);
+        assert_eq!(grid.total_cells(), 1_000_000);
+        assert_eq!(grid.rows(), 1000);
+        assert_eq!(grid.cols(), 1000);
+        assert!(grid.place_within_extent(999, 999, 1, 1, 5), "the last slot must be writable");
+        assert_eq!(grid.cell_of(5), Some((999, 999)));
+
+        // Just over the cap: the extent is reduced so no logical cell lacks a slot.
+        let grid = GridLayout::new(1001, 1000, 0, 0);
+        assert!(grid.total_cells() <= 1_000_000);
+        assert_eq!(grid.total_cells(), grid.rows() as usize * grid.cols() as usize);
+    }
+
+    /// A growing placement cannot silently drop a widget: after `set_widget_spanning` the
+    /// widget is either placed somewhere addressable or refused outright.
+    #[test]
+    fn a_placement_that_cannot_be_stored_is_not_claimed_as_placed() {
+        let mut grid = GridLayout::new(1, 1, 0, 0);
+        // A request reaching column 1,000,001 exceeds the capped storage; the reduced
+        // extent has no slot for it, so the widget must not be reported as placed.
+        grid.set_widget_spanning(0, 1_000_001, 1, 1, 42);
+        assert!(!grid.has_child(42), "a placement with no slot must be refused");
+        assert_eq!(grid.cell_count(), 0);
     }
 
     /// Auto-placement appends a row when every existing cell is occupied.

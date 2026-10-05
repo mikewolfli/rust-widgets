@@ -9,6 +9,32 @@ use super::types::Rgba8;
 use crate::render::gpu::{GpuCapability, GpuRenderer};
 use std::collections::HashMap;
 use std::sync::mpsc;
+
+/// Byte length of an RGBA8 image of `width × height` pixels.
+///
+/// Computed in `usize` with checked multiplication: in `u32` the product wraps
+/// (e.g. 65536×16384 = 2^32), which would hand the GPU a buffer one byte long for
+/// a 1 GiB image. Returns an explicit error on overflow, a zero dimension, or a
+/// size beyond the largest supported framebuffer (N-S-66).
+fn rgba_buffer_len(width: u32, height: u32) -> Result<usize, String> {
+    if width == 0 || height == 0 {
+        return Err(format!("width/height must be > 0, got {width}x{height}"));
+    }
+    let pixels = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or_else(|| format!("image {width}x{height} pixel count overflows usize"))?;
+    let bytes = pixels
+        .checked_mul(4)
+        .ok_or_else(|| format!("image {width}x{height} RGBA size overflows usize"))?;
+    if bytes > u32::MAX as usize {
+        return Err(format!(
+            "image {width}x{height} needs {bytes} bytes, which exceeds the largest supported \
+             framebuffer ({} bytes)",
+            u32::MAX
+        ));
+    }
+    Ok(bytes)
+}
 /// Lightweight GPU renderer context backed by `wgpu`.
 pub struct WgpuRenderer {
     device: wgpu::Device,
@@ -259,6 +285,10 @@ impl WgpuRenderer {
         height: u32,
         color: [f64; 4],
     ) -> Result<Vec<u8>, String> {
+        // Validate dimensions before touching the GPU: a zero-sized texture is
+        // not a valid render target and an overflowing byte count must not be
+        // truncated (N-S-66).
+        let expected_len = rgba_buffer_len(width, height)?;
         let color_f32: [f32; 4] = [
             color[0].clamp(0.0, 1.0) as f32,
             color[1].clamp(0.0, 1.0) as f32,
@@ -324,7 +354,9 @@ impl WgpuRenderer {
         }
 
         // Read back pixels
-        let unpadded_bytes_per_row = width * 4;
+        let unpadded_bytes_per_row = width
+            .checked_mul(4)
+            .ok_or_else(|| format!("row byte width for {width} pixels overflows u32"))?;
         let padded_bytes_per_row =
             super::raster::align_to(unpadded_bytes_per_row, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -372,9 +404,9 @@ impl WgpuRenderer {
         })?;
 
         // Copy row by row, stripping padding
-        let unpadded = (width * 4) as usize;
+        let unpadded = unpadded_bytes_per_row as usize;
         let padded = padded_bytes_per_row as usize;
-        let mut pixels = vec![0u8; unpadded * height as usize];
+        let mut pixels = vec![0u8; expected_len];
         for row in 0..height as usize {
             let src_start = row * padded;
             let src_end = src_start + unpadded;
@@ -401,8 +433,11 @@ impl WgpuRenderer {
         height: u32,
         rects: &[(i32, i32, u32, u32, [f64; 4])],
     ) -> Result<Vec<u8>, String> {
+        // Reject zero/overflowing dimensions up front so the empty-rects fast
+        // path cannot allocate a wrapped-around buffer either (N-S-66).
+        let expected_len = rgba_buffer_len(width, height)?;
         if rects.is_empty() {
-            return Ok(vec![0u8; (width * height * 4) as usize]);
+            return Ok(vec![0u8; expected_len]);
         }
 
         let w = width as f32;
@@ -514,7 +549,9 @@ impl WgpuRenderer {
         }
 
         // Read back pixels (same logic as render_clear_gpu)
-        let unpadded_bytes_per_row = width * 4;
+        let unpadded_bytes_per_row = width
+            .checked_mul(4)
+            .ok_or_else(|| format!("row byte width for {width} pixels overflows u32"))?;
         let padded_bytes_per_row =
             super::raster::align_to(unpadded_bytes_per_row, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let output_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -561,9 +598,9 @@ impl WgpuRenderer {
             format!("mapped GPU buffer range could not be read back: {error:?}")
         })?;
 
-        let unpadded = (width * 4) as usize;
+        let unpadded = unpadded_bytes_per_row as usize;
         let padded = padded_bytes_per_row as usize;
-        let mut pixels = vec![0u8; unpadded * height as usize];
+        let mut pixels = vec![0u8; expected_len];
         for row in 0..height as usize {
             let src_start = row * padded;
             let src_end = src_start + unpadded;
@@ -585,8 +622,10 @@ impl WgpuRenderer {
         height: u32,
         rects: &[((i32, i32, u32, u32, u32), [f64; 4])],
     ) -> Result<Vec<u8>, String> {
+        // Validate dimensions before any allocation (N-S-66).
+        let expected_len = rgba_buffer_len(width, height)?;
         if rects.is_empty() {
-            return Ok(vec![0u8; (width * height * 4) as usize]);
+            return Ok(vec![0u8; expected_len]);
         }
 
         // Decompose each stroke rect into 4 fill rects
@@ -627,8 +666,10 @@ impl WgpuRenderer {
         height: u32,
         lines: &[((i32, i32, i32, i32, u32), [f64; 4])],
     ) -> Result<Vec<u8>, String> {
+        // Validate dimensions before any allocation (N-S-66).
+        let expected_len = rgba_buffer_len(width, height)?;
         if lines.is_empty() {
-            return Ok(vec![0u8; (width * height * 4) as usize]);
+            return Ok(vec![0u8; expected_len]);
         }
 
         let mut fill_rects: Vec<(i32, i32, u32, u32, [f64; 4])> = Vec::with_capacity(lines.len());
@@ -664,8 +705,10 @@ impl WgpuRenderer {
         height: u32,
         circles: &[((i32, i32, u32), [f64; 4])], // ((cx, cy, radius), color)
     ) -> Result<Vec<u8>, String> {
+        // Validate dimensions before any allocation (N-S-66).
+        let expected_len = rgba_buffer_len(width, height)?;
         if circles.is_empty() {
-            return Ok(vec![0u8; (width * height * 4) as usize]);
+            return Ok(vec![0u8; expected_len]);
         }
 
         let mut fill_rects: Vec<(i32, i32, u32, u32, [f64; 4])> = Vec::new();
@@ -707,11 +750,20 @@ impl WgpuRenderer {
         height: u32,
         rgba8: &[u8],
     ) -> Result<Vec<u8>, String> {
-        if rgba8.len() != (width * height * 4) as usize {
+        // Zero dimensions have no GPU texture representation and must be an
+        // explicit error, not a zero-sized texture that silently succeeds
+        // (N-S-66).
+        if width == 0 || height == 0 {
+            return Err(format!("width/height must be > 0, got {width}x{height}"));
+        }
+        // Compute the expected byte length with checked wide-type arithmetic: in
+        // `u32` the product wraps (65536×16384 = 2^32), so this both reports
+        // overflow and validates the input length against the real size (N-S-66).
+        let expected_len = rgba_buffer_len(width, height)?;
+        if rgba8.len() != expected_len {
             return Err(format!(
-                "rgba8 input is {} bytes but a {width}x{height} image needs {} bytes",
+                "rgba8 input is {} bytes but a {width}x{height} image needs {expected_len} bytes",
                 rgba8.len(),
-                (width * height * 4) as usize
             ));
         }
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -727,7 +779,9 @@ impl WgpuRenderer {
             view_formats: &[],
         });
         let bytes_per_pixel = 4u32;
-        let unpadded_bytes_per_row = width * bytes_per_pixel;
+        let unpadded_bytes_per_row = width
+            .checked_mul(bytes_per_pixel)
+            .ok_or_else(|| format!("row byte width for {width} pixels overflows u32"))?;
         let padded_bytes_per_row =
             align_to(unpadded_bytes_per_row, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let output_buffer_size = padded_bytes_per_row as u64 * height as u64;
@@ -790,7 +844,7 @@ impl WgpuRenderer {
         let mapped = buffer_slice.get_mapped_range().map_err(|error| {
             format!("mapped GPU buffer range could not be read back: {error:?}")
         })?;
-        let mut pixels = vec![0u8; (width * height * bytes_per_pixel) as usize];
+        let mut pixels = vec![0u8; expected_len];
         for row in 0..height as usize {
             let src_start = row * padded_bytes_per_row as usize;
             let src_end = src_start + unpadded_bytes_per_row as usize;

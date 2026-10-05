@@ -36,8 +36,8 @@ impl MemoryStats {
     /// Both are plain additions with no overflow check, so counters are not
     /// saturating.
     pub fn record_allocation(&mut self, size: usize) {
-        self.total_allocated += size;
-        self.current_usage += size;
+        self.total_allocated = self.total_allocated.saturating_add(size);
+        self.current_usage = self.current_usage.saturating_add(size);
         if self.current_usage > self.peak_usage {
             self.peak_usage = self.current_usage;
         }
@@ -49,18 +49,20 @@ impl MemoryStats {
     /// more than was ever allocated clamps at zero rather than wrapping. Peak usage
     /// is deliberately left alone, since it is a high-water mark.
     pub fn record_deallocation(&mut self, size: usize) {
-        self.total_freed += size;
+        self.total_freed = self.total_freed.saturating_add(size);
         self.current_usage = self.current_usage.saturating_sub(size);
     }
 
     /// Counts one request that was satisfied from a pool.
+    #[inline]
     pub fn record_pool_hit(&mut self) {
-        self.pool_hits += 1;
+        self.pool_hits = self.pool_hits.saturating_add(1);
     }
 
     /// Counts one request that had to allocate rather than reuse a pooled buffer.
+    #[inline]
     pub fn record_pool_miss(&mut self) {
-        self.pool_misses += 1;
+        self.pool_misses = self.pool_misses.saturating_add(1);
     }
 
     /// Fraction of pool requests that were hits, in `0.0..=1.0`.
@@ -68,7 +70,7 @@ impl MemoryStats {
     /// Returns `0.0` when no requests have been recorded at all, so the "no data"
     /// case is indistinguishable from "every request missed".
     pub fn pool_hit_rate(&self) -> f32 {
-        let total = self.pool_hits + self.pool_misses;
+        let total = self.pool_hits.saturating_add(self.pool_misses);
         if total == 0 {
             0.0
         } else {
@@ -115,11 +117,24 @@ pub struct ArenaAllocator {
 impl ArenaAllocator {
     /// Creates an arena owning a `capacity`-byte block, 8-byte aligned.
     ///
+    /// A `capacity` of zero is legal and yields an **empty arena**: the backing block is a dangling,
+    /// never-dereferenced pointer and every [`Self::allocate`] returns `None`. Zero must not reach
+    /// `alloc`, whose contract requires a non-zero layout, so the empty case is represented without
+    /// an allocation rather than by passing a zero-size layout through.
+    ///
     /// # Panics
     ///
-    /// Panics if `capacity` is zero or the layout is otherwise invalid, and aborts
-    /// on out-of-memory — there is no fallible constructor.
+    /// Panics if the layout is otherwise invalid (i.e. the size cannot fit an 8-byte alignment),
+    /// and aborts on out-of-memory — there is no fallible constructor.
     pub fn new(capacity: usize) -> Self {
+        if capacity == 0 {
+            // An empty arena never owns a block: keep the layout as the zero-size/8-align layout
+            // (used only to report `capacity()`) and a dangling, aligned pointer that `allocate`
+            // rejects before it is ever read. `Drop` skips deallocation in this case.
+            let layout = Layout::from_size_align(0, 8)
+                .expect("a zero size with an 8-byte alignment is a valid layout");
+            return Self { buffer: NonNull::dangling(), layout, offset: 0 };
+        }
         let layout = Layout::from_size_align(capacity, 8).expect(
             "capacity must be non-zero and fit an 8-byte alignment, which `Arena::new` documents \
              as a panic condition",
@@ -147,6 +162,11 @@ impl ArenaAllocator {
     pub fn allocate<T>(&mut self) -> Option<NonNull<T>> {
         let size = core::mem::size_of::<T>();
         let align = core::mem::align_of::<T>();
+        // An empty arena (or one shrunk to nothing) has no block to bump; return `None` before any
+        // pointer arithmetic so the dangling base is never dereferenced.
+        if self.layout.size() == 0 || self.offset > self.layout.size() {
+            return None;
+        }
         // Align the *absolute* address, not just the offset. The backing block is
         // only 8-byte aligned (see `Self::new`), so masking the offset alone cannot
         // satisfy a caller that needs, say, 64-byte alignment: the base address's own
@@ -210,6 +230,11 @@ impl ArenaAllocator {
 
 impl Drop for ArenaAllocator {
     fn drop(&mut self) {
+        // An empty arena never allocated a block, so there is nothing to free. Calling dealloc with
+        // a zero-size layout would violate `dealloc`'s non-zero-size contract, so it is skipped.
+        if self.layout.size() == 0 {
+            return;
+        }
         // SAFETY: self.buffer was allocated with self.layout in ArenaAllocator::new(),
         // and this is the only deallocation (no aliased frees). The buffer is
         // guaranteed to be non-null and valid until this Drop runs.
@@ -458,6 +483,12 @@ impl MemoryMonitor {
     /// re-notify; only actual transitions fire.
     pub fn update(&mut self, current_usage: usize) {
         self.stats.current_usage = current_usage;
+        // `update` reports live usage directly, so it must also raise the high-water mark the same
+        // way `record_allocation` does; otherwise peak_usage would stay at zero while current_usage
+        // climbed, and the two paths would disagree about what "peak" means.
+        if current_usage > self.stats.peak_usage {
+            self.stats.peak_usage = current_usage;
+        }
         let new_pressure = if current_usage >= self.critical_threshold {
             MemoryPressure::Critical
         } else if current_usage >= self.warning_threshold {
@@ -520,6 +551,69 @@ mod tests {
         assert_eq!(stats.peak_usage, 100);
         stats.record_deallocation(50);
         assert_eq!(stats.current_usage, 50);
+    }
+
+    /// A zero-capacity arena is legal: it never passes a zero-size layout to `alloc` (which would
+    /// violate the allocation contract), cannot hand out any memory, and can be dropped safely
+    /// because it never owns a block to free.
+    #[test]
+    fn a_zero_capacity_arena_is_safe_to_construct_use_and_drop() {
+        let mut arena = ArenaAllocator::new(0);
+        assert_eq!(arena.capacity(), 0);
+        assert_eq!(arena.used(), 0);
+        assert_eq!(arena.available(), 0);
+        assert!(arena.allocate::<u64>().is_none(), "an empty arena can hand out nothing");
+        arena.reset();
+        assert_eq!(arena.used(), 0);
+        // Dropping the arena must not call dealloc with a zero-size layout.
+        drop(arena);
+    }
+
+    /// Ordinary counters saturate rather than wrap. Reporting a byte count twice, the second time
+    /// larger than what remains, must clamp the running totals instead of overflowing.
+    #[test]
+    fn memory_stats_counters_saturate_instead_of_wrapping() {
+        let mut stats = MemoryStats::default();
+        stats.record_allocation(usize::MAX - 5);
+        stats.record_allocation(100);
+        assert_eq!(stats.total_allocated, usize::MAX, "total_allocated saturates");
+        assert_eq!(stats.current_usage, usize::MAX, "current_usage saturates");
+        assert_eq!(stats.peak_usage, usize::MAX);
+
+        stats.record_deallocation(usize::MAX - 1);
+        stats.record_deallocation(100);
+        assert_eq!(stats.total_freed, usize::MAX, "total_freed saturates");
+        assert_eq!(stats.current_usage, 0);
+
+        for _ in 0..3 {
+            stats.record_pool_hit();
+        }
+        stats.pool_hits = usize::MAX;
+        stats.record_pool_hit();
+        assert_eq!(stats.pool_hits, usize::MAX, "pool_hits saturates");
+        stats.pool_misses = usize::MAX;
+        stats.record_pool_miss();
+        assert_eq!(stats.pool_misses, usize::MAX, "pool_misses saturates");
+        // The rate must not divide by a wrapped-to-zero total.
+        assert!(stats.pool_hit_rate() >= 0.0 && stats.pool_hit_rate() <= 1.0);
+    }
+
+    /// `update` reports live usage directly, so it must raise the high-water mark just like
+    /// `record_allocation`. Before the fix, `peak_usage` stayed at zero while `current_usage` climbed.
+    #[test]
+    fn memory_monitor_update_maintains_peak_usage() {
+        let mut monitor = MemoryMonitor::new(100, 200);
+        monitor.update(100);
+        assert_eq!(monitor.stats().current_usage, 100);
+        assert_eq!(monitor.stats().peak_usage, 100, "update must raise peak_usage");
+
+        // Dropping back down keeps the high-water mark.
+        monitor.update(20);
+        assert_eq!(monitor.stats().current_usage, 20);
+        assert_eq!(monitor.stats().peak_usage, 100, "peak is a high-water mark");
+
+        monitor.update(150);
+        assert_eq!(monitor.stats().peak_usage, 150);
     }
 
     #[test]

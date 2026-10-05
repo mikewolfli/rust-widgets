@@ -154,9 +154,36 @@ impl Font {
         }
     }
     /// Sets the font point size (mutable setter for CSS parser integration).
+    ///
+    /// Changing the size re-applies the size-relative constraints to the text-scaling fields, because
+    /// those fields were validated against the *old* size: a `line_height` that was legal at size 10
+    /// may be shorter than the glyphs at size 30, and a negative `letter_spacing` legal at size 10 no
+    /// longer is. The **precedence** is: an absolute value is preserved where it is still valid and
+    /// clamped to the safe bound where it is not — so the caller's explicit leading/tracking survives
+    /// a size change, but never in a form that would overlap text on itself.
     pub fn set_size(&mut self, size: f32) -> &mut Self {
         self.size = size;
+        self.reapply_size_relative_constraints();
         self
+    }
+
+    /// Re-clamps the size-relative text-scaling fields against the current size.
+    ///
+    /// This is the single place that knows the constraints `set_line_height`/
+    /// `set_letter_spacing`/`set_word_spacing` enforce, so a size change cannot leave a field the
+    /// setters would have rejected. `0` means "no explicit value" for both spacing kinds and is left
+    /// alone; a positive `line_height` is raised at least to the size; a negative spacing is raised at
+    /// least to `-size`.
+    fn reapply_size_relative_constraints(&mut self) {
+        if self.line_height > 0.0 {
+            self.line_height = self.line_height.max(self.size);
+        }
+        if self.letter_spacing < 0.0 {
+            self.letter_spacing = self.letter_spacing.max(-self.size);
+        }
+        if self.word_spacing < 0.0 {
+            self.word_spacing = self.word_spacing.max(-self.size);
+        }
     }
     /// Sets the font family (mutable setter for CSS parser integration).
     pub fn set_family(&mut self, family: impl Into<String>) -> &mut Self {
@@ -376,6 +403,10 @@ impl Font {
         derived.letter_spacing = self.letter_spacing;
         derived.word_spacing = self.word_spacing;
         derived.line_height = self.line_height;
+        // The carried-over fields were validated against the original size, not `size`, so re-apply
+        // the size-relative constraints here too; a derived font must satisfy the same invariants a
+        // freshly built one does.
+        derived.reapply_size_relative_constraints();
         derived
     }
 
@@ -400,19 +431,36 @@ impl Font {
     }
     /// Creates a larger font by scaling the size. The text-scaling fields are carried over; see
     /// [`Self::with_size`] for why that matters.
+    ///
+    /// A scale whose product with the size is not a finite, positive number is refused and `self` is
+    /// returned unchanged: `scaled(f32::MAX)` would otherwise produce an infinite size
+    /// (`is_valid() == false`) from an input that passed the finite/positive check. Returning the
+    /// original keeps the font usable instead of handing back a broken one.
     pub fn scaled(&self, scale: f32) -> Self {
         if !scale.is_finite() || scale <= 0.0 {
             return self.clone();
         }
-        self.with_size(self.size * scale)
+        let size = self.size * scale;
+        if !size.is_finite() || size <= 0.0 {
+            return self.clone();
+        }
+        self.with_size(size)
     }
     /// Creates a smaller font by scaling the size. The text-scaling fields are carried over; see
     /// [`Self::with_size`] for why that matters.
+    ///
+    /// As with [`Self::scaled`], a result that is not finite and positive is refused: dividing by
+    /// `f32::MIN_POSITIVE` overflows to infinity, and returning the original is the only outcome that
+    /// leaves the font valid.
     pub fn scaled_down(&self, scale: f32) -> Self {
         if !scale.is_finite() || scale <= 0.0 {
             return self.clone();
         }
-        self.with_size(self.size / scale)
+        let size = self.size / scale;
+        if !size.is_finite() || size <= 0.0 {
+            return self.clone();
+        }
+        self.with_size(size)
     }
     /// Returns whether the font is bold (weight >= 700).
     pub fn is_bold(&self) -> bool {
@@ -652,6 +700,101 @@ mod tests {
         assert_eq!(font.scaled_down(f32::INFINITY), font);
         assert!(font.scaled(2.0).is_valid());
         assert!(font.scaled_down(2.0).is_valid());
+    }
+
+    /// A scale that passes the finite/positive check but overflows the *product* must be refused
+    /// rather than producing an infinite, invalid size. `scaled(f32::MAX)` and
+    /// `scaled_down(f32::MIN_POSITIVE)` both overflow; the font must come back unchanged and valid.
+    #[test]
+    fn scaling_that_would_overflow_the_size_returns_the_font_unchanged() {
+        let font = Font::default_ui();
+        let scaled = font.scaled(f32::MAX);
+        assert_eq!(scaled.size(), font.size(), "an unrepresentable size is refused");
+        assert!(scaled.is_valid(), "the refused result must stay valid");
+
+        let scaled_down = font.scaled_down(f32::MIN_POSITIVE);
+        assert_eq!(scaled_down.size(), font.size(), "underflow div is refused");
+        assert!(scaled_down.is_valid());
+
+        // Normal multipliers still scale, in both directions.
+        assert!((font.scaled(2.0).size() - font.size() * 2.0).abs() < 1e-6);
+        assert!((font.scaled_down(2.0).size() - font.size() / 2.0).abs() < 1e-6);
+    }
+
+    /// Changing the size must re-check the size-relative constraints on the text-scaling fields.
+    /// A `line_height`/spacing legal at the old size can become illegal at the new one: the defect
+    /// was that `set_size` left `line_height` below the new size and let negative tracking fall below
+    /// the `-size` bound.
+    #[test]
+    fn set_size_reapplies_the_size_relative_constraints() {
+        let mut font = Font::new("Arial", 10.0, false, false);
+        font.set_line_height(10.0);
+        assert_eq!(font.effective_line_height(), 10.0);
+
+        font.set_size(30.0);
+        assert!(font.is_valid());
+        assert_eq!(
+            font.line_height(),
+            30.0,
+            "an explicit leading shorter than the new glyphs must be raised"
+        );
+        assert_eq!(font.effective_line_height(), 30.0, "the effective leading follows");
+
+        // A leading already larger than the new size is preserved, not shrunk to the size.
+        let mut sized = Font::new("Arial", 40.0, false, false);
+        sized.set_line_height(50.0);
+        sized.set_size(10.0);
+        assert_eq!(sized.line_height(), 50.0, "a valid absolute leading is preserved");
+
+        // `0` still means "derive from the size" and is not turned into an explicit value.
+        let mut plain = Font::new("Arial", 10.0, false, false);
+        plain.set_size(30.0);
+        assert_eq!(plain.line_height(), 0.0);
+        assert_eq!(plain.effective_line_height(), 30.0);
+    }
+
+    /// The size-relative spacing bound is `-size`, so shrinking the size can push stored negative
+    /// tracking below it. That is the case the re-check must catch: a `-9.0` tracking legal at size
+    /// 10 is illegal once the size drops to 5 and must be clamped up to `-5`.
+    #[test]
+    fn shrinking_the_size_re_clamps_negative_spacing() {
+        let mut font = Font::new("Arial", 10.0, false, false);
+        font.set_letter_spacing(-9.0);
+        font.set_word_spacing(-9.0);
+        assert_eq!(font.letter_spacing(), -9.0);
+
+        font.set_size(5.0);
+        assert_eq!(font.letter_spacing(), -5.0, "tracking is clamped to the new -size bound");
+        assert_eq!(font.word_spacing(), -5.0, "word spacing is clamped to the new -size bound");
+
+        // Growing the size leaves already-valid negative spacing alone.
+        let mut growing = Font::new("Arial", 10.0, false, false);
+        growing.set_letter_spacing(-8.0);
+        growing.set_size(30.0);
+        assert_eq!(growing.letter_spacing(), -8.0, "-8 is still within the -30 bound");
+    }
+
+    /// The deriving constructors funnel through the same re-check, so a `with_size` that shrinks the
+    /// font also re-clamps negative tracking against the smaller bound.
+    #[test]
+    fn derived_size_changes_also_reapply_the_constraints() {
+        let base = Font::builder().size(20.0).line_height(20.0).letter_spacing(-18.0).build();
+        let shrunk = base.with_size(10.0);
+        assert_eq!(shrunk.line_height(), 20.0, "20 is still at least the new size of 10");
+        assert_eq!(shrunk.letter_spacing(), -10.0, "tracking is re-clamped against the new size");
+        assert!(shrunk.is_valid());
+
+        // Growing the size raises a now-too-short leading and leaves valid tracking alone.
+        let small = Font::builder().size(10.0).line_height(10.0).letter_spacing(-5.0).build();
+        let grown = small.with_size(40.0);
+        assert_eq!(grown.line_height(), 40.0, "with_size(40) must raise a 10px leading");
+        assert_eq!(grown.letter_spacing(), -5.0, "-5 is still within the -40 bound");
+        assert!(grown.is_valid());
+
+        // `scaled` takes the same path, so an internal size change is consistent with `with_size`.
+        let scaled = small.scaled(4.0);
+        assert_eq!(scaled.line_height(), 40.0);
+        assert_eq!(scaled.letter_spacing(), -5.0);
     }
 
     #[test]

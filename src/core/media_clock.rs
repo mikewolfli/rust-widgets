@@ -156,9 +156,22 @@ impl MediaClock {
     /// A non-finite or negative duration is treated as "unknown" rather than stored: a container
     /// that failed to parse yields `NaN`, and a clock that clamped against `NaN` would panic on every
     /// tick (the same hazard `VideoEngine::seek` documents for its own bound).
+    ///
+    /// Setting a duration also re-clamps the current position into `[0, duration]`, because the
+    /// invariant "position is never beyond the duration" must hold as soon as the bound is known —
+    /// otherwise a clock that played past a newly-discovered short duration would report a position
+    /// the media does not have. Landing exactly on the new end reports `Ended`, for the same reason
+    /// [`Self::seek`] does. Setting the duration to "unknown" (`0`) leaves the position alone, since
+    /// there is no bound to clamp against.
     pub fn set_duration(&mut self, duration_secs: f64) {
         self.duration =
             if duration_secs.is_finite() && duration_secs > 0.0 { duration_secs } else { 0.0 };
+        if self.duration > 0.0 {
+            self.position = self.position.clamp(0.0, self.duration);
+            if self.position >= self.duration {
+                self.state = PlaybackState::Ended;
+            }
+        }
     }
 
     /// The media duration this clock was told about, or `0.0` when unknown.
@@ -239,12 +252,21 @@ impl MediaClock {
     /// Reaching the end sets [`PlaybackState::Ended`] and **stops** the position at the duration.
     /// `Ended` rather than a wrap: repeating needs a repeat mode the crate does not have, and
     /// inventing one here would be a second mechanism for a question the caller has not asked.
+    ///
+    /// With no known duration the position must still stay **finite**: a very large but accepted rate
+    /// multiplied by a delta cannot be allowed to overflow to `Infinity`, because every later frame's
+    /// [`Self::verdict_for`] would then be judged against an infinite clock and be dropped. The
+    /// advance is computed in finite steps and torn down to `f64::MAX` if it would overflow.
     pub fn tick(&mut self, delta_ms: u32) -> f64 {
         if self.state != PlaybackState::Playing {
             return self.position;
         }
-        let advance = (delta_ms as f64 / 1000.0) * self.rate;
-        self.position += advance;
+        let delta_secs = delta_ms as f64 / 1000.0;
+        // `rate` is finite and positive (set_rate refuses anything else), but `delta_secs * rate` can
+        // still overflow to +Infinity. Clamping the product into the finite f64 range keeps the
+        // position arithmetic finite and preserves the ordering between advances.
+        let advance = (delta_secs * self.rate).min(f64::MAX);
+        self.position = (self.position + advance).min(f64::MAX);
         if self.duration > 0.0 && self.position >= self.duration {
             self.position = self.duration;
             self.state = PlaybackState::Ended;
@@ -457,5 +479,62 @@ mod tests {
         clock.seek(4.0);
         clock.seek(f64::NAN);
         assert_eq!(clock.position(), 4.0);
+    }
+
+    /// Discovering a shorter duration than the position must clamp the position into `[0, duration]`,
+    /// so the invariant `position <= duration` holds from the moment the bound is known — including
+    /// while paused, where no tick would otherwise fix it up.
+    #[test]
+    fn setting_a_duration_clamps_the_position_into_range() {
+        // Learn the duration only after playing past it: the classic "parse finished late" case.
+        let mut clock = MediaClock::new();
+        clock.play();
+        clock.tick(10_000);
+        assert_eq!(clock.position(), 10.0, "unknown duration lets the clock run on");
+        clock.pause();
+        clock.set_duration(2.0);
+        assert_eq!(clock.position(), 2.0, "the position must clamp to the newly-known duration");
+        assert!(clock.position() <= clock.duration(), "position <= duration is the invariant");
+        assert_eq!(clock.state(), PlaybackState::Ended, "landing on the end is the end");
+
+        // The paused tick that previously returned the stale out-of-range position now returns the
+        // clamped one.
+        assert_eq!(clock.tick(16), 2.0);
+
+        // A longer duration than the position leaves it untouched, in any state.
+        let mut running = MediaClock::new();
+        running.set_duration(10.0);
+        running.play();
+        running.tick(1_000);
+        running.set_duration(30.0);
+        assert_eq!(running.position(), 1.0);
+        assert_eq!(running.state(), PlaybackState::Playing, "a longer duration does not end it");
+
+        // A stopped clock that discovers a short duration is also clamped.
+        let mut stopped = MediaClock::new();
+        stopped.set_duration(5.0);
+        stopped.play();
+        stopped.tick(4_000);
+        stopped.stop();
+        stopped.set_duration(1.0);
+        assert_eq!(stopped.position(), 0.0, "stop already rewound, so nothing to clamp");
+    }
+
+    /// A large but accepted rate must not make an unknown-duration clock reach `Infinity`: every
+    /// downstream verdict would then judge a finite frame as overdue and drop it. The position must
+    /// stay finite across repeated ticks.
+    #[test]
+    fn an_extreme_rate_keeps_an_unknown_duration_clock_finite() {
+        let mut clock = MediaClock::new();
+        clock.play();
+        assert_eq!(clock.set_rate(f64::MAX), f64::MAX);
+        clock.tick(2_000);
+        assert!(clock.position().is_finite(), "position went non-finite: {}", clock.position());
+        for _ in 0..1000 {
+            clock.tick(2_000);
+        }
+        assert!(clock.position().is_finite(), "repeated ticks overflowed to {}", clock.position());
+        // And a finite frame near the (finite) clock is still shown rather than dropped.
+        assert_eq!(clock.verdict_for(clock.position(), 0.008), FrameVerdict::Show);
     }
 }

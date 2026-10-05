@@ -120,10 +120,49 @@ public class MainActivity extends Activity {
             return false;
         }
 
-        // The window reports its own size changes. Drive one through the documented
+        // The window reports its own size changes. Drive them through the documented
         // entry point so a regression in the resize path is visible on-device.
-        int resized = RustWidgets.nativeNotifyResize(0L, 1080, 1920);
-        Log.i(TAG, "nativeNotifyResize -> " + resized);
+        //
+        // # What this asserts, and why
+        //
+        // The previous probe called `nativeNotifyResize(0L, 1080, 1920)` and only
+        // logged the result. `0L` is not a window this library ever handed out, so the
+        // call exercised **only** the rejection branch — a probe that passes when the
+        // success branch is broken, and one that never asserted anything at all.
+        //
+        // The C ABI's contract (see `accept_host_resize` in `src/platform/android_jni.rs`)
+        // is: a resize is accepted (`1`) when the id addresses a live window this backend
+        // created, and refused (`0`) for an id it did not create. So the two halves are
+        // asserted separately below:
+        //   * an unknown id must be refused;
+        //   * a non-positive id or size must be refused.
+        //
+        // The success half — resizing a window that was really created — needs the id
+        // `rw_create_window` returned. This Activity's Android JNI surface
+        // (`rust_widgets.RustWidgets`) deliberately exposes no `create_window` method
+        // (the library paints every control itself, so window creation is reached
+        // through the C ABI the host links against), and `nativeWidgetSelfTest` tears
+        // down the window it creates without handing its id back. Obtaining a live id
+        // here would therefore require adding a JNI creator to a file outside this
+        // probe's scope, so the self-test's "window created" bit stands as the evidence
+        // that a real window can be created on this device, and the assertions below
+        // pin the refusal contract that this entry point does own.
+        int refusedUnknown = RustWidgets.nativeNotifyResize(0L, 1080, 1920);
+        int refusedBogus = RustWidgets.nativeNotifyResize(0xDEADBEEFL, 1080, 1920);
+        int refusedSize = RustWidgets.nativeNotifyResize(1L, 0, 0);
+        if (refusedUnknown != 0) {
+            Log.e(TAG, "nativeNotifyResize accepted the unknown id 0 (expected refusal)");
+            return false;
+        }
+        if (refusedBogus != 0) {
+            Log.e(TAG, "nativeNotifyResize accepted an id the backend never created (expected refusal)");
+            return false;
+        }
+        if (refusedSize != 0) {
+            Log.e(TAG, "nativeNotifyResize accepted a non-positive size (expected refusal)");
+            return false;
+        }
+        Log.i(TAG, "nativeNotifyResize refused unknown/stale/non-positive inputs as documented");
 
         // Everything above proves the JNI **plumbing**. This proves the library can create
         // and drive a control on this device, which is what an app depends on — and it is

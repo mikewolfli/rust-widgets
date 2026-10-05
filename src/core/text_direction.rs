@@ -80,10 +80,23 @@ impl TextDirection {
     /// key code or a drag delta is expressed in. Without it, an arrow key would
     /// have to be inverted at every call site, which is how the wrong branch gets
     /// taken once and stays.
+    ///
+    /// # Mirroring an unrepresentable step
+    ///
+    /// Negating `i32::MIN` overflows, which panics in a checked build. Rather than
+    /// abort on a step no line could hold, the mirror is **saturated** to `i32::MAX`:
+    /// the result keeps the opposite sign and the largest representable magnitude,
+    /// which is the closest a two's-complement integer can express to "the same
+    /// step, mirrored". Every other input — `0`, `±1`, and any value whose negation
+    /// fits — is returned negated exactly as before.
     pub const fn begin_step_to_left_step(self, begin_step: i32) -> i32 {
         match self {
             Self::LeftToRight => begin_step,
-            Self::RightToLeft => -begin_step,
+            Self::RightToLeft => match begin_step.checked_neg() {
+                Some(negated) => negated,
+                // Only `i32::MIN` reaches here; the exact mirror does not fit.
+                None => i32::MAX,
+            },
         }
     }
 }
@@ -159,6 +172,22 @@ mod tests {
         // Decrementing is the mirror, so no call site needs its own negation.
         assert_eq!(TextDirection::LeftToRight.begin_step_to_left_step(-1), -1);
         assert_eq!(TextDirection::RightToLeft.begin_step_to_left_step(-1), 1);
+        // Zero and the normal (LTR) path are unchanged.
+        assert_eq!(TextDirection::LeftToRight.begin_step_to_left_step(0), 0);
+        assert_eq!(TextDirection::RightToLeft.begin_step_to_left_step(0), 0);
+    }
+
+    /// Mirroring `i32::MIN` has no representable result: negating it overflows and would panic in a
+    /// checked build. The mirror is saturated to `i32::MAX` instead — opposite sign, largest
+    /// magnitude — so a pathological step can never abort the caller.
+    #[test]
+    fn mirroring_an_unrepresentable_step_saturates_instead_of_panicking() {
+        assert_eq!(TextDirection::RightToLeft.begin_step_to_left_step(i32::MIN), i32::MAX);
+        // The representable boundary is still negated exactly.
+        assert_eq!(TextDirection::RightToLeft.begin_step_to_left_step(i32::MIN + 1), i32::MAX);
+        assert_eq!(TextDirection::RightToLeft.begin_step_to_left_step(i32::MAX), i32::MIN + 1);
+        // LTR never negates, so it returns `i32::MIN` untouched.
+        assert_eq!(TextDirection::LeftToRight.begin_step_to_left_step(i32::MIN), i32::MIN);
     }
 
     /// Mirroring the fraction and then mirroring the *step* compose into the same thing as

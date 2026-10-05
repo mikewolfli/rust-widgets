@@ -1023,3 +1023,84 @@ fn load_translations_rejects_file_name_language_mismatch() {
     manager.load_translations(ok.to_str().unwrap()).unwrap();
     assert_eq!(manager.translate("k"), "v");
 }
+
+// ── N-S-68: every *reload* re-applies the initial load's identity check ──
+
+/// A reload must reject a file whose name disagrees with its declared `language`,
+/// exactly as the initial load does, and must leave the previous contents in place.
+///
+/// `reload_translation_quiet` used to parse the file and insert it under the caller's
+/// `language` key without checking `TranslationFile.language`, so an edit that changed
+/// the declared language (or a file swapped under a mismatched name) silently put one
+/// language's catalogue under another language's key — and the mismatch the loader
+/// rejects on first load was never reported on reload.
+#[test]
+fn reload_rejects_file_name_language_mismatch_and_keeps_old_translations() {
+    let temp_dir = TempDir::new().unwrap();
+    let en_path = temp_dir.path().join("en.json");
+    fs::write(&en_path, r#"{"language":"en","translations":{"k":{"message":"Original"}}}"#)
+        .unwrap();
+
+    let mut manager = I18nManager::new();
+    manager.load_translations(en_path.to_str().unwrap()).unwrap();
+    assert_eq!(manager.translate("k"), "Original");
+
+    // Overwrite the file at en.json with a catalogue that declares a *different*
+    // language. A reload must reject it rather than file it under "en".
+    fs::write(&en_path, r#"{"language":"fr","translations":{"k":{"message":"Bonjour"}}}"#).unwrap();
+    let result = manager.reload_translation_quiet("en");
+    assert!(
+        result.is_err(),
+        "a reload whose declared language disagrees with its file name must be rejected"
+    );
+    let error = result.unwrap_err();
+    assert!(
+        error.contains("fr") && error.contains("en"),
+        "the error must name the declared and requested languages so the mismatch is diagnosable: {error}"
+    );
+    assert_eq!(
+        manager.translate("k"),
+        "Original",
+        "a rejected reload must leave the previous translations in place"
+    );
+}
+
+/// A well-formed reload whose declared language matches its file name still applies.
+#[test]
+fn reload_applies_when_the_declared_language_matches_the_file_name() {
+    let temp_dir = TempDir::new().unwrap();
+    let fr_path = temp_dir.path().join("fr.json");
+    fs::write(&fr_path, r#"{"language":"fr","translations":{"k":{"message":"Ancien"}}}"#).unwrap();
+
+    let mut manager = I18nManager::new();
+    manager.load_translations(fr_path.to_str().unwrap()).unwrap();
+    manager.set_language("fr");
+    assert_eq!(manager.translate("k"), "Ancien");
+
+    fs::write(&fr_path, r#"{"language":"fr","translations":{"k":{"message":"Nouveau"}}}"#).unwrap();
+    manager.reload_translation_quiet("fr").expect("a matching reload must succeed");
+    assert_eq!(manager.translate("k"), "Nouveau");
+}
+
+/// After a rejected reload, a subsequent *valid* reload of the same language still
+/// works — the rejection must not poison the registration or the fingerprint.
+#[test]
+fn a_rejected_reload_does_not_block_a_later_valid_one() {
+    let temp_dir = TempDir::new().unwrap();
+    let de_path = temp_dir.path().join("de.json");
+    fs::write(&de_path, r#"{"language":"de","translations":{"k":{"message":"Alt"}}}"#).unwrap();
+
+    let mut manager = I18nManager::new();
+    manager.load_translations(de_path.to_str().unwrap()).unwrap();
+    manager.set_language("de");
+    assert_eq!(manager.translate("k"), "Alt");
+
+    // A mismatched save is rejected...
+    fs::write(&de_path, r#"{"language":"no","translations":{"k":{"message":"Feil"}}}"#).unwrap();
+    assert!(manager.reload_translation_quiet("de").is_err());
+
+    // ...and a corrected save is still applied.
+    fs::write(&de_path, r#"{"language":"de","translations":{"k":{"message":"Neu"}}}"#).unwrap();
+    manager.reload_translation_quiet("de").expect("the corrected reload must succeed");
+    assert_eq!(manager.translate("k"), "Neu");
+}

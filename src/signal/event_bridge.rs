@@ -176,6 +176,13 @@ impl EventSignalBinder {
             signal_identity: signal.identity(),
             is_connected: alloc::boxed::Box::new(move || probe.is_connected(handle)),
         });
+        // Every successful forward records the history, not just `wire_one`. Without
+        // this, a binder used only through the public manual entry points
+        // (`forward_unit`, and `forward_widget_events` which calls it) left
+        // `wired_once == false`, so `unwired_events_for` answered `None` — reporting a
+        // real wire as "not wired yet" — and `event_is_wired` could disagree with the
+        // See `unwired_events_for`'s contract (BLUE-issue E-07).
+        self.wired_once = true;
     }
 
     /// Wires **every** event a mounted control publishes, in one call.
@@ -519,6 +526,10 @@ impl EventSignalBinder {
             signal_identity: signal.identity(),
             is_connected: alloc::boxed::Box::new(move || probe.is_connected(handle)),
         });
+        // Every successful forward records the history (see `forward_unit`): without it a
+        // binder used only through `forward_mapped` reported `None` from
+        // `unwired_events_for`, i.e. "not wired", for a real wire (BLUE-issue N-S-31).
+        self.wired_once = true;
     }
 
     /// Removes every subscription this binder registered, leaving the binder reusable.
@@ -852,6 +863,84 @@ mod tests {
             !binder.event_is_wired(&widget, "clicked"),
             "`event_is_wired` must agree with `forward_one`: neither may report a wire whose hub \
              name and signal name disagree"
+        );
+    }
+
+    /// Every successful forward must record the "has wired" history, not only `wire_one`.
+    ///
+    /// # The defect this pins (BLUE-issue N-S-31)
+    ///
+    /// `wired_once` gated `unwired_events_for`: it returned `None` ("not wired yet") until the
+    /// first forward. Only `wire_one` set it, so a host that used the public manual entry points
+    /// — `forward_unit`, `forward_widget_events` (which calls `forward_unit`), or `forward_mapped`
+    /// — wired real slots while the count query kept answering `None`, i.e. reporting a live wire
+    /// as never wired. This test drives each successful entry point and requires the query to
+    /// answer `Some(...)` — and requires a **detached** binder (which wires nothing) to keep
+    /// answering `None`, so the fix cannot be "always report an answer".
+    #[test]
+    fn every_successful_forward_entry_records_the_wired_history() {
+        use crate::widget::Widget;
+        use std::sync::Arc;
+
+        let r = Rect::new(0, 0, 100, 40);
+
+        // A fresh binder has no history: the query must have no answer yet.
+        let button = crate::widget::base_widgets::button::Button::new("b".to_string(), r);
+        let hub = Arc::new(crate::signal::hub::CustomSignalHub::new());
+        let mut binder = EventSignalBinder::new(hub);
+        assert_eq!(
+            binder.unwired_events_for(&button),
+            None,
+            "a binder that has never forwarded must report no answer, not a count"
+        );
+
+        // `forward_unit` alone must switch the query to a live answer.
+        binder.forward_unit("clicked", button.clicked_signal());
+        assert!(
+            binder.unwired_events_for(&button).is_some(),
+            "`forward_unit` wires a real slot, so the query must report a count rather than None"
+        );
+
+        // A fresh binder driven only through `forward_widget_events` (which uses
+        // `forward_unit`) must also report a count.
+        let hub = Arc::new(crate::signal::hub::CustomSignalHub::new());
+        let mut binder = EventSignalBinder::new(hub);
+        assert_eq!(binder.forward_widget_events(&button), 1, "`clicked` is wired");
+        assert!(
+            binder.unwired_events_for(&button).is_some(),
+            "`forward_widget_events` goes through `forward_unit`, so it must record the history"
+        );
+
+        // A fresh binder driven only through `forward_mapped` must also report a count.
+        let hub = Arc::new(crate::signal::hub::CustomSignalHub::new());
+        let mut binder = EventSignalBinder::new(hub);
+        let slider: crate::signal::Signal1<i32> = crate::signal::Signal1::new();
+        binder.forward_mapped("value_changed", &slider, |_| {});
+        // `unwired_events_for` walks the *control's* capability, so use a real control
+        // that publishes `value_changed`; the binder history is what is under test.
+        let area = crate::widget::input_widgets::textarea::TextArea::new(String::new(), r);
+        assert!(
+            binder.unwired_events_for(&area).is_some(),
+            "`forward_mapped` wires a real slot, so the query must report a count rather than None"
+        );
+
+        // `unbind_all` removes the slots but must retain the history, so the query
+        // reports the honest "everything is unwired again" count rather than flipping
+        // back to the no-answer state.
+        binder.unbind_all();
+        assert!(
+            binder.unwired_events_for(&area).is_some(),
+            "after `unbind_all` the binder has still wired once, so it must report a count"
+        );
+        assert!(!binder.event_is_wired(&area, "value_changed"), "the wire was removed");
+
+        // A detached binder wires nothing, so it must keep reporting `None`.
+        let mut detached = EventSignalBinder::detached();
+        detached.forward_unit("clicked", button.clicked_signal());
+        assert_eq!(
+            detached.unwired_events_for(&button),
+            None,
+            "a detached binder has nowhere to wire, so it must not claim a history"
         );
     }
 }

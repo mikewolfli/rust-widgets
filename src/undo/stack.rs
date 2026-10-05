@@ -17,7 +17,19 @@ pub struct UndoStack {
     /// document without changing the depth, so a depth index reported "clean" for state that
     /// never matched the save. Each [`Entry`] records the revision of the document after it is
     /// applied; the current revision moves with undo/redo and is compared to this value.
+    ///
+    /// Eviction can leave the saved content *below* the retained stack, at which point no
+    /// undo/redo can return to it. That state is recorded in [`Self::saved_reachable`] rather
+    /// than by clearing this field, so an unreachable save still reports dirty.
     saved_revision: Option<u64>,
+    /// Whether the saved content is still reachable by undo/redo.
+    ///
+    /// `saved_revision` alone could not express this: clearing it to `None` on eviction made
+    /// [`Self::is_clean`] fall back to its "empty stack is clean" rule, so a stack whose save
+    /// had just been evicted reported clean the moment it emptied. Keeping the revision and
+    /// flagging it unreachable makes the empty-as-clean rule apply only when *no* save was ever
+    /// taken, while a save that no longer exists still reads as dirty.
+    saved_reachable: bool,
     /// Revision of the empty/base state. Advances as entries are evicted from the bottom.
     base_revision: u64,
     /// Monotonic source of the next revision number.
@@ -47,6 +59,7 @@ impl UndoStack {
             redo_stack: Vec::new(),
             max_capacity: max,
             saved_revision: None,
+            saved_reachable: true,
             base_revision: 0,
             next_revision: 1,
         }
@@ -90,7 +103,12 @@ impl UndoStack {
     /// at the wrong entry. Returns `false` when nothing was retained (zero-capacity stacks).
     fn push_undo_entry(&mut self, entry: Entry) -> bool {
         if self.max_capacity == 0 {
-            // Zero-capacity stacks retain nothing; drop the command silently.
+            // Zero-capacity stacks retain nothing, but the command still changed the document
+            // and must be recorded. Dropping the entry without advancing the content revision
+            // left `current_revision` at the saved one, so `mark_clean` → `push` reported clean
+            // even though the document had diverged. The revision moves; no entry is stored.
+            self.base_revision = entry.after_revision;
+            self.invalidate_saved_if_unreachable();
             return false;
         }
         if self.undo_stack.len() >= self.max_capacity {
@@ -190,6 +208,7 @@ impl UndoStack {
     /// Mark the current state as "clean" (e.g., saved).
     pub fn mark_clean(&mut self) {
         self.saved_revision = Some(self.current_revision());
+        self.saved_reachable = true;
     }
 
     /// Returns `true` if the current state is the "clean" (saved) state.
@@ -200,7 +219,8 @@ impl UndoStack {
     /// replacement and a post-save merge both misreport clean.
     pub fn is_clean(&self) -> bool {
         match self.saved_revision {
-            Some(saved) => self.current_revision() == saved,
+            Some(saved) => self.saved_reachable && self.current_revision() == saved,
+            // No save was ever taken: only the base state (an empty stack) counts as clean.
             None => self.undo_stack.is_empty(),
         }
     }
@@ -210,6 +230,7 @@ impl UndoStack {
         self.undo_stack.clear();
         self.redo_stack.clear();
         self.saved_revision = None;
+        self.saved_reachable = true;
         self.base_revision = 0;
         self.next_revision = 1;
     }
@@ -234,9 +255,17 @@ impl UndoStack {
     /// was evicted. A saved state below that revision is no longer reachable by undo.
     fn advance_base_past(&mut self, revision: u64) {
         self.base_revision = revision;
+        self.invalidate_saved_if_unreachable();
+    }
+
+    /// Flag the saved state unreachable when it now sits below the base revision.
+    ///
+    /// The saved revision is kept (see the field docs); only the reachability flag flips, so
+    /// [`Self::is_clean`] reports dirty instead of falling back to the empty-stack rule.
+    fn invalidate_saved_if_unreachable(&mut self) {
         if let Some(saved) = self.saved_revision {
             if saved < self.base_revision {
-                self.saved_revision = None;
+                self.saved_reachable = false;
             }
         }
     }
@@ -884,5 +913,125 @@ mod tests {
 
         assert_eq!(stack.undo_count(), 1, "the commands merged into a single entry");
         assert!(!stack.is_clean(), "a merge after save must be dirty");
+    }
+
+    /// With history disabled, a push must still mark the document dirty.
+    ///
+    /// Zero-capacity stacks retain no entries, but the document still changed. The push used to
+    /// return after dropping the command without touching `base_revision`, so `mark_clean` → push
+    /// left `current_revision` equal to the saved one and `is_clean()` reported clean despite the
+    /// edit.
+    #[test]
+    fn a_zero_capacity_push_still_dirties_the_document() {
+        let mut stack = UndoStack::with_capacity(0);
+        stack.mark_clean();
+        assert!(stack.is_clean(), "the freshly saved empty state is clean");
+
+        let mut cmd = TextCommand::new("x", "");
+        cmd.execute().unwrap();
+        stack.push(Box::new(cmd));
+
+        assert_eq!(stack.undo_count(), 0, "zero capacity retains nothing");
+        assert!(
+            !stack.is_clean(),
+            "an applied command on a zero-capacity stack must still mark the document dirty"
+        );
+    }
+
+    /// Shrinking capacity to zero evicts the saved point, which must stay dirty.
+    ///
+    /// `push` → `mark_clean` → `push` (dirty) → `set_max_capacity(0)` evicts every reachable
+    /// entry. Clearing `saved_revision` there made the now-empty stack fall back to the
+    /// empty-is-clean rule, so dropping history reported the document as saved though nothing was.
+    #[test]
+    fn shrinking_capacity_to_zero_keeps_the_document_dirty() {
+        let mut stack = UndoStack::with_capacity(1);
+        let mut a = TextCommand::new("a", "");
+        a.execute().unwrap();
+        stack.push(Box::new(a));
+        stack.mark_clean();
+        assert!(stack.is_clean());
+
+        let mut b = TextCommand::new("b", "");
+        b.execute().unwrap();
+        stack.push(Box::new(b));
+        assert!(!stack.is_clean(), "the second push is not the saved content");
+
+        stack.set_max_capacity(0);
+        assert_eq!(stack.undo_count(), 0);
+        assert!(
+            !stack.is_clean(),
+            "evicting the saved point while dirty must not report the empty stack as clean"
+        );
+    }
+
+    /// Evicting an unreachable saved point leaves the stack dirty, even when the
+    /// remaining content happens to match the evicted revision.
+    #[test]
+    fn evicting_an_unreachable_save_leaves_the_stack_dirty() {
+        let mut stack = UndoStack::with_capacity(3);
+        let mut a = TextCommand::new("a", "");
+        a.execute().unwrap();
+        stack.push(Box::new(a));
+        stack.mark_clean();
+
+        for text in ["b", "c", "d"] {
+            let mut cmd = TextCommand::new(text, "");
+            cmd.execute().unwrap();
+            stack.push(Box::new(cmd));
+        }
+        // The saved revision was evicted from the bottom of the stack.
+        assert_eq!(stack.undo_count(), 3);
+        assert!(!stack.is_clean(), "a save evicted by capacity is no longer reachable");
+
+        // A no-op redo must not change the dirty verdict either.
+        assert!(stack.redo().is_err(), "nothing is redoable after the save was evicted");
+        assert!(!stack.is_clean(), "the unreachable save must never read as clean");
+    }
+
+    /// A genuine `mark_clean` reports clean and survives normal undo/redo.
+    #[test]
+    fn a_genuine_mark_clean_is_reachable_and_clean() {
+        let mut stack = UndoStack::with_capacity(8);
+        let mut a = TextCommand::new("a", "");
+        a.execute().unwrap();
+        stack.push(Box::new(a));
+
+        let mut b = TextCommand::new("b", "");
+        b.execute().unwrap();
+        stack.push(Box::new(b));
+        stack.mark_clean();
+        assert!(stack.is_clean(), "mark_clean records the current revision as reachable");
+
+        // Undoing away is dirty; undoing back is clean again.
+        stack.undo().unwrap();
+        assert!(!stack.is_clean(), "undoing off the saved state is dirty");
+        stack.redo().unwrap();
+        assert!(stack.is_clean(), "returning to the saved state is clean");
+    }
+
+    /// Undo back to a saved state that is still on the stack reports clean, and
+    /// the state below it stays dirty.
+    #[test]
+    fn undo_return_to_saved_reports_clean() {
+        let mut stack = UndoStack::with_capacity(8);
+        for text in ["a", "b"] {
+            let mut cmd = TextCommand::new(text, "");
+            cmd.execute().unwrap();
+            stack.push(Box::new(cmd));
+        }
+        stack.mark_clean();
+        assert!(stack.is_clean());
+
+        let mut c = TextCommand::new("c", "");
+        c.execute().unwrap();
+        stack.push(Box::new(c));
+        assert!(!stack.is_clean());
+
+        stack.undo().unwrap();
+        assert!(stack.is_clean(), "undoing back to the saved revision is clean");
+
+        stack.undo().unwrap();
+        assert!(!stack.is_clean(), "undoing past the saved state is dirty");
     }
 }

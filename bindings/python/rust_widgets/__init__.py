@@ -900,9 +900,16 @@ class RustWidgets:
         return text.encode("utf-8")
 
     @staticmethod
-    @staticmethod
     def _decode_and_free(lib: ctypes.CDLL, ptr) -> str:
         """Decode an **owned** ``char*`` returned by the ABI, then free it.
+
+        # Why this is exactly one ``@staticmethod``
+
+        It had two, stacked. On the declared minimum (Python 3.9) the outer
+        ``staticmethod`` wraps the inner one instead of the function, so the attribute
+        resolves to a descriptor rather than the callable and every call raises
+        ``TypeError`` — while 3.10+ happens to unwrap the nesting, which is why it went
+        unnoticed. One decorator is the contract.
 
         # Why `ptr` must be the raw address
 

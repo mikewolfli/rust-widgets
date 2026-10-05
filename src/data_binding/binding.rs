@@ -33,6 +33,14 @@ struct BindingInner<T: Clone + Send + 'static> {
     /// Cleared when a pass starts and again once its restore step has run, so it only
     /// ever describes the pass currently in flight.
     unsubscribed_during_notify: alloc::collections::BTreeSet<String>,
+    /// Number of `set` calls that arrived while a pass was already in flight.
+    ///
+    /// A `set` that observes `notifying` must not take the listener map (the running
+    /// pass owns it), so instead of silently notifying nobody it records one replay
+    /// here. The running pass, once it restores its listeners, performs that many
+    /// further full passes, so **every** `set` is delivered to every listener rather
+    /// than being merged into the pass already on the stack.
+    pending_replays: usize,
 }
 
 impl<T: Clone + Send + 'static> BindingInner<T> {
@@ -47,6 +55,7 @@ impl<T: Clone + Send + 'static> BindingInner<T> {
             listeners: HashMap::new(),
             notifying: false,
             unsubscribed_during_notify: alloc::collections::BTreeSet::new(),
+            pending_replays: 0,
         }
     }
 }
@@ -83,40 +92,81 @@ impl<T: Clone + Send + 'static> Binding<T> {
     /// "re-subscribed" from "just unsubscribed": both leave the key absent, so a
     /// self-unsubscribing listener was put straight back and fired again on the next
     /// `set`. The removal set below is what distinguishes them.
+    ///
+    /// # Every `set` is delivered
+    ///
+    /// The window in which `listeners` is empty must be published **atomically** with
+    /// taking it, and a second `set` arriving in that window must not be merged away.
+    /// Both used to be true and both were wrong: `notifying` was raised in a *second*
+    /// lock acquisition, so a concurrent `set` saw an empty map while `notifying` was
+    /// still `false`, took the map, notified nobody and — because it believed it was
+    /// the outermost pass — cleared the first pass's unsubscribe tombstone; an
+    /// `unsubscribe` racing the same window also missed the tombstone and resurrected
+    /// its listener. `notifying` is now raised inside the same critical section as the
+    /// take, and a `set` that observes `notifying` increments [`pending_replays`]
+    /// instead of running a silent empty pass, so the running pass replays for it.
+    ///
+    /// [`pending_replays`]: BindingInner::pending_replays
     pub fn set(&self, value: T) {
-        // ── Phase 1: Lock, update value, take all listeners ──
-        let listeners: Vec<(String, BoxedListener)>;
-        let outermost: bool;
+        // ── Publish the notification window and take the listeners, atomically ──
+        let mut listeners: Vec<(String, BoxedListener)>;
         {
             let mut inner = lock(&self.inner);
             inner.value = value;
-            // A re-entrant `set` (a listener calling `set` again before the outer pass has
-            // restored its map) must not clear the outer pass's unsubscribe tombstone: the
-            // tombstone describes the pass still in flight, and only the outermost pass owns
-            // its lifetime. Clearing it here on every call was what let an inner `set` wipe
-            // the outer pass's record and revive a listener that had just unsubscribed.
-            outermost = !inner.notifying;
-            if outermost {
-                inner.unsubscribed_during_notify.clear();
+            // A `set` that arrives while a pass is already in flight must be delivered
+            // after it, not dropped and not merged into it.
+            if inner.notifying {
+                inner.pending_replays = inner.pending_replays.saturating_add(1);
+                return;
             }
+            // Raise `notifying` in the *same* critical section that empties the map.
+            // There is therefore no instant at which `unsubscribe` can see an empty map
+            // and `notifying == false`, which was the window that lost a tombstone.
+            inner.notifying = true;
+            inner.unsubscribed_during_notify.clear();
             listeners = core::mem::take(&mut inner.listeners).into_iter().collect();
-        } // Mutex lock released.
-
-        // ── Phase 2: Notify outside lock (safe from re-entrancy) ──
-        // `notifying` brackets the pass so `unsubscribe` knows the map is temporarily
-        // empty rather than genuinely missing the key.
-        {
-            lock(&self.inner).notifying = true;
-        }
-        let mut guard = NotifyGuard { inner: &*self.inner, listeners, outermost };
-        for (key, ref mut listener) in &mut guard.listeners {
-            listener.on_value_changed(key, "set");
         }
 
-        // ── Phase 3: restore runs in `NotifyGuard::drop` ──
-        // A `Drop` implementation runs on the normal return path **and** while unwinding
-        // from a panicking listener, so a panic can no longer skip the restore and leave the
-        // map empty with `notifying` stuck on (which silently disabled all future updates).
+        // ── Notify outside the lock, one full pass per delivery ──
+        // Each iteration notifies the current listener set, restores it, and decides
+        // whether a queued `set` still owes a pass. The guard restores and terminates
+        // the pass if a listener panics, so a panic cannot leave `notifying` stuck or
+        // the listener map empty.
+        loop {
+            let mut guard = NotifyGuard { inner: &self.inner, listeners, armed: true };
+            for (key, ref mut listener) in &mut guard.listeners {
+                listener.on_value_changed(key, "set");
+            }
+
+            // Normal (non-panicking) exit: restore, then hand back the next pass's
+            // listener set when a replay is due.
+            let next = {
+                let mut inner = lock(&self.inner);
+                for (key, listener) in guard.listeners.drain(..) {
+                    if inner.unsubscribed_during_notify.contains(&key) {
+                        continue;
+                    }
+                    inner.listeners.entry(key).or_insert(listener);
+                }
+                if inner.pending_replays > 0 {
+                    inner.pending_replays -= 1;
+                    inner.unsubscribed_during_notify.clear();
+                    Some(core::mem::take(&mut inner.listeners).into_iter().collect::<Vec<_>>())
+                } else {
+                    inner.notifying = false;
+                    inner.unsubscribed_during_notify.clear();
+                    None
+                }
+            };
+            // The restore and the end-of-pass decision are done; disarm so the guard's
+            // `Drop` does not repeat them (and does not reset `notifying` while a
+            // replay is about to run).
+            guard.armed = false;
+            match next {
+                Some(next_listeners) => listeners = next_listeners,
+                None => break,
+            }
+        }
     }
 
     /// Subscribe to value changes.
@@ -268,34 +318,36 @@ impl Drop for SyncingGuard<'_> {
 
 /// Restores a `Binding`'s listener map after a notification pass.
 ///
-/// Owns the listeners `set` took out and re-inserts those still subscribed when it drops.
-/// Because `Drop` runs whether the notification loop returned or unwound, a panicking
-/// listener can no longer leave the map empty and `notifying` stuck. The `outermost` flag is
-/// `true` only for the pass that began while no notification was in flight: a nested
-/// re-entrant `set` must not clear the unsubscribe tombstone or end `notifying` early,
-/// because the outer pass still needs both when its own restore runs.
+/// Owns the listeners `set` took out and re-inserts those still subscribed when it is
+/// disarmed. [`Binding::set`] performs the restore inline on the normal path (so it can
+/// then hand the next pass its listener set when a replay is queued) and sets `armed`
+/// to `false`; the guard's `Drop` remains as the panic net, running the same restore and
+/// terminating the pass — clearing `notifying`, the tombstone, and any queued replays —
+/// so a panicking listener can never leave the map empty with `notifying` stuck on.
 struct NotifyGuard<'a, T: Clone + Send + 'static> {
     inner: &'a Mutex<BindingInner<T>>,
     listeners: Vec<(String, BoxedListener)>,
-    outermost: bool,
+    armed: bool,
 }
 
 impl<T: Clone + Send + 'static> Drop for NotifyGuard<'_, T> {
     fn drop(&mut self) {
+        if !self.armed {
+            // `set` already restored and terminated (or handed off to a replay).
+            return;
+        }
+        // Panic path: restore what we still own, honouring the unsubscribe tombstone,
+        // and end the pass so the binding stays usable.
         let mut inner = lock(self.inner);
         for (key, listener) in self.listeners.drain(..) {
             if inner.unsubscribed_during_notify.contains(&key) {
-                // Removed by `unsubscribe` while this pass was notifying; honour it.
                 continue;
             }
-            // If no new listener was subscribed under this key during notification, put the
-            // original one back. A *new* listener wins, which is the pre-existing behaviour.
             inner.listeners.entry(key).or_insert(listener);
         }
-        if self.outermost {
-            inner.unsubscribed_during_notify.clear();
-            inner.notifying = false;
-        }
+        inner.notifying = false;
+        inner.unsubscribed_during_notify.clear();
+        inner.pending_replays = 0;
     }
 }
 
@@ -803,5 +855,188 @@ mod unsubscribe_during_notify_tests {
 
         binding.set(2);
         assert_eq!(calls.load(Ordering::SeqCst), 1, "the next set must not revive the listener");
+    }
+}
+
+/// Tests for the atomic publish/replay contract added for BLUE-issue N-S-46.
+///
+/// # The defect these pin
+///
+/// `set` took the listener map under one lock acquisition and raised `notifying` under a
+/// **second**, so a `set` arriving in that window saw an empty map (and, before the second
+/// lock, `notifying == false`). It notified nobody and — believing itself the outermost
+/// pass — cleared the first pass's unsubscribe tombstone. The result was a silently lost
+/// notification (the second `set` was never delivered) and, for a concurrent
+/// `unsubscribe`, a listener resurrected by the restore. `notifying` is now raised in the
+/// same critical section as the take, and a `set` that observes it queues a replay.
+#[cfg(test)]
+mod atomic_publish_tests {
+    use super::*;
+    use crate::compat::lock;
+    use alloc::sync::Arc;
+    use core::sync::atomic::AtomicI32;
+
+    /// A `set` issued while another `set`'s pass is in flight must still be delivered.
+    ///
+    /// The first callback is held open on two barriers so the second `set` is guaranteed
+    /// to land inside the first pass's window (deterministic, not timing-dependent).
+    /// Before the fix the second `set` took the empty listener map (the running pass owned
+    /// it) and notified nobody, so the counter stayed at one.
+    #[test]
+    fn a_second_set_during_a_pass_is_still_delivered() {
+        use std::sync::Barrier;
+
+        let binding: Arc<Binding<i32>> = Arc::new(Binding::new(0));
+        let calls = Arc::new(AtomicI32::new(0));
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+
+        let counter = Arc::clone(&calls);
+        let entered_slot = Arc::clone(&entered);
+        let release_slot = Arc::clone(&release);
+        binding.subscribe(
+            "counter",
+            Box::new(FnListener::new(move |_key: &str, _op: &str| {
+                let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
+                if n == 1 {
+                    // Only the first delivery blocks, so the replay can pass through.
+                    entered_slot.wait();
+                    release_slot.wait();
+                }
+            })),
+        );
+
+        let worker_binding = Arc::clone(&binding);
+        let worker = std::thread::spawn(move || worker_binding.set(1));
+
+        // Wait until the worker is inside the callback (its pass owns the listener map).
+        entered.wait();
+        // Issue a second `set` from this thread while that pass is in flight. It must be
+        // queued and delivered once the running pass restores its listeners.
+        binding.set(2);
+        // Let the first callback finish so the running pass can replay for the second set.
+        release.wait();
+
+        worker.join().expect("the first setter must not panic");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "both sets must reach the listener; a single delivery is the lost-notification defect"
+        );
+        assert_eq!(binding.get(), 2, "the last write wins for the value");
+    }
+
+    /// A re-entrant `set` from a listener is queued and replayed, not swallowed.
+    ///
+    /// Single-threaded and fully deterministic: the listener records the value it saw via
+    /// `get`, then re-enters `set` once. Both `set` calls must deliver, so the listener
+    /// runs twice.
+    #[test]
+    fn a_reentrant_set_is_queued_and_replayed() {
+        let binding: Arc<Binding<i32>> = Arc::new(Binding::new(0));
+        let deliveries = Arc::new(AtomicI32::new(0));
+
+        let weak = Arc::downgrade(&binding);
+        let counter = Arc::clone(&deliveries);
+        binding.subscribe(
+            "reenter",
+            Box::new(FnListener::new(move |_key: &str, _op: &str| {
+                let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
+                if n == 1 {
+                    if let Some(b) = weak.upgrade() {
+                        b.set(42);
+                    }
+                }
+            })),
+        );
+
+        binding.set(1);
+        assert_eq!(
+            deliveries.load(Ordering::SeqCst),
+            2,
+            "the re-entrant set must be replayed, not merged away"
+        );
+        assert_eq!(binding.get(), 42);
+        assert_eq!(binding.listener_count(), 1, "the listener survives both passes");
+    }
+
+    /// An `unsubscribe` performed by an earlier listener in the same pass must stay removed
+    /// across a queued replay too: the tombstone is not cleared between passes.
+    #[test]
+    fn an_unsubscribe_is_honoured_across_a_queued_replay() {
+        let binding: Arc<Binding<i32>> = Arc::new(Binding::new(0));
+        let victim_calls = Arc::new(AtomicI32::new(0));
+
+        let counter = Arc::clone(&victim_calls);
+        binding.subscribe(
+            "victim",
+            Box::new(FnListener::new(move |_key: &str, _op: &str| {
+                counter.fetch_add(1, Ordering::SeqCst);
+            })),
+        );
+
+        let weak = Arc::downgrade(&binding);
+        let acted = Arc::new(AtomicI32::new(0));
+        let acted_slot = Arc::clone(&acted);
+        binding.subscribe(
+            "remover",
+            Box::new(FnListener::new(move |_key: &str, _op: &str| {
+                // Act once. Without this guard the queued replay would re-run the remover,
+                // which would queue another replay forever — a self-driving loop, not the
+                // property under test.
+                if acted_slot.fetch_add(1, Ordering::SeqCst) > 0 {
+                    return;
+                }
+                if let Some(b) = weak.upgrade() {
+                    b.unsubscribe("victim");
+                    // Queue a replay as well, so the pass after this one must not restore
+                    // or revive the removed listener.
+                    b.set(7);
+                }
+            })),
+        );
+
+        binding.set(1);
+        assert_eq!(binding.listener_count(), 1, "only the remover remains");
+        assert_eq!(victim_calls.load(Ordering::SeqCst), 1, "the victim ran in the first pass only");
+
+        binding.set(2);
+        assert_eq!(
+            victim_calls.load(Ordering::SeqCst),
+            1,
+            "the removed listener must not be revived by the replay or a later set"
+        );
+    }
+
+    /// The atomic window leaves no observable "map empty but not notifying" instant: a
+    /// `get` from inside a listener still sees the new value, and the listener map is empty
+    /// only for the duration of the pass.
+    #[test]
+    fn the_publish_window_is_atomic() {
+        let binding: Arc<Binding<i32>> = Arc::new(Binding::new(0));
+        let observed_notifying = Arc::new(AtomicI32::new(-1));
+
+        let weak = Arc::downgrade(&binding);
+        let flag = Arc::clone(&observed_notifying);
+        binding.subscribe(
+            "probe",
+            Box::new(FnListener::new(move |_key: &str, _op: &str| {
+                if let Some(b) = weak.upgrade() {
+                    // During the callback the map is empty and `notifying` must be true.
+                    let empty = b.listener_count() == 0;
+                    let notifying = lock(&b.inner).notifying;
+                    flag.store(if empty && notifying { 1 } else { 0 }, Ordering::SeqCst);
+                }
+            })),
+        );
+
+        binding.set(5);
+        assert_eq!(binding.get(), 5);
+        assert_eq!(
+            observed_notifying.load(Ordering::SeqCst),
+            1,
+            "while the map is empty, `notifying` must be published in the same critical section"
+        );
+        assert_eq!(binding.listener_count(), 1, "the listener is restored after the pass");
     }
 }

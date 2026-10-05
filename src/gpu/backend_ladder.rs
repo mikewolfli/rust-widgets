@@ -206,6 +206,36 @@ fn rank_adapter(device_type: wgpu::DeviceType, power_preference: wgpu::PowerPref
     }
 }
 
+/// Picks the winning candidate index from an already-enumerated adapter list.
+///
+/// `candidates` carries each adapter's device type and whether it can present to
+/// the requested surface. Surface-incompatible candidates are dropped first, then
+/// the remainder are ranked by [`rank_adapter`] so the requested power preference
+/// is honoured. Returns `None` when no candidate survives the filter.
+///
+/// Both the pinned `WGPU_BACKEND` branch and the unpinned ladder delegate to this
+/// so the two cannot drift: a pin changes *which* backends are considered, never
+/// how the survivors are ranked (N-S-57).
+fn best_candidate_index(
+    candidates: &[(wgpu::DeviceType, bool)],
+    power_preference: wgpu::PowerPreference,
+) -> Option<usize> {
+    let mut best: Option<(usize, u8)> = None;
+    for (index, &(device_type, surface_ok)) in candidates.iter().enumerate() {
+        if !surface_ok {
+            continue;
+        }
+        let rank = rank_adapter(device_type, power_preference);
+        match best {
+            // Strictly better rank wins; equal ranks keep the first candidate, so
+            // the sort is stable with respect to enumeration order.
+            Some((_, best_rank)) if best_rank <= rank => {}
+            _ => best = Some((index, rank)),
+        }
+    }
+    best.map(|(index, _)| index)
+}
+
 /// Picks the best adapter restricted to `backends` that can present to
 /// `compatible_surface`.
 ///
@@ -219,14 +249,19 @@ async fn best_adapter_for_backends(
     compatible_surface: Option<&wgpu::Surface<'_>>,
 ) -> Option<wgpu::Adapter> {
     let mut candidates = instance.enumerate_adapters(backends).await;
-    if let Some(surface) = compatible_surface {
-        candidates.retain(|adapter| adapter.is_surface_supported(surface));
-    }
-    candidates.sort_by_key(|adapter| {
-        let info = adapter.get_info();
-        rank_adapter(info.device_type, power_preference)
-    });
-    candidates.into_iter().next()
+    let meta: Vec<(wgpu::DeviceType, bool)> = candidates
+        .iter()
+        .map(|adapter| {
+            let info = adapter.get_info();
+            let surface_ok = match compatible_surface {
+                Some(surface) => adapter.is_surface_supported(surface),
+                None => true,
+            };
+            (info.device_type, surface_ok)
+        })
+        .collect();
+    let index = best_candidate_index(&meta, power_preference)?;
+    Some(candidates.swap_remove(index))
 }
 
 /// Picks the best available adapter by walking the ladder.
@@ -249,16 +284,40 @@ pub async fn select_adapter_with_gl_fallback(
     // instance to keep every ladder rung reachable, so `request_adapter` alone
     // would hand back the default (primary) adapter and silently ignore the pin.
     if let Some(pinned) = backends_from_env() {
-        let mut candidates = instance.enumerate_adapters(pinned).await;
-        if candidates.is_empty() {
-            log::error!("[gpu] WGPU_BACKEND pinned {pinned:?} but no adapter exposes that backend");
-            return None;
+        let candidates = instance.enumerate_adapters(pinned).await;
+        // The pin narrows *which* backends are acceptable; it must not disable
+        // the rest of the selection policy. Surface compatibility and the power
+        // preference are applied through the same helper the unpinned ladder
+        // uses, so a pinned adapter that cannot present to the requested surface
+        // is never returned (N-S-57).
+        let meta: Vec<(wgpu::DeviceType, bool)> = candidates
+            .iter()
+            .map(|adapter| {
+                let info = adapter.get_info();
+                let surface_ok = match compatible_surface {
+                    Some(surface) => adapter.is_surface_supported(surface),
+                    None => true,
+                };
+                (info.device_type, surface_ok)
+            })
+            .collect();
+        match best_candidate_index(&meta, power_preference) {
+            Some(index) => {
+                let adapter = &candidates[index];
+                let backend = adapter.get_info().backend;
+                // `Adapter` is not `Clone`; move the chosen one out by draining.
+                let mut candidates = candidates;
+                let adapter = candidates.swap_remove(index);
+                return Some((adapter, GpuBackendTier::from_backend(backend)));
+            }
+            None => {
+                log::error!(
+                    "[gpu] WGPU_BACKEND pinned {pinned:?} but no surface-compatible adapter \
+                     exposes that backend"
+                );
+                return None;
+            }
         }
-        // Prefer a hardware adapter over the CPU one when several qualify.
-        candidates.sort_by_key(|adapter| adapter.get_info().device_type == wgpu::DeviceType::Cpu);
-        let adapter = candidates.into_iter().next()?;
-        let backend = adapter.get_info().backend;
-        return Some((adapter, GpuBackendTier::from_backend(backend)));
     }
 
     let ladder = ladder_for_target();
@@ -515,6 +574,55 @@ mod tests {
                 tier.label(),
             );
         }
+    }
+
+    /// The pinned branch and the unpinned ladder must rank candidates the same
+    /// way, and a surface-incompatible candidate must never win (N-S-57).
+    #[test]
+    fn candidate_selection_honours_surface_and_power_preference() {
+        use wgpu::DeviceType;
+        use wgpu::PowerPreference;
+
+        // A discrete GPU that cannot present to the surface, an integrated GPU
+        // that can, and a CPU adapter. The surface-incompatible discrete must be
+        // skipped even though it ranks best on paper (the old pinned branch
+        // returned it).
+        let candidates = [
+            (DeviceType::DiscreteGpu, false),
+            (DeviceType::IntegratedGpu, true),
+            (DeviceType::Cpu, true),
+        ];
+        assert_eq!(
+            best_candidate_index(&candidates, PowerPreference::HighPerformance),
+            Some(1),
+            "a surface-incompatible discrete adapter must not be selected"
+        );
+
+        // When the discrete adapter *is* compatible it wins under high
+        // performance, exactly as the unpinned ladder would choose.
+        let candidates = [(DeviceType::DiscreteGpu, true), (DeviceType::IntegratedGpu, true)];
+        assert_eq!(
+            best_candidate_index(&candidates, PowerPreference::HighPerformance),
+            Some(0),
+            "high performance prefers the discrete adapter"
+        );
+        // ... and the integrated one wins under low power, showing the power
+        // preference is not ignored in the pinned branch.
+        assert_eq!(
+            best_candidate_index(&candidates, PowerPreference::LowPower),
+            Some(1),
+            "low power prefers the integrated adapter"
+        );
+
+        // The CPU adapter is always last among compatible candidates.
+        let candidates = [(DeviceType::Cpu, true), (DeviceType::IntegratedGpu, true)];
+        assert_eq!(best_candidate_index(&candidates, PowerPreference::HighPerformance), Some(1));
+
+        // No compatible candidate yields None (honest "no adapter", still
+        // honouring the pin rather than substituting an incompatible one).
+        let candidates = [(DeviceType::DiscreteGpu, false)];
+        assert_eq!(best_candidate_index(&candidates, PowerPreference::HighPerformance), None);
+        assert_eq!(best_candidate_index(&[], PowerPreference::HighPerformance), None);
     }
 
     /// A pinned `WGPU_BACKEND` that the host cannot provide must yield `None`,

@@ -62,13 +62,41 @@ impl RenderEngine for EmbeddedRenderEngine {
 }
 
 /// Build default engine for compile-time profile.
+///
+/// # Why the selection reads the derived profile facts (N-S-45)
+///
+/// `cfg!(embedded_surface)` alone was the gate, and `build.rs` sets that alias only for the
+/// explicit `embedded` feature. A build that selects **no** device profile —
+/// `--no-default-features --features gpu` — has `profile_class() == Surface`,
+/// `runtime_profile() == Embedded` and `has_os_runtime() == false`, yet the alias was off, so
+/// this returned [`NativeRenderEngine`] (whose `profile()` is `Full`). That chose the OS
+/// adapter for a build with no OS runtime to host it, contradicting the very facts the rest
+/// of the profile layer derives. Selection now follows those facts: the library-owned
+/// embedded scheduler is chosen whenever there is no OS-hosted runtime, which covers the
+/// explicit `embedded` surface, the no-device-profile build, and any future surfaced-only
+/// profile — without inventing a hidden device profile.
 #[cfg(not(alloc_frugal))]
 pub fn default_render_engine() -> Box<dyn RenderEngine> {
-    if cfg!(embedded_surface) {
+    if uses_embedded_scheduler() {
         Box::new(EmbeddedRenderEngine::new())
     } else {
         Box::new(NativeRenderEngine::new())
     }
+}
+
+/// Whether this build must drive the library-owned embedded scheduler.
+///
+/// Kept as a named predicate so the selection is a single testable fact and the engine's
+/// reported `profile()` and the profile module's `runtime_profile()` cannot drift apart.
+#[cfg(not(alloc_frugal))]
+pub fn uses_embedded_scheduler() -> bool {
+    use crate::core::RuntimeProfile;
+    use crate::platform::profile::{has_os_runtime, runtime_profile};
+    // `embedded_surface` is kept as a positive signal (the `embedded` feature explicitly asks
+    // for the surface engine); the derived facts add the case it missed. `runtime_profile()`
+    // is `Embedded` exactly when `has_os_runtime()` is false, so either spelling selects the
+    // same builds — both are stated so neither can silently stop agreeing with the other.
+    cfg!(embedded_surface) || !has_os_runtime() || runtime_profile() == RuntimeProfile::Embedded
 }
 /// Default render engine in mini mode uses the embedded engine.
 #[cfg(alloc_frugal)]
@@ -174,5 +202,37 @@ mod tests {
         handle.join().expect("embedded render loop thread should join");
         // Restore the shared default: see the note in `embedded_task_executes_in_run_loop`.
         set_embedded_target_fps(crate::render_engine::embedded::DEFAULT_EMBEDDED_TARGET_FPS);
+    }
+
+    /// N-S-45: the engine-selection predicate must be exactly the derived profile fact.
+    ///
+    /// A build with no OS runtime (`has_os_runtime() == false`, e.g.
+    /// `--no-default-features --features gpu`) derives `runtime_profile() == Embedded` but
+    /// does not set the `embedded_surface` alias (only the explicit `embedded` feature does).
+    /// Selection must follow the derived facts, so `uses_embedded_scheduler()` must equal
+    /// "there is no OS-hosted runtime" — never merely `cfg!(embedded_surface)`. This runs on
+    /// every profile, so it pins the equivalence even where the surface build cannot run the
+    /// test harness.
+    #[test]
+    fn engine_selection_follows_the_derived_profile_facts() {
+        use crate::core::RuntimeProfile;
+        use crate::platform::profile::{has_os_runtime, runtime_profile};
+
+        assert_eq!(
+            uses_embedded_scheduler(),
+            !has_os_runtime(),
+            "the embedded scheduler must be chosen exactly when there is no OS-hosted runtime"
+        );
+        assert_eq!(
+            uses_embedded_scheduler(),
+            runtime_profile() == RuntimeProfile::Embedded,
+            "engine selection and the derived runtime profile must not disagree"
+        );
+        // And the concrete engine the profile drives its loop with reports that fact.
+        assert_eq!(
+            crate::platform::profile::runtime_engine().profile(),
+            runtime_profile(),
+            "the selected engine's own profile() must equal the derived runtime_profile()"
+        );
     }
 }

@@ -193,8 +193,13 @@ impl MjpegDecoder {
         Some((info.width as u32, info.height as u32))
     }
 
-    /// Decode a single JPEG frame to RGBA pixel data.
-    fn decode_frame(jpeg_data: &[u8]) -> Result<Vec<u8>, String> {
+    /// Decode a single JPEG frame to RGBA pixel data, returning the frame's own
+    /// pixel dimensions alongside the bytes.
+    ///
+    /// The dimensions must travel with the pixels: an MJPEG stream may change
+    /// resolution mid-stream, and `decode_frame` is the only place that knows the
+    /// real size of the frame it just decoded (N-S-55).
+    fn decode_frame(jpeg_data: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
         let mut decoder = JpegDecoder::new(std::io::Cursor::new(jpeg_data));
         let pixels = decoder.decode().map_err(|e| {
             format!(
@@ -252,7 +257,7 @@ impl MjpegDecoder {
                 ));
             }
         }
-        Ok(rgba)
+        Ok((rgba, info.width as u32, info.height as u32))
     }
 
     /// Set a custom frame rate.
@@ -273,22 +278,33 @@ impl VideoDecoder for MjpegDecoder {
 
         let (start, end) = self.frame_offsets[self.current_frame];
         let jpeg_data = &self.data[start..end];
-        let rgba = Self::decode_frame(jpeg_data).map_err(|err| {
+        let (rgba, width, height) = Self::decode_frame(jpeg_data).map_err(|err| {
             format!("MJPEG frame {} decode failed: {err}", self.current_frame + 1)
         })?;
+
+        // Use the decoded frame's *own* size rather than the first frame's
+        // metadata dimensions: an MJPEG stream can change resolution mid-stream,
+        // and reporting the cached size for a differently-sized frame would make
+        // `data.len() != width * height * 4` for every consumer (N-S-55). When the
+        // size changes the metadata is advanced too, so `metadata()` describes the
+        // most recently decoded frame rather than the first one forever.
+        if width != self.metadata.width || height != self.metadata.height {
+            log::debug!(
+                "[MjpegDecoder] frame {} changed size from {}x{} to {width}x{height}; updating metadata",
+                self.current_frame + 1,
+                self.metadata.width,
+                self.metadata.height,
+            );
+            self.metadata.width = width;
+            self.metadata.height = height;
+        }
 
         let fps = self.frame_rate.max(1.0);
         let timestamp = self.current_frame as f64 / fps;
         let frame_type =
             if self.current_frame == 0 { FrameType::IFrame } else { FrameType::PFrame };
 
-        let frame = VideoFrame::with_type(
-            timestamp,
-            rgba,
-            self.metadata.width,
-            self.metadata.height,
-            frame_type,
-        );
+        let frame = VideoFrame::with_type(timestamp, rgba, width, height, frame_type);
         self.current_frame += 1;
         Ok(Some(frame))
     }
@@ -329,6 +345,31 @@ fn test_jpeg_bytes() -> Vec<u8> {
 /// snapshot tests; used here to exercise the genuine decode-success path.
 #[cfg(test)]
 const TEST_REAL_JPEG: &[u8] = include_bytes!("../../snapshots/header.jpg");
+
+/// A tiny, real 2x2 grayscale baseline JPEG.
+///
+/// Its only purpose is to be a *differently sized* valid JPEG from
+/// [`TEST_REAL_JPEG`], so the MJPEG size-change path can be exercised without a
+/// second file on disk (N-S-55). It decodes to `L8`, which `decode_frame`
+/// converts to RGBA.
+#[cfg(test)]
+const TEST_TINY_JPEG: &[u8] = &[
+    255, 216, 255, 224, 0, 16, 74, 70, 73, 70, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 255, 219, 0, 67, 0,
+    16, 11, 12, 14, 12, 10, 16, 14, 13, 14, 18, 17, 16, 19, 24, 40, 26, 24, 22, 22, 24, 49, 35, 37,
+    29, 40, 58, 51, 61, 60, 57, 51, 56, 55, 64, 72, 92, 78, 64, 68, 87, 69, 55, 56, 80, 109, 81,
+    87, 95, 98, 103, 104, 103, 62, 77, 113, 121, 112, 100, 120, 92, 101, 103, 99, 255, 192, 0, 11,
+    8, 0, 2, 0, 2, 1, 1, 17, 0, 255, 196, 0, 31, 0, 0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0,
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 255, 196, 0, 181, 16, 0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4,
+    0, 0, 1, 125, 1, 2, 3, 0, 4, 17, 5, 18, 33, 49, 65, 6, 19, 81, 97, 7, 34, 113, 20, 50, 129,
+    145, 161, 8, 35, 66, 177, 193, 21, 82, 209, 240, 36, 51, 98, 114, 130, 9, 10, 22, 23, 24, 25,
+    26, 37, 38, 39, 40, 41, 42, 52, 53, 54, 55, 56, 57, 58, 67, 68, 69, 70, 71, 72, 73, 74, 83, 84,
+    85, 86, 87, 88, 89, 90, 99, 100, 101, 102, 103, 104, 105, 106, 115, 116, 117, 118, 119, 120,
+    121, 122, 131, 132, 133, 134, 135, 136, 137, 138, 146, 147, 148, 149, 150, 151, 152, 153, 154,
+    162, 163, 164, 165, 166, 167, 168, 169, 170, 178, 179, 180, 181, 182, 183, 184, 185, 186, 194,
+    195, 196, 197, 198, 199, 200, 201, 202, 210, 211, 212, 213, 214, 215, 216, 217, 218, 225, 226,
+    227, 228, 229, 230, 231, 232, 233, 234, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 255,
+    218, 0, 8, 1, 1, 0, 0, 63, 0, 43, 255, 217,
+];
 
 #[cfg(test)]
 mod tests {
@@ -501,5 +542,42 @@ mod tests {
         decoder.set_frame_rate(30.0);
         let meta = decoder.metadata();
         assert!((meta.frame_rate - 30.0).abs() < f64::EPSILON);
+    }
+
+    /// N-S-55: when a later frame changes size, the returned `VideoFrame` must
+    /// carry *its own* dimensions (and matching data length), and the metadata
+    /// must advance to describe the most recently decoded frame.
+    #[test]
+    fn test_mjpeg_decoder_propagates_per_frame_dimensions_on_size_change() {
+        // Frame 1 is the large real JPEG; frame 2 is the tiny 2x2 JPEG. A naive
+        // decoder would report 1440x1499 (the first frame's size) for frame 2
+        // while returning 2x2x4 bytes of pixels, breaking every consumer.
+        let mut data = Vec::new();
+        data.extend_from_slice(TEST_REAL_JPEG);
+        data.extend_from_slice(TEST_TINY_JPEG);
+        let mut decoder = MjpegDecoder::new(data, ContainerFormat::Mjpeg);
+        assert_eq!(decoder.metadata().total_frames, 2);
+        // Metadata starts from the first frame.
+        assert_eq!((decoder.metadata().width, decoder.metadata().height), (1440, 1499));
+
+        let first = decoder.read_frame().unwrap().expect("first frame decodes");
+        assert_eq!((first.width, first.height), (1440, 1499));
+        assert_eq!(first.data.len(), 1440 * 1499 * 4);
+
+        let second = decoder.read_frame().unwrap().expect("second frame decodes");
+        assert_eq!(
+            (second.width, second.height),
+            (2, 2),
+            "the frame must carry its own size, not the first frame's"
+        );
+        assert_eq!(
+            second.data.len(),
+            2 * 2 * 4,
+            "data length must agree with the frame's own size"
+        );
+        // Metadata advances to describe the latest frame.
+        assert_eq!((decoder.metadata().width, decoder.metadata().height), (2, 2));
+
+        assert!(decoder.read_frame().unwrap().is_none(), "no more frames");
     }
 }

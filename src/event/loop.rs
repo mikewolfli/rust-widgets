@@ -14,6 +14,7 @@ use crate::core::ObjectId;
 use crate::gesture::GestureEngine;
 use alloc::sync::Arc;
 use core::sync::atomic::AtomicU64;
+use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::Ordering;
 use core::time::Duration;
 #[cfg(not(alloc_frugal))]
@@ -92,9 +93,69 @@ fn animation_frame_id(event: &Event) -> Option<u64> {
     Some(u64::from_le_bytes(bytes))
 }
 
-/// Whether `id` is in `cancelled`, removing it. See `cancel_animation_frame` for why it consumes.
+/// Whether `id` is in `cancelled`, removing it.
+///
+/// Only the `mini` `pump_once` needs this mutex-based form; the threaded loop uses
+/// [`AnimFrameState::dispatched_and_cancelled`] under the same lock as its pending set.
+#[cfg(alloc_frugal)]
 fn take_cancelled(cancelled: &Mutex<Vec<u64>>, id: u64) -> bool {
     let mut cancelled = lock(cancelled);
+    if let Some(position) = cancelled.iter().position(|pending| *pending == id) {
+        cancelled.swap_remove(position);
+        return true;
+    }
+    false
+}
+
+/// Bookkeeping for animation-frame requests, shared with the loop thread.
+///
+/// # Why both a pending set and a cancelled set
+///
+/// `cancel_animation_frame` used to consult only the cancelled set, which records what
+/// was cancelled, not what is still outstanding. It therefore reported `true` for a
+/// handle that had already been dispatched, for one that was never issued, and for one
+/// belonging to a different loop — and pushed duplicate entries. This type holds the
+/// complementary fact: which ids are still pending. A cancel is accepted only for a
+/// pending id, dispatches are marked, and the cancelled entries are consumed by the
+/// dispatch check, so a repeated cancel and a cancel-after-dispatch both report `false`.
+#[cfg(not(alloc_frugal))]
+#[derive(Debug, Default)]
+struct AnimFrameState {
+    /// Ids requested but not yet dispatched or cancelled.
+    pending: Vec<u64>,
+    /// Pending ids whose dispatch must be skipped, consumed by the dispatch check.
+    cancelled: Vec<u64>,
+}
+
+impl AnimFrameState {
+    /// Records a new request as pending.
+    fn request(&mut self, id: u64) {
+        self.pending.push(id);
+    }
+
+    /// Cancels `id` if it is still pending. Returns whether a state change occurred.
+    fn cancel(&mut self, id: u64) -> bool {
+        if let Some(position) = self.pending.iter().position(|pending| *pending == id) {
+            self.pending.swap_remove(position);
+            self.cancelled.push(id);
+            return true;
+        }
+        false
+    }
+
+    /// Marks `id` dispatched if it is pending, then consumes a matching cancellation
+    /// entry, returning whether the frame must be skipped.
+    fn dispatched_and_cancelled(&mut self, id: u64) -> bool {
+        if let Some(position) = self.pending.iter().position(|pending| *pending == id) {
+            self.pending.swap_remove(position);
+        }
+        take_cancelled_ids(&mut self.cancelled, id)
+    }
+}
+
+/// Whether `id` is in `cancelled`, removing it.
+#[cfg(not(alloc_frugal))]
+fn take_cancelled_ids(cancelled: &mut Vec<u64>, id: u64) -> bool {
     if let Some(position) = cancelled.iter().position(|pending| *pending == id) {
         cancelled.swap_remove(position);
         return true;
@@ -168,10 +229,30 @@ pub struct EventLoop {
     /// a removal would have to race the `dequeue_blocking` that already holds the mutex. An id
     /// set the dispatcher consults is the same guarantee without touching that lock discipline.
     ///
-    /// The set only ever grows, which is bounded by the number of cancellations a host performs
-    /// (UI code cancels a frame at most once per request); ids are `u64` and never reused, so a
-    /// stale entry can never cancel a later frame.
-    cancelled_anim_frames: Arc<Mutex<Vec<u64>>>,
+    /// The state ([`AnimFrameState`]) also records which ids are still *pending*, so a cancel
+    /// of an already-dispatched, never-issued, or foreign handle is refused rather than
+    /// accumulating a cancellation entry that can never match. Cancellation entries are taken
+    /// (consumed) by the dispatch check, so the set does not grow without bound; ids are `u64`
+    /// and never reused, so a stale entry can never cancel a later frame.
+    #[cfg(not(alloc_frugal))]
+    cancelled_anim_frames: Arc<Mutex<AnimFrameState>>,
+    /// Profile-neutral mirror of the animation-frame state.
+    ///
+    /// `mini` has no loop thread and no cancellation check in its synchronous `pump_once`,
+    /// so only the pending registry is meaningful there — it is what [`Self::cancel_animation_frame`]
+    /// consults to decide whether an id is cancellable.
+    #[cfg(alloc_frugal)]
+    cancelled_anim_frames: Mutex<Vec<u64>>,
+    /// Round-robin start index into `idle_tasks` for the next loop iteration.
+    ///
+    /// The Idle-task phase used to restart at index 0 every round and break on the 5ms
+    /// budget, so a slow first task let later tasks starve. Persisting the next start
+    /// position rotates the phase: every task eventually reaches the front of the round,
+    /// while the budget and the normal (cooldown-respecting) ordering are unchanged.
+    ///
+    /// Shared with the loop thread through an `Arc`, mirroring `cancelled_anim_frames`:
+    /// the thread mutates it each round and the loop reads it on the next `start`.
+    idle_task_cursor: Arc<AtomicUsize>,
 }
 
 impl EventLoop {
@@ -191,7 +272,8 @@ impl EventLoop {
             next_anim_frame_id: AtomicU64::new(1),
             native_pump: None,
             idle_tasks: Vec::new(),
-            cancelled_anim_frames: Arc::new(Mutex::new(Vec::new())),
+            idle_task_cursor: Arc::new(AtomicUsize::new(0)),
+            cancelled_anim_frames: Arc::new(Mutex::new(AnimFrameState::default())),
         }
     }
 
@@ -249,9 +331,10 @@ impl EventLoop {
         // field empty; a restart after `stop()` therefore begins with none, which is the
         // honest state — the caller re-registers what it still wants.
         let mut idle_tasks = core::mem::take(&mut self.idle_tasks);
-        // The loop thread consults this set at dispatch time; it is shared rather than moved so
+        // The loop thread consults this state at dispatch time; it is shared rather than moved so
         // `cancel_animation_frame` (called from the host's thread) mutates the same one.
         let cancelled_anim_frames = Arc::clone(&self.cancelled_anim_frames);
+        let idle_task_cursor = Arc::clone(&self.idle_task_cursor);
         let handle = thread::spawn(move || {
             while *lock(&running) {
                 // Phase 0: Pump native platform events (e.g., Wayland dispatch)
@@ -310,10 +393,14 @@ impl EventLoop {
                     // A cancelled animation frame is discarded here, before any dispatch, so a
                     // host that cancelled never sees the callback. See
                     // `cancel_animation_frame` for why this is checked at dispatch rather than
-                    // removed from the queue.
-                    if animation_frame_id(event)
-                        .is_some_and(|id| take_cancelled(&cancelled_anim_frames, id))
-                    {
+                    // removed from the queue. Every delivered id is also marked dispatched so a
+                    // later cancel of the same handle reports `false`.
+                    let anim_id = animation_frame_id(event);
+                    let skip = match anim_id {
+                        Some(id) => lock(&cancelled_anim_frames).dispatched_and_cancelled(id),
+                        None => false,
+                    };
+                    if skip {
                         continue;
                     }
 
@@ -365,9 +452,12 @@ impl EventLoop {
                         let (target, event) = &idle_events[processed];
                         // Same cancellation rule the Normal phase applies; an animation frame may
                         // be posted at either priority.
-                        if animation_frame_id(event)
-                            .is_some_and(|id| take_cancelled(&cancelled_anim_frames, id))
-                        {
+                        let anim_id = animation_frame_id(event);
+                        let skip = match anim_id {
+                            Some(id) => lock(&cancelled_anim_frames).dispatched_and_cancelled(id),
+                            None => false,
+                        };
+                        if skip {
                             processed += 1;
                             continue;
                         }
@@ -413,11 +503,21 @@ impl EventLoop {
                 if !idle_tasks.is_empty() {
                     #[cfg(not(alloc_frugal))]
                     let task_budget_start = std::time::Instant::now();
-                    for task in &mut idle_tasks {
+                    let task_count = idle_tasks.len();
+                    // Rotate the starting point each round so the tail is not starved by a slow
+                    // head task. The phase still breaks on the 5ms budget; the saved cursor is
+                    // where a later round resumes, and running the whole ring (at most once per
+                    // task) keeps the normal ordering and `threshold_frames` cooldown intact.
+                    let start_at = idle_task_cursor.load(Ordering::SeqCst) % task_count;
+                    let mut offset = 0;
+                    while offset < task_count {
                         #[cfg(not(alloc_frugal))]
                         if task_budget_start.elapsed().as_millis() >= 5 {
                             break;
                         }
+                        let index = (start_at + offset) % task_count;
+                        offset += 1;
+                        let task = &mut idle_tasks[index];
                         // A panicking task must not take the loop down with it: the
                         // rest of the queue is still valid work.
                         let outcome =
@@ -430,6 +530,10 @@ impl EventLoop {
                             }
                         }
                     }
+                    // Resume at the task after the last one attempted, wrapping around. A task
+                    // the budget cut off is `start_at + offset` (offset was incremented past
+                    // it), so the whole ring is covered across rounds even if every task is slow.
+                    idle_task_cursor.store((start_at + offset) % task_count, Ordering::SeqCst);
                 }
 
                 // Phase 2: If no events were dispatched, sleep briefly to avoid
@@ -452,6 +556,11 @@ impl EventLoop {
     ///
     /// Mini builds do not spawn a background thread, so hosts must call this
     /// from their own frame/input loop to make `post_event` and timers live.
+    ///
+    /// This is the synchronous counterpart of the threaded loop's Normal phase, and it
+    /// honours the same animation-frame contract: an event carrying a cancelled frame id
+    /// is discarded before dispatch and its cancellation entry is consumed, exactly as the
+    /// threaded loop does.
     #[cfg(alloc_frugal)]
     pub fn pump_once(&mut self) -> bool {
         if !self.is_running() {
@@ -462,7 +571,18 @@ impl EventLoop {
         let Some((target, event, _priority)) = next else {
             return false;
         };
+        let id = animation_frame_id(&event);
+        let skip = match id {
+            Some(id) => take_cancelled(&self.cancelled_anim_frames, id),
+            None => false,
+        };
+        if skip {
+            // The frame was cancelled: treat it as consumed work, not a dispatch.
+            return true;
+        }
         if let Some(dispatch) = &self.dispatch_fn {
+            let target = target;
+            let event = event;
             dispatch(target, &event);
         }
         true
@@ -473,8 +593,10 @@ impl EventLoop {
     pub fn stop(&mut self) {
         *lock(&self.running) = false;
         self.timer_manager.clear();
-        // Post a wake event so the event loop thread unblocks from
-        // dequeue_blocking() and can observe the running flag.
+        // Post a wake event so the loop thread's next poll observes the running flag without
+        // waiting out its idle sleep. It does not hold the queue lock while sleeping — the loop
+        // polls `dequeue` and releases the lock between iterations — so this is politeness, not
+        // the deadlock-avoidance measure it was once described as.
         let _ =
             self.sender.post(0, Event::Custom { name: "__stop_wake".to_string(), payload: vec![] });
         if let Some(handle) = self.thread_handle.take() {
@@ -497,9 +619,9 @@ impl EventLoop {
 
     /// Posts an event to the event loop.
     ///
-    /// Uses an independent sender that does not lock the queue mutex,
-    /// avoiding deadlock with the event loop thread (which holds the mutex
-    /// while blocked on `dequeue_blocking()`).
+    /// Uses an independent sender so posting never contends on the queue mutex. The loop
+    /// *polls* `dequeue` each iteration and releases that lock between polls, so a producer is
+    /// not blocked behind a sleeping loop thread.
     pub fn post_event(
         &self,
         target: ObjectId,
@@ -524,6 +646,12 @@ impl EventLoop {
             payload: id.to_le_bytes().to_vec(),
         };
         self.post_event(target, event, EventPriority::Normal)?;
+        // Record the request as pending so a subsequent cancel can tell a live request from
+        // one that was already dispatched (or never issued through this loop).
+        #[cfg(not(alloc_frugal))]
+        lock(&self.cancelled_anim_frames).request(id);
+        #[cfg(alloc_frugal)]
+        lock(&self.cancelled_anim_frames).push(id);
         Ok(AnimationFrameRequest { id })
     }
 
@@ -532,32 +660,55 @@ impl EventLoop {
     /// # What "cancelled" means here
     ///
     /// The frame event may already be queued when this is called, so cancellation is enforced by
-    /// the loop: when it dequeues an animation-frame event whose id is in this set, it **discards
-    /// it without invoking the dispatch callback**. A host that cancels therefore never sees the
-    /// callback, which is the guarantee `requestAnimationFrame`'s counterpart gives.
+    /// the loop: when it dequeues an animation-frame event whose id is pending-and-cancelled, it
+    /// **discards it without invoking the dispatch callback**. A host that cancels therefore never
+    /// sees the callback, which is the guarantee `requestAnimationFrame`'s counterpart gives.
     ///
     /// # The return value
     ///
-    /// `true` when this call is the one that cancelled it. A second cancel of the same request
-    /// returns `false`: the frame is already cancelled, and reporting `true` again would say a
-    /// state change happened when none did. A request that has **already been dispatched** also
-    /// reports `false`, because there is nothing left to cancel.
+    /// `true` when this call is the one that cancelled a still-pending request. A second cancel
+    /// of the same request returns `false`: the frame is already cancelled, and reporting `true`
+    /// again would say a state change happened when none did. A request that has **already been
+    /// dispatched** also reports `false`, because there is nothing left to cancel — as does a
+    /// handle that was never issued through this loop. Tracking the pending set is what lets the
+    /// return value mean this rather than merely "an id was recorded".
     pub fn cancel_animation_frame(&mut self, request: AnimationFrameRequest) -> bool {
-        let mut cancelled = lock(&self.cancelled_anim_frames);
-        if cancelled.contains(&request.id) {
-            return false;
+        #[cfg(not(alloc_frugal))]
+        {
+            // The request is cancellable only while it is still pending in this loop. An
+            // already-dispatched frame, a repeated cancel, and a handle from another loop (or
+            // one never issued here) all report `false` because none of them changes state.
+            lock(&self.cancelled_anim_frames).cancel(request.id)
         }
-        cancelled.push(request.id);
-        true
+        #[cfg(alloc_frugal)]
+        {
+            let mut pending = lock(&self.cancelled_anim_frames);
+            if let Some(position) = pending.iter().position(|id| *id == request.id) {
+                // The synchronous pump removes an id through `take_cancelled` once it has
+                // honoured the cancellation, so a second cancel of the same id finds nothing.
+                pending.swap_remove(position);
+                true
+            } else {
+                false
+            }
+        }
     }
 
     /// Whether `id` was cancelled, consuming the entry.
     ///
     /// Kept for callers that hold an [`EventLoop`] and want to ask without going through the
-    /// dispatch path (a test, or a host with its own pump). The loop thread uses the free
-    /// [`take_cancelled`] because it captures the `Arc`, not `self`.
+    /// dispatch path (a test, or a host with its own pump). The loop thread uses the shared
+    /// [`AnimFrameState`] because it captures the `Arc`, not `self`.
     pub fn take_cancelled_animation_frame(&self, id: u64) -> bool {
-        take_cancelled(&self.cancelled_anim_frames, id)
+        #[cfg(not(alloc_frugal))]
+        {
+            lock(&self.cancelled_anim_frames).dispatched_and_cancelled(id)
+        }
+        #[cfg(alloc_frugal)]
+        {
+            let mut cancelled = lock(&self.cancelled_anim_frames);
+            take_cancelled_ids(&mut cancelled, id)
+        }
     }
 
     /// Sets the dispatch callback invoked for each dequeued event.
@@ -941,6 +1092,188 @@ mod tests {
         #[cfg(not(alloc_frugal))]
         std::thread::sleep(Duration::from_millis(30));
         el.stop();
+    }
+
+    /// A cancel must be refused for a request that is not pending: already dispatched,
+    /// never issued here, or belonging to another loop.
+    ///
+    /// The old `cancel_animation_frame` consulted only the cancelled set, so it returned
+    /// `true` for any first-seen id — including a forged handle — and pushed a duplicate
+    /// entry that no dispatch could ever consume.
+    #[cfg(all(not(alloc_frugal), not(target_arch = "wasm32")))]
+    #[test]
+    fn cancel_is_refused_for_non_pending_handles() {
+        let mut el = EventLoop::new();
+
+        // Never issued through this loop.
+        assert!(
+            !el.cancel_animation_frame(AnimationFrameRequest { id: 999 }),
+            "a forged id is not cancellable"
+        );
+
+        // Issued by another loop.
+        let other = EventLoop::new();
+        let foreign = other.request_animation_frame(1u64).unwrap();
+        assert!(!el.cancel_animation_frame(foreign), "a foreign loop's handle is not cancellable");
+
+        assert!(el.cancel_animation_frame(el.request_animation_frame(1).unwrap()));
+        assert!(el.cancel_animation_frame(el.request_animation_frame(1).unwrap()));
+    }
+
+    /// Once a frame is dispatched, its handle can no longer be cancelled.
+    #[cfg(all(not(alloc_frugal), not(target_arch = "wasm32")))]
+    #[test]
+    fn cancel_after_dispatch_reports_false() {
+        let mut el = EventLoop::new();
+        let dispatched = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&dispatched);
+        el.set_dispatch_fn(Arc::new(move |_target, event| {
+            if animation_frame_id(event).is_some() {
+                flag.store(true, Ordering::SeqCst);
+            }
+        }));
+
+        let handle = el.request_animation_frame(1u64).unwrap();
+        el.start();
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        while !dispatched.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        el.stop();
+        assert!(dispatched.load(Ordering::SeqCst), "the frame must have been dispatched first");
+
+        assert!(
+            !el.cancel_animation_frame(handle),
+            "a dispatched frame has nothing left to cancel, so the report must be false"
+        );
+    }
+
+    /// After a cancellation is consumed by dispatch, cancelling the same id again must
+    /// report false rather than recording a stale entry.
+    #[cfg(all(not(alloc_frugal), not(target_arch = "wasm32")))]
+    #[test]
+    fn a_consumed_cancellation_makes_later_cancels_false() {
+        let mut el = EventLoop::new();
+        let handle = el.request_animation_frame(1u64).unwrap();
+
+        assert!(el.cancel_animation_frame(handle), "the first cancel reports the change");
+        // Consume the cancellation the way the dispatch phase does.
+        assert!(el.take_cancelled_animation_frame(handle.id));
+        assert!(
+            !el.cancel_animation_frame(handle),
+            "the cancellation was consumed, so a later cancel changes nothing"
+        );
+    }
+
+    /// Cancelling a still-pending frame prevents its callback from running.
+    #[cfg(all(not(alloc_frugal), not(target_arch = "wasm32")))]
+    #[test]
+    fn a_pending_cancel_prevents_the_callback() {
+        let mut el = EventLoop::new();
+        let fired = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&fired);
+        el.set_dispatch_fn(Arc::new(move |_target, event| {
+            if animation_frame_id(event).is_some() {
+                flag.store(true, Ordering::SeqCst);
+            }
+        }));
+
+        let handle = el.request_animation_frame(1u64).unwrap();
+        assert!(el.cancel_animation_frame(handle));
+
+        el.start();
+        std::thread::sleep(Duration::from_millis(100));
+        el.stop();
+
+        assert!(!fired.load(Ordering::SeqCst), "a cancelled pending frame must never dispatch");
+    }
+
+    /// A slow front idle task must not starve a later one forever.
+    ///
+    /// The Idle phase restarted at index 0 and broke on the 5ms budget every round, so a
+    /// first task that always spent the budget left the tail unreachable. The saved
+    /// round-robin cursor rotates which task is tried first.
+    #[cfg(all(not(alloc_frugal), not(target_arch = "wasm32")))]
+    #[test]
+    fn a_slow_front_idle_task_does_not_starve_the_tail() {
+        let slow_runs = Arc::new(AtomicUsize::new(0));
+        let tail_runs = Arc::new(AtomicUsize::new(0));
+
+        let mut el = EventLoop::new();
+        let slow = Arc::clone(&slow_runs);
+        // Threshold 1: eligible on every iteration, and it always burns the 5ms budget.
+        assert!(el.add_idle_task(IdleTask::new(1, 1, move || {
+            slow.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(8));
+        })));
+        let tail = Arc::clone(&tail_runs);
+        assert!(el.add_idle_task(IdleTask::new(2, 1, move || {
+            tail.fetch_add(1, Ordering::SeqCst);
+        })));
+
+        el.start();
+        let deadline = std::time::Instant::now() + Duration::from_millis(1_500);
+        while tail_runs.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        el.stop();
+
+        assert!(
+            tail_runs.load(Ordering::SeqCst) > 0,
+            "the task behind a budget-burning head task must eventually run"
+        );
+        assert!(slow_runs.load(Ordering::SeqCst) > 0, "the slow task still runs too");
+    }
+
+    /// The animation-frame state machine: a cancel is accepted only while pending, a
+    /// dispatch consumes the cancellation, and an uncancelled dispatch is never skipped.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn the_anim_frame_state_tracks_pending_and_cancelled() {
+        let mut state = AnimFrameState::default();
+        state.request(1);
+        assert!(state.cancel(1), "a pending id can be cancelled");
+        assert!(!state.cancel(1), "a second cancel of the same id changes nothing");
+        // Dispatch sees the pending-and-cancelled id and must skip it, consuming the entry.
+        assert!(state.dispatched_and_cancelled(1), "a cancelled pending frame is skipped");
+        assert!(!state.dispatched_and_cancelled(1), "the cancellation was consumed");
+
+        state.request(2);
+        assert!(!state.dispatched_and_cancelled(2), "an uncancelled dispatch is not skipped");
+        assert!(!state.cancel(2), "a dispatched id is no longer pending");
+    }
+
+    /// The `mini` synchronous pump honours the same cancellation contract as the
+    /// threaded loop: a cancelled frame is discarded before dispatch.
+    ///
+    /// Only compiled (and only runnable) under `alloc_frugal`, because `pump_once` itself is;
+    /// there is no desktop equivalent to exercise. The desktop dispatch-phase tests
+    /// (`a_pending_cancel_prevents_the_callback`) cover the same contract for the threaded loop.
+    #[cfg(alloc_frugal)]
+    #[test]
+    fn pump_once_honours_cancellation() {
+        use core::sync::atomic::AtomicBool;
+
+        let mut el = EventLoop::new();
+        let fired = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&fired);
+        el.set_dispatch_fn(Arc::new(move |_target, event| {
+            if animation_frame_id(event).is_some() {
+                flag.store(true, Ordering::SeqCst);
+            }
+        }));
+        el.start();
+
+        let handle = el.request_animation_frame(1).unwrap();
+        assert!(el.cancel_animation_frame(handle));
+        // The queue still holds the frame event; the pump must skip it.
+        assert!(el.pump_once(), "a cancelled frame is consumed work");
+        assert!(!fired.load(Ordering::SeqCst), "a cancelled frame must not dispatch in mini");
+
+        // A later, uncancelled frame still dispatches.
+        el.request_animation_frame(1).unwrap();
+        assert!(el.pump_once());
+        assert!(fired.load(Ordering::SeqCst), "an uncancelled frame still dispatches");
     }
 
     /// Gesture recogniser state is scoped to the interaction target: a tap on one target must

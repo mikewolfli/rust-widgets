@@ -94,7 +94,7 @@ fn decode_wav(data: &[u8]) -> Result<AudioBuffer, String> {
     // Parse fmt chunk
     let mut pos = 12;
     let mut sample_rate = 0u32;
-    let mut channels = 0u8;
+    let mut channels = 0u16;
     let mut bits_per_sample = 0u16;
     let mut format_tag = 0u16;
     let mut data_chunk: Option<&[u8]> = None;
@@ -117,7 +117,11 @@ fn decode_wav(data: &[u8]) -> Result<AudioBuffer, String> {
 
         if chunk_id == b"fmt " && chunk_data.len() >= 16 {
             format_tag = u16::from_le_bytes([chunk_data[0], chunk_data[1]]);
-            channels = u16::from_le_bytes([chunk_data[2], chunk_data[3]]) as u8;
+            // Kept as `u16` here: narrowing to `u8` would silently accept
+            // channel counts like 257 as 1 and reject 256 as 0, i.e. treat two
+            // equally-legal `u16` field values in completely different ways. The
+            // count is validated explicitly after the chunk loop instead.
+            channels = u16::from_le_bytes([chunk_data[2], chunk_data[3]]);
             sample_rate =
                 u32::from_le_bytes([chunk_data[4], chunk_data[5], chunk_data[6], chunk_data[7]]);
             bits_per_sample = u16::from_le_bytes([chunk_data[14], chunk_data[15]]);
@@ -147,18 +151,38 @@ fn decode_wav(data: &[u8]) -> Result<AudioBuffer, String> {
     if sample_rate == 0 || channels == 0 {
         return Err("WAV fmt chunk is missing or invalid".into());
     }
+    // Reject unsupported channel counts explicitly (N-S-51). The buffer stores
+    // channels in a `u8`, so anything above `u8::MAX` cannot be represented; a
+    // 0 channel count is meaningless. Both are reported rather than narrowed,
+    // so `257` and `256` fail the same way instead of one becoming mono and the
+    // other being rejected by a separate `channels == 0` check.
+    let channels_u8 = u8::try_from(channels)
+        .map_err(|_| format!("unsupported WAV channel count: {channels} (must be 1..=255)"))?;
     let raw_samples = data_chunk.ok_or("No data chunk in WAV")?;
     let fmt = sample_format_for_tag(format_tag, bits_per_sample)?;
-    if raw_samples.len() % fmt.bytes_per_sample() != 0 {
+    let bytes_per_sample = fmt.bytes_per_sample();
+    if raw_samples.len() % bytes_per_sample != 0 {
         return Err(format!(
             "WAV data chunk is {} bytes, which is not a whole number of {bits_per_sample}-bit \
              samples ({} bytes each); the data chunk is truncated",
             raw_samples.len(),
-            fmt.bytes_per_sample()
+            bytes_per_sample
+        ));
+    }
+    // A WAV data chunk holds whole *frames*, so its length must be a multiple of
+    // one frame (channels × bytes per sample). Checking only per sample would
+    // accept a stereo file with a single sample, which is half a frame and would
+    // make every downstream interleaved read misaligned (N-S-51).
+    let bytes_per_frame = bytes_per_sample * channels as usize;
+    if raw_samples.len() % bytes_per_frame != 0 {
+        return Err(format!(
+            "WAV data chunk is {} bytes, which is not a whole number of {channels}-channel \
+             frames ({bytes_per_frame} bytes each); the data chunk holds an incomplete final frame",
+            raw_samples.len()
         ));
     }
     let samples = fmt.to_f32(raw_samples);
-    let mut buf = AudioBuffer::new(sample_rate.max(1), samples, channels.max(1));
+    let mut buf = AudioBuffer::new(sample_rate.max(1), samples, channels_u8);
     buf.original_format = fmt;
     Ok(buf)
 }
@@ -324,20 +348,30 @@ fn decode_with_symphonia(data: &[u8], format: AudioFormat) -> Result<AudioBuffer
 
     let mut all_samples: Vec<f32> = Vec::new();
 
+    // Recovery policy for mid-stream errors. Symphonia distinguishes *expected*
+    // outcomes (a normal end of stream, a retryable interrupt) from *genuine*
+    // decode failures. The old code collapsed everything else into a bare
+    // `break`/`continue`, which silently turned a corrupt file into a partial
+    // success: the caller got an `Ok(AudioBuffer)` truncated at the fault with no
+    // indication that anything was lost. Both the packet reader and the decoder
+    // now classify each error through [`RecoverableError`] and, on an
+    // unrecoverable one, surface it as an explicit `Err` rather than a silent
+    // short read.
     loop {
         let packet = match format_reader.next_packet() {
             Ok(packet) => packet,
-            Err(symphonia::core::errors::Error::IoError(ref e))
-                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-            {
-                break;
-            }
-            Err(symphonia::core::errors::Error::IoError(ref e))
-                if e.kind() == std::io::ErrorKind::Interrupted =>
-            {
-                continue;
-            }
-            Err(_) => break,
+            Err(error) => match classify_symphonia_error(&error) {
+                // A clean end of stream is not an error; stop normally.
+                RecoverableError::EndOfStream => break,
+                // An interrupt is transient: retry the read.
+                RecoverableError::Skip => continue,
+                RecoverableError::Unrecoverable(reason) => {
+                    return Err(format!(
+                        "audio stream could not be read after {} decoded sample(s): {reason}",
+                        all_samples.len()
+                    ));
+                }
+            },
         };
 
         if packet.track_id() != track_id {
@@ -346,7 +380,21 @@ fn decode_with_symphonia(data: &[u8], format: AudioFormat) -> Result<AudioBuffer
 
         let decoded = match decoder.decode(&packet) {
             Ok(decoded) => decoded,
-            Err(_) => continue,
+            Err(error) => match classify_symphonia_error(&error) {
+                // The decoder reported the end of its input; stop normally.
+                RecoverableError::EndOfStream => break,
+                // A transient decode hiccup: skip this packet and keep going.
+                RecoverableError::Skip => continue,
+                // A packet genuinely failed to decode. Delivering the samples
+                // decoded so far as if they were the whole stream would hide
+                // corruption, so report it explicitly.
+                RecoverableError::Unrecoverable(reason) => {
+                    return Err(format!(
+                        "audio packet at {} decoded sample(s) could not be decoded: {reason}",
+                        all_samples.len()
+                    ));
+                }
+            },
         };
 
         // Convert decoded audio to interleaved F32 samples
@@ -371,6 +419,49 @@ fn decode_with_symphonia(data: &[u8], format: AudioFormat) -> Result<AudioBuffer
     let mut buf = AudioBuffer::new(sample_rate, all_samples, channels);
     buf.original_format = SampleFormat::F32;
     Ok(buf)
+}
+
+/// How a symphonia error should be treated by the decode loop.
+///
+/// Symphonia's `Error` enum mixes three very different situations behind one
+/// type, so the loop must decide per error whether to stop cleanly, retry, or
+/// fail. Modelling that decision as a value keeps the policy in one place and
+/// makes it unit-testable without manufacturing a corrupt media file.
+#[cfg(feature = "symphonia-codecs")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RecoverableError {
+    /// The stream ended normally; the samples decoded so far are complete.
+    EndOfStream,
+    /// A transient condition (`Interrupted`, or the decoder asking for more
+    /// input); retry rather than abort.
+    Skip,
+    /// A genuine failure. Carries a human-readable reason; the caller must
+    /// report it instead of returning a silently truncated buffer.
+    Unrecoverable(String),
+}
+
+/// Classifies a symphonia error against the decode loop's recovery policy.
+///
+/// * `IoError(UnexpectedEof)` is a clean end of stream — the samples collected
+///   so far are the whole usable stream. (Symphonia reports end of stream as an
+///   `IoError` with `UnexpectedEof`, not a dedicated variant.)
+/// * `IoError(Interrupted)` and `ResetRequired` are transient; the caller should
+///   retry the same step.
+/// * Everything else is unrecoverable and is reported with a reason string.
+#[cfg(feature = "symphonia-codecs")]
+fn classify_symphonia_error(error: &symphonia::core::errors::Error) -> RecoverableError {
+    use symphonia::core::errors::Error;
+    match error {
+        Error::IoError(e) if e.kind() == std::io::ErrorKind::Interrupted => RecoverableError::Skip,
+        Error::IoError(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+            RecoverableError::EndOfStream
+        }
+        // The decoder needs its state reset before it can continue; that is a
+        // caller mistake here (we never request a reset) but it is recoverable in
+        // principle, so it is treated as a retry rather than a hard failure.
+        Error::ResetRequired => RecoverableError::Skip,
+        other => RecoverableError::Unrecoverable(format!("{other:?}")),
+    }
 }
 
 /// Decode FLAC audio data.
@@ -725,6 +816,39 @@ mod tests {
         assert!((buf.samples[2] + 1.0).abs() < 0.01, "got {}", buf.samples[2]);
     }
 
+    /// N-S-51: an out-of-range channel count must be rejected explicitly, and two
+    /// legal `u16` field values that both exceed a `u8` must fail identically
+    /// (the old `as u8` narrowed 257 to 1 and turned 256 into 0).
+    #[test]
+    fn test_decode_wav_rejects_unsupported_channel_counts_without_narrowing() {
+        // 257 would have narrowed to 1 (mono) under the old code.
+        let wav = build_wav(0x0001, 257, 44100, 16, &[0u8; 4]);
+        let err = decode_wav(&wav).unwrap_err();
+        assert!(err.contains("channel count"), "got: {err}");
+
+        // 256 would have narrowed to 0 and been rejected by a *different* check;
+        // the unified validation must reject it the same way.
+        let wav = build_wav(0x0001, 256, 44100, 16, &[0u8; 4]);
+        let err = decode_wav(&wav).unwrap_err();
+        assert!(err.contains("channel count"), "got: {err}");
+    }
+
+    /// N-S-51: a stereo data chunk must contain whole frames. A single 16-bit
+    /// sample is half a frame and previously slipped past the per-sample check.
+    #[test]
+    fn test_decode_wav_rejects_incomplete_final_frame() {
+        // Stereo, 16-bit, one sample (2 bytes) = half of a 4-byte frame.
+        let wav = build_wav(0x0001, 2, 44100, 16, &[0u8, 0]);
+        let err = decode_wav(&wav).unwrap_err();
+        assert!(err.contains("incomplete final frame"), "got: {err}");
+
+        // A full frame (two samples, 4 bytes) decodes fine.
+        let wav = build_wav(0x0001, 2, 44100, 16, &[0u8; 4]);
+        let buf = decode_wav(&wav).unwrap();
+        assert_eq!(buf.channels(), 2);
+        assert_eq!(buf.samples.len(), 2);
+    }
+
     #[test]
     fn test_decode_mp3_empty_data_returns_error() {
         assert!(decode_mp3(b"").is_err());
@@ -805,7 +929,13 @@ mod tests {
         let result = decode_with_symphonia(b"not valid audio data", AudioFormat::Flac);
         assert!(result.is_err());
         let err_msg = result.unwrap_err();
-        assert!(err_msg.contains("Symphonia probe error") || err_msg.contains("No audio"));
+        // A stream symphonia cannot even probe is reported through the probe
+        // mapper; a stream that probes but has no usable track through the
+        // track mapper. Either is an acceptable explicit failure.
+        assert!(
+            err_msg.contains("could not probe") || err_msg.contains("no decodable audio track"),
+            "unexpected error: {err_msg}"
+        );
     }
 
     #[test]
@@ -870,5 +1000,41 @@ mod tests {
         // With symphonia enabled, invalid FLAC data must surface a decode
         // error instead of being masked by a fabricated fallback.
         assert!(decode_flac(b"fLaC").is_err());
+    }
+
+    /// The recovery policy must treat a clean end of stream and a transient
+    /// error as non-fatal, and must mark every other error unrecoverable — the
+    /// distinction the loop relies on to avoid returning a truncated buffer as a
+    /// successful decode (N-S-47).
+    #[test]
+    #[cfg(feature = "symphonia-codecs")]
+    fn test_classify_symphonia_error_policy() {
+        use std::io::{Error as IoError, ErrorKind};
+        use symphonia::core::errors::Error;
+
+        assert_eq!(
+            classify_symphonia_error(&Error::IoError(IoError::new(ErrorKind::UnexpectedEof, ""))),
+            RecoverableError::EndOfStream,
+            "UnexpectedEof means the stream ended cleanly, not a failure"
+        );
+        assert_eq!(
+            classify_symphonia_error(&Error::IoError(IoError::new(ErrorKind::Interrupted, ""))),
+            RecoverableError::Skip,
+            "Interrupted is transient and must be retried"
+        );
+        assert_eq!(
+            classify_symphonia_error(&Error::ResetRequired),
+            RecoverableError::Skip,
+            "ResetRequired is recoverable"
+        );
+        // A genuine decode failure must be reported, not swallowed.
+        assert!(matches!(
+            classify_symphonia_error(&Error::DecodeError("corrupt frame")),
+            RecoverableError::Unrecoverable(_)
+        ));
+        assert!(matches!(
+            classify_symphonia_error(&Error::IoError(IoError::new(ErrorKind::Other, ""))),
+            RecoverableError::Unrecoverable(_)
+        ));
     }
 }

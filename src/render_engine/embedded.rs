@@ -56,6 +56,62 @@ impl EmbeddedTask {
     }
 }
 
+/// Runs one frame's task, isolating a panic so the task itself is still consumed
+/// and the rest of the frame is still delivered.
+///
+/// # Why isolation is needed
+///
+/// The run loop drains a whole frame's tasks before running any of them. A task
+/// that panicked unwound out of the `for` loop, so every task after it in the same
+/// frame was dropped un-run, and (before the running guard) the loop itself never
+/// restarted. Catching the unwind per task makes the outcome explicit: the
+/// panicking task is reported and the loop moves on to the next one, so "deliver
+/// every drained task" holds unconditionally rather than only when nothing panics.
+///
+/// `AssertUnwindSafe` is correct here because a panicking task cannot leave any
+/// shared invariant the loop reads half-updated: the task owns nothing the loop
+/// inspects, and the loop's own state (`running`, `pending_tasks`) is only mutated
+/// under the state lock, which a task does not hold while it runs.
+#[cfg(not(alloc_frugal))]
+fn run_task(task: EmbeddedTask, frame_index: u64) {
+    let id = task.id;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        task.run(frame_index);
+    }));
+    if let Err(_payload) = result {
+        log::error!("[embedded] task {id} panicked while running on frame {frame_index}; the remaining tasks of this frame still run");
+    }
+}
+
+/// Mini-mode task runner: no `std` to catch an unwind with, so the task runs
+/// directly. The running guard still restores `running` if it unwinds (under a
+/// `panic = abort` toolchain nothing after the panic runs, which is the honest
+/// behaviour there).
+#[cfg(alloc_frugal)]
+fn run_task(task: EmbeddedTask, frame_index: u64) {
+    task.run(frame_index);
+}
+
+/// Restores `running = false` when the run loop leaves, on the normal path and on
+/// the unwind path alike.
+///
+/// Without it, a task panic unwound out of [`EmbeddedEngineShared::run_loop`] with
+/// `running` still `true`, so [`embedded_engine_stats`] reported a live loop and the
+/// next `run_loop` saw `running` set and returned immediately — the engine could
+/// never be restarted.
+struct RunningGuard<'a> {
+    shared: &'a EmbeddedEngineShared,
+}
+
+impl Drop for RunningGuard<'_> {
+    fn drop(&mut self) {
+        // Take the state lock even if it is poisoned by an earlier panic: `lock`
+        // already recovers the inner value, which is the only way to guarantee the
+        // flag is cleared after a panic that poisoned it.
+        self.shared.lock_state().running = false;
+    }
+}
+
 #[derive(Default)]
 struct EmbeddedRuntimeState {
     initialized: bool,
@@ -133,6 +189,14 @@ impl EmbeddedEngineShared {
             }
             state.running = true;
         }
+        // Clearing `running` is guard-owned, not just done on the normal exit path. A
+        // task panic used to unwind straight past the loop, leaving `running == true`
+        // forever: the next `run_loop` saw a live run and returned immediately, so the
+        // engine never ticked again. The guard restores `running = false` on both the
+        // normal break and the unwind path. `run_task` isolates each task's panic, so
+        // in practice a task does not unwind here — the guard is the belt to that
+        // suspenders, and pins the invariant for any future body that can panic.
+        let _running_guard = RunningGuard { shared: self };
         loop {
             let frame_start = Instant::now();
             let (tasks, target_fps, still_running) = {
@@ -146,8 +210,11 @@ impl EmbeddedEngineShared {
                 break;
             }
             let frame_index = self.frame_count.fetch_add(1, Ordering::SeqCst) + 1;
+            // Every drained task is delivered, even if an earlier task in the same
+            // frame panics: a panic is reported and the loop continues rather than
+            // dropping the rest of the frame's tasks silently.
             for task in tasks {
-                task.run(frame_index);
+                run_task(task, frame_index);
             }
             let frame_interval = frame_interval_for_fps(clamp_embedded_target_fps(target_fps));
             let elapsed = frame_start.elapsed();
@@ -184,6 +251,10 @@ impl EmbeddedEngineShared {
             }
             state.running = true;
         }
+        // See the desktop arm's note: the guard clears `running` on the unwind path as
+        // well as the normal one, so a panicking task cannot leave the engine stuck
+        // "running" and no-op every subsequent call.
+        let _running_guard = RunningGuard { shared: self };
         loop {
             let frame_start = Instant::now();
             let (tasks, target_fps, still_running) = {
@@ -198,7 +269,7 @@ impl EmbeddedEngineShared {
             }
             let frame_index = self.frame_count.fetch_add(1, Ordering::SeqCst) + 1;
             for task in tasks {
-                task.run(frame_index);
+                run_task(task, frame_index);
             }
             let frame_interval = frame_interval_for_fps(clamp_embedded_target_fps(target_fps));
             while frame_start.elapsed() < frame_interval {
@@ -221,12 +292,20 @@ impl EmbeddedEngineShared {
     }
 
     pub(crate) fn quit(&self) {
-        let mut state = self.lock_state();
-        state.running = false;
-        state.windows.clear();
-        state.buttons.clear();
-        state.pending_tasks.clear();
-        drop(state);
+        // Take the queued tasks under the lock, then drop them **after** releasing it.
+        // Each task owns the user closure's captures, so clearing in place while the
+        // state lock is held destroyed those captures with the lock held; a capture
+        // whose `Drop` re-enters the engine (`embedded_engine_stats`,
+        // `submit_embedded_task`, or `quit`) then self-deadlocked on the
+        // non-reentrant state mutex. `cancelled` is destroyed with no lock held.
+        let cancelled = {
+            let mut state = self.lock_state();
+            state.running = false;
+            state.windows.clear();
+            state.buttons.clear();
+            core::mem::take(&mut state.pending_tasks)
+        };
+        drop(cancelled);
         #[cfg(not(alloc_frugal))]
         self.wake_signal.notify_all();
     }
@@ -488,5 +567,113 @@ mod tests {
         );
         // Clean up so the queued task does not leak into another test's view.
         embedded_engine_shared().quit();
+    }
+
+    /// N-S-30 extension: `quit` must not drop queued tasks' captures under the state lock.
+    ///
+    /// A queued task owns its closure and therefore everything the closure captured.
+    /// `quit` used to `pending_tasks.clear()` while holding the state mutex, so a captured
+    /// value whose `Drop` re-enters the engine (`embedded_engine_stats`, which takes the
+    /// same mutex) self-deadlocked. The tasks are now taken out under the lock and dropped
+    /// after it is released. Run on a worker with a bounded join so a regression fails as a
+    /// timeout rather than hanging the suite.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn quit_does_not_drop_task_captures_under_the_lock() {
+        use core::time::Duration;
+        use std::sync::mpsc;
+
+        /// A capture whose `Drop` re-enters the engine's state lock.
+        struct ReentrantProbe;
+        impl Drop for ReentrantProbe {
+            fn drop(&mut self) {
+                // Takes the state mutex that `quit` must not be holding here.
+                let _ = embedded_engine_stats();
+            }
+        }
+
+        let _guard = test_guard();
+        // Queue a task that *owns* a re-entrant capture (dropped when the task is
+        // dropped by `quit`), leaving it un-run.
+        let probe = ReentrantProbe;
+        submit_embedded_task("reentrant-quit", move |_frame| {
+            let _ = &probe;
+        });
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            embedded_engine_shared().quit();
+            let _ = done_tx.send(());
+        });
+
+        assert!(
+            done_rx.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "quit must complete without dropping queued task captures under the state lock"
+        );
+        worker.join().expect("the quit worker must not panic");
+        assert_eq!(embedded_engine_stats().pending_task_count, 0, "quit cleared the queue");
+    }
+
+    /// N-S-44: a panicking task must not stop the rest of the frame, and the loop must
+    /// stay restartable afterwards.
+    ///
+    /// A task panic used to unwind out of the `for` loop, dropping every task after it in
+    /// the same frame and (before the running guard) leaving `running == true` so the next
+    /// run no-opped forever. `run_task` isolates the panic and the guard restores `running`.
+    #[cfg(not(alloc_frugal))]
+    #[test]
+    fn a_panicking_task_does_not_stop_the_frame_or_the_engine() {
+        use crate::render_engine::RenderEngine;
+        use core::time::Duration;
+        use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+        use std::sync::mpsc;
+
+        let _guard = test_guard();
+        set_embedded_target_fps(120);
+
+        let after_ran = Arc::new(AtomicBool::new(false));
+        let after_ran_slot = Arc::clone(&after_ran);
+        // The panicking task goes first; the flag task second. Both are drained into the
+        // same frame, so if the panic aborted the frame the second would never run.
+        submit_embedded_task("panicker", |_frame| {
+            panic!("deliberate panic from an embedded task");
+        });
+        let (tx, rx) = mpsc::channel();
+        submit_embedded_task("after", move |_frame| {
+            after_ran_slot.store(true, AtomicOrdering::SeqCst);
+            let _ = tx.send(());
+        });
+
+        let engine = crate::render_engine::EmbeddedRenderEngine::new();
+        let runner = engine.clone();
+        let handle = std::thread::spawn(move || runner.run());
+
+        assert!(
+            rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+            "a task after a panicking task must still run in the same frame"
+        );
+        assert!(after_ran.load(AtomicOrdering::SeqCst));
+
+        // Stop and restart: the running flag must have been cleared, so a second loop can
+        // run (this is what the running guard makes possible).
+        engine.quit();
+        handle.join().expect("the embedded loop must join after a task panic");
+        set_embedded_target_fps(DEFAULT_EMBEDDED_TARGET_FPS);
+
+        // A fresh loop must not no-op as "already running".
+        set_embedded_target_fps(120);
+        let (tx2, rx2) = mpsc::channel();
+        submit_embedded_task("restart", move |_frame| {
+            let _ = tx2.send(());
+        });
+        let restart_engine = engine.clone();
+        let restart = std::thread::spawn(move || restart_engine.run());
+        assert!(
+            rx2.recv_timeout(Duration::from_secs(2)).is_ok(),
+            "the engine must be restartable after a task panic"
+        );
+        engine.quit();
+        restart.join().expect("the restarted loop must join");
+        set_embedded_target_fps(DEFAULT_EMBEDDED_TARGET_FPS);
     }
 }

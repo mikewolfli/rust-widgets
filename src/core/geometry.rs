@@ -406,6 +406,15 @@ impl Rect {
     /// `Rect::new(10, 0, 10, 10)` are reported as disjoint. Zero-sized
     /// rectangles never intersect anything.
     pub fn intersects(&self, other: &Rect) -> bool {
+        // A zero-width or zero-height rectangle encloses no area, so it cannot overlap
+        // anything — this matches the documented contract ("zero-sized rectangles never
+        // intersect anything") and keeps `intersects` consistent with [`Self::intersection`],
+        // which returns `None` for such an input. Without this guard a degenerate rect
+        // whose far edge lies past the other rect's origin was reported as intersecting,
+        // even though there was no shared pixel.
+        if !self.is_valid() || !other.is_valid() {
+            return false;
+        }
         let (sx, sy) = self.max_coords();
         let (ox, oy) = other.max_coords();
         self.x < ox && sx > other.x && self.y < oy && sy > other.y
@@ -846,6 +855,36 @@ mod tests {
         assert!(!rect2.contains_rect(&rect1));
         assert!(rect1.intersects(&rect2));
         assert!(!rect1.intersects(&rect3));
+    }
+
+    /// A zero-width or zero-height rectangle encloses no area, so it can never intersect
+    /// anything — as the method's own documentation promises, and as [`Rect::intersection`]
+    /// already reports by returning `None`.
+    #[test]
+    fn degenerate_rectangles_never_intersect() {
+        let wide = Rect::new(-1, -1, 4, 20);
+        let zero_width = Rect::new(0, 0, 0, 10);
+        let zero_height = Rect::new(0, 0, 10, 0);
+
+        assert!(!zero_width.intersects(&wide), "zero width must not intersect");
+        assert!(!wide.intersects(&zero_width), "intersection is symmetric");
+        assert!(!zero_height.intersects(&wide), "zero height must not intersect");
+        assert!(!wide.intersects(&zero_height), "intersection is symmetric");
+        assert!(!zero_width.intersects(&zero_height), "two degenerate rects: no area shared");
+        assert_eq!(zero_width.intersection(&wide), None, "agrees with `intersection`");
+    }
+
+    /// Exactly one overlapping pixel counts, while merely touching edges do not — the
+    /// boundary the zero-size guard must not overshoot.
+    #[test]
+    fn one_pixel_overlap_intersects_but_edge_touch_does_not() {
+        // b starts inside a and reaches one pixel into it.
+        assert!(Rect::new(0, 0, 2, 2).intersects(&Rect::new(1, 0, 2, 2)));
+        // Vertical analog: one shared row.
+        assert!(Rect::new(0, 0, 2, 2).intersects(&Rect::new(0, 1, 2, 2)));
+        // Edge-touching rectangles share no pixel.
+        assert!(!Rect::new(0, 0, 2, 2).intersects(&Rect::new(2, 0, 2, 2)));
+        assert!(!Rect::new(0, 0, 2, 2).intersects(&Rect::new(0, 2, 2, 2)));
     }
     #[test]
     fn rect_center_and_edges() {

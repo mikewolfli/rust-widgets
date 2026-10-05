@@ -187,6 +187,25 @@ fn choose_encoder_sample_format(codec_audio: &ffmpeg_next::codec::Audio) -> Samp
 // Build an F32 interleaved frame from the audio buffer slice
 // ---------------------------------------------------------------------------
 
+/// Picks the channel layout an encoder should be told about.
+///
+/// The layout must describe exactly the buffer's channel count: the encode loop
+/// strides the interleaved samples by `buffer.channels()`, so declaring STEREO
+/// for a 3+ channel buffer would make the encoder interpret a truncated frame as
+/// a complete one. Only mono and stereo are supported; any other count is an
+/// explicit error instead of a silent truncation (N-S-50).
+fn channel_layout_for(channels: u8) -> Result<ChannelLayout, String> {
+    match channels {
+        1 => Ok(ChannelLayout::MONO),
+        2 => Ok(ChannelLayout::STEREO),
+        other => Err(format!(
+            "cannot encode a {other}-channel audio buffer: only mono and stereo are supported, \
+             so the channel layout cannot be described and the extra channels would be silently \
+             dropped"
+        )),
+    }
+}
+
 /// Create an F32-packed `AudioFrame` filled with samples from `buffer`.
 fn build_f32_frame(
     buffer: &AudioBuffer,
@@ -281,10 +300,14 @@ pub fn ffmpeg_encode(buffer: &AudioBuffer, format: AudioFormat) -> Result<Vec<u8
         .map_err(|e| format!("audio encoder '{encoder_name}' could not be created: {e}"))?;
 
     // ── Set encoder parameters ──────────────────────────────────────
-    let channel_layout = match buffer.channels() {
-        1 => ChannelLayout::MONO,
-        _ => ChannelLayout::STEREO,
-    };
+    // The channel layout must describe exactly the channel count the buffer has:
+    // `build_f32_frame`/`sample_offset` stride through the buffer by
+    // `buffer.channels()`, so declaring STEREO for a 3+ channel buffer would hand
+    // the encoder frames whose declared layout does not match their contents and
+    // silently truncate the extra channels. Only mono and stereo are supported;
+    // anything else is rejected explicitly rather than misdescribed (N-S-50).
+    let channel_layout = channel_layout_for(buffer.channels())
+        .map_err(|e| format!("audio encoder '{encoder_name}' {e}"))?;
 
     // Determine supported sample rate (Opus only supports specific rates).
     let encoder_sample_rate = codec_audio
@@ -628,6 +651,22 @@ mod tests {
             "Ogg output does not start with the OggS magic: {:02x?}",
             &data[..4]
         );
+    }
+
+    /// N-S-50: the channel layout must match the buffer's channel count, and any
+    /// count other than 1 or 2 must be rejected rather than mapped to STEREO
+    /// (which would silently truncate the extra channels).
+    #[test]
+    fn test_channel_layout_only_supports_mono_and_stereo() {
+        assert_eq!(channel_layout_for(1).unwrap(), ChannelLayout::MONO);
+        assert_eq!(channel_layout_for(2).unwrap(), ChannelLayout::STEREO);
+        for channels in [0u8, 3, 4, 6, 8, 255] {
+            let err = channel_layout_for(channels).expect_err("only mono/stereo are representable");
+            assert!(
+                err.contains("mono and stereo"),
+                "error for {channels} channels should explain the supported set, got: {err}"
+            );
+        }
     }
 
     // ── Temp-file lifecycle ──────────────────────────────────────────

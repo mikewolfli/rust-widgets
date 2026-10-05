@@ -22,8 +22,11 @@
 //!
 //! - **Slot storage** uses a `RwLock<HashMap<ConnectionHandle, SlotEntry<T>>>` for
 //!   concurrent read access during emit and exclusive write for connect/disconnect.
-//! - **Payloads** are wrapped in `Arc<T>` to avoid cloning on multi-slot emit.
-//!   Only the `Arc` pointer is cloned, not the underlying data.
+//! - **Payloads** are wrapped in `Arc<T>` so an emit delivers the same value to every
+//!   slot by cloning only the `Arc` pointer, not the underlying data. The exception is a
+//!   slot whose callback is busy on another thread: rather than block or drop the value,
+//!   the emit clones the `T` onto that slot's pending queue for the running thread to
+//!   deliver. (A `T: Clone` bound is therefore inherent to the deferred-delivery design.)
 //! - **Priority sorting** happens on each emit — slots are sorted by priority rank
 //!   before invocation. For signals with many slots, this adds a small O(n log n) cost.
 //! - **`ConnectionScope`** uses a `Mutex<Vec<Box<dyn FnOnce()>>>` for thread-safe

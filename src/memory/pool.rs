@@ -64,8 +64,11 @@ impl<T: Poolable> ObjectPool<T> {
     /// exist (and are initialised) immediately, so large `T` values make this
     /// expensive.
     pub fn new(config: PoolConfig) -> Self {
-        let mut pool = Vec::with_capacity(config.initial_size);
-        for _ in 0..config.initial_size {
+        // Clamp the eager fill to `max_size`: the documented bound on `available()` is `max_size`,
+        // and pre-creating more than that would report a count the pool is not allowed to keep.
+        let initial = config.initial_size.min(config.max_size);
+        let mut pool = Vec::with_capacity(initial);
+        for _ in 0..initial {
             pool.push(T::default());
         }
         Self { pool, config, allocated: 0 }
@@ -258,6 +261,9 @@ impl BufferPool {
     /// how many [`Self::release`] will keep. Both bounds are inclusive and may be
     /// zero. Every pre-allocated buffer is zero-filled.
     pub fn new(buffer_size: usize, initial_count: usize, max_buffers: usize) -> Self {
+        // The documented bound on `available()` is `max_buffers`, so the eager fill is clamped to
+        // it rather than pre-creating buffers the pool would refuse to keep on release.
+        let initial_count = initial_count.min(max_buffers);
         let mut buffers = Vec::with_capacity(initial_count);
         for _ in 0..initial_count {
             buffers.push(vec![0u8; buffer_size]);
@@ -272,7 +278,16 @@ impl BufferPool {
     /// the full `buffer_size`. Callers must treat the contents as garbage, or use
     /// [`Self::acquire_sized`], which zeroes the range it returns.
     pub fn acquire(&mut self) -> Vec<u8> {
-        self.buffers.pop().unwrap_or_else(|| vec![0u8; self.buffer_size])
+        // A pooled buffer was cleared on release, so its length is restored to the pool's exact
+        // size here: the contract is `len() == buffer_size`, and returning the cleared `0`-length
+        // buffer would hand out less than the caller was promised.
+        match self.buffers.pop() {
+            Some(mut buffer) => {
+                buffer.resize(self.buffer_size, 0);
+                buffer
+            }
+            None => vec![0u8; self.buffer_size],
+        }
     }
     /// Hands out a zero-filled buffer of exactly `size` bytes.
     ///
@@ -345,6 +360,8 @@ impl StringPool {
     /// `default_capacity` of zero makes the capacity check in `release` always
     /// succeed, so effectively every returned string is kept up to `max_strings`.
     pub fn new(default_capacity: usize, initial_count: usize, max_strings: usize) -> Self {
+        // Clamped to `max_strings` so `available()` never exceeds the documented bound.
+        let initial_count = initial_count.min(max_strings);
         let mut strings = Vec::with_capacity(initial_count);
         for _ in 0..initial_count {
             strings.push(String::with_capacity(default_capacity));
@@ -406,6 +423,8 @@ impl<T> VecPool<T> {
     /// capacity is merely reserved. `max_vecs` caps how many [`Self::release`]
     /// will keep.
     pub fn new(default_capacity: usize, initial_count: usize, max_vecs: usize) -> Self {
+        // Clamped to `max_vecs` so `available()` never exceeds the documented bound.
+        let initial_count = initial_count.min(max_vecs);
         let mut vecs = Vec::with_capacity(initial_count);
         for _ in 0..initial_count {
             vecs.push(Vec::with_capacity(default_capacity));
@@ -480,5 +499,83 @@ mod tests {
         assert_eq!(buf1.len(), 1024);
         pool.release(buf1);
         assert_eq!(pool.available(), 2);
+    }
+
+    /// A released buffer is cleared, so a second `acquire` must restore its length to the pool's
+    /// `buffer_size` rather than hand back the cleared `0`-length buffer. The contract is that
+    /// `acquire` always returns exactly `buffer_size` bytes.
+    #[test]
+    fn buffer_pool_re_acquire_restores_the_documented_length() {
+        let mut pool = BufferPool::new(16, 1, 4);
+        let first = pool.acquire();
+        assert_eq!(first.len(), 16, "first acquire is a full buffer");
+        pool.release(first);
+        let second = pool.acquire();
+        assert_eq!(second.len(), 16, "re-acquire must restore the length, not return len=0");
+        assert!(second.capacity() >= 16);
+    }
+
+    /// A buffer obtained through `acquire_sized` is smaller than the pool buffer, and once released
+    /// and re-acquired the normal `acquire` must still yield the full `buffer_size` length.
+    #[test]
+    fn buffer_pool_acquire_sized_then_acquire_restores_the_length() {
+        let mut pool = BufferPool::new(16, 1, 4);
+        let small = pool.acquire_sized(8);
+        assert_eq!(small.len(), 8, "acquire_sized returns exactly the requested size");
+        pool.release(small);
+        let full = pool.acquire();
+        assert_eq!(full.len(), 16, "a normal acquire is always a full buffer");
+    }
+
+    /// Every pool constructor clamps its eager fill to its own max, so `available()` never exceeds
+    /// the documented bound. `initial > max` used to create more entries than `max` immediately.
+    #[test]
+    fn pool_constructors_clamp_initial_fill_to_the_maximum() {
+        let object_pool = ObjectPool::<TestObject>::new(PoolConfig {
+            initial_size: 3,
+            max_size: 1,
+            growth_factor: 1.5,
+        });
+        assert_eq!(object_pool.available(), 1, "object pool is bounded by max_size");
+
+        let buffer_pool = BufferPool::new(8, 3, 1);
+        assert_eq!(buffer_pool.available(), 1, "buffer pool is bounded by max_buffers");
+
+        let string_pool = StringPool::new(4, 3, 1);
+        assert_eq!(string_pool.available(), 1, "string pool is bounded by max_strings");
+
+        let vec_pool: VecPool<u8> = VecPool::new(4, 3, 1);
+        assert_eq!(vec_pool.available(), 1, "vec pool is bounded by max_vecs");
+    }
+
+    /// A max of zero still yields an empty pool (nothing is clamped to being kept), and a normal
+    /// `initial <= max` case is unchanged.
+    #[test]
+    fn pool_constructors_preserve_zero_max_and_normal_cases() {
+        assert_eq!(
+            ObjectPool::<TestObject>::new(PoolConfig {
+                initial_size: 3,
+                max_size: 0,
+                growth_factor: 1.5,
+            })
+            .available(),
+            0
+        );
+        assert_eq!(BufferPool::new(8, 3, 0).available(), 0);
+        assert_eq!(StringPool::new(4, 3, 0).available(), 0);
+        assert_eq!(VecPool::<u8>::new(4, 3, 0).available(), 0);
+
+        assert_eq!(
+            ObjectPool::<TestObject>::new(PoolConfig {
+                initial_size: 2,
+                max_size: 8,
+                growth_factor: 1.5,
+            })
+            .available(),
+            2
+        );
+        assert_eq!(BufferPool::new(8, 2, 8).available(), 2);
+        assert_eq!(StringPool::new(4, 2, 8).available(), 2);
+        assert_eq!(VecPool::<u8>::new(4, 2, 8).available(), 2);
     }
 }

@@ -106,12 +106,24 @@ impl BoxLayout {
             assigned.push(major);
         }
 
+        // A `Fixed` item's size is decided by its constraints alone, so the grow pass must
+        // not stretch it toward the container. Treating a missing `max` as `u32::MAX` did
+        // exactly that: a single `Fixed` item with `min = 20` and no `max` in a 100px parent
+        // was filled to 100. A `Fixed` item may still be *scaled down* in the shortfall pass
+        // below, which is why only this pass skips it.
+        let is_fixed = |index: usize| self.items[index].policy == SizePolicy::Fixed;
+
         // `min` is a hard floor only while the parent can pay for every floor. When the
         // floors alone exceed `primary`, they are scaled down proportionally: every item
         // then falls short by the same fraction, which is the only order-independent
         // answer, and invariant 1 is restored before the grow/shrink passes run.
-        let total_min: u32 = self.items.iter().map(|item| item.constraints.min).sum();
-        if total_min > primary {
+        //
+        // `total_min` and each numerator are computed in `u64`: summing several large
+        // minima in `u32` overflowed, and the proportional share used `saturating_mul` in
+        // `u32`, which saturated the numerator and biased the split heavily toward the last
+        // item. Widening makes both the sum and the products exact.
+        let total_min: u64 = self.items.iter().map(|item| item.constraints.min as u64).sum();
+        if total_min > primary as u64 {
             let budget = primary;
             let mut scaled = Vec::with_capacity(self.items.len());
             let mut consumed = 0u32;
@@ -121,9 +133,9 @@ impl BoxLayout {
                 let share = if index + 1 == self.items.len() {
                     budget.saturating_sub(consumed)
                 } else {
-                    (budget.saturating_mul(item.constraints.min) / total_min.max(1))
-                        .min(budget.saturating_sub(consumed))
+                    (budget as u64 * item.constraints.min as u64 / total_min.max(1)) as u32
                 };
+                let share = share.min(budget.saturating_sub(consumed));
                 consumed = consumed.saturating_add(share);
                 scaled.push(share);
             }
@@ -136,6 +148,11 @@ impl BoxLayout {
             for (index, item) in self.items.iter().enumerate() {
                 if total_assigned >= primary {
                     break;
+                }
+                // A `Fixed` item has already taken its exact constrained size and must not
+                // absorb leftover room.
+                if is_fixed(index) {
+                    continue;
                 }
                 let max_allowed =
                     item.constraints.max.unwrap_or(u32::MAX).max(item.constraints.min);
@@ -368,5 +385,97 @@ mod tests {
         assert!(a.width >= b.width, "the max-weight item gets the larger share");
         assert_eq!(a.width + b.width, 100, "the items must not exceed the container");
         assert!(b.x + b.width as i32 <= rect.x + rect.width as i32, "right item: {b:?}");
+    }
+
+    /// The defect this pins: a `Fixed` item with no `max` was treated as having `u32::MAX`
+    /// room, so the grow pass stretched it to the whole container.
+    ///
+    /// A `Fixed` item is fixed by definition — its size is `max.unwrap_or(min)` — and must
+    /// keep it no matter how much room is left over. Both axes are checked, with and without
+    /// an explicit `max`.
+    #[test]
+    fn a_fixed_item_without_a_max_keeps_its_size() {
+        // Horizontal: min 20, no max, in a 100px parent.
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(1, 1);
+        layout.set_constraints(1, LayoutConstraints::new(20, None));
+        layout.set_size_policy(1, SizePolicy::Fixed);
+        let out = placed(&layout, Rect::new(0, 0, 100, 50));
+        assert_eq!(rect_of(&out, 1).width, 20, "a Fixed item is not filled to the parent width");
+
+        // Horizontal: min 20, explicit max 30, in a 100px parent.
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(1, 1);
+        layout.set_constraints(1, LayoutConstraints::new(20, Some(30)));
+        layout.set_size_policy(1, SizePolicy::Fixed);
+        let out = placed(&layout, Rect::new(0, 0, 100, 50));
+        assert_eq!(rect_of(&out, 1).width, 30, "a Fixed item keeps its explicit max");
+
+        // Vertical: min 20, no max, in a 100px parent.
+        let mut layout = BoxLayout::new(Orientation::Vertical, 0, 0);
+        layout.add_widget(1, 1);
+        layout.set_constraints(1, LayoutConstraints::new(20, None));
+        layout.set_size_policy(1, SizePolicy::Fixed);
+        let out = placed(&layout, Rect::new(0, 0, 50, 100));
+        assert_eq!(rect_of(&out, 1).height, 20, "a Fixed item is not filled to the parent height");
+    }
+
+    /// A `Fixed` sibling must not absorb leftover room that belongs to the expanding items,
+    /// and the two together must still sum to the container.
+    #[test]
+    fn leftover_room_goes_to_expanding_items_not_to_fixed_ones() {
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(1, 1); // becomes Fixed via policy below
+        layout.add_widget(2, 1); // stays Expanding
+        layout.set_constraints(1, LayoutConstraints::new(20, None));
+        layout.set_size_policy(1, SizePolicy::Fixed);
+
+        let out = placed(&layout, Rect::new(0, 0, 100, 50));
+        assert_eq!(rect_of(&out, 1).width, 20, "the Fixed item keeps its size");
+        assert_eq!(rect_of(&out, 2).width, 80, "the expanding item takes the leftover");
+        assert_eq!(rect_of(&out, 1).width + rect_of(&out, 2).width, 100);
+    }
+
+    /// The defect this pins: the shortfall split summed the minima in `u32` and computed each
+    /// numerator with `u32::saturating_mul`, so two large equal minima produced a wildly
+    /// unequal split (the first share saturated, the last took almost the whole budget).
+    #[test]
+    fn a_large_shortfall_is_split_unbiased() {
+        let min = 2_000_000_000u32;
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(1, 1);
+        layout.add_widget(2, 1);
+        layout.set_constraints(1, LayoutConstraints::new(min, None));
+        layout.set_constraints(2, LayoutConstraints::new(min, None));
+
+        let out = placed(&layout, Rect::new(0, 0, 2_000_000_000, 50));
+        let a = rect_of(&out, 1);
+        let b = rect_of(&out, 2);
+        // Equal minima must receive equal shares; the remainder lands on one of them.
+        assert!(
+            a.width.abs_diff(b.width) <= 1,
+            "equal minima must split the budget near-evenly, got {} and {}",
+            a.width,
+            b.width
+        );
+        assert_eq!(a.width + b.width, 2_000_000_000, "the pieces sum to the budget exactly");
+    }
+
+    /// The summed minima can exceed `u32::MAX`; the split must still work and sum to the
+    /// budget instead of overflowing the running total.
+    #[test]
+    fn a_shortfall_whose_minima_sum_overflows_u32_still_sums_to_the_budget() {
+        let min = 3_000_000_000u32; // 2 * this > u32::MAX
+        let mut layout = BoxLayout::new(Orientation::Horizontal, 0, 0);
+        layout.add_widget(1, 1);
+        layout.add_widget(2, 1);
+        layout.set_constraints(1, LayoutConstraints::new(min, None));
+        layout.set_constraints(2, LayoutConstraints::new(min, None));
+
+        let out = placed(&layout, Rect::new(0, 0, 1_000_000_000, 50));
+        let a = rect_of(&out, 1);
+        let b = rect_of(&out, 2);
+        assert_eq!(a.width + b.width, 1_000_000_000, "the pieces sum to the budget exactly");
+        assert!(a.width.abs_diff(b.width) <= 1, "an overflowing min sum still splits evenly");
     }
 }

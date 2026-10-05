@@ -91,24 +91,107 @@ def _check_empty_drag_payload(rw: RustWidgets) -> None:
 
 
 def _check_drop_event_free_once(rw: RustWidgets) -> None:
-    """A drop-event payload is freed exactly once.
+    """An owned byte payload is freed **exactly once**, and an empty queue is safe.
 
-    The original code called ``rw_free_bytes`` and then ``libc.free`` on the same
-    pointer. On Linux ``libc.so.6`` loads, so the guard did not hide it and the
-    process aborted with ``double free or corruption`` on the first drop event
-    carrying a payload. Reaching the end of this function is the assertion: a
-    second free would abort the process rather than fail an assert.
+    # What the previous version failed to establish
+
+    It polled up to 16 times and `continue`d on every `None`, so a backend that never
+    produced a drop event — every desktop build, where drag-and-drop has no in-process
+    source — passed having asserted nothing about a payload. Zero real payloads is not a
+    weaker proof of "freed once"; it is no proof at all, and a wrong `restype` or a
+    double free on the payload path would have stayed invisible.
+
+    # How the invariant is pinned here
+
+    * **Empty-queue control.** A drained queue must return `None` — the "no event" path,
+      which must not allocate or free anything.
+    * **A real owned payload, from the ABI.** `rw_render_surface_frame` hands out the
+      same `Box<[u8]>` payload that `rw_poll_drop_event` does, released through the same
+      `rw_free_bytes(ptr, len)` contract. That is the *only* owned-bytes producer the
+      binding can reach without an injection entry point, and it is enough to exercise
+      the deallocator pairing the drop path depends on.
+    * **A counted free.** `rw_free_bytes` is wrapped for the duration of the check, so
+      the assertion is on the *number* of frees (exactly one), not on "no abort".
+    * **A real drop event, when the backend has one.** If a poll returns a payload, its
+      free goes through the same counter and must also be exactly one.
     """
-    # Poll repeatedly: the queue is normally empty, which exercises the
-    # "no event" early return and its absence of allocation.
-    for _ in range(16):
-        event = rw.poll_drop_event()
-        if event is None:
-            continue
-        assert set(event) >= {"source", "target", "mime", "payload"}, event
-        assert isinstance(event["payload"], (bytes, bytearray)), event["payload"]
-        assert isinstance(event["mime"], str), event["mime"]
-    print("  drop-event payload freed once (no abort): ok")
+    # `getattr`/`setattr` rather than attribute syntax: `rw_free_bytes` is a ctypes
+    # foreign function added at runtime, so a static reader sees no such attribute on
+    # `CDLL`. Going through the builtins is the same call at runtime without the false
+    # "unknown attribute" report.
+    original_free_bytes = getattr(rw.lib, "rw_free_bytes")
+    freed: list[int] = []
+
+    def counting_free_bytes(ptr, length):
+        # `ptr` arrives either as a `c_void_p` (from the binding's own calls) or as an
+        # int/None (a caller may pass either). Record the address actually handed to the
+        # deallocator; a null free is a documented no-op and is not counted.
+        if isinstance(ptr, ctypes.c_void_p):
+            address = ptr.value
+        else:
+            address = ptr
+        if address:
+            freed.append(int(address))
+        return original_free_bytes(ptr, length)
+
+    setattr(rw.lib, "rw_free_bytes", counting_free_bytes)
+    try:
+        # Empty-queue control: drain first, then one more poll must be `None` and leave
+        # every output cleared (the clearing contract is what makes unconditional free
+        # safe).
+        while rw.poll_drop_event() is not None:
+            pass
+        assert rw.poll_drop_event() is None, "a drained drop queue must report no event"
+
+        # Real owned payload #1: the render path's buffer, same allocator as the drop
+        # payload. `len` is what the ABI reported; it must be positive (a zero-length
+        # buffer would be the "no payload" case again).
+        window = rw.create_window("abi-contract", 0, 0, 64, 48)
+        assert window, "create_window must return a live id"
+
+        out_width = ctypes.c_uint(0)
+        out_height = ctypes.c_uint(0)
+        out_stride = ctypes.c_uint(0)
+        out_len = ctypes.c_uint(0)
+        out_pixels = ctypes.c_void_p()
+        ok = rw.lib.rw_render_surface_frame(
+            window,
+            64,
+            48,
+            ctypes.byref(out_width),
+            ctypes.byref(out_height),
+            ctypes.byref(out_stride),
+            ctypes.byref(out_len),
+            ctypes.byref(out_pixels),
+        )
+        assert ok, "a window surface must render a frame for the owned-payload check"
+        assert out_pixels.value, "a rendered frame must hand back an owned buffer"
+        assert out_len.value > 0, f"the owned payload must be non-empty, got {out_len.value}"
+        assert out_stride.value >= out_width.value * 4, "stride must cover a row"
+
+        before = len(freed)
+        getattr(rw.lib, "rw_free_bytes")(out_pixels, out_len.value)
+        assert len(freed) == before + 1, "the rendered payload must be freed exactly once"
+
+        # Real owned payload #2 (only where the backend actually queues drops): the drop
+        # payload path itself. On a backend with no in-process drag source the queue is
+        # empty and the empty-queue control above already covered that case.
+        while True:
+            event = rw.poll_drop_event()
+            if event is None:
+                break
+            assert set(event) >= {"source", "target", "mime", "payload"}, event
+            # `poll_drop_event` frees the payload internally through the wrapped free;
+            # a double free would show as two recorded addresses and, in practice, abort.
+            assert isinstance(event["payload"], (bytes, bytearray)), event["payload"]
+            assert isinstance(event["mime"], str), event["mime"]
+
+        # Every non-null address the wrapped deallocator saw must appear exactly once.
+        duplicates = {addr for addr in freed if freed.count(addr) > 1}
+        assert not duplicates, f"these payload addresses were freed more than once: {duplicates}"
+        print(f"  owned payload freed exactly once (frees observed: {len(freed)}): ok")
+    finally:
+        setattr(rw.lib, "rw_free_bytes", original_free_bytes)
 
 
 def main() -> int:

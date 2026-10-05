@@ -114,7 +114,11 @@ int main() {
 
             if (event_widget == checkbox.id() &&
                 kind == rust_widgets::TriggerKind::Clicked) {
-                bool checked = checkbox.is_enabled();
+                // Report the state this actually reads. `is_enabled()` reads whether the
+                // control accepts input; the ticked/unticked fact is `is_checked()`. The
+                // two are unrelated, so printing `is_enabled()` under a "checked" label
+                // told the user the wrong thing about the control.
+                bool checked = checkbox.is_checked();
                 std::cout << "Checkbox toggled: " << (checked ? "checked" : "unchecked") << "\n";
             }
         }

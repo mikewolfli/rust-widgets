@@ -737,7 +737,15 @@ pub unsafe extern "C" fn rw_get_widget_property(
         let property = c_str_or_default(name);
         match crate::widget::capability::read_widget_property_by_id(widget_id, &property) {
             Ok(value) => {
-                let (kind, num, text) = encode_capability_value(value);
+                // The output pointer's existence is checked *before* encoding, not
+                // after. `encode_capability_value` hands back an owning `CString`
+                // (via `into_raw`) for the string-carrying kinds; if `out_str` were
+                // null at write time that pointer would have no destination and no
+                // free path, leaking one allocation per read. A caller that only
+                // wants the kind (the documented use — see the safety notes above)
+                // must not pay for a string it will never receive, so the encoder is
+                // told whether anyone can accept the text.
+                let (kind, num, text) = encode_capability_value(value, !out_str.is_null());
                 unsafe {
                     if !out_kind.is_null() {
                         *out_kind = kind;
@@ -1361,8 +1369,18 @@ pub unsafe extern "C" fn rw_widget_set_style(widget_id: u64, declaration: *const
 /// losslessly. Keeping `out_num` and `out_str` independent means a caller can
 /// ignore whichever it does not need.
 #[cfg(not(stripped_widgets))]
+/// Encodes a [`CapabilityValue`](crate::widget::capability::CapabilityValue) into
+/// the ABI's `(kind, num, text)` triple.
+///
+/// `want_text` says whether the caller has a place to receive the text. When it is
+/// `false`, the string-carrying kinds return `None` **without allocating**: the
+/// owning `CString` is only produced when there is an output pointer to receive it,
+/// so a kind-only read (`out_str == null`) cannot leak. The `kind`/`num` half is
+/// computed unconditionally, so a caller that suppresses the text still gets the
+/// discriminator and the numeric payload.
 fn encode_capability_value(
     value: crate::widget::capability::CapabilityValue,
+    want_text: bool,
 ) -> (c_int, i64, Option<*mut c_char>) {
     use crate::widget::capability::CapabilityValue;
     match value {
@@ -1376,6 +1394,9 @@ fn encode_capability_value(
             (RW_VALUE_FLOAT, number.to_bits() as i64, None)
         }
         CapabilityValue::String(text) => {
+            if !want_text {
+                return (RW_VALUE_STRING, 0, None);
+            }
             let c_text = CString::new(text).unwrap_or_default().into_raw();
             (RW_VALUE_STRING, 0, Some(c_text))
         }
@@ -1388,10 +1409,16 @@ fn encode_capability_value(
         // accepts, so encode/decode round-trips exactly (see
         // `capability_values_round_trip_through_the_abi`).
         CapabilityValue::Color(color) => {
+            if !want_text {
+                return (RW_VALUE_COLOR, 0, None);
+            }
             let c_text = CString::new(color.to_hex_rgba()).unwrap_or_default();
             (RW_VALUE_COLOR, 0, Some(c_text.into_raw()))
         }
         CapabilityValue::Rect(rect) => {
+            if !want_text {
+                return (RW_VALUE_RECT, 0, None);
+            }
             let text = alloc::format!(
                 "{},{},{},{}",
                 rect.x,
@@ -1407,6 +1434,9 @@ fn encode_capability_value(
         // The components keep their own kinds because the whole point of the variant is that a
         // composite payload is not flattened to one scalar (BLUE19 #95).
         CapabilityValue::Tuple(items) => {
+            if !want_text {
+                return (RW_VALUE_TUPLE, items.len() as i64, None);
+            }
             let mut text = alloc::string::String::new();
             for (index, item) in items.iter().enumerate() {
                 if index > 0 {
@@ -2742,13 +2772,25 @@ pub unsafe extern "C" fn rw_render_surface_frame(
             return false;
         };
         let byte_len = frame.len() as c_uint;
+        // The buffer is only handed to the caller when there is an output pointer to
+        // receive it. `out_pixels` may be null (the safety contract above allows it,
+        // and a caller probing the size/stride reports may pass null deliberately), in
+        // which case a `forget` would drop the only owning pointer on the floor and
+        // leak the frame. So the `Box<[u8]>` is leaked **only** on the transfer path;
+        // otherwise it is left to drop and free normally at the end of the call.
+        //
         // Leaked as one allocation, exactly like `rw_poll_drop_event`'s payload, so
         // `rw_free_bytes(ptr, len)` reconstructs it with the length the caller echoed
         // back. Handing out a `Vec` pointer without its length is what forced the
         // separate free function to exist in the first place.
         let mut buffer = frame.into_boxed_slice();
-        let pointer = buffer.as_mut_ptr();
-        core::mem::forget(buffer);
+        let pointer = if out_pixels.is_null() {
+            core::ptr::null_mut()
+        } else {
+            let pointer = buffer.as_mut_ptr();
+            core::mem::forget(buffer);
+            pointer
+        };
         // SAFETY: each out-pointer is null-checked before use, and the caller's
         // contract is that a non-null one is writable for one value of its type.
         unsafe {
@@ -3291,7 +3333,7 @@ mod tests {
         ];
 
         for original in cases {
-            let (kind, num, text) = encode_capability_value(original.clone());
+            let (kind, num, text) = encode_capability_value(original.clone(), true);
             let raw = text.map_or(core::ptr::null(), |owned| owned as *const c_char);
             let decoded = decode_capability_value(kind, num, raw)
                 .unwrap_or_else(|| panic!("kind {kind} must decode, but did not"));
@@ -3306,6 +3348,194 @@ mod tests {
                 unsafe { drop(CString::from_raw(raw as *mut c_char)) };
             }
         }
+    }
+
+    /// When no string output is supplied, the encoder must not allocate one.
+    ///
+    /// # The defect this closes
+    ///
+    /// `rw_get_widget_property` encoded the value — allocating and `into_raw`-leaking a
+    /// `CString` for every string-carrying kind — and only *then* checked `out_str`. A
+    /// caller that passed a null `out_str` (documented as allowed, and the way a
+    /// kind-only reader works) therefore had its `CString` dropped on the floor: the
+    /// only owning pointer was never written anywhere and could never be freed.
+    ///
+    /// The assertion is on the encoder contract the entry point relies on: with
+    /// `want_text == false` a string-carrying value still reports its kind and numeric
+    /// payload, but hands back **no** pointer, so there is nothing to leak. `kind` and
+    /// `num` must be identical to the allocating path — suppressing the text must not
+    /// suppress the discriminator.
+    #[test]
+    fn encoding_without_a_string_output_allocates_nothing() {
+        use crate::widget::capability::CapabilityValue;
+
+        let cases = [
+            CapabilityValue::String("hello".to_string()),
+            CapabilityValue::Color(crate::core::Color::rgba(1, 2, 3, 4)),
+            CapabilityValue::Rect(crate::core::Rect::new(5, 6, 7, 8)),
+            CapabilityValue::Tuple(vec![
+                CapabilityValue::Int(1),
+                CapabilityValue::String("x".to_string()),
+            ]),
+        ];
+
+        for original in cases {
+            let (kind_with, num_with, text) = encode_capability_value(original.clone(), true);
+            let (kind_without, num_without, none) =
+                encode_capability_value(original.clone(), false);
+
+            assert_eq!(
+                (kind_with, num_with),
+                (kind_without, num_without),
+                "suppressing the text must not change the kind/num of {original:?}"
+            );
+            assert!(!text.is_none(), "{original:?} allocates when an output exists");
+            assert!(
+                none.is_none(),
+                "{original:?} must not allocate when there is no output pointer to receive it"
+            );
+
+            // Reclaim the allocation the paying path made, so this test itself does not leak.
+            if let Some(raw) = text {
+                unsafe { drop(CString::from_raw(raw)) };
+            }
+        }
+
+        // A scalar kind never allocated in either mode, and must keep answering the same
+        // thing — the flag narrows the string path only.
+        let (kind_a, num_a, text_a) = encode_capability_value(CapabilityValue::Int(9), true);
+        let (kind_b, num_b, text_b) = encode_capability_value(CapabilityValue::Int(9), false);
+        assert_eq!((kind_a, num_a, text_a), (kind_b, num_b, text_b));
+        assert_eq!(kind_a, RW_VALUE_INT);
+    }
+
+    /// The null-string path of `rw_get_widget_property` must not allocate but must still
+    /// report the kind and numeric payload.
+    ///
+    /// This drives the real entry point rather than the encoder alone, so the branch
+    /// that decides `want_text` is under test: a caller reading a string property with
+    /// `out_str == null` gets `RW_VALUE_STRING` back and an untouched null pointer.
+    #[test]
+    fn c_abi_get_property_with_null_string_output_reports_the_kind() {
+        use std::ffi::CString;
+
+        let c = |s: &str| CString::new(s).expect("no interior NUL");
+
+        unsafe {
+            let title = c("null-str-window");
+            let window = rw_create_window(title.as_ptr(), 0, 0, 320, 240);
+            assert_ne!(window, 0);
+
+            let tooltip = c("tooltip");
+            let value = c("a-tip");
+            assert!(rw_set_widget_property(
+                window,
+                tooltip.as_ptr(),
+                RW_VALUE_STRING,
+                0,
+                value.as_ptr()
+            ));
+
+            // No `out_str`: the kind must still be written, and no string is produced.
+            let mut out_kind: c_int = -1;
+            let mut out_num: i64 = 0;
+            assert!(
+                rw_get_widget_property(
+                    window,
+                    tooltip.as_ptr(),
+                    &mut out_kind,
+                    &mut out_num,
+                    core::ptr::null_mut(),
+                ),
+                "a kind-only read must succeed"
+            );
+            assert_eq!(
+                out_kind, RW_VALUE_STRING,
+                "the string kind must be reported without a buffer"
+            );
+            assert_eq!(out_num, 0);
+
+            // And the same property read *with* an output still round-trips its text, so
+            // the suppression did not disable the normal path.
+            let mut out_str: *mut c_char = core::ptr::null_mut();
+            assert!(rw_get_widget_property(
+                window,
+                tooltip.as_ptr(),
+                &mut out_kind,
+                &mut out_num,
+                &mut out_str
+            ));
+            assert!(!out_str.is_null());
+            assert_eq!(CStr::from_ptr(out_str).to_string_lossy(), "a-tip");
+            rw_free_string(out_str);
+        }
+    }
+
+    /// A frame requested with no pixel output must free its buffer, not leak it.
+    ///
+    /// # The defect this closes
+    ///
+    /// `rw_render_surface_frame` built the frame, `forget`-leaked the owning `Box<[u8]>`
+    /// to hand ownership to the caller, and only then checked `out_pixels`. A caller that
+    /// passed a null pixel output — documented as allowed, e.g. a probe that only wants
+    /// the dimensions/stride — left the allocation with no pointer to free it: a leak per
+    /// frame, on the per-pixel hot path.
+    ///
+    /// Both branches are exercised: null `out_pixels` must still report width/height/
+    /// stride/length but write nothing, and a real `out_pixels` must receive an owned
+    /// buffer that `rw_free_bytes` reclaims with the reported length.
+    #[test]
+    fn render_surface_frame_without_a_pixel_output_does_not_leak() {
+        use crate::core::Rect;
+
+        let mut editor =
+            crate::widget::special_widgets::code_editor::CodeEditor::new(Rect::new(0, 0, 64, 48));
+        editor.set_text("fn main() {}");
+        let id = crate::widget::runtime::register(Box::new(editor)).expect("the registry");
+
+        // Null pixel output: the geometry must still be published, and nothing is written.
+        let mut width: c_uint = 0;
+        let mut height: c_uint = 0;
+        let mut stride: c_uint = 0;
+        let mut len: c_uint = 0;
+        let ok = unsafe {
+            rw_render_surface_frame(
+                id,
+                64,
+                48,
+                &mut width,
+                &mut height,
+                &mut stride,
+                &mut len,
+                core::ptr::null_mut(),
+            )
+        };
+        assert!(ok, "a frame must be produced for a mounted drawable widget");
+        assert_eq!((width, height), (64, 48));
+        assert_eq!(stride, 64 * 4);
+        assert_eq!(len, 64 * 48 * 4);
+
+        // A real pixel output receives an owned buffer of exactly the reported length,
+        // freed once through `rw_free_bytes`. This is the same pairing a host uses.
+        let mut pixels: *mut u8 = core::ptr::null_mut();
+        let ok = unsafe {
+            rw_render_surface_frame(
+                id,
+                64,
+                48,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                &mut len,
+                &mut pixels,
+            )
+        };
+        assert!(ok);
+        assert!(!pixels.is_null(), "a non-null output must receive the buffer");
+        assert_eq!(len, 64 * 48 * 4);
+        unsafe { rw_free_bytes(pixels, len) };
+
+        crate::widget::runtime::unregister(id);
     }
 
     /// A malformed colour or rectangle must be refused, not defaulted.

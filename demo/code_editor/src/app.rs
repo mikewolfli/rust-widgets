@@ -42,13 +42,27 @@ use crate::commands::{self, Command};
 /// 不影响**是否丢失**事件。
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
 
-/// 一次事件都没有的连续空闲超过这个时长，事件泵就自动退出。
+/// 一次事件都没有的连续空闲超过这个时长，事件泵就记录一条诊断，但**不退出**。
 ///
-/// # 为什么需要一个上限，而不是一直等
+/// # 为什么需要一个可观察的空闲上限
 ///
-/// 主线程跑的是平台循环（`App::run`），它只在窗口关闭时返回。若宿主关窗的事件没有到达
-/// 本进程（例如某些后端下窗口被别的方式销毁），平台循环会一直不返回，而本泵线程就会
-/// **永久空转**，留下一个关不掉的孤儿进程。这个上限是那条路径的兜底。
+/// 主线程跑的是平台循环（`App::run`），它只在窗口关闭时返回。这个上限让“长期无事件”在
+/// 日志里看得见（便于区分“真的空闲”和“事件没人消费”），但它**不是退出条件**。
+///
+/// # 为什么不能让它结束泵线程（本 demo 之前的缺陷）
+///
+/// 早先的写法是空闲超时后 `break` 掉泵线程，主线程却仍卡在 `app.run()` 里。后果是：
+/// 窗口还活着，但**菜单/控件触发再没有消费者** —— 30 秒后用户点菜单，事件进了队列却没人
+/// 取，菜单看起来“坏了”。泵线程与窗口的生命周期必须一致：只要窗口还在跑，就必须有人
+/// 消费。所以唯一的退出信号是 `done`（主线程在 `app.run()` 返回后置位），空闲超过上限
+/// 只记诊断且归零，不结束循环。
+///
+/// # 为什么不用 `rust_widgets::quit()` 来收尾
+///
+/// 试过：在空闲超时时请求平台退出。但 `Platform::quit` 在部分后端是**主线程专属**的
+/// （macOS 的 `NSApp stop_` 会在非主线程上直接 no-op），从泵线程调用只会静默失效，
+/// 反而掩盖“窗口没关”的真实情况。不依赖不可移植的跨线程退出，只观察主线程给出的
+/// `done`。
 ///
 /// # 它必须由 `POLL_INTERVAL` 算出来，不能写成拍脑袋的 tick 数
 ///
@@ -56,13 +70,13 @@ const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
 /// 算，`30 * 60 * 2 = 3600` tick 实际是 **57.6 秒**；而 `30 * 60` 也不是秒数，
 /// 是「分钟数 × 60」这个中间量——即那个表达式**从来不代表任何真实时长**。
 /// 现在把两个常数分开：上限说「多长时间」，`ticks()` 把它换算成 tick，二者不会漂移。
-const IDLE_EXIT_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+const IDLE_REPORT_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// [`IDLE_EXIT_AFTER`] 换算成多少个 `POLL_INTERVAL` tick。
-fn idle_ticks_before_exit() -> u32 {
-    // 向上取整，并保证至少 1：一个比轮询间隔还短的上限会立刻退出，那不是「空闲太久」。
+/// [`IDLE_REPORT_AFTER`] 换算成多少个 `POLL_INTERVAL` tick。
+fn idle_ticks_before_report() -> u32 {
+    // 向上取整，并保证至少 1：一个比轮询间隔还短的上限会立刻刷屏，那不是「空闲太久」。
     let interval = POLL_INTERVAL.as_millis().max(1) as u64;
-    let ticks = (IDLE_EXIT_AFTER.as_millis() as u64).div_ceil(interval);
+    let ticks = (IDLE_REPORT_AFTER.as_millis() as u64).div_ceil(interval);
     ticks.clamp(1, u64::from(u32::MAX)) as u32
 }
 
@@ -205,32 +219,63 @@ fn apply_split(
 
 /// 分栏那一行的矩形，从窗口纵向布局的输出里读回。
 ///
-/// 传入的是 `build_window_layout` 用的同三个 id，所以这里的答案就是窗口布局
-/// 实际会给分栏行的那块地方 —— 不需要再抄一遍“工具栏 + 间距”的减法。
-fn split_row_rect_in(tool_bar_id: ObjectId, split_id: ObjectId, status_bar_id: ObjectId) -> Rect {
+/// 传入的是 `build_window_layout` 用的同三个 id 与**实际客户区**，所以这里的答案就是
+/// 窗口布局实际会给分栏行的那块地方 —— 不需要再抄一遍“工具栏 + 间距”的减法。
+///
+/// # 为什么客户区是参数而不是常量
+///
+/// 内层分栏（项目树 | 编辑器）不在窗口布局的托管项里：窗口布局只能排“分栏那一行”这个
+/// 占位，两栏由 [`apply_split`] 自己切。所以窗口一变尺寸，外层会自动重排、内层却停在旧
+/// 矩形上（本 demo 之前的缺陷）。把客户区显式传进来，[`apply_layout`] 才能在**每次**重排时
+/// 用真实尺寸算出分栏行，内外两层就不会在一件事上给出两个答案。
+fn split_row_rect_in_for(
+    client: Rect,
+    tool_bar_id: ObjectId,
+    split_id: ObjectId,
+    status_bar_id: ObjectId,
+) -> Rect {
     let mut placed: Vec<(ObjectId, Rect)> = Vec::new();
     build_window_layout(tool_bar_id, split_id, status_bar_id)
-        .update(Rect::new(0, 0, WINDOW_W, WINDOW_H), &mut |id, rect| placed.push((id, rect)));
+        .update(client, &mut |id, rect| placed.push((id, rect)));
     placed.iter().find(|(id, _)| *id == split_id).map(|(_, rect)| *rect).unwrap_or(Rect::new(
         0,
         MENU_H as i32 + TOOLBAR_H as i32,
-        WINDOW_W,
-        split_row_height(),
+        client.width,
+        split_row_height_for(client.height),
     ))
 }
 
-/// 分栏那一行占据的高度：客户区去掉工具栏与状态栏，以及两条间距。
-fn split_row_height() -> u32 {
-    WINDOW_H.saturating_sub(TOOLBAR_H + STATUS_H + STRIP_GAP * 2)
+/// 初始客户区（窗口创建时给的大小）。`split_row_rect_in` 的便捷形式。
+#[cfg(test)]
+fn split_row_rect_in(tool_bar_id: ObjectId, split_id: ObjectId, status_bar_id: ObjectId) -> Rect {
+    split_row_rect_in_for(initial_client(), tool_bar_id, split_id, status_bar_id)
 }
 
-/// 分栏内两栏的初始矩形，与 [`build_split_layout`] 的结果一致。
+/// 窗口创建时的客户区大小。
+fn initial_client() -> Rect {
+    Rect::new(0, 0, WINDOW_W, WINDOW_H)
+}
+
+/// 分栏那一行占据的高度：客户区去掉工具栏与状态栏，以及两条间距。
+fn split_row_height_for(client_height: u32) -> u32 {
+    client_height.saturating_sub(TOOLBAR_H + STATUS_H + STRIP_GAP * 2)
+}
+
+/// [`split_row_height_for`] 在初始客户区下的便捷形式（测试与推导用）。
+#[cfg(test)]
+fn split_row_height() -> u32 {
+    split_row_height_for(WINDOW_H)
+}
+
+/// 分栏内两栏的矩形，与 [`build_split_layout`] 的结果一致。
 ///
 /// 挂载自绘型控件必须给一个矩形（`mount_surface` 的签名如此），所以这里按同一个
 /// 横向布局算一份出来 —— 而不是自己再写一遍比例算术。布局随后会把几何修正到与
 /// 真实分栏一致；两者同源，所以首帧不会跳动。
-fn pane_rects() -> (Rect, Rect) {
-    let row = split_row_rect_in(1, 2, 3);
+///
+/// 传入**真实客户区**，所以窗口缩放后重新调用它会得到新的两栏矩形。
+fn pane_rects_for(client: Rect) -> (Rect, Rect) {
+    let row = split_row_rect_in_for(client, 1, 2, 3);
 
     // 用一个临时布局跑一遍即可拿到两栏的宽度；id 只是占位，不指向真实控件。
     let mut placed: Vec<(ObjectId, Rect)> = Vec::new();
@@ -244,6 +289,11 @@ fn pane_rects() -> (Rect, Rect) {
             .unwrap_or(Rect::new(row.x, row.y, TREE_MIN_W, row.height))
     };
     (take(1), take(2))
+}
+
+/// [`pane_rects_for`] 在初始客户区下的便捷形式（挂载两栏时用）。
+fn pane_rects() -> (Rect, Rect) {
+    pane_rects_for(initial_client())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -647,13 +697,15 @@ pub fn run() {
     // 项目树与编辑器。两者由 [`apply_layout`] 一次算完，避免“只应用了一层”。
     // **宽度比例只在 `build_split_layout` 里出现一次**，所以两栏不会不一致，
     // 也不会像本轮之前那样让编辑器独占整个宽度。
-    apply_layout(&win, tool_bar_id, status.raw_id(), &tree, &editor, &log);
+    //
+    // 客户区用**创建时**的尺寸；后续真实 resize 由 `run_loop` 里的监视循环重算内层。
+    apply_layout(&win, tool_bar_id, status.raw_id(), &tree, &editor, initial_client(), &log);
 
     win.show();
     log.append("[Window] shown");
 
     print_usage();
-    run_loop(&app, &bindings, &editor, &log);
+    run_loop(&app, win.raw_id(), tool_bar_id, status.raw_id(), &bindings, &tree, &editor, &log);
 }
 
 /// 一次性应用两层布局：窗口三行 + 分栏两栏。
@@ -669,18 +721,20 @@ fn apply_layout(
     status_bar_id: ObjectId,
     tree: &CustomWidgetHandle,
     editor: &CustomWidgetHandle,
+    client: Rect,
     log: &Arc<EventLog>,
 ) {
-    // 外层：三行。
+    // 外层：三行。`win.set_layout` 会用窗口自己的客户区重排（后端 resize 时已更新）。
     let layout = build_window_layout(tool_bar_id, SPLIT_ROW_ID, status_bar_id);
     log.append(format!(
         "[Layout] window BoxLayout(Vertical): toolbar {TOOLBAR_H}px (fixed) + \
-         split (expanding) + status bar {STATUS_H}px (fixed)"
+         split (expanding) + status bar {STATUS_H}px (fixed) in client {}x{}",
+        client.width, client.height
     ));
     win.set_layout(layout);
 
-    // 内层：用外层算出的分栏行矩形把两栏切开。
-    let row = split_row_rect_in(tool_bar_id, SPLIT_ROW_ID, status_bar_id);
+    // 内层：用**真实客户区**算出的分栏行矩形把两栏切开，而不是挂载时那份常量。
+    let row = split_row_rect_in_for(client, tool_bar_id, SPLIT_ROW_ID, status_bar_id);
     let split = build_split_layout(tree.raw_id(), editor.raw_id());
     apply_split(&split, row, tree, editor);
     log.append(format!(
@@ -689,6 +743,27 @@ fn apply_layout(
         SPLIT_WEIGHTS.0, SPLIT_WEIGHTS.1, row.x, row.y, row.width, row.height
     ));
     log.append("[Layout] applied");
+}
+
+/// 内层分栏的重排：窗口客户区改变时用新尺寸重算两栏几何。
+///
+/// # 为什么需要单独一步
+///
+/// 窗口的纵向布局只托管“工具栏 / 分栏行 / 状态栏”三行，项目树与编辑器是**自绘挂载面**，
+/// 不在窗口布局的托管项里。所以后端 resize 会重排外层三行，却不会动内层的两栏 —— 窗口
+/// 越拉越宽，两栏却停在挂载时那份 `WINDOW_W` 上。这里按当前客户区重算一次内层，把它
+/// 与窗口大小重新对齐。
+fn resync_split_to_client_size(
+    tool_bar_id: ObjectId,
+    status_bar_id: ObjectId,
+    tree: &CustomWidgetHandle,
+    editor: &CustomWidgetHandle,
+    size: (u32, u32),
+) {
+    let client = Rect::new(0, 0, size.0, size.1);
+    let row = split_row_rect_in_for(client, tool_bar_id, SPLIT_ROW_ID, status_bar_id);
+    let split = build_split_layout(tree.raw_id(), editor.raw_id());
+    apply_split(&split, row, tree, editor);
 }
 
 /// 轮询菜单/控件事件并转成命令。
@@ -709,9 +784,23 @@ fn apply_layout(
 ///
 /// 只有轮询本身会动 Qt/GTK 对象时才会出问题；`poll_*` 只读队列并分派命令，
 /// 不需要平台 API，所以可以安全地在后台线程运行。
+///
+/// # 后台线程还负责两件事
+///
+/// * **内层分栏随窗口重排**：项目树/编辑器是自绘挂载面，不在窗口布局的托管项里，
+///   所以客户区一变就重算一次（见 [`resync_split_to_client_size`]）。
+/// * **状态栏写回**：每次有事件时把光标位置写到可见的状态栏句柄（见 [`refresh_status`]）。
+///
+/// 后台线程的唯一退出信号是 `done`，由主线程在 `app.run()` 返回后置位 —— 即窗口真正
+/// 关闭。窗口还开着时永远有人消费事件，因此不会出现“菜单事件进了队列却没人取”的半死
+/// 状态（见 `IDLE_REPORT_AFTER` 的说明）。
 fn run_loop(
     app: &App,
+    window_id: ObjectId,
+    tool_bar_id: ObjectId,
+    status_bar_id: ObjectId,
     bindings: &[(u64, MenuBinding)],
+    tree: &CustomWidgetHandle,
     editor: &CustomWidgetHandle,
     log: &Arc<EventLog>,
 ) {
@@ -719,6 +808,7 @@ fn run_loop(
     // 触发；`Arc` 让两个线程各自持有需要的东西。
     let bindings: Arc<Vec<(u64, MenuBinding)>> = Arc::new(bindings.to_vec());
     let editor = editor.clone();
+    let tree = tree.clone();
     let poll_log = Arc::clone(log);
     let done = Arc::new(AtomicBool::new(false));
     let done_flag = Arc::clone(&done);
@@ -726,8 +816,30 @@ fn run_loop(
     let poller = std::thread::spawn(move || {
         let mut handled = 0usize;
         let mut idle_ticks = 0u32;
+        // 记住上一次重排内层时使用的客户区，仅在真实变化时重算 —— 不是每个 tick 都动。
+        let mut last_client: Option<(u32, u32)> = rust_widgets::window_client_size(window_id);
+        // The pump runs for as long as the window does. The only exit is `done`, which
+        // the main thread sets after `app.run()` returns — i.e. after the window has
+        // actually closed. This is the shutdown signal that keeps the two threads in
+        // step: as long as the window is open there is a consumer for every event, so a
+        // later menu activation can never land in a queue nobody polls (the defect this
+        // loop closes).
         while !done_flag.load(Ordering::SeqCst) {
             let mut did_work = false;
+
+            // 窗口 resize：客户区变了就把内层两栏重算一遍。外层三行由窗口布局自己负责，
+            // 但项目树/编辑器是自绘挂载面，不在窗口布局的托管项里（见 [`resync_split_to_client_size`]）。
+            if let Some(size) = rust_widgets::window_client_size(window_id) {
+                if last_client != Some(size) {
+                    resync_split_to_client_size(tool_bar_id, status_bar_id, &tree, &editor, size);
+                    poll_log.append(format!(
+                        "[Layout] resize {}x{} -> 两栏已重算（tree/editor）",
+                        size.0, size.1
+                    ));
+                    last_client = Some(size);
+                    did_work = true;
+                }
+            }
 
             // 菜单激活：菜单不会直接回调 Rust，必须从队列取出。
             while let Some(item_id) = rust_widgets::poll_menu_triggered() {
@@ -746,14 +858,19 @@ fn run_loop(
 
             if did_work {
                 idle_ticks = 0;
-                refresh_status(&poll_log, &editor);
+                refresh_status(&poll_log, &editor, status_bar_id);
             } else {
                 idle_ticks += 1;
-                // 连续无事件超过 `IDLE_EXIT_AFTER` 就退出，避免无法关闭的孤儿进程（见该常数的说明）。
-                if idle_ticks > idle_ticks_before_exit() {
-                    poll_log
-                        .append(format!("[App] 空闲超过 {:?} 无事件，自动退出", IDLE_EXIT_AFTER));
-                    break;
+                // 连续无事件超过 `IDLE_REPORT_AFTER` 时只记一条诊断，**不退出**。唯一的退出
+                // 信号是 `done`（主线程在 `app.run()` 返回后置位）：只要窗口还在，就必须有人
+                // 消费菜单/控件触发，否则“窗口还开着、泵已死”会让菜单看起来失效（见
+                // `IDLE_REPORT_AFTER` 的说明）。归零是为了不重复刷同一条。
+                if idle_ticks > idle_ticks_before_report() {
+                    poll_log.append(format!(
+                        "[App] 空闲超过 {:?} 无事件（继续消费，等待窗口关闭）",
+                        IDLE_REPORT_AFTER
+                    ));
+                    idle_ticks = 0;
                 }
             }
             std::thread::sleep(POLL_INTERVAL);
@@ -775,11 +892,19 @@ fn run_loop(
 ///
 /// 状态栏直接改文本即可；`None` 表示控件已卸载（窗口正在关闭），
 /// 此时不再访问平台，避免关窗期间的无效调用。
-fn refresh_status(log: &Arc<EventLog>, editor: &CustomWidgetHandle) {
+///
+/// # 这里必须真正写可见的状态栏句柄（本 demo 之前的缺陷）
+///
+/// 早先的 `refresh_status` 算出新文本后只写进了 `EventLog`（即控制台 / 日志），从没碰过
+/// 状态栏句柄——状态栏因此永远停在创建时那句初始文本上，看起来“状态不更新”。现在同时把
+/// 文本推到可见句柄上，日志行为保留。
+fn refresh_status(log: &Arc<EventLog>, editor: &CustomWidgetHandle, status_bar_id: ObjectId) {
     let Some(line) = commands::status_line(editor) else {
         return;
     };
     log.append(format!("[Status] {line}"));
+    // 写回可见句柄：这是“状态栏真的变了”的唯一可观察证据。
+    rust_widgets::set_widget_text(status_bar_id, &line);
 }
 
 fn banner() {
@@ -1050,5 +1175,104 @@ mod tests {
             );
             assert_eq!(rect.height, row.height, "id {id} must fill the row's height");
         }
+    }
+
+    /// 内层分栏必须跟随**真实客户区**变化，而不是停在 `WINDOW_W`/`WINDOW_H` 上。
+    ///
+    /// # 这条回归护栏盯什么
+    ///
+    /// 修复前内层只在挂载时调一次 `apply_split`，用的是常量 `WINDOW_W`/`WINDOW_H`：
+    /// 后端 resize 重排了外层三行，两栏却一直停在 1100×720 算出的宽度上（窗口拉宽后
+    /// 右侧留白，拉窄后编辑器被截断）。用同一份客户区分别算两栏，尺寸必须随之变化。
+    #[test]
+    fn the_inner_split_follows_the_real_client_size() {
+        // 分栏行本身就跟着客户区走。
+        let (toolbar, split_row, status) = strip_ids();
+        let small = split_row_rect_in_for(Rect::new(0, 0, 800, 600), toolbar, split_row, status);
+        let large = split_row_rect_in_for(Rect::new(0, 0, 1600, 900), toolbar, split_row, status);
+        assert_eq!(small.width, 800, "the split row must span the client width");
+        assert_eq!(large.width, 1600, "and follow a wider client");
+        assert!(
+            large.height > small.height,
+            "a taller client must give the split row more height: {small:?} then {large:?}"
+        );
+
+        // 两栏随着同一份客户区变宽，且仍落在分栏行内、不溢出。
+        let (tree_small, editor_small) = pane_rects_for(Rect::new(0, 0, 800, 600));
+        let (tree_large, editor_large) = pane_rects_for(Rect::new(0, 0, 1600, 900));
+        assert!(
+            tree_large.width > tree_small.width,
+            "the tree must widen with the window: {} -> {}",
+            tree_small.width,
+            tree_large.width
+        );
+        assert!(
+            editor_large.width > editor_small.width,
+            "the editor must widen too: {} -> {}",
+            editor_small.width,
+            editor_large.width
+        );
+        for (tree, editor) in [(tree_small, editor_small), (tree_large, editor_large)] {
+            assert!(
+                tree.x + tree.width as i32 <= editor.x,
+                "the panes must not overlap: {tree:?} / {editor:?}"
+            );
+        }
+
+        // 初始（挂载时）的两栏必须等于初始客户区下算出的结果，而不是某一份常量。
+        let (initial_tree, initial_editor) = pane_rects();
+        assert_eq!((initial_tree, initial_editor), pane_rects_for(initial_client()));
+    }
+
+    /// `refresh_status` 必须把状态写回**可见的状态栏句柄**，而不只是日志。
+    ///
+    /// # 这条测试能测什么、不能测什么
+    ///
+    /// 这是无头测试，拿不到真实窗口，但可以用控件运行时直接挂一个 `CodeEditor` 与一个充当
+    /// 状态栏的 `Label`，让 `refresh_status` 真的走完整条写入路径。断言是这个探针状态栏的
+    /// 文本从初始值变成了 `status_line` 的结果 —— 如果 `refresh_status` 退回到“只写日志”，
+    /// 文本不会变，这条断言就挂。
+    #[test]
+    fn refresh_status_writes_the_visible_status_handle() {
+        use rust_widgets::widget::runtime;
+        use rust_widgets::widget::special_widgets::code_editor::CodeEditor;
+        use rust_widgets::widget::Label;
+
+        // Mount a real `CodeEditor` so `status_line` can read a cursor from it.
+        let mut editor = CodeEditor::new(Rect::new(0, 0, 400, 300));
+        editor.set_text("fn main() {}");
+        let editor_id = runtime::register(Box::new(editor)).expect("ui thread has a registry");
+        let editor = CustomWidgetHandle::from_raw(editor_id);
+
+        // A label stands in for the status bar: `refresh_status` writes to it by id.
+        let status_id = runtime::register(Box::new(Label::new(
+            "initial".to_string(),
+            Rect::new(0, 0, 200, 20),
+        )))
+        .expect("ui thread has a registry");
+
+        let log = Arc::new(EventLog::new());
+        refresh_status(&log, &editor, status_id);
+
+        let expected = commands::status_line(&editor).expect("the editor is mounted");
+        assert!(
+            expected.contains("Ln") && expected.contains("Col"),
+            "the status line must carry the cursor position: {expected}"
+        );
+        assert_ne!(expected, "initial", "the status text must actually change");
+        assert_eq!(
+            rust_widgets::get_widget_text(status_id),
+            expected,
+            "the visible status handle must receive the status line, not only the log"
+        );
+
+        // The log behaviour is kept: the same line is also recorded.
+        assert!(
+            log.entries.lock().unwrap().iter().any(|entry| entry.contains(&expected)),
+            "the [Status] log line must still be written"
+        );
+
+        runtime::unregister(editor_id);
+        runtime::unregister(status_id);
     }
 }

@@ -217,15 +217,19 @@ struct NativeLayoutEntry {
 
 /// Check if two (widget_id, Rect) entries from the same parent overlap.
 /// Ignores neighbouring rects that only touch at edges.
+///
+/// Uses the half-open interval contract: each rect spans `[origin, origin + length)`.
+/// Two rects overlap when each axis' intervals strictly overlap on both sides. Merely
+/// touching edges (`a.x2 == b.x`) are naturally excluded, because the comparison is
+/// strict. The previous version subtracted 1 from each exclusive end before comparing
+/// with `>`, which additionally discarded the last genuinely shared pixel — two rects
+/// sharing a single pixel were reported as disjoint.
 fn rects_overlap_excluding_touch(a: &Rect, b: &Rect) -> bool {
     let a_x2 = a.x.saturating_add_unsigned(a.width);
     let a_y2 = a.y.saturating_add_unsigned(a.height);
     let b_x2 = b.x.saturating_add_unsigned(b.width);
     let b_y2 = b.y.saturating_add_unsigned(b.height);
-    a.x < b_x2.saturating_sub(1)
-        && a_x2.saturating_sub(1) > b.x
-        && a.y < b_y2.saturating_sub(1)
-        && a_y2.saturating_sub(1) > b.y
+    a.x < b_x2 && a_x2 > b.x && a.y < b_y2 && a_y2 > b.y
 }
 
 // ── LayoutInspector public API ───────────────────────────────
@@ -910,6 +914,76 @@ mod tests {
         let overlap_issues: Vec<_> =
             report.issues.iter().filter(|i| i.description.contains("overlap")).collect();
         assert!(overlap_issues.is_empty());
+        LayoutInspector::disable();
+    }
+
+    /// The defect this pins: the exclusive-end subtraction discarded the last genuinely
+    /// shared pixel, so two rects sharing exactly one column of pixels were reported as
+    /// non-overlapping. The half-open contract detects it while still excluding a touch.
+    #[test]
+    fn one_pixel_overlap_is_detected() {
+        let _lock = lock_inspector();
+        LayoutInspector::enable();
+        let mut reg = WidgetRegistry::new();
+        reg.register(WidgetEntry {
+            id: 10,
+            kind: WidgetKind::Window,
+            parent: None,
+            label: "win".into(),
+        });
+        reg.register(WidgetEntry {
+            id: 1,
+            kind: WidgetKind::Button,
+            parent: Some(10),
+            label: "left".into(),
+        });
+        reg.register(WidgetEntry {
+            id: 2,
+            kind: WidgetKind::Button,
+            parent: Some(10),
+            label: "right".into(),
+        });
+        // Shares pixel x=1: (0,0,2,2) covers x 0..2, (1,0,2,2) covers x 1..3.
+        LayoutInspector::record_geometry(1, Rect::new(0, 0, 2, 2));
+        LayoutInspector::record_geometry(2, Rect::new(1, 0, 2, 2));
+        let report = LayoutInspector::run_once(&reg);
+        let overlap_issues: Vec<_> =
+            report.issues.iter().filter(|i| i.description.contains("overlap")).collect();
+        assert_eq!(overlap_issues.len(), 1, "a one-pixel overlap must be diagnosed");
+        LayoutInspector::disable();
+    }
+
+    /// The vertical analog of the one-pixel case: a single shared row must be diagnosed.
+    #[test]
+    fn one_pixel_vertical_overlap_is_detected() {
+        let _lock = lock_inspector();
+        LayoutInspector::enable();
+        let mut reg = WidgetRegistry::new();
+        reg.register(WidgetEntry {
+            id: 10,
+            kind: WidgetKind::Window,
+            parent: None,
+            label: "win".into(),
+        });
+        reg.register(WidgetEntry {
+            id: 1,
+            kind: WidgetKind::Button,
+            parent: Some(10),
+            label: "top".into(),
+        });
+        reg.register(WidgetEntry {
+            id: 2,
+            kind: WidgetKind::Button,
+            parent: Some(10),
+            label: "bottom".into(),
+        });
+        // Shares row y=1.
+        LayoutInspector::record_geometry(1, Rect::new(0, 0, 2, 2));
+        LayoutInspector::record_geometry(2, Rect::new(0, 1, 2, 2));
+        let report = LayoutInspector::run_once(&reg);
+        let overlap_issues: Vec<_> =
+            report.issues.iter().filter(|i| i.description.contains("overlap")).collect();
+        assert_eq!(overlap_issues.len(), 1, "a one-pixel vertical overlap must be diagnosed");
         LayoutInspector::disable();
     }
 

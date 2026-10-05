@@ -99,14 +99,27 @@ static UIView *findViewOfClass(UIView *root, Class cls) {
     return nil;
 }
 
-static void writeResultFile(NSString *text) {
+static BOOL writeResultFile(NSString *text, NSString **errorOut) {
     NSArray<NSString *> *paths =
         NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
     if (paths.count == 0) {
-        return;
+        if (errorOut) {
+            *errorOut = @"no Documents directory is available";
+        }
+        return NO;
     }
     NSString *file = [paths[0] stringByAppendingPathComponent:@"ios_probe_result.txt"];
-    [text writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    NSError *error = nil;
+    // The write's **result** is what is reported, not an assumption that it worked.
+    // `writeToFile:...` returns `NO` and fills `error` when the path is unwritable
+    // (read-only container, a full disk, a missing directory), so ignoring the return
+    // value made every run claim the result had been recorded even when nothing was.
+    BOOL written = [text writeToFile:file atomically:YES encoding:NSUTF8StringEncoding
+                              error:&error];
+    if (!written && errorOut) {
+        *errorOut = error.localizedDescription ?: @"unknown write error";
+    }
+    return written;
 }
 
 // ── App delegate ────────────────────────────────────────────────────────────
@@ -289,8 +302,12 @@ static void writeResultFile(NSString *text) {
                                             [gFailures componentsJoinedByString:@", "]];
     }
     printf("\n%s\n", result.UTF8String);
-    writeResultFile([gLines componentsJoinedByString:@"\n"]);
-    record(@"result_written", YES, result);
+    NSString *writeError = nil;
+    BOOL wroteResult = writeResultFile([gLines componentsJoinedByString:@"\n"], &writeError);
+    record(@"result_written", wroteResult,
+           wroteResult ? result
+                       : [NSString stringWithFormat:@"could not write the result file: %@",
+                                                    writeError ?: @"unknown error"]);
 
     return YES;
 }

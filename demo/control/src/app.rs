@@ -350,6 +350,62 @@ mod layout_tests {
             assert!(rect.height >= 1, "控件 {id} 高度退化为 0：{rect:?}");
         }
     }
+
+    /// 滚动区必须声明内容**范围**，且内容行必须真的是它的子控件。
+    ///
+    /// # 这条测什么
+    ///
+    /// 修复前滚动区只是一个 260×90 的视口，没有 `content_size`，六行“log line …”
+    /// 也只是窗口的兄弟控件、恰好压在它上面。这里用与 demo 相同的后端调用重建那一块：
+    /// 内容行用**滚动区**做 parent（而不是窗口），并声明内容范围。
+    ///
+    /// 断言分两半：
+    /// * **内容行确实被滚动区拥有** —— 直接读控件自身的子列表，这是 demo 要的“内容”关系；
+    /// * **内容范围已声明** —— 通过 `ScrollAreaHandle` 读取回它记录的范围（`set_content_size`
+    ///   在句柄侧记下这份数据，`scroll_to_bottom`/`AsNeeded` 据此计算）。
+    #[test]
+    fn scroll_area_declares_its_extent_and_owns_its_content() {
+        use rust_widgets::app::ScrollAreaHandle;
+
+        rust_widgets::init();
+        let window = rust_widgets::create_window("scroll-test", 0, 0, 320, 240);
+        assert_ne!(window, 0, "窗口必须创建成功");
+
+        let area = rust_widgets::create_scroll_area(window, 20, 286, 260, 90);
+        assert_ne!(area, 0, "滚动区必须创建成功");
+
+        const CONTENT_H: u32 = 6 * 20 + 4;
+        let handle = ScrollAreaHandle::from_raw(area);
+        handle.set_content_size(260, CONTENT_H);
+
+        for i in 0..6u32 {
+            let child = rust_widgets::create_label(
+                area,
+                &format!("log line {i} - scroll me"),
+                4,
+                4 + i as i32 * 20,
+                244,
+                18,
+            );
+            assert_ne!(child, 0, "内容行 {i} 必须挂载成功");
+        }
+
+        // 内容范围已声明且高于视口：`scroll_to_bottom` 会按这份高度算出底部偏移。
+        handle.scroll_to_bottom();
+        assert_eq!(
+            handle.scroll_position().1,
+            CONTENT_H as i32,
+            "内容范围必须恰恰是声明的那个（且高于视口）"
+        );
+        assert!(CONTENT_H > 90, "内容必须高于视口，否则无滚可滚");
+
+        // 六行都是滚动区的子控件，而不是窗口的兄弟。
+        let child_count = rust_widgets::widget::runtime::with_widget(area, |widget| {
+            widget.base().children().len()
+        })
+        .expect("滚动区必须已挂载");
+        assert_eq!(child_count, 6, "六行内容都必须是滚动区的子控件");
+    }
 }
 
 /// 注册窗口 layout，使 resize 后所有控件重新排布。
@@ -635,14 +691,48 @@ fn build_all_controls(win: &WindowHandle, log: &Arc<EventLog>) -> Vec<Slot> {
     // ── Row 5: Scrollable Text Area ──────────────────────────────────
     log.append("═══ Row: Scrollable Text Area ═══");
 
-    let _area = row!(win.new_scroll_area(20, 286, 260, 90), 5, 1, (20, 286, 260, 90));
+    let area = row!(win.new_scroll_area(20, 286, 260, 90), 5, 1, (20, 286, 260, 90));
+    // # The content extent is what makes a scrollbar possible
+    //
+    // `new_scroll_area` creates the **viewport** only; without a declared content
+    // size the area has nothing to scroll to, so the `AsNeeded` policy decides no bar
+    // is needed and the content is simply clipped (see the note on
+    // `ScrollAreaHandle::set_content_size`). Six 20px rows plus 4px of leading padding
+    // is 124 content pixels against a 90px viewport, which is what gives the bar a
+    // reason to exist.
+    let content_h = 6 * 20 + 4;
+    area.set_content_size(260, content_h);
     for i in 0..6 {
         // ASCII only: the default build's glyph face carries no em dash, so a `—` here
         // painted as a missing-glyph box. A separator that renders is worth more than a
         // typographically nicer one that does not.
-        let _line = win.new_label(&format!("log line {i} - scroll me"), 28, 294 + i * 20, 244, 18);
+        //
+        // # Parented into the scroll area, not the window
+        //
+        // These used to be `win.new_label(..)` — window **siblings** at absolute
+        // coordinates that merely happened to overlap the scroll area. The scroll area
+        // knew nothing about them: they were not its content, so scrolling moved the
+        // viewport while the labels stayed put, and the extent above had no rows to
+        // cover. `create_label(parent, ..)` mounts each row under the scroll area, so
+        // it is genuinely the area's content.
+        let label = rust_widgets::create_label(
+            area.raw_id(),
+            &format!("log line {i} - scroll me"),
+            4,
+            4 + i * 20,
+            244,
+            18,
+        );
+        // The scroll area draws its own content frame; each row must still be
+        // parented before it can be seen, and reporting a failure to mount keeps a
+        // silently-empty area from looking like a layout accent.
+        if label == 0 {
+            log.append(format!("[ScrollArea] WARN: 内容行 {i} 挂载失败"));
+        }
     }
-    log.append("[ScrollArea] with 6 stacked labels at (20,286,260,90)");
+    log.append(format!(
+        "[ScrollArea] viewport (20,286,260,90) with content 260x{content_h} and 6 stacked labels"
+    ));
 
     // ── Row 6: Panel / Frame ─────────────────────────────────────────
     log.append("═══ Row: Panel / Frame ═══");

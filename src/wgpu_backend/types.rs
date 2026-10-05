@@ -34,19 +34,20 @@ pub struct PixelRect {
 impl PixelRect {
     /// Returns the exclusive right edge, i.e. `x + width`.
     ///
-    /// The computation saturates rather than wrapping, so a rectangle that
-    /// would overflow `i32` clamps to `i32::MAX` instead of producing a
-    /// negative edge. The right edge is exclusive: a rectangle at `x = 0` with
-    /// `width = 1` covers column `0` only.
+    /// The computation is done in `i64` and saturates to `i32::MAX`/`i32::MIN`
+    /// rather than wrapping. The old form did `self.width as i32` first, so a
+    /// width of `u32::MAX` became `-1` and `x + width` produced a *left-shifted*
+    /// right edge (for `x = 0`, `right() == -1`), which broke every clip and
+    /// bounding-box computation that used it (N-S-67).
     pub fn right(self) -> i32 {
-        self.x.saturating_add(self.width as i32)
+        saturating_i32(self.x as i64 + self.width as i64)
     }
     /// Returns the exclusive bottom edge, i.e. `y + height`.
     ///
-    /// Saturating, like [`PixelRect::right`]. The bottom edge is exclusive: a
-    /// rectangle at `y = 0` with `height = 1` covers row `0` only.
+    /// Widened to `i64` like [`PixelRect::right`], so a `u32::MAX` height clamps
+    /// to `i32::MAX` instead of wrapping (N-S-67).
     pub fn bottom(self) -> i32 {
-        self.y.saturating_add(self.height as i32)
+        saturating_i32(self.y as i64 + self.height as i64)
     }
     /// Returns a copy of this rectangle moved by `offset`.
     ///
@@ -86,10 +87,19 @@ impl PixelRect {
         Some(PixelRect {
             x: left,
             y: top,
-            width: (right - left) as u32,
-            height: (bottom - top) as u32,
+            width: (right as i64 - left as i64) as u32,
+            height: (bottom as i64 - top as i64) as u32,
         })
     }
+}
+
+/// Clamps an `i64` coordinate into the `i32` pixel space.
+///
+/// `PixelRect` stores coordinates as `i32` but computes edges in `i64` so a
+/// `u32` width/height cannot wrap into a negative value. This is the single place
+/// the widened value is narrowed back, saturating at the `i32` bounds.
+fn saturating_i32(value: i64) -> i32 {
+    value.clamp(i32::MIN as i64, i32::MAX as i64) as i32
 }
 /// 8-bit RGBA color.
 ///
@@ -118,4 +128,38 @@ pub struct Rgba8 {
     /// Alpha (opacity), `0`..=`255`. Straight, not premultiplied, so it is
     /// independent of the other three channels.
     pub a: u8,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// N-S-67: `right`/`bottom` must widen before adding, so a `u32::MAX` extent
+    /// clamps to `i32::MAX` instead of wrapping through `u32 as i32` to `-1`.
+    #[test]
+    fn right_and_bottom_widen_before_adding() {
+        let rect = PixelRect { x: 0, y: 0, width: u32::MAX, height: u32::MAX };
+        assert_eq!(rect.right(), i32::MAX, "width u32::MAX must clamp, not wrap to -1");
+        assert_eq!(rect.bottom(), i32::MAX, "height u32::MAX must clamp, not wrap to -1");
+
+        // A negative origin with a huge width still takes the widened path: the
+        // sum is far past i32::MAX and clamps.
+        let rect = PixelRect { x: -10, y: -10, width: u32::MAX, height: u32::MAX };
+        assert_eq!(rect.right(), i32::MAX);
+        assert_eq!(rect.bottom(), i32::MAX);
+
+        // Ordinary rectangles are unchanged.
+        let rect = PixelRect { x: 3, y: 4, width: 5, height: 6 };
+        assert_eq!((rect.right(), rect.bottom()), (8, 10));
+    }
+
+    /// The intersection must derive its extent from the clamped edges and must
+    /// not overflow when an input width is `u32::MAX`.
+    #[test]
+    fn intersect_handles_huge_extents() {
+        let huge = PixelRect { x: 0, y: 0, width: u32::MAX, height: u32::MAX };
+        let small = PixelRect { x: 2, y: 2, width: 4, height: 4 };
+        let overlap = huge.intersect(small).expect("small lies inside the huge rect");
+        assert_eq!(overlap, small);
+    }
 }

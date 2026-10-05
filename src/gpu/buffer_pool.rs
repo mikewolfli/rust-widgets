@@ -305,17 +305,21 @@ impl GpuStagingBufferPool {
     /// Allocates a buffer from the current slot
     pub fn allocate(&mut self, size: usize) -> Option<GpuBufferAllocation> {
         let aligned_size = align_up_checked(size, self.config.alignment)?;
+        // Enforce the batch-size limit *before* the merge path: the merge branch
+        // used to return early, so a small request that was still over
+        // `max_batch_size` (or a pool whose limits the merge path never checked)
+        // bypassed the large-request fallback policy entirely, and the two paths
+        // disagreed about what is allowed (N-S-59).
+        if aligned_size > self.config.max_batch_size {
+            // Try fallback pool for large allocations
+            return self.allocate_fallback(size);
+        }
         // Check if we should merge small uploads
         if self.config.merge_uploads && size < self.config.small_upload_threshold {
             // Try to merge with existing allocation
             if let Some(allocation) = self.try_merge_allocate(size) {
                 return Some(allocation);
             }
-        }
-        // Check batch size limit
-        if aligned_size > self.config.max_batch_size {
-            // Try fallback pool for large allocations
-            return self.allocate_fallback(size);
         }
         let slot = self.slots.get(self.current_slot)?;
         let new_used = self.total_used.checked_add(aligned_size)?;
@@ -362,6 +366,12 @@ impl GpuStagingBufferPool {
     /// Tries to merge a small allocation with existing data in the current slot
     fn try_merge_allocate(&mut self, size: usize) -> Option<GpuBufferAllocation> {
         let aligned_size = align_up_checked(size, self.config.alignment)?;
+        // The merge path must honour the same batch-size limit as the normal
+        // path; it is called after the check in `allocate`, but keeping the guard
+        // here too means the helper is safe on its own and cannot drift (N-S-59).
+        if aligned_size > self.config.max_batch_size {
+            return None;
+        }
         // Get current slot
         let slot = self.slots.get(self.current_slot)?;
         // Check if we can merge with existing allocation
@@ -567,12 +577,20 @@ pub struct GpuBufferPoolMonitor {
 }
 impl GpuBufferPoolMonitor {
     /// Creates a new monitor
+    ///
+    /// A history of 0 is clamped to 1: `record` evicts the oldest entry when the
+    /// history is full, and `remove(0)` on an empty `Vec` panics. A zero-sized
+    /// history would make the very first `record` call do exactly that (N-S-32).
     pub fn new(max_history: usize) -> Self {
+        let max_history = max_history.max(1);
         Self { stats_history: Vec::with_capacity(max_history), max_history }
     }
     /// Records a stats sample
     pub fn record(&mut self, stats: GpuBufferPoolStats) {
-        if self.stats_history.len() >= self.max_history {
+        // Evict from the front only when there is something to evict; `new`
+        // guarantees a non-zero capacity, but the guard makes the invariant local
+        // to `record` as well and removes any dependence on construction order.
+        while self.stats_history.len() >= self.max_history && !self.stats_history.is_empty() {
             self.stats_history.remove(0);
         }
         self.stats_history.push(stats);
@@ -897,5 +915,52 @@ mod tests {
             vec![(vec![1, 1, 1], 0), (vec![2, 2], 2), (vec![3], 3)],
             "the trailing write must not be folded into the earlier upload across an overlap",
         );
+    }
+
+    /// N-S-59: a small request that exceeds `max_batch_size` must take the
+    /// fallback path even when merging is enabled — the merge branch used to
+    /// short-circuit the limit check.
+    #[test]
+    fn test_small_over_batch_request_takes_fallback_even_with_merge() {
+        let mut config = StagingBufferPoolConfig::discrete();
+        config.pool_size = 64 * 1024;
+        config.ring_slots = 1;
+        config.merge_uploads = true;
+        config.small_upload_threshold = 4096; // merge applies below this
+        config.max_batch_size = 256; // ... but a 272-byte request is over the batch limit
+        config.alignment = 256;
+        let mut pool = GpuStagingBufferPool::new(config)
+            .unwrap()
+            .with_fallback_pool(crate::memory::BufferPool::new(512, 1, 4));
+
+        // 272 bytes < small_upload_threshold, so it *would* have gone through the
+        // merge path; it is over max_batch_size, so it must fall back instead.
+        let alloc = pool.allocate(272).expect("falls back to the fallback pool");
+        assert!(alloc.is_fallback, "an over-batch small request must not merge");
+        // A request within the batch limit still uses the ring slot.
+        let normal = pool.allocate(128).expect("normal allocation");
+        assert!(!normal.is_fallback);
+    }
+
+    /// N-S-59 / N-S-32: a monitor created with zero history must not panic on its
+    /// first `record` (the old `remove(0)` on an empty vec did), and must retain
+    /// exactly one sample.
+    #[test]
+    fn test_buffer_pool_monitor_zero_history_does_not_panic() {
+        let mut monitor = GpuBufferPoolMonitor::new(0);
+        let stats = GpuBufferPoolStats {
+            total_size: 1024,
+            used_size: 512,
+            allocated_size: 512,
+            slot_count: 1,
+            current_slot: 0,
+            current_frame: 0,
+            fallback_used: 0,
+        };
+        monitor.record(stats);
+        assert_eq!(monitor.average_utilization(), 0.5);
+        // Recording again keeps the single slot and does not panic.
+        monitor.record(GpuBufferPoolStats { used_size: 1024, ..stats });
+        assert_eq!(monitor.average_utilization(), 1.0);
     }
 }

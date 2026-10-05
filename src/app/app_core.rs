@@ -188,15 +188,56 @@ impl App {
     /// Initialize global platform and (optionally) i18n subsystems.
     ///
     /// Call this once before creating windows or running the loop.
+    ///
+    /// # The `AppConfig` switches are honoured here
+    ///
+    /// `AppConfig::enable_i18n` / `enable_accessibility` are declared as init switches,
+    /// so this method must be the place they take effect. It used to call the
+    /// unparameterised `crate::init()`, which unconditionally brought up every optional
+    /// subsystem — so `with_i18n(false)` and `with_accessibility(false)` changed nothing.
+    ///
+    /// The two halves of `crate::init()` are now driven separately with the configured
+    /// flags: the platform runtime is always brought up (a control cannot exist without
+    /// it), and [`platform::profile::init_optional_subsystems`] — the i18n catalogue and
+    /// its watcher — runs only when `enable_i18n` is set. The accessibility switch is
+    /// recorded process-wide so capability wiring that asks can honour it; see
+    /// [`App::accessibility_enabled`]. The no-config crate entry [`crate::init`] keeps the
+    /// previous all-on behaviour, because its callers have no `AppConfig` to consult.
+    ///
+    /// [`platform::profile::init_optional_subsystems`]: crate::platform::profile::init_optional_subsystems
     pub fn init(&mut self) {
         trace_runtime_route("app::init");
-        crate::init();
+
+        // The platform runtime is unconditional: it owns the window and the event loop,
+        // which every profile that can create a control needs.
+        crate::platform::profile::runtime_init();
+
+        if self.config.enable_i18n {
+            crate::platform::profile::init_optional_subsystems();
+        } else {
+            log::debug!("[app] i18n initialisation skipped: AppConfig::with_i18n(false) was set");
+        }
+
+        // Record the accessibility switch so capability wiring can honour it. Set before
+        // the lifecycle transition and the startup callback, so a startup callback that
+        // queries accessibility observes the configured value.
+        set_accessibility_enabled(self.config.enable_accessibility);
 
         // Transition lifecycle to Foreground after init completes.
         self.lifecycle.transition(crate::app::lifecycle::AppLifecycleState::Foreground);
 
         // Fire the startup callback after everything is initialised.
         fire_startup();
+    }
+
+    /// Whether this application's accessibility subsystem was enabled at [`init`](App::init).
+    ///
+    /// Mirrors [`AppConfig::enable_accessibility`](AppConfig::enable_accessibility): the
+    /// config switch is a declaration, and this reports the value the running application
+    /// actually recorded when it initialised. Before `init` it reports the process default
+    /// (`true`).
+    pub fn accessibility_enabled(&self) -> bool {
+        accessibility_enabled()
     }
 
     /// Run the platform main event loop (blocks).
@@ -271,10 +312,32 @@ crate::impl_default_via_new!(App);
 // are available across threads (e.g. in run_async).
 
 use crate::compat::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::OnceLock;
 
 static STARTUP: OnceLock<Mutex<Option<Box<dyn FnOnce() + Send>>>> = OnceLock::new();
 static SHUTDOWN: OnceLock<Mutex<Option<Box<dyn FnOnce() + Send>>>> = OnceLock::new();
+
+/// Whether the accessibility subsystem is enabled for the running application.
+///
+/// Defaults to `true`, matching [`AppConfig::default`]. [`App::init`] writes
+/// [`AppConfig::enable_accessibility`] here so the switch is a real, queryable fact rather
+/// than a field nothing reads. Process-wide because accessibility is a property of the
+/// running application, not of one window.
+static A11Y_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// Record whether accessibility is enabled for the running application.
+fn set_accessibility_enabled(enabled: bool) {
+    A11Y_ENABLED.store(enabled, AtomicOrdering::SeqCst);
+}
+
+/// Whether accessibility is enabled for the running application.
+///
+/// `pub(crate)` so capability wiring elsewhere can gate on it without importing `App`.
+/// Returns the process default (`true`) until [`App::init`] records a configuration.
+pub(crate) fn accessibility_enabled() -> bool {
+    A11Y_ENABLED.load(AtomicOrdering::SeqCst)
+}
 
 fn with_startup<F, R>(f: F) -> R
 where
@@ -384,5 +447,74 @@ mod tests {
 
         fire_shutdown();
         assert_eq!(calls.load(Ordering::SeqCst), 11, "the re-registered callback runs later");
+    }
+
+    /// Serialises the tests that drive `App::init`, because `init` mutates two process-wide
+    /// globals (the i18n manager and the accessibility flag).
+    fn app_init_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// N-S-70: `with_i18n(false)` must actually skip i18n initialisation.
+    ///
+    /// `AppConfig::enable_i18n` was declared but `App::init` called the unparameterised
+    /// `crate::init()`, so the global i18n manager was brought up regardless. After the
+    /// fix the optional-subsystem step is skipped and the manager stays absent.
+    #[test]
+    fn with_i18n_false_skips_i18n_initialisation() {
+        let _lock = app_init_test_lock();
+        let _i18n = crate::i18n::global_i18n_test_lock();
+        // Start from a known-uninitialised state.
+        *crate::compat::lock(&crate::i18n::GLOBAL_I18N) = None;
+
+        let mut app = App::with_config(AppConfig::default().with_i18n(false));
+        app.init();
+
+        assert!(
+            crate::i18n::GLOBAL_I18N.lock().unwrap_or_else(|e| e.into_inner()).is_none(),
+            "with_i18n(false) must leave the i18n manager uninitialised"
+        );
+    }
+
+    /// N-S-70: the default (and `with_i18n(true)`) still brings i18n up, so the switch
+    /// changed behaviour rather than disabling it outright.
+    #[test]
+    fn with_i18n_true_initialises_i18n() {
+        let _lock = app_init_test_lock();
+        let _i18n = crate::i18n::global_i18n_test_lock();
+        *crate::compat::lock(&crate::i18n::GLOBAL_I18N) = None;
+
+        let mut app = App::new();
+        app.init();
+
+        let count = crate::i18n::GLOBAL_I18N
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|manager| manager.translation_count())
+            .unwrap_or(0);
+        assert!(count > 0, "the default configuration must initialise the embedded catalogue");
+
+        *crate::compat::lock(&crate::i18n::GLOBAL_I18N) = None;
+    }
+
+    /// N-S-70: `with_accessibility(false)` must be observable through the running app.
+    #[test]
+    fn accessibility_switch_is_recorded_by_init() {
+        let _lock = app_init_test_lock();
+        let _i18n = crate::i18n::global_i18n_test_lock();
+
+        let mut off =
+            App::with_config(AppConfig::default().with_accessibility(false).with_i18n(false));
+        off.init();
+        assert!(!off.accessibility_enabled(), "with_accessibility(false) must be recorded off");
+        assert!(!accessibility_enabled(), "the process-wide flag must reflect the config");
+
+        let mut on =
+            App::with_config(AppConfig::default().with_accessibility(true).with_i18n(false));
+        on.init();
+        assert!(on.accessibility_enabled(), "the default/true switch must be recorded on");
+        assert!(accessibility_enabled());
     }
 }
